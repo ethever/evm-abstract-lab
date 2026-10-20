@@ -3,7 +3,7 @@ use super::super::*;
 #[test]
 fn copy_quotes_pay_source_once_and_additive_occurrences_and_keep_history_fees() {
     let domain = Domain::default();
-    let policy = limits(domain).into();
+    let policy = limits(crate::domain::ValueAlgebra::new(&domain)).into();
     let c = |n| ExprId::constant(U256::from(n));
     let a = ByteStateId::zero();
     let b = ByteStateId::exact(Arc::from([0x22]));
@@ -118,9 +118,20 @@ fn uncertified_cells_keep_coordinates_for_authoritative_scoped_summary_reads() {
         array
     };
     let mut source = branch(0x33)
-        .join_guarded(&branch(0x44), domain, selector.clone(), limits(domain))
+        .join_guarded(
+            &branch(0x44),
+            domain,
+            selector.clone(),
+            limits(crate::domain::ValueAlgebra::new(&domain)),
+        )
         .unwrap();
-    source.remember(selector, &constant(1), domain).unwrap();
+    source
+        .remember(
+            selector,
+            &constant(1),
+            crate::domain::ValueAlgebra::new(&domain),
+        )
+        .unwrap();
     assert!(source.conditional.len() > 0);
     // Presentation cannot certify these stale values, even with retained terms.
     source.bytes.insert(700, constant(0x99));
@@ -369,7 +380,7 @@ fn conditional_return_data_fixture(domain: Domain, entries: usize) -> ByteArray 
             &branch(0x22),
             domain,
             ExprId::fresh().unwrap(),
-            limits(domain),
+            limits(crate::domain::ValueAlgebra::new(&domain)),
         )
         .unwrap()
 }
@@ -477,7 +488,13 @@ fn empty_actual_return_data_keeps_expansion_and_atomic_typed_refusals() {
     // Constrain this captured slice's own length, retaining its root/history.
     let length_term = source.len().expression().unwrap().clone();
     source.length = source.length.clone().with_numeric(zero().numeric().clone());
-    source.remember(length_term, &zero(), domain).unwrap();
+    source
+        .remember(
+            length_term,
+            &zero(),
+            crate::domain::ValueAlgebra::new(&domain),
+        )
+        .unwrap();
     assert!(source.conditional.len() > 0);
     assert!(source.root.nodes() > ByteArray::empty().root.nodes());
     let source_before = source.clone();
@@ -633,12 +650,18 @@ fn maybe_zero_and_nonzero_return_data_keep_complete_copy_and_fee() {
             .saturating_mul(super::alternatives(&zero()))
             .saturating_mul(super::alternatives(&requested))
             .saturating_mul(super::alternatives(&source.length));
-        let complete = super::work(&target, (&source).into(), ranges, branches, domain)
-            .saturating_add(
-                target
-                    .metadata_len()
-                    .saturating_mul(12 + crate::domain::provenance::MAX_ORIGINS + 4),
-            );
+        let complete = super::work(
+            &target,
+            (&source).into(),
+            ranges,
+            branches,
+            crate::domain::ValueAlgebra::new(&domain),
+        )
+        .saturating_add(
+            target
+                .metadata_len()
+                .saturating_mul(12 + crate::domain::provenance::MAX_ORIGINS + 4),
+        );
         assert_eq!(
             target.copy_return_data_work(&source, &zero(), &requested, domain),
             complete
@@ -668,12 +691,16 @@ fn maybe_zero_and_nonzero_return_data_keep_complete_copy_and_fee() {
 #[test]
 fn empty_import_quote_avoids_policy_comparisons_only_for_empty_targets() {
     let domain = Domain::default();
-    let larger = Domain::from_spec(domain.spec().with_relations(
-        crate::domain::relational::RelationLimits {
-            max_nodes: limits(domain).max_nodes.saturating_mul(2),
-            ..domain.spec().relations()
-        },
-    ));
+    let larger = Domain::from_spec(
+        domain
+            .spec()
+            .with_relations(crate::domain::relational::RelationLimits {
+                max_nodes: limits(crate::domain::ValueAlgebra::new(&domain))
+                    .max_nodes
+                    .saturating_mul(2),
+                ..domain.spec().relations()
+            }),
+    );
     let mut source = ByteArray::exact(&[0x11]);
     for n in 0..8 {
         source
@@ -704,7 +731,8 @@ fn empty_import_quote_avoids_policy_comparisons_only_for_empty_targets() {
     let facts = nonempty.operands.len() + source.operands.len() + 3;
     let old_comparison_delta = source.operands.len()
         * 2
-        * (limits(larger).max_nodes - limits(domain).max_nodes)
+        * (limits(crate::domain::ValueAlgebra::new(&larger)).max_nodes
+            - limits(crate::domain::ValueAlgebra::new(&domain)).max_nodes)
         * (super::probes(facts) * 2 + 4);
     for (before, after) in quote(&nonempty, &source, domain)
         .into_iter()
@@ -745,7 +773,7 @@ fn empty_import_quote_pays_clone_and_height_based_retain_even_for_neutral_facts(
             },
             0,
             0,
-            domain,
+            crate::domain::ValueAlgebra::new(&domain),
         )
     };
     let value_copy = 12 + crate::domain::provenance::MAX_ORIGINS + 4;

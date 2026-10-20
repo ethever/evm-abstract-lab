@@ -1,12 +1,18 @@
 //! Freeze sparse loop coordinates; forgotten cells flow into their defaults.
 
 use super::{
-    AbstractValue, BTreeSet, Domain, InitialIndependence, OrderedMap, StoreSummary, SummaryPlane,
-    lifecycle, representable_default, sparse,
+    BTreeSet, EvmStoreSummary, EvmValue, InitialIndependence, OrderedMap, SummaryPlane, lifecycle,
+    representable_default, sparse,
 };
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 
-impl SummaryPlane {
-    fn project_to_layout(&self, layout: &Self, domain: Domain) -> Self {
+impl<N: WordElement> SummaryPlane<N> {
+    fn project_to_layout_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        layout: &Self,
+        domain: AlgebraRef<'_, D>,
+    ) -> Self {
         let owners: BTreeSet<_> = layout
             .defaults
             .keys()
@@ -60,7 +66,7 @@ impl SummaryPlane {
     }
 }
 
-impl StoreSummary {
+impl<N: WordElement> EvmStoreSummary<N> {
     /// A complete coarse envelope when retaining numerical cell expressions is
     /// refused. Control-relevant code/lifecycle variants remain represented.
     pub(crate) fn forget_loop_numeric(&self) -> Self {
@@ -68,13 +74,13 @@ impl StoreSummary {
         let plane = || SummaryPlane {
             slots: OrderedMap::new(),
             defaults: OrderedMap::new(),
-            global_default: AbstractValue::top(),
+            global_default: EvmValue::<N>::top(),
             initial_independence: InitialIndependence::new(false),
         };
         out.persistent = plane();
         out.transient = plane();
         out.balances.clear();
-        out.balance_default = AbstractValue::top();
+        out.balance_default = EvmValue::<N>::top();
         out.nonces.clear();
         out.possible_logs.clear();
         out.logs_unknown = true;
@@ -83,12 +89,18 @@ impl StoreSummary {
 
     /// Project numerical coordinates onto one frozen loop layout. Code and
     /// creation/destruction variants remain in the scheduler's structural key.
-    pub(crate) fn project_to_layout(&self, layout: &Self, domain: Domain) -> Self {
+    pub(crate) fn project_to_layout_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        layout: &Self,
+        domain: AlgebraRef<'_, D>,
+    ) -> Self {
         let mut out = self.clone();
         out.persistent = self
             .persistent
-            .project_to_layout(&layout.persistent, domain);
-        out.transient = self.transient.project_to_layout(&layout.transient, domain);
+            .project_to_layout_with(&layout.persistent, domain);
+        out.transient = self
+            .transient
+            .project_to_layout_with(&layout.transient, domain);
         (out.balances, out.balance_default) = sparse::project(
             (&self.balances, &self.balance_default),
             &layout.balances,
@@ -135,9 +147,16 @@ impl StoreSummary {
                     .expect("retained source key");
                 log.data = log
                     .data
-                    .project_to_layout(&layout.possible_logs[&key].data, domain);
+                    .project_to_layout_with(&layout.possible_logs[&key].data, domain);
             }
         }
         out
+    }
+}
+
+impl EvmStoreSummary<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn project_to_layout(&self, layout: &Self, domain: crate::domain::Domain) -> Self {
+        self.project_to_layout_with(layout, crate::domain::ValueAlgebra::new(domain).borrowed())
     }
 }

@@ -1,16 +1,19 @@
 //! Summary renaming covers slot bases, account roots, and event byte views.
 
-use super::{Store, StoreError};
+use super::{EvmStore, StoreError};
+use crate::domain::AlgebraRef;
+use crate::domain::EvmNumericAlgebra;
+use crate::domain::WordElement;
 use crate::domain::{
-    AbstractValue,
+    EvmValue,
     symbolic::{ExprId, ExprLimits},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-impl Store {
+impl<N: WordElement> EvmStore<N> {
     /// Import proved numeric guarantees using the immutable original term keys.
     /// Compact operand values need not retain an optional expression themselves.
-    pub(crate) fn refine_operands(&mut self, update: &mut impl FnMut(&ExprId, &mut AbstractValue)) {
+    pub(crate) fn refine_operands(&mut self, update: &mut impl FnMut(&ExprId, &mut EvmValue<N>)) {
         for plane in [&mut self.persistent, &mut self.transient] {
             for (expression, value) in &mut plane.operands {
                 update(expression, value);
@@ -35,10 +38,11 @@ impl Store {
         out
     }
     /// Apply one map to the whole store. Any error leaves the savepoint untouched.
-    pub fn rename_fresh(
+    pub fn rename_fresh_with<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         map: &BTreeMap<ExprId, ExprId>,
         limits: ExprLimits,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
         let mut out = self.clone();
         for plane in [&mut out.persistent, &mut out.transient] {
@@ -77,7 +81,7 @@ impl Store {
                     &mut plane.operands,
                     e.rename_fresh(map, limits)?,
                     &v,
-                    crate::domain::Domain::default(),
+                    domain,
                     limits,
                 )?;
             }
@@ -113,7 +117,7 @@ impl Store {
             for topic in &mut log.topics {
                 topic.rename_fresh(map, limits)?;
             }
-            log.data.rename_fresh(map, limits)?;
+            log.data.rename_fresh_with(map, limits, domain)?;
             out.possible_logs.insert(key, log);
         }
         *self = out;
@@ -124,5 +128,20 @@ impl Store {
         let mut failed = self.persistent.failure.is_some() || self.transient.failure.is_some();
         self.visit_values(&mut |value| failed |= value.symbolic_limit_reached());
         failed
+    }
+}
+
+impl EvmStore<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub fn rename_fresh(
+        &mut self,
+        map: &BTreeMap<ExprId, ExprId>,
+        limits: ExprLimits,
+    ) -> Result<(), StoreError> {
+        self.rename_fresh_with(
+            map,
+            limits,
+            crate::domain::ValueAlgebra::new(crate::domain::Domain::default()).borrowed(),
+        )
     }
 }

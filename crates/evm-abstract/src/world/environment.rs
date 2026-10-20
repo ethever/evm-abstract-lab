@@ -4,9 +4,11 @@
 //! transaction. Address identities remain distinct from account-state owners.
 //! Indexed observations are partial: a missing valid entry remains unknown.
 
-use super::{ByteArray, SnapshotIdentity};
+use super::{EvmByteArray, SnapshotIdentity};
+use crate::domain::AlgebraRef;
+use crate::domain::EvmValue;
 pub use crate::domain::provenance::Symbol;
-use crate::domain::{AbstractValue, Domain};
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use alloy_primitives::{Address, B256, U256};
 use serde::Serialize;
 use std::{
@@ -77,18 +79,18 @@ impl AddressInput {
         }
     }
     /// Numeric representation with the high 96 bits guaranteed zero.
-    pub fn value(self) -> AbstractValue {
+    pub fn value_with<N: WordElement>(self) -> EvmValue<N> {
         match self {
             Self::Concrete(address) => {
-                AbstractValue::constant(U256::from_be_slice(address.as_slice()))
+                EvmValue::<N>::constant(U256::from_be_slice(address.as_slice()))
             }
-            Self::Symbolic(_) => AbstractValue::unknown_address(),
+            Self::Symbolic(_) => EvmValue::<N>::unknown_address(),
         }
     }
-    pub(crate) fn scoped_value(self, scope: Option<u64>) -> AbstractValue {
+    pub(crate) fn scoped_value_with<N: WordElement>(self, scope: Option<u64>) -> EvmValue<N> {
         match self {
-            Self::Concrete(_) => self.value(),
-            Self::Symbolic(symbol) => self.value().with_symbol(symbol, scope),
+            Self::Concrete(_) => self.value_with::<N>(),
+            Self::Symbolic(symbol) => self.value_with::<N>().with_symbol(symbol, scope),
         }
     }
 }
@@ -119,10 +121,10 @@ pub enum GasInput {
 }
 
 impl GasInput {
-    pub(crate) fn value(self) -> AbstractValue {
+    pub(crate) fn value_with<N: WordElement>(self) -> EvmValue<N> {
         match self {
-            Self::Unknown => AbstractValue::top(),
-            Self::UpperBound(upper) => AbstractValue::unsigned_range(U256::ZERO, upper)
+            Self::Unknown => EvmValue::<N>::top(),
+            Self::UpperBound(upper) => EvmValue::<N>::unsigned_range(U256::ZERO, upper)
                 .expect("zero never exceeds an unsigned bound"),
         }
     }
@@ -130,27 +132,28 @@ impl GasInput {
 
 /// Partial transaction blob hashes plus an independently known or unknown count.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct BlobHashes {
+#[serde(rename = "BlobHashes")]
+pub struct EvmBlobHashes<N: WordElement> {
     /// Count of versioned hashes; omitted count remains unknown.
-    pub length: AbstractValue,
+    pub length: EvmValue<N>,
     /// Only observed indices; holes below a known count remain unknown.
     pub hashes: BTreeMap<U256, B256>,
 }
 
-impl Default for BlobHashes {
+impl<N: WordElement> Default for EvmBlobHashes<N> {
     fn default() -> Self {
         Self {
-            length: AbstractValue::top(),
+            length: EvmValue::<N>::top(),
             hashes: BTreeMap::new(),
         }
     }
 }
 
-impl BlobHashes {
+impl<N: WordElement> EvmBlobHashes<N> {
     /// A complete observed list; indices beyond its length return zero.
     pub fn exact(hashes: &[B256]) -> Self {
         Self {
-            length: AbstractValue::constant(U256::from(hashes.len())),
+            length: EvmValue::<N>::constant(U256::from(hashes.len())),
             hashes: hashes
                 .iter()
                 .enumerate()
@@ -159,17 +162,17 @@ impl BlobHashes {
         }
     }
 
-    pub(crate) fn get(
+    pub(crate) fn get_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        index: &AbstractValue,
-        domain: Domain,
+        index: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
         scope: Option<u64>,
-    ) -> AbstractValue {
-        let Some(indices) = index.constants() else {
+    ) -> EvmValue<N> {
+        let Some(indices) = crate::world::candidates(index) else {
             return if self.length.singleton() == Some(U256::ZERO) {
-                AbstractValue::constant(U256::ZERO)
+                EvmValue::<N>::constant(U256::ZERO)
             } else {
-                AbstractValue::top()
+                EvmValue::<N>::top()
             };
         };
         let mut values = indices.iter().map(|index| {
@@ -179,13 +182,13 @@ impl BlobHashes {
                     .singleton()
                     .is_some_and(|length| *index >= length)
             {
-                return AbstractValue::constant(U256::ZERO);
+                return EvmValue::<N>::constant(U256::ZERO);
             }
             if let Some(hash) = self.hashes.get(index) {
                 // An observed hash also establishes that this index exists.
-                return AbstractValue::constant(U256::from_be_slice(hash.as_slice()));
+                return EvmValue::<N>::constant(U256::from_be_slice(hash.as_slice()));
             }
-            AbstractValue::top().with_symbol(Symbol::BlobHash(*index), scope)
+            EvmValue::<N>::top().with_symbol(Symbol::BlobHash(*index), scope)
         });
         let first = values.next().expect("finite value candidates are nonempty");
         values.fold(first, |value, incoming| domain.join(&value, &incoming))
@@ -194,7 +197,8 @@ impl BlobHashes {
 
 /// All immutable transaction and block observations consumed by EVM opcodes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct EvmEnvironment {
+#[serde(rename = "EvmEnvironment")]
+pub struct EvmEnvironmentValues<N: WordElement> {
     /// Identity namespace; cloning preserves the same symbolic inputs.
     #[serde(skip)]
     pub input_scope: InputScope,
@@ -205,60 +209,60 @@ pub struct EvmEnvironment {
     /// Transaction ORIGIN; omission aliases the exact same input as caller.
     pub origin: Option<AddressInput>,
     /// Root CALLVALUE; omitted value covers every unsigned word.
-    pub value: AbstractValue,
+    pub value: EvmValue<N>,
     /// Root calldata, including its length; omitted data is unknown.
-    pub calldata: ByteArray,
+    pub calldata: EvmByteArray<N>,
     /// Whether the root frame is static; children inherit restrictions.
     pub is_static: bool,
     /// Effective transaction gas price.
-    pub gas_price: AbstractValue,
+    pub gas_price: EvmValue<N>,
     /// Block beneficiary.
     pub coinbase: AddressInput,
     /// Block timestamp.
-    pub timestamp: AbstractValue,
+    pub timestamp: EvmValue<N>,
     /// Execution block number; RPC snapshots fill the default, while an explicit
     /// override changes execution without changing the acquisition snapshot.
-    pub number: AbstractValue,
+    pub number: EvmValue<N>,
     /// PREVRANDAO under all supported post-Merge forks.
-    pub prevrandao: AbstractValue,
+    pub prevrandao: EvmValue<N>,
     /// Block gas limit.
-    pub gas_limit: AbstractValue,
+    pub gas_limit: EvmValue<N>,
     /// Execution CHAINID override; omission uses an anchored world's chain ID.
-    pub chain_id: Option<AbstractValue>,
+    pub chain_id: Option<EvmValue<N>>,
     /// Block base fee per gas.
-    pub base_fee: AbstractValue,
+    pub base_fee: EvmValue<N>,
     /// Block blob base fee.
-    pub blob_base_fee: AbstractValue,
+    pub blob_base_fee: EvmValue<N>,
     /// Initial remaining-gas upper bound; GAS is never treated as a constant.
     pub gas: GasInput,
     /// Partial BLOCKHASH observations, indexed by full-width block number.
     pub block_hashes: BTreeMap<U256, B256>,
     /// Transaction BLOBHASH observations and count.
-    pub blob_hashes: BlobHashes,
+    pub blob_hashes: EvmBlobHashes<N>,
 }
 
-impl Default for EvmEnvironment {
+impl<N: WordElement> Default for EvmEnvironmentValues<N> {
     fn default() -> Self {
         Self {
             input_scope: InputScope::default(),
             to: AddressInput::unknown_to(),
             caller: AddressInput::unknown_caller(),
             origin: None,
-            value: AbstractValue::top(),
-            calldata: ByteArray::unknown(),
+            value: EvmValue::<N>::top(),
+            calldata: EvmByteArray::<N>::unknown(),
             is_static: false,
-            gas_price: AbstractValue::top(),
+            gas_price: EvmValue::<N>::top(),
             coinbase: AddressInput::unknown_coinbase(),
-            timestamp: AbstractValue::top(),
-            number: AbstractValue::top(),
-            prevrandao: AbstractValue::top(),
-            gas_limit: AbstractValue::top(),
+            timestamp: EvmValue::<N>::top(),
+            number: EvmValue::<N>::top(),
+            prevrandao: EvmValue::<N>::top(),
+            gas_limit: EvmValue::<N>::top(),
             chain_id: None,
-            base_fee: AbstractValue::top(),
-            blob_base_fee: AbstractValue::top(),
+            base_fee: EvmValue::<N>::top(),
+            blob_base_fee: EvmValue::<N>::top(),
             gas: GasInput::Unknown,
             block_hashes: BTreeMap::new(),
-            blob_hashes: BlobHashes::default(),
+            blob_hashes: EvmBlobHashes::<N>::default(),
         }
     }
 }
@@ -287,9 +291,9 @@ pub enum EnvironmentError {
     },
 }
 
-impl EvmEnvironment {
-    pub(crate) fn address_value(&self, address: AddressInput) -> AbstractValue {
-        address.scoped_value(self.input_scope.id())
+impl<N: WordElement> EvmEnvironmentValues<N> {
+    pub(crate) fn address_value(&self, address: AddressInput) -> EvmValue<N> {
+        address.scoped_value_with::<N>(self.input_scope.id())
     }
 
     /// Transaction origin with the default caller alias resolved.
@@ -340,7 +344,7 @@ impl EvmEnvironment {
             self.calldata.work_size().saturating_add(8),
             |cost, value| cost.saturating_add(value.work_size()),
         )
-        .saturating_add(self.chain_id.as_ref().map_or(0, AbstractValue::work_size))
+        .saturating_add(self.chain_id.as_ref().map_or(0, EvmValue::<N>::work_size))
         .saturating_add(
             self.block_hashes
                 .len()
@@ -349,7 +353,10 @@ impl EvmEnvironment {
         )
     }
 
-    pub(crate) fn projection_work(&self, domain: Domain) -> usize {
+    pub(crate) fn projection_work_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: AlgebraRef<'_, D>,
+    ) -> usize {
         [
             &self.value,
             &self.gas_price,
@@ -362,7 +369,7 @@ impl EvmEnvironment {
             &self.blob_hashes.length,
         ]
         .iter()
-        .fold(self.calldata.projection_work(domain), |cost, value| {
+        .fold(self.calldata.projection_work_with(domain), |cost, value| {
             cost.saturating_add(domain.projection_work(value))
         })
         .saturating_add(
@@ -370,58 +377,113 @@ impl EvmEnvironment {
                 .as_ref()
                 .map_or(0, |value| domain.projection_work(value)),
         )
-        .saturating_add(domain.projection_work(&self.to.value()))
-        .saturating_add(domain.projection_work(&self.caller.value()))
-        .saturating_add(domain.projection_work(&self.resolved_origin().value()))
-        .saturating_add(domain.projection_work(&self.coinbase.value()))
+        .saturating_add(domain.projection_work(&self.to.value_with::<N>()))
+        .saturating_add(domain.projection_work(&self.caller.value_with::<N>()))
+        .saturating_add(domain.projection_work(&self.resolved_origin().value_with::<N>()))
+        .saturating_add(domain.projection_work(&self.coinbase.value_with::<N>()))
     }
 
-    pub(crate) fn chain_id(&self, identity: &SnapshotIdentity) -> AbstractValue {
+    pub(crate) fn chain_id(&self, identity: &SnapshotIdentity) -> EvmValue<N> {
         self.chain_id
             .clone()
             .unwrap_or_else(|| match identity {
-                SnapshotIdentity::Chain { chain_id, .. } => AbstractValue::constant(*chain_id),
-                SnapshotIdentity::Offline { .. } => AbstractValue::top(),
+                SnapshotIdentity::Chain { chain_id, .. } => EvmValue::<N>::constant(*chain_id),
+                SnapshotIdentity::Offline { .. } => EvmValue::<N>::top(),
             })
             .with_symbol(Symbol::ChainId, self.input_scope.id())
     }
 
-    pub(crate) fn block_hash(&self, index: &AbstractValue, domain: Domain) -> AbstractValue {
+    pub(crate) fn block_hash_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        index: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
+    ) -> EvmValue<N> {
         let current = self.number.singleton();
-        let Some(indices) = index.constants() else {
+        let Some(indices) = crate::world::candidates(index) else {
             return if current == Some(U256::ZERO) {
-                AbstractValue::constant(U256::ZERO)
+                EvmValue::<N>::constant(U256::ZERO)
             } else {
-                AbstractValue::top()
+                EvmValue::<N>::top()
             };
         };
         let mut values = indices.iter().map(|index| {
             if *index == U256::MAX {
-                return AbstractValue::constant(U256::ZERO);
+                return EvmValue::<N>::constant(U256::ZERO);
             }
             if let Some(current) = current {
                 if *index >= current || current - *index > U256::from(256) {
-                    return AbstractValue::constant(U256::ZERO);
+                    return EvmValue::<N>::constant(U256::ZERO);
                 }
                 return self.block_hashes.get(index).map_or_else(
                     || {
-                        AbstractValue::top()
+                        EvmValue::<N>::top()
                             .with_symbol(Symbol::BlockHash(*index), self.input_scope.id())
                     },
-                    |hash| AbstractValue::constant(U256::from_be_slice(hash.as_slice())),
+                    |hash| EvmValue::<N>::constant(U256::from_be_slice(hash.as_slice())),
                 );
             }
             // Without NUMBER the index can be either valid or out of range.
             self.block_hashes
                 .get(index)
-                .map_or_else(AbstractValue::top, |hash| {
+                .map_or_else(EvmValue::<N>::top, |hash| {
                     domain.join(
-                        &AbstractValue::constant(U256::ZERO),
-                        &AbstractValue::constant(U256::from_be_slice(hash.as_slice())),
+                        &EvmValue::<N>::constant(U256::ZERO),
+                        &EvmValue::<N>::constant(U256::from_be_slice(hash.as_slice())),
                     )
                 })
         });
         let first = values.next().expect("finite value candidates are nonempty");
         values.fold(first, |value, incoming| domain.join(&value, &incoming))
+    }
+}
+
+/// Default numeric-carrier compatibility alias.
+pub type EvmEnvironment = EvmEnvironmentValues<crate::domain::NumericValue>;
+/// Default numeric-carrier compatibility alias.
+pub type BlobHashes = EvmBlobHashes<crate::domain::NumericValue>;
+
+impl AddressInput {
+    /// Resolve this input with the default numeric carrier.
+    pub fn value(self) -> crate::domain::AbstractValue {
+        self.value_with::<crate::domain::NumericValue>()
+    }
+    pub(crate) fn scoped_value(self, scope: Option<u64>) -> crate::domain::AbstractValue {
+        self.scoped_value_with::<crate::domain::NumericValue>(scope)
+    }
+}
+impl GasInput {
+    pub(crate) fn value(self) -> crate::domain::AbstractValue {
+        self.value_with::<crate::domain::NumericValue>()
+    }
+}
+
+impl EvmBlobHashes<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn get(
+        &self,
+        index: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+        scope: Option<u64>,
+    ) -> EvmValue<crate::domain::NumericValue> {
+        self.get_with(
+            index,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+            scope,
+        )
+    }
+}
+
+impl EvmEnvironmentValues<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn projection_work(&self, domain: crate::domain::Domain) -> usize {
+        self.projection_work_with(crate::domain::ValueAlgebra::new(domain).borrowed())
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn block_hash(
+        &self,
+        index: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> EvmValue<crate::domain::NumericValue> {
+        self.block_hash_with(index, crate::domain::ValueAlgebra::new(domain).borrowed())
     }
 }

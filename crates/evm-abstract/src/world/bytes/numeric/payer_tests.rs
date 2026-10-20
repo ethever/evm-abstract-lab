@@ -43,16 +43,16 @@ fn exact_reader_byte_observations_pay_their_original_operand_quotes() {
             (at.clone(), opcode::AND, [value.clone(), constant(255)])
         };
         let expected = domain.observe_byte(op, &args);
-        let mut reader = Reader::new(&facts, domain);
+        let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
         assert_complete(&reader.read(&state, &index), &expected, &value);
         assert_eq!(reader.cache_stats(), (0, 0));
         check(
             state.work_size(),
             &facts,
-            domain,
+            &domain,
             &value,
             &[(false, domain.operation_work(&args))],
-            |context| Reader::with_context(context.clone(), domain).read(&state, &index),
+            |context| Reader::with_context(context.clone(), context.algebra()).read(&state, &index),
         );
     }
 }
@@ -88,10 +88,17 @@ fn stopped_byte_observations_leave_warm_reader_caches_unpublished_and_sticky() {
         let mut pilot = WorkBudget::new(usize::MAX);
         let trace;
         {
-            let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut pilot)
-                .unwrap()
-                .unwrap();
-            let mut reader = Reader::with_context(root.clone(), domain);
+            let root = Context::budgeted(
+                &facts,
+                &conditional,
+                crate::domain::ValueAlgebra::new(&domain),
+                &preparation,
+                &mut pilot,
+            )
+            .unwrap()
+            .unwrap();
+            let mut reader =
+                Reader::with_context(root.clone(), crate::domain::ValueAlgebra::new(&domain));
             reader.word_byte_union(&warm);
             assert_ne!(reader.read(&state, &index), AbstractValue::top());
             assert!(!root.stopped());
@@ -109,12 +116,18 @@ fn stopped_byte_observations_leave_warm_reader_caches_unpublished_and_sticky() {
             let mut budget = WorkBudget::new(available);
             let paid;
             {
-                let root =
-                    Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
-                        .unwrap()
-                        .unwrap();
+                let root = Context::budgeted(
+                    &facts,
+                    &conditional,
+                    crate::domain::ValueAlgebra::new(&domain),
+                    &preparation,
+                    &mut budget,
+                )
+                .unwrap()
+                .unwrap();
                 let clone = root.clone();
-                let mut reader = Reader::with_context(root.clone(), domain);
+                let mut reader =
+                    Reader::with_context(root.clone(), crate::domain::ValueAlgebra::new(&domain));
                 assert_ne!(reader.word_byte_union(&warm), AbstractValue::top());
                 let cache = reader.cache_stats();
                 assert_eq!(cache.0, 1);
@@ -140,7 +153,11 @@ fn stopped_byte_observations_leave_warm_reader_caches_unpublished_and_sticky() {
                 assert_eq!(reader.read(&state, &index), AbstractValue::top());
                 assert_eq!(reader.word_byte_union(&warm), AbstractValue::top());
                 assert_eq!(
-                    clone.observe_byte(domain, opcode::AND, &[constant(9), constant(255)]),
+                    clone.observe_byte(
+                        crate::domain::ValueAlgebra::new(&domain),
+                        opcode::AND,
+                        &[constant(9), constant(255)]
+                    ),
                     AbstractValue::top()
                 );
                 assert_eq!(root.demand_payments(), payments);
@@ -166,7 +183,7 @@ fn quote(root_work: usize, facts: &Facts, domain: Domain) -> conditional::Prepar
         work,
         facts.len(),
         &ConditionalFacts::default(),
-        domain,
+        crate::domain::ValueAlgebra::new(&domain),
     )
 }
 
@@ -222,16 +239,25 @@ fn calls(actions: &[(bool, usize)]) -> (usize, usize) {
 fn check(
     root_work: usize,
     facts: &Facts,
-    domain: Domain,
+    domain: &Domain,
     probe: &AbstractValue,
     actions: &[(bool, usize)],
     action: impl Fn(&Context<'_>) -> AbstractValue,
 ) {
     let conditional = ConditionalFacts::default();
     let frozen = facts.clone();
-    let preparation = quote(root_work, facts, domain);
-    let expected = action(&Context::new(facts, Some(&conditional)));
-    let oracle = Context::prepared(facts, &conditional, domain, preparation.nodes);
+    let preparation = quote(root_work, facts, *domain);
+    let expected = action(&Context::new(
+        facts,
+        Some(&conditional),
+        crate::domain::ValueAlgebra::new(domain),
+    ));
+    let oracle = Context::prepared(
+        facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(domain),
+        preparation.nodes,
+    );
     assert_complete(&action(&oracle), &expected, probe);
     assert!(!oracle.stopped());
     assert!(
@@ -242,9 +268,15 @@ fn check(
     let mut budget = WorkBudget::new(usize::MAX);
     let trace;
     {
-        let root = Context::budgeted(facts, &conditional, domain, &preparation, &mut budget)
-            .unwrap()
-            .unwrap();
+        let root = Context::budgeted(
+            facts,
+            &conditional,
+            crate::domain::ValueAlgebra::new(domain),
+            &preparation,
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap();
         assert_complete(&action(&root), &expected, probe);
         assert!(!root.stopped());
         assert_eq!(root.reader_calls(), calls(actions));
@@ -304,10 +336,15 @@ fn check(
             assert!(budget.charge(17));
             let paid;
             {
-                let root =
-                    Context::budgeted(facts, &conditional, domain, &preparation, &mut budget)
-                        .unwrap()
-                        .unwrap();
+                let root = Context::budgeted(
+                    facts,
+                    &conditional,
+                    crate::domain::ValueAlgebra::new(domain),
+                    &preparation,
+                    &mut budget,
+                )
+                .unwrap()
+                .unwrap();
                 let clone = root.clone();
                 let actual = action(&root);
                 assert_eq!(
@@ -342,11 +379,19 @@ fn check(
                     let executed = root.reader_calls();
                     assert_eq!(action(&clone), AbstractValue::top());
                     assert_eq!(
-                        clone.apply(domain, opcode::ADD, &[constant(1), constant(2)]),
+                        clone.apply(
+                            crate::domain::ValueAlgebra::new(domain),
+                            opcode::ADD,
+                            &[constant(1), constant(2)]
+                        ),
                         AbstractValue::top()
                     );
                     assert_eq!(
-                        clone.join(domain, &constant(1), &constant(2)),
+                        clone.join_with(
+                            crate::domain::ValueAlgebra::new(domain),
+                            &constant(1),
+                            &constant(2)
+                        ),
                         AbstractValue::top()
                     );
                     assert_eq!(root.demand_payments(), paid);
@@ -385,10 +430,16 @@ fn scalar_operations_pay_original_input_prices_and_preserve_runtime_alias_semant
             check(
                 expression.work_size(),
                 &facts,
-                domain,
+                &domain,
                 &value,
                 &[(false, price)],
-                |context| scalar_in(&expression, context, domain),
+                |context| {
+                    scalar_in(
+                        &expression,
+                        context,
+                        crate::domain::ValueAlgebra::new(&domain),
+                    )
+                },
             );
         }
     }
@@ -405,13 +456,17 @@ fn scalar_constant_sources_and_unselected_ites_pay_their_distinct_joins() {
     check(
         key.work_size(),
         &facts,
-        domain,
+        &domain,
         &value,
         &[(
             true,
-            Context::reader_join_work(domain, &value, &constant(7)),
+            Context::reader_join_work(
+                crate::domain::ValueAlgebra::new(&domain),
+                &value,
+                &constant(7),
+            ),
         )],
-        |context| scalar_in(&key, context, domain),
+        |context| scalar_in(&key, context, crate::domain::ValueAlgebra::new(&domain)),
     );
 
     let yes = ExprId::fresh().unwrap();
@@ -424,7 +479,11 @@ fn scalar_constant_sources_and_unselected_ites_pay_their_distinct_joins() {
     assert!(right.identity().input().is_none());
     let expression = ExprId::ite(guard, yes.clone(), no.clone(), ExprLimits::default()).unwrap();
     let facts = Facts::from([(yes, left.clone()), (no, right.clone())]);
-    let expected = scalar_in(&expression, &Context::new(&facts, None), domain);
+    let expected = scalar_in(
+        &expression,
+        &Context::new(&facts, None, crate::domain::ValueAlgebra::new(&domain)),
+        crate::domain::ValueAlgebra::new(&domain),
+    );
     assert!(
         !expected.same_identity(&left) && !expected.same_identity(&right),
         "the unresolved scalar join drops runtime-only identity"
@@ -432,10 +491,19 @@ fn scalar_constant_sources_and_unselected_ites_pay_their_distinct_joins() {
     check(
         expression.work_size(),
         &facts,
-        domain,
+        &domain,
         &left,
-        &[(true, Context::reader_join_work(domain, &left, &right))],
-        |context| scalar_in(&expression, context, domain),
+        &[(
+            true,
+            Context::reader_join_work(crate::domain::ValueAlgebra::new(&domain), &left, &right),
+        )],
+        |context| {
+            scalar_in(
+                &expression,
+                context,
+                crate::domain::ValueAlgebra::new(&domain),
+            )
+        },
     );
 }
 
@@ -452,13 +520,13 @@ fn byte_mask_extraction_and_finite_index_joins_have_one_actual_owner() {
     check(
         byte.work_size(),
         &facts,
-        domain,
+        &domain,
         &value,
         &[(
             false,
             domain.operation_work(&[value.clone(), constant(255)]),
         )],
-        |context| Reader::with_context(context.clone(), domain).read(&byte, &at),
+        |context| Reader::with_context(context.clone(), context.algebra()).read(&byte, &at),
     );
     let word = ByteStateId::zero()
         .write_word(at, key, StateLimits::default())
@@ -467,10 +535,10 @@ fn byte_mask_extraction_and_finite_index_joins_have_one_actual_owner() {
     check(
         word.work_size(),
         &facts,
-        domain,
+        &domain,
         &value,
         &[(false, domain.operation_work(&[constant(31), value.clone()]))],
-        |context| Reader::with_context(context.clone(), domain).read(&word, &last),
+        |context| Reader::with_context(context.clone(), context.algebra()).read(&word, &last),
     );
 
     let index = ExprId::fresh().unwrap();
@@ -479,13 +547,17 @@ fn byte_mask_extraction_and_finite_index_joins_have_one_actual_owner() {
     check(
         exact.work_size(),
         &facts,
-        domain,
+        &domain,
         &value,
         &[(
             true,
-            Context::reader_join_work(domain, &constant(5), &constant(7)),
+            Context::reader_join_work(
+                crate::domain::ValueAlgebra::new(&domain),
+                &constant(5),
+                &constant(7),
+            ),
         )],
-        |context| Reader::with_context(context.clone(), domain).read(&exact, &index),
+        |context| Reader::with_context(context.clone(), context.algebra()).read(&exact, &index),
     );
 }
 
@@ -498,17 +570,28 @@ fn whole_word_ite_joins_once_after_complete_branch_packing() {
         .join_guarded(&no, ExprId::fresh().unwrap(), StateLimits::default())
         .unwrap();
     assert!(matches!(state.kind(), ByteStateKind::Ite { .. }));
-    let left = packing::pack(&vec![constant(5); 32], domain).unwrap();
-    let right = packing::pack(&vec![constant(7); 32], domain).unwrap();
+    let left = packing::pack(
+        &vec![constant(5); 32],
+        crate::domain::ValueAlgebra::new(&domain),
+    )
+    .unwrap();
+    let right = packing::pack(
+        &vec![constant(7); 32],
+        crate::domain::ValueAlgebra::new(&domain),
+    )
+    .unwrap();
     let probe = sourced(1, 9, &ExprId::fresh().unwrap());
     check(
         state.work_size(),
         &Facts::new(),
-        domain,
+        &domain,
         &probe,
-        &[(true, Context::reader_join_work(domain, &left, &right))],
+        &[(
+            true,
+            Context::reader_join_work(crate::domain::ValueAlgebra::new(&domain), &left, &right),
+        )],
         |context| {
-            Reader::with_context(context.clone(), domain)
+            Reader::with_context(context.clone(), context.algebra())
                 .word(&state, &ExprId::constant(U256::ZERO))
         },
     );
@@ -524,7 +607,14 @@ fn union_actions(value: &AbstractValue, domain: Domain) -> Vec<(bool, usize)> {
         let byte = domain.apply(opcode::BYTE, &args);
         out = Some(match out {
             Some(old) => {
-                actions.push((true, Context::reader_join_work(domain, &old, &byte)));
+                actions.push((
+                    true,
+                    Context::reader_join_work(
+                        crate::domain::ValueAlgebra::new(&domain),
+                        &old,
+                        &byte,
+                    ),
+                ));
                 domain.join(&old, &byte)
             }
             None => byte,
@@ -555,18 +645,27 @@ fn byte_unions_pay_executed_calls_and_complete_warm_hits_owe_no_new_actions() {
         check(
             key.work_size(),
             &facts,
-            domain,
+            &domain,
             &probe,
             &actions,
-            |context| Reader::with_context(context.clone(), domain).word_byte_union(&key),
+            |context| {
+                Reader::with_context(context.clone(), context.algebra()).word_byte_union(&key)
+            },
         );
         let conditional = ConditionalFacts::default();
         let preparation = quote(key.work_size(), &facts, domain);
         let mut budget = WorkBudget::new(usize::MAX);
-        let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
-            .unwrap()
-            .unwrap();
-        let mut reader = Reader::with_context(root.clone(), domain);
+        let root = Context::budgeted(
+            &facts,
+            &conditional,
+            crate::domain::ValueAlgebra::new(&domain),
+            &preparation,
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap();
+        let mut reader =
+            Reader::with_context(root.clone(), crate::domain::ValueAlgebra::new(&domain));
         let expected = reader.word_byte_union(&key);
         assert_eq!(reader.word_bytes.len(), 1);
         let trace = root.demand_payments();
@@ -588,7 +687,8 @@ fn certified_byte_image_pays_fixed_proof_then_one_transfer_and_no_warm_fee() {
         .with_symbolic_limit();
     let facts = Facts::from([(key.clone(), value.clone())]);
     let frozen = facts.clone();
-    let expected = Reader::new(&facts, domain).word_byte_union(&key);
+    let expected =
+        Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain)).word_byte_union(&key);
     let conditional = ConditionalFacts::default();
     let preparation = quote(key.work_size(), &facts, domain);
     let transfer = domain.operation_work(&[
@@ -597,9 +697,15 @@ fn certified_byte_image_pays_fixed_proof_then_one_transfer_and_no_warm_fee() {
             .clone()
             .with_numeric(crate::domain::NumericValue::top()),
     ]);
-    let oracle = Context::prepared(&facts, &conditional, domain, preparation.nodes);
+    let oracle = Context::prepared(
+        &facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(&domain),
+        preparation.nodes,
+    );
     assert_complete(
-        &Reader::with_context(oracle.clone(), domain).word_byte_union(&key),
+        &Reader::with_context(oracle.clone(), crate::domain::ValueAlgebra::new(&domain))
+            .word_byte_union(&key),
         &expected,
         &value,
     );
@@ -608,10 +714,17 @@ fn certified_byte_image_pays_fixed_proof_then_one_transfer_and_no_warm_fee() {
     let mut probe = WorkBudget::new(usize::MAX);
     let full;
     {
-        let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut probe)
-            .unwrap()
-            .unwrap();
-        let mut reader = Reader::with_context(root.clone(), domain);
+        let root = Context::budgeted(
+            &facts,
+            &conditional,
+            crate::domain::ValueAlgebra::new(&domain),
+            &preparation,
+            &mut probe,
+        )
+        .unwrap()
+        .unwrap();
+        let mut reader =
+            Reader::with_context(root.clone(), crate::domain::ValueAlgebra::new(&domain));
         assert_complete(&reader.word_byte_union(&key), &expected, &value);
         assert_eq!(root.reader_calls(), (1, 0));
         assert_eq!(root.demand_usage(), oracle.demand_usage());
@@ -637,12 +750,18 @@ fn certified_byte_image_pays_fixed_proof_then_one_transfer_and_no_warm_fee() {
             let available = total(&full[..position]) + full[position].1 - usize::from(!exact);
             let mut budget = WorkBudget::new(available);
             {
-                let root =
-                    Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
-                        .unwrap()
-                        .unwrap();
+                let root = Context::budgeted(
+                    &facts,
+                    &conditional,
+                    crate::domain::ValueAlgebra::new(&domain),
+                    &preparation,
+                    &mut budget,
+                )
+                .unwrap()
+                .unwrap();
                 let clone = root.clone();
-                let mut reader = Reader::with_context(root.clone(), domain);
+                let mut reader =
+                    Reader::with_context(root.clone(), crate::domain::ValueAlgebra::new(&domain));
                 let actual = reader.word_byte_union(&key);
                 assert_eq!(
                     root.demand_payments(),
@@ -662,7 +781,7 @@ fn certified_byte_image_pays_fixed_proof_then_one_transfer_and_no_warm_fee() {
                     assert_eq!(reader.retained_work, 0);
                     let trace = root.demand_payments();
                     let usage = root.demand_usage();
-                    assert!(!clone.pay_byte_image(domain));
+                    assert!(!clone.pay_byte_image(crate::domain::ValueAlgebra::new(&domain)));
                     assert_eq!(reader.word_byte_union(&key), AbstractValue::top());
                     assert_eq!(root.demand_payments(), trace);
                     assert_eq!(root.demand_usage(), usage);
@@ -689,12 +808,19 @@ fn certified_byte_image_cancellation_and_full_policy_guard_precede_publication()
         let mut budget = WorkBudget::new(usize::MAX);
         let paid;
         {
-            let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
-                .unwrap()
-                .unwrap();
+            let root = Context::budgeted(
+                &facts,
+                &conditional,
+                crate::domain::ValueAlgebra::new(&domain),
+                &preparation,
+                &mut budget,
+            )
+            .unwrap()
+            .unwrap();
             root.cancel_after_numeric_payments(stage, token.clone());
             let clone = root.clone();
-            let mut reader = Reader::with_context(root.clone(), domain);
+            let mut reader =
+                Reader::with_context(root.clone(), crate::domain::ValueAlgebra::new(&domain));
             analysis_control::with_cancellation(&token, || {
                 assert_eq!(reader.word_byte_union(&key), AbstractValue::top());
                 assert_eq!(root.check(), Err(ExprError::Cancelled));
@@ -707,7 +833,7 @@ fn certified_byte_image_cancellation_and_full_policy_guard_precede_publication()
             assert!(!root.work_exhausted());
             assert!(!root.cache_refused());
             let trace = root.demand_payments();
-            assert!(!clone.pay_byte_image(domain));
+            assert!(!clone.pay_byte_image(crate::domain::ValueAlgebra::new(&domain)));
             assert_eq!(reader.word_byte_union(&key), AbstractValue::top());
             assert_eq!(root.demand_payments(), trace);
             paid = total(&trace);
@@ -717,9 +843,15 @@ fn certified_byte_image_cancellation_and_full_policy_guard_precede_publication()
     }
     let mut budget = WorkBudget::new(usize::MAX);
     {
-        let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
-            .unwrap()
-            .unwrap();
+        let root = Context::budgeted(
+            &facts,
+            &conditional,
+            crate::domain::ValueAlgebra::new(&domain),
+            &preparation,
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap();
         let trace = root.demand_payments();
         let changed = Domain::from_spec(
             crate::domain::DomainSpec::new(
@@ -730,7 +862,7 @@ fn certified_byte_image_cancellation_and_full_policy_guard_precede_publication()
             )
             .with_relations(domain.spec().relations()),
         );
-        assert!(!root.pay_byte_image(changed));
+        assert!(!root.pay_byte_image(crate::domain::ValueAlgebra::new(&changed)));
         assert!(root.cache_refused());
         assert!(!root.work_exhausted());
         assert_eq!(root.demand_payments(), trace);
@@ -749,11 +881,11 @@ fn successful_packing_has_no_synthetic_transfers_and_fallback_pays_all_original_
     let state = ByteStateId::zero()
         .write_byte(at.clone(), key, StateLimits::default())
         .unwrap();
-    let mut reference = Reader::new(&facts, domain);
+    let mut reference = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
     let bytes: Vec<_> = (0..32)
         .map(|index| reference.read(&state, &ExprId::constant(U256::from(index))))
         .collect();
-    assert!(packing::pack(&bytes, domain).is_none());
+    assert!(packing::pack(&bytes, crate::domain::ValueAlgebra::new(&domain)).is_none());
     let mut actions = vec![(
         false,
         domain.operation_work(&[value.clone(), constant(255)]),
@@ -780,29 +912,29 @@ fn successful_packing_has_no_synthetic_transfers_and_fallback_pays_all_original_
     check(
         state.work_size(),
         &facts,
-        domain,
+        &domain,
         &value,
         &actions,
-        |context| Reader::with_context(context.clone(), domain).word(&state, &at),
+        |context| Reader::with_context(context.clone(), context.algebra()).word(&state, &at),
     );
 
     let exact = ByteStateId::exact(Arc::from([7_u8; 32]));
     check(
         exact.work_size(),
         &Facts::new(),
-        domain,
+        &domain,
         &value,
         &[],
-        |context| Reader::with_context(context.clone(), domain).word(&exact, &at),
+        |context| Reader::with_context(context.clone(), context.algebra()).word(&exact, &at),
     );
     let unknown = ByteStateId::input(SourceId::fresh().unwrap(), ExprId::constant(U256::from(32)));
     check(
         unknown.work_size(),
         &Facts::new(),
-        domain,
+        &domain,
         &value,
         &[],
-        |context| Reader::with_context(context.clone(), domain).word(&unknown, &at),
+        |context| Reader::with_context(context.clone(), context.algebra()).word(&unknown, &at),
     );
 }
 
@@ -829,13 +961,21 @@ fn cancellation_at_a_reader_payment_is_typed_sticky_and_never_publishes_a_union(
         let mut budget = WorkBudget::new(usize::MAX);
         let paid;
         {
-            let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
-                .unwrap()
-                .unwrap();
+            let root = Context::budgeted(
+                &facts,
+                &conditional,
+                crate::domain::ValueAlgebra::new(&domain),
+                &preparation,
+                &mut budget,
+            )
+            .unwrap()
+            .unwrap();
             let clone = root.clone();
             let child = root.branch(&ExprId::fresh().unwrap(), true);
-            let mut reader = Reader::with_context(root.clone(), domain);
-            let mut other = Reader::with_context(clone.clone(), domain);
+            let mut reader =
+                Reader::with_context(root.clone(), crate::domain::ValueAlgebra::new(&domain));
+            let mut other =
+                Reader::with_context(clone.clone(), crate::domain::ValueAlgebra::new(&domain));
             other.word_byte_union(&warm);
             assert_eq!(other.word_bytes.len(), 1);
             let before_calls = root.reader_calls();
@@ -874,7 +1014,10 @@ fn cancellation_at_a_reader_payment_is_typed_sticky_and_never_publishes_a_union(
                 assert_eq!(context.check(), Err(ExprError::Cancelled));
                 assert!(!context.work_exhausted());
                 assert!(!context.cache_refused());
-                assert_eq!(scalar_in(&key, context, domain), AbstractValue::top());
+                assert_eq!(
+                    scalar_in(&key, context, crate::domain::ValueAlgebra::new(&domain)),
+                    AbstractValue::top()
+                );
             }
             assert_eq!(
                 other.word_byte_union(&warm),
@@ -910,11 +1053,19 @@ fn unpaid_union_byte_and_join_leave_cold_and_warm_caches_stopped_without_new_cha
     let mut probe = WorkBudget::new(usize::MAX);
     let full;
     {
-        let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut probe)
-            .unwrap()
-            .unwrap();
-        Reader::with_context(root.clone(), domain).word_byte_union(&warm);
-        Reader::with_context(root.clone(), domain).word_byte_union(&key);
+        let root = Context::budgeted(
+            &facts,
+            &conditional,
+            crate::domain::ValueAlgebra::new(&domain),
+            &preparation,
+            &mut probe,
+        )
+        .unwrap()
+        .unwrap();
+        Reader::with_context(root.clone(), crate::domain::ValueAlgebra::new(&domain))
+            .word_byte_union(&warm);
+        Reader::with_context(root.clone(), crate::domain::ValueAlgebra::new(&domain))
+            .word_byte_union(&key);
         assert!(!root.stopped());
         full = root.demand_payments();
     }
@@ -932,15 +1083,22 @@ fn unpaid_union_byte_and_join_leave_cold_and_warm_caches_stopped_without_new_cha
         let price = full[position].1;
         let mut budget = WorkBudget::new(prefix + price - 1);
         {
-            let root = Context::budgeted(&facts, &conditional, domain, &preparation, &mut budget)
-                .unwrap()
-                .unwrap();
+            let root = Context::budgeted(
+                &facts,
+                &conditional,
+                crate::domain::ValueAlgebra::new(&domain),
+                &preparation,
+                &mut budget,
+            )
+            .unwrap()
+            .unwrap();
             let clone = root.clone();
-            let mut other = Reader::with_context(clone, domain);
+            let mut other = Reader::with_context(clone, crate::domain::ValueAlgebra::new(&domain));
             other.word_byte_union(&warm);
             let retained = other.retained_work;
             assert_eq!(other.word_bytes.len(), 1);
-            let mut reader = Reader::with_context(root.clone(), domain);
+            let mut reader =
+                Reader::with_context(root.clone(), crate::domain::ValueAlgebra::new(&domain));
             assert_eq!(reader.word_byte_union(&key), AbstractValue::top());
             assert!(root.work_exhausted());
             assert!(!root.cache_refused());

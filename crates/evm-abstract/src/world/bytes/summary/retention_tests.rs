@@ -27,7 +27,7 @@ fn finite(domain: Domain, values: impl IntoIterator<Item = u64>) -> AbstractValu
         .into_iter()
         .map(|value| AbstractValue::constant(U256::from(value)))
         .reduce(|left, right| domain.join(&left, &right))
-        .map(|value| scalar(&value, domain))
+        .map(|value| scalar(&value, crate::domain::ValueAlgebra::new(&domain)))
         .unwrap()
 }
 
@@ -65,7 +65,7 @@ fn old_root(summary: &ByteArraySummary, policy: StateLimits) -> Result<ByteState
             .map(|(index, value)| StateBinding {
                 index: U256::from(*index),
                 value: ExprId::fresh().unwrap(),
-                numeric: value.numeric().clone(),
+                numeric: value.numeric().clone().into(),
             })
             .collect(),
         policy,
@@ -92,7 +92,7 @@ fn actual_shallow_observed_constructor_admits_compact_64_binding_carrier_only() 
     let summary = producer_shape(domain);
     let frozen = summary.clone();
     let original_work = summary.work_size();
-    let policy: StateLimits = limits(domain).into();
+    let policy: StateLimits = limits(crate::domain::ValueAlgebra::new(&domain)).into();
     assert_eq!(policy.max_nodes, 16_384);
     assert_eq!(
         old_root(&summary, policy),
@@ -138,7 +138,10 @@ fn actual_shallow_observed_constructor_admits_compact_64_binding_carrier_only() 
             );
         }
     }
-    assert_eq!(retained[63].numeric, *cells[&63].numeric());
+    assert_eq!(
+        retained[63].numeric,
+        crate::domain::WordElement::observation(cells[&63].numeric())
+    );
     assert_eq!(summary, frozen);
     assert_eq!(summary.work_size(), original_work);
     assert_eq!(replay.bytes, *cells);
@@ -155,7 +158,10 @@ fn actual_84_binding_dense_carrier_shrinks_without_changing_the_policy() {
         content: Content::Cells((0..84).map(|index| (index, dense.clone())).collect()),
     };
     assert_eq!(
-        old_root(&summary, limits(domain).into()),
+        old_root(
+            &summary,
+            limits(crate::domain::ValueAlgebra::new(&domain)).into()
+        ),
         Err(StateError::Limit {
             nodes: 22_599,
             depth: 2
@@ -259,7 +265,7 @@ fn repeated_projection_join_and_instantiation_keep_canonical_cells_and_work_stab
                     .map(|(index, value)| StateBinding {
                         index: U256::from(*index),
                         value: ExprId::fresh().unwrap(),
-                        numeric: value.numeric().clone(),
+                        numeric: value.numeric().clone().into(),
                     })
                     .collect(),
                 StateLimits {
@@ -410,7 +416,11 @@ fn projection_to_a_smaller_capacity_cannot_resurrect_a_discarded_finite_componen
     };
     let compact = summary.instantiate(domain).unwrap();
     let mut original = compact.clone();
-    original.root = old_root(&summary, limits(domain).into()).unwrap();
+    original.root = old_root(
+        &summary,
+        limits(crate::domain::ValueAlgebra::new(&domain)).into(),
+    )
+    .unwrap();
     for smaller in [
         Domain::default(),
         Domain::new(NonZeroUsize::new(8).unwrap()),
@@ -450,9 +460,9 @@ fn projection_checks_current_root_before_using_a_stale_or_missing_presentation_c
             vec![StateBinding {
                 index: U256::ZERO,
                 value: ExprId::fresh().unwrap(),
-                numeric: current.numeric().clone(),
+                numeric: current.numeric().clone().into(),
             }],
-            limits(domain).into(),
+            limits(crate::domain::ValueAlgebra::new(&domain)).into(),
         )
         .unwrap();
         let projected = replay.summary_projection(domain).unwrap();

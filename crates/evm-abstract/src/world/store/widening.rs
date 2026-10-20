@@ -1,9 +1,11 @@
 //! Preserve complete account cases while discarding redundant cycle metadata.
 
-use super::{InitialIndependence, Plane, Store, StoreError};
+use super::{EvmStore, InitialIndependence, Plane, StoreError};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::{
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         symbolic::{ExprError, ExprLimits, SlotStateId, SlotStateKind},
     },
     world::bytes::{
@@ -14,7 +16,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
-fn scalar_nodes(store: &Store) -> Vec<Node> {
+fn scalar_nodes<N: WordElement>(store: &EvmStore<N>) -> Vec<Node> {
     let mut pending = Vec::new();
     for value in store
         .balances
@@ -37,27 +39,27 @@ fn scalar_nodes(store: &Store) -> Vec<Node> {
     pending
 }
 
-impl Plane {
-    fn default_upper(
+impl<N: WordElement> Plane<N> {
+    fn default_upper<D: EvmNumericAlgebra<Element = N>>(
         &self,
         root: &SlotStateId,
-        domain: Domain,
-        memo: &mut BTreeMap<SlotStateId, AbstractValue>,
-    ) -> Result<AbstractValue, StoreError> {
+        domain: AlgebraRef<'_, D>,
+        memo: &mut BTreeMap<SlotStateId, EvmValue<N>>,
+    ) -> Result<EvmValue<N>, StoreError> {
         if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled.into());
         }
         if let Some(value) = memo.get(root) {
             return Ok(value.clone());
         }
-        let domain = numeric::numeric_domain(domain);
+        let domain = numeric::numeric_domain_with(domain);
         let value = match root.kind() {
             SlotStateKind::Zero => numeric::scalar(
                 &crate::domain::symbolic::ExprId::constant(alloy_primitives::U256::ZERO),
                 &self.operands,
                 domain,
             ),
-            SlotStateKind::Input { .. } => AbstractValue::top(),
+            SlotStateKind::Input { .. } => EvmValue::<N>::top(),
             SlotStateKind::Store {
                 previous, value, ..
             } => domain.join(
@@ -86,10 +88,10 @@ impl Plane {
         Ok(value)
     }
 
-    fn widening_form(
+    fn widening_form_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         scalars: &[Node],
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         limits: ExprLimits,
     ) -> Result<Self, StoreError> {
         let mut pending = scalars.to_vec();
@@ -100,7 +102,7 @@ impl Plane {
         // Discard branch-narrowed cache projections and reread the same roots
         // using only the external facts retained above.
         for (address, key) in self.slots.keys().copied() {
-            let value = out.read_checked(address, &AbstractValue::constant(key), domain)?;
+            let value = out.read_checked_with(address, &EvmValue::<N>::constant(key), domain)?;
             out.slots.insert((address, key), value);
         }
         let mut memo = BTreeMap::new();
@@ -116,19 +118,23 @@ impl Plane {
     }
 }
 
-impl Store {
+impl<N: WordElement> EvmStore<N> {
     /// Canonical whole-case metadata, with source facts and rollback roots intact.
     /// This deliberately forgets must-independence rather than adding RPC facts.
-    pub(crate) fn widening_form(
+    pub(crate) fn widening_form_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         limits: ExprLimits,
     ) -> Result<Self, StoreError> {
         self.check_existing(limits)?;
         let scalars = scalar_nodes(self);
         let mut out = self.clone();
-        out.persistent = self.persistent.widening_form(&scalars, domain, limits)?;
-        out.transient = self.transient.widening_form(&scalars, domain, limits)?;
+        out.persistent = self
+            .persistent
+            .widening_form_with(&scalars, domain, limits)?;
+        out.transient = self
+            .transient
+            .widening_form_with(&scalars, domain, limits)?;
         out.balances.update_values(refresh_constant);
         out.nonces.update_values(refresh_constant);
         refresh_constant(&mut out.balance_default);
@@ -137,9 +143,20 @@ impl Store {
             for topic in &mut log.topics {
                 refresh_constant(topic);
             }
-            log.data = log.data.widening_form(domain, limits)?;
+            log.data = log.data.widening_form_with(domain, limits)?;
         }
         out.check_existing(limits)?;
         Ok(out)
+    }
+}
+
+impl EvmStore<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn widening_form(
+        &self,
+        domain: crate::domain::Domain,
+        limits: ExprLimits,
+    ) -> Result<Self, StoreError> {
+        self.widening_form_with(crate::domain::ValueAlgebra::new(domain).borrowed(), limits)
     }
 }

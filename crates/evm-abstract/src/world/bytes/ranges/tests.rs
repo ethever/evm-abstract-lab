@@ -39,7 +39,15 @@ fn proved_length_does_not_construct_an_irrelevant_oversized_maximum() {
     let offset = domain
         .join(&word(0), &word(32))
         .with_expression(ExprId::fresh().unwrap());
-    let actual = expanded(&word(128), &offset, &size, 4096, true, domain).unwrap();
+    let actual = expanded(
+        &word(128),
+        &offset,
+        &size,
+        4096,
+        true,
+        crate::domain::ValueAlgebra::new(&domain),
+    )
+    .unwrap();
     assert_eq!(actual.singleton(), Some(U256::from(128)));
 }
 
@@ -49,10 +57,26 @@ fn repeated_same_positive_symbolic_extent_keeps_one_length_expression() {
     let size = domain
         .join(&word(32), &word(64))
         .with_expression(ExprId::fresh().unwrap());
-    let first = expanded(&word(0), &word(0), &size, 4096, true, domain).unwrap();
+    let first = expanded(
+        &word(0),
+        &word(0),
+        &size,
+        4096,
+        true,
+        crate::domain::ValueAlgebra::new(&domain),
+    )
+    .unwrap();
     let mut current = first.clone();
     for _ in 0..40 {
-        current = expanded(&current, &word(0), &size, 4096, true, domain).unwrap();
+        current = expanded(
+            &current,
+            &word(0),
+            &size,
+            4096,
+            true,
+            crate::domain::ValueAlgebra::new(&domain),
+        )
+        .unwrap();
         assert_eq!(current.expression(), first.expression());
         assert_eq!(current.numeric(), first.numeric());
     }
@@ -89,7 +113,15 @@ fn symbolic_expansion_agrees_with_checked_word_rounding_and_zero_size() {
             vec![1, 32],
         ),
     ] {
-        let output = expanded(&old, &offset, &size, 4096, true, domain).unwrap();
+        let output = expanded(
+            &old,
+            &offset,
+            &size,
+            4096,
+            true,
+            crate::domain::ValueAlgebra::new(&domain),
+        )
+        .unwrap();
         let expression = output.symbolic_expression().unwrap();
         for previous in &old_values {
             for at in &offsets {
@@ -124,7 +156,7 @@ fn symbolic_expansion_agrees_with_checked_word_rounding_and_zero_size() {
         &word(0),
         4096,
         true,
-        domain,
+        crate::domain::ValueAlgebra::new(&domain),
     )
     .unwrap();
     assert_eq!(unchanged, old);

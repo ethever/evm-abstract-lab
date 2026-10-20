@@ -1,16 +1,22 @@
 //! Prepay omitted-owner persistent cleanup without weakening explicit owners.
 
 use super::{FinalizationError, reserve, tree_height, tree_work};
+use crate::domain::AlgebraRef;
+#[cfg(test)]
+use crate::domain::{AbstractValue, Domain};
+use crate::domain::{EvmNumericAlgebra, WordElement};
+#[cfg(test)]
+use crate::world::Store;
 use crate::{
-    domain::{AbstractValue, Domain},
+    domain::EvmValue,
     resource::WorkBudget,
-    world::store::{Plane, Store, StoreError},
+    world::store::{EvmStore, Plane, StoreError},
 };
 use alloy_primitives::Address;
 use std::collections::BTreeSet;
 
 /// Copy/drop of owned scalar metadata; expression/source handles stay shared.
-fn value_clone_units(value: &AbstractValue) -> usize {
+fn value_clone_units<N: WordElement>(value: &EvmValue<N>) -> usize {
     value
         .numeric()
         .work_size()
@@ -33,7 +39,7 @@ impl PreparationWork {
         tree_work(entries).saturating_mul(6)
     }
 
-    fn measure(plane: &Plane, protected: &BTreeSet<Address>) -> Self {
+    fn measure<N: WordElement>(plane: &Plane<N>, protected: &BTreeSet<Address>) -> Self {
         let owners = protected.len();
         let owner_height = tree_height(owners);
         let slots = plane.slots.len();
@@ -100,14 +106,14 @@ impl PreparationWork {
     }
 }
 
-impl Store {
+impl<N: WordElement> EvmStore<N> {
     fn needs_unlisted_finalization(&self) -> bool {
         self.touched_default != Some(false) || self.pending_destruction_default != Some(false)
     }
 
-    fn prepare_unlisted_owners(
+    fn prepare_unlisted_owners<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         protected: &BTreeSet<Address>,
     ) -> Result<(), StoreError> {
         // Preserve the complete explicit set, including owners found only in
@@ -119,9 +125,11 @@ impl Store {
             .havoc_except_checked(protected, domain.spec().relations().expressions())
     }
 
-    pub(in crate::world::store) fn prepare_unlisted_finalization(
+    pub(in crate::world::store) fn prepare_unlisted_finalization_with<
+        D: EvmNumericAlgebra<Element = N>,
+    >(
         &mut self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
         if self.needs_unlisted_finalization() {
             let protected = self.addresses();
@@ -130,9 +138,9 @@ impl Store {
         Ok(())
     }
 
-    pub(super) fn prepare_unlisted_finalization_checked(
+    pub(super) fn prepare_unlisted_finalization_checked_with<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
     ) -> Result<(), FinalizationError> {
         if !self.needs_unlisted_finalization() {
@@ -152,3 +160,25 @@ impl Store {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+impl EvmStore<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(in crate::world::store) fn prepare_unlisted_finalization(
+        &mut self,
+        domain: crate::domain::Domain,
+    ) -> Result<(), StoreError> {
+        self.prepare_unlisted_finalization_with(crate::domain::ValueAlgebra::new(domain).borrowed())
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub(super) fn prepare_unlisted_finalization_checked(
+        &mut self,
+        domain: crate::domain::Domain,
+        budget: &mut WorkBudget,
+    ) -> Result<(), FinalizationError> {
+        self.prepare_unlisted_finalization_checked_with(
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+            budget,
+        )
+    }
+}

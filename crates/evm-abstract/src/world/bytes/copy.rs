@@ -1,24 +1,24 @@
 //! COPY keeps a complete checked root and a separate, bounded presentation.
 
-use super::{ByteArray, COPY_FACT_LIMIT, RangeError, limits, zero};
+use super::{COPY_FACT_LIMIT, EvmByteArray, RangeError, limits, zero_with};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    AbstractValue, Domain,
+    EvmValue,
     provenance::MAX_ORIGINS,
     symbolic::{ByteStateKind, ExprError},
 };
 use alloy_primitives::U256;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn bounds(value: &AbstractValue) -> (U256, U256) {
-    value
-        .singleton()
-        .map_or_else(|| value.interval().unsigned_bounds(), |n| (n, n))
+fn bounds<N: WordElement>(value: &EvmValue<N>) -> (U256, U256) {
+    crate::world::unsigned_bounds(value)
 }
 
 // Only literal leaves are display certificates. No retained expression, stale
 // cell or inactive implication is used to prove a number. The caller requires
 // an empty resulting operand/conditional context, including both snapshots.
-fn literal(array: &ByteArray, index: usize) -> Option<AbstractValue> {
+fn literal<N: WordElement>(array: &EvmByteArray<N>, index: usize) -> Option<EvmValue<N>> {
     let byte = match array.root.kind() {
         ByteStateKind::Zero => U256::ZERO,
         ByteStateKind::Exact(bytes) => U256::from(bytes.get(index).copied().unwrap_or(0)),
@@ -27,31 +27,31 @@ fn literal(array: &ByteArray, index: usize) -> Option<AbstractValue> {
         } => {
             // Use the captured root length, never the expandable wrapper.
             if U256::from(index) >= length.as_constant()? {
-                return Some(zero());
+                return Some(zero_with());
             }
             let at = bindings
                 .binary_search_by_key(&U256::from(index), |binding| binding.index)
                 .ok()?;
             let binding = &bindings[at];
             let byte = binding.value.as_constant()?;
-            if binding.numeric != *AbstractValue::constant(byte).numeric() {
+            if binding.numeric != EvmValue::<N>::constant(byte).numeric().observation() {
                 return None;
             }
             byte
         }
         _ => return None,
     };
-    (byte <= U256::from(255)).then(|| AbstractValue::constant(byte))
+    (byte <= U256::from(255)).then(|| EvmValue::<N>::constant(byte))
 }
 
-pub(super) fn project(
-    previous: &ByteArray,
-    source: &ByteArray,
-    destination: &AbstractValue,
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    complete: &ByteArray,
-) -> Result<BTreeMap<usize, AbstractValue>, RangeError> {
+pub(super) fn project<N: WordElement>(
+    previous: &EvmByteArray<N>,
+    source: &EvmByteArray<N>,
+    destination: &EvmValue<N>,
+    offset: &EvmValue<N>,
+    size: &EvmValue<N>,
+    complete: &EvmByteArray<N>,
+) -> Result<BTreeMap<usize, EvmValue<N>>, RangeError> {
     let (size_lo, size_hi) = bounds(size);
     let (dst_lo, dst_hi) = bounds(destination);
     let starts = destination
@@ -119,7 +119,7 @@ pub(super) fn project(
                 literal(source, usize::try_from(index).ok()?)
             })
         };
-        bytes.insert(index, value.unwrap_or_else(AbstractValue::unknown_byte));
+        bytes.insert(index, value.unwrap_or_else(EvmValue::<N>::unknown_byte));
     }
     Ok(bytes)
 }
@@ -134,7 +134,7 @@ fn probes(entries: usize) -> usize {
     entries.min(height(entries).saturating_mul(12))
 }
 
-fn scalar_work(value: &AbstractValue) -> usize {
+fn scalar_work<N: WordElement>(value: &EvmValue<N>) -> usize {
     value
         .work_size()
         .saturating_add(value.expression().map_or_else(
@@ -153,8 +153,8 @@ struct SourceWork {
     nodes: usize,
 }
 
-impl From<&ByteArray> for SourceWork {
-    fn from(array: &ByteArray) -> Self {
+impl<N: WordElement> From<&EvmByteArray<N>> for SourceWork {
+    fn from(array: &EvmByteArray<N>) -> Self {
         Self {
             bytes: array.bytes.len(),
             operands: array.operands.len(),
@@ -166,12 +166,12 @@ impl From<&ByteArray> for SourceWork {
     }
 }
 
-fn work(
-    target: &ByteArray,
+fn work<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    target: &EvmByteArray<N>,
     source: SourceWork,
     ranges: usize,
     branches: usize,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
 ) -> usize {
     // Finite sets/expressions share handles; only bounded origin sets are deep
     // cloned. Numeric/provenance unions are componentwise, not capacity² tuples.
@@ -309,20 +309,20 @@ fn work(
         .saturating_add(projection)
 }
 
-fn alternatives(value: &AbstractValue) -> usize {
+fn alternatives<N: WordElement>(value: &EvmValue<N>) -> usize {
     value.constants().map_or(1, BTreeSet::len)
 }
 
-impl ByteArray {
+impl<N: WordElement> EvmByteArray<N> {
     /// Complete COPY fee, including the caller's captured source clone and the
     /// bounded presentation. No logical range or metadata discovery is scanned.
-    pub(crate) fn copy_work(
+    pub(crate) fn copy_work_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         source: &Self,
-        destination: &AbstractValue,
-        offset: &AbstractValue,
-        size: &AbstractValue,
-        domain: Domain,
+        destination: &EvmValue<N>,
+        offset: &EvmValue<N>,
+        size: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> usize {
         let ranges = scalar_work(&self.length)
             .saturating_add(scalar_work(destination))
@@ -337,14 +337,14 @@ impl ByteArray {
 
     /// Code sources are constructed after admission; lengths bound their exact
     /// maps, and the number of accounts bounds a possible selected source root.
-    pub(crate) fn copy_code_work(
+    pub(crate) fn copy_code_work_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         bytes: usize,
         accounts: usize,
-        destination: &AbstractValue,
-        offset: &AbstractValue,
-        size: &AbstractValue,
-        domain: Domain,
+        destination: &EvmValue<N>,
+        offset: &EvmValue<N>,
+        size: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> usize {
         let source = SourceWork {
             bytes,
@@ -386,12 +386,12 @@ impl ByteArray {
     /// CALL's requested allocation precedes COPY unless either size is proved
     /// zero. Quote only normalization for a zero request; an empty source still
     /// needs the complete target expansion/retention envelope.
-    pub(crate) fn copy_return_data_work(
+    pub(crate) fn copy_return_data_work_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         source: &Self,
-        destination: &AbstractValue,
-        requested: &AbstractValue,
-        domain: Domain,
+        destination: &EvmValue<N>,
+        requested: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> usize {
         if requested.singleton() == Some(U256::ZERO) {
             // Both normalizations still run, including numeric-only sources.
@@ -441,3 +441,57 @@ impl ByteArray {
 mod canonical_tests;
 #[cfg(test)]
 mod tests;
+
+impl EvmByteArray<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn copy_work(
+        &self,
+        source: &Self,
+        destination: &EvmValue<crate::domain::NumericValue>,
+        offset: &EvmValue<crate::domain::NumericValue>,
+        size: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> usize {
+        self.copy_work_with(
+            source,
+            destination,
+            offset,
+            size,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn copy_code_work(
+        &self,
+        bytes: usize,
+        accounts: usize,
+        destination: &EvmValue<crate::domain::NumericValue>,
+        offset: &EvmValue<crate::domain::NumericValue>,
+        size: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> usize {
+        self.copy_code_work_with(
+            bytes,
+            accounts,
+            destination,
+            offset,
+            size,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn copy_return_data_work(
+        &self,
+        source: &Self,
+        destination: &EvmValue<crate::domain::NumericValue>,
+        requested: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> usize {
+        self.copy_return_data_work_with(
+            source,
+            destination,
+            requested,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+}

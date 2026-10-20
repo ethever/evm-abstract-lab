@@ -4,8 +4,16 @@
 //! Store is installed only after all work is reserved and cancellation checked.
 //! The ordinary Store API uses the same classification and execution order.
 
-use super::{Code, Snapshot, Store, StoreError, lifecycle, owner_deletion::OwnerCleanupFootprint};
-use crate::{domain::Domain, resource::WorkBudget};
+use super::{
+    Code, EvmSnapshot, EvmStore, StoreError, lifecycle, owner_deletion::OwnerCleanupFootprint,
+};
+use crate::domain::AlgebraRef;
+#[cfg(test)]
+use crate::domain::Domain;
+use crate::domain::{EvmNumericAlgebra, WordElement};
+use crate::resource::WorkBudget;
+#[cfg(test)]
+use crate::world::Store;
 use alloy_primitives::Address;
 
 mod preparation;
@@ -76,7 +84,7 @@ enum Deletion {
 }
 
 impl Deletion {
-    fn at(store: &Store, address: Address) -> Self {
+    fn at<N: WordElement>(store: &EvmStore<N>, address: Address) -> Self {
         let pending = store.pending_destruction(address);
         // Pending destruction is independent of code emptiness. In particular,
         // EIP-6780 leaves created accounts' code visible until this point.
@@ -110,7 +118,7 @@ enum PlanFee {
 }
 
 impl Plan {
-    pub(super) fn new(store: &Store) -> Self {
+    pub(super) fn new<N: WordElement>(store: &EvmStore<N>) -> Self {
         let mut actions = Vec::new();
         let mut owners = Vec::new();
         let mut has_delete = false;
@@ -271,10 +279,10 @@ impl Plan {
         receipt
     }
 
-    pub(super) fn apply<E>(
+    pub(super) fn apply<E, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         self,
-        store: &mut Store,
-        domain: Domain,
+        store: &mut EvmStore<N>,
+        domain: AlgebraRef<'_, D>,
         interrupt: &mut impl FnMut() -> Result<(), E>,
     ) -> Result<(), E> {
         let mut checked_join_input = false;
@@ -299,7 +307,7 @@ impl Plan {
                         }
                         checked_join_input = true;
                     }
-                    store.maybe_delete_account(address, domain);
+                    store.maybe_delete_account_with(address, domain);
                 }
             }
         }
@@ -405,7 +413,7 @@ struct Footprint {
     validation_work: usize,
 }
 
-impl Store {
+impl<N: WordElement> EvmStore<N> {
     /// O(1) container lengths only. This includes every map visited by planning,
     /// cloning, deletion, joins and cleanup, not merely the account maps.
     pub(crate) fn finalization_entries(&self) -> usize {
@@ -435,10 +443,10 @@ impl Store {
     /// Finish a root transaction atomically under the shared work ledger.
     /// Return uses the live Store; Revert/Failure supply the root checkpoint.
     /// Restoration precedes planning so its sticky RIPEMD touch is included.
-    pub(crate) fn finalize_transaction_checked(
+    pub(crate) fn finalize_transaction_checked_with<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
-        domain: Domain,
-        rollback: Option<&Snapshot>,
+        domain: AlgebraRef<'_, D>,
+        rollback: Option<&EvmSnapshot<N>>,
         budget: &mut WorkBudget,
     ) -> Result<(), FinalizationError> {
         let current = Footprint::measure(self, budget)?;
@@ -468,7 +476,7 @@ impl Store {
         if let Some(snapshot) = rollback {
             staged.restore(snapshot.clone());
         }
-        staged.prepare_unlisted_finalization_checked(domain, budget)?;
+        staged.prepare_unlisted_finalization_checked_with(domain, budget)?;
         let footprint = Footprint::measure(&staged, budget)?;
         // Pay address-set construction, lookup/classification and plan disposal
         // before visiting any address; values remain borrowed during emptiness.
@@ -489,7 +497,10 @@ impl Store {
 }
 
 impl Footprint {
-    fn measure(store: &Store, budget: &mut WorkBudget) -> Result<Self, FinalizationError> {
+    fn measure<N: WordElement>(
+        store: &EvmStore<N>,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, FinalizationError> {
         let entries = store.finalization_entries();
         // Two passes cover outer metadata discovery and temporary traversal
         // storage. No uncharged work_size()/addresses() scan discovers this fee.
@@ -602,3 +613,19 @@ impl Footprint {
 mod tests;
 #[cfg(test)]
 mod unlisted;
+
+impl EvmStore<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn finalize_transaction_checked(
+        &mut self,
+        domain: crate::domain::Domain,
+        rollback: Option<&EvmSnapshot<crate::domain::NumericValue>>,
+        budget: &mut WorkBudget,
+    ) -> Result<(), FinalizationError> {
+        self.finalize_transaction_checked_with(
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+            rollback,
+            budget,
+        )
+    }
+}

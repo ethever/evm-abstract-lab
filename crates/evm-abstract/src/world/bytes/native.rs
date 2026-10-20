@@ -1,7 +1,8 @@
 //! Native exports retain operand guarantees as bounded typed entries.
 
+use crate::domain::WordElement;
 use crate::domain::{
-    AbstractValue,
+    EvmValue,
     symbolic::{ExprId, GraphLimits, SymbolicGraph, SymbolicGraphNode},
 };
 use serde::{
@@ -11,13 +12,13 @@ use serde::{
 use std::{collections::BTreeMap, fmt::Display};
 
 #[derive(Serialize)]
-struct Fact<'a> {
+struct Fact<'a, N: WordElement> {
     expression: &'a ExprId,
-    value: &'a AbstractValue,
+    value: &'a EvmValue<N>,
 }
 
-pub(in crate::world) fn serialize_facts<S: Serializer>(
-    facts: &BTreeMap<ExprId, AbstractValue>,
+pub(in crate::world) fn serialize_facts<S: Serializer, N: WordElement>(
+    facts: &BTreeMap<ExprId, EvmValue<N>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     let mut remaining = GraphLimits::default();

@@ -1,22 +1,21 @@
 //! Fixed demands may use complete facts from their own immutable snapshot.
 
 use super::{conditional::Context, numeric};
-use crate::domain::{
-    Domain,
-    symbolic::{ByteStateKind, ByteView, ExprError, ExprId, ExprLimits},
-};
+use crate::domain::AlgebraRef;
+use crate::domain::symbolic::{ByteStateKind, ByteView, ExprError, ExprId, ExprLimits};
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use alloy_primitives::U256;
 
 /// Resolve a complete word demand without constructing wrapping ADD terms.
 /// All bounds belong to the caller's current guard environment. Returning None
 /// preserves the view for bytewise evaluation of partial or padded windows.
-pub(super) fn view_word_offset(
+pub(super) fn view_word_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     view: &ByteView,
     at: &ExprId,
-    context: &Context<'_>,
-    domain: Domain,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
 ) -> Option<ExprId> {
-    let domain = numeric::numeric_domain(domain);
+    let domain = numeric::numeric_domain_with(domain);
     let relative = numeric::scalar_in(at, context, domain);
     let offset = numeric::scalar_in(&view.offset, context, domain);
     let length = numeric::scalar_in(&view.length, context, domain);
@@ -25,10 +24,10 @@ pub(super) fn view_word_offset(
         .unsigned_bounds()
         .1
         .checked_add(U256::from(31))?;
-    if last >= length.interval().unsigned_bounds().0 {
+    if last >= crate::world::unsigned_bounds(&length).0 {
         return None;
     }
-    offset.interval().unsigned_bounds().1.checked_add(last)?;
+    crate::world::unsigned_bounds(&offset).1.checked_add(last)?;
     if relative.singleton() == Some(U256::ZERO) {
         Some(view.offset.clone())
     } else if offset.singleton() == Some(U256::ZERO) {
@@ -42,15 +41,15 @@ pub(super) fn view_word_offset(
 
 /// Both the destination copy and the captured source view must cover all 32
 /// bytes. In particular, a short CALL output never replaces its old suffix.
-pub(super) fn copy_word_offset(
+pub(super) fn copy_word_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     destination: &ExprId,
     source: &ByteView,
     length: &ExprId,
     at: &ExprId,
-    context: &Context<'_>,
-    domain: Domain,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
 ) -> Option<ExprId> {
-    let domain = numeric::numeric_domain(domain);
+    let domain = numeric::numeric_domain_with(domain);
     let offset = numeric::scalar_in(at, context, domain);
     offset
         .interval()
@@ -75,27 +74,30 @@ pub(super) fn copy_word_offset(
     view_word_offset(source, &ExprId::constant(relative), context, domain)
 }
 
-pub(super) fn same_offset(
+pub(super) fn same_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     left: &ExprId,
     right: &ExprId,
-    context: &Context<'_>,
-    domain: Domain,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
 ) -> bool {
     left == right
-        || numeric::scalar_in(left, context, numeric::numeric_domain(domain))
+        || numeric::scalar_in(left, context, numeric::numeric_domain_with(domain))
             .singleton()
-            .zip(numeric::scalar_in(right, context, numeric::numeric_domain(domain)).singleton())
+            .zip(
+                numeric::scalar_in(right, context, numeric::numeric_domain_with(domain))
+                    .singleton(),
+            )
             .is_some_and(|(left, right)| left == right)
 }
 
 /// Normalize each whole-word alternative using only facts selected by that
 /// snapshot's guard. The public constructor's global callback cannot express
 /// different destination bounds in the two children of the same state ITE.
-pub(super) fn word_expression(
+pub(super) fn word_expression<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     mut view: ByteView,
     at: ExprId,
-    context: &Context<'_>,
-    domain: Domain,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
     limits: ExprLimits,
 ) -> Result<ExprId, ExprError> {
     view = view.canonicalize();

@@ -3,11 +3,13 @@
 //! The caller owns proof queries and their work ledger. This module never obtains
 //! a model or changes immutable content, source identities, or historical reads.
 
-use super::{ByteArray, RangeError, numeric};
+use super::{EvmByteArray, RangeError, numeric};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::{
     domain::{
-        AbstractValue, Domain, DomainSpec, Profile,
-        relational::{QueryReason, RelationLimits, RelationState, ScalarQuery},
+        EvmValue,
+        relational::{QueryReason, RelationLimits, RelationState},
         symbolic::{
             ByteStateId, ByteStateKind, ExprError, ExprId, ExprKind, ExprLimits, SlotStateId,
             SlotStateKind,
@@ -16,10 +18,7 @@ use crate::{
     world::StoreError,
 };
 use alloy_primitives::U256;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    num::NonZeroUsize,
-};
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 /// Checked metadata projection or the caller's actual proof failure.
@@ -241,21 +240,21 @@ fn view_nodes(view: &crate::domain::symbolic::ByteView) -> [Node; 3] {
 
 /// Intersect every old numeric component with a truth already proved by the
 /// caller. `observe`/`refine_numeric` here import facts without a native query.
-pub(in crate::world) fn retain_truth<E>(
-    facts: &mut BTreeMap<ExprId, AbstractValue>,
+pub(in crate::world) fn retain_truth<E, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    facts: &mut BTreeMap<ExprId, EvmValue<N>>,
     condition: &ExprId,
     nonzero: bool,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
     limits: ExprLimits,
 ) -> Result<bool, GuardRefinementError<E>> {
     let old = facts
         .get(condition)
         .cloned()
-        .unwrap_or_else(AbstractValue::top);
+        .unwrap_or_else(EvmValue::<N>::top);
     let bound = if nonzero {
-        AbstractValue::unsigned_range(U256::ONE, U256::MAX).expect("nonempty word range")
+        EvmValue::<N>::unsigned_range(U256::ONE, U256::MAX).expect("nonempty word range")
     } else {
-        AbstractValue::constant(U256::ZERO)
+        EvmValue::<N>::constant(U256::ZERO)
     };
     let policy = RelationLimits {
         enabled: true,
@@ -267,19 +266,8 @@ pub(in crate::world) fn retain_truth<E>(
     guarantee
         .observe(condition, bound.numeric(), &policy)
         .map_err(GuardRefinementError::Facts)?;
-    let spec = domain.spec();
-    // Guard truth is semantic metadata even with a constant-only numeric profile.
-    let fact_domain = Domain::from_spec(
-        DomainSpec::new(
-            Profile::Product,
-            NonZeroUsize::new(spec.capacity()).expect("validated capacity"),
-            NonZeroUsize::new(spec.reduction_rounds()).expect("validated reduction rounds"),
-            NonZeroUsize::new(spec.fact_limit()).expect("validated fact limit"),
-        )
-        .with_relations(policy),
-    );
-    match guarantee.refine_numeric(condition, old.numeric(), fact_domain, &policy) {
-        ScalarQuery::Refined { numeric, .. } => {
+    match guarantee.refine_numeric_with(condition, old.numeric(), domain, &policy) {
+        crate::domain::relational::EvmScalarQuery::Refined { numeric, .. } => {
             facts.insert(
                 condition.clone(),
                 old.with_numeric(*numeric)
@@ -287,29 +275,31 @@ pub(in crate::world) fn retain_truth<E>(
             );
             Ok(true)
         }
-        ScalarQuery::Infeasible => Ok(false),
-        ScalarQuery::Unknown(reason) => Err(GuardRefinementError::Facts(reason)),
-        ScalarQuery::Unchanged => Err(GuardRefinementError::Facts(QueryReason::ScalarFactLimit)),
+        crate::domain::relational::EvmScalarQuery::Infeasible => Ok(false),
+        crate::domain::relational::EvmScalarQuery::Unknown(reason) => {
+            Err(GuardRefinementError::Facts(reason))
+        }
+        crate::domain::relational::EvmScalarQuery::Unchanged => {
+            Err(GuardRefinementError::Facts(QueryReason::ScalarFactLimit))
+        }
     }
 }
 
-pub(in crate::world) fn refresh_scalar(
-    value: &mut AbstractValue,
-    facts: &BTreeMap<ExprId, AbstractValue>,
-    domain: Domain,
+pub(in crate::world) fn refresh_scalar<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    value: &mut EvmValue<N>,
+    facts: &BTreeMap<ExprId, EvmValue<N>>,
+    domain: AlgebraRef<'_, D>,
 ) {
     if let Some(expression) = value.expression()
         && let Some(exact) =
-            numeric::scalar(expression, facts, numeric::numeric_domain(domain)).singleton()
+            numeric::scalar(expression, facts, numeric::numeric_domain_with(domain)).singleton()
         && value.contains(exact)
     {
-        *value = value
-            .clone()
-            .with_numeric(crate::domain::NumericValue::constant(exact));
+        *value = value.clone().with_numeric(N::constant(exact));
     }
 }
 
-impl ByteArray {
+impl<N: WordElement> EvmByteArray<N> {
     /// A content join can fold equal roots while its operand bounds still differ.
     /// Such selectors remain guards even without an ITE in the content graph.
     pub(in crate::world) fn extend_conditional_guards(&self, out: &mut BTreeSet<ExprId>) {
@@ -342,9 +332,9 @@ impl ByteArray {
     /// Apply only caller-proved guard truth. None retains both alternatives;
     /// false means the imported facts prove the whole state infeasible. Errors
     /// leave this wrapper unchanged. The callback owns query/budget diagnostics.
-    pub fn refine_guards<E>(
+    pub fn refine_guards_with<E, D: EvmNumericAlgebra<Element = N>>(
         &mut self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         limits: ExprLimits,
         proof: &mut impl FnMut(&ExprId) -> Result<Option<bool>, E>,
     ) -> Result<bool, GuardRefinementError<E>> {
@@ -362,5 +352,21 @@ impl ByteArray {
         out.check_existing(limits)?;
         *self = out;
         Ok(true)
+    }
+}
+
+impl EvmByteArray<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub fn refine_guards<E>(
+        &mut self,
+        domain: crate::domain::Domain,
+        limits: ExprLimits,
+        proof: &mut impl FnMut(&ExprId) -> Result<Option<bool>, E>,
+    ) -> Result<bool, GuardRefinementError<E>> {
+        self.refine_guards_with(
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+            limits,
+            proof,
+        )
     }
 }

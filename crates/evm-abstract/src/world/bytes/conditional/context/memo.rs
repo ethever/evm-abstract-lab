@@ -2,10 +2,12 @@
 //! of payment. Each admitted action owes the same original WorkBudget first.
 
 use super::Context;
+use crate::domain::AlgebraRef;
 use crate::domain::{
-    AbstractValue, Domain, DomainSpec, Profile,
+    DomainSpec, EvmValue, Profile,
     symbolic::{ExprError, ExprId, ExprLimits},
 };
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::resource::WorkBudget;
 use std::{
     cell::{Cell, RefCell},
@@ -34,7 +36,8 @@ enum Payer<'a> {
     Oracle,
 }
 
-pub(super) struct Demand<'a> {
+pub(super) struct Demand<'a, D: EvmNumericAlgebra> {
+    pub(super) domain: AlgebraRef<'a, D>,
     pub(super) limits: ExprLimits,
     policies: [DomainSpec; POLICIES],
     maximum: usize,
@@ -58,9 +61,9 @@ pub(super) struct Demand<'a> {
     reader_calls: Cell<(usize, usize)>,
 }
 
-impl<'a> Demand<'a> {
+impl<'a, D: EvmNumericAlgebra> Demand<'a, D> {
     pub(super) fn new(
-        domain: Domain,
+        domain: AlgebraRef<'a, D>,
         preparation: &Preparation,
         maximum_key_work: usize,
         budget: &'a mut WorkBudget,
@@ -78,12 +81,16 @@ impl<'a> Demand<'a> {
     }
 
     #[cfg(test)]
-    pub(super) fn oracle(domain: Domain, maximum: usize, maximum_key_work: usize) -> Self {
+    pub(super) fn oracle(
+        domain: AlgebraRef<'a, D>,
+        maximum: usize,
+        maximum_key_work: usize,
+    ) -> Self {
         Self::with_payer(domain, maximum, maximum_key_work, 0, Payer::Oracle)
     }
 
     fn with_payer(
-        domain: Domain,
+        domain: AlgebraRef<'a, D>,
         maximum: usize,
         maximum_key_work: usize,
         reduction_work: usize,
@@ -91,6 +98,7 @@ impl<'a> Demand<'a> {
     ) -> Self {
         let spec = domain.spec();
         Self {
+            domain,
             limits: spec.relations().expressions(),
             policies: [
                 spec,
@@ -135,8 +143,10 @@ impl<'a> Demand<'a> {
         self.source_key_visits.get()
     }
 
-    pub(super) fn policy(&self, domain: Domain) -> bool {
-        if !self.policies.contains(&domain.spec()) {
+    pub(super) fn policy(&self, domain: AlgebraRef<'_, D>) -> bool {
+        if !std::ptr::eq(*self.domain.numeric_algebra(), *domain.numeric_algebra())
+            || !self.policies.contains(&domain.spec())
+        {
             self.refuse();
             return false;
         }
@@ -335,31 +345,30 @@ impl<'a> Demand<'a> {
     }
 }
 
-#[derive(Default)]
-struct Policy {
-    values: BTreeMap<ExprId, Option<AbstractValue>>,
+struct Policy<N: WordElement> {
+    values: BTreeMap<ExprId, Option<EvmValue<N>>>,
     // Missing keys have no intersections to repeat. One complete negative
     // result is retained; other misses repeat their fully paid map probes.
     absent: Option<ExprId>,
     work: usize,
 }
 
-#[derive(Default)]
-pub(super) struct Memo<'a> {
-    policies: Vec<(DomainSpec, Policy)>,
+pub(super) struct Memo<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> {
+    marker: std::marker::PhantomData<&'a D>,
+    policies: Vec<(DomainSpec, Policy<N>)>,
     // The retained condition in each entry keeps this pointer key alive. A
     // structurally equal different allocation may miss, never falsely hit.
-    pub(super) branches: BTreeMap<(usize, bool), (ExprId, Context<'a>)>,
+    pub(super) branches: BTreeMap<(usize, bool), (ExprId, Context<'a, N, D>)>,
 }
 
-impl Memo<'_> {
-    pub(super) fn get(
+impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Memo<'_, N, D> {
+    pub(super) fn get_with(
         &self,
         expression: &ExprId,
-        domain: Domain,
-        demand: &Demand<'_>,
+        domain: AlgebraRef<'_, D>,
+        demand: &Demand<'_, D>,
         reserve: &impl Fn(usize) -> bool,
-    ) -> Option<Option<AbstractValue>> {
+    ) -> Option<Option<EvmValue<N>>> {
         if !reserve(POLICIES) {
             return None;
         }
@@ -379,7 +388,7 @@ impl Memo<'_> {
             return None;
         }
         let value = policy.values.get(expression)?;
-        if !reserve(value.as_ref().map_or(1, AbstractValue::work_size)) {
+        if !reserve(value.as_ref().map_or(1, EvmValue::<N>::work_size)) {
             return None;
         }
         Some(value.clone())
@@ -388,9 +397,9 @@ impl Memo<'_> {
     pub(super) fn insert(
         &mut self,
         expression: &ExprId,
-        value: &Option<AbstractValue>,
-        domain: Domain,
-        demand: &Demand<'_>,
+        value: &Option<EvmValue<N>>,
+        domain: AlgebraRef<'_, D>,
+        demand: &Demand<'_, D>,
         reserve: &impl Fn(usize) -> bool,
     ) {
         if !reserve(POLICIES) {
@@ -406,7 +415,7 @@ impl Memo<'_> {
                 if !demand.reserve_owned(1, 1, 0) {
                     return;
                 }
-                self.policies.push((domain.spec(), Policy::default()));
+                self.policies.push((domain.spec(), Policy::<N>::default()));
                 self.policies.len() - 1
             }
             None => {
@@ -454,10 +463,10 @@ impl Memo<'_> {
 /// The frozen demand's maximum covers source keys and every constructed choice,
 /// including structural comparisons when expression fingerprints collide.
 /// Taking a length instead of a map makes a planning key scan impossible here.
-pub(super) fn probe(
+pub(super) fn probe<D: EvmNumericAlgebra>(
     len: usize,
     expression: &ExprId,
-    demand: &Demand<'_>,
+    demand: &Demand<'_, D>,
     reserve: &impl Fn(usize) -> bool,
 ) -> bool {
     let levels = (len.saturating_add(1).ilog2() as usize).saturating_add(1);
@@ -487,7 +496,11 @@ pub(in crate::world::bytes) struct Preparation {
 /// expression comparisons and materialization of joined components. The caller
 /// and memo's own AV snapshots remain arena work. Constants-only joins rebuild
 /// numeric summaries, including one congruence fold per retained candidate.
-pub(super) fn join_work(domain: Domain, left: &AbstractValue, right: &AbstractValue) -> usize {
+pub(super) fn join_work<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    domain: AlgebraRef<'_, D>,
+    left: &EvmValue<N>,
+    right: &EvmValue<N>,
+) -> usize {
     let candidates = match (left.constants(), right.constants()) {
         (Some(left), Some(right)) => left.len().saturating_add(right.len()),
         _ => 0,
@@ -527,13 +540,13 @@ pub(super) fn join_work(domain: Domain, left: &AbstractValue, right: &AbstractVa
 /// Pure size arithmetic, with no fact merges or allocating preparation. The
 /// node receipt is a hard scratch cap, not an upfront financial reservation.
 /// Metadata and the original numeric bound are paid at their actual actions.
-pub(in crate::world::bytes) fn preparation(
+pub(in crate::world::bytes) fn preparation<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     root_work: usize,
-    offset: &AbstractValue,
+    offset: &EvmValue<N>,
     fact_work: usize,
     _fact_count: usize,
-    conditional: &super::ConditionalFacts,
-    domain: Domain,
+    conditional: &super::ConditionalFacts<N>,
+    domain: AlgebraRef<'_, D>,
 ) -> Preparation {
     let metadata = conditional
         .work_size()
@@ -550,7 +563,7 @@ pub(in crate::world::bytes) fn preparation(
                 .saturating_add(32),
         );
     let reduction = domain
-        .refinement_work(&AbstractValue::top(), 1)
+        .refinement_work(&EvmValue::<N>::top(), 1)
         // Keep the original generic meet/reduction bound and numeric scratch
         // allowance. Its separate 4096 join gcd now belongs only to join_work.
         // Metadata is a cached upper bound on the numeric operand/result sizes;
@@ -564,5 +577,24 @@ pub(in crate::world::bytes) fn preparation(
         #[cfg(test)]
         work: nodes,
         reduction_work: reduction,
+    }
+}
+
+impl<N: WordElement> Default for Policy<N> {
+    fn default() -> Self {
+        Self {
+            values: BTreeMap::new(),
+            absent: None,
+            work: 0,
+        }
+    }
+}
+impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Default for Memo<'a, N, D> {
+    fn default() -> Self {
+        Self {
+            marker: std::marker::PhantomData,
+            policies: Vec::new(),
+            branches: BTreeMap::new(),
+        }
     }
 }

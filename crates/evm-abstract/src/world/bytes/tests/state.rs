@@ -334,7 +334,12 @@ fn project_guarded_join_keep_length_source_view_and_hash() {
         .slice(&v(0), &symbolic(1, 33), 64, Domain::default())
         .unwrap();
     let joined = old
-        .join_guarded(&array, domain, ExprId::fresh().unwrap(), limits(domain))
+        .join_guarded(
+            &array,
+            domain,
+            ExprId::fresh().unwrap(),
+            limits(crate::domain::ValueAlgebra::new(&domain)),
+        )
         .unwrap();
     let projected = joined.project(domain);
     assert_eq!(projected.len().expression(), joined.len().expression());

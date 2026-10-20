@@ -18,7 +18,10 @@ fn byte_sequence(length: AbstractValue) -> ByteArray {
         vec![crate::domain::symbolic::StateBinding {
             index: U256::from(7),
             value: crate::domain::symbolic::ExprId::constant(U256::from(0xaa)),
-            numeric: AbstractValue::constant(U256::from(0xaa)).numeric().clone(),
+            numeric: AbstractValue::constant(U256::from(0xaa))
+                .numeric()
+                .clone()
+                .into(),
         }],
         crate::domain::symbolic::StateLimits::default(),
     )

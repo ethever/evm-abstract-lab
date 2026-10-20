@@ -42,7 +42,7 @@ fn check(value: &AbstractValue, key: &ExprId, domain: Domain, calls: (usize, usi
     let facts = Facts::from([(key.clone(), value.clone())]);
     let frozen = facts.clone();
     let expected = original_union(key, &facts, domain);
-    let mut reader = Reader::new(&facts, domain);
+    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
     let actual = counted_union(&mut reader, key, &expected, calls);
     // Spell out independent layers so a future equality implementation cannot
     // silently weaken this oracle's complete representation requirement.
@@ -158,7 +158,8 @@ fn general_free_lanes_known_ones_and_nonzero_keep_the_full_union() {
             let key = expression();
             check(value, &key, domain, (1, 0));
             let facts = Facts::from([(key.clone(), value.clone())]);
-            let actual = Reader::new(&facts, domain).word_byte_union(&key);
+            let actual = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain))
+                .word_byte_union(&key);
             assert!(actual.contains(U256::ZERO));
             assert!(actual.contains(U256::from(255)));
         }
@@ -265,9 +266,16 @@ fn certificate_does_not_change_constants_only_or_relations_on() {
                 ..Default::default()
             }),
         );
-        let mut reader = Reader::with_context(Context::new(&facts, None), domain);
-        reader.domain = domain;
-        let scalar = scalar_in(&key, &reader.context, domain);
+        let mut reader = Reader::with_context(
+            Context::new(&facts, None, crate::domain::ValueAlgebra::new(&domain)),
+            crate::domain::ValueAlgebra::new(&domain),
+        );
+        reader.domain = crate::domain::ValueAlgebra::new(&domain);
+        let scalar = scalar_in(
+            &key,
+            &reader.context,
+            crate::domain::ValueAlgebra::new(&domain),
+        );
         assert!(!full_image::candidate(scalar.numeric(), domain));
         let expected = original_in_context(&key, &reader.context, domain);
         counted_union(&mut reader, &key, &expected, (32, 31));

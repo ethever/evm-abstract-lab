@@ -42,21 +42,42 @@ fn reference_copy_from(
     let at = expr(offset)?;
     let len = expr(size)?;
     if out.operands.is_empty() {
-        out.operands = operands::import_empty(&source.operands, domain, limits(domain))?;
+        out.operands = operands::import_empty(
+            &source.operands,
+            crate::domain::ValueAlgebra::new(&domain),
+            limits(crate::domain::ValueAlgebra::new(&domain)),
+        )?;
     } else {
         for (expression, value) in &source.operands {
-            out.remember(expression.clone(), value, domain)?;
+            out.remember(
+                expression.clone(),
+                value,
+                crate::domain::ValueAlgebra::new(&domain),
+            )?;
         }
     }
-    out.conditional
-        .extend(&source.conditional, limits(domain))?;
-    out.remember(dst.clone(), destination, domain)?;
-    out.remember(at.clone(), offset, domain)?;
-    out.remember(len.clone(), size, domain)?;
+    out.conditional.extend(
+        &source.conditional,
+        limits(crate::domain::ValueAlgebra::new(&domain)),
+    )?;
+    out.remember(
+        dst.clone(),
+        destination,
+        crate::domain::ValueAlgebra::new(&domain),
+    )?;
+    out.remember(
+        at.clone(),
+        offset,
+        crate::domain::ValueAlgebra::new(&domain),
+    )?;
+    out.remember(len.clone(), size, crate::domain::ValueAlgebra::new(&domain))?;
     let view = ByteView::new(source.root.clone(), at, len.clone());
-    out.root = out
-        .root
-        .copy_recanonicalizing(dst, view, len, limits(domain).into())?;
+    out.root = out.root.copy_recanonicalizing(
+        dst,
+        view,
+        len,
+        limits(crate::domain::ValueAlgebra::new(&domain)).into(),
+    )?;
     out.bytes = super::project(target, source, destination, offset, size, &out)?;
     out.default = AbstractValue::unknown_byte();
     *target = out;
@@ -77,7 +98,11 @@ fn reference_return(
     }
     let mut out = target.clone();
     out.expand(destination, requested, 4096, domain)?;
-    let copied = ranges::minimum(requested, source.len(), domain)?;
+    let copied = ranges::minimum(
+        requested,
+        source.len(),
+        crate::domain::ValueAlgebra::new(&domain),
+    )?;
     reference_copy_from(&mut out, destination, source, &zero(), &copied, domain)?;
     *target = out;
     Ok(())
@@ -99,7 +124,12 @@ fn selected(leaves: usize, domain: Domain) -> ByteArray {
     for leaf in 1..leaves {
         let other = memory(800 + leaf as u64, leaf + 7, domain);
         out = out
-            .join_guarded(&other, domain, ExprId::fresh().unwrap(), limits(domain))
+            .join_guarded(
+                &other,
+                domain,
+                ExprId::fresh().unwrap(),
+                limits(crate::domain::ValueAlgebra::new(&domain)),
+            )
             .unwrap();
     }
     assert_eq!(out.root.copy_leaves(), leaves);
@@ -111,7 +141,7 @@ fn compound(value: usize, domain: Domain) -> AbstractValue {
         ExprId::operation(
             opcode::ADD,
             &[ExprId::fresh().unwrap(), ExprId::constant(U256::ONE)],
-            limits(domain),
+            limits(crate::domain::ValueAlgebra::new(&domain)),
         )
         .unwrap(),
     )
@@ -246,15 +276,32 @@ fn complex_source_growth_is_paid_once_plus_additive_leaf_fields() {
     };
     // Adjacent sizes keep projection's search height equal, isolating input
     // growth in the source once-envelope and the per-occurrence field bound.
-    let small = super::work(&target, source(62), 516, 1, domain);
-    let large = super::work(&target, source(63), 516, 1, domain);
+    let small = super::work(
+        &target,
+        source(62),
+        516,
+        1,
+        crate::domain::ValueAlgebra::new(&domain),
+    );
+    let large = super::work(
+        &target,
+        source(63),
+        516,
+        1,
+        crate::domain::ValueAlgebra::new(&domain),
+    );
     assert_eq!(large - small, 8 * (516 + 19));
     assert!(large - small < 8 * 19 * 516);
 
     let mut compound_source = memory(999, 7, domain);
     compound_source.length = compound(32, domain);
     let requested = compound(32, domain);
-    let copied = ranges::minimum(&requested, compound_source.len(), domain).unwrap();
+    let copied = ranges::minimum(
+        &requested,
+        compound_source.len(),
+        crate::domain::ValueAlgebra::new(&domain),
+    )
+    .unwrap();
     assert_eq!(copied.singleton(), Some(U256::from(32)));
     assert!(expr(&copied).unwrap().as_constant().is_none());
     let destination = compound(0, domain);

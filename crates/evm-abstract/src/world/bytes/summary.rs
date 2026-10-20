@@ -3,9 +3,13 @@
 //! Projection deliberately forgets allocation, alias and path correlations. A
 //! summary is never an executable array: each instantiation gets fresh sources.
 
-use super::{ByteArray, COPY_FACT_LIMIT, RangeError, limits, zero};
+use super::{COPY_FACT_LIMIT, EvmByteArray, RangeError, limits, zero_with};
+use crate::domain::AlgebraRef;
+#[cfg(test)]
+use crate::domain::{AbstractValue, Domain};
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    AbstractValue, Domain,
+    EvmValue, ValueAlgebra,
     symbolic::{
         ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, SlotStateId, SourceId,
         StateBinding, StateError,
@@ -19,19 +23,21 @@ mod presentation;
 #[cfg(test)]
 mod retention_tests;
 
-pub(in crate::world) fn scalar(value: &AbstractValue, domain: Domain) -> AbstractValue {
+pub(in crate::world) fn scalar<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    value: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
+) -> EvmValue<N> {
     let projected = domain.project(value);
-    if let Some(constant) = projected.singleton() {
-        AbstractValue::from_numeric(crate::domain::NumericValue::constant(constant))
-    } else {
-        AbstractValue::from_numeric(projected.numeric().clone())
-    }
+    EvmValue::<N>::from_numeric(projected.numeric().canonical_for_summary())
 }
 
 // The root is authoritative. A stale presentation cell can supply only a dense
 // finite allocation proved redundant by the newly evaluated interval; no old
 // masks, bounds, congruence, nonzero or metadata enter the current scalar.
-fn restore_presentation(value: AbstractValue, previous: Option<&AbstractValue>) -> AbstractValue {
+fn restore_presentation<N: WordElement>(
+    value: EvmValue<N>,
+    previous: Option<&EvmValue<N>>,
+) -> EvmValue<N> {
     let Some(previous) = previous else {
         return value;
     };
@@ -41,12 +47,12 @@ fn restore_presentation(value: AbstractValue, previous: Option<&AbstractValue>) 
     value.with_numeric(numeric)
 }
 
-pub(in crate::world) fn join_scalar(
-    old: &AbstractValue,
-    incoming: &AbstractValue,
-    domain: Domain,
+pub(in crate::world) fn join_scalar<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    old: &EvmValue<N>,
+    incoming: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
     widen: bool,
-) -> AbstractValue {
+) -> EvmValue<N> {
     let next = domain.join(old, incoming);
     let next = if widen {
         domain.widen_procedure(old, &next)
@@ -57,12 +63,14 @@ pub(in crate::world) fn join_scalar(
 }
 
 /// An independent word with every retained numerical constraint.
-pub(in crate::world) fn instantiate_scalar(
-    value: &AbstractValue,
-    domain: Domain,
-) -> Result<AbstractValue, RangeError> {
-    if let Some(constant) = value.singleton() {
-        return Ok(value.clone().with_expression(ExprId::constant(constant)));
+pub(in crate::world) fn instantiate_scalar<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    value: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<EvmValue<N>, RangeError> {
+    if let Some(constant_with) = value.singleton() {
+        return Ok(value
+            .clone()
+            .with_expression(ExprId::constant(constant_with)));
     }
     if value.numeric().is_top() {
         // Top contributes no numeric constraint. An independent leaf expresses
@@ -78,7 +86,7 @@ pub(in crate::world) fn instantiate_scalar(
         vec![StateBinding {
             index: U256::ZERO,
             value: raw,
-            numeric: value.numeric().clone(),
+            numeric: value.numeric().observation(),
         }],
         limits(domain).into(),
     )?;
@@ -90,7 +98,7 @@ pub(in crate::world) fn instantiate_scalar(
 }
 
 /// Node bound for the independent word built by instantiate_scalar.
-pub(in crate::world) fn scalar_expression_work(value: &AbstractValue) -> usize {
+pub(in crate::world) fn scalar_expression_work<N: WordElement>(value: &EvmValue<N>) -> usize {
     if value.singleton().is_some() || value.numeric().is_top() {
         1
     } else {
@@ -99,13 +107,13 @@ pub(in crate::world) fn scalar_expression_work(value: &AbstractValue) -> usize {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Content {
+enum Content<N: WordElement = crate::domain::NumericValue> {
     Zero,
     Exact(Arc<[u8]>),
-    Cells(BTreeMap<usize, AbstractValue>),
+    Cells(BTreeMap<usize, EvmValue<N>>),
 }
 
-impl Content {
+impl<N: WordElement> Content<N> {
     fn exact(bytes: Arc<[u8]>) -> Self {
         match bytes.iter().rposition(|byte| *byte != 0) {
             None => Self::Zero,
@@ -114,17 +122,16 @@ impl Content {
         }
     }
 
-    fn at(&self, index: usize) -> AbstractValue {
+    fn at(&self, index: usize) -> EvmValue<N> {
         match self {
-            Self::Zero => scalar(&zero(), Domain::default()),
-            Self::Exact(bytes) => scalar(
-                &AbstractValue::constant(U256::from(bytes.get(index).copied().unwrap_or(0))),
-                Domain::default(),
-            ),
+            Self::Zero => EvmValue::<N>::from_numeric(N::constant(U256::ZERO)),
+            Self::Exact(bytes) => EvmValue::<N>::from_numeric(N::constant(U256::from(
+                bytes.get(index).copied().unwrap_or(0),
+            ))),
             Self::Cells(cells) => cells
                 .get(&index)
                 .cloned()
-                .unwrap_or_else(AbstractValue::unknown_byte),
+                .unwrap_or_else(EvmValue::<N>::unknown_byte),
         }
     }
 
@@ -140,15 +147,18 @@ impl Content {
 /// Canonical byte/length upper bound used for procedure input and output joins.
 /// It contains no source identities, write history or caller path predicates.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ByteArraySummary {
-    length: AbstractValue,
+pub struct EvmByteArraySummary<N: WordElement> {
+    length: EvmValue<N>,
     memory: bool,
-    content: Content,
+    content: Content<N>,
 }
 
-impl ByteArray {
+impl<N: WordElement> EvmByteArray<N> {
     /// Evaluate the complete content graph before forgetting its correlations.
-    pub fn summary_projection(&self, domain: Domain) -> Result<ByteArraySummary, RangeError> {
+    pub fn summary_projection_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmByteArraySummary<N>, RangeError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -159,14 +169,15 @@ impl ByteArray {
         // that history in the output. Local symbolic-read retention limits apply when
         // the numerical summary is instantiated, not to its discarded input.
         let content = match self.root.kind() {
-            ByteStateKind::Zero => Content::Zero,
-            ByteStateKind::Exact(bytes) => Content::exact(Arc::clone(bytes)),
+            ByteStateKind::Zero => Content::<N>::Zero,
+            ByteStateKind::Exact(bytes) => Content::<N>::exact(Arc::clone(bytes)),
             _ => {
-                if let Some(exact) = self.exact_bytes_bounded(COPY_FACT_LIMIT) {
-                    Content::exact(Arc::from(exact))
+                if let Some(exact) = self.exact_bytes_bounded_with(COPY_FACT_LIMIT, domain) {
+                    Content::<N>::exact(Arc::from(exact))
                 } else {
                     let mut keys = self.bytes.keys().copied().collect::<Vec<_>>();
-                    if let Ok(upper) = usize::try_from(self.length.interval().unsigned_bounds().1)
+                    if let Ok(upper) =
+                        usize::try_from(crate::world::unsigned_bounds(&self.length).1)
                         && upper <= COPY_FACT_LIMIT
                     {
                         keys.extend(0..upper);
@@ -174,8 +185,12 @@ impl ByteArray {
                     keys.sort_unstable();
                     keys.dedup();
                     let mut cells = BTreeMap::new();
-                    let mut reader = super::numeric::Reader::with_context(
-                        super::conditional::Context::new(&self.operands, Some(&self.conditional)),
+                    let mut reader = super::numeric::Reader::<N, D>::with_context(
+                        super::conditional::Context::<N, D>::new(
+                            &self.operands,
+                            Some(&self.conditional),
+                            domain,
+                        ),
                         domain,
                     );
                     for index in keys.into_iter().take(COPY_FACT_LIMIT) {
@@ -187,18 +202,18 @@ impl ByteArray {
                         // Apply the caller's profile/capacity last, including
                         // when the presentation came from a larger old policy.
                         let value = scalar(&value, domain);
-                        if value.numeric() != AbstractValue::unknown_byte().numeric() {
+                        if value.numeric() != EvmValue::<N>::unknown_byte().numeric() {
                             cells.insert(index, value);
                         }
                     }
-                    Content::Cells(cells)
+                    Content::<N>::Cells(cells)
                 }
             }
         };
         if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled.into());
         }
-        Ok(ByteArraySummary {
+        Ok(EvmByteArraySummary {
             length: scalar(&self.length, domain),
             memory: self.memory,
             content,
@@ -206,9 +221,9 @@ impl ByteArray {
     }
 }
 
-impl ByteArraySummary {
+impl<N: WordElement> EvmByteArraySummary<N> {
     /// Logical input length or MSIZE projection, without an equality identity.
-    pub fn len(&self) -> &AbstractValue {
+    pub fn len(&self) -> &EvmValue<N> {
         &self.length
     }
 
@@ -223,14 +238,14 @@ impl ByteArraySummary {
             .saturating_add(length_nodes);
         let mut canonical = self.length.numeric().work_size().saturating_add(2);
         let content_work = match &self.content {
-            Content::Zero => 1,
-            Content::Exact(bytes) => {
+            Content::<N>::Zero => 1,
+            Content::<N>::Exact(bytes) => {
                 canonical = canonical.saturating_add(bytes.len());
                 // One exact root, its shared buffer, and at most one numerical
                 // cached constant per already-materialized byte.
                 bytes.len().saturating_mul(15).saturating_add(1)
             }
-            Content::Cells(cells) => {
+            Content::<N>::Cells(cells) => {
                 let mut constant_cells = 0usize;
                 let mut chunks = 0usize;
                 let mut previous_constant = None;
@@ -278,7 +293,12 @@ impl ByteArraySummary {
     }
 
     /// Complete numerical union. Widening affects growing word fields only.
-    pub fn join(&self, other: &Self, domain: Domain, widen: bool) -> Self {
+    pub fn join_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        other: &Self,
+        domain: AlgebraRef<'_, D>,
+        widen: bool,
+    ) -> Self {
         let content = if self.content == other.content {
             self.content.clone()
         } else {
@@ -296,11 +316,11 @@ impl ByteArraySummary {
                         domain,
                         widen,
                     );
-                    (value.numeric() != AbstractValue::unknown_byte().numeric())
+                    (value.numeric() != EvmValue::<N>::unknown_byte().numeric())
                         .then_some((index, value))
                 })
                 .collect();
-            Content::Cells(cells)
+            Content::<N>::Cells(cells)
         };
         Self {
             length: join_scalar(&self.length, &other.length, domain, widen),
@@ -310,17 +330,24 @@ impl ByteArraySummary {
     }
 
     /// Coverage of content, logical length and allocation mode together.
-    pub fn covers(&self, other: &Self, domain: Domain) -> bool {
-        self.join(other, domain, false) == *self
+    pub fn covers_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        other: &Self,
+        domain: AlgebraRef<'_, D>,
+    ) -> bool {
+        self.join_with(other, domain, false) == *self
     }
 
     /// Build independent symbolic cells and a constrained length for one use.
-    pub fn instantiate(&self, domain: Domain) -> Result<ByteArray, RangeError> {
+    pub fn instantiate_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmByteArray<N>, RangeError> {
         let length = instantiate_scalar(&self.length, domain)?;
-        let mut out = ByteArray {
+        let mut out = EvmByteArray {
             length,
             bytes: BTreeMap::new(),
-            default: AbstractValue::unknown_byte(),
+            default: EvmValue::<N>::unknown_byte(),
             memory: self.memory,
             root: ByteStateId::zero(),
             allocations: Default::default(),
@@ -330,10 +357,10 @@ impl ByteArraySummary {
         };
         let mut bare_cells = false;
         match &self.content {
-            Content::Zero => out.default = scalar(&zero(), domain),
-            Content::Exact(bytes) => {
+            Content::<N>::Zero => out.default = scalar(&zero_with(), domain),
+            Content::<N>::Exact(bytes) => {
                 out.root = ByteStateId::exact(Arc::clone(bytes));
-                out.default = scalar(&zero(), domain);
+                out.default = scalar(&zero_with(), domain);
                 out.bytes = bytes
                     .iter()
                     .enumerate()
@@ -341,12 +368,12 @@ impl ByteArraySummary {
                     .map(|(index, byte)| {
                         (
                             index,
-                            scalar(&AbstractValue::constant(U256::from(*byte)), domain),
+                            scalar(&EvmValue::<N>::constant(U256::from(*byte)), domain),
                         )
                     })
                     .collect();
             }
-            Content::Cells(cells) => {
+            Content::<N>::Cells(cells) => {
                 let source = SourceId::fresh()?;
                 let len = out
                     .length
@@ -372,15 +399,28 @@ impl ByteArraySummary {
                             // finite component, before observed checks its size.
                             // The original full summary work is still prepaid.
                             numeric: if domain.spec().profile() == crate::domain::Profile::Product {
-                                value.numeric().compact_for_retention()
+                                value.numeric().compact_for_retention().observation()
                             } else {
                                 // ConstantsOnly joins inspect finite alone;
                                 // retain its existing executable representation.
-                                value.numeric().clone()
+                                value.numeric().observation()
                             },
                         })
                     })
                     .collect::<Result<Vec<_>, RangeError>>()?;
+                for binding in &bindings {
+                    let index = usize::try_from(binding.index).expect("cell index was usize");
+                    let value = cells.get(&index).expect("binding was formed from cell");
+                    let numeric = if domain.spec().profile() == crate::domain::Profile::Product {
+                        value.numeric().compact_for_retention()
+                    } else {
+                        value.numeric().clone()
+                    };
+                    out.operands.insert(
+                        binding.value.clone(),
+                        EvmValue::<N>::from_numeric(numeric).with_expression(binding.value.clone()),
+                    );
+                }
                 out.root =
                     ByteStateId::observed(source, len.clone(), bindings, limits(domain).into())?;
                 // Constant runs need no observed numeric constraints. Retaining
@@ -438,5 +478,40 @@ impl ByteArraySummary {
         presentation::refresh(&mut out, bare_cells, domain)?;
         out.check_existing(limits(domain))?;
         Ok(out)
+    }
+}
+
+/// Default numeric-carrier compatibility alias.
+pub type ByteArraySummary = EvmByteArraySummary<crate::domain::NumericValue>;
+
+impl EvmByteArray<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub fn summary_projection(
+        &self,
+        domain: crate::domain::Domain,
+    ) -> Result<EvmByteArraySummary<crate::domain::NumericValue>, RangeError> {
+        self.summary_projection_with(crate::domain::ValueAlgebra::new(domain).borrowed())
+    }
+}
+
+impl EvmByteArraySummary<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub fn join(&self, other: &Self, domain: crate::domain::Domain, widen: bool) -> Self {
+        self.join_with(
+            other,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+            widen,
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub fn covers(&self, other: &Self, domain: crate::domain::Domain) -> bool {
+        self.covers_with(other, crate::domain::ValueAlgebra::new(domain).borrowed())
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub fn instantiate(
+        &self,
+        domain: crate::domain::Domain,
+    ) -> Result<EvmByteArray<crate::domain::NumericValue>, RangeError> {
+        self.instantiate_with(crate::domain::ValueAlgebra::new(domain).borrowed())
     }
 }

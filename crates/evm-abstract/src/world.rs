@@ -5,6 +5,9 @@
 //! fork and code bytes are fixed before execution. Explicit [`rpc`] acquisition
 //! is separate from execution, which changes a [`Store`] for nested rollback.
 
+#[cfg(test)]
+use crate::domain::AbstractValue;
+use crate::domain::{EvmNumericAlgebra, ValueAlgebra, WordElement};
 mod bytes;
 pub mod environment;
 mod initial;
@@ -12,21 +15,56 @@ pub mod rpc;
 #[cfg(test)]
 mod runtime_code_tests;
 mod snapshot;
-pub use environment::{AddressInput, BlobHashes, EvmEnvironment, GasInput, InputScope, Symbol};
+pub use environment::{
+    AddressInput, BlobHashes, EvmBlobHashes, EvmEnvironment, EvmEnvironmentValues, GasInput,
+    InputScope, Symbol,
+};
 mod store;
 
-pub use bytes::{ByteArray, ByteArraySummary, GuardRefinementError, RangeError};
+pub use bytes::{
+    ByteArray, ByteArraySummary, EvmByteArray, EvmByteArraySummary, GuardRefinementError,
+    RangeError,
+};
 pub use snapshot::{FingerprintError, SnapshotEnvironment, SnapshotIdentity};
 pub use store::{
-    AbstractLog, LogError, LogKey, LogSourceKind, OrderedMap, Snapshot, Store, StoreError,
-    StoreSummary,
+    AbstractLog, EvmLog, EvmSnapshot, EvmStore, EvmStoreSummary, LogError, LogKey, LogSourceKind,
+    OrderedMap, Snapshot, Store, StoreError, StoreSummary,
 };
 
-use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::AbstractValue};
+use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::EvmValue};
 use alloy_primitives::{Address, B256, U256, hex, keccak256};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use thiserror::Error;
+
+/// Complete word candidates, including exact elements without a finite view.
+/// The singleton is held inline; querying an independently represented constant
+/// must not allocate a new finite set or invoke another numeric policy.
+struct Candidates<'a> {
+    finite: Option<&'a std::collections::BTreeSet<U256>>,
+    singleton: Option<U256>,
+}
+impl Candidates<'_> {
+    fn iter(&self) -> impl Iterator<Item = &U256> {
+        self.finite
+            .into_iter()
+            .flatten()
+            .chain(self.singleton.iter())
+    }
+    fn is_subset(&self, values: &std::collections::BTreeSet<U256>) -> bool {
+        self.iter().all(|value| values.contains(value))
+    }
+}
+fn candidates<N: WordElement>(value: &EvmValue<N>) -> Option<Candidates<'_>> {
+    let finite = value.constants();
+    let singleton = finite.is_none().then(|| value.singleton()).flatten();
+    (finite.is_some() || singleton.is_some()).then_some(Candidates { finite, singleton })
+}
+fn unsigned_bounds<N: WordElement>(value: &EvmValue<N>) -> (U256, U256) {
+    value
+        .singleton()
+        .map_or_else(|| value.interval().unsigned_bounds(), |word| (word, word))
+}
 
 /// Observed code at an account, independently of the account's storage owner.
 #[derive(Clone, Debug, Serialize)]
@@ -90,22 +128,23 @@ pub enum Existence {
 
 /// One initial account observation. Missing slots are zero only if complete.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Account {
+#[serde(rename = "Account")]
+pub struct EvmAccount<N: WordElement> {
     /// Observed runtime code, delegation, empty code, or missing code.
     pub code: Code,
     /// Explicit initial slot values.
-    pub storage: BTreeMap<U256, AbstractValue>,
+    pub storage: BTreeMap<U256, EvmValue<N>>,
     /// Whether unspecified initial storage slots can have any value.
     pub storage_unknown: bool,
-    /// Initial balance; an unobserved balance must be [`AbstractValue::top`].
-    pub balance: AbstractValue,
+    /// Initial balance; an unobserved balance must be [`EvmValue::top`].
+    pub balance: EvmValue<N>,
     /// Initial nonce; required for CREATE addresses and collision checks.
-    pub nonce: AbstractValue,
+    pub nonce: EvmValue<N>,
     /// Explicit account-presence observation, independently of empty code.
     pub existence: Existence,
 }
 
-impl Account {
+impl<N: WordElement> EvmAccount<N> {
     /// Decode account code, preserving [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) as a code pointer.
     ///
     /// This synthetic constructor defaults storage, balance and nonce to zero
@@ -122,8 +161,8 @@ impl Account {
             code,
             storage: BTreeMap::new(),
             storage_unknown: false,
-            balance: AbstractValue::constant(U256::ZERO),
-            nonce: AbstractValue::constant(U256::ZERO),
+            balance: EvmValue::<N>::constant(U256::ZERO),
+            nonce: EvmValue::<N>::constant(U256::ZERO),
             existence: Existence::Present,
         })
     }
@@ -134,8 +173,8 @@ impl Account {
             code: Code::Empty,
             storage: BTreeMap::new(),
             storage_unknown: false,
-            balance: AbstractValue::constant(U256::ZERO),
-            nonce: AbstractValue::constant(U256::ZERO),
+            balance: EvmValue::<N>::constant(U256::ZERO),
+            nonce: EvmValue::<N>::constant(U256::ZERO),
             existence: Existence::Present,
         }
     }
@@ -154,8 +193,8 @@ impl Account {
             code: Code::Unknown,
             storage: BTreeMap::new(),
             storage_unknown: true,
-            balance: AbstractValue::top(),
-            nonce: AbstractValue::top(),
+            balance: EvmValue::<N>::top(),
+            nonce: EvmValue::<N>::top(),
             existence: Existence::Unknown,
         }
     }
@@ -163,7 +202,8 @@ impl Account {
 
 /// Fixed initial observations. One analysis cannot silently mix identities or forks.
 #[derive(Clone, Debug, Serialize)]
-pub struct World {
+#[serde(rename = "World")]
+pub struct EvmWorld<N: WordElement> {
     fork: Fork,
     identity: SnapshotIdentity,
     // Free-form offline labels are descriptions, not source equality identities.
@@ -172,7 +212,7 @@ pub struct World {
     #[serde(skip_serializing_if = "Option::is_none")]
     snapshot_environment: Option<SnapshotEnvironment>,
     provenance: String,
-    accounts: BTreeMap<Address, Account>,
+    accounts: BTreeMap<Address, EvmAccount<N>>,
 }
 
 /// Invalid account insertion into an otherwise coherent snapshot.
@@ -213,12 +253,12 @@ pub enum WorldError {
     InvalidAbsence(Address),
 }
 
-impl World {
+impl<N: WordElement> EvmWorld<N> {
     /// 原子补入固定快照的初始 slot 观测，不改事务 Store 或其他账户事实。
     pub(crate) fn install_storage(
         &mut self,
         address: Address,
-        storage: BTreeMap<U256, AbstractValue>,
+        storage: BTreeMap<U256, EvmValue<N>>,
     ) -> Result<(), WorldError> {
         let account = self
             .accounts
@@ -245,12 +285,15 @@ impl World {
     }
 
     /// Store 初始化投影可能生成的完整候选；复制费用由输入 work_size 另计。
-    pub(crate) fn projection_work(&self, domain: crate::domain::Domain) -> usize {
+    pub(crate) fn projection_work_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: crate::domain::AlgebraRef<'_, D>,
+    ) -> usize {
         self.accounts.values().fold(0usize, |work, account| {
             let default = if account.storage_unknown {
                 0
             } else {
-                domain.projection_work(&AbstractValue::constant(U256::ZERO))
+                domain.projection_work(&EvmValue::<N>::constant(U256::ZERO))
             };
             account.storage.values().fold(
                 work.saturating_add(domain.projection_work(&account.balance))
@@ -303,8 +346,8 @@ impl World {
     pub fn insert(
         &mut self,
         address: Address,
-        account: Account,
-    ) -> Result<Option<Account>, WorldError> {
+        account: EvmAccount<N>,
+    ) -> Result<Option<EvmAccount<N>>, WorldError> {
         match &account.code {
             Code::Runtime(program) if program.fork() != self.fork => {
                 return Err(WorldError::MixedFork {
@@ -342,9 +385,9 @@ impl World {
     pub fn insert_with_code_hash(
         &mut self,
         address: Address,
-        account: Account,
+        account: EvmAccount<N>,
         expected: B256,
-    ) -> Result<Option<Account>, WorldError> {
+    ) -> Result<Option<EvmAccount<N>>, WorldError> {
         let observed = account_code_hash(&account).ok_or(WorldError::UnknownCodeHash(address))?;
         if observed != expected {
             return Err(WorldError::CodeHash {
@@ -367,7 +410,7 @@ impl World {
     }
 
     /// Account observation; absence denotes unknown code and persistent state.
-    pub fn account(&self, address: Address) -> Option<&Account> {
+    pub fn account(&self, address: Address) -> Option<&EvmAccount<N>> {
         self.accounts.get(&address)
     }
 
@@ -392,7 +435,7 @@ impl World {
     }
 
     /// All explicit observations, ordered by address.
-    pub fn accounts(&self) -> &BTreeMap<Address, Account> {
+    pub fn accounts(&self) -> &BTreeMap<Address, EvmAccount<N>> {
         &self.accounts
     }
 }
@@ -411,7 +454,7 @@ fn raw_code(code: &Code) -> Option<Vec<u8>> {
     }
 }
 
-fn account_code_hash(account: &Account) -> Option<B256> {
+fn account_code_hash<N: WordElement>(account: &EvmAccount<N>) -> Option<B256> {
     if account.existence == Existence::Absent {
         Some(B256::ZERO)
     } else {
@@ -421,21 +464,22 @@ fn account_code_hash(account: &Account) -> Option<B256> {
 
 /// One root frame and its immutable transaction and block inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Entry {
+#[serde(rename = "Entry")]
+pub struct EvmEntry<N: WordElement> {
     /// Concrete owner used to address the supplied world's account state.
     pub address: Address,
     /// Root call inputs and transaction/block observations shared by all frames.
-    pub environment: EvmEnvironment,
+    pub environment: EvmEnvironmentValues<N>,
 }
 
-impl Entry {
+impl<N: WordElement> EvmEntry<N> {
     /// Analyze all unspecified call inputs at a known destination address.
     pub fn new(address: Address) -> Self {
         Self {
             address,
-            environment: EvmEnvironment {
+            environment: EvmEnvironmentValues {
                 to: AddressInput::Concrete(address),
-                ..EvmEnvironment::default()
+                ..EvmEnvironmentValues::<N>::default()
             },
         }
     }
@@ -444,13 +488,26 @@ impl Entry {
     pub fn concrete(
         address: Address,
         caller: Address,
-        value: AbstractValue,
-        calldata: ByteArray,
+        value: EvmValue<N>,
+        calldata: EvmByteArray<N>,
     ) -> Self {
         let mut entry = Self::new(address);
         entry.environment.caller = AddressInput::Concrete(caller);
         entry.environment.value = value;
         entry.environment.calldata = calldata;
         entry
+    }
+}
+
+/// Default numeric-carrier compatibility alias.
+pub type Account = EvmAccount<crate::domain::NumericValue>;
+/// Default numeric-carrier compatibility alias.
+pub type World = EvmWorld<crate::domain::NumericValue>;
+/// Default numeric-carrier compatibility alias.
+pub type Entry = EvmEntry<crate::domain::NumericValue>;
+
+impl EvmWorld<crate::domain::NumericValue> {
+    pub(crate) fn projection_work(&self, domain: crate::domain::Domain) -> usize {
+        self.projection_work_with(ValueAlgebra::new(domain).borrowed())
     }
 }

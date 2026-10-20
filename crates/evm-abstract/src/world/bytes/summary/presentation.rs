@@ -1,11 +1,17 @@
 //! Refresh only the presentation of an already checked, freshly built root.
 
-use super::{
-    AbstractValue, ByteArray, Domain, ExprError, ExprId, RangeError, restore_presentation, scalar,
-};
+use super::{EvmByteArray, EvmValue, ExprError, ExprId, RangeError, restore_presentation, scalar};
+use crate::domain::AlgebraRef;
+#[cfg(test)]
+use crate::domain::{AbstractValue, Domain};
+use crate::domain::{EvmNumericAlgebra, WordElement};
+#[cfg(test)]
+use crate::world::ByteArray;
+#[cfg(test)]
+use crate::world::bytes::zero;
 use crate::{
     domain::symbolic::{ByteStateId, ByteStateKind, ExprKind},
-    world::bytes::{numeric, zero},
+    world::bytes::{numeric, zero_with},
 };
 use alloy_primitives::U256;
 use std::collections::BTreeMap;
@@ -13,24 +19,24 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 mod tests;
 
-pub(super) fn refresh(
-    out: &mut ByteArray,
+pub(super) fn refresh<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    out: &mut EvmByteArray<N>,
     bare_cells: bool,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
 ) -> Result<(), RangeError> {
     refresh_with(out, bare_cells, domain, numeric::read)
 }
 
-fn refresh_with(
-    out: &mut ByteArray,
+fn refresh_with<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    out: &mut EvmByteArray<N>,
     bare_cells: bool,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
     mut read: impl FnMut(
         &ByteStateId,
         &ExprId,
-        &BTreeMap<ExprId, AbstractValue>,
-        Domain,
-    ) -> AbstractValue,
+        &BTreeMap<ExprId, EvmValue<N>>,
+        AlgebraRef<'_, D>,
+    ) -> EvmValue<N>,
 ) -> Result<(), RangeError> {
     // Constructor knowledge matters even when chunk/slice canonicalization
     // happens to leave an Input root. No other root or cache is inspected.
@@ -43,8 +49,8 @@ fn refresh_with(
     {
         // Use exactly the Reader's length lookup after the fresh operand was
         // installed, with relations disabled; do not project old summary facts.
-        let length = numeric::scalar(length, &out.operands, numeric::numeric_domain(domain));
-        Some((bindings, length.interval().unsigned_bounds()))
+        let length = numeric::scalar(length, &out.operands, numeric::numeric_domain_with(domain));
+        Some((bindings, crate::world::unsigned_bounds(&length)))
     } else {
         None
     };
@@ -69,11 +75,21 @@ fn refresh_with(
                     return None;
                 }
                 if at >= upper {
-                    Some(zero())
+                    Some(zero_with())
                 } else {
                     // Q is the actual emitted carrier, including every numeric
                     // component. Final scalar below discards all read metadata.
-                    Some(AbstractValue::from_numeric(binding.numeric.clone()))
+                    // The retained N belongs to this exact exported source.
+                    // A replaced observation starts a new import boundary;
+                    // stale cache components must not refine that new carrier.
+                    let numeric = out
+                        .operands
+                        .get(&binding.value)
+                        .map(EvmValue::numeric)
+                        .filter(|value| value.observation() == binding.numeric)
+                        .cloned()
+                        .unwrap_or_else(|| N::from_observation(&binding.numeric));
+                    Some(EvmValue::<N>::from_numeric(numeric))
                 }
             })
             .unwrap_or_else(|| read(&out.root, &ExprId::constant(at), &out.operands, domain));

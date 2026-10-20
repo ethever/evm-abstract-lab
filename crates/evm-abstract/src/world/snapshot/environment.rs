@@ -1,9 +1,10 @@
 //! Execution-visible observations obtained from one pinned RPC block header.
 
+use crate::domain::WordElement;
 use crate::{
     Address, U256,
-    domain::AbstractValue,
-    world::{AddressInput, EvmEnvironment},
+    domain::EvmValue,
+    world::{AddressInput, EvmEnvironmentValues},
 };
 use alloy_primitives::B256;
 use serde::Serialize;
@@ -37,12 +38,12 @@ pub struct SnapshotEnvironment {
 }
 
 impl SnapshotEnvironment {
-    pub(crate) fn apply(&self, environment: &mut EvmEnvironment) {
-        fn missing(value: &mut AbstractValue, observed: U256) {
+    pub(crate) fn apply<N: WordElement>(&self, environment: &mut EvmEnvironmentValues<N>) {
+        fn missing<N: WordElement>(value: &mut EvmValue<N>, observed: U256) {
             // Preserve explicitly supplied constants, intervals, provenance and
             // symbolic expressions. Only the unqualified default is filled.
-            if *value == AbstractValue::top() {
-                *value = AbstractValue::constant(observed);
+            if *value == EvmValue::<N>::top() {
+                *value = EvmValue::<N>::constant(observed);
             }
         }
         missing(&mut environment.number, self.number);

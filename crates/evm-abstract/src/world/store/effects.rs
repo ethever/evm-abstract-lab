@@ -1,9 +1,11 @@
 //! Capabilities of unknown execution, separated from known-owner callbacks.
 
-use super::{InitialIndependence, OrderedMap, Plane, Store, StoreError};
+use super::{EvmStore, InitialIndependence, OrderedMap, Plane, StoreError};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::{
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         symbolic::{ExprId, ExprLimits, SlotStateId, SourceId, StateError},
     },
     world::Code,
@@ -11,7 +13,7 @@ use crate::{
 use alloy_primitives::{Address, U256};
 use std::collections::BTreeSet;
 
-impl Plane {
+impl<N: WordElement> Plane<N> {
     /// Replace only unprotected current storage. The caller owns work admission
     /// and whole-Store validation; this helper stages every plane update.
     pub(super) fn havoc_except_checked(
@@ -64,7 +66,7 @@ impl Plane {
             failure: None,
             slots: OrderedMap::new(),
             defaults: OrderedMap::new(),
-            global_default: AbstractValue::top(),
+            global_default: EvmValue::<N>::top(),
             initial_independence: InitialIndependence::new(true),
         };
         for address in protected {
@@ -100,19 +102,20 @@ impl Plane {
     }
 }
 
-impl Store {
+impl<N: WordElement> EvmStore<N> {
     /// Unknown-world effects under the selected transaction lifecycle rules.
     /// Every supported fork keeps SELFDESTRUCT code visible until finalization.
-    pub fn apply_unknown_effects(
+    pub fn apply_unknown_effects_with<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         protected: &BTreeSet<Address>,
         delegated_owner: Option<Address>,
         is_static: bool,
         fork: crate::Fork,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
         match fork {
             crate::Fork::Cancun | crate::Fork::Prague | crate::Fork::Osaka => {
-                self.unknown_effects(protected, delegated_owner, is_static, Domain::default())
+                self.unknown_effects_with(protected, delegated_owner, is_static, domain)
             }
         }
     }
@@ -129,12 +132,12 @@ impl Store {
     /// delegated unknown execution additionally writes its current owner.
     /// Static execution preserves values but can touch zero-value recipients.
     /// Errors leave the store unchanged.
-    pub(crate) fn unknown_effects(
+    pub(crate) fn unknown_effects_with<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         protected: &BTreeSet<Address>,
         writable_owner: Option<Address>,
         is_static: bool,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
         if is_static {
             // STATICCALL (and zero-value CALL under a static parent) still
@@ -163,7 +166,7 @@ impl Store {
         out.persistent.havoc_except_checked(&stable, limits)?;
         out.transient.havoc_except_checked(&stable, limits)?;
         out.balances.clear();
-        out.balance_default = crate::domain::AbstractValue::top();
+        out.balance_default = crate::domain::EvmValue::<N>::top();
         let addresses = self.addresses();
         out.codes = OrderedMap::new();
         out.nonces = OrderedMap::new();
@@ -188,7 +191,7 @@ impl Store {
             out.havoc_storage_owner(owner);
             // CREATE executes with this owner's nonce, even in a delegate frame.
             out.nonces
-                .insert(owner, crate::domain::AbstractValue::top());
+                .insert(owner, crate::domain::EvmValue::<N>::top());
             // All supported forks defer EIP-6780 code deletion until the actual
             // transaction end. A created owner may selfdestruct in unknown code.
             if out.created_in_transaction(owner) != Some(false) {
@@ -199,5 +202,39 @@ impl Store {
         out.check_existing(limits)?;
         *self = out;
         Ok(())
+    }
+}
+
+impl EvmStore<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub fn apply_unknown_effects(
+        &mut self,
+        protected: &BTreeSet<Address>,
+        delegated_owner: Option<Address>,
+        is_static: bool,
+        fork: crate::Fork,
+    ) -> Result<(), StoreError> {
+        self.apply_unknown_effects_with(
+            protected,
+            delegated_owner,
+            is_static,
+            fork,
+            crate::domain::ValueAlgebra::new(crate::domain::Domain::default()).borrowed(),
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn unknown_effects(
+        &mut self,
+        protected: &BTreeSet<Address>,
+        writable_owner: Option<Address>,
+        is_static: bool,
+        domain: crate::domain::Domain,
+    ) -> Result<(), StoreError> {
+        self.unknown_effects_with(
+            protected,
+            writable_owner,
+            is_static,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
     }
 }

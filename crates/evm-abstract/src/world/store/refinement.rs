@@ -1,11 +1,10 @@
 //! Conditional numeric projection keeps immutable account roots and RPC facts.
 
-use super::{Store, StoreError};
+use super::{EvmStore, StoreError};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::{
-    domain::{
-        Domain,
-        symbolic::{ExprId, ExprLimits},
-    },
+    domain::symbolic::{ExprId, ExprLimits},
     world::{
         GuardRefinementError,
         bytes::refinement::{Node, guards, refresh_scalar, retain_truth},
@@ -13,7 +12,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-impl Store {
+impl<N: WordElement> EvmStore<N> {
     /// Collect distinct ITE selectors from both storage planes, account scalars
     /// and log data under the existing limits, without changing this wrapper or
     /// initial observations. Proofs apply to this same frozen state.
@@ -45,9 +44,9 @@ impl Store {
     /// Project caller-proved zero/nonzero selectors through both planes and log
     /// data. No proof result becomes an initial/RPC observation. False means
     /// infeasible; any error leaves the transaction checkpoint unchanged.
-    pub fn refine_guards<E>(
+    pub fn refine_guards_with<E, D: EvmNumericAlgebra<Element = N>>(
         &mut self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         limits: ExprLimits,
         proof: &mut impl FnMut(&ExprId) -> Result<Option<bool>, E>,
     ) -> Result<bool, GuardRefinementError<E>> {
@@ -69,9 +68,9 @@ impl Store {
                 }
             }
             for (address, key) in plane.slots.keys().copied().collect::<Vec<_>>() {
-                let value = plane.read_checked(
+                let value = plane.read_checked_with(
                     address,
-                    &crate::domain::AbstractValue::constant(key),
+                    &crate::domain::EvmValue::<N>::constant(key),
                     domain,
                 )?;
                 plane.slots.insert((address, key), value);
@@ -87,14 +86,33 @@ impl Store {
             for topic in &mut log.topics {
                 refresh_scalar(topic, &out.persistent.operands, domain);
             }
-            if !log.data.refine_guards(domain, limits, &mut |condition| {
-                Ok::<_, E>(truths.get(condition).copied().flatten())
-            })? {
+            if !log
+                .data
+                .refine_guards_with(domain, limits, &mut |condition| {
+                    Ok::<_, E>(truths.get(condition).copied().flatten())
+                })?
+            {
                 return Ok(false);
             }
         }
         out.check_existing(limits)?;
         *self = out;
         Ok(true)
+    }
+}
+
+impl EvmStore<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub fn refine_guards<E>(
+        &mut self,
+        domain: crate::domain::Domain,
+        limits: ExprLimits,
+        proof: &mut impl FnMut(&ExprId) -> Result<Option<bool>, E>,
+    ) -> Result<bool, GuardRefinementError<E>> {
+        self.refine_guards_with(
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+            limits,
+            proof,
+        )
     }
 }

@@ -43,34 +43,54 @@ fn memo_keeps_complete_values_negative_results_and_exact_guard_environments() {
         Facts::from([(key.clone(), source.clone())]),
         Facts::from([(key.clone(), constant(9))]),
     );
-    let context = Context::prepared(&facts, &conditional, domain, 1_000_000);
-    assert_eq!(context.value(&key, domain), None);
+    let context = Context::prepared(
+        &facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(&domain),
+        1_000_000,
+    );
     assert_eq!(
-        context
-            .memo
-            .borrow()
-            .get(&key, domain, context.demand.as_deref().unwrap(), &|_| true),
+        context.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+        None
+    );
+    assert_eq!(
+        context.memo.borrow().get_with(
+            &key,
+            crate::domain::ValueAlgebra::new(&domain),
+            context.demand.as_deref().unwrap(),
+            &|_| true
+        ),
         Some(None)
     );
     let yes = context.branch(&guard, true);
-    let first = yes.value(&key, domain).unwrap();
+    let first = yes
+        .value(&key, crate::domain::ValueAlgebra::new(&domain))
+        .unwrap();
     assert_eq!(first, source);
     assert!(first.same_identity(&source));
     let before = yes.demand.as_ref().unwrap().used();
-    let second = yes.value(&key, domain).unwrap();
+    let second = yes
+        .value(&key, crate::domain::ValueAlgebra::new(&domain))
+        .unwrap();
     assert_eq!(second, first);
     assert!(second.same_identity(&source));
     assert!(yes.demand.as_ref().unwrap().used() - before < 64);
     assert!(Rc::ptr_eq(&yes.memo, &context.branch(&guard, true).memo));
     assert_eq!(
-        context.branch(&guard, false).value(&key, domain),
+        context
+            .branch(&guard, false)
+            .value(&key, crate::domain::ValueAlgebra::new(&domain)),
         Some(constant(9))
     );
     assert_eq!(
-        yes.branch(&guard, false).value(&key, domain),
+        yes.branch(&guard, false)
+            .value(&key, crate::domain::ValueAlgebra::new(&domain)),
         Some(constant(9))
     );
-    assert_eq!(context.value(&key, domain), None);
+    assert_eq!(
+        context.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+        None
+    );
     context.check().unwrap();
 }
 
@@ -87,19 +107,35 @@ fn intersections_and_metadata_joins_are_reused_without_changing_the_meet() {
         .with_origin(Origin::Storage);
     let facts = Facts::from([(key.clone(), left)]);
     let conditional = branches(&guard, Facts::from([(key.clone(), right)]), Facts::new());
-    let selected = Context::prepared(&facts, &conditional, domain, 1_000_000).branch(&guard, true);
-    let expected = Context::new(&facts, Some(&conditional))
-        .branch(&guard, true)
-        .resolve(&key, domain)
-        .unwrap();
+    let selected = Context::prepared(
+        &facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(&domain),
+        1_000_000,
+    )
+    .branch(&guard, true);
+    let expected = Context::new(
+        &facts,
+        Some(&conditional),
+        crate::domain::ValueAlgebra::new(&domain),
+    )
+    .branch(&guard, true)
+    .resolve(&key, crate::domain::ValueAlgebra::new(&domain))
+    .unwrap();
     let before = selected.demand.as_ref().unwrap().used();
-    assert_eq!(selected.value(&key, domain), Some(expected.clone()));
+    assert_eq!(
+        selected.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+        Some(expected.clone())
+    );
     let after = selected.demand.as_ref().unwrap().used();
     assert_eq!(
         expected.interval().unsigned_bounds(),
         (U256::from(5), U256::from(20))
     );
-    assert_eq!(selected.value(&key, domain), Some(expected));
+    assert_eq!(
+        selected.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+        Some(expected)
+    );
     assert!(selected.demand.as_ref().unwrap().used() - after < after - before);
     selected.check().unwrap();
 }
@@ -116,11 +152,22 @@ fn inactive_contradictions_and_a_missing_key_are_not_impossibility_or_zero() {
         Facts::new(),
         Facts::from([(key.clone(), constant(9))]),
     );
-    let context = Context::prepared(&facts, &conditional, domain, 1_000_000);
+    let context = Context::prepared(
+        &facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(&domain),
+        1_000_000,
+    );
     for nonzero in [true, false] {
         let selected = context.branch(&guard, nonzero);
-        assert_eq!(selected.value(&key, domain), Some(constant(7)));
-        assert_eq!(selected.value(&missing, domain), None);
+        assert_eq!(
+            selected.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+            Some(constant(7))
+        );
+        assert_eq!(
+            selected.value(&missing, crate::domain::ValueAlgebra::new(&domain)),
+            None
+        );
         selected.check().unwrap();
     }
 }
@@ -131,9 +178,21 @@ fn guard_truth_intersection_is_cached_and_preserves_the_old_fallback() {
     let guard = ExprId::fresh().unwrap();
     let facts = Facts::from([(guard.clone(), constant(0))]);
     let conditional = ConditionalFacts::default();
-    let context = Context::prepared(&facts, &conditional, domain, 1_000_000).branch(&guard, true);
-    assert_eq!(context.value(&guard, domain), Some(constant(0)));
-    assert_eq!(context.value(&guard, domain), Some(constant(0)));
+    let context = Context::prepared(
+        &facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(&domain),
+        1_000_000,
+    )
+    .branch(&guard, true);
+    assert_eq!(
+        context.value(&guard, crate::domain::ValueAlgebra::new(&domain)),
+        Some(constant(0))
+    );
+    assert_eq!(
+        context.value(&guard, crate::domain::ValueAlgebra::new(&domain)),
+        Some(constant(0))
+    );
     context.check().unwrap();
 }
 
@@ -144,29 +203,51 @@ fn cache_identity_includes_all_domain_limits_and_the_immutable_fact_owner() {
     let guard = ExprId::fresh().unwrap();
     let facts = Facts::from([(key.clone(), constant(7))]);
     let conditional = ConditionalFacts::default();
-    let context = Context::prepared(&facts, &conditional, domain, 1_000_000);
-    assert_eq!(context.value(&key, domain), Some(constant(7)));
+    let context = Context::prepared(
+        &facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(&domain),
+        1_000_000,
+    );
+    assert_eq!(
+        context.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+        Some(constant(7))
+    );
     let numeric = Domain::from_spec(domain.spec().with_relations(RelationLimits {
         enabled: false,
         ..domain.spec().relations()
     }));
-    assert_eq!(context.value(&key, numeric), Some(constant(7)));
+    assert_eq!(
+        context.value(
+            &key,
+            crate::domain::ValueAlgebra::new(&domain).without_relations()
+        ),
+        Some(constant(7))
+    );
     let changed = Domain::from_spec(domain.spec().with_relations(RelationLimits {
         max_nodes: domain.spec().relations().max_nodes + 1,
         ..domain.spec().relations()
     }));
-    assert_eq!(context.value(&key, changed), None);
+    assert_eq!(
+        context.value(&key, crate::domain::ValueAlgebra::new(&changed)),
+        None
+    );
     assert!(context.cache_refused());
     context.check().unwrap();
     let other = Facts::from([(key.clone(), constant(9))]);
     assert_eq!(
-        Context::new(&other, None).value(&key, domain),
+        Context::new(&other, None, crate::domain::ValueAlgebra::new(&domain))
+            .value(&key, crate::domain::ValueAlgebra::new(&domain)),
         Some(constant(9))
     );
     // Unprepared callers resolve each policy with the original complete meet.
-    let fallback = Context::new(&facts, None).branch(&guard, true);
+    let fallback =
+        Context::new(&facts, None, crate::domain::ValueAlgebra::new(&domain)).branch(&guard, true);
     for policy in [domain, numeric, changed] {
-        assert_eq!(fallback.value(&key, policy), fallback.resolve(&key, policy));
+        assert_eq!(
+            fallback.value(&key, crate::domain::ValueAlgebra::new(&policy)),
+            fallback.resolve(&key, crate::domain::ValueAlgebra::new(&policy))
+        );
     }
 }
 
@@ -177,10 +258,18 @@ fn prepared_cache_keeps_every_source_fact_beyond_the_word_width() {
         .map(|i| (ExprId::fresh().unwrap(), constant(i)))
         .collect();
     let conditional = ConditionalFacts::default();
-    let context = Context::prepared(&facts, &conditional, domain, 1_000_000);
+    let context = Context::prepared(
+        &facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(&domain),
+        1_000_000,
+    );
     for _ in 0..2 {
         for (key, value) in &facts {
-            assert_eq!(context.value(key, domain), Some(value.clone()));
+            assert_eq!(
+                context.value(key, crate::domain::ValueAlgebra::new(&domain)),
+                Some(value.clone())
+            );
         }
     }
     context.check().unwrap();
@@ -192,19 +281,34 @@ fn metadata_capacity_refuses_but_full_retention_keeps_complete_temporary_context
     let key = ExprId::fresh().unwrap();
     let facts = Facts::from([(key.clone(), constant(7))]);
     let conditional = ConditionalFacts::default();
-    let short = Context::prepared(&facts, &conditional, domain, 1);
-    assert_eq!(short.value(&key, domain), None);
+    let short = Context::prepared(
+        &facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(&domain),
+        1,
+    );
+    assert_eq!(
+        short.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+        None
+    );
     assert!(short.cache_refused());
     assert_eq!(short.demand_usage(), Some((1, 0)));
     short.check().unwrap();
     assert_eq!(
-        short
-            .memo
-            .borrow()
-            .get(&key, domain, short.demand.as_deref().unwrap(), &|_| true),
+        short.memo.borrow().get_with(
+            &key,
+            crate::domain::ValueAlgebra::new(&domain),
+            short.demand.as_deref().unwrap(),
+            &|_| true
+        ),
         None
     );
-    let root = Context::prepared(&facts, &conditional, domain, 1_000_000);
+    let root = Context::prepared(
+        &facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(&domain),
+        1_000_000,
+    );
     let mut context = root.clone();
     for _ in 1..memo::CONTEXTS {
         context = context.branch(&ExprId::fresh().unwrap(), true);
@@ -218,7 +322,10 @@ fn metadata_capacity_refuses_but_full_retention_keeps_complete_temporary_context
         assert!(parent.memo.borrow().branches.is_empty());
         assert!(!context.cache_refused());
         assert_eq!(context.demand_usage().unwrap().0, memo::CONTEXTS);
-        assert_eq!(context.value(&key, domain), Some(constant(7)));
+        assert_eq!(
+            context.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+            Some(constant(7))
+        );
         context.check().unwrap();
     }
     assert!(!root.cache_refused());
@@ -231,19 +338,32 @@ fn cancellation_is_observed_even_on_a_warm_memo_hit() {
     let key = ExprId::fresh().unwrap();
     let facts = Facts::from([(key.clone(), constant(7))]);
     let conditional = ConditionalFacts::default();
-    let context = Context::prepared(&facts, &conditional, domain, 1_000_000);
-    assert_eq!(context.value(&key, domain), Some(constant(7)));
+    let context = Context::prepared(
+        &facts,
+        &conditional,
+        crate::domain::ValueAlgebra::new(&domain),
+        1_000_000,
+    );
+    assert_eq!(
+        context.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+        Some(constant(7))
+    );
     let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
     analysis_control::with_cancellation(&cancellation, || {
-        assert_eq!(context.value(&key, domain), None);
+        assert_eq!(
+            context.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+            None
+        );
         assert_eq!(context.check(), Err(ExprError::Cancelled));
     });
     assert_eq!(
-        context
-            .memo
-            .borrow()
-            .get(&key, domain, context.demand.as_deref().unwrap(), &|_| true),
+        context.memo.borrow().get_with(
+            &key,
+            crate::domain::ValueAlgebra::new(&domain),
+            context.demand.as_deref().unwrap(),
+            &|_| true
+        ),
         Some(Some(constant(7)))
     );
 }
@@ -261,7 +381,8 @@ fn guarded_word_preparation_bounds_metadata_separately_from_actual_payments() {
         Facts::from([(ExprId::fresh().unwrap(), constant(7))]),
         Facts::from([(ExprId::fresh().unwrap(), constant(7))]),
     );
-    let old = 72usize * 32 * (1 + conditional.lookup_work(domain));
+    let old =
+        72usize * 32 * (1 + conditional.lookup_work(crate::domain::ValueAlgebra::new(&domain)));
     let fact_work = facts.iter().fold(0usize, |work, (key, value)| {
         work.saturating_add(key.work_size())
             .saturating_add(value.work_size())
@@ -272,7 +393,7 @@ fn guarded_word_preparation_bounds_metadata_separately_from_actual_payments() {
         fact_work,
         facts.len(),
         &conditional,
-        domain,
+        crate::domain::ValueAlgebra::new(&domain),
     );
     // Preparation is the unchanged metadata capacity receipt; payer tests cover
     // actual metadata/numeric actions and atomic payment refusal.
@@ -289,16 +410,27 @@ fn warm_key_lookups_do_not_rescan_the_frozen_source_map() {
             .map(|i| (ExprId::fresh().unwrap(), constant(i)))
             .collect();
         let conditional = ConditionalFacts::default();
-        let context = Context::prepared(&facts, &conditional, domain, 10_000_000);
+        let context = Context::prepared(
+            &facts,
+            &conditional,
+            crate::domain::ValueAlgebra::new(&domain),
+            10_000_000,
+        );
         let demand = context.demand.as_deref().unwrap();
         assert_eq!(demand.source_key_visits(), count);
         for (key, expected) in &facts {
-            assert_eq!(context.value(key, domain), Some(expected.clone()));
+            assert_eq!(
+                context.value(key, crate::domain::ValueAlgebra::new(&domain)),
+                Some(expected.clone())
+            );
         }
         let before = demand.source_key_visits();
         for _ in 0..2 {
             for (key, expected) in &facts {
-                assert_eq!(context.value(key, domain), Some(expected.clone()));
+                assert_eq!(
+                    context.value(key, crate::domain::ValueAlgebra::new(&domain)),
+                    Some(expected.clone())
+                );
             }
         }
         assert_eq!(demand.source_key_visits(), before);

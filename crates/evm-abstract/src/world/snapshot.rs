@@ -1,10 +1,11 @@
 //! Snapshot identity is independent of caller-supplied source descriptions.
 
+use crate::domain::WordElement;
 mod environment;
 pub use environment::SnapshotEnvironment;
 
-use super::World;
-use crate::{Fork, domain::AbstractValue};
+use super::EvmWorld;
+use crate::{Fork, domain::EvmValue};
 use alloy_primitives::{B256, Keccak256, U256, keccak256};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -43,7 +44,7 @@ pub enum SnapshotIdentity {
     },
 }
 
-impl World {
+impl<N: WordElement> EvmWorld<N> {
     /// Source identity survives acquisition of additional cells in this snapshot.
     pub(crate) fn storage_source_token(&self) -> crate::domain::symbolic::ExprId {
         if matches!(self.identity, SnapshotIdentity::Offline { .. }) {
@@ -62,13 +63,16 @@ impl World {
         self.snapshot_environment.as_ref()
     }
 
-    pub(crate) fn apply_snapshot_environment(&self, environment: &mut super::EvmEnvironment) {
+    pub(crate) fn apply_snapshot_environment(
+        &self,
+        environment: &mut super::EvmEnvironmentValues<N>,
+    ) {
         if let Some(snapshot) = &self.snapshot_environment {
             snapshot.apply(environment);
             if environment.chain_id.is_none()
                 && let SnapshotIdentity::Chain { chain_id, .. } = self.identity()
             {
-                environment.chain_id = Some(AbstractValue::constant(*chain_id));
+                environment.chain_id = Some(EvmValue::<N>::constant(*chain_id));
             }
         }
     }
@@ -210,7 +214,10 @@ fn append_len(hash: &mut Keccak256, length: usize) -> Result<(), FingerprintErro
 
 /// Scalars have a length prefix in the historical encoding. Two bounded passes
 /// preserve those bytes without constructing a scalar or whole-world Vec.
-fn append_value(hash: &mut Keccak256, value: &AbstractValue) -> Result<(), FingerprintError> {
+fn append_value<N: WordElement>(
+    hash: &mut Keccak256,
+    value: &EvmValue<N>,
+) -> Result<(), FingerprintError> {
     let mut count = FingerprintWriter::counting();
     encode(&mut count, value)?;
     append(hash, &count.length.to_be_bytes())?;

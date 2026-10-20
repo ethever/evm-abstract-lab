@@ -141,10 +141,10 @@ fn constant_runs_use_small_roots_and_keep_variable_length_padding() {
             .map(|(index, value)| crate::domain::symbolic::StateBinding {
                 index: U256::from(*index),
                 value: ExprId::constant(value.singleton().unwrap()),
-                numeric: value.numeric().clone(),
+                numeric: value.numeric().clone().into(),
             })
             .collect(),
-        limits(domain).into(),
+        limits(crate::domain::ValueAlgebra::new(&domain)).into(),
     )
     .unwrap();
     input.bytes = cells;
@@ -198,7 +198,7 @@ fn mixed_byte_constraints_use_independent_leaves_and_keep_native_numeric_facts()
                     .singleton()
                     .map(ExprId::constant)
                     .unwrap_or_else(|| ExprId::fresh().unwrap()),
-                numeric: value.numeric().clone(),
+                numeric: value.numeric().clone().into(),
             })
             .collect(),
         crate::domain::symbolic::StateLimits {

@@ -40,7 +40,7 @@ fn literal_and_complete_finite_writes_keep_exact_bytes_and_untouched_suffixes() 
                     .write_byte(at.clone(), key.clone(), StateLimits::default())
                     .unwrap()
             };
-            let mut reader = Reader::new(&facts, domain);
+            let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
             for index in 0..80 {
                 let expected = if word && (8..40).contains(&index) {
                     domain.apply(opcode::BYTE, &[constant(index - 8), value.clone()])
@@ -82,7 +82,7 @@ fn open_word_suffixes_remain_exact_through_reader_byte_observations() {
     let byte = previous
         .write_byte(at.clone(), key, StateLimits::default())
         .unwrap();
-    let mut reader = Reader::new(&facts, domain);
+    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
     for (state, index, expected) in [(&word, 38, 0x11), (&word, 39, 0x22), (&byte, 8, 0x22)] {
         let actual = reader.read(state, &ExprId::constant(U256::from(index)));
         assert_eq!(actual.numeric(), constant(expected).numeric());
@@ -130,7 +130,11 @@ fn ordinary_scalar_byte_operations_keep_the_generic_transfer() {
     ] {
         let expression = ExprId::operation(op, &args, ExprLimits::default()).unwrap();
         assert_eq!(
-            scalar(&expression, &facts, domain),
+            scalar(
+                &expression,
+                &facts,
+                crate::domain::ValueAlgebra::new(&domain)
+            ),
             domain.apply(op, &numeric)
         );
     }
@@ -154,7 +158,10 @@ fn original_union(expression: &ExprId, facts: &Facts, domain: Domain) -> Abstrac
                 out,
                 domain.apply(
                     opcode::BYTE,
-                    &[constant(index), scalar(expression, facts, domain)],
+                    &[
+                        constant(index),
+                        scalar(expression, facts, crate::domain::ValueAlgebra::new(&domain)),
+                    ],
                 ),
                 domain,
             ))
@@ -162,8 +169,8 @@ fn original_union(expression: &ExprId, facts: &Facts, domain: Domain) -> Abstrac
         .unwrap()
 }
 
-fn uncached(facts: &Facts, domain: Domain) -> Reader<'_> {
-    let mut reader = Reader::new(facts, domain);
+fn uncached<'a>(facts: &'a Facts, domain: &'a Domain) -> Reader<'a> {
+    let mut reader = Reader::new(facts, crate::domain::ValueAlgebra::new(domain));
     // A full retention budget makes every cache miss use the ordinary evaluator.
     reader.retained_work = WORD_CACHE_WORK;
     reader
@@ -184,7 +191,7 @@ fn ambiguous_word_reads_reuse_the_complete_value_and_sources() {
     bounded.set_origin(Origin::Calldata);
     let facts = BTreeMap::from([(value.clone(), bounded)]);
     let state = word(&ByteStateId::zero(), &at, &value);
-    let mut reader = Reader::new(&facts, domain);
+    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
     let expected = domain.join(&zero(), &original_union(&value, &facts, domain));
     for index in 0..256 {
         assert_eq!(
@@ -203,7 +210,7 @@ fn ambiguous_word_reads_reuse_the_complete_value_and_sources() {
     let other = word(&previous, &at, &value);
     assert_eq!(
         reader.read(&other, &ExprId::constant(U256::ZERO)),
-        uncached(&facts, domain).read(&other, &ExprId::constant(U256::ZERO))
+        uncached(&facts, &domain).read(&other, &ExprId::constant(U256::ZERO))
     );
 }
 
@@ -214,9 +221,11 @@ fn later_facts_and_another_domain_get_independent_evaluations() {
     let at = expression();
     let state = word(&ByteStateId::zero(), &at, &value);
     let mut facts = BTreeMap::from([(value.clone(), constant(0x1122))]);
-    let before = Reader::new(&facts, domain).read(&state, &ExprId::constant(U256::ZERO));
+    let before = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain))
+        .read(&state, &ExprId::constant(U256::ZERO));
     facts.insert(value.clone(), constant(0x3344));
-    let after = Reader::new(&facts, domain).read(&state, &ExprId::constant(U256::ZERO));
+    let after = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain))
+        .read(&state, &ExprId::constant(U256::ZERO));
     assert_ne!(before, after);
     assert_eq!(
         after,
@@ -224,7 +233,8 @@ fn later_facts_and_another_domain_get_independent_evaluations() {
     );
     facts.insert(at.clone(), constant(64));
     assert_eq!(
-        Reader::new(&facts, domain).read(&state, &ExprId::constant(U256::ZERO)),
+        Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain))
+            .read(&state, &ExprId::constant(U256::ZERO)),
         zero()
     );
 
@@ -234,8 +244,10 @@ fn later_facts_and_another_domain_get_independent_evaluations() {
         AbstractValue::unsigned_range(U256::from(0x100), U256::from(0x1ff)).unwrap(),
     );
     let constants = Domain::new(std::num::NonZeroUsize::new(8).unwrap());
-    let product = Reader::new(&facts, domain).read(&state, &ExprId::constant(U256::ZERO));
-    let finite = Reader::new(&facts, constants).read(&state, &ExprId::constant(U256::ZERO));
+    let product = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain))
+        .read(&state, &ExprId::constant(U256::ZERO));
+    let finite = Reader::new(&facts, crate::domain::ValueAlgebra::new(&constants))
+        .read(&state, &ExprId::constant(U256::ZERO));
     assert_ne!(product.numeric(), finite.numeric());
     assert_eq!(
         finite,
@@ -270,8 +282,8 @@ fn copies_slices_aliases_and_overflow_keep_the_original_read_result() {
         )
         .unwrap();
     let near_max = word(&ByteStateId::zero(), &ExprId::constant(U256::MAX), &value);
-    let mut reader = Reader::new(&facts, domain);
-    let mut reference = uncached(&facts, domain);
+    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
+    let mut reference = uncached(&facts, &domain);
     for state in [&state, &copied, &overflowing, &near_max] {
         for index in [
             ExprId::constant(U256::ZERO),
@@ -309,10 +321,10 @@ fn finite_index_and_offset_alternatives_still_select_their_own_byte() {
         (index.clone(), domain.join(&constant(30), &constant(63))),
     ]);
     let state = word(&ByteStateId::zero(), &at, &value);
-    let mut reader = Reader::new(&facts, domain);
+    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
     assert_eq!(
         reader.read(&state, &index),
-        uncached(&facts, domain).read(&state, &index)
+        uncached(&facts, &domain).read(&state, &index)
     );
     assert_eq!(
         reader.read(&state, &index).constants(),
@@ -336,7 +348,7 @@ fn cache_capacity_and_work_limits_fall_back_without_losing_values() {
         .enumerate()
         .map(|(index, value)| (value.clone(), constant(index + 1)))
         .collect();
-    let mut reader = Reader::new(&facts, domain);
+    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
     for value in &values {
         assert_eq!(
             reader.word_byte_union(value),
@@ -364,7 +376,7 @@ fn cache_capacity_and_work_limits_fall_back_without_losing_values() {
         large = ExprId::operation(opcode::ADD, &[large.clone(), large], limits).unwrap();
     }
     let large_facts = BTreeMap::from([(large.clone(), constant(0xaa))]);
-    let mut reader = Reader::new(&large_facts, domain);
+    let mut reader = Reader::new(&large_facts, crate::domain::ValueAlgebra::new(&domain));
     assert_eq!(
         reader.word_byte_union(&large),
         original_union(&large, &large_facts, domain)
@@ -398,7 +410,7 @@ fn real_summary_projection_matches_all_original_byte_bounds() {
     let input = projection_input();
     let summary = input.summary_projection(domain).unwrap();
     let restored = summary.instantiate(domain).unwrap();
-    let mut reference = uncached(&input.operands, domain);
+    let mut reference = uncached(&input.operands, &domain);
     for index in 0..256 {
         assert_eq!(
             restored.byte_at(index, domain).numeric(),
@@ -470,7 +482,14 @@ mod top_word_byte_union {
                     out,
                     domain.apply(
                         opcode::BYTE,
-                        &[constant(index), scalar_in(expression, context, domain)],
+                        &[
+                            constant(index),
+                            scalar_in(
+                                expression,
+                                context,
+                                crate::domain::ValueAlgebra::new(&domain),
+                            ),
+                        ],
                     ),
                     domain,
                 ))
@@ -520,7 +539,7 @@ mod top_word_byte_union {
                 for value in &values {
                     let key = value.expression().cloned().unwrap_or_else(expression);
                     let facts = Facts::from([(key.clone(), value.clone())]);
-                    let mut reader = Reader::new(&facts, domain);
+                    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
                     let scalar = scalar_in(&key, &reader.context, reader.domain);
                     assert_eq!(&scalar, value);
                     assert!(scalar.numeric().is_top());
@@ -556,7 +575,7 @@ mod top_word_byte_union {
                     assert_eq!(reader.retained_work, key.work_size() + actual.work_size());
                     counted_union(&mut reader, &key, &expected, (0, 0));
 
-                    let mut refused = uncached(&facts, domain);
+                    let mut refused = uncached(&facts, &domain);
                     counted_union(&mut refused, &key, &expected, (1, 0));
                     counted_union(&mut refused, &key, &expected, (1, 0));
                     assert!(refused.word_bytes.is_empty());
@@ -601,7 +620,7 @@ mod top_word_byte_union {
                     let key = expression();
                     let facts = Facts::from([(key.clone(), value.clone())]);
                     let expected = original_union(&key, &facts, domain);
-                    let mut reader = Reader::new(&facts, domain);
+                    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
                     let calls = if matches!(index, 0 | 2) {
                         (1, 0)
                     } else {
@@ -635,11 +654,11 @@ mod top_word_byte_union {
                         ..Default::default()
                     }),
                 );
-                let mut reader = Reader::new(&facts, domain);
+                let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
                 assert!(!reader.domain.spec().relations().enabled);
                 // Private assignment exercises the guard if Reader policy ever
                 // changes; no public relation-enabled constructor is added.
-                reader.domain = domain;
+                reader.domain = crate::domain::ValueAlgebra::new(&domain);
                 let expected = original_in_context(&key, &reader.context, domain);
                 if enabled {
                     let one = domain.apply(opcode::BYTE, &[constant(0), input.clone()]);
@@ -681,7 +700,11 @@ mod top_word_byte_union {
             ExprLimits::default(),
         )
         .unwrap();
-        let context = Context::new(&common, Some(&conditional));
+        let context = Context::new(
+            &common,
+            Some(&conditional),
+            crate::domain::ValueAlgebra::new(&domain),
+        );
         let mut results = Vec::new();
         for selected in [
             context.clone(),
@@ -689,7 +712,8 @@ mod top_word_byte_union {
             context.branch(&guard, false),
         ] {
             let expected = original_in_context(&key, &selected, domain);
-            let mut reader = Reader::with_context(selected, domain);
+            let mut reader =
+                Reader::with_context(selected, crate::domain::ValueAlgebra::new(&domain));
             results.push(counted_union(&mut reader, &key, &expected, (1, 0)));
             counted_union(&mut reader, &key, &expected, (0, 0));
         }
@@ -698,9 +722,14 @@ mod top_word_byte_union {
         assert_ne!(results[1], results[2]);
         for nonzero in [false, true] {
             let selected = context.branch(&guard, true).branch(&key, nonzero);
-            assert!(!scalar_in(&key, &selected, domain).numeric().is_top());
+            assert!(
+                !scalar_in(&key, &selected, crate::domain::ValueAlgebra::new(&domain))
+                    .numeric()
+                    .is_top()
+            );
             let expected = original_in_context(&key, &selected, domain);
-            let mut reader = Reader::with_context(selected, domain);
+            let mut reader =
+                Reader::with_context(selected, crate::domain::ValueAlgebra::new(&domain));
             // Selected nonzero facts also narrow the interval to start at one;
             // that interval does not contain the complete zero-based bit cube.
             counted_union(&mut reader, &key, &expected, (32, 31));
@@ -714,7 +743,7 @@ mod top_word_byte_union {
         let key = expression();
         let facts = Facts::from([(key.clone(), AbstractValue::top())]);
         let expected = original_union(&key, &facts, domain);
-        let mut reader = Reader::new(&facts, domain);
+        let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
         counted_union(&mut reader, &key, &expected, (1, 0));
         let cache = reader.word_bytes.clone();
         let retained = reader.retained_work;

@@ -145,10 +145,16 @@ fn normalized_zero_and_exact_writes_keep_singleton_sources_through_widening() {
     for value in [&zero, &exact] {
         let expected = value.byte_at(0, domain).singleton().unwrap();
         assert_sources(&value.byte_at(0, domain), expected, &[Origin::Calldata]);
-        let form = value.widening_form(domain, limits(domain)).unwrap();
+        let form = value
+            .widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain)))
+            .unwrap();
         assert_sources(&form.byte_at(0, domain), expected, &[Origin::Calldata]);
         assert_eq!(form.state_root(), value.state_root());
-        assert_eq!(form, form.widening_form(domain, limits(domain)).unwrap());
+        assert_eq!(
+            form,
+            form.widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain)))
+                .unwrap()
+        );
     }
 }
 
@@ -177,7 +183,9 @@ fn singleton_inputs_never_gain_a_shared_identity_and_keep_source_records() {
     );
     for value in [
         &memory,
-        &memory.widening_form(domain, limits(domain)).unwrap(),
+        &memory
+            .widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain)))
+            .unwrap(),
     ] {
         for original in [&a, &b] {
             assert_eq!(
@@ -219,14 +227,19 @@ fn singleton_fresh_history_survives_collision_widening_and_rename() {
         )
         .unwrap();
     let snapshot = memory.clone();
-    let mut form = memory.widening_form(domain, limits(domain)).unwrap();
+    let mut form = memory
+        .widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain)))
+        .unwrap();
     assert!(
         form.fresh_leaves()
             .is_superset(&BTreeSet::from([a.clone(), b.clone()]))
     );
     let next = ExprId::fresh().unwrap();
-    form.rename_fresh(&BTreeMap::from([(a.clone(), next.clone())]), limits(domain))
-        .unwrap();
+    form.rename_fresh(
+        &BTreeMap::from([(a.clone(), next.clone())]),
+        limits(crate::domain::ValueAlgebra::new(&domain)),
+    )
+    .unwrap();
     assert!(!form.fresh_leaves().contains(&a));
     assert!(form.fresh_leaves().contains(&next));
     assert!(form.fresh_leaves().contains(&b));
@@ -277,12 +290,14 @@ fn rename_collision_unions_origins_and_refreshes_all_constant_components() {
                 (a, ExprId::constant(U256::from(7))),
                 (b, ExprId::constant(U256::from(7))),
             ]),
-            limits(domain),
+            limits(crate::domain::ValueAlgebra::new(&domain)),
         )
         .unwrap();
     for current in [
         &memory,
-        &memory.widening_form(domain, limits(domain)).unwrap(),
+        &memory
+            .widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain)))
+            .unwrap(),
     ] {
         let fact = current
             .operands
@@ -321,7 +336,9 @@ fn repeated_singleton_source_overwrite_drops_obsolete_fresh_records_in_widening(
                 domain,
             )
             .unwrap();
-        memory = memory.widening_form(domain, limits(domain)).unwrap();
+        memory = memory
+            .widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain)))
+            .unwrap();
         assert_eq!(memory.fresh_leaves(), BTreeSet::from([source.clone()]));
         assert!(memory.work_size() < 500);
         assert_sources(
@@ -341,7 +358,12 @@ fn repeated_singleton_source_overwrite_drops_obsolete_fresh_records_in_widening(
                 domain,
             )
             .unwrap();
-        assert_eq!(memory.widening_form(domain, limits(domain)).unwrap(), saved);
+        assert_eq!(
+            memory
+                .widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain)))
+                .unwrap(),
+            saved
+        );
         previous = Some(source);
     }
 }

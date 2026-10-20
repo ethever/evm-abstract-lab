@@ -1,26 +1,37 @@
 //! Bounded presentation projection; the captured root and facts remain authoritative.
 
-use super::{ByteArray, COPY_FACT_LIMIT, zero};
+use super::{COPY_FACT_LIMIT, EvmByteArray, zero_with};
+use crate::domain::AlgebraRef;
+#[cfg(test)]
+use crate::domain::{AbstractValue, Domain};
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    AbstractValue, Domain,
+    EvmValue,
     provenance::MAX_ORIGINS,
     symbolic::{ByteStateKind, ExprId, ExprKind},
 };
+#[cfg(test)]
+use crate::world::ByteArray;
+#[cfg(test)]
+use crate::world::bytes::zero;
 use alloy_primitives::U256;
 use std::collections::BTreeMap;
 
-type Facts = BTreeMap<ExprId, AbstractValue>;
+type Facts<N = crate::domain::NumericValue> = BTreeMap<ExprId, EvmValue<N>>;
 
-fn bounds(value: &AbstractValue) -> (U256, U256) {
-    value
-        .singleton()
-        .map_or_else(|| value.interval().unsigned_bounds(), |n| (n, n))
+fn bounds<N: WordElement>(value: &EvmValue<N>) -> (U256, U256) {
+    crate::world::unsigned_bounds(value)
 }
 
 /// A retained expression alone is not a certificate for its cached numeric
 /// value: update_values/refine_operands can change the surrounding facts. Use
 /// an explicit current-root guarantee, or check a leaf's constant binding.
-fn certified(source: &ByteArray, index: usize, value: &AbstractValue, domain: Domain) -> bool {
+fn certified<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    source: &EvmByteArray<N>,
+    index: usize,
+    value: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
+) -> bool {
     if value
         .constants()
         .is_some_and(|set| set.len() > domain.capacity())
@@ -49,29 +60,29 @@ fn certified(source: &ByteArray, index: usize, value: &AbstractValue, domain: Do
             let Some(byte) = binding.value.as_constant() else {
                 return false;
             };
-            if binding.numeric != *AbstractValue::constant(byte).numeric() {
+            if binding.numeric != EvmValue::<N>::constant(byte).numeric().observation() {
                 return false;
             }
             byte
         }
         _ => return false,
     };
-    let constant = AbstractValue::constant(byte);
+    let constant_with = EvmValue::<N>::constant(byte);
     let expression = ExprId::constant(byte);
     // Constant-key guarantees can carry observed sources after normalization.
     // Keep their complete metadata rather than copying just a numeric byte.
     let expected = source.operands.get(&expression).map_or_else(
-        || constant.clone(),
+        || constant_with.clone(),
         |fact| {
             domain
-                .join(fact, &constant)
-                .with_numeric(constant.numeric().clone())
+                .join(fact, &constant_with)
+                .with_numeric(constant_with.numeric().clone())
         },
     );
     value == &expected
 }
 
-fn source_bounds(source: &ByteArray) -> Option<(U256, U256)> {
+fn source_bounds<N: WordElement>(source: &EvmByteArray<N>) -> Option<(U256, U256)> {
     match source.root.kind() {
         ByteStateKind::Exact(bytes) => {
             let length = U256::from(bytes.len());
@@ -93,15 +104,15 @@ fn source_bounds(source: &ByteArray) -> Option<(U256, U256)> {
     }
 }
 
-pub(super) fn project(
-    source: &ByteArray,
-    offset: &AbstractValue,
-    size: &AbstractValue,
+pub(super) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    source: &EvmByteArray<N>,
+    offset: &EvmValue<N>,
+    size: &EvmValue<N>,
     offset_expr: &ExprId,
     size_expr: &ExprId,
-    facts: &Facts,
-    domain: Domain,
-) -> BTreeMap<usize, AbstractValue> {
+    facts: &Facts<N>,
+    domain: AlgebraRef<'_, D>,
+) -> BTreeMap<usize, EvmValue<N>> {
     let mut bytes = BTreeMap::new();
     let Some(start) = offset.singleton() else {
         return bytes;
@@ -132,15 +143,15 @@ pub(super) fn project(
             continue;
         };
         let value = if source_bounds.is_some_and(|(_, hi)| at >= hi) {
-            zero()
+            zero_with()
         } else if !same_context || !certified(source, *source_index, value, domain) {
             // Keep the candidate coordinate for summary projection, which
             // rereads the complete root. The old display value proves nothing.
-            AbstractValue::unknown_byte()
+            EvmValue::<N>::unknown_byte()
         } else if delta >= output_lo || source_bounds.is_some_and(|(lo, _)| at >= lo) {
             // Union removes the source equality/alias when padding is
             // possible. These display values never enter operand facts.
-            domain.join(value, &zero())
+            domain.join(value, &zero_with())
         } else {
             value.clone()
         };
@@ -159,7 +170,7 @@ fn tree_work(entries: usize) -> usize {
         .saturating_mul(tree_height(entries))
 }
 
-fn range_key_nodes(value: &AbstractValue) -> usize {
+fn range_key_nodes<N: WordElement>(value: &EvmValue<N>) -> usize {
     if let Some(expression) = value.expression() {
         expression.nodes()
     } else if value.singleton().is_some() || value.numeric().is_top() {
@@ -179,14 +190,14 @@ fn comparison_work(query_nodes: usize) -> usize {
     query_nodes.saturating_mul(2).saturating_add(1)
 }
 
-impl ByteArray {
+impl<N: WordElement> EvmByteArray<N> {
     /// Prepay the slice algorithm from cached counts, before any map/graph
     /// census. Exact payloads and logical lengths are retained by reference.
-    pub(crate) fn slice_work(
+    pub(crate) fn slice_work_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        offset: &AbstractValue,
-        size: &AbstractValue,
-        domain: Domain,
+        offset: &EvmValue<N>,
+        size: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> usize {
         // Twelve inline numeric fields/limbs, bounded origin copies, and the
         // finite-set, expression, identity and status handles of a value clone.
@@ -255,3 +266,19 @@ impl ByteArray {
 
 #[cfg(test)]
 mod tests;
+
+impl EvmByteArray<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn slice_work(
+        &self,
+        offset: &EvmValue<crate::domain::NumericValue>,
+        size: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> usize {
+        self.slice_work_with(
+            offset,
+            size,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+}

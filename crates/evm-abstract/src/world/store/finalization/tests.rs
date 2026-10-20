@@ -250,7 +250,11 @@ fn may_delete_retention_refusal_is_typed_and_never_installs_the_numeric_fallback
     assert!(fallback.finalize_transaction(domain).is_err());
     assert_eq!(fallback, store);
     Plan::new(&fallback)
-        .apply(&mut fallback, domain, &mut || Ok::<(), StoreError>(()))
+        .apply(
+            &mut fallback,
+            crate::domain::ValueAlgebra::new(&domain),
+            &mut || Ok::<(), StoreError>(()),
+        )
         .unwrap();
     assert!(matches!(
         fallback.check_existing(limits),
@@ -447,7 +451,11 @@ fn may_delete_does_not_erase_a_transient_retention_failure_during_cleanup() {
     assert_eq!(fallback.finalize_transaction(domain), Err(error.clone()));
     assert_eq!(fallback, store);
     Plan::new(&fallback)
-        .apply(&mut fallback, domain, &mut || Ok::<(), StoreError>(()))
+        .apply(
+            &mut fallback,
+            crate::domain::ValueAlgebra::new(&domain),
+            &mut || Ok::<(), StoreError>(()),
+        )
         .unwrap();
     assert_eq!(
         fallback.check_existing(domain.spec().relations().expressions()),

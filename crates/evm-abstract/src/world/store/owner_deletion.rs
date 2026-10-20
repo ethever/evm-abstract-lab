@@ -1,10 +1,16 @@
 //! Union with deletion changes one owner, never the immutable facts it read.
 
-use super::{Code, Existence, Plane, Store, StoreError};
+use super::{Code, EvmStore, Existence, Plane, StoreError};
+use crate::domain::AlgebraRef;
+#[cfg(test)]
+use crate::domain::{AbstractValue, Domain};
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    AbstractValue, Domain,
+    EvmValue,
     symbolic::{ExprId, ExprLimits, SlotStateId, StateError},
 };
+#[cfg(test)]
+use crate::world::Store;
 use alloy_primitives::{Address, U256};
 
 /// A cached old value and the separate cost of constructing its union with zero.
@@ -16,8 +22,8 @@ pub(super) struct CleanupValue {
 }
 
 impl CleanupValue {
-    fn new(
-        value: &AbstractValue,
+    fn new<N: WordElement>(
+        value: &EvmValue<N>,
         new_entry: bool,
         union_work: impl Fn(usize) -> usize + Copy,
     ) -> Self {
@@ -86,7 +92,7 @@ impl OwnerCleanupFootprint {
     }
 }
 
-impl Plane {
+impl<N: WordElement> Plane<N> {
     fn cleanup_footprint(
         &self,
         address: Address,
@@ -142,12 +148,16 @@ impl Plane {
             .join_guarded(&SlotStateId::zero(), selector, limits.into())?)
     }
 
-    fn join_deleted_numeric(&mut self, address: Address, domain: Domain) {
-        let zero = AbstractValue::constant(U256::ZERO);
-        let default = domain.join(self.default_at(address), &zero);
+    fn join_deleted_numeric<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        address: Address,
+        domain: AlgebraRef<'_, D>,
+    ) {
+        let zero_with = EvmValue::<N>::constant(U256::ZERO);
+        let default = domain.join(self.default_at(address), &zero_with);
         self.slots
             .update_range((address, U256::ZERO)..=(address, U256::MAX), |_, value| {
-                *value = domain.join(value, &zero);
+                *value = domain.join(value, &zero_with);
             });
         self.defaults.insert(address, default);
         // Reset's independence is true, so old AND reset is exactly old.
@@ -156,7 +166,7 @@ impl Plane {
     }
 }
 
-impl Store {
+impl<N: WordElement> EvmStore<N> {
     // Finalization supplies the finite-union price during the existing scan;
     // owner execution does not depend on its sibling's pricing implementation.
     pub(super) fn owner_cleanup_footprint(
@@ -173,7 +183,7 @@ impl Store {
                 union_work,
             ),
             nonce: CleanupValue::new(
-                nonce.unwrap_or(&AbstractValue::top()),
+                nonce.unwrap_or(&EvmValue::<N>::top()),
                 nonce.is_none(),
                 union_work,
             ),
@@ -186,7 +196,11 @@ impl Store {
         }
     }
 
-    fn join_deleted_fields(&mut self, address: Address, domain: Domain) {
+    fn join_deleted_fields<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        address: Address,
+        domain: AlgebraRef<'_, D>,
+    ) {
         self.persistent.join_deleted_numeric(address, domain);
         self.transient.join_deleted_numeric(address, domain);
         let code = if matches!(self.code(address), Some(Code::Empty)) {
@@ -205,14 +219,14 @@ impl Store {
 
     /// Same old/deleted alternatives as Store::join_guarded, with one selector
     /// for both planes and scalars. All fallible preparation precedes mutation.
-    fn join_deleted_guarded(
+    fn join_deleted_guarded<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         address: Address,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         selector: ExprId,
     ) -> Result<(), StoreError> {
         let limits = domain.spec().relations().expressions();
-        let zero = AbstractValue::constant(U256::ZERO);
+        let zero_with = EvmValue::<N>::constant(U256::ZERO);
         let balance = self.read_balance(address);
         let nonce = self.nonce(address);
         crate::world::bytes::check_value(&balance, limits)?;
@@ -223,8 +237,8 @@ impl Store {
         let transient = self
             .transient
             .deleted_root(address, selector.clone(), limits)?;
-        let balance = balance.join_guarded(&zero, domain, selector.clone(), limits)?;
-        let nonce = nonce.join_guarded(&zero, domain, selector, limits)?;
+        let balance = balance.join_guarded_with(&zero_with, domain, selector.clone(), limits)?;
+        let nonce = nonce.join_guarded_with(&zero_with, domain, selector, limits)?;
 
         self.join_deleted_fields(address, domain);
         self.persistent.roots.insert(address, persistent);
@@ -234,16 +248,20 @@ impl Store {
         Ok(())
     }
 
-    pub(super) fn maybe_delete_account(&mut self, address: Address, domain: Domain) {
+    pub(super) fn maybe_delete_account_with<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        address: Address,
+        domain: AlgebraRef<'_, D>,
+    ) {
         let result = ExprId::fresh()
             .ok_or(StoreError::State(StateError::IdentityExhausted))
             .and_then(|selector| self.join_deleted_guarded(address, domain, selector));
         if let Err(error) = result {
             // Preserve the unmetered API's numerical upper fallback and visible
             // failure. Checked finalization rejects it before installing state.
-            let zero = AbstractValue::constant(U256::ZERO);
-            let balance = domain.join(&self.read_balance(address), &zero);
-            let nonce = domain.join(&self.nonce(address), &zero);
+            let zero_with = EvmValue::<N>::constant(U256::ZERO);
+            let balance = domain.join(&self.read_balance(address), &zero_with);
+            let nonce = domain.join(&self.nonce(address), &zero_with);
             self.join_deleted_fields(address, domain);
             self.balances.insert(address, balance);
             self.nonces.insert(address, nonce);

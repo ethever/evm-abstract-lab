@@ -1,8 +1,10 @@
 //! A1 shares only equal complete numeric projections within one fresh word write.
 
-use super::{ByteArray, constant, numeric};
+use super::{EvmByteArray, constant_with, numeric};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    AbstractValue, Domain, Profile,
+    EvmValue, Profile,
     known_bits::KnownBits,
     provenance::{MAX_ORIGINS, Origin},
     symbolic::{ByteStateKind, ExprId, ExprKind},
@@ -17,7 +19,7 @@ mod tests;
 pub(super) static NUMERIC_READS: crate::test_instrumentation::Counter<usize> =
     crate::test_instrumentation::Counter::new(0);
 
-fn literal(value: &AbstractValue, n: U256) -> bool {
+fn literal<N: WordElement>(value: &EvmValue<N>, n: U256) -> bool {
     // Canonical inline components avoid a whole-product singleton query's
     // general congruence division or finite-set membership before prepayment.
     value.known_bits().singleton() == Some(n)
@@ -39,12 +41,12 @@ fn literal(value: &AbstractValue, n: U256) -> bool {
 
 // All queries use inline fields or cached counts. In particular, allocation
 // emptiness is not a guard: transfer's touch_memory precedes the staged write.
-pub(super) fn eligible(
-    array: &ByteArray,
-    offset: &AbstractValue,
-    value: &AbstractValue,
+pub(super) fn eligible<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    array: &EvmByteArray<N>,
+    offset: &EvmValue<N>,
+    value: &EvmValue<N>,
     width: usize,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
 ) -> bool {
     width == 32
         && array.memory
@@ -65,7 +67,10 @@ pub(super) fn eligible(
         && value.congruence().singleton().is_none()
 }
 
-pub(super) fn refresh(array: &mut ByteArray, domain: Domain) {
+pub(super) fn refresh<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    array: &mut EvmByteArray<N>,
+    domain: AlgebraRef<'_, D>,
+) {
     let indices = array.bytes.keys().copied().collect::<Vec<_>>();
     let mut numeric = None;
     for index in indices {
@@ -73,19 +78,19 @@ pub(super) fn refresh(array: &mut ByteArray, domain: Domain) {
         // Context, authoritative expression, checks and failure marker. Only
         // the first Reader executes BYTE; its complete AV is cloned 32 times.
         let byte = array
-            .read_byte_with_numeric(&constant(index), domain, Some(&mut numeric))
-            .unwrap_or_else(|_| AbstractValue::unknown_byte().with_symbolic_limit());
+            .read_byte_with_numeric(&constant_with(index), domain, Some(&mut numeric))
+            .unwrap_or_else(|_| EvmValue::<N>::unknown_byte().with_symbolic_limit());
         array.bytes.insert(index, byte);
     }
 }
 
-impl ByteArray {
+impl<N: WordElement> EvmByteArray<N> {
     /// Quote A1 before any effect or traversal; all other writes keep the old fee.
-    pub(crate) fn uniform_word_write_work(
+    pub(crate) fn uniform_word_write_work_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        offset: &AbstractValue,
-        value: &AbstractValue,
-        domain: Domain,
+        offset: &EvmValue<N>,
+        value: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> Option<usize> {
         if !eligible(self, offset, value, 32, domain) {
             return None;
@@ -156,7 +161,7 @@ impl ByteArray {
         // Nonfinite source forces the ordinary Product fee: the empty-argument
         // base has the same one tuple, then add actual cached operand sizes.
         // Reader disables relations; authoritative expressions are paid below.
-        let numeric = numeric::numeric_domain(domain)
+        let numeric = numeric::numeric_domain_with(domain)
             .operation_work(&[])
             .saturating_add(LITERAL_WORK)
             .saturating_add(value.work_size());
@@ -174,6 +179,22 @@ impl ByteArray {
                 .saturating_add(expand_root)
                 .saturating_add(numeric)
                 .saturating_add(cells),
+        )
+    }
+}
+
+impl EvmByteArray<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn uniform_word_write_work(
+        &self,
+        offset: &EvmValue<crate::domain::NumericValue>,
+        value: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> Option<usize> {
+        self.uniform_word_write_work_with(
+            offset,
+            value,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
         )
     }
 }

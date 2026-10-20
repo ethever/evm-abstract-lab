@@ -1,19 +1,21 @@
 //! Logical allocation arithmetic. Symbolic ranges arrive constrained by transfer.
 
-use super::{RangeError, constant, expr, limits, numeric, zero};
-use crate::domain::{AbstractValue, Domain, symbolic::ExprId};
+use super::{RangeError, constant_with, expr, limits, numeric, zero_with};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
+use crate::domain::{EvmValue, symbolic::ExprId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
 /// Check the actual retained terms, including numeric-only operands whose
 /// bounded source expression was synthesized by the caller.
-pub(super) fn check_allocation(
+pub(super) fn check_allocation<D: EvmNumericAlgebra>(
     allocation: &(ExprId, ExprId),
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
 ) -> Result<(), RangeError> {
     for expression in [&allocation.0, &allocation.1] {
         super::check_value(
-            &AbstractValue::top().with_expression(expression.clone()),
+            &EvmValue::<D::Element>::top().with_expression(expression.clone()),
             limits(domain),
         )?;
     }
@@ -22,13 +24,13 @@ pub(super) fn check_allocation(
 
 /// Bind numeric-only operands once, then reuse the same term for allocation,
 /// roots and length arithmetic. No scalar fact is inferred from a path guard.
-pub(super) fn normalized(value: &AbstractValue) -> Result<AbstractValue, RangeError> {
+pub(super) fn normalized<N: WordElement>(value: &EvmValue<N>) -> Result<EvmValue<N>, RangeError> {
     Ok(value.clone().with_expression(expr(value)?))
 }
 
-pub(super) fn validate_target(
-    offset: &AbstractValue,
-    size: &AbstractValue,
+pub(super) fn validate_target<N: WordElement>(
+    offset: &EvmValue<N>,
+    size: &EvmValue<N>,
     memory: bool,
 ) -> Result<(), RangeError> {
     if size.singleton() == Some(U256::ZERO) {
@@ -43,14 +45,18 @@ pub(super) fn validate_target(
     }
     Ok(())
 }
-fn op(opcode: u8, args: &[ExprId], domain: Domain) -> Result<ExprId, RangeError> {
+fn op<D: EvmNumericAlgebra>(
+    opcode: u8,
+    args: &[ExprId],
+    domain: AlgebraRef<'_, D>,
+) -> Result<ExprId, RangeError> {
     Ok(ExprId::operation(opcode, args, limits(domain))?)
 }
-fn choose(
+fn choose<D: EvmNumericAlgebra>(
     condition: ExprId,
     yes: ExprId,
     no: ExprId,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
 ) -> Result<ExprId, RangeError> {
     Ok(ExprId::ite(condition, yes, no, limits(domain))?)
 }
@@ -65,14 +71,14 @@ fn checked_end(offset: U256, size: U256, memory: bool) -> Option<U256> {
     }
 }
 
-pub(super) fn expanded(
-    old: &AbstractValue,
-    offset: &AbstractValue,
-    size: &AbstractValue,
+pub(super) fn expanded<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    old: &EvmValue<N>,
+    offset: &EvmValue<N>,
+    size: &EvmValue<N>,
     _max_bytes: usize,
     memory: bool,
-    domain: Domain,
-) -> Result<AbstractValue, RangeError> {
+    domain: AlgebraRef<'_, D>,
+) -> Result<EvmValue<N>, RangeError> {
     if size.singleton() == Some(U256::ZERO) {
         return Ok(old.clone());
     }
@@ -83,14 +89,14 @@ pub(super) fn expanded(
     }
     if let (Some(at), Some(size)) = (offset.singleton(), size.singleton()) {
         let end = checked_end(at, size, memory).ok_or(RangeError::OffsetTooLarge(at))?;
-        if end <= old.interval().unsigned_bounds().0 {
+        if end <= crate::world::unsigned_bounds(old).0 {
             return Ok(old.clone());
         }
         if let Some(old) = old.singleton() {
-            return Ok(AbstractValue::constant(old.max(end)));
+            return Ok(EvmValue::<N>::constant(old.max(end)));
         }
     }
-    let numerical = numeric::numeric_domain(domain);
+    let numerical = numeric::numeric_domain_with(domain);
     let mut finite = None;
     if let (Some(old), Some(offsets), Some(sizes)) =
         (old.constants(), offset.constants(), size.constants())
@@ -113,11 +119,11 @@ pub(super) fn expanded(
                             .map(|end| end.max(*old))
                     };
                     if let Some(v) = candidate {
-                        let v = AbstractValue::constant(v);
+                        let v = EvmValue::<N>::constant(v);
                         finite =
                             Some(finite.map_or_else(|| v.clone(), |old| numerical.join(&old, &v)));
                     } else {
-                        finite = Some(AbstractValue::top());
+                        finite = Some(EvmValue::<N>::top());
                     }
                 }
             }
@@ -126,8 +132,8 @@ pub(super) fn expanded(
     // A public wrapper call may lack scalar proof of the transfer guard.
     // Use operand bounds rather than importing an inactive relational guard.
     let endpoint_upper = checked_end(
-        offset.interval().unsigned_bounds().1,
-        size.interval().unsigned_bounds().1,
+        crate::world::unsigned_bounds(offset).1,
+        crate::world::unsigned_bounds(size).1,
         memory,
     );
     let upper = old
@@ -138,16 +144,16 @@ pub(super) fn expanded(
     let numeric = finite
         .filter(|value| !value.numeric().is_top())
         .unwrap_or_else(|| {
-            AbstractValue::unsigned_range(old.interval().unsigned_bounds().0, upper)
-                .unwrap_or_else(AbstractValue::top)
+            EvmValue::<N>::unsigned_range(crate::world::unsigned_bounds(old).0, upper)
+                .unwrap_or_else(EvmValue::<N>::top)
         });
     if let Some(value) = numeric.singleton() {
-        return Ok(AbstractValue::constant(value));
+        return Ok(EvmValue::<N>::constant(value));
     }
     // Prove the numeric result before constructing a duplicated max tree.
     // These bounds concern mathematical, nonwrapping endpoints. An unknown
     // upper endpoint cannot justify selecting a branch of a wrapped sum.
-    if endpoint_upper.is_some_and(|end| end <= old.interval().unsigned_bounds().0) {
+    if endpoint_upper.is_some_and(|end| end <= crate::world::unsigned_bounds(old).0) {
         return Ok(old.clone());
     }
     if endpoint_upper.is_none() {
@@ -157,8 +163,8 @@ pub(super) fn expanded(
         return normalized(&numeric);
     }
     let endpoint_lower = checked_end(
-        offset.interval().unsigned_bounds().0,
-        size.interval().unsigned_bounds().0,
+        crate::world::unsigned_bounds(offset).0,
+        crate::world::unsigned_bounds(size).0,
         memory,
     );
     let size_expr = expr(size)?;
@@ -183,7 +189,7 @@ pub(super) fn expanded(
     let max = if end == old_expr {
         old_expr.clone()
     } else if endpoint_upper.is_some()
-        && endpoint_lower.is_some_and(|end| old.interval().unsigned_bounds().1 <= end)
+        && endpoint_lower.is_some_and(|end| crate::world::unsigned_bounds(old).1 <= end)
     {
         end
     } else {
@@ -211,32 +217,32 @@ pub(super) fn expanded(
     Ok(numeric::attach(numeric, expression))
 }
 
-pub(super) fn minimum(
-    left: &AbstractValue,
-    right: &AbstractValue,
-    domain: Domain,
-) -> Result<AbstractValue, RangeError> {
+pub(super) fn minimum<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    left: &EvmValue<N>,
+    right: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<EvmValue<N>, RangeError> {
     if left.singleton() == Some(U256::ZERO) || right.singleton() == Some(U256::ZERO) {
-        return Ok(zero());
+        return Ok(zero_with());
     }
     let left_expr = expr(left)?;
     let right_expr = expr(right)?;
     let condition = op(opcode::LT, &[left_expr.clone(), right_expr.clone()], domain)?;
     let expression = choose(condition, left_expr, right_expr, domain)?;
-    let numerical = numeric::numeric_domain(domain);
+    let numerical = numeric::numeric_domain_with(domain);
     let numeric = if let (Some(left), Some(right)) = (left.constants(), right.constants()) {
         let mut out = None;
         for a in left {
             for b in right {
-                let v = AbstractValue::constant((*a).min(*b));
+                let v = EvmValue::<N>::constant((*a).min(*b));
                 out = Some(out.map_or_else(|| v.clone(), |old| numerical.join(&old, &v)));
             }
         }
-        out.unwrap_or_else(|| constant(0))
+        out.unwrap_or_else(|| constant_with(0))
     } else {
-        let (alo, ahi) = left.interval().unsigned_bounds();
-        let (blo, bhi) = right.interval().unsigned_bounds();
-        AbstractValue::unsigned_range(alo.min(blo), ahi.min(bhi)).unwrap_or_else(AbstractValue::top)
+        let (alo, ahi) = crate::world::unsigned_bounds(left);
+        let (blo, bhi) = crate::world::unsigned_bounds(right);
+        EvmValue::<N>::unsigned_range(alo.min(blo), ahi.min(bhi)).unwrap_or_else(EvmValue::<N>::top)
     };
     Ok(numeric::attach(numeric, expression))
 }

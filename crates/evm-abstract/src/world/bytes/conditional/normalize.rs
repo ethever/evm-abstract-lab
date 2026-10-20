@@ -5,6 +5,7 @@
 //! No byte-state identity or numeric-only equality participates in these rules.
 
 use super::{Branch, ConditionalFacts, Scope};
+use crate::domain::WordElement;
 use crate::domain::symbolic::{ExprError, ExprId, ExprLimits};
 use alloy_primitives::U256;
 use std::sync::Arc;
@@ -32,7 +33,11 @@ impl Actions {
         Ok(true)
     }
 
-    fn equal(&mut self, left: &Scope, right: &Scope) -> Result<bool, ExprError> {
+    fn equal<N: WordElement>(
+        &mut self,
+        left: &Scope<N>,
+        right: &Scope<N>,
+    ) -> Result<bool, ExprError> {
         if !self.pay(1)? || left.facts.len() != right.facts.len() {
             return Ok(false);
         }
@@ -53,7 +58,7 @@ impl Actions {
         Ok(left == right)
     }
 
-    fn cloned(&mut self, scope: &Scope) -> Result<Option<Scope>, ExprError> {
+    fn cloned<N: WordElement>(&mut self, scope: &Scope<N>) -> Result<Option<Scope<N>>, ExprError> {
         // One shallow quote, key/entry copies and the final from_branches fact
         // scan are funded here. Conditional Clone copies only top-level Arcs;
         // nested facts remain immutable and shared, without a subtree census.
@@ -76,7 +81,7 @@ impl Actions {
     }
 }
 
-fn nested(scope: &Scope) -> Option<&Branch> {
+fn nested<N: WordElement>(scope: &Scope<N>) -> Option<&Branch<N>> {
     if scope.facts.is_empty() && scope.conditional.branches.len() == 1 {
         Some(&scope.conditional.branches[0])
     } else {
@@ -84,11 +89,13 @@ fn nested(scope: &Scope) -> Option<&Branch> {
     }
 }
 
-fn shared<'a>(
-    yes: &'a Scope,
-    no: &'a Scope,
+type SharedScopes<'a, N> = (ExprId, ExprId, &'a Scope<N>, &'a Scope<N>);
+
+fn shared<'a, N: WordElement>(
+    yes: &'a Scope<N>,
+    no: &'a Scope<N>,
     actions: &mut Actions,
-) -> Result<Option<(ExprId, ExprId, &'a Scope, &'a Scope)>, ExprError> {
+) -> Result<Option<SharedScopes<'a, N>>, ExprError> {
     let yes_ite = nested(yes);
     let no_ite = nested(no);
     if let (Some(g), Some(h)) = (yes_ite, no_ite)
@@ -142,10 +149,10 @@ fn shared<'a>(
     Ok(None)
 }
 
-pub(super) fn shared_branches(
-    original: ConditionalFacts,
+pub(super) fn shared_branches<N: WordElement>(
+    original: ConditionalFacts<N>,
     limits: ExprLimits,
-) -> Result<ConditionalFacts, ExprError> {
+) -> Result<ConditionalFacts<N>, ExprError> {
     let branch = &original.branches[0];
     // Cached input delta work excludes the new outer selector. It is bounded
     // by the two input ByteArray work sizes already charged by machine joins.
@@ -205,7 +212,7 @@ pub(super) fn shared_branches(
     let Some(else_facts) = actions.cloned(no)? else {
         return Ok(original);
     };
-    let out = ConditionalFacts::from_branches(vec![Arc::new(Branch {
+    let out = ConditionalFacts::<N>::from_branches(vec![Arc::new(Branch {
         condition,
         then_facts,
         else_facts,
@@ -214,7 +221,7 @@ pub(super) fn shared_branches(
     // than the caller's ExprLimits. Compare cached dimensions, without invoking
     // serialization or swallowing cancellation from a real metadata check.
     let native = crate::domain::symbolic::GraphLimits::default();
-    let fits_native = |metadata: &ConditionalFacts| {
+    let fits_native = |metadata: &ConditionalFacts<N>| {
         !metadata.limited
             && metadata.entries.max(metadata.largest_expression) <= native.max_nodes
             && metadata.depth <= native.max_depth

@@ -19,7 +19,9 @@ fn widening_form_is_idempotent_and_keeps_external_word_facts_and_history() {
         .operands
         .insert(unused.clone(), AbstractValue::constant(U256::ONE));
     let historical = memory.clone();
-    let widened = memory.widening_form(domain, limits(domain)).unwrap();
+    let widened = memory
+        .widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain)))
+        .unwrap();
     assert_eq!(widened.root, historical.root);
     assert_eq!(widened.length, historical.length);
     assert_eq!(widened.memory, historical.memory);
@@ -33,7 +35,9 @@ fn widening_form_is_idempotent_and_keeps_external_word_facts_and_history() {
     assert!(!read.contains(U256::from(u64::MAX) + U256::ONE));
     assert_eq!(
         widened,
-        widened.widening_form(domain, limits(domain)).unwrap()
+        widened
+            .widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain)))
+            .unwrap()
     );
     assert_eq!(memory, historical);
 }
@@ -54,7 +58,9 @@ fn widening_form_preserves_observed_input_and_large_copy_without_expansion() {
         )
         .unwrap();
     let root = memory.root.clone();
-    let widened = memory.widening_form(domain, limits(domain)).unwrap();
+    let widened = memory
+        .widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain)))
+        .unwrap();
     assert_eq!(widened.root, root);
     assert_eq!(widened.len(), memory.len());
     assert!(widened.bytes.is_empty());
@@ -90,7 +96,7 @@ fn widening_form_preserves_original_on_failure_cancel_and_low_policy() {
     cancellation.cancel();
     analysis_control::with_cancellation(&cancellation, || {
         assert!(matches!(
-            memory.widening_form(domain, limits(domain)),
+            memory.widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain))),
             Err(RangeError::Expression(ExprError::Cancelled)
                 | RangeError::State(StateError::Cancelled))
         ));
@@ -102,14 +108,17 @@ fn widening_form_preserves_original_on_failure_cancel_and_low_policy() {
     };
     memory.failure = Some(failure.clone());
     let failed = memory.clone();
-    assert_eq!(memory.widening_form(domain, limits(domain)), Err(failure));
+    assert_eq!(
+        memory.widening_form(domain, limits(crate::domain::ValueAlgebra::new(&domain))),
+        Err(failure)
+    );
     assert_eq!(memory, failed);
 }
 
 #[test]
 fn widening_form_refreshes_projected_length_from_the_authoritative_constant() {
     let domain = Domain::default();
-    let limits = limits(domain);
+    let limits = limits(crate::domain::ValueAlgebra::new(&domain));
     let left = ByteArray::memory();
     let mut right = left.clone();
     right
