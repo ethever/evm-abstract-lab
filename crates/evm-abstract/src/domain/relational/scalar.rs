@@ -225,6 +225,11 @@ fn failed<N: WordElement>(error: FactError) -> EvmScalarQuery<N> {
         other => EvmScalarQuery::Unknown(QueryReason::ScalarFactError(other)),
     }
 }
+struct PreparedScalar<N: WordElement> {
+    value: EvmValue<N>,
+    complete: bool,
+}
+
 impl RelationState {
     /// Whether this exact expression has a consequence in the local scalar
     /// proof language. Callers can skip reduction for unrelated cached reads.
@@ -244,17 +249,130 @@ impl RelationState {
         domain: AlgebraRef<'_, D>,
         limits: &RelationLimits,
     ) -> EvmScalarQuery<D::Element> {
+        match self.prepare_scalar(expression, numeric, domain, limits) {
+            Ok(prepared) => Self::finish_scalar(prepared, domain),
+            Err(answer) => answer,
+        }
+    }
+
+    /// Reserve detached fact import, then the actual imported numeric closure.
+    /// Custom policies retain their whole-operation quote unless they opt in.
+    pub fn refine_numeric_budgeted_with<D: EvmNumericAlgebra>(
+        &self,
+        expression: &ExprId,
+        value: &EvmValue<D::Element>,
+        domain: AlgebraRef<'_, D>,
+        limits: &RelationLimits,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<EvmScalarQuery<D::Element>, crate::domain::WorkExhausted> {
+        let (facts, finite, structural) = self.scalar_import_shape(expression, value.numeric());
+        let staged = domain.numeric_algebra().refinement_import_work(
+            value.numeric(),
+            facts,
+            finite,
+            structural,
+        );
+        let work = staged.map_or_else(
+            || domain.refinement_work(value, self.len()),
+            |work| {
+                work.saturating_add(
+                    value
+                        .work_size()
+                        .saturating_sub(value.numeric().work_size()),
+                )
+            },
+        );
+        if budget.exhausted() || !budget.charge(work) {
+            return Err(crate::domain::WorkExhausted);
+        }
+        let prepared = match self.prepare_scalar(expression, value.numeric(), domain, limits) {
+            Ok(prepared) => prepared,
+            Err(answer) => return Ok(answer),
+        };
+        if staged.is_some()
+            && !budget.charge(domain.numeric_reduction_work(prepared.value.numeric()))
+        {
+            return Err(crate::domain::WorkExhausted);
+        }
+        Ok(Self::finish_scalar(prepared, domain))
+    }
+
+    fn scalar_import_shape<N: WordElement>(
+        &self,
+        target: &ExprId,
+        numeric: &N,
+    ) -> (usize, usize, usize) {
+        let mut finite = numeric.finite_constants().cardinality().unwrap_or(0);
+        let mut structural = target.work_size().saturating_add(self.path.nodes());
+        let target_levels = target.nodes().saturating_add(1).ilog2() as usize + 2;
+        let mut expression = |expr: &ExprId| {
+            let levels = expr.nodes().saturating_add(1).ilog2() as usize + 2;
+            // Variable walks and leaf-set lookups, plus at most four guard/
+            // masked-target comparisons at each nested unary level. All sizes
+            // are cached; quotation allocates/clones/enumerates no fact payload.
+            structural = structural
+                .saturating_add(
+                    expr.work_size()
+                        .saturating_mul(levels.saturating_add(target_levels).saturating_add(8)),
+                )
+                .saturating_add(
+                    expr.work_size()
+                        .saturating_add(target.work_size())
+                        .saturating_mul(expr.depth().saturating_add(1))
+                        .saturating_mul(4),
+                );
+        };
+        for constraint in &self.constraints {
+            match constraint {
+                Constraint::Equal { left, right } => {
+                    expression(left);
+                    expression(right);
+                }
+                Constraint::Members {
+                    expression: expr,
+                    values,
+                } => {
+                    finite = finite.saturating_add(values.len());
+                    expression(expr);
+                }
+                Constraint::Truth {
+                    expression: expr, ..
+                }
+                | Constraint::Range {
+                    expression: expr, ..
+                }
+                | Constraint::SignedRange {
+                    expression: expr, ..
+                }
+                | Constraint::Modulo {
+                    expression: expr, ..
+                }
+                | Constraint::Bits {
+                    expression: expr, ..
+                } => expression(expr),
+            }
+        }
+        (self.constraints.len().saturating_add(1), finite, structural)
+    }
+
+    fn prepare_scalar<D: EvmNumericAlgebra>(
+        &self,
+        expression: &ExprId,
+        numeric: &D::Element,
+        domain: AlgebraRef<'_, D>,
+        limits: &RelationLimits,
+    ) -> Result<PreparedScalar<D::Element>, EvmScalarQuery<D::Element>> {
         if self.bottom {
-            return EvmScalarQuery::Infeasible;
+            return Err(EvmScalarQuery::Infeasible);
         }
         if !limits.enabled {
-            return EvmScalarQuery::Unknown(QueryReason::Disabled);
+            return Err(EvmScalarQuery::Unknown(QueryReason::Disabled));
         }
         if !limits.valid() {
-            return EvmScalarQuery::Unknown(QueryReason::Configuration);
+            return Err(EvmScalarQuery::Unknown(QueryReason::Configuration));
         }
         if expression.nodes() > limits.max_nodes || expression.depth() > limits.max_depth {
-            return EvmScalarQuery::Unknown(QueryReason::ExpressionLimit);
+            return Err(EvmScalarQuery::Unknown(QueryReason::ExpressionLimit));
         }
         let variables = expression.variables();
         let mut lattice = FactLattice::new(domain.spec().fact_limit());
@@ -271,10 +389,10 @@ impl RelationState {
                         Symbol::THIS,
                         UnaryPredicate::MemberOf(values),
                     ))) {
-                        return failed(error);
+                        return Err(failed(error));
                     }
                 }
-                Err(error) => return failed(error),
+                Err(error) => return Err(failed(error)),
             }
         }
         let mut found = false;
@@ -288,13 +406,13 @@ impl RelationState {
                 .iter()
                 .fold(work, |total, expr| total.saturating_add(expr.nodes()));
             if work > limits.max_nodes {
-                return EvmScalarQuery::Unknown(QueryReason::ExpressionLimit);
+                return Err(EvmScalarQuery::Unknown(QueryReason::ExpressionLimit));
             }
             match direct(constraint, expression) {
                 Ok(Some(fact)) => {
                     found = true;
                     if let Err(error) = lattice.insert(fact) {
-                        return failed(error);
+                        return Err(failed(error));
                     }
                 }
                 Ok(None) => {
@@ -306,18 +424,26 @@ impl RelationState {
                         complete = false;
                     }
                 }
-                Err(error) => return failed(error),
+                Err(error) => return Err(failed(error)),
             }
         }
         if !found {
-            return EvmScalarQuery::Unchanged;
+            return Err(EvmScalarQuery::Unchanged);
         }
         let value = EvmValue::from_numeric(numeric.clone());
         let value = match reduce::import(&value, &lattice) {
             Ok(value) => value,
-            Err(error) => return failed(error),
+            Err(error) => return Err(failed(error)),
         };
-        let reduced = domain.reduce(&value);
+        Ok(PreparedScalar { value, complete })
+    }
+
+    fn finish_scalar<D: EvmNumericAlgebra>(
+        prepared: PreparedScalar<D::Element>,
+        domain: AlgebraRef<'_, D>,
+    ) -> EvmScalarQuery<D::Element> {
+        let reduced = domain.reduce(&prepared.value);
+        let complete = prepared.complete;
         match reduced.status {
             ReductionStatus::Empty => EvmScalarQuery::Infeasible,
             // These limits only stop further reductions. The already imported

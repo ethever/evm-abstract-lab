@@ -3,7 +3,7 @@
 use super::{
     AlgebraRef, EvmNumericAlgebra, NumericValue, ValueAlgebra, WordElement,
     identity::{InputIdentity, RuntimeIdentity, Symbol, ValueIdentity},
-    provenance::{Origin, Provenance},
+    provenance::{Origin, OriginSet, Provenance},
     symbolic::{ExprError, ExprId, ExprLimits},
 };
 use alloy_primitives::U256;
@@ -93,6 +93,23 @@ impl<N: WordElement> EvmValue<N> {
             expression: self.expression.clone(),
             symbolic_limit: self.symbolic_limit,
         }
+    }
+    /// Construct only the result union, without cloning operand provenance into
+    /// a temporary vector. Arithmetic discards the operands' must-address role.
+    pub(super) fn transfer_provenance(args: &[Self]) -> Provenance {
+        if args.iter().any(|value| value.provenance.origins().is_top()) {
+            return Provenance::top();
+        }
+        let sources = std::iter::once(Origin::Arithmetic).chain(args.iter().flat_map(|value| {
+            value
+                .provenance
+                .origins()
+                .sources()
+                .expect("known operand origins")
+                .iter()
+                .copied()
+        }));
+        Provenance::from_origins(OriginSet::from_sources(sources).expect("arithmetic origin"))
     }
     /// Possible sources and a code-address role, without equality identities.
     pub fn provenance(&self) -> &Provenance {
