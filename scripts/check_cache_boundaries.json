@@ -512,6 +512,76 @@
         "web-browser-registry",
         "web-browser"
       ]
+    },
+    {
+      "name": "analysis-kernel-production-closure",
+      "description": "Kernel implementation edits reach EVM, installed CLI/server consumers and native web tests through the server dev-dependency, while independent crates and production Wasm stay cached.",
+      "mutations": [
+        {
+          "path": "crates/analysis-kernel/src/kernel/run.rs",
+          "append": "\n// Cache boundary probe.\n"
+        }
+      ],
+      "changed": [
+        "*analysis-kernel",
+        "*evm-abstract",
+        "*release-build-evm-abstract-cli",
+        "*release-build-evm-abstract-server",
+        "tests-evm-abstract-web",
+        "web-browser-startup",
+        "state-backend-parity"
+      ],
+      "unchanged": [
+        "*analysis-control",
+        "*snapshot-state",
+        "*symbolic-structure",
+        "*evm-abstract-notation",
+        "*evm-abstract-protocol",
+        "*evm-abstract-layout",
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "cargo-context-*",
+        "cargo-bindgen-environment",
+        "lean-proofs"
+      ]
+    },
+    {
+      "name": "analysis-kernel-external-test-isolation",
+      "description": "External kernel tests remain inputs of native test closures, including EVM's dependency closure, without invalidating production builds, Rustdoc, Wasm or installed-runtime checks.",
+      "mutations": [
+        {
+          "path": "crates/analysis-kernel/tests/cooperation.rs",
+          "append": "\n// Cache boundary probe.\n"
+        }
+      ],
+      "changed": [
+        "*tests-analysis-kernel",
+        "*clippy-analysis-kernel",
+        "*no-dyn-analysis-kernel",
+        "*tests-evm-abstract"
+      ],
+      "unchanged": [
+        "*release-build*",
+        "*docs*",
+        "web-build",
+        "web-clippy",
+        "web-no-dyn",
+        "web-browser*",
+        "state-backend-*",
+        "symbolic-*",
+        "example-*",
+        "examples",
+        "cargo-context-*",
+        "cargo-bindgen-environment",
+        "*analysis-control",
+        "*snapshot-state",
+        "*symbolic-structure",
+        "*evm-abstract-notation",
+        "*evm-abstract-protocol",
+        "*evm-abstract-layout",
+        "lean-proofs"
+      ]
     }
   ]
 }
