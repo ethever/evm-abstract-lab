@@ -76,6 +76,11 @@ impl WordElement for Word {
         // restore the actual executable element's additional guarantee.
         WordObservation::unsigned_range(self.lower, self.upper).unwrap()
     }
+    fn requires_retained_binding(&self) -> bool {
+        // This capability describes the value, not the Rust carrier type.
+        // Only a nonsingleton parity predicate is absent from our export.
+        self.odd && self.lower != self.upper
+    }
     fn constrain(&self, observation: &WordObservation) -> Result<Self, FactError> {
         if let Some(word) = observation.singleton() {
             return if self.contains(word) {
@@ -316,6 +321,22 @@ fn full_hull_custom_word_keeps_identity_without_complete_standard_views() {
             super::limits(domain),
         )
         .unwrap();
+    assert!(!combined.length.numeric().requires_retained_binding());
+    assert!(!combined.default.numeric().requires_retained_binding());
+    assert!(
+        combined
+            .operands
+            .values()
+            .all(|value| !value.numeric().requires_retained_binding())
+    );
+    let mut scoped_predicate = false;
+    combined.conditional.visit(&mut |_, value| {
+        scoped_predicate |= value.is_some_and(|value| value.numeric().requires_retained_binding());
+    });
+    assert!(
+        scoped_predicate,
+        "the only extra guarantees belong to the guarded scopes"
+    );
     assert_odd(&combined.read_word_with(&literal(0), domain));
     assert_odd(
         &combined
@@ -324,6 +345,11 @@ fn full_hull_custom_word_keeps_identity_without_complete_standard_views() {
             .instantiate_with(domain)
             .unwrap()
             .read_word_with(&literal(0), domain),
+    );
+    assert!(combined.retained_word_projection_work_with(domain, 0) > 0);
+    assert_eq!(
+        EvmByteArray::<Word>::memory().retained_word_projection_work_with(domain, 0),
+        0
     );
     let joined = summary.join_with(&summary, domain, false);
     assert_eq!(joined, summary);

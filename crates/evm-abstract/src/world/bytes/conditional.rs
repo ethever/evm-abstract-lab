@@ -250,6 +250,11 @@ impl<N: WordElement> ConditionalFacts<N> {
         self.entries == 0
     }
 
+    /// Cached alongside branch work; quotation must not traverse native facts.
+    pub(in crate::world::bytes) fn retains_words(&self) -> bool {
+        self.retained_words
+    }
+
     pub(in crate::world) fn len(&self) -> usize {
         self.entries
     }

@@ -12,11 +12,12 @@ use std::collections::{BTreeMap, BTreeSet};
 const WORDS: usize = COPY_FACT_LIMIT / 32;
 
 pub(super) fn needed<N: WordElement>(array: &EvmByteArray<N>) -> bool {
-    array
-        .operands
-        .values()
-        .chain([&array.length, &array.default])
-        .any(|value| value.numeric().requires_retained_binding())
+    array.conditional.retains_words()
+        || array
+            .operands
+            .values()
+            .chain([&array.length, &array.default])
+            .any(|value| value.numeric().requires_retained_binding())
 }
 
 fn insert(out: &mut BTreeSet<usize>, index: usize) {
