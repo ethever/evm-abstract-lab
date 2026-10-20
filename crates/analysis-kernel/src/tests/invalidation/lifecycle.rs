@@ -172,38 +172,42 @@ fn new_semantic_topology_invalidates_its_directory_adopters_without_payload_grow
 fn descending_refinement_wakes_external_consumers_without_reseeding_either_scope() {
     let mut f = Fixture::new();
     f.adopt();
-    let mut run = f.kernel.begin(f.reader, &mut f.meter).unwrap();
-    run.query(&mut f.local, Scoped::new(f.target, 0)).unwrap();
-    refine(&mut run, &mut f.local, 0);
-    run.finish(LocalClosure::Stable).unwrap();
-    assert!(!f.stale(0));
-    assert!(!f.stale(1));
-    assert!(
-        f.kernel.worklist().contains(&f.reader),
-        "same-scope self-feedback survives"
+    // The concrete allowed input is {0}; {0,1} -> {0} is a lawful precision
+    // improvement. Never use an empty meet to model this nonempty universe.
+    let mut coarse = f.kernel.channel(Descending(Meet), &mut f.meter).unwrap();
+    seed(&mut f.kernel, &mut f.meter, f.reader, &mut coarse, 0b11);
+    let mut run = f.kernel.begin(f.downstream_reader, &mut f.meter).unwrap();
+    assert_eq!(
+        run.query(&mut coarse, Scoped::new(f.target, 0))
+            .unwrap()
+            .value(),
+        Some(&0b11)
     );
+    run.finish(LocalClosure::Stable).unwrap();
+    let mut run = f.kernel.begin(f.reader, &mut f.meter).unwrap();
+    run.query(&mut coarse, Scoped::new(f.target, 0)).unwrap();
+    refine(&mut run, &mut coarse, 0b01);
+    run.finish(LocalClosure::Stable).unwrap();
+    assert!(!f.stale(0) && !f.stale(1));
+    assert!(f.kernel.worklist().contains(&f.reader));
     assert!(f.kernel.worklist().contains(&f.downstream_reader));
     assert!(!f.kernel.worklist().contains(&f.owner));
     assert!(!f.kernel.worklist().contains(&f.downstream_owner));
     for job in [f.reader, f.downstream_reader] {
         let mut run = f.kernel.begin(job, &mut f.meter).unwrap();
         assert_eq!(
-            run.query(&mut f.local, Scoped::new(f.target, 0))
+            run.query(&mut coarse, Scoped::new(f.target, 0))
                 .unwrap()
                 .value(),
-            Some(&0)
+            Some(&0b01)
         );
         if job == f.reader {
-            refine(&mut run, &mut f.local, 0);
+            refine(&mut run, &mut coarse, 0b01);
         }
         run.finish(LocalClosure::Stable).unwrap();
     }
     assert_eq!(f.kernel.closure(), Closure::Closed);
-    assert_eq!(
-        f.entry,
-        f.entry.clone(),
-        "handle equality follows the stable selector identity"
-    );
+    assert_eq!(f.entry, f.entry.clone());
     assert_ne!(f.entry, f.downstream_entry);
 }
 

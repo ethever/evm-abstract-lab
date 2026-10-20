@@ -230,6 +230,11 @@ impl<Cx, A: Analyzer<Cx>, B: Analyzer<Cx>> Analyzer<Cx> for Pair<A, B> {
 /// A local precision limit can be accepted with a sound coarse answer; pending
 /// required jobs, missing providers and explicit semantic obligations remain in
 /// the returned closure. Errors retain the currently admitted/in-flight job.
+/// A callback invalidating its own selected scope returns the recoverable
+/// `SolveError::Kernel(KernelError::StaleGeneration)` completion boundary. Its
+/// stable owner stays scheduled and its stale scope keeps closure Open. Actual
+/// meter/cancel failures and analyzer errors are preserved; the caller can reseed
+/// and replace the generation before continuing this solver.
 /// The final report traversal is reserved on the same meter even with zero steps
 /// or an empty ready queue; cancellation/resource refusal cannot bypass it.
 pub fn solve<J, A, S, M, E>(

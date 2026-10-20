@@ -55,6 +55,7 @@ impl<J> Kernel<J> {
                 n.saturating_add(f.readers.len())
                     .saturating_add(f.providers.len())
                     .saturating_add(f.assumptions.len())
+                    .saturating_add(f.coverage.len().saturating_mul(2))
             })
             .saturating_add(self.jobs.iter().fold(0usize, |n, j| {
                 n.saturating_add(j.reads.len())
@@ -154,6 +155,7 @@ impl<J> Kernel<J> {
                 n.saturating_add(f.readers.len())
                     .saturating_add(f.providers.len())
                     .saturating_add(f.assumptions.len())
+                    .saturating_add(f.coverage.len().saturating_mul(2))
             })
             .saturating_add(self.jobs.iter().fold(0usize, |n, j| {
                 n.saturating_add(j.reads.len())

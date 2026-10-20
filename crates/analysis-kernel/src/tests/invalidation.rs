@@ -5,6 +5,8 @@ mod api;
 mod atomicity;
 mod convergence;
 mod lifecycle;
+mod provenance;
+mod self_callback;
 
 use super::{Budget, Stop, scope};
 use crate::{
@@ -144,6 +146,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::configured(1, false)
+    }
+    fn configured(universe: u8, reverse: bool) -> Self {
         let mut kernel = Kernel::new().unwrap();
         let mut meter = Budget::default();
         let stable = scope(&mut kernel, &mut meter, 0, 0);
@@ -158,17 +163,40 @@ impl Fixture {
         let downstream_owner = kernel.register(stable, (), &mut meter).unwrap();
         let mut inputs = kernel.channel(Ascending(Union), &mut meter).unwrap();
         let mut local = kernel.channel(Descending(Meet), &mut meter).unwrap();
-        publish(&mut kernel, &mut meter, writer, &mut inputs, source, 0, 1);
+        publish(
+            &mut kernel,
+            &mut meter,
+            writer,
+            &mut inputs,
+            source,
+            0,
+            universe,
+        );
         // Seed/register/seal, publish stable entry, register owner, then drain.
-        seed(&mut kernel, &mut meter, reader, &mut local, 1);
-        seed(&mut kernel, &mut meter, downstream_reader, &mut local, 1);
+        seed(&mut kernel, &mut meter, reader, &mut local, universe);
+        seed(
+            &mut kernel,
+            &mut meter,
+            downstream_reader,
+            &mut local,
+            universe,
+        );
         for scope in [stable, source, target, downstream, unrelated] {
             kernel.seal_scope(scope, &mut meter).unwrap();
         }
-        let entry = kernel.generation_entry(stable, target, &mut meter).unwrap();
-        let downstream_entry = kernel
-            .generation_entry(stable, downstream, &mut meter)
-            .unwrap();
+        let (entry, downstream_entry) = if reverse {
+            let b = kernel
+                .generation_entry(stable, downstream, &mut meter)
+                .unwrap();
+            let a = kernel.generation_entry(stable, target, &mut meter).unwrap();
+            (a, b)
+        } else {
+            let a = kernel.generation_entry(stable, target, &mut meter).unwrap();
+            let b = kernel
+                .generation_entry(stable, downstream, &mut meter)
+                .unwrap();
+            (a, b)
+        };
         let unrelated_entry = kernel
             .generation_entry(stable, unrelated, &mut meter)
             .unwrap();
