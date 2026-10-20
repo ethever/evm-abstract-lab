@@ -494,8 +494,9 @@ fn identification_outcomes_preserve_value_layers_and_the_same_payment() {
                 |expression| original.clone().with_expression(expression.clone()),
             );
             let mut budget = WorkBudget::new(usize::MAX);
+            let numeric = Domain::default();
             let mut builder = Builder {
-                domain: ValueAlgebra::new(&Domain::default()),
+                domain: ValueAlgebra::new(&numeric),
                 budget: &mut budget,
                 retention: GuardRetention::new(&original, &original),
             };

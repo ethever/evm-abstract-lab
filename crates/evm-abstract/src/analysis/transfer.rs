@@ -156,11 +156,16 @@ pub(super) struct EvmCompletedCall<N: WordElement> {
     pub output_data: EvmByteArray<N>,
 }
 
-// Default aliases keep concrete consumers and regression fixtures unambiguous.
+// Concrete aliases keep existing default regression fixtures unambiguous.
+#[cfg(test)]
 pub(super) type Execution = EvmExecution<crate::domain::NumericValue>;
+#[cfg(test)]
 pub(super) type Successor = EvmSuccessor<crate::domain::NumericValue>;
+#[cfg(test)]
 pub(super) type Outcome = EvmOutcome<crate::domain::NumericValue>;
+#[cfg(test)]
 pub(super) type ExecutionFrontier = EvmExecutionFrontier<crate::domain::NumericValue>;
+#[cfg(test)]
 pub(super) type CompletedCall = EvmCompletedCall<crate::domain::NumericValue>;
 
 pub(super) fn resume_summary<D: EvmNumericAlgebra>(
