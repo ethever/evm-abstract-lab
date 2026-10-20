@@ -226,13 +226,17 @@ KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部�
 
 ## 6. 交换停止与执行未完成是两种边界
 
-交换不能无限回馈。事实表合并重复的位、范围与同余声明；相同事实重复出现不算新的增强。每次交换还受完整轮数与事实容量限制。
+交换不能无限回馈。事实表合并重复的位、范围与同余声明；相同事实重复出现不算新的增强。每次交换还受局部任务额度与事实容量限制。
+
+默认 product 把位、范围和有限集合/同余事实交给独立规则，通过共享 kernel 的依赖通知重新调度。`reduction_rounds = R` 当前按饱和运算换算为最多 `1 + 3 × R` 次任务评估，其中一次用于建立固定输入；它不是让所有组件同时读取旧快照的同步轮。`Reduction.rounds` 记录已经成功完成的 scalar 事实导出/导入次数；只有其余已唤醒的依赖任务也处理完，才能报告 Stable。范围规则刚发布的结果可以在同一份额度内被 scalar 读到，因此更换调度协议后，原先需要下一同步轮才能物化的单点可能更早出现。
+
+一个仍需后续反馈的例子是 `0 <= x <= 20`、`x ≡ 0 (mod 3)`、最低两位为 `01`，常量容量为 1。第一份额度内，范围规则先把端点收紧到 `1..17`；scalar 再把低位导出为模 4 的事实，与模 3 合成 `x ≡ 9 (mod 12)`。这个新同余需要后续范围任务才能给出 `9..9`，再物化常量、位和同余单点。普通整数逐一检查 `0..20` 也只得到 9；每个中间结果都必须覆盖它。对应的[真实多轮回归](../crates/evm-abstract/tests/domain_policy.rs)同时检查 RoundLimit、后续 Stable、四个组件的单点以及完整具体候选的保留。
 
 | 局部交换状态 | 含义 |
 | --- | --- |
 | Stable | 当前支持的交换规则没有进一步变化 |
-| RoundLimit | 轮数用完，保留已经证明的安全约束 |
-| FactLimit | 事实容量不足，保留此前完整轮的安全结果 |
+| RoundLimit | 局部任务额度用完，保留已经完成导入的安全约束，不声称依赖已经稳定 |
+| FactLimit | 事实容量不足，保留此前完整导入的安全结果 |
 | Empty | 数值约束已证明矛盾 |
 | OriginConflict | 来源声明不相容，数值是否不可达仍未知 |
 | SymbolicLimit | 数值结果仍安全，但运算表达式不能在节点/深度预算内保留 |
@@ -267,7 +271,7 @@ nix run . -- analyze \
 jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
-结果的 `schema_version` 为 10；其中 `domain_spec.schema_version` 为 2，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `cost_version` 为 4，`provenance_policy` 是 `scoped-expressions-and-value-identities-v3`。`domain_spec.relations` 冻结关系开关、表达式/约束预算，同样参与摘要资格。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
+结果的 `schema_version` 为 10；其中 `domain_spec.schema_version` 为 2，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `cost_version` 为 5，`provenance_policy` 是 `scoped-expressions-and-value-identities-v3`。费用版本 5 标记类型化依赖传播及其共享工作计费规则，不能把它读成分析 JSON 或域策略格式升级到 schema 5。`domain_spec.relations` 冻结关系开关、表达式/约束预算，同样参与摘要资格。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
 
 `--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 constants-only 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；CLI 默认容量 512 可以容纳全部候选；显式降至 8 时则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
 

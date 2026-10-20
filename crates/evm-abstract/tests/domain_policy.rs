@@ -15,6 +15,9 @@ use evm_abstract::{
 use revm_bytecode::opcode;
 use std::num::NonZeroUsize;
 
+#[path = "domain_policy/rounds.rs"]
+mod rounds;
+
 fn word(value: u64) -> AbstractValue {
     AbstractValue::constant(U256::from(value))
 }
@@ -158,7 +161,9 @@ fn json_distinguishes_a_top_component_from_the_whole_product() {
     );
     assert_eq!(json["domain_spec"]["profile"], "product");
     assert_eq!(json["domain_spec"]["word_bits"], 256);
-    assert_eq!(json["domain_spec"]["cost_version"], 4);
+    // Billing policy 5 does not change the domain policy's serialized schema.
+    assert_eq!(json["domain_spec"]["schema_version"], 2);
+    assert_eq!(json["domain_spec"]["cost_version"], 5);
     assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
 }
 
@@ -190,29 +195,40 @@ fn insufficient_initial_work_retains_a_typed_source_free_frontier() {
 #[test]
 fn successive_fact_rounds_materialize_a_real_cross_domain_chain() {
     let one_round = domain(Profile::Product, 1, 1, 256);
-    // 同余给 21..33；bit 4 clear 把范围收紧为 32..33。第二轮再次对齐同余，
-    // 才能把唯一成员 33 导入常量、位、区间和同余四个组件。
+    // Bounds consumes modulo 3 first: 0..18, then low bits 01 give 1..17.
+    // Scalar exports those low bits as modulo 4; CRT produces 9 modulo 12.
+    // Only a later bounds evaluation can align that NEW congruence to 9..9.
     let partially_reduced = one_round
         .from_facts(&[
-            UnaryPredicate::UnsignedBounds(
-                WordBounds::new(U256::from(10), U256::from(40)).unwrap(),
-            ),
-            UnaryPredicate::congruent(U256::from(12), U256::from(9)).unwrap(),
-            UnaryPredicate::BitClear(BitIndex::new(4).unwrap()),
+            UnaryPredicate::UnsignedBounds(WordBounds::new(U256::ZERO, U256::from(20)).unwrap()),
+            UnaryPredicate::congruent(U256::from(3), U256::ZERO).unwrap(),
+            UnaryPredicate::BitSet(BitIndex::new(0).unwrap()),
+            UnaryPredicate::BitClear(BitIndex::new(1).unwrap()),
         ])
         .unwrap();
     assert_eq!(
         partially_reduced.interval().unsigned_bounds(),
-        (U256::from(32), U256::from(33))
+        (U256::ONE, U256::from(17))
+    );
+    assert_eq!(
+        partially_reduced.congruence().modulus_residue(),
+        Some((U256::from(12), U256::from(9)))
     );
     assert!(partially_reduced.constants().is_none());
     assert_eq!(partially_reduced.singleton(), None);
-    assert!(partially_reduced.contains(U256::from(33)));
+    // This integer enumeration is independent of every abstract component.
+    let witnesses: Vec<_> = (0_u64..=20).filter(|x| x % 3 == 0 && x & 3 == 1).collect();
+    assert_eq!(witnesses, [9]);
     let next = one_round.reduce(&partially_reduced);
     assert_eq!(next.status, ReductionStatus::RoundLimit);
     assert_eq!(next.rounds, 1);
     assert!(next.strengthened > 0);
-    assert_eq!(next.value.singleton(), Some(U256::from(33)));
+    let exact = Some(U256::from(9));
+    assert_eq!(next.value.singleton(), exact);
+    assert_eq!(next.value.finite_constants().singleton(), exact);
+    assert_eq!(next.value.known_bits().singleton(), exact);
+    assert_eq!(next.value.interval().singleton(), exact);
+    assert_eq!(next.value.congruence().singleton(), exact);
     let full = domain(Profile::Product, 1, 8, 256).reduce(&partially_reduced);
     assert_eq!(full.status, ReductionStatus::Stable);
     assert!(full.rounds >= 2);
@@ -221,6 +237,13 @@ fn successive_fact_rounds_materialize_a_real_cross_domain_chain() {
         one_round.reduce(&full.value).status,
         ReductionStatus::Stable
     );
+    // All possible members lie in the asserted bounds above, so this also
+    // checks preservation of the whole joint concrete set through feedback.
+    for value in [&partially_reduced, &next.value, &full.value] {
+        for raw in 0_u64..=31 {
+            assert_eq!(value.contains(U256::from(raw)), witnesses.contains(&raw));
+        }
+    }
     // 从不把规约写入 join：有限容量已溢出，两个原始分量的界仍是 21..33。
     let raw_join = one_round.join(&word(21), &word(33));
     assert_eq!(
@@ -277,7 +300,7 @@ fn summaries_guard_the_entire_frozen_domain_policy() {
         );
         let json = serde_json::to_value(&record.input).unwrap();
         assert_eq!(json["domain_spec"]["schema_version"], 2);
-        assert_eq!(json["domain_spec"]["cost_version"], 4);
+        assert_eq!(json["domain_spec"]["cost_version"], 5);
         assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
         assert_eq!(
             json["domain_spec"]["provenance_policy"],
