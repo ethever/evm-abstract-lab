@@ -5,6 +5,7 @@ use crate::analysis::transfer::Execution;
 use crate::domain::AbstractValue;
 use crate::domain::Domain;
 use crate::domain::ValueAlgebra;
+use crate::domain::WordElement;
 use crate::world::ByteArray;
 
 use super::*;
@@ -428,7 +429,17 @@ fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() 
         eprintln!("identity case={case}");
         let (world, entry, payload) = fixture(address(4), input, Fork::Osaka, &config);
         let expected = payload.active().calldata.clone();
-        let mut budget = WorkBudget::new(config.max_work);
+        // These fixtures either decline extraction at the length or at the
+        // first unknown byte. Fund those independent queries separately from
+        // the retained-data summary bound; logical length contributes no fee.
+        let queries = expected.len().numeric().singleton_work()
+            + expected
+                .read_byte_checked(&value(0), domain)
+                .unwrap()
+                .numeric()
+                .singleton_work();
+        let maximum = config.max_work + queries;
+        let mut budget = WorkBudget::new(maximum);
         let result = run(&world, &entry, payload, &config, &mut budget);
         let diagnostics = format!(
             "{case}: budget={budget:?}, frontiers={:?}",
@@ -445,7 +456,7 @@ fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() 
             returned.data, expected,
             "{diagnostics}: preserve source, length and all facts"
         );
-        assert!(budget.used() < 50_000, "{diagnostics}");
+        assert!(budget.used() < maximum, "{diagnostics}");
     }
 }
 
@@ -874,6 +885,7 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         .metadata_len()
         .saturating_add(payload.active().calldata.state_root().work_size());
     let retained_input = scan.saturating_add(payload.active().calldata.work_size());
+    let length_query = payload.active().calldata.len().numeric().singleton_work();
     // Production quote receipts locate each root phase. Finalization retains
     // its own ledger after all three buffers have been fully validated.
     let receipts = root::tests::admission_receipts(&payload, &PrecompileId::Bn254Add, &config);
@@ -881,7 +893,9 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         .iter()
         .map(|kind| root_finalization_work(&payload, *kind, &config))
         .sum::<usize>();
-    let prefix = entry_work + retained_input;
+    let retained_prefix = entry_work + retained_input;
+    // Unknown length declines materialization only after one paid discovery.
+    let prefix = retained_prefix + length_query;
     assert_eq!(
         full_budget.used(),
         prefix + receipts.validation_ready + finalization_work
@@ -894,6 +908,7 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         // Input preflight precedes the optimized summary and keeps its receipt.
         (entry_work, entry_work, original_key.clone()),
         (entry_work + scan, entry_work + scan, original_key.clone()),
+        (prefix - 1, retained_prefix, original_key.clone()),
         (prefix + receipts.key_census - 1, prefix, None),
         (
             prefix + receipts.key_admitted - 1,
@@ -980,7 +995,7 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         FrontierReason::Relations(QueryReason::ExpressionLimit),
     );
     assert_eq!(result.payload, payload);
-    assert_eq!(budget.used(), entry_work + retained_input);
+    assert_eq!(budget.used(), retained_prefix);
     assert!(!budget.exhausted());
     let mut result = empty_execution(payload.clone());
     let mut budget = WorkBudget::new(limited.max_work);
