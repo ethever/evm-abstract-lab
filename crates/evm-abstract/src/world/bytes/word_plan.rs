@@ -222,8 +222,16 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Plan<'a, N, D> {
                 return Ok(None);
             }
         }
-        let context =
-            conditional::Context::<N, D>::new(&self.facts, Some(&self.conditional), domain);
+        // The original full-read fee is already paid. Keep the same ledger
+        // available for additional custom binding work, including after an
+        // optional prepared-cache refusal, without charging old actions twice.
+        let binding_budget = conditional::BindingBudget::new(budget);
+        let context = conditional::Context::<N, D>::prepaid(
+            &self.facts,
+            Some(&self.conditional),
+            domain,
+            &binding_budget,
+        );
         evaluate(&self.root, self.length.as_ref(), &offset, &context, domain)
     }
 }

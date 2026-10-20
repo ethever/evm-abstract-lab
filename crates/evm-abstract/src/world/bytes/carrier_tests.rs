@@ -17,6 +17,9 @@ use revm_bytecode::opcode;
 use serde::Serialize;
 use std::{cell::Cell, collections::BTreeMap, fmt};
 
+static BINDING_IMPORTS: crate::test_instrumentation::Counter<usize> =
+    crate::test_instrumentation::Counter::new(0);
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Word {
     lower: U256,
@@ -96,6 +99,10 @@ impl WordElement for Word {
             upper,
             odd: self.odd,
         })
+    }
+    fn import_binding(&self, observation: &WordObservation) -> Self {
+        BINDING_IMPORTS.update(|count| *count += 1);
+        self.constrain(observation).unwrap_or_else(|_| self.clone())
     }
     fn contains(&self, word: U256) -> bool {
         self.lower <= word && word <= self.upper && (!self.odd || word.bit(0))
@@ -312,6 +319,153 @@ fn tightened_custom_source_keeps_extra_guarantees_beyond_its_binding_observation
     assert!(read.numeric().odd);
     assert!(!read.contains(U256::from(3)));
     assert!(read.contains(U256::from(9)));
+}
+
+#[test]
+fn binding_import_is_prepaid_on_prepared_and_unprepared_reader_paths() {
+    use crate::domain::symbolic::{ByteStateId, ExprLimits, SourceId, StateBinding};
+    let _imports = BINDING_IMPORTS.scope();
+    let algebra = ValueAlgebra::new(Words::new("binding payment"));
+    let domain = algebra.borrowed();
+    let expression = ExprId::fresh().unwrap();
+    let observation = odd().numeric().observation();
+    let fee = odd().numeric().import_binding_work(&observation);
+    assert!(fee > 0);
+    let facts = BTreeMap::from([(expression.clone(), odd())]);
+    let conditional = conditional::ConditionalFacts::default();
+    let root = ByteStateId::observed(
+        SourceId::fresh().unwrap(),
+        ExprId::constant(U256::ONE),
+        vec![StateBinding {
+            index: U256::ZERO,
+            value: expression,
+            numeric: observation,
+        }],
+        ExprLimits::default().into(),
+    )
+    .unwrap();
+    let preparation = conditional::preparation(
+        root.work_size(),
+        &literal(0),
+        facts
+            .iter()
+            .map(|(key, value)| key.work_size() + value.work_size())
+            .sum(),
+        facts.len(),
+        &conditional,
+        domain,
+    );
+    let read = |prepared: bool, budget: &mut WorkBudget| {
+        if prepared {
+            let context =
+                conditional::Context::budgeted(&facts, &conditional, domain, &preparation, budget)
+                    .unwrap()
+                    .unwrap();
+            let value = super::numeric::Reader::with_context(context.clone(), domain)
+                .read(&root, &ExprId::constant(U256::ZERO));
+            (value, context.work_exhausted(), context.demand_payments())
+        } else {
+            let payer = conditional::BindingBudget::new(budget);
+            let context = conditional::Context::prepaid(&facts, Some(&conditional), domain, &payer);
+            let value = super::numeric::Reader::with_context(context.clone(), domain)
+                .read(&root, &ExprId::constant(U256::ZERO));
+            (value, context.work_exhausted(), Vec::new())
+        }
+    };
+    for prepared in [false, true] {
+        BINDING_IMPORTS.replace(0);
+        let mut pilot = WorkBudget::new(usize::MAX);
+        let (value, exhausted, payments) = read(prepared, &mut pilot);
+        assert_odd(&value);
+        assert!(!exhausted);
+        assert_eq!(BINDING_IMPORTS.replace(0), 1);
+        let prefix = if prepared {
+            let index = payments
+                .iter()
+                .position(|&(numeric, work)| numeric && work == fee)
+                .unwrap();
+            payments[..index].iter().map(|&(_, work)| work).sum()
+        } else {
+            0
+        };
+        let mut refused = WorkBudget::new(prefix + fee - 1);
+        let (value, exhausted, _) = read(prepared, &mut refused);
+        assert!(exhausted && refused.exhausted());
+        assert!(value.numeric().is_top());
+        assert_eq!(BINDING_IMPORTS.replace(0), 0, "unpaid binding hook ran");
+
+        let mut funded = WorkBudget::new(pilot.used());
+        let (value, exhausted, _) = read(prepared, &mut funded);
+        assert_odd(&value);
+        assert!(!exhausted);
+        assert_eq!(funded.used(), pilot.used());
+        assert_eq!(BINDING_IMPORTS.replace(0), 1);
+    }
+
+    // Exercise the public deferred reader as well: with no conditional scopes
+    // it uses the prepaid fallback Context, still on the original ledger.
+    let mut input = EvmByteArray::unknown();
+    input.length = literal(1);
+    input.root = root;
+    input.operands = facts;
+    let frozen = input.clone();
+    let mut pilot = WorkBudget::new(usize::MAX);
+    let plan = input
+        .prepare_word_read_with(&literal(0), domain, &mut pilot)
+        .unwrap()
+        .unwrap();
+    let prefix = pilot.used();
+    BINDING_IMPORTS.replace(0);
+    assert!(plan.read_word_budgeted(&mut pilot).unwrap().is_some());
+    assert_eq!(pilot.used() - prefix, fee);
+    assert_eq!(BINDING_IMPORTS.replace(0), 1);
+    let mut refused = WorkBudget::new(prefix + fee - 1);
+    let plan = input
+        .prepare_word_read_with(&literal(0), domain, &mut refused)
+        .unwrap()
+        .unwrap();
+    assert!(plan.read_word_budgeted(&mut refused).unwrap().is_none());
+    assert!(refused.exhausted());
+    assert_eq!(BINDING_IMPORTS.replace(0), 0);
+    assert_eq!(input, frozen);
+}
+
+#[test]
+fn native_world_byte_and_store_exports_keep_the_actual_custom_element() {
+    fn contains_odd(json: &serde_json::Value) -> bool {
+        match json {
+            serde_json::Value::Object(fields) => {
+                fields.get("odd").and_then(serde_json::Value::as_bool) == Some(true)
+                    || fields.values().any(contains_odd)
+            }
+            serde_json::Value::Array(values) => values.iter().any(contains_odd),
+            _ => false,
+        }
+    }
+
+    let algebra = ValueAlgebra::new(Words::new("native carrier"));
+    let domain = algebra.borrowed();
+    let owner = Address::repeat_byte(0x33);
+    let mut world = EvmWorld::new(Fork::Osaka, "native carrier");
+    let mut account = EvmAccount::empty();
+    account.balance = odd();
+    account.storage.insert(U256::from(9), odd());
+    world.insert(owner, account).unwrap();
+    let store = EvmStore::new_checked_with(&world, domain).unwrap();
+    let mut memory = EvmByteArray::memory();
+    memory
+        .write_byte_with(&literal(0), &odd(), 4096, domain)
+        .unwrap();
+
+    // The interner's WordObservation intentionally has no odd field. These
+    // exports must also serialize their real retained executable N.
+    for json in [
+        serde_json::to_value(&world).unwrap(),
+        serde_json::to_value(&store).unwrap(),
+        serde_json::to_value(&memory).unwrap(),
+    ] {
+        assert!(contains_odd(&json), "native export erased custom N: {json}");
+    }
 }
 
 #[test]

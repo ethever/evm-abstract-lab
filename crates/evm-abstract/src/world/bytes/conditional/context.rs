@@ -12,7 +12,9 @@ use crate::resource::WorkBudget;
 use alloy_primitives::U256;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
+mod bindings;
 mod memo;
+pub(in crate::world::bytes) use bindings::BindingBudget;
 pub(in crate::world::bytes) use memo::{CONTEXTS, Preparation, preparation};
 
 /// Resolve the active metadata scopes once per guard environment. Scalar
@@ -31,6 +33,7 @@ pub(in crate::world::bytes) struct Context<
     active: Rc<Vec<&'a Facts<N>>>,
     memo: Rc<RefCell<memo::Memo<'a, N, D>>>,
     demand: Option<Rc<memo::Demand<'a, D>>>,
+    binding_budget: Option<&'a BindingBudget<'a>>,
 }
 
 impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
@@ -47,6 +50,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
             active: Rc::new(Vec::new()),
             memo: Rc::new(RefCell::new(memo::Memo::<N, D>::default())),
             demand: None,
+            binding_budget: None,
         };
         out.select();
         out
@@ -57,17 +61,45 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
         self.domain
     }
 
-    /// Retained executable N is valid for a binding only under its original
-    /// exported observation. Refusal is latched before constructing that export.
-    pub(in crate::world::bytes) fn binding_matches(
+    pub(in crate::world::bytes) fn prepaid(
+        facts: &'a Facts<N>,
+        conditional: Option<&'a ConditionalFacts<N>>,
+        domain: AlgebraRef<'a, D>,
+        binding_budget: &'a BindingBudget<'a>,
+    ) -> Self {
+        let mut out = Self::new(facts, conditional, domain);
+        out.binding_budget = Some(binding_budget);
+        out
+    }
+
+    /// Retention follows the expression association, never equality of exports.
+    pub(in crate::world::bytes) fn has_binding_value(&self, expression: &ExprId) -> bool {
+        self.fact(self.facts, expression).is_some()
+            || self
+                .active
+                .iter()
+                .any(|facts| self.fact(facts, expression).is_some())
+    }
+
+    pub(in crate::world::bytes) fn pay_binding(
         &self,
-        expression: &ExprId,
+        numeric: &N,
         observation: &crate::domain::WordObservation,
     ) -> bool {
-        self.fact(self.facts, expression).is_some_and(|value| {
-            self.reserve(value.numeric().work_size())
-                && value.numeric().observation() == *observation
-        })
+        if self.stopped() {
+            return false;
+        }
+        let work = numeric.import_binding_work(observation);
+        // Zero is the old raw NumericValue materialization already funded by
+        // the caller. Do not add a payment/cancellation receipt for that case.
+        if work == 0 {
+            return true;
+        }
+        if let Some(demand) = &self.demand {
+            demand.pay_reader(|| work)
+        } else {
+            self.binding_budget.is_none_or(|budget| budget.pay(work))
+        }
     }
 
     /// Metadata and numeric actions share the original ledger. Fixed setup is
@@ -122,6 +154,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
             active: Rc::new(Vec::new()),
             memo: Rc::new(RefCell::new(memo::Memo::<N, D>::default())),
             demand: Some(demand),
+            binding_budget: None,
         };
         // Immutable source keys are sized once, before any prepared lookups.
         // All fixed scaffolding above was funded before its first allocation.
@@ -136,6 +169,9 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
     }
 
     pub(in crate::world::bytes) fn check(&self) -> Result<(), ExprError> {
+        if let Some(budget) = self.binding_budget {
+            budget.check()?;
+        }
         if let Some(demand) = &self.demand {
             // Latch cancellation in the shared trial before its dynamic scope
             // can end; every existing Context/Reader clone then stays stopped.
@@ -157,6 +193,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
         self.demand
             .as_ref()
             .is_some_and(|demand| demand.work_exhausted())
+            || self.binding_budget.is_some_and(BindingBudget::exhausted)
     }
 
     #[cfg(test)]
@@ -442,6 +479,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
             active: Rc::new(Vec::new()),
             memo: Rc::new(RefCell::new(memo::Memo::<N, D>::default())),
             demand: self.demand.as_ref().map(Rc::clone),
+            binding_budget: self.binding_budget,
         };
         out.select();
         // The unchanged construction envelope above already funded this
@@ -618,6 +656,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Clone for Context<'a
             active: Rc::clone(&self.active),
             memo: Rc::clone(&self.memo),
             demand: self.demand.clone(),
+            binding_budget: self.binding_budget,
         }
     }
 }

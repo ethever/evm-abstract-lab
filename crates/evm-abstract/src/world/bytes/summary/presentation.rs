@@ -79,15 +79,13 @@ fn refresh_with<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                 } else {
                     // Q is the actual emitted carrier, including every numeric
                     // component. Final scalar below discards all read metadata.
-                    // The retained N belongs to this exact exported source.
-                    // A replaced observation starts a new import boundary;
-                    // stale cache components must not refine that new carrier.
+                    // Preserve the actual carrier for this exact binding Expr.
+                    // The element owns default/raw versus custom import policy.
                     let numeric = out
                         .operands
                         .get(&binding.value)
                         .map(EvmValue::numeric)
-                        .filter(|value| value.observation() == binding.numeric)
-                        .cloned()
+                        .map(|value| value.import_binding(&binding.numeric))
                         .unwrap_or_else(|| N::from_observation(&binding.numeric));
                     Some(EvmValue::<N>::from_numeric(numeric))
                 }

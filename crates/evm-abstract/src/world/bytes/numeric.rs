@@ -329,11 +329,15 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                             let cell = bindings.iter().find(|b| b.index == *i).map_or_else(
                                 EvmValue::<N>::unknown_byte,
                                 |b| {
-                                    bound(
-                                        scalar_in(&b.value, &context, domain),
-                                        context.binding_matches(&b.value, &b.numeric),
-                                        &b.numeric,
-                                    )
+                                    let retained = context.has_binding_value(&b.value);
+                                    let value = scalar_in(&b.value, &context, domain);
+                                    if context.stopped()
+                                        || (retained
+                                            && !context.pay_binding(value.numeric(), &b.numeric))
+                                    {
+                                        return EvmValue::<N>::top();
+                                    }
+                                    bound(value, retained, &b.numeric)
                                 },
                             );
                             Some(join(out, cell, domain, &context))
@@ -751,15 +755,16 @@ mod tests;
 #[cfg(test)]
 mod windows;
 
-/// Retain executable custom guarantees associated with this exact observation.
-/// Unmatched/replaced bindings are the explicit observation-import boundary.
+/// Import a binding onto its actual retained carrier for the same expression.
+/// Budgeted callers pay import_binding_work before calling this helper.
 pub(in crate::world) fn bound<N: WordElement>(
     value: EvmValue<N>,
-    matches: bool,
+    retained: bool,
     observation: &crate::domain::WordObservation,
 ) -> EvmValue<N> {
-    if matches {
-        value
+    if retained {
+        let numeric = value.numeric().import_binding(observation);
+        value.with_numeric(numeric)
     } else {
         value.with_numeric(N::from_observation(observation))
     }

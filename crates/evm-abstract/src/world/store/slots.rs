@@ -72,9 +72,7 @@ pub(super) fn read_numeric<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                         |b| {
                             numeric::bound(
                                 numeric::scalar(&b.value, facts, domain),
-                                facts.get(&b.value).is_some_and(|value| {
-                                    value.numeric().observation() == b.numeric
-                                }),
+                                facts.contains_key(&b.value),
                                 &b.numeric,
                             )
                         },

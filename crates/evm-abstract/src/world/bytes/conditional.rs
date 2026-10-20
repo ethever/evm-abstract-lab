@@ -9,7 +9,7 @@ mod context;
 mod length;
 mod normalize;
 pub(super) use context::Context;
-pub(super) use context::{CONTEXTS, Preparation, preparation};
+pub(super) use context::{BindingBudget, CONTEXTS, Preparation, preparation};
 
 use super::{RangeError, native};
 use crate::domain::{
