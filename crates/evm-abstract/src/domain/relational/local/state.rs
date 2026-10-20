@@ -3,10 +3,7 @@
 
 use super::{Engine, LocalResult, QueryReason, Stop, terms::denied};
 use crate::domain::{
-    WordElement, WordObservation,
-    congruence::Congruence,
-    interval::Interval,
-    known_bits::KnownBits,
+    WordElement,
     symbolic::{
         ByteStateId, ByteStateKind, ByteView, ExprId, ExprKind, SlotStateId, SlotStateKind,
         SourceId,
@@ -698,15 +695,11 @@ impl<D: crate::domain::EvmNumericAlgebra> Engine<'_, '_, '_, D> {
                 return self.eval(value);
             }
         }
-        // Whole-word forwarding above preserves correlations and explicit
-        // source facts. Independent unconstrained bytes add no information to
-        // generic SHL/OR; pack their masks directly, keeping concrete padding.
+        // Whole-word forwarding above preserves correlations and source facts.
+        // Only the injected numeric policy may replace independent byte folding.
         let window = self.view_window(view, relative)?;
         self.work.prepay(32)?;
         let mut bytes = Vec::with_capacity(32);
-        let mut simple = true;
-        let mut zero = U256::ZERO;
-        let mut one = U256::ZERO;
         for i in 0..32usize {
             self.work.charge(1)?;
             let byte = match &window {
@@ -717,54 +710,35 @@ impl<D: crate::domain::EvmNumericAlgebra> Engine<'_, '_, '_, D> {
                 },
             };
             self.work.prepay(byte.work_size())?;
-            let shift = (31 - i) * 8;
-            if let Some(value) = byte.singleton() {
-                zero |= (!value & U256::from(255)) << shift;
-                one |= (value & U256::from(255)) << shift;
-            } else if byte != D::Element::unknown_byte() {
-                simple = false;
-            }
             bytes.push(byte);
         }
-        if simple {
-            let bits = KnownBits::new(zero, one).expect("disjoint byte positions");
-            if let Some(value) = bits.singleton() {
-                return Ok(D::Element::constant(value));
+        self.pack_word(bytes.try_into().expect("32 demanded bytes"))
+    }
+
+    fn pack_word(&mut self, bytes: [D::Element; 32]) -> LocalResult<D::Element> {
+        self.work.prepay(32)?;
+        let refs = std::array::from_fn(|i| &bytes[i]);
+        if let Some(fee) = self.domain.pack_word_work(&refs) {
+            self.work.prepay(fee)?;
+            let packed = self.domain.pack_word_numeric(&refs);
+            self.work.charge(0)?;
+            if let Some(packed) = packed {
+                return Ok(packed);
             }
-            let sign = U256::ONE << 255usize;
-            let biased_one = (one & !sign) | (zero & sign);
-            let biased_zero = (zero & !sign) | (one & sign);
-            let interval = Interval::new_unsigned(one, !zero)
-                .and_then(|unsigned| {
-                    unsigned.meet(&Interval::new_signed(biased_one, !biased_zero)?)
-                })
-                .expect("byte mask endpoints are included");
-            let fixed_low = (zero | one).trailing_ones();
-            let congruence = if fixed_low == 0 {
-                Congruence::top()
-            } else {
-                let modulus = U256::ONE << fixed_low;
-                Congruence::new(modulus, one & (modulus - U256::ONE))
-                    .expect("nonzero byte mask modulus")
-            };
-            return Ok(D::Element::from_observation(&WordObservation {
-                bits,
-                interval,
-                congruence,
-                nonzero: one != U256::ZERO,
-                ..WordObservation::top()
-            }));
         }
-        // Informative finite/range/congruence bytes retain the existing scalar
-        // transfer; the direct packing rule does not discard their guarantees.
+        // Opaque policies and uncertified inputs retain every injected scalar
+        // operation. Literal construction is paid before opaque factories run;
+        // apply keeps its existing operand/operation reservations unchanged.
+        self.work
+            .prepay(self.domain.literal_quote_work(U256::ZERO))?;
         let mut word = D::Element::constant(U256::ZERO);
         for (i, byte) in bytes.into_iter().enumerate() {
-            let shifted = self.apply(
-                opcode::SHL,
-                &[D::Element::constant(U256::from((31 - i) * 8)), byte],
-            )?;
+            let shift = U256::from((31 - i) * 8);
+            self.work.prepay(self.domain.literal_quote_work(shift))?;
+            let shifted = self.apply(opcode::SHL, &[D::Element::constant(shift), byte])?;
             word = self.apply(opcode::OR, &[word, shifted])?;
         }
+        self.work.charge(0)?;
         Ok(word)
     }
 

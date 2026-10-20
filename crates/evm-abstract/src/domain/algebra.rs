@@ -196,7 +196,18 @@ pub trait EvmNumericAlgebra: Debug {
     fn byte_image_complete(&self, _value: &Self::Element) -> bool {
         false
     }
-    /// Optional numeric replacement for the ordered 32-byte SHL/OR fold.
+    /// Optional complete fee for `pack_word_numeric`, including failed admission,
+    /// predicates, allocation and construction. Inspect only cached metadata.
+    /// None declines without calling the hook; MAX refuses before doing work.
+    /// This separate opt-in is needed because ordinary operation quotes cannot
+    /// price an opaque carrier's whole-word certificate or custom cooperation.
+    fn pack_word_work(&self, _bytes: &[&Self::Element; 32]) -> Option<usize> {
+        None
+    }
+    /// Paid numeric replacement for the ordered 32-byte SHL/OR fold under this
+    /// exact policy. Some promises equivalent numeric results, including hidden
+    /// carrier constraints and required custom reductions. Matching standard
+    /// observations alone cannot establish this law. None keeps ordinary apply.
     fn pack_word_numeric(&self, _bytes: &[&Self::Element; 32]) -> Option<Self::Element> {
         None
     }
@@ -310,6 +321,9 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     fn byte_image_complete(&self, value: &Self::Element) -> bool {
         D::byte_image_complete(self, value)
     }
+    fn pack_word_work(&self, bytes: &[&Self::Element; 32]) -> Option<usize> {
+        D::pack_word_work(self, bytes)
+    }
     fn pack_word_numeric(&self, bytes: &[&Self::Element; 32]) -> Option<Self::Element> {
         D::pack_word_numeric(self, bytes)
     }
@@ -373,7 +387,11 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     pub fn byte_image_complete(&self, value: &D::Element) -> bool {
         self.numeric.byte_image_complete(value)
     }
-    /// Optional domain-owned replacement for the 32-byte numeric scalar fold.
+    /// Cached-metadata fee for the optional domain-owned numeric fold replacement.
+    pub fn pack_word_work(&self, bytes: &[&D::Element; 32]) -> Option<usize> {
+        self.numeric.pack_word_work(bytes)
+    }
+    /// Call only after the complete domain-owned pack fee has been paid.
     pub fn pack_word_numeric(&self, bytes: &[&D::Element; 32]) -> Option<D::Element> {
         self.numeric.pack_word_numeric(bytes)
     }
@@ -784,6 +802,9 @@ impl EvmNumericAlgebra for Domain {
     }
     fn byte_image_complete(&self, value: &NumericValue) -> bool {
         super::byte_projection::full_byte_image(value)
+    }
+    fn pack_word_work(&self, bytes: &[&NumericValue; 32]) -> Option<usize> {
+        Some(super::byte_projection::pack_work(*self, bytes))
     }
     fn pack_word_numeric(&self, bytes: &[&NumericValue; 32]) -> Option<NumericValue> {
         super::byte_projection::pack_numeric(*self, bytes)

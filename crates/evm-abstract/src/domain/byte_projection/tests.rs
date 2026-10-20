@@ -12,6 +12,8 @@ use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::{collections::BTreeSet, num::NonZeroUsize};
 
+mod packing;
+
 fn product(capacity: usize) -> Domain {
     Domain::from_spec(
         DomainSpec::new(

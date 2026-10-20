@@ -13,6 +13,8 @@ use alloy_primitives::{U256, keccak256};
 use revm_bytecode::opcode;
 use std::sync::Arc;
 
+mod word_packing;
+
 fn limits() -> RelationLimits {
     // Existing analysis allowance from the captured failure, not a new policy.
     RelationLimits {

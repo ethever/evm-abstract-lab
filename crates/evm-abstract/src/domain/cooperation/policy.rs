@@ -87,9 +87,8 @@ where
     fn byte_image_complete(&self, v: &NumericValue) -> bool {
         EvmNumericAlgebra::byte_image_complete(&self.domain, v)
     }
-    fn pack_word_numeric(&self, bytes: &[&NumericValue; 32]) -> Option<NumericValue> {
-        EvmNumericAlgebra::pack_word_numeric(&self.domain, bytes)
-    }
+    // Replacing M/R can change even a cube's scalar-fold presentation. Retain
+    // the default pack opt-out rather than forwarding Domain's stronger law.
     fn uniform_byte_top(&self, v: &NumericValue) -> bool {
         EvmNumericAlgebra::uniform_byte_top(&self.domain, v)
     }
