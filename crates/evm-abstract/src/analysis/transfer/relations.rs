@@ -123,11 +123,10 @@ fn prepare_refine<D: EvmNumericAlgebra>(
         EvmScalarQuery::Unknown(crate::domain::relational::QueryReason::ScalarFactLimit) => {}
         EvmScalarQuery::Unknown(reason) => return Err(FrontierReason::Relations(reason)),
     }
-    let cache_work = context.query_cache.work(relations, &expression);
-    if cache_work == usize::MAX || !context.budget.charge(cache_work) {
-        return Err(FrontierReason::Work);
-    }
-    if let Some(answer) = context.query_cache.get(relations, &expression, &limits) {
+    if let Some(answer) = context
+        .query_cache
+        .get(relations, &expression, &limits, context.budget)
+    {
         return finish_refine(value, context, answer).map(PreparedRefinement::Done);
     }
     Ok(PreparedRefinement::Pending(expression))
@@ -148,7 +147,7 @@ fn local_refine<D: EvmNumericAlgebra>(
     }
     context
         .query_cache
-        .remember(relations, expression, &limits, &answer);
+        .remember(relations, expression, &limits, &answer, context.budget);
     finish_refine(value, context, answer)
 }
 

@@ -47,6 +47,8 @@ pub(super) mod procedure;
 mod ranges;
 mod relations;
 #[cfg(test)]
+mod resource_tests;
+#[cfg(test)]
 mod scalar_retention_tests;
 
 pub(super) use crate::resource::WorkBudget;
@@ -451,14 +453,21 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
     }
     let scope = identity_scope();
     let mut definition = 0_u32;
-    for value in &mut result.payload.active_mut().stack {
-        value.forget_identity();
-        *value = relations::identify(value.clone(), config.analysis.relations.enabled);
-        if let Some(scope) = scope {
-            *value = value.clone().with_identity(scope, definition);
-        }
-        definition = definition.saturating_add(1);
-    }
+    // Metadata changes consume each owned value; neither operation needs a
+    // duplicate of N. Taking the Vec constructs no placeholder numeric value.
+    let stack = std::mem::take(&mut result.payload.active_mut().stack);
+    result.payload.active_mut().stack = stack
+        .into_iter()
+        .map(|mut value| {
+            value.forget_identity();
+            let mut value = relations::identify(value, config.analysis.relations.enabled);
+            if let Some(scope) = scope {
+                value = value.with_identity(scope, definition);
+            }
+            definition = definition.saturating_add(1);
+            value
+        })
+        .collect();
     let code = result.payload.active().code;
     if let FrameCode::Precompile(address) = code {
         precompile::execute(&mut result, world.fork(), address, context);
@@ -563,18 +572,31 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
             return result;
         }
         if let Some(value) = instruction.immediate {
-            stack.push(EvmValue::<D::Element>::constant(value));
+            let value = EvmValue::<D::Element>::constant(value);
+            // The receipt owns a numeric copy even on this early PUSH path.
+            if !context.budget.charge(value.clone_work()) {
+                boundary(&mut result, pc, FrontierReason::Work);
+                return result;
+            }
             result
                 .instruction_values
                 .push(EvmInstructionValue::<D::Element>::new(
                     result.executed_pcs.len() - 1,
-                    stack.last().expect("PUSH produced its normal result"),
+                    &value,
                 ));
+            stack.push(value);
             result.mark_instruction(InstructionProgress::Completed);
             continue;
         }
         if (opcode::DUP1..=opcode::DUP16).contains(&op) {
             let depth = usize::from(op - opcode::DUP1 + 1);
+            if !context
+                .budget
+                .charge(stack[stack.len() - depth].clone_work())
+            {
+                boundary(&mut result, pc, FrontierReason::Work);
+                return result;
+            }
             stack.push(stack[stack.len() - depth].clone());
             result.mark_instruction(InstructionProgress::Completed);
             continue;
@@ -1082,6 +1104,13 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                     },
                     pc,
                 };
+                let topic_copy_work = args[2..].iter().fold(0usize, |work, value| {
+                    work.saturating_add(value.clone_work())
+                });
+                if !context.budget.charge(topic_copy_work) {
+                    boundary(&mut result, pc, FrontierReason::Work);
+                    return result;
+                }
                 if result
                     .payload
                     .store
@@ -1101,6 +1130,27 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
             }
             _ if outputs > 0 => {
                 let frame = result.payload.active();
+                let copied = match op {
+                    opcode::ADDRESS => frame.address_operand.as_ref(),
+                    opcode::CALLER => frame.caller_operand.as_ref(),
+                    opcode::CALLVALUE => Some(&frame.call_value),
+                    opcode::GASPRICE => Some(&entry.environment.gas_price),
+                    opcode::TIMESTAMP => Some(&entry.environment.timestamp),
+                    opcode::NUMBER => Some(&entry.environment.number),
+                    opcode::DIFFICULTY => Some(&entry.environment.prevrandao),
+                    opcode::GASLIMIT => Some(&entry.environment.gas_limit),
+                    opcode::CHAINID => entry.environment.chain_id.as_ref(),
+                    opcode::BASEFEE => Some(&entry.environment.base_fee),
+                    opcode::BLOBBASEFEE => Some(&entry.environment.blob_base_fee),
+                    opcode::CALLDATASIZE => Some(frame.calldata.len()),
+                    opcode::RETURNDATASIZE => Some(frame.returndata.len()),
+                    opcode::MSIZE => Some(frame.memory.len()),
+                    _ => None,
+                };
+                if copied.is_some_and(|value| !context.budget.charge(value.clone_work())) {
+                    boundary(&mut result, pc, FrontierReason::Work);
+                    return result;
+                }
                 let mut value = match op {
                     opcode::ADDRESS => frame.address_operand.clone().unwrap_or_else(|| {
                         entry.environment.address_value(frame.key.address_value)
@@ -1386,6 +1436,15 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                     } else {
                         value.forget_identity();
                     }
+                }
+                // One numeric copy belongs to the receipt; repeat_n may make
+                // outputs - 1 further copies before moving the final value.
+                if !context
+                    .budget
+                    .charge(value.clone_work().saturating_mul(outputs))
+                {
+                    boundary(&mut result, pc, FrontierReason::Work);
+                    return result;
                 }
                 result
                     .instruction_values

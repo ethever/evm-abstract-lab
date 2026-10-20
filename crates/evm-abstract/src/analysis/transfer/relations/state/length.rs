@@ -58,11 +58,11 @@ pub(super) fn refine<D: EvmNumericAlgebra>(
             cancelled()?;
             return Ok(());
         }
-        if !context.budget.charge(work) {
-            cancelled()?;
-            return Ok(());
-        }
-        let answer = if let Some(answer) = context.query_cache.get(relations, expression, &limits) {
+        let answer = if let Some(answer) =
+            context
+                .query_cache
+                .get(relations, expression, &limits, context.budget)
+        {
             answer
         } else {
             if !context.budget.can_afford(QUERY_WORK) {
@@ -90,9 +90,13 @@ pub(super) fn refine<D: EvmNumericAlgebra>(
                 return Ok(());
             }
             if !matches!(&answer, EvmValueQuery::Undetermined(_)) {
-                context
-                    .query_cache
-                    .remember(relations, expression, &limits, &answer);
+                context.query_cache.remember(
+                    relations,
+                    expression,
+                    &limits,
+                    &answer,
+                    context.budget,
+                );
             }
             answer
         };
