@@ -373,7 +373,9 @@ pub fn analyze_world(
 ///
 /// Context and partition policies are the same contracts used by ordinary
 /// propagation and relative procedure execution. They are immutable during the
-/// run and need not implement `Copy` or `Clone`.
+/// run and need not implement `Copy` or `Clone`. The public facade is borrowed
+/// once at the engine boundary; recursive execution forwards that same cheap
+/// view over the original numeric policy.
 ///
 /// ```
 /// use evm_abstract::{Address, Fork, analysis, domain::{Domain, ValueAlgebra}, world};
@@ -413,6 +415,7 @@ where
 }
 
 /// Analyze a custom numeric element while publishing bounded observations.
+/// Creates one borrowed algebra view for the engine to forward by value.
 pub fn analyze_world_with_components_observer<D, C, P>(
     world: crate::world::EvmWorld<D::Element>,
     entry: crate::world::EvmEntry<D::Element>,
@@ -426,7 +429,7 @@ where
     C: ContextPolicy,
     P: PartitionPolicy,
 {
-    engine::run_world_with(world, entry, config, algebra, policies, observer)
+    engine::run_world_with(world, entry, config, algebra.borrowed(), policies, observer)
 }
 
 /// Analyze a world while publishing bounded, discrete execution observations.

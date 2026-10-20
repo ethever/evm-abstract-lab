@@ -95,7 +95,10 @@ impl EvmNumericAlgebra for NumericProbe<'_> {
         EvmNumericAlgebra::apply_numeric(&self.domain, op, args)
     }
 
-    fn operation_work(&self, args: &[NumericValue]) -> usize {
+    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    where
+        Self::Element: 'a,
+    {
         EvmNumericAlgebra::operation_work(&self.domain, args)
     }
 
