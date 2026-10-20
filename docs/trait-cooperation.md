@@ -165,7 +165,7 @@ EVM 返回的详细 `Status::Converged` 与 `Status::Incomplete` 应连同诊断
 
 客户端应在语义遍历、集合构造等工作之前调用 `Charges::charge`，并让 capability/policy 的报价覆盖自己的键、值和合并成本。报价本身应保守、无分配，不通过深拷贝数值来估价；饱和或拒绝必须传播。框架支付的调度成本不会自动覆盖任意客户端计算。示例展示了这种预付方式。
 
-数值操作与观察导入还有自己的实际操作数/上下文报价协议，直接以当前 [`EvmNumericAlgebra`](../crates/evm-abstract/src/domain/algebra.rs)、[默认域实现](../crates/evm-abstract/src/domain/product.rs)和[工作预算](../crates/evm-abstract/src/resource.rs)的契约为准。发布按单次更新原子安装；成功的先前事实和已支付工作可以在之后中断时保留，整个异构任务不承诺一起回滚。具体语义回滚仍由 EVM 适配器负责。
+数值操作与观察导入还有自己的实际操作数/上下文报价协议，直接以当前 [`EvmNumericAlgebra`](../crates/evm-abstract/src/domain/algebra.rs)、[默认域实现](../crates/evm-abstract/src/domain/product.rs)和[工作预算](../crates/evm-abstract/src/resource.rs)的契约为准。自定义策略若使用受计费的 literal 构造路径，需要为 `literal_quote_work` 显式提供可信的构造与释放成本上界；其默认值为 `usize::MAX`，会在构造前保守拒绝。发布按单次更新原子安装；成功的先前事实和已支付工作可以在之后中断时保留，整个异构任务不承诺一起回滚。具体语义回滚仍由 EVM 适配器负责。
 
 ## 当前反馈端口和可信语义边界
 
