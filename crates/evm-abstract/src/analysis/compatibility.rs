@@ -58,6 +58,7 @@ struct NumericProbe<'a> {
     domain: Domain,
     operations: &'a Cell<usize>,
     coarse_add: bool,
+    empty_reduce: bool,
 }
 
 impl EvmNumericAlgebra for NumericProbe<'_> {
@@ -84,6 +85,14 @@ impl EvmNumericAlgebra for NumericProbe<'_> {
     }
 
     fn reduce_numeric(&self, value: &NumericValue) -> NumericReduction<NumericValue> {
+        if self.empty_reduce {
+            return NumericReduction {
+                value: value.clone(),
+                status: crate::domain::ReductionStatus::Empty,
+                rounds: 0,
+                strengthened: 0,
+            };
+        }
         EvmNumericAlgebra::reduce_numeric(&self.domain, value)
     }
 
@@ -138,6 +147,7 @@ fn borrowed_numeric_context_and_partition_policies_drive_production_execution() 
             domain: Domain::default(),
             operations: &numeric_calls,
             coarse_add: false,
+            empty_reduce: false,
         });
         let policies = EnginePolicies::new(
             ContextProbe {
@@ -222,6 +232,7 @@ fn equal_domain_specs_do_not_share_results_between_numeric_instances() {
             domain,
             operations: &operations,
             coarse_add,
+            empty_reduce: false,
         });
         assert_eq!(algebra.spec(), domain.spec());
         let graph = analyze_world_with(
@@ -294,4 +305,36 @@ fn custom_composition_cancellation_prevents_start_and_report_publication() {
             assert!(context_calls.get() > 0);
         }
     }
+}
+
+#[test]
+fn refused_optional_feedback_keeps_the_input_reachable_and_unmodified() {
+    use super::cooperation::{LocalInput, StackFacts, apply_refinements};
+    use crate::{
+        domain::{ReductionStatus, WordObservation},
+        resource::WorkBudget,
+    };
+
+    let operations = Cell::new(0);
+    let algebra = ValueAlgebra::new(NumericProbe {
+        domain: Domain::default(),
+        operations: &operations,
+        coarse_add: false,
+        empty_reduce: true,
+    });
+    let mut payload = super::machine::fixtures::payload(Domain::default());
+    payload.active_mut().stack.push(AbstractValue::top());
+    let facts = StackFacts::at(0, WordObservation::constant(U256::from(7)));
+    let result = apply_refinements(
+        payload,
+        &facts,
+        algebra.borrowed(),
+        &mut WorkBudget::new(20_000_000),
+    )
+    .unwrap();
+    let LocalInput::Reachable { payload, limited } = result else {
+        panic!("an optional Empty reduction is not an unreachable-input proof");
+    };
+    assert!(payload.active().stack[0].numeric().is_top());
+    assert_eq!(limited, vec![ReductionStatus::Empty]);
 }
