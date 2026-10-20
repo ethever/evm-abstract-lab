@@ -44,6 +44,7 @@ mod injection_tests;
 mod late_failure;
 mod precompile;
 pub(super) mod procedure;
+mod query;
 mod ranges;
 mod relations;
 #[cfg(test)]
@@ -647,10 +648,16 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
             let owner = result.payload.active().key.address;
             // 不用抽象环境的内部占位地址向链上查询。
             let frame = result.payload.active();
-            let observed_owner = frame.address_operand.as_ref().map_or_else(
-                || frame.key.address_value.as_concrete(),
-                |value| value.singleton().map(address),
-            );
+            let observed_owner = match frame.address_operand.as_ref() {
+                None => frame.key.address_value.as_concrete(),
+                Some(value) => match query::singleton(value.numeric(), context.budget) {
+                    Ok(singleton) => singleton.map(address),
+                    Err(reason) => {
+                        boundary(&mut result, pc, reason);
+                        return result;
+                    }
+                },
+            };
             if observed_owner == Some(owner) {
                 let scan = args[0]
                     .work_size()

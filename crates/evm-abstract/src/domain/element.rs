@@ -20,6 +20,10 @@ static CONGRUENCE_TOP: OnceLock<Congruence> = OnceLock::new();
 /// unsupported views return Top rather than fabricating a witness. Export to
 /// `WordObservation` is an explicit sound projection, not a lossless round-trip
 /// promise for arbitrary custom predicates. Executable state retains `Self`.
+///
+/// Pure methods do no accounting. A metered caller either reserves the named
+/// query/copy quote or uses a complete enclosing operation quote that explicitly
+/// owns that work. Retaining or copying a value never prepays later queries.
 pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
     /// Include this element's actual `Serialize` payload under `numeric` in
     /// native value reports, even for Top. Custom carriers default to retaining
@@ -43,6 +47,8 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
     }
     /// Refine this element by sound guarantees, preserving custom constraints.
     /// A default refusal to gain precision is sound and leaves the element intact.
+    /// The caller funds the entire operation, including any internal queries,
+    /// through `constrain_work` or a complete algebra refinement envelope.
     fn constrain(&self, observation: &WordObservation) -> Result<Self, FactError> {
         if self
             .singleton()
@@ -53,6 +59,14 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
             });
         }
         Ok(self.clone())
+    }
+    /// Complete standalone constraint-import quote, including internal queries
+    /// and the returned copy. Cached sizes only; overrides of `constrain` must
+    /// override this bound if their implementation needs more work.
+    fn constrain_work(&self, observation: &WordObservation) -> usize {
+        self.singleton_work()
+            .saturating_add(self.clone_work())
+            .saturating_add(observation.work_size().saturating_mul(256))
     }
     /// Materialize an immutable binding when this executable element belongs to
     /// the SAME binding expression. Preserve custom/path-refined guarantees and
@@ -67,9 +81,7 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
     /// only inspects cached sizes, covering attempted constraint work and a
     /// fallback copy; override if a custom implementation needs a larger bound.
     fn import_binding_work(&self, observation: &WordObservation) -> usize {
-        self.work_size()
-            .saturating_add(observation.work_size())
-            .saturating_mul(256)
+        self.constrain_work(observation)
             .saturating_add(self.clone_work())
     }
     /// Numeric format of one unobserved byte.
@@ -109,8 +121,23 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
         self.observation().contains(word)
     }
     /// Exact singleton if proved; the answer must agree with all own constraints.
+    /// Pure/caller-funded. An independent metered query reserves `singleton_work`
+    /// first; a paid operation owns only the queries inside that operation.
     fn singleton(&self) -> Option<U256> {
         self.observation().singleton()
+    }
+    /// Pay for one independent query, then return its reusable answer. The payer
+    /// must reject `usize::MAX` (unknown/overflowed work) and cancellation before
+    /// returning success. Refusal never executes the query. The caller must also
+    /// check cancellation AFTER this method returns, before using its answer.
+    /// A new or changed element requires a new payment; callers may reuse this
+    /// immutable answer. Overrides must preserve the payment-before-query order.
+    fn singleton_with_payment<E>(
+        &self,
+        pay: impl FnOnce(usize) -> Result<(), E>,
+    ) -> Result<Option<U256>, E> {
+        pay(self.singleton_work())?;
+        Ok(self.singleton())
     }
     /// Zero has not been excluded by sound numeric knowledge.
     fn may_be_zero(&self) -> bool {
@@ -122,17 +149,21 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
     }
     /// Whether this element has no numeric constraints. A conservative false is valid.
     fn is_top(&self) -> bool;
-    /// Retained/copy/query work bound, including observation construction and
-    /// retention and enabled native serialization. These traversals/allocations
-    /// must fit the quote; obtaining it must not perform them.
+    /// Retention/structural work bound, also covering one observation export,
+    /// membership test or enabled native serialization. It is not a prepaid
+    /// query allowance: singleton discovery has its own `singleton_work` quote,
+    /// and copying has `clone_work`. Obtaining sizes performs none of that work.
     fn work_size(&self) -> usize;
     /// Cost of copying this numeric payload, quoted without doing the copy.
     /// Deep custom storage must be included; metadata wrappers are separate.
+    /// Payment authorizes the copy alone, not queries on either copy.
     fn clone_work(&self) -> usize {
         self.work_size()
     }
     /// Cost of singleton discovery and validation, without running that query.
     /// Overrides may use cached shape/cardinality, never unpaid enumeration.
+    /// Covers the complete query, including any observation export/membership
+    /// checks it uses. `usize::MAX` refuses standalone metered execution.
     fn singleton_work(&self) -> usize {
         self.work_size().saturating_mul(256)
     }
@@ -181,6 +212,12 @@ impl WordElement for NumericValue {
     }
     fn constrain(&self, observation: &WordObservation) -> Result<Self, FactError> {
         Ok(self.observation().meet(observation)?.numeric())
+    }
+    fn constrain_work(&self, observation: &WordObservation) -> usize {
+        // Default conjunction meet/export, including finite input traversal.
+        self.work_size()
+            .saturating_add(observation.work_size())
+            .saturating_mul(256)
     }
     fn import_binding(&self, observation: &WordObservation) -> Self {
         // This explicit binding boundary restores the authoritative default raw
