@@ -442,7 +442,7 @@ fn mixed_projection(width: usize) {
             &AbstractValue::constant(U256::from(9)),
         )
         .numeric()
-        .clone();
+        .into();
     let binding = StateBinding {
         index: U256::from(2),
         value: cell.clone(),

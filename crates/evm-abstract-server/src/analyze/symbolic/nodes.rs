@@ -4,7 +4,7 @@
 use super::{Pool, Root, value};
 use alloy_primitives::{U256, hex};
 use evm_abstract::domain::{
-    AbstractValue,
+    AbstractValue, NumericValue, WordElement,
     symbolic::{
         ByteStateId, ByteView, ExprId, InputAtom, SlotStateId, SourceId, StateBinding,
         structure::{Borrowed, Mapper},
@@ -65,7 +65,11 @@ impl<'a> Mapper<Borrowed<'a>> for Pool<'_> {
         Ok(api::SymbolicBinding {
             index: value::word(value.index),
             value: self.e(&value.value),
-            numeric: value::info(&AbstractValue::from_numeric(value.numeric.clone())),
+            // The immutable binding is already a neutral observation. Import
+            // its guarantees only for the default wire-value presentation.
+            numeric: value::info(&AbstractValue::from_numeric(
+                NumericValue::from_observation(&value.numeric),
+            )),
         })
     }
 }
