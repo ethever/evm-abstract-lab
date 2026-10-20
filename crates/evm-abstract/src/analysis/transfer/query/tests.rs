@@ -766,9 +766,11 @@ fn public_pop_probe_needs_no_singleton_discovery_even_with_a_max_quote() {
         EvmValue::constant(U256::ZERO),
         EvmByteArray::empty(),
     );
-    let mut config = ExecutionConfig::default();
-    config.max_work = 10_000_000;
-    config.root_terminal_coverage = false;
+    let config = ExecutionConfig {
+        max_work: 10_000_000,
+        root_terminal_coverage: false,
+        ..ExecutionConfig::default()
+    };
     let algebra = ValueAlgebra::new(Policy);
     RECEIPT.update(|receipt| receipt.fee = usize::MAX);
     let skipped = analyze_world_with(
