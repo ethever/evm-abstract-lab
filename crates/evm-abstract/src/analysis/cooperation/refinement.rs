@@ -1,0 +1,216 @@
+use super::{
+    ExtraStores, ImmutableInputPolicy, Input, InputAlreadyInitialized, InputRoute, Inputs, Ports,
+    RefinementRoute, Refinements, StackFacts, StackMeet, Subject,
+};
+use crate::{
+    analysis::{EvmMachinePayload, MachineError},
+    domain::{
+        AlgebraRef, EvmNumericAlgebra, ReductionStatus, WordElement,
+        facts::{FactError, Symbol},
+    },
+    resource::WorkBudget,
+};
+use analysis_kernel::{
+    Accepts, Analyzer, Answer, Capability, Cons, Context, Descending, Kernel, KernelError,
+    LocalClosure, Meter, PublishError, Reduction, Registered, Run, Scoped,
+};
+
+/// Failed preparation is not a proof that the EVM input is unreachable.
+#[derive(Debug, thiserror::Error)]
+pub enum InitializationError<S> {
+    /// The root ledger or scope protocol refused required seed construction.
+    #[error("cooperation initialization failed: {0}")]
+    Kernel(KernelError<S>),
+    /// A seed was evaluated outside its declared immutable input universe.
+    #[error("cooperation input seed belongs to a different scope")]
+    WrongScope,
+    /// Input publication was refused; an existing input cannot be overwritten.
+    #[error("cooperation input publication failed: {0}")]
+    Input(PublishError<InputAlreadyInitialized, S>),
+    /// Registered initial guarantees could not be installed completely.
+    #[error("cooperation feedback initialization failed: {0}")]
+    Feedback(PublishError<FactError, S>),
+}
+
+pub(crate) fn create_ports<N: WordElement, J, M: Meter, F: ExtraStores>(
+    kernel: &mut Kernel<J>,
+    meter: &mut M,
+    factory: &F,
+) -> Result<Ports<N, F::Stores>, KernelError<M::Stop>> {
+    let input = kernel.channel(ImmutableInputPolicy::default(), meter)?;
+    let feedback = kernel.channel(Descending(StackMeet), meter)?;
+    let tail = factory.create(kernel, meter)?;
+    Ok(Cons::new(input, Cons::new(feedback, tail)))
+}
+
+/// Explicitly registered initialization accepts the same fixed-input semantic
+/// contract as later reductions. Normal analyzers have no first-write bypass.
+struct InitializeInput<'a, N: WordElement> {
+    input: &'a Input<N>,
+}
+
+impl<Cx, N: WordElement> Reduction<Cx> for InitializeInput<'_, N>
+where
+    Cx: Accepts<Inputs<N>, InputRoute>,
+{
+    type Task = Subject;
+    type Error = <Cx as Accepts<Inputs<N>, InputRoute>>::Error;
+
+    fn reduce(&mut self, subject: &Subject, cx: &mut Cx) -> Result<LocalClosure, Self::Error> {
+        cx.accept(Scoped::new(subject.scope, ()), Input::clone(self.input))?;
+        Ok(LocalClosure::Stable)
+    }
+}
+
+struct InitializeFeedback;
+
+impl<Cx> Reduction<Cx> for InitializeFeedback
+where
+    Cx: Accepts<Refinements, RefinementRoute>,
+{
+    type Task = Subject;
+    type Error = <Cx as Accepts<Refinements, RefinementRoute>>::Error;
+
+    fn reduce(&mut self, subject: &Subject, cx: &mut Cx) -> Result<LocalClosure, Self::Error> {
+        cx.accept(Scoped::new(subject.scope, ()), StackFacts::none())?;
+        Ok(LocalClosure::Stable)
+    }
+}
+
+/// Called on a bootstrap job in the NEW input scope, before publishing its
+/// stable generation selector. Failure leaves that bootstrap obligation open.
+pub(crate) fn initialize<N: WordElement, J, M: Meter, Tail>(
+    run: &mut Run<'_, J, M>,
+    ports: &mut Ports<N, Tail>,
+    input: Input<N>,
+) -> Result<(), InitializationError<M::Stop>> {
+    let subject = input.subject();
+    if run.scope() != subject.scope {
+        return Err(InitializationError::WrongScope);
+    }
+    run.reserve(Inputs::<N>::value_work(&input))
+        .map_err(InitializationError::Kernel)?;
+    let mut cx = Context::new(run, ports);
+    Registered::new(InitializeInput { input: &input })
+        .evaluate(&subject, &mut cx)
+        .map_err(InitializationError::Input)?;
+    Registered::new(InitializeFeedback)
+        .evaluate(&subject, &mut cx)
+        .map_err(InitializationError::Feedback)?;
+    Ok(())
+}
+
+/// Interpreter consumers read feedback through this same tracked publication
+/// channel. Retired subjects fail through the kernel's scope validation; pending
+/// answers retain a mandatory read obligation and never imply unreachable.
+pub(crate) fn read_refinements<N: WordElement, J, M: Meter, Tail>(
+    run: &mut Run<'_, J, M>,
+    ports: &mut Ports<N, Tail>,
+    subject: Subject,
+) -> Result<Answer<StackFacts>, KernelError<M::Stop>> {
+    run.query(&mut ports.tail.head, Scoped::new(subject.scope, ()))
+}
+
+/// A detached executable view, with contradiction separate from interruption.
+#[derive(Debug)]
+pub enum LocalInput<N: WordElement> {
+    /// A valid numerical contradiction in this fixed input universe.
+    Unreachable,
+    /// The original carrier and metadata survive; precision limits do not remove
+    /// this path. Global anchors and previous generations are never mutated.
+    Reachable {
+        /// Reduced local machine input consumed by bytecode transfer.
+        payload: EvmMachinePayload<N>,
+        /// Optional bounded numerical closure results, for native diagnostics.
+        limited: Vec<ReductionStatus>,
+    },
+}
+
+/// Typed local refinement refusal, distinct from a semantic contradiction.
+#[derive(Debug, thiserror::Error)]
+pub enum RefinementError {
+    /// Original root work ledger or cancellation refused required work.
+    #[error("{0}")]
+    Stopped(MachineError),
+    /// Feedback references no operand in this immutable input generation.
+    #[error("cooperation stack slot {slot} is outside the active stack height {height}")]
+    StackSlot {
+        /// Bottom-based stack index used by the registered component.
+        slot: usize,
+        /// Actual fixed input height.
+        height: usize,
+    },
+    /// Invalid/non-numerical facts cannot be turned into numerical Bottom.
+    #[error("{0}")]
+    Facts(FactError),
+}
+
+fn reserve(budget: &mut WorkBudget, work: usize) -> Result<(), RefinementError> {
+    MachineError::check_cancelled().map_err(RefinementError::Stopped)?;
+    if work == usize::MAX || !budget.charge(work) {
+        return Err(RefinementError::Stopped(MachineError::work_failure()));
+    }
+    Ok(())
+}
+
+/// Consume the already paid detached input from the interpreter's tracked read.
+/// Only its active scalar operands change, using the run's actual D. A failure
+/// discards this view while the authoritative ascending input remains untouched.
+pub(crate) fn apply_refinements<D: EvmNumericAlgebra>(
+    mut payload: EvmMachinePayload<D::Element>,
+    facts: &StackFacts,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<LocalInput<D::Element>, RefinementError> {
+    let StackFacts::Reachable(facts) = facts else {
+        return Ok(LocalInput::Unreachable);
+    };
+    let height = payload.active().stack.len();
+    let mut limited = Vec::new();
+    for (slot, observation) in facts {
+        let Some(value) = payload.active().stack.get(*slot) else {
+            return Err(RefinementError::StackSlot {
+                slot: *slot,
+                height,
+            });
+        };
+        reserve(
+            budget,
+            domain
+                .refinement_work(value, observation.work_size())
+                .saturating_add(value.clone_work()),
+        )?;
+        let numeric = match domain.constrain_numeric(value.numeric(), observation) {
+            Ok(result) => result,
+            Err(FactError::Contradiction { .. }) => return Ok(LocalInput::Unreachable),
+            Err(error) => return Err(RefinementError::Facts(error)),
+        };
+        match numeric.status {
+            ReductionStatus::Empty => {
+                // Empty retains a conservative prior result, not the explicit
+                // numerical contradiction proved by constrain().
+                reserve(budget, 1)?;
+                limited.push(ReductionStatus::Empty);
+                continue;
+            }
+            ReductionStatus::OriginConflict => {
+                return Err(RefinementError::Facts(FactError::OriginContradiction {
+                    subject: Symbol::THIS,
+                }));
+            }
+            ReductionStatus::Stable => {}
+            status => {
+                reserve(budget, 1)?;
+                limited.push(status);
+            }
+        }
+        // with_numeric updates singleton retention metadata, so quote that
+        // actual custom-element query before cloning/installing the value.
+        reserve(budget, numeric.value.singleton_work())?;
+        let next = payload.active().stack[*slot]
+            .clone()
+            .with_numeric(numeric.value);
+        payload.active_mut().stack[*slot] = next;
+    }
+    Ok(LocalInput::Reachable { payload, limited })
+}

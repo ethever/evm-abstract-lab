@@ -16,6 +16,7 @@
 
 mod config;
 pub mod control;
+pub mod cooperation;
 mod engine;
 pub mod layers;
 mod machine;
@@ -37,6 +38,10 @@ use std::fmt;
 
 pub use crate::bytecode::InvalidOpcodeReason;
 pub use config::{Config, ConfigError, ValidatedConfig};
+pub use cooperation::{
+    analyze_world_cooperating, analyze_world_cooperating_with_control,
+    analyze_world_cooperating_with_observer,
+};
 pub use engine::{
     Arrival, ContextInsensitive, ContextPolicy, EnginePolicies, FirstResumeStatus,
     MergeResumeStatus, PartitionPolicy, RecentDistinctJumps,
