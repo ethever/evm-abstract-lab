@@ -22,6 +22,8 @@ static BINDING_IMPORTS: crate::test_instrumentation::Counter<usize> =
 static SINGLETON_QUERIES: crate::test_instrumentation::Counter<usize> =
     crate::test_instrumentation::Counter::new(0);
 
+mod cancellation;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Word {
     lower: U256,
@@ -849,6 +851,8 @@ fn prepared_read_cache_rejects_another_policy_instance_with_the_same_spec() {
 
 pub(super) static HEAVY_CLONES: crate::test_instrumentation::Counter<usize> =
     crate::test_instrumentation::Counter::new(0);
+static CANCEL_HEAVY_CLONE: crate::test_instrumentation::Counter<bool> =
+    crate::test_instrumentation::Counter::new(false);
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub(super) struct Heavy {
@@ -858,10 +862,20 @@ pub(super) struct Heavy {
 impl Clone for Heavy {
     fn clone(&self) -> Self {
         HEAVY_CLONES.update(|count| *count += 1);
-        Self {
+        let copy = Self {
             word: self.word.clone(),
             payload: self.payload.clone(),
+        };
+        // Only an explicitly armed test can interrupt a real retained payload
+        // copy. Keep observed work outside the scoped counter's lock.
+        let mut cancel = false;
+        if !self.payload.is_empty() {
+            CANCEL_HEAVY_CLONE.update(|armed| cancel = std::mem::take(armed));
         }
+        if cancel {
+            analysis_control::current_cancellation().cancel();
+        }
+        copy
     }
 }
 impl fmt::Display for Heavy {
