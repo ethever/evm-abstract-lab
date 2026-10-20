@@ -11,6 +11,9 @@ use analysis_kernel::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+mod tests;
+
 /// Opaque static task sum of the production interpreter and its extension.
 /// External components name this type through cooperation::EvmContext; only
 /// the interpreter constructs machine/initialization tasks.

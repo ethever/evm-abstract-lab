@@ -693,6 +693,19 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         }
     }
 
+    /// A precise ordinary-transfer gap already represents this fixed-input
+    /// evaluation. Finishing the kernel job still failed: retain its obligation
+    /// and every queued rerun, including this node after a dependency/input wake.
+    /// The receipt is local to this evaluation, never inferred from old reports
+    /// or a relative Body/Resume frontier carrying the same outer source ID.
+    fn stop_after_execution(&mut self, id: usize, reported_work: bool, reason: FrontierReason) {
+        if reported_work && reason == FrontierReason::Work {
+            self.stop_queued(reason);
+        } else {
+            self.stop_pending(id, reason);
+        }
+    }
+
     /// Finish deeper callees before propagating their callers' pending unions.
     /// A caller's immediate rejection and later return then meet before that
     /// caller executes. Same-depth nodes retain their existing FIFO order.
@@ -853,6 +866,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 break;
             }
             let reused = matches!(attempt, SummaryAttempt::Hit);
+            let mut reported_work = false;
             if !reused {
                 let execution = if relative_procedure {
                     let (execution, evidence) = self.procedures.execute_with(
@@ -879,7 +893,16 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     self.result.transfers += 1;
                     self.counters.transfers += 1;
                     match self.ordinary_execution(id, input) {
-                        Ok(execution) => execution,
+                        Ok(execution) => {
+                            // Only this ordinary World evaluation owns these
+                            // instruction PCs. Relative frontiers and previous
+                            // evaluations cannot satisfy its reporting duty.
+                            reported_work = execution
+                                .frontiers
+                                .iter()
+                                .any(|frontier| frontier.reason == FrontierReason::Work);
+                            execution
+                        }
                         Err(error) => {
                             self.cache = cache;
                             self.stop_pending(id, error.frontier_reason());
@@ -907,7 +930,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             if let Some(token) = self.active.take()
                 && let Err(error) = self.runtime.finish(token, self.budget)
             {
-                self.stop_pending(id, error.frontier_reason());
+                self.stop_after_execution(id, reported_work, error.frontier_reason());
                 break;
             }
             self.active_node = None;
