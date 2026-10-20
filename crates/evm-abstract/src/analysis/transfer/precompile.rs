@@ -11,7 +11,7 @@ use crate::{
     analysis::{FrontierReason, OutcomeKind},
     domain::{
         AlgebraRef, EvmValue,
-        symbolic::{ByteStateKind, ExprId, ExprLimits, StateError},
+        symbolic::{ByteStateKind, ByteView, ExprId, ExprLimits, StateError},
     },
     world::{EvmByteArray, RangeError},
 };
@@ -26,6 +26,8 @@ use revm_precompile::{
 const MAX_EXACT_PRECOMPILE_WORK: usize = 16 * 1024 * 1024;
 const MAX_MATERIALIZATION_WORK: usize = 16 * 1024 * 1024;
 
+#[cfg(test)]
+mod query_tests;
 mod root;
 #[cfg(test)]
 mod tests;
@@ -159,9 +161,7 @@ fn materialize<D: EvmNumericAlgebra>(
     input: &EvmByteArray<D::Element>,
     context: &mut TransferContext<'_, D>,
 ) -> Result<Option<Vec<u8>>, FrontierReason> {
-    let Some(length) = input
-        .len()
-        .singleton()
+    let Some(length) = super::query::singleton(input.len().numeric(), context.budget)?
         .and_then(|n| usize::try_from(n).ok())
     else {
         return Ok(None);
@@ -185,7 +185,13 @@ fn materialize<D: EvmNumericAlgebra>(
         if !context.budget.charge(work) {
             return Err(FrontierReason::Work);
         }
-        let view = input.view();
+        // Reuse the paid length proof. `input.view()` would discover the same
+        // opaque singleton again while constructing its length expression.
+        let view = ByteView::new(
+            input.state_root().clone(),
+            ExprId::constant(U256::ZERO),
+            ExprId::constant(U256::from(length)),
+        );
         let limits = ExprLimits {
             max_nodes: length
                 .saturating_mul(input.state_root().nodes().saturating_add(2))
@@ -213,7 +219,9 @@ fn materialize<D: EvmNumericAlgebra>(
                 context.domain,
             )
             .map_err(super::errors::bytes)?;
-        let Some(byte) = value.singleton().and_then(|n| u8::try_from(n).ok()) else {
+        let Some(byte) = super::query::singleton(value.numeric(), context.budget)?
+            .and_then(|n| u8::try_from(n).ok())
+        else {
             return Ok(None);
         };
         bytes.try_reserve(1).map_err(|_| FrontierReason::Memory)?;
