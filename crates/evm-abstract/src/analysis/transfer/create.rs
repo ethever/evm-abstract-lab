@@ -178,7 +178,7 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                     &EvmValue::<D::Element>::constant(*offset),
                     &EvmValue::<D::Element>::constant(*size),
                 ],
-                maximum(&EvmValue::<D::Element>::constant(*size)),
+                usize::try_from(*size).unwrap_or(usize::MAX),
                 result.payload.active().memory.work_size(),
                 domain,
             )) {
@@ -421,17 +421,12 @@ pub(super) fn finish_creation<D: EvmNumericAlgebra>(
     if *kind != OutcomeKind::Return {
         return Ok(());
     }
-    if !context
-        .budget
-        .charge(data.work_size().saturating_add(maximum(data.len())))
-    {
+    let (lengths, _) = super::candidates::prepare(data.len(), context.budget)?;
+    let work = data.work_size().saturating_add(maximum(lengths.as_ref()));
+    if work == usize::MAX || !context.budget.charge(work) {
         return Err(FrontierReason::Work);
     }
-    if complete_candidates(data.len())
-        .is_some_and(|lengths| lengths.iter().all(|length| *length > U256::from(24_576)))
-        || complete_candidates(&data.byte_at_with(0, context.domain))
-            .is_some_and(|bytes| bytes.len() == 1 && bytes.contains(&U256::from(0xef)))
-    {
+    if lengths.is_some_and(|lengths| lengths.iter().all(|length| *length > U256::from(24_576))) {
         *kind = OutcomeKind::Failure;
         *data = EvmByteArray::<D::Element>::empty();
         return Ok(());

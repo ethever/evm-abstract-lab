@@ -1,6 +1,6 @@
 use super::{
-    Builder, CONSTANT_WORK_SIZE, GuardRetention, QUOTE_WORK, RangeKind, TransferContext, build,
-    copy_work, literal_memory_singleton_work, logical, output_release_work, release_work,
+    Builder, GuardRetention, QUOTE_WORK, RangeKind, TransferContext, build,
+    literal_memory_singleton_work, logical, output_release_work, release_work, value_copy_work,
 };
 use crate::domain::ValueAlgebra;
 use crate::{
@@ -176,23 +176,21 @@ fn operation_refusals(
 ) -> Vec<(usize, usize)> {
     let mut prefix = QUOTE_WORK;
     for value in [offset, size] {
-        prefix +=
-            QUOTE_WORK + copy_work(value.work_size() + 1) + literal_memory_singleton_work(value);
+        prefix += QUOTE_WORK + value_copy_work(value) + 2;
+        if value.expression().is_none() {
+            prefix += literal_memory_singleton_work(value);
+        }
     }
-    prefix += copy_work(CONSTANT_WORK_SIZE) * 2;
+    prefix += ValueAlgebra::new(&domain).literal_quote_work(logical::MAX_END) * 2;
     reference(offset, size, domain)
         .iter()
         .enumerate()
         .map(|(step, (op, args, _))| {
             if matches!(step, 1 | 3 | 4) {
-                prefix += QUOTE_WORK
-                    + args
-                        .iter()
-                        .map(|arg| copy_work(arg.work_size()))
-                        .sum::<usize>();
+                prefix += QUOTE_WORK + args.iter().map(value_copy_work).sum::<usize>();
             }
             prefix += QUOTE_WORK + output_release_work(ValueAlgebra::new(&domain), *op, args);
-            let cost = domain.operation_work(args);
+            let cost = ValueAlgebra::new(&domain).operation_work_for(*op, args);
             let refusal = (prefix, cost);
             prefix += cost;
             refusal
@@ -207,9 +205,8 @@ fn caller_copy_fees_cover_constants_only_and_saturate_before_actions() {
     config.analysis.relations.enabled = false;
     let domain = config.domain().unwrap();
     let (left, right) = (word(1), word(2));
-    let mut budget = WorkBudget::new(
-        QUOTE_WORK + copy_work(left.work_size()) + copy_work(right.work_size()) - 1,
-    );
+    let mut budget =
+        WorkBudget::new(QUOTE_WORK + value_copy_work(&left) + value_copy_work(&right) - 1);
     assert_eq!(domain.operation_work(&[left.clone(), right.clone()]), 1);
     let mut builder = Builder {
         domain: ValueAlgebra::new(&domain),
@@ -219,11 +216,11 @@ fn caller_copy_fees_cover_constants_only_and_saturate_before_actions() {
     assert!(builder.copied(opcode::GT, [&left, &right]).is_err());
     assert_eq!(budget.used(), QUOTE_WORK);
     assert!(budget.exhausted());
-    assert_eq!(copy_work(usize::MAX), usize::MAX);
     assert_eq!(release_work(usize::MAX), usize::MAX);
 
     // A small shared DAG has an enormous cached expanded-node count. The
-    // saturated lifetime fee must refuse before cloning or calling Domain.
+    // lifetime fee must refuse before cloning or calling Domain. Numeric
+    // clone_work is separate, so the finite release bound need not saturate.
     let limits = ExprLimits {
         max_nodes: usize::MAX,
         max_depth: usize::MAX,
@@ -234,7 +231,7 @@ fn caller_copy_fees_cover_constants_only_and_saturate_before_actions() {
             ExprId::operation(opcode::ADD, &[expression.clone(), expression], limits).unwrap();
     }
     let offset = AbstractValue::top().with_expression(expression);
-    let mut budget = WorkBudget::new(usize::MAX);
+    let mut budget = WorkBudget::new(1_000_000);
     let config = ExecutionConfig::default();
     assert!(
         build(
@@ -515,7 +512,8 @@ fn identification_outcomes_preserve_value_layers_and_the_same_payment() {
             assert_eq!(
                 budget.used(),
                 QUOTE_WORK
-                    + copy_work(original.work_size() + 1)
+                    + value_copy_work(&original)
+                    + 2
                     + literal_memory_singleton_work(&original)
             );
             assert!(!budget.exhausted());
@@ -538,9 +536,18 @@ fn identification_short_circuits_without_calling_the_allocator() {
             true,
         ),
     ] {
-        let (actual, identity_failed) = super::identify(original.clone(), enabled, || {
-            panic!("identification must not allocate on a short-circuited path")
-        });
+        let mut budget = WorkBudget::new(usize::MAX);
+        let domain = Domain::default();
+        let mut builder = Builder {
+            domain: ValueAlgebra::new(&domain),
+            budget: &mut budget,
+            retention: GuardRetention::new(&original, &original),
+        };
+        let (actual, identity_failed) = builder
+            .identify(&original, enabled, || {
+                panic!("identification must not allocate on a short-circuited path")
+            })
+            .unwrap();
         assert_same_value(&actual, &original);
         assert!(!identity_failed);
     }
@@ -589,10 +596,7 @@ fn unmarked_offset_identity_failure_vetoes_the_real_finite_guard_error() {
     assert!(built.condition.symbolic_expression().is_none());
     assert!(built.condition.may_be_zero() && built.condition.may_be_nonzero());
     let (prefix, cost) = *operation_refusals(&offset, &size, domain).last().unwrap();
-    assert_eq!(
-        budget.used(),
-        prefix + cost + QUOTE_WORK + literal_memory_singleton_work(&built.condition)
-    );
+    assert_eq!(budget.used(), prefix + cost);
     assert!(!budget.exhausted());
     assert_eq!(built.retention.cause(), None);
     built.retention.record(None);
@@ -617,7 +621,8 @@ fn unmarked_offset_identity_failure_vetoes_the_real_finite_guard_error() {
         super::super::partition(
             &mut result,
             &built.request,
-            &built.condition,
+            super::super::Condition::prepare(&built.condition, built.singleton, &mut budget)
+                .unwrap(),
             Some(&built.retention),
             &mut context(
                 &config,

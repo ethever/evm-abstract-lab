@@ -276,7 +276,7 @@ fn mstore_prices_every_real_index_and_refuses_before_quote_construction_or_deep_
             assert_eq!(LITERALS.get(), 0);
             assert_eq!(INDICES.get(), 0);
         } else {
-            assert_eq!(result.unwrap(), expected);
+            assert_eq!(result.unwrap().work, expected);
             assert_eq!(budget.used(), prepare);
             assert!(!budget.charge(expected));
             assert_eq!(budget.used(), prepare);
@@ -299,7 +299,7 @@ fn mstore_prices_every_real_index_and_refuses_before_quote_construction_or_deep_
         &mut full,
     )
     .unwrap();
-    assert!(full.charge(quoted));
+    assert!(full.charge(quoted.work));
     assert_eq!(full.used(), prepare + expected);
     assert!(!full.exhausted());
     let _applies = APPLIES.scope();
