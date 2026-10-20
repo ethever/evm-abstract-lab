@@ -147,6 +147,37 @@ pub trait EvmNumericAlgebra: Debug {
     fn byte_quotes_uniform(&self) -> bool {
         false
     }
+    /// Certify that `observe_byte_numeric(BYTE, [i, word])` gives equivalent
+    /// numeric results for every literal i in 0..32 under this exact policy,
+    /// including hidden carrier constraints. Component shapes or equal prices
+    /// alone cannot establish this law. Inspect only cached metadata here.
+    /// Admission depends only on the retained word, so a preceding memory touch
+    /// cannot invalidate a paid fast path. Custom policies decline by default.
+    fn uniform_word_bytes(&self, _word: &Self::Element) -> bool {
+        false
+    }
+    /// Complete fresh-word writer fee, called only after `uniform_word_bytes`.
+    /// The caller guarantees literal offset zero, a Zero content root, no stored
+    /// bytes/bindings or conditional context, and a nonconstant, non-ITE source
+    /// expression. Cover staging/expansion and all 32 checked byte projections,
+    /// including carrier copies, literals, queries and common metadata. Refresh
+    /// observes BYTE once; a singleton source may also require staging's 32
+    /// provenance-preserving BYTE calls. Reserve the extra allocation transfer
+    /// may install before the write, beyond the current `allocations` count.
+    ///
+    /// Quotation inspects only cached metadata: no literal construction or work
+    /// needing separate payment. MAX honestly refuses metered execution before
+    /// effects; pure library calls remain caller-funded. Ordinary policies that
+    /// decline the semantic certificate retain their per-index quote and work.
+    fn uniform_word_write_work(
+        &self,
+        _value: &EvmValue<Self::Element>,
+        _length: &EvmValue<Self::Element>,
+        _default: &EvmValue<Self::Element>,
+        _allocations: usize,
+    ) -> usize {
+        usize::MAX
+    }
     /// Upper bound on width-sized arithmetic passes in the shared memory writer.
     /// Opaque elements retain both possible passes without inspecting their state.
     fn memory_write_passes(
@@ -282,6 +313,18 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     }
     fn byte_quotes_uniform(&self) -> bool {
         D::byte_quotes_uniform(self)
+    }
+    fn uniform_word_bytes(&self, word: &Self::Element) -> bool {
+        D::uniform_word_bytes(self, word)
+    }
+    fn uniform_word_write_work(
+        &self,
+        value: &EvmValue<Self::Element>,
+        length: &EvmValue<Self::Element>,
+        default: &EvmValue<Self::Element>,
+        allocations: usize,
+    ) -> usize {
+        D::uniform_word_write_work(self, value, length, default, allocations)
     }
     fn memory_write_passes(
         &self,
@@ -769,6 +812,109 @@ impl EvmNumericAlgebra for Domain {
     }
     fn byte_quotes_uniform(&self) -> bool {
         true
+    }
+    fn uniform_word_bytes(&self, word: &NumericValue) -> bool {
+        // Only the default transfer's coarse BYTE rule has this shape law.
+        // More precise policies using NumericValue opt in independently.
+        self.spec().profile() == super::Profile::Product
+            && word.finite_constants().is_top()
+            && *word.known_bits() == super::known_bits::KnownBits::top()
+            && word.interval().singleton().is_none()
+            && word.congruence().singleton().is_none()
+    }
+    fn uniform_word_write_work(
+        &self,
+        value: &EvmValue<NumericValue>,
+        length: &EvmValue<NumericValue>,
+        default: &EvmValue<NumericValue>,
+        allocations: usize,
+    ) -> usize {
+        use super::{provenance::MAX_ORIGINS, symbolic::ExprId};
+
+        // Finite sets and expressions share handles; origins are bounded deep
+        // copies. Literal scalar work is 13 numeric units plus one origin.
+        const VALUE_COPY: usize = 12 + MAX_ORIGINS + 4;
+        const LITERAL_WORK: usize = 14;
+        let nodes = value.expression().map_or(0, ExprId::nodes);
+        // MSIZE may be nonliteral even with a Zero content root. A length
+        // guard would change eligibility when touch collapses {0,16} to 32.
+        // Quote its original expansion instead, using cached shape only.
+        let exact_length = length.known_bits().singleton().is_some_and(|n| {
+            length.interval().singleton() == Some(n)
+                && length.congruence().singleton() == Some(n)
+                && length.finite_constants().singleton() == Some(n)
+        });
+        // A synthesized numeric-only source adds five nodes: observed root,
+        // fresh source token, fresh binding value, constant key and SlotRead.
+        let length_nodes = length.expression().map_or_else(
+            || {
+                if exact_length {
+                    1
+                } else {
+                    length.numeric().work_size().saturating_add(5)
+                }
+            },
+            ExprId::nodes,
+        );
+        let candidates = if exact_length {
+            0
+        } else {
+            length
+                .constants()
+                .map_or(0, std::collections::BTreeSet::len)
+        };
+        let joined = candidates.min(self.capacity()).saturating_add(1);
+        let join_height = (usize::BITS - joined.leading_zeros()) as usize + 1;
+        // At most k joins of a <=capacity set and one constant. Pay bounded
+        // set insertion/comparison shape, copies and the 256-bit congruence
+        // gcd/difference steps (4096, as in the numeric fixed-width base).
+        let length_joins = candidates.saturating_mul(
+            4096usize
+                .saturating_add(joined.saturating_mul(join_height).saturating_mul(256))
+                .saturating_add(VALUE_COPY.saturating_mul(6)),
+        );
+        // Reserve the allocation touch_memory may install after this quote.
+        let allocations = allocations.saturating_add(1);
+        let height = (usize::BITS - allocations.leading_zeros()) as usize + 1;
+        // Each B-tree node has at most eleven keys. Only the new literal pair
+        // is compared, so even a fingerprint collision with an arbitrary old
+        // key compares a kind tag or fixed-width constants, never its children.
+        let allocation_probes = allocations.min(height.saturating_mul(12));
+        let staged = VALUE_COPY
+            .saturating_mul(8)
+            .saturating_add(allocations.saturating_mul(VALUE_COPY.saturating_mul(2) + 3))
+            .saturating_add(allocation_probes.saturating_mul(16).saturating_mul(2));
+        // Expanded uses only constant candidates/joins and checked scalar
+        // terms here, never Domain::apply. Four old-expression copies bound
+        // its maximum/guard terms.
+        let expand_root = nodes
+            .saturating_add(length_nodes.saturating_mul(4))
+            .saturating_add(28)
+            .saturating_mul(256)
+            .saturating_add(length_joins)
+            .saturating_add(length.work_size())
+            .saturating_add(default.work_size());
+        // This default-only proof uses one nonfinite tuple: the numeric base
+        // plus cached operand sizes bounds the default BYTE transfer. Reader
+        // disables relations; authoritative expressions are paid below.
+        let numeric = ValueAlgebra::new(self)
+            .without_relations()
+            .operation_work(&[])
+            .saturating_add(LITERAL_WORK)
+            .saturating_add(value.work_size());
+        // Per cell: complete numeric clone, one source-fact map clone, literal
+        // remember/metadata copies, Context and checked ByteRead/attach. Roots
+        // have nodes+3; ByteRead adds two. Index collection and B-tree insertion
+        // visit at most 32 coordinates. No word-read packing is charged here.
+        let cells = VALUE_COPY
+            .saturating_mul(6)
+            .saturating_add(nodes.saturating_add(5).saturating_mul(256))
+            .saturating_add(32)
+            .saturating_mul(32);
+        staged
+            .saturating_add(expand_root)
+            .saturating_add(numeric)
+            .saturating_add(cells)
     }
     fn memory_write_passes(
         &self,
