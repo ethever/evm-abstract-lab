@@ -1,7 +1,7 @@
 //! An abstract value separates numeric constraints, source metadata and identity.
 
 use super::{
-    NumericValue,
+    EvmNumericAlgebra, NumericValue, ValueAlgebra, WordElement,
     identity::{InputIdentity, RuntimeIdentity, Symbol, ValueIdentity},
     provenance::{Origin, Provenance},
     symbolic::{ExprError, ExprId, ExprLimits},
@@ -16,17 +16,17 @@ use std::{
 /// Machine value whose independent layers have explicit accessors.
 /// Neither equal sources nor equal numeric summaries create an identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AbstractValue {
-    pub(super) numeric: NumericValue,
+pub struct EvmValue<N: WordElement> {
+    pub(super) numeric: N,
     pub(super) provenance: Provenance,
     pub(super) identity: ValueIdentity,
     pub(super) expression: Option<ExprId>,
     pub(super) symbolic_limit: bool,
 }
 
-impl AbstractValue {
+impl<N: WordElement> EvmValue<N> {
     /// Numeric value with unknown source and no identity or expression.
-    pub fn from_numeric(numeric: NumericValue) -> Self {
+    pub fn from_numeric(numeric: N) -> Self {
         Self {
             numeric,
             provenance: Provenance::top(),
@@ -37,35 +37,35 @@ impl AbstractValue {
     }
     /// Exact word; its source is a supplied constant.
     pub fn constant(value: U256) -> Self {
-        let mut out = Self::from_numeric(NumericValue::constant(value));
+        let mut out = Self::from_numeric(N::constant(value));
         out.provenance = Provenance::constant();
         out
     }
     /// No numeric constraints, source facts, identity or expression.
     pub fn top() -> Self {
-        Self::from_numeric(NumericValue::top())
+        Self::from_numeric(N::top())
     }
     /// Unknown byte with the format's numeric width guarantee.
     pub fn unknown_byte() -> Self {
-        Self::from_numeric(NumericValue::unknown_byte())
+        Self::from_numeric(N::unknown_byte())
     }
     /// Unsigned interval with no source or identity assertion.
     pub fn unsigned_range(lower: U256, upper: U256) -> Option<Self> {
-        NumericValue::unsigned_range(lower, upper).map(Self::from_numeric)
+        N::unsigned_range(lower, upper).map(Self::from_numeric)
     }
     /// Unknown address with a numeric width guarantee and Address source label.
     pub fn unknown_address() -> Self {
-        let mut value = Self::from_numeric(NumericValue::unknown_address());
+        let mut value = Self::from_numeric(N::unknown_address());
         value.provenance = Provenance::source(Origin::Address);
         value
     }
     /// Numeric constraints; callers must explicitly select this layer.
-    pub fn numeric(&self) -> &NumericValue {
+    pub fn numeric(&self) -> &N {
         &self.numeric
     }
     /// Replace numeric facts after a caller has proved a sound refinement; all
     /// source, identity and expression layers retain the same semantic value.
-    pub(crate) fn with_numeric(mut self, numeric: NumericValue) -> Self {
+    pub(crate) fn with_numeric(mut self, numeric: N) -> Self {
         self.numeric = numeric;
         if self.singleton().is_some() {
             self.symbolic_limit = false;
@@ -121,10 +121,10 @@ impl AbstractValue {
     /// Numeric join plus a symbolic ITE using the machine's shared branch guard.
     /// Equal values keep their original representation. Anonymous values retain
     /// numeric facts while their missing symbolic correlation remains explicit.
-    pub fn join_guarded(
+    pub fn join_guarded_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
-        domain: super::Domain,
+        domain: &ValueAlgebra<D>,
         selector: ExprId,
         limits: ExprLimits,
     ) -> Result<Self, ExprError> {
@@ -235,7 +235,7 @@ impl AbstractValue {
         self.numeric.is_top()
     }
 }
-impl Serialize for AbstractValue {
+impl<N: WordElement> Serialize for EvmValue<N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if self.numeric_top()
             && self.provenance == Provenance::top()
@@ -246,14 +246,14 @@ impl Serialize for AbstractValue {
             return serializer.serialize_str("Top");
         }
         let mut map = serializer.serialize_map(None)?;
-        if let Some(constants) = self.numeric.finite.as_values() {
+        if let Some(constants) = self.numeric.constants() {
             map.serialize_entry("Constants", constants)?;
         }
-        map.serialize_entry("known_bits", &self.numeric.bits)?;
-        map.serialize_entry("interval", &self.numeric.interval)?;
-        map.serialize_entry("congruence", &self.numeric.congruence)?;
+        map.serialize_entry("known_bits", self.numeric.known_bits())?;
+        map.serialize_entry("interval", self.numeric.interval())?;
+        map.serialize_entry("congruence", self.numeric.congruence())?;
         map.serialize_entry("provenance", &self.provenance)?;
-        map.serialize_entry("nonzero", &self.numeric.nonzero)?;
+        map.serialize_entry("nonzero", &self.numeric.observation().nonzero())?;
         if !self.identity.persistent_empty() {
             map.serialize_entry("identity", &self.identity)?;
         }
@@ -266,9 +266,25 @@ impl Serialize for AbstractValue {
         map.end()
     }
 }
-impl fmt::Display for AbstractValue {
+impl<N: WordElement> fmt::Display for EvmValue<N> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.numeric.fmt(formatter)
+    }
+}
+
+/// Default executable value, preserving legacy constructor inference.
+pub type AbstractValue = EvmValue<NumericValue>;
+
+impl EvmValue<NumericValue> {
+    /// Default-domain compatibility entrypoint for a shared guarded join.
+    pub fn join_guarded(
+        &self,
+        other: &Self,
+        domain: super::Domain,
+        selector: ExprId,
+        limits: ExprLimits,
+    ) -> Result<Self, ExprError> {
+        self.join_guarded_with(other, &ValueAlgebra::new(domain), selector, limits)
     }
 }
 

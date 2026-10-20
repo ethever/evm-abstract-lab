@@ -10,15 +10,18 @@ use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::{collections::BTreeSet, num::NonZeroUsize};
 
+mod algebra;
 mod byte_projection;
 mod concrete;
 pub mod congruence;
+mod element;
 pub mod facts;
 pub mod finite_constant_set;
 pub mod identity;
 pub mod interval;
 pub mod known_bits;
 mod numeric;
+mod observation;
 pub mod provenance;
 mod query;
 mod reduce;
@@ -29,13 +32,16 @@ mod transfer;
 mod value;
 mod widening;
 
+pub use algebra::{EvmNumericAlgebra, NumericReduction, ValueAlgebra};
 use concrete::evaluate;
+pub use element::WordElement;
 pub use finite_constant_set::{EmptyFiniteConstantSet, FiniteConstantSet};
 pub use identity::{InputIdentity, RuntimeIdentity, ValueIdentity};
 pub use numeric::NumericValue;
-pub use reduce::{Reduction, ReductionStatus};
+pub use observation::WordObservation;
+pub use reduce::{EvmReduction, Reduction, ReductionStatus};
 pub use spec::{DomainSpec, Profile};
-pub use value::AbstractValue;
+pub use value::{AbstractValue, EvmValue};
 
 /// 根工作账本拒绝整项数值运算；不是 EVM gas 不足。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
