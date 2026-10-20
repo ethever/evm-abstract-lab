@@ -45,6 +45,27 @@ nix develop --no-update-lock-file --command cargo test --offline --locked \
 
 测试执行相同的 `main` 和全部三个对照；仓库的所有 target 测试也会执行它。
 
+## 定义自己的完整解释器
+
+[独立小语言客户端](../crates/analysis-kernel/tests/interpreter.rs)只使用 `analysis-kernel` 的公开 API。它自己定义指令、程序点、上下文、抽象状态和终态，并执行下面这段取值范围为 `0..7` 的程序：
+
+```text
+if x == 1 { fault }
+while x < 6 { x = min(x + 2, 7) }
+return x
+```
+
+[区间解释器](../crates/analysis-kernel/tests/interpreter/intervals.rs)与[独立奇偶分析器](../crates/analysis-kernel/tests/interpreter/parity.rs)通过各自声明的能力交换信息。区间提供循环体的数值范围，奇偶信息排除不可能的值。对输入集合 `{0,2}`，完整组合得到返回值 `6`；关闭任一方向的精度贡献，返回值都会扩大为 `[6,7]`。
+
+客户端在发现后继时注册任务，后续调度和依赖唤醒由同一个 `solve` 完成。两个域保存向上增长的可能值，每次求值重新计算临时交集；这个有限语言通过有限高度的 join 收敛。[具体执行检查](../crates/analysis-kernel/tests/interpreter/reference.rs)穷尽有限状态图，验证状态、终态和实际控制流边的覆盖。移除一个上下文的回边后，即使另一个上下文仍有同名边，检查也必须失败。
+
+```bash
+nix develop --no-update-lock-file --command cargo test --offline --locked \
+  -p analysis-kernel --test interpreter
+```
+
+这份见证还检查迟到输入、循环输入增长、组件顺序和上下文隔离。限步与取消会保留未完成义务；它验证的是这门有限语言的完整解释器使用方式，不是任意客户端规则的正确性证明。
+
 ## 内核、EVM 适配器和客户端各管什么
 
 [`analysis-kernel`](../crates/analysis-kernel/README.md)不依赖 EVM 指令、机器状态或数值域。它管理任务、带版本的事实、读取依赖、发布、代际替换与共同闭包。事实值保存在显式类型的 `Channel<Q, P>` 中；语义合并由策略 `P` 实现。
