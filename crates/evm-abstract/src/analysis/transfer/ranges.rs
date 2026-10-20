@@ -399,7 +399,7 @@ pub(super) fn memory_condition<D: EvmNumericAlgebra>(
     offset: &EvmValue<D::Element>,
     size: &EvmValue<D::Element>,
     domain: AlgebraRef<'_, D>,
-) -> EvmValue {
+) -> EvmValue<D::Element> {
     let limit = EvmValue::<D::Element>::constant(logical::MAX_END);
     let empty = domain.apply(opcode::ISZERO, std::slice::from_ref(size));
     let fits = sequence_condition(offset, size, &limit, domain);
@@ -413,7 +413,7 @@ pub(super) fn sequence_condition<D: EvmNumericAlgebra>(
     size: &EvmValue<D::Element>,
     length: &EvmValue<D::Element>,
     domain: AlgebraRef<'_, D>,
-) -> EvmValue {
+) -> EvmValue<D::Element> {
     let offset_fits = at_most(offset, length, domain);
     let remaining = domain.apply(opcode::SUB, &[length.clone(), offset.clone()]);
     let size_fits = at_most(size, &remaining, domain);
@@ -424,7 +424,7 @@ fn at_most<D: EvmNumericAlgebra>(
     left: &EvmValue<D::Element>,
     right: &EvmValue<D::Element>,
     domain: AlgebraRef<'_, D>,
-) -> EvmValue {
+) -> EvmValue<D::Element> {
     let greater = domain.apply(opcode::GT, &[left.clone(), right.clone()]);
     domain.apply(opcode::ISZERO, &[greater])
 }

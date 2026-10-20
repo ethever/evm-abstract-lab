@@ -4,7 +4,7 @@
 //! still owns numeric execution, reduction, provenance transfer and expression
 //! construction, including its internal copies. Refusal publishes no guard.
 
-use crate::domain::WordElement;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 
 use super::{
     AlgebraRef, EvmRangeRequest, EvmValue, GuardRetention, RangeKind, TransferContext,

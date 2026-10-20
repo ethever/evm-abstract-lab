@@ -1,7 +1,7 @@
 //! Basic-block execution on a transaction-wide machine. Calls suspend a frame;
 //! returns resume it with the same transaction store and an explicit result.
 
-use crate::domain::EvmNumericAlgebra;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 
 use super::engine::policy::ContextPolicy;
 use super::{
@@ -111,7 +111,7 @@ pub(super) enum RetentionCause {
     State,
 }
 
-fn empty_execution<N: WordElement>(payload: EvmMachinePayload<N>) -> EvmExecution {
+fn empty_execution<N: WordElement>(payload: EvmMachinePayload<N>) -> EvmExecution<N> {
     EvmExecution {
         payload,
         executed_pcs: Vec::new(),
@@ -136,7 +136,7 @@ pub(super) struct EvmExecutionFrontier<N: WordElement> {
     pub payload: Option<std::sync::Arc<EvmMachinePayload<N>>>,
 }
 
-impl<N: WordElement> EvmExecution {
+impl<N: WordElement> EvmExecution<N> {
     fn mark_instruction(&mut self, progress: InstructionProgress) {
         *self
             .instruction_progress
@@ -175,7 +175,7 @@ pub(super) fn resume_summary<D: EvmNumericAlgebra>(
     config: &ExecutionConfig,
     domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
-) -> EvmExecution {
+) -> EvmExecution<D::Element> {
     resume_summary_inner(payload, kind, data, config, domain, budget, false)
 }
 
@@ -187,7 +187,7 @@ fn resume_summary_inner<D: EvmNumericAlgebra>(
     domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
     procedure: bool,
-) -> EvmExecution {
+) -> EvmExecution<D::Element> {
     let mut result = EvmExecution {
         payload: payload.clone(),
         executed_pcs: Vec::new(),
@@ -224,10 +224,10 @@ fn resume_summary_inner<D: EvmNumericAlgebra>(
 fn address(value: U256) -> Address {
     Address::from_slice(&value.to_be_bytes::<32>()[12..])
 }
-fn constant<N: WordElement>(value: usize) -> EvmValue {
+fn constant<N: WordElement>(value: usize) -> EvmValue<N> {
     EvmValue::<N>::constant(U256::from(value))
 }
-fn zero<N: WordElement>() -> EvmValue {
+fn zero<N: WordElement>() -> EvmValue<N> {
     EvmValue::<N>::constant(U256::ZERO)
 }
 fn boundary<N: WordElement>(result: &mut EvmExecution<N>, pc: usize, reason: FrontierReason) {
@@ -352,7 +352,7 @@ fn environment_targets<D: EvmNumericAlgebra>(
     domain: AlgebraRef<'_, D>,
     entry: &EvmEntry<D::Element>,
     mut read: impl FnMut(Address) -> EvmValue<D::Element>,
-) -> EvmValue {
+) -> EvmValue<D::Element> {
     let symbolic_owner = entry.environment.to.as_concrete().is_none();
     if symbolic_owner
         && value.identity().same_identity(
@@ -394,7 +394,7 @@ pub(super) fn execute<D: EvmNumericAlgebra, C: ContextPolicy>(
     context_policy: &C,
     budget: &mut WorkBudget,
     storage_reads: StorageReadPolicy,
-) -> EvmExecution {
+) -> EvmExecution<D::Element> {
     execute_inner(
         world,
         entry,
@@ -422,7 +422,7 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
     budget: &mut WorkBudget,
     storage_reads: StorageReadPolicy,
     procedure: bool,
-) -> EvmExecution {
+) -> EvmExecution<D::Element> {
     let mut transfer_context = TransferContext {
         config,
         domain,
