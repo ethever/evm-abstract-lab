@@ -3,6 +3,7 @@ use super::{
     TransferContext, build, copy_work, literal_memory_singleton_work, logical, output_release_work,
     release_work,
 };
+use crate::domain::ValueAlgebra;
 use crate::{
     U256,
     analysis::{
@@ -21,10 +22,14 @@ use crate::{
 };
 use revm_bytecode::opcode;
 
-fn context<'a>(config: &'a ExecutionConfig, budget: &'a mut WorkBudget) -> TransferContext<'a> {
+fn context<'a>(
+    config: &'a ExecutionConfig,
+    budget: &'a mut WorkBudget,
+    algebra: crate::domain::AlgebraRef<'a, Domain>,
+) -> TransferContext<'a, Domain> {
     TransferContext {
         config,
-        domain: config.domain().unwrap(),
+        domain: algebra,
         budget,
         root_address: None,
         input_scope: None,
@@ -131,11 +136,21 @@ fn all_eight_paid_operations_preserve_the_original_values_in_both_profiles() {
                     .unwrap();
                     assert_same_value(&actual, &expected.value);
                     assert!(
-                        release_work(actual.work_size()) <= output_release_work(domain, *op, args)
+                        release_work(actual.work_size())
+                            <= output_release_work(ValueAlgebra::new(&domain), *op, args)
                     );
                 }
                 let mut budget = WorkBudget::new(usize::MAX);
-                let built = build(&offset, &size, &mut context(&config, &mut budget)).unwrap();
+                let built = build(
+                    &offset,
+                    &size,
+                    &mut context(
+                        &config,
+                        &mut budget,
+                        ValueAlgebra::new(&config.domain().unwrap()),
+                    ),
+                )
+                .unwrap();
                 assert_same_value(&built.request.offset, &offset);
                 assert_same_value(&built.request.size, &size);
                 assert_eq!(
@@ -145,7 +160,7 @@ fn all_eight_paid_operations_preserve_the_original_values_in_both_profiles() {
                 assert_same_value(&built.condition, &steps[7].2.value);
                 assert_same_value(
                     &built.condition,
-                    &super::super::memory_condition(&offset, &size, domain),
+                    &super::super::memory_condition(&offset, &size, ValueAlgebra::new(&domain)),
                 );
                 assert!(!budget.exhausted());
             }
@@ -177,7 +192,7 @@ fn operation_refusals(
                         .map(|arg| copy_work(arg.work_size()))
                         .sum::<usize>();
             }
-            prefix += QUOTE_WORK + output_release_work(domain, *op, args);
+            prefix += QUOTE_WORK + output_release_work(ValueAlgebra::new(&domain), *op, args);
             let cost = domain.operation_work(args);
             let refusal = (prefix, cost);
             prefix += cost;
@@ -222,7 +237,18 @@ fn caller_copy_fees_cover_constants_only_and_saturate_before_actions() {
     let offset = AbstractValue::top().with_expression(expression);
     let mut budget = WorkBudget::new(usize::MAX);
     let config = ExecutionConfig::default();
-    assert!(build(&offset, &word(1), &mut context(&config, &mut budget)).is_err());
+    assert!(
+        build(
+            &offset,
+            &word(1),
+            &mut context(
+                &config,
+                &mut budget,
+                ValueAlgebra::new(&config.domain().unwrap())
+            )
+        )
+        .is_err()
+    );
     assert_eq!(budget.used(), QUOTE_WORK * 2);
     assert!(budget.exhausted());
 }
@@ -235,12 +261,16 @@ fn each_of_eight_operation_refusals_keeps_paid_prefix_payload_and_prior_failure(
     config.analysis.relations.max_nodes = 10;
     let domain = config.domain().unwrap();
     let (offset, size) = inputs();
-    let payload = initial(&world, &entry, domain).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     let mut covered = empty_execution(payload.clone());
     let mut full = WorkBudget::new(usize::MAX);
     assert!(super::super::logical::failure(
         &mut covered,
-        &mut context(&config, &mut full),
+        &mut context(
+            &config,
+            &mut full,
+            ValueAlgebra::new(&config.domain().unwrap())
+        ),
         19
     ));
     let gas_work = full.used();
@@ -257,7 +287,11 @@ fn each_of_eight_operation_refusals_keeps_paid_prefix_payload_and_prior_failure(
                 &mut result,
                 &offset,
                 &size,
-                &mut context(&config, &mut budget),
+                &mut context(
+                    &config,
+                    &mut budget,
+                    ValueAlgebra::new(&config.domain().unwrap())
+                ),
                 19,
             ),
             "step {}",
@@ -304,7 +338,7 @@ fn finite_raw_guard_error_attaches_only_to_the_actual_missing_expression_frontie
         Some(ExprError::Limit { nodes: 11, .. })
     ));
     assert!(steps[7].2.symbolic_error.is_none());
-    let mut result = empty_execution(initial(&world, &entry, domain).unwrap());
+    let mut result = empty_execution(initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap());
     let before = result.payload.clone();
     boundary(&mut result, 3, FrontierReason::Work);
     let mut budget = WorkBudget::new(config.max_work);
@@ -312,7 +346,11 @@ fn finite_raw_guard_error_attaches_only_to_the_actual_missing_expression_frontie
         &mut result,
         &offset,
         &size,
-        &mut context(&config, &mut budget),
+        &mut context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&config.domain().unwrap())
+        ),
         19,
     ));
     assert!(!budget.exhausted());
@@ -345,17 +383,31 @@ fn raw_finite_error_does_not_turn_a_proven_constant_guard_into_a_failure() {
     let offset = AbstractValue::top().with_expression(expression);
     let size = word(0);
     let mut budget = WorkBudget::new(config.max_work);
-    let built = build(&offset, &size, &mut context(&config, &mut budget)).unwrap();
+    let built = build(
+        &offset,
+        &size,
+        &mut context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
+    )
+    .unwrap();
     assert_eq!(built.retention.cause(), Some(RetentionCause::Expression));
     assert_eq!(built.condition.singleton(), Some(U256::ONE));
     // allow_memory bypasses literal admission because the offset root exceeds
     // the cap, then keeps the original proven-constant success path.
-    let mut result = empty_execution(initial(&world, &entry, Domain::default()).unwrap());
+    let mut result =
+        empty_execution(initial(&world, &entry, ValueAlgebra::new(&Domain::default())).unwrap());
     assert!(super::super::allow_memory(
         &mut result,
         &offset,
         &size,
-        &mut context(&config, &mut budget),
+        &mut context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&config.domain().unwrap())
+        ),
         19,
     ));
     assert!(result.frontiers.is_empty());
@@ -367,14 +419,18 @@ fn raw_finite_error_does_not_turn_a_proven_constant_guard_into_a_failure() {
 fn literal_and_cancelled_paths_keep_their_original_boundaries_without_guard_fallback() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
-    let payload = initial(&world, &entry, config.domain().unwrap()).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&config.domain().unwrap())).unwrap();
     let mut result = empty_execution(payload.clone());
     let mut budget = WorkBudget::new(736);
     assert!(super::super::allow_memory(
         &mut result,
         &AbstractValue::top(),
         &word(0),
-        &mut context(&config, &mut budget),
+        &mut context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&config.domain().unwrap())
+        ),
         19,
     ));
     assert_eq!(budget.used(), 736);
@@ -388,7 +444,11 @@ fn literal_and_cancelled_paths_keep_their_original_boundaries_without_guard_fall
         let mut budget = WorkBudget::new(config.max_work);
         assert!(super::super::logical::failure(
             &mut result,
-            &mut context(&config, &mut budget),
+            &mut context(
+                &config,
+                &mut budget,
+                ValueAlgebra::new(&config.domain().unwrap())
+            ),
             19
         ));
         let paid = budget.used();
@@ -398,7 +458,11 @@ fn literal_and_cancelled_paths_keep_their_original_boundaries_without_guard_fall
             &mut result,
             &offset,
             &size,
-            &mut context(&config, &mut budget),
+            &mut context(
+                &config,
+                &mut budget,
+                ValueAlgebra::new(&config.domain().unwrap())
+            ),
             19,
         ));
         assert_eq!(budget.used(), paid);
@@ -431,7 +495,7 @@ fn identification_outcomes_preserve_value_layers_and_the_same_payment() {
             );
             let mut budget = WorkBudget::new(usize::MAX);
             let mut builder = Builder {
-                domain: Domain::default(),
+                domain: ValueAlgebra::new(&Domain::default()),
                 budget: &mut budget,
                 retention: GuardRetention::new(&original, &original),
             };
@@ -502,12 +566,20 @@ fn unmarked_offset_identity_failure_vetoes_the_real_finite_guard_error() {
 
     let mut allocations = 0;
     let mut budget = WorkBudget::new(usize::MAX);
-    let mut built =
-        super::build_with_allocator(&offset, &size, &mut context(&config, &mut budget), || {
+    let mut built = super::build_with_allocator(
+        &offset,
+        &size,
+        &mut context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
+        || {
             allocations += 1;
             None
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
     assert_eq!(allocations, 1);
     assert_same_value(&built.request.offset, &offset);
     assert!(!built.request.offset.symbolic_limit_reached());
@@ -538,7 +610,8 @@ fn unmarked_offset_identity_failure_vetoes_the_real_finite_guard_error() {
     assert_eq!(previously_eligible.cause(), None);
 
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut result = empty_execution(initial(&world, &entry, Domain::default()).unwrap());
+    let mut result =
+        empty_execution(initial(&world, &entry, ValueAlgebra::new(&Domain::default())).unwrap());
     let before = result.payload.clone();
     assert!(
         super::super::partition(
@@ -546,7 +619,11 @@ fn unmarked_offset_identity_failure_vetoes_the_real_finite_guard_error() {
             &built.request,
             &built.condition,
             Some(&built.retention),
-            &mut context(&config, &mut budget),
+            &mut context(
+                &config,
+                &mut budget,
+                ValueAlgebra::new(&config.domain().unwrap())
+            ),
             19,
         )
         .is_none()
@@ -582,12 +659,20 @@ fn unmarked_size_identity_failure_also_vetoes_finite_guard_evidence() {
     );
     let mut allocations = 0;
     let mut budget = WorkBudget::new(usize::MAX);
-    let built =
-        super::build_with_allocator(&offset, &size, &mut context(&config, &mut budget), || {
+    let built = super::build_with_allocator(
+        &offset,
+        &size,
+        &mut context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
+        || {
             allocations += 1;
             None
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
     assert_eq!(allocations, 1);
     assert_same_value(&built.request.offset, &offset);
     assert_same_value(&built.request.size, &size);

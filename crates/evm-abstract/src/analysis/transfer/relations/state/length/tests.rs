@@ -1,5 +1,7 @@
 //! The production consumer queries only the composite length, never its arms.
 
+use crate::domain::ValueAlgebra;
+
 use crate::{
     Fork,
     analysis::{
@@ -71,13 +73,13 @@ fn composite_proof_narrows_both_unknown_arms_without_changing_guard_or_frozen_re
     let address = Address::repeat_byte(0x71);
     let mut world = World::offline(Fork::Osaka, "length consequences", "paired unknown return");
     world.insert(address, Account::empty()).unwrap();
-    let mut payload = initial(&world, &Entry::new(address), domain).unwrap();
+    let mut payload = initial(&world, &Entry::new(address), ValueAlgebra::new(&domain)).unwrap();
     payload.active_mut().memory = memory;
     payload.active_mut().returndata = returndata.clone();
     let mut budget = WorkBudget::new(1_000_000);
     let mut context = TransferContext {
         config: &config,
-        domain,
+        domain: ValueAlgebra::new(&domain),
         budget: &mut budget,
         root_address: None,
         input_scope: None,
@@ -140,7 +142,7 @@ fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomi
     let address = Address::repeat_byte(0x72);
     let mut world = World::offline(Fork::Osaka, "length admission", "optional precision");
     world.insert(address, Account::empty()).unwrap();
-    let mut original = initial(&world, &Entry::new(address), domain).unwrap();
+    let mut original = initial(&world, &Entry::new(address), ValueAlgebra::new(&domain)).unwrap();
     let returndata = ByteArray::unknown();
     let expression = returndata.len().expression().unwrap().clone();
     let mut memory = before();
@@ -160,7 +162,7 @@ fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomi
         let mut budget = WorkBudget::new(capacity);
         let mut context = TransferContext {
             config: &config,
-            domain,
+            domain: ValueAlgebra::new(&domain),
             budget: &mut budget,
             root_address: None,
             input_scope: None,
@@ -192,7 +194,7 @@ fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomi
     let mut budget = WorkBudget::new(1_000_000);
     let mut context = TransferContext {
         config: &config,
-        domain,
+        domain: ValueAlgebra::new(&domain),
         budget: &mut budget,
         root_address: None,
         input_scope: None,
@@ -258,7 +260,7 @@ fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomi
         let mut budget = WorkBudget::new(1_000_000);
         let mut context = TransferContext {
             config: &config,
-            domain,
+            domain: ValueAlgebra::new(&domain),
             budget: &mut budget,
             root_address: None,
             input_scope: None,

@@ -1,13 +1,16 @@
 //! The original eager memory predicate, prepaid on the transfer's root ledger.
 //!
-//! Caller copies and local destruction have their own owners. Domain pricing
+//! Caller copies and local destruction have their own owners. AlgebraRef pricing
 //! still owns numeric execution, reduction, provenance transfer and expression
 //! construction, including its internal copies. Refusal publishes no guard.
 
+use crate::domain::WordElement;
+
 use super::{
-    AbstractValue, Domain, GuardRetention, RangeKind, RangeRequest, TransferContext,
+    AlgebraRef, EvmRangeRequest, EvmValue, GuardRetention, RangeKind, TransferContext,
     literal_memory_singleton_work, logical,
 };
+
 use crate::{
     domain::{WorkExhausted, symbolic::ExprId},
     resource::WorkBudget,
@@ -20,19 +23,19 @@ const QUOTE_WORK: usize = 32 * 4;
 const VALUE_INLINE_WORK: usize = 32;
 const CONSTANT_WORK_SIZE: usize = 14;
 
-pub(super) struct PreparedGuard {
-    pub(super) request: RangeRequest,
-    pub(super) condition: AbstractValue,
+pub(super) struct PreparedGuard<N: WordElement> {
+    pub(super) request: EvmRangeRequest<N>,
+    pub(super) condition: EvmValue<N>,
     pub(super) retention: GuardRetention,
 }
 
-struct Builder<'a> {
-    domain: Domain,
+struct Builder<'a, D: EvmNumericAlgebra> {
+    domain: AlgebraRef<'a, D>,
     budget: &'a mut WorkBudget,
     retention: GuardRetention,
 }
 
-impl Builder<'_> {
+impl<D: EvmNumericAlgebra> Builder<'_, D> {
     fn pay(&mut self, work: usize) -> Result<(), WorkExhausted> {
         if self.budget.exhausted() || !self.budget.charge(work) {
             return Err(WorkExhausted);
@@ -42,10 +45,10 @@ impl Builder<'_> {
 
     fn identify(
         &mut self,
-        value: &AbstractValue,
+        value: &EvmValue<D::Element>,
         enabled: bool,
         fresh: impl FnOnce() -> Option<ExprId>,
-    ) -> Result<(AbstractValue, bool), WorkExhausted> {
+    ) -> Result<(EvmValue<D::Element>, bool), WorkExhausted> {
         self.pay(QUOTE_WORK)?;
         // The extra leaf covers identify's possible fresh expression. This
         // reservation includes the copy's release on every later exit path.
@@ -61,8 +64,8 @@ impl Builder<'_> {
     fn copied(
         &mut self,
         op: u8,
-        args: [&AbstractValue; 2],
-    ) -> Result<AbstractValue, WorkExhausted> {
+        args: [&EvmValue<D::Element>; 2],
+    ) -> Result<EvmValue<D::Element>, WorkExhausted> {
         self.pay(QUOTE_WORK)?;
         let work = args.iter().fold(0usize, |work, arg| {
             work.saturating_add(copy_work(arg.work_size()))
@@ -72,11 +75,15 @@ impl Builder<'_> {
         self.apply(op, &args)
     }
 
-    fn apply(&mut self, op: u8, args: &[AbstractValue]) -> Result<AbstractValue, WorkExhausted> {
+    fn apply(
+        &mut self,
+        op: u8,
+        args: &[EvmValue<D::Element>],
+    ) -> Result<EvmValue<D::Element>, WorkExhausted> {
         self.pay(QUOTE_WORK)?;
-        // Domain owns creation/retention; this pays only the caller's eventual
+        // The algebra owns creation/retention; this pays only the caller's eventual
         // release, even if a later stage refuses. Successful copy/release
-        // prepayments also keep Domain's unchanged small-slice work sum finite.
+        // prepayments also keep the algebra's unchanged small-slice work sum finite.
         self.pay(output_release_work(self.domain, op, args))?;
         let work = self.domain.operation_work(args);
         self.pay(work)?;
@@ -88,11 +95,11 @@ impl Builder<'_> {
 
 // Keep relations::identify's query order and returned value, but retain the
 // otherwise unmarked identity refusal without repeating its singleton query.
-fn identify(
-    value: AbstractValue,
+fn identify<N: WordElement>(
+    value: EvmValue<N>,
     enabled: bool,
     fresh: impl FnOnce() -> Option<ExprId>,
-) -> (AbstractValue, bool) {
+) -> (EvmValue<N>, bool) {
     if enabled && value.singleton().is_none() && value.expression().is_none() {
         return match fresh() {
             Some(expression) => (value.with_expression(expression), false),
@@ -113,7 +120,11 @@ fn copy_work(work: usize) -> usize {
 /// Only the eight operations below use this bound. Their Boolean outputs have
 /// at most two candidates. SUB has at most the finite input tuple count, or the
 /// domain's existing candidate limit when reduction starts from an open value.
-fn output_release_work(domain: Domain, op: u8, args: &[AbstractValue]) -> usize {
+fn output_release_work<D: EvmNumericAlgebra>(
+    domain: AlgebraRef<'_, D>,
+    op: u8,
+    args: &[EvmValue<D::Element>],
+) -> usize {
     let candidates = if op == opcode::SUB {
         args.iter()
             .try_fold(1usize, |tuples, arg| {
@@ -147,20 +158,20 @@ fn output_release_work(domain: Domain, op: u8, args: &[AbstractValue]) -> usize 
     )
 }
 
-pub(super) fn build(
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    context: &mut TransferContext<'_>,
-) -> Result<PreparedGuard, WorkExhausted> {
+pub(super) fn build<D: EvmNumericAlgebra>(
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
+) -> Result<PreparedGuard<D::Element>, WorkExhausted> {
     build_with_allocator(offset, size, context, ExprId::fresh)
 }
 
-fn build_with_allocator(
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    context: &mut TransferContext<'_>,
+fn build_with_allocator<D: EvmNumericAlgebra>(
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
     mut fresh: impl FnMut() -> Option<ExprId>,
-) -> Result<PreparedGuard, WorkExhausted> {
+) -> Result<PreparedGuard<D::Element>, WorkExhausted> {
     // Pay before reading operand metadata or constructing any local value.
     if context.budget.exhausted() || !context.budget.charge(QUOTE_WORK) {
         return Err(WorkExhausted);
@@ -180,13 +191,13 @@ fn build_with_allocator(
         builder.retention.veto_identity_failure();
     }
     builder.pay(copy_work(CONSTANT_WORK_SIZE).saturating_mul(2))?;
-    let request = RangeRequest {
+    let request = EvmRangeRequest {
         kind: RangeKind::LogicalMemory,
         offset,
         size,
-        limit: AbstractValue::constant(logical::MAX_END),
+        limit: EvmValue::<D::Element>::constant(logical::MAX_END),
     };
-    let limit = AbstractValue::constant(logical::MAX_END);
+    let limit = EvmValue::<D::Element>::constant(logical::MAX_END);
 
     let empty = builder.apply(opcode::ISZERO, std::slice::from_ref(&request.size))?;
     let greater = builder.copied(opcode::GT, [&request.offset, &limit])?;

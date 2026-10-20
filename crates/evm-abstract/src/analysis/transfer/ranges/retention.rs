@@ -4,9 +4,11 @@
 //! Inherited refusals and nonfinite failures prevent attributing that loss to
 //! this guard's finite retention policy, even if a finite failure also occurs.
 
+use crate::domain::WordElement;
+
 use crate::{
     analysis::FrontierReason,
-    domain::{AbstractValue, relational::QueryReason, symbolic::ExprError},
+    domain::{EvmValue, relational::QueryReason, symbolic::ExprError},
 };
 
 use super::super::{RetentionCause, errors::retention_expression};
@@ -17,7 +19,7 @@ pub(super) struct GuardRetention {
 }
 
 impl GuardRetention {
-    pub(super) fn new(offset: &AbstractValue, size: &AbstractValue) -> Self {
+    pub(super) fn new<N: WordElement>(offset: &EvmValue<N>, size: &EvmValue<N>) -> Self {
         Self {
             cause: None,
             blocked: offset.symbolic_limit_reached() || size.symbolic_limit_reached(),

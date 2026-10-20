@@ -1,4 +1,5 @@
 use super::{memory_condition, sequence_condition};
+use crate::domain::ValueAlgebra;
 use crate::domain::{AbstractValue, Domain};
 use alloy_primitives::U256;
 
@@ -24,7 +25,7 @@ fn sequence_guard_agrees_with_checked_math_including_empty_and_overflow() {
                     &value(offset),
                     &value(size),
                     &value(length),
-                    Domain::default(),
+                    ValueAlgebra::new(&Domain::default()),
                 );
                 assert_eq!(actual.singleton(), Some(U256::from(u8::from(expected))));
             }
@@ -46,16 +47,25 @@ fn memory_guard_distinguishes_zero_size_and_word_rounded_u256_end() {
         (bound + U256::from(1), 0, true),
         (U256::MAX, 1, false),
     ] {
-        let actual = memory_condition(&value(offset), &value(U256::from(size)), domain);
+        let actual = memory_condition(
+            &value(offset),
+            &value(U256::from(size)),
+            ValueAlgebra::new(&domain),
+        );
         assert_eq!(actual.singleton(), Some(U256::from(u8::from(expected))));
     }
     assert_eq!(
-        memory_condition(&value(U256::ZERO), &value(bound), domain).singleton(),
+        memory_condition(
+            &value(U256::ZERO),
+            &value(bound),
+            ValueAlgebra::new(&domain)
+        )
+        .singleton(),
         Some(U256::from(1))
     );
 }
 
-fn execution() -> super::Execution {
+fn execution() -> crate::analysis::transfer::Execution {
     use crate::{
         Fork,
         world::{Account, Entry, World},
@@ -64,8 +74,13 @@ fn execution() -> super::Execution {
     let address = Address::from([0x11; 20]);
     let mut world = World::new(Fork::Osaka, "range partition unit test");
     world.insert(address, Account::empty()).unwrap();
-    super::Execution {
-        payload: super::super::initial(&world, &Entry::new(address), Domain::default()).unwrap(),
+    crate::analysis::transfer::Execution {
+        payload: super::super::initial(
+            &world,
+            &Entry::new(address),
+            ValueAlgebra::new(&Domain::default()),
+        )
+        .unwrap(),
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
         instruction_values: Vec::new(),
@@ -91,9 +106,10 @@ fn symbolic_logical_partition_retains_success_and_pre_effect_failure() {
         ..ExecutionConfig::default()
     };
     let mut budget = super::super::WorkBudget::new(10_000_000);
+    let transfer_numeric = Domain::default();
     let mut context = super::TransferContext {
         config: &config,
-        domain: Domain::default(),
+        domain: ValueAlgebra::new(&transfer_numeric),
         budget: &mut budget,
         root_address: None,
         input_scope: None,
@@ -121,8 +137,12 @@ fn symbolic_logical_partition_retains_success_and_pre_effect_failure() {
     for (length, legal) in [(0, true), (32, true), (64, true), (65, true), (4096, true)] {
         let word = U256::from(length);
         assert_eq!(
-            super::memory_condition(&value(U256::ZERO), &value(word), Domain::default(),)
-                .singleton(),
+            super::memory_condition(
+                &value(U256::ZERO),
+                &value(word),
+                ValueAlgebra::new(&Domain::default()),
+            )
+            .singleton(),
             Some(U256::from(u8::from(legal))),
             "host extraction capacity does not exclude logical success"
         );
@@ -162,9 +182,10 @@ fn assumption_capacity_failure_preserves_the_whole_unmodified_input() {
     let source = ExprId::fresh().unwrap();
     let size = AbstractValue::top().with_expression(source);
     let mut budget = super::super::WorkBudget::new(10_000_000);
+    let transfer_numeric = Domain::default();
     let mut context = super::TransferContext {
         config: &config,
-        domain: Domain::default(),
+        domain: ValueAlgebra::new(&transfer_numeric),
         budget: &mut budget,
         root_address: None,
         input_scope: None,
@@ -227,13 +248,18 @@ fn encoder_limit_keeps_success_guard_and_gas_failure_coverage() {
     )
     .unwrap();
     let size = AbstractValue::top().with_expression(hash);
-    let condition = super::memory_condition(&value(U256::ZERO), &size, Domain::default());
+    let condition = super::memory_condition(
+        &value(U256::ZERO),
+        &size,
+        ValueAlgebra::new(&Domain::default()),
+    );
     let expression = condition.symbolic_expression().unwrap();
     assert!(expression.nodes() <= config.analysis.relations.max_nodes);
     let mut budget = super::super::WorkBudget::new(10_000_000);
+    let transfer_numeric = Domain::default();
     let mut context = super::TransferContext {
         config: &config,
-        domain: Domain::default(),
+        domain: ValueAlgebra::new(&transfer_numeric),
         budget: &mut budget,
         root_address: None,
         input_scope: None,
@@ -306,10 +332,14 @@ mod literal_memory {
         ))
     }
 
-    fn context<'a>(config: &'a ExecutionConfig, budget: &'a mut WorkBudget) -> TransferContext<'a> {
+    fn context<'a>(
+        config: &'a ExecutionConfig,
+        budget: &'a mut WorkBudget,
+        algebra: crate::domain::AlgebraRef<'a, Domain>,
+    ) -> TransferContext<'a, Domain> {
         TransferContext {
             config,
-            domain: config.domain().unwrap(),
+            domain: algebra,
             budget,
             root_address: None,
             input_scope: None,
@@ -355,7 +385,11 @@ mod literal_memory {
                             &mut result,
                             &value(offset),
                             &value(size),
-                            &mut context(&config, &mut budget),
+                            &mut context(
+                                &config,
+                                &mut budget,
+                                ValueAlgebra::new(&config.domain().unwrap())
+                            ),
                             7,
                         ),
                         allowed,
@@ -429,7 +463,11 @@ mod literal_memory {
                     &mut result,
                     &offset,
                     size,
-                    &mut context(&config, &mut budget),
+                    &mut context(
+                        &config,
+                        &mut budget,
+                        ValueAlgebra::new(&config.domain().unwrap())
+                    ),
                     7,
                 ));
                 assert_eq!(budget.used(), fee);
@@ -451,7 +489,11 @@ mod literal_memory {
                 &mut result,
                 offset,
                 &end,
-                &mut context(&config, &mut budget),
+                &mut context(
+                    &config,
+                    &mut budget,
+                    ValueAlgebra::new(&config.domain().unwrap())
+                ),
                 7,
             ));
             assert_uninstalled(&result, &before);
@@ -490,7 +532,11 @@ mod literal_memory {
                     &mut result,
                     &AbstractValue::top(),
                     &size,
-                    &mut context(&config, &mut budget),
+                    &mut context(
+                        &config,
+                        &mut budget,
+                        ValueAlgebra::new(&config.domain().unwrap())
+                    ),
                     7,
                 ),
                 len == 1,
@@ -531,7 +577,11 @@ mod literal_memory {
             &mut result,
             &value(U256::MAX),
             &size,
-            &mut context(&config, &mut budget),
+            &mut context(
+                &config,
+                &mut budget,
+                ValueAlgebra::new(&config.domain().unwrap())
+            ),
             7,
         ));
         assert_eq!(budget.used(), 1_600);
@@ -564,7 +614,11 @@ mod literal_memory {
                     &mut result,
                     &AbstractValue::top(),
                     &value(U256::ZERO),
-                    &mut context(&config, &mut budget),
+                    &mut context(
+                        &config,
+                        &mut budget,
+                        ValueAlgebra::new(&config.domain().unwrap())
+                    ),
                     7,
                 ));
                 assert_eq!(budget.used(), prior);
@@ -601,7 +655,11 @@ mod literal_memory {
                 &mut result,
                 &operands.0,
                 &operands.1,
-                &mut context(&config, &mut budget),
+                &mut context(
+                    &config,
+                    &mut budget,
+                    ValueAlgebra::new(&config.domain().unwrap())
+                ),
                 7,
             ));
             assert_eq!(budget.used(), prior + paid);
@@ -736,7 +794,11 @@ mod literal_memory {
                 let _guard = super::super::guard::build(
                     &offset,
                     &size,
-                    &mut context(&config, &mut guard_budget),
+                    &mut context(
+                        &config,
+                        &mut guard_budget,
+                        ValueAlgebra::new(&config.domain().unwrap()),
+                    ),
                 )
                 .expect("the original 1B allowance funds the complete guard");
                 assert_eq!(guard_budget.used(), guard_work);
@@ -761,7 +823,11 @@ mod literal_memory {
                         &mut result,
                         &offset,
                         &size,
-                        &mut context(&config, &mut budget),
+                        &mut context(
+                            &config,
+                            &mut budget,
+                            ValueAlgebra::new(&config.domain().unwrap())
+                        ),
                         7,
                     ));
                     assert_eq!(budget.used(), prior.saturating_add(paid), "stage {stage}");
@@ -776,7 +842,11 @@ mod literal_memory {
                     &mut result,
                     &offset,
                     &size,
-                    &mut context(&config, &mut budget),
+                    &mut context(
+                        &config,
+                        &mut budget,
+                        ValueAlgebra::new(&config.domain().unwrap())
+                    ),
                     7,
                 ));
                 assert!(budget.used() > preflight + guard_work);
@@ -794,7 +864,7 @@ mod literal_memory {
                         .any(|atom| matches!(atom, Constraint::Truth { nonzero: true, .. }))
                 );
                 if size.expression().is_some() || offset.expression().is_some() {
-                    let expression = memory_condition(&offset, &size, domain)
+                    let expression = memory_condition(&offset, &size, ValueAlgebra::new(&domain))
                         .symbolic_expression()
                         .unwrap();
                     assert!(result.payload.relations.constraints().any(|atom| atom
@@ -839,7 +909,11 @@ mod literal_memory {
                 &mut result,
                 &offset,
                 &size,
-                &mut context(&config, &mut budget),
+                &mut context(
+                    &config,
+                    &mut budget,
+                    ValueAlgebra::new(&config.domain().unwrap())
+                ),
                 7,
             ));
             assert_eq!(budget.used(), LITERAL_MEMORY_METADATA_WORK);

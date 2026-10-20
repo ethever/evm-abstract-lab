@@ -1,5 +1,7 @@
 //! Bounds that add no facts preserve the complete value without reduction work.
 
+use crate::domain::ValueAlgebra;
+
 use super::context;
 use crate::{
     analysis::{ExecutionConfig, FrontierReason, transfer::WorkBudget},
@@ -43,7 +45,7 @@ fn top_and_equal_bounds_preserve_every_value_layer_with_only_comparison_work() {
             assert_eq!(
                 super::super::finish_refine(
                     &mut value,
-                    &mut context(&config, &mut budget),
+                    &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                     ValueQuery::Bounds(Box::new(bounds)),
                 ),
                 Ok(true)
@@ -72,7 +74,7 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
         assert_eq!(
             super::super::finish_refine(
                 &mut value,
-                &mut context(&config, &mut budget),
+                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                 ValueQuery::Bounds(Box::new(bounds.clone())),
             ),
             Ok(feasible)
@@ -103,7 +105,7 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
         assert_eq!(
             super::super::finish_refine(
                 &mut value,
-                &mut context(&config, &mut budget),
+                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                 ValueQuery::Bounds(Box::new(bounds)),
             ),
             Err(FrontierReason::Work)
@@ -127,7 +129,7 @@ fn comparison_refusal_preserves_original_value_and_prior_paid_work() {
     assert_eq!(
         super::super::finish_refine(
             &mut value,
-            &mut context(&config, &mut budget),
+            &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
             ValueQuery::Bounds(Box::new(bounds)),
         ),
         Err(FrontierReason::Work)
@@ -145,7 +147,7 @@ fn comparison_refusal_preserves_original_value_and_prior_paid_work() {
         assert_eq!(
             super::super::finish_refine(
                 &mut value,
-                &mut context(&config, &mut budget),
+                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                 ValueQuery::Bounds(Box::new(NumericValue::top())),
             ),
             Err(FrontierReason::Work)

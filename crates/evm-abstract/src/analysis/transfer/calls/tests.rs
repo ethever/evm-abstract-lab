@@ -1,4 +1,10 @@
 use super::*;
+use crate::analysis::MachinePayload;
+use crate::domain::AbstractValue;
+use crate::domain::Domain;
+use crate::domain::ValueAlgebra;
+use crate::world::Entry;
+use crate::world::World;
 use crate::{
     Fork,
     analysis::{
@@ -36,13 +42,14 @@ fn entered_call(
     entry.environment.value = value;
     let config = ExecutionConfig::default();
     let domain = config.domain().unwrap();
-    let input = initial(&world, &entry, domain).unwrap();
+    let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     let result = execute(
         &world,
         &entry,
         input.clone(),
         &config,
-        domain,
+        ValueAlgebra::new(&domain),
+        &crate::analysis::RecentDistinctJumps,
         &mut WorkBudget::new(config.max_work),
         StorageReadPolicy::Abstract,
     );
@@ -128,7 +135,7 @@ fn call_family_touches_only_entered_transfer_recipients_inside_their_checkpoint(
         let mut config = ExecutionConfig::default();
         config.analysis.relations.enabled = false;
         let domain = config.domain().unwrap();
-        let input = initial(&world, &entry, domain).unwrap();
+        let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
         let mut before_call = input.store.clone();
         before_call.touch_account(owner);
         let result = execute(
@@ -136,7 +143,8 @@ fn call_family_touches_only_entered_transfer_recipients_inside_their_checkpoint(
             &entry,
             input,
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut WorkBudget::new(config.max_work),
             StorageReadPolicy::Abstract,
         );
@@ -172,7 +180,7 @@ fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query()
     let (world, entry) = crate::analysis::machine::fixtures::fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
     let domain = config.domain().unwrap();
-    let payload = initial(&world, &entry, domain).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     let expression = ExprId::fresh().unwrap();
     let projected = AbstractValue::unknown_address().with_expression(expression.clone());
     let candidate = word(0x301);
@@ -180,7 +188,7 @@ fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query()
     let mut budget = WorkBudget::new(config.max_work);
     let mut context = TransferContext {
         config: &config,
-        domain,
+        domain: ValueAlgebra::new(&domain),
         budget: &mut budget,
         root_address: None,
         input_scope: None,

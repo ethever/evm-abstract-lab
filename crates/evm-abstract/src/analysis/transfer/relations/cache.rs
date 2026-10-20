@@ -1,7 +1,8 @@
 //! Bounded local answers for one immutable relation snapshot within a transfer.
 
+use crate::domain::WordElement;
 use crate::domain::{
-    relational::{RelationLimits, RelationState, ValueQuery},
+    relational::{EvmValueQuery, RelationLimits, RelationState},
     symbolic::ExprId,
 };
 use std::collections::BTreeMap;
@@ -16,14 +17,23 @@ struct Snapshot {
 /// Retention and lookup work are bounded independently of propagation work.
 /// A cached upper approximation is independent of the caller; each caller uses its
 /// own finite candidates and containment checks when intersecting the result.
-#[derive(Default)]
-pub(in crate::analysis::transfer) struct QueryCache {
+pub(in crate::analysis::transfer) struct QueryCache<N: WordElement> {
     snapshot: Option<Snapshot>,
-    values: BTreeMap<ExprId, ValueQuery>,
+    values: BTreeMap<ExprId, EvmValueQuery<N>>,
     retained_work: usize,
 }
 
-impl QueryCache {
+impl<N: WordElement> Default for QueryCache<N> {
+    fn default() -> Self {
+        Self {
+            snapshot: None,
+            values: BTreeMap::new(),
+            retained_work: 0,
+        }
+    }
+}
+
+impl<N: WordElement> QueryCache<N> {
     /// Reserve comparison, scope replacement and possible insertion before
     /// touching the cache. Counting every entry also bounds BTreeMap searches.
     pub(super) fn work(&self, state: &RelationState, expression: &ExprId) -> usize {
@@ -55,7 +65,7 @@ impl QueryCache {
         state: &RelationState,
         expression: &ExprId,
         limits: &RelationLimits,
-    ) -> Option<ValueQuery> {
+    ) -> Option<EvmValueQuery<N>> {
         self.scope(state, limits);
         self.values.get(expression).cloned()
     }
@@ -65,10 +75,10 @@ impl QueryCache {
         state: &RelationState,
         expression: &ExprId,
         limits: &RelationLimits,
-        answer: &ValueQuery,
+        answer: &EvmValueQuery<N>,
     ) {
         self.scope(state, limits);
-        if matches!(answer, ValueQuery::Undetermined(_)) || !limits.enabled || !limits.valid() {
+        if matches!(answer, EvmValueQuery::Undetermined(_)) || !limits.enabled || !limits.valid() {
             return;
         }
         let state_work = state.work_size();

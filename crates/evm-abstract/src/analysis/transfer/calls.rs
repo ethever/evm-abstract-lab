@@ -1,17 +1,22 @@
 //! Account-code resolution, frame entry and rollback-aware caller resumption.
+
+use super::complete_candidates;
+
 use super::budget::byte_work;
 use super::{
-    CompletedCall, Execution, Outcome, Successor, TransferContext, address, boundary, boundary_on,
-    touch_memory, zero,
+    EvmCompletedCall, EvmExecution, EvmOutcome, EvmSuccessor, TransferContext, address, boundary,
+    boundary_on, touch_memory, zero,
 };
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use crate::{
     analysis::{
-        CallStack, ChildFrame, Continuation, FrameCode, FrameKey, FrameState, FrontierReason,
-        MachineEdgeKind, MachinePayload, OutcomeKind, RootFrame,
+        EvmCallStack, EvmChildFrame, EvmContinuation, EvmFrameState, EvmMachinePayload,
+        EvmRootFrame, FrameCode, FrameKey, FrontierReason, MachineEdgeKind, OutcomeKind,
     },
     bytecode::Program,
-    domain::{AbstractValue, Domain},
-    world::{AddressInput, ByteArray, Code, Entry, Snapshot, Store, World},
+    domain::{AlgebraRef, EvmValue},
+    world::{AddressInput, Code, EvmByteArray, EvmEntry, EvmSnapshot, EvmStore, EvmWorld},
 };
 use alloy_primitives::{Address, B256, U256, keccak256};
 use revm_bytecode::opcode;
@@ -22,15 +27,15 @@ mod tests;
 
 use dispatch::target_guard;
 
-fn precompile(world: &World, address: Address) -> bool {
+fn precompile<N: WordElement>(world: &EvmWorld<N>, address: Address) -> bool {
     super::precompile::contains(world.fork(), address)
 }
 
 /// 7702 follows exactly one pointer. The second marker is invalid executable
 /// EF code; a delegated precompile target executes as empty code.
-pub(super) fn resolve(
-    world: &World,
-    store: &Store,
+pub(super) fn resolve<N: WordElement>(
+    world: &EvmWorld<N>,
+    store: &EvmStore<N>,
     target: Address,
 ) -> Result<(Address, FrameCode, Option<Program>), FrontierReason> {
     if precompile(world, target) {
@@ -58,9 +63,9 @@ pub(super) fn resolve(
     }
 }
 
-fn captured_hash(
+fn captured_hash<N: WordElement>(
     program: &Option<Program>,
-    store: &Store,
+    store: &EvmStore<N>,
     address: Address,
     mode: FrameCode,
 ) -> B256 {
@@ -76,19 +81,20 @@ fn captured_hash(
     )
 }
 
-pub(super) fn initial(
-    world: &World,
-    entry: &Entry,
-    domain: Domain,
-) -> Result<MachinePayload, FrontierReason> {
-    let mut store = Store::new_checked(world, domain).map_err(super::errors::store)?;
-    store.project(domain);
+pub(super) fn initial<D: EvmNumericAlgebra>(
+    world: &EvmWorld<D::Element>,
+    entry: &EvmEntry<D::Element>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<EvmMachinePayload<D::Element>, FrontierReason> {
+    let mut store =
+        EvmStore::<D::Element>::new_checked_with(world, domain).map_err(super::errors::store)?;
+    store.project_with(domain);
     store
         .check_existing(domain.spec().relations().expressions())
         .map_err(super::errors::store)?;
     let (code_address, code, program) = resolve(world, &store, entry.address)?;
     let code_hash = captured_hash(&program, &store, code_address, code);
-    let mut calldata = entry.environment.calldata.project(domain);
+    let mut calldata = entry.environment.calldata.project_with(domain);
     if let Some(scope) = entry.environment.input_scope.id() {
         calldata.bind_input(scope).map_err(super::errors::bytes)?;
     }
@@ -106,10 +112,10 @@ pub(super) fn initial(
         // recipient. Any account may be touched; no particular one must be.
         store.may_touch_all();
     }
-    Ok(MachinePayload {
+    Ok(EvmMachinePayload {
         relations: crate::domain::relational::RelationState::default(),
-        call_stack: CallStack::new(RootFrame {
-            state: FrameState {
+        call_stack: EvmCallStack::<D::Element>::new(EvmRootFrame {
+            state: EvmFrameState {
                 key: FrameKey {
                     code_address,
                     code_hash,
@@ -125,10 +131,10 @@ pub(super) fn initial(
                 code,
                 program,
                 stack: Vec::new(),
-                memory: ByteArray::memory(),
+                memory: EvmByteArray::<D::Element>::memory(),
                 calldata,
                 environment_calldata: true,
-                returndata: ByteArray::empty(),
+                returndata: EvmByteArray::<D::Element>::empty(),
                 call_value: domain.project(&entry.environment.value.clone().with_symbol(
                     crate::world::Symbol::CallValue,
                     entry.environment.input_scope.id(),
@@ -142,19 +148,19 @@ pub(super) fn initial(
     })
 }
 
-/// Complete a root's Store without retaining frame data that outcomes discard.
+/// Complete a root's EvmStore without retaining frame data that outcomes discard.
 /// Creation completion stays with `finish`: callers may bypass it only for an
 /// actual native root with no child, where `finish_creation` is a no-op.
-pub(super) fn finish_root_store(
-    store: &mut Store,
-    saved_store: &Snapshot,
+pub(super) fn finish_root_store<D: EvmNumericAlgebra>(
+    store: &mut EvmStore<D::Element>,
+    saved_store: &EvmSnapshot<D::Element>,
     kind: OutcomeKind,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) -> Result<(), FrontierReason> {
     if !context.procedure {
         let rollback = (kind != OutcomeKind::Return).then_some(saved_store);
         store
-            .finalize_transaction_checked(context.domain, rollback, context.budget)
+            .finalize_transaction_checked_with(context.domain, rollback, context.budget)
             .map_err(|error| {
                 if error.is_cancelled() {
                     FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
@@ -170,12 +176,12 @@ pub(super) fn finish_root_store(
     Ok(())
 }
 
-pub(super) fn finish(
-    result: &mut Execution,
-    mut payload: MachinePayload,
+pub(super) fn finish<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    mut payload: EvmMachinePayload<D::Element>,
     mut kind: OutcomeKind,
-    mut data: ByteArray,
-    context: &mut TransferContext<'_>,
+    mut data: EvmByteArray<D::Element>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) {
     let config = context.config;
@@ -193,7 +199,7 @@ pub(super) fn finish(
     if let Some(child) = payload.call_stack.active_child() {
         let continuation = &child.continuation;
         let parent = payload.call_stack.parent().expect("a child has a parent");
-        let cost = parent.memory.copy_return_data_work(
+        let cost = parent.memory.copy_return_data_work_with(
             &data,
             &continuation.output_offset,
             &continuation.output_size,
@@ -214,7 +220,7 @@ pub(super) fn finish(
             boundary_on(result, pc, reason, payload.key());
             return;
         }
-        result.outcomes.push(Outcome {
+        result.outcomes.push(EvmOutcome {
             kind,
             data,
             store: payload.store,
@@ -238,8 +244,10 @@ pub(super) fn finish(
     } else {
         U256::ZERO
     };
-    parent.stack.push(AbstractValue::constant(result_value));
-    if let Err(error) = parent.memory.copy_return_data(
+    parent
+        .stack
+        .push(EvmValue::<D::Element>::constant(result_value));
+    if let Err(error) = parent.memory.copy_return_data_with(
         &continuation.output_offset,
         &parent.returndata,
         &continuation.output_size,
@@ -254,7 +262,7 @@ pub(super) fn finish(
         .expect("call continuations include synthetic end blocks");
     payload.normalize();
     if let Some((payload, kind, data)) = completed {
-        result.completed_calls.push(CompletedCall {
+        result.completed_calls.push(EvmCompletedCall {
             payload,
             kind,
             data,
@@ -263,7 +271,7 @@ pub(super) fn finish(
             output_data,
         });
     }
-    result.successors.push(Successor {
+    result.successors.push(EvmSuccessor {
         payload,
         kind: match kind {
             OutcomeKind::Return => MachineEdgeKind::Return,
@@ -273,36 +281,44 @@ pub(super) fn finish(
     });
 }
 
-pub(super) fn failure(result: &mut Execution, context: &mut TransferContext<'_>, pc: usize) {
+pub(super) fn failure<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) {
     finish(
         result,
         result.payload.clone(),
         OutcomeKind::Failure,
-        ByteArray::empty(),
+        EvmByteArray::<D::Element>::empty(),
         context,
         pc,
     );
 }
 
-fn immediate_call_failure(result: &mut Execution, mut payload: MachinePayload, next: usize) {
+fn immediate_call_failure<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    mut payload: EvmMachinePayload<N>,
+    next: usize,
+) {
     let caller = payload.active_mut();
     caller.stack.push(zero());
-    caller.returndata = ByteArray::empty();
+    caller.returndata = EvmByteArray::<N>::empty();
     caller.key.basic_block_index = next;
     payload.normalize();
-    result.successors.push(Successor {
+    result.successors.push(EvmSuccessor {
         payload,
         kind: MachineEdgeKind::Failure,
     });
 }
 
-pub(super) fn call(
-    result: &mut Execution,
-    world: &World,
+pub(super) fn call<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    world: &EvmWorld<D::Element>,
     op: u8,
-    args: &[AbstractValue],
+    args: &[EvmValue<D::Element>],
     program: &Program,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) {
     let config = context.config;
@@ -323,7 +339,7 @@ pub(super) fn call(
                 result,
                 payload,
                 OutcomeKind::Failure,
-                ByteArray::empty(),
+                EvmByteArray::<D::Element>::empty(),
                 context,
                 pc,
             );
@@ -372,7 +388,7 @@ pub(super) fn call(
     }
     let projection_args = [
         args[1].clone(),
-        AbstractValue::constant(U256::MAX >> 96usize),
+        EvmValue::<D::Element>::constant(U256::MAX >> 96usize),
     ];
     if !context
         .budget
@@ -384,8 +400,8 @@ pub(super) fn call(
     let target_value =
         super::relations::identify(args[1].clone(), config.analysis.relations.enabled);
     let projected = domain.address_projection(&target_value);
-    let finite = projected.constants().is_some();
-    let mut targets = if let Some(values) = projected.constants() {
+    let finite = complete_candidates(&projected).is_some();
+    let mut targets = if let Some(values) = complete_candidates(&projected) {
         values.iter().map(|v| address(*v)).collect::<Vec<_>>()
     } else {
         if !context.budget.charge(
@@ -423,7 +439,7 @@ pub(super) fn call(
         .root_address
         .filter(|(_, logical)| logical.as_concrete().is_none())
     {
-        let candidate = logical.scoped_value(context.input_scope);
+        let candidate = logical.scoped_value_with(context.input_scope);
         if let Some(input) = remaining.take() {
             if let Some(payload) =
                 target_guard(result, &input, &projected, &candidate, true, context, pc)
@@ -438,7 +454,7 @@ pub(super) fn call(
     }
     for target in targets {
         let Some(input) = remaining.take() else { break };
-        let candidate = AbstractValue::constant(U256::from_be_slice(target.as_slice()));
+        let candidate = EvmValue::<D::Element>::constant(U256::from_be_slice(target.as_slice()));
         if let Some(payload) =
             target_guard(result, &input, &projected, &candidate, true, context, pc)
         {
@@ -475,7 +491,8 @@ pub(super) fn call(
         let caller_address = caller.key.address;
         let balance = input_payload.store.read_balance(caller_address);
         if with_value
-            && let (Some(balances), Some(values)) = (balance.constants(), value.constants())
+            && let (Some(balances), Some(values)) =
+                (complete_candidates(&balance), complete_candidates(&value))
             && balances
                 .iter()
                 .all(|balance| values.iter().all(|value| value > balance))
@@ -507,7 +524,7 @@ pub(super) fn call(
             );
             continue;
         }
-        let calldata = match caller.memory.slice(
+        let calldata = match caller.memory.slice_with(
             &args[input],
             &args[input + 1],
             config.max_memory_bytes,
@@ -594,8 +611,8 @@ pub(super) fn call(
                 domain.apply(opcode::ADD, &[recipient, value.clone()]),
             );
         }
-        payload.call_stack.push_child(ChildFrame {
-            state: FrameState {
+        payload.call_stack.push_child(EvmChildFrame {
+            state: EvmFrameState {
                 key: FrameKey {
                     code_address,
                     code_hash,
@@ -611,16 +628,16 @@ pub(super) fn call(
                 code,
                 program,
                 stack: Vec::new(),
-                memory: ByteArray::memory(),
+                memory: EvmByteArray::<D::Element>::memory(),
                 calldata,
                 environment_calldata: false,
-                returndata: ByteArray::empty(),
+                returndata: EvmByteArray::<D::Element>::empty(),
                 call_value,
                 address_operand,
                 caller_operand,
                 saved_store,
             },
-            continuation: Continuation {
+            continuation: EvmContinuation {
                 return_block: Some(next),
                 output_offset: args[output].clone(),
                 output_size: args[output + 1].clone(),
@@ -628,7 +645,7 @@ pub(super) fn call(
             },
         });
         payload.normalize();
-        result.successors.push(Successor {
+        result.successors.push(EvmSuccessor {
             payload,
             kind: MachineEdgeKind::Call,
         });

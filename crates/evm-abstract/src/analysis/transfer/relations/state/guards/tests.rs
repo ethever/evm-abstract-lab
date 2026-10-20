@@ -1,4 +1,6 @@
 //! Direct branch facts refine live and rollback wrappers without native queries.
+
+use crate::domain::ValueAlgebra;
 use crate::{
     Fork,
     analysis::{
@@ -19,7 +21,7 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
     let address = Address::repeat_byte(0x11);
     let mut world = World::offline(Fork::Osaka, "local guards", "known initial storage");
     world.insert(address, Account::empty()).unwrap();
-    let mut payload = initial(&world, &Entry::new(address), domain).unwrap();
+    let mut payload = initial(&world, &Entry::new(address), ValueAlgebra::new(&domain)).unwrap();
     let guard = ExprId::fresh().unwrap();
     let bytes = ByteArray::exact(&[1])
         .join_guarded(
@@ -58,7 +60,7 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
     let mut budget = WorkBudget::new(10_000_000);
     let mut context = TransferContext {
         config: &config,
-        domain,
+        domain: ValueAlgebra::new(&domain),
         budget: &mut budget,
         root_address: None,
         input_scope: None,
@@ -74,7 +76,10 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
             &mut context,
             &mut diagnostics,
             0,
-            (domain, config.analysis.relations.expressions())
+            (
+                ValueAlgebra::new(&domain),
+                config.analysis.relations.expressions()
+            )
         ),
         Ok(true)
     );
@@ -112,7 +117,7 @@ fn absent_guard_proof_retains_wrapper_and_work_refusal_stops_before_rewrite() {
     let address = Address::repeat_byte(0x22);
     let mut world = World::offline(Fork::Osaka, "local guards", "unknown condition");
     world.insert(address, Account::empty()).unwrap();
-    let mut payload = initial(&world, &Entry::new(address), domain).unwrap();
+    let mut payload = initial(&world, &Entry::new(address), ValueAlgebra::new(&domain)).unwrap();
     let guard = ExprId::fresh().unwrap();
     payload.active_mut().memory = ByteArray::exact(&[1])
         .join_guarded(
@@ -128,7 +133,7 @@ fn absent_guard_proof_retains_wrapper_and_work_refusal_stops_before_rewrite() {
     let mut budget = WorkBudget::new(10_000_000);
     let mut context = TransferContext {
         config: &config,
-        domain,
+        domain: ValueAlgebra::new(&domain),
         budget: &mut budget,
         root_address: None,
         input_scope: None,
@@ -143,7 +148,10 @@ fn absent_guard_proof_retains_wrapper_and_work_refusal_stops_before_rewrite() {
             &mut context,
             &mut diagnostics,
             0,
-            (domain, config.analysis.relations.expressions())
+            (
+                ValueAlgebra::new(&domain),
+                config.analysis.relations.expressions()
+            )
         ),
         Ok(true)
     );
@@ -158,7 +166,10 @@ fn absent_guard_proof_retains_wrapper_and_work_refusal_stops_before_rewrite() {
             &mut context,
             &mut diagnostics,
             0,
-            (domain, config.analysis.relations.expressions())
+            (
+                ValueAlgebra::new(&domain),
+                config.analysis.relations.expressions()
+            )
         ),
         Err(FrontierReason::Work)
     );
@@ -207,8 +218,12 @@ impl Fixture {
         account.storage.insert(U256::from(7), v(11));
         account.storage.insert(U256::from(9), v(13));
         world.insert(owners[1], account).unwrap();
-        let mut before =
-            crate::analysis::transfer::initial(&world, &Entry::new(owners[0]), domain).unwrap();
+        let mut before = crate::analysis::transfer::initial(
+            &world,
+            &Entry::new(owners[0]),
+            ValueAlgebra::new(&domain),
+        )
+        .unwrap();
         let guards = (0..6).map(|_| ExprId::fresh().unwrap()).collect::<Vec<_>>();
         let initial = before.store.clone();
         let mut changed = initial.clone();
@@ -393,7 +408,7 @@ fn direct_guard_refinement_covers_fourteen_live_and_rollback_observations() {
         let mut diagnostics = Vec::new();
         let mut context = TransferContext {
             config: &config,
-            domain,
+            domain: ValueAlgebra::new(&domain),
             budget: &mut budget,
             root_address: None,
             input_scope: None,
@@ -408,7 +423,10 @@ fn direct_guard_refinement_covers_fourteen_live_and_rollback_observations() {
                 &mut context,
                 &mut diagnostics,
                 7,
-                (domain, config.analysis.relations.expressions())
+                (
+                    ValueAlgebra::new(&domain),
+                    config.analysis.relations.expressions()
+                )
             ),
             Ok(true),
             "{case:?}"

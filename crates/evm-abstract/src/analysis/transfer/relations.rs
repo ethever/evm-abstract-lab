@@ -3,17 +3,19 @@
 //! Local propagation reserves its bounded work from the transaction ledger.
 //! Real bounds retain the path and record why optional precision stopped.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 mod cache;
 mod state;
 #[cfg(test)]
 mod tests;
 
-use super::{Execution, TransferContext, boundary};
+use super::{EvmExecution, TransferContext, boundary};
 use crate::{
-    analysis::{FrontierReason, MachinePayload},
+    analysis::{EvmMachinePayload, FrontierReason},
     domain::{
-        AbstractValue, NumericValue,
-        relational::{CheckResult, QueryReason, RelationState, ScalarQuery, ValueQuery},
+        EvmValue,
+        relational::{CheckResult, EvmScalarQuery, EvmValueQuery, QueryReason, RelationState},
         symbolic::ExprId,
     },
 };
@@ -22,8 +24,8 @@ pub(super) use cache::QueryCache;
 
 /// Failure of an optional value projection does not leave an execution path
 /// unexpanded. Cancellation and the shared ledger still stop real work.
-pub(super) fn refinement_failure(
-    result: &mut Execution,
+pub(super) fn refinement_failure<N: WordElement>(
+    result: &mut EvmExecution<N>,
     pc: usize,
     reason: FrontierReason,
 ) -> bool {
@@ -51,10 +53,10 @@ pub(super) fn refinement_failure(
 }
 
 /// Project only proven consequences; the expression and its scope survive.
-pub(super) fn refine(
-    value: &mut AbstractValue,
+pub(super) fn refine<D: EvmNumericAlgebra>(
+    value: &mut EvmValue<D::Element>,
     relations: &RelationState,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) -> Result<bool, FrontierReason> {
     match prepare_refine(value, relations, context)? {
         PreparedRefinement::Done(feasible) => Ok(feasible),
@@ -71,10 +73,10 @@ enum PreparedRefinement {
 
 /// Keep the numerical and original per-value fact paths ahead of local evaluation.
 /// Pending values have paid for local preparation, but not a local evaluation.
-fn prepare_refine(
-    value: &mut AbstractValue,
+fn prepare_refine<D: EvmNumericAlgebra>(
+    value: &mut EvmValue<D::Element>,
     relations: &RelationState,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) -> Result<PreparedRefinement, FrontierReason> {
     if analysis_control::current_cancellation().is_cancelled() {
         return Err(FrontierReason::Relations(QueryReason::Cancelled));
@@ -109,17 +111,17 @@ fn prepare_refine(
     {
         return Err(FrontierReason::Work);
     }
-    match relations.refine_numeric(&expression, value.numeric(), context.domain, &limits) {
-        ScalarQuery::Refined { numeric, complete } => {
+    match relations.refine_numeric_with(&expression, value.numeric(), context.domain, &limits) {
+        EvmScalarQuery::Refined { numeric, complete } => {
             *value = value.clone().with_numeric(*numeric);
             if complete || value.singleton().is_some() {
                 return Ok(PreparedRefinement::Done(true));
             }
         }
-        ScalarQuery::Infeasible => return Ok(PreparedRefinement::Done(false)),
-        ScalarQuery::Unchanged => {}
-        ScalarQuery::Unknown(crate::domain::relational::QueryReason::ScalarFactLimit) => {}
-        ScalarQuery::Unknown(reason) => return Err(FrontierReason::Relations(reason)),
+        EvmScalarQuery::Infeasible => return Ok(PreparedRefinement::Done(false)),
+        EvmScalarQuery::Unchanged => {}
+        EvmScalarQuery::Unknown(crate::domain::relational::QueryReason::ScalarFactLimit) => {}
+        EvmScalarQuery::Unknown(reason) => return Err(FrontierReason::Relations(reason)),
     }
     let cache_work = context.query_cache.work(relations, &expression);
     if cache_work == usize::MAX || !context.budget.charge(cache_work) {
@@ -132,14 +134,15 @@ fn prepare_refine(
 }
 
 /// Bounded local propagation; the cache contains only this frozen conjunction.
-fn local_refine(
-    value: &mut AbstractValue,
+fn local_refine<D: EvmNumericAlgebra>(
+    value: &mut EvmValue<D::Element>,
     expression: &ExprId,
     relations: &RelationState,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) -> Result<bool, FrontierReason> {
     let limits = context.config.analysis.relations;
-    let answer = relations.local_value_budgeted(expression, &limits, context.budget);
+    let answer =
+        relations.local_value_budgeted_with(expression, &limits, context.budget, context.domain);
     if context.budget.exhausted() {
         return Err(FrontierReason::Work);
     }
@@ -150,20 +153,20 @@ fn local_refine(
 }
 
 /// Apply each proof to this caller's own numeric upper bound and identity.
-fn finish_refine(
-    value: &mut AbstractValue,
-    context: &mut TransferContext<'_>,
-    answer: ValueQuery,
+fn finish_refine<D: EvmNumericAlgebra>(
+    value: &mut EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
+    answer: EvmValueQuery<D::Element>,
 ) -> Result<bool, FrontierReason> {
     match answer {
-        ValueQuery::Exact(exact) => {
+        EvmValueQuery::Exact(exact) => {
             if value.contains(exact) {
-                *value = value.clone().with_numeric(NumericValue::constant(exact));
+                *value = value.clone().with_numeric(D::Element::constant(exact));
             } else {
                 return Ok(false);
             }
         }
-        ValueQuery::Bounds(bounds) => {
+        EvmValueQuery::Bounds(bounds) => {
             // Equality can traverse finite candidates. Pay before comparing, and
             // leave every value layer intact when the meet adds no numeric facts.
             if !context.budget.charge(
@@ -192,8 +195,8 @@ fn finish_refine(
             };
             *value = value.clone().with_numeric(numeric);
         }
-        ValueQuery::ProvenImpossible => return Ok(false),
-        ValueQuery::Undetermined(reason) => return Err(FrontierReason::Relations(reason)),
+        EvmValueQuery::ProvenImpossible => return Ok(false),
+        EvmValueQuery::Undetermined(reason) => return Err(FrontierReason::Relations(reason)),
     }
     Ok(true)
 }
@@ -201,13 +204,13 @@ fn finish_refine(
 pub(super) use crate::analysis::state::identify;
 
 /// Each successor owns its assumptions; the predecessor remains unchanged.
-pub(super) fn branch(
-    result: &mut Execution,
-    condition: &AbstractValue,
+pub(super) fn branch<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    condition: &EvmValue<D::Element>,
     nonzero: bool,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
-) -> Option<MachinePayload> {
+) -> Option<EvmMachinePayload<D::Element>> {
     if !context.budget.charge(result.payload.work_size()) {
         boundary(result, pc, FrontierReason::Work);
         return None;
@@ -247,10 +250,13 @@ pub(super) fn branch(
         boundary(result, pc, FrontierReason::Work);
         return None;
     }
-    let checked =
-        payload
-            .relations
-            .assume_checked_budgeted(&expression, nonzero, &limits, context.budget);
+    let checked = payload.relations.assume_checked_budgeted_with(
+        &expression,
+        nonzero,
+        &limits,
+        context.budget,
+        context.domain,
+    );
     if context.budget.exhausted() {
         boundary(result, pc, FrontierReason::Work);
         return None;

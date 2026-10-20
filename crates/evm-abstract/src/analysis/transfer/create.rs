@@ -1,16 +1,20 @@
 //! CREATE/CREATE2 lifecycle. Initcode is a fresh frame of the shared machine;
 //! the destination's code remains empty until a successful RETURN installs it.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use super::budget::{byte_work, maximum};
-use super::{Execution, Successor, TransferContext, boundary, touch_memory, zero};
+use super::complete_candidates;
+use super::{EvmExecution, EvmSuccessor, TransferContext, boundary, touch_memory, zero};
+
 use crate::{
     analysis::{
-        ChildFrame, Continuation, FrameCode, FrameKey, FrameState, FrontierReason, MachineEdgeKind,
-        MachinePayload, OutcomeKind,
+        EvmChildFrame, EvmContinuation, EvmFrameState, EvmMachinePayload, FrameCode, FrameKey,
+        FrontierReason, MachineEdgeKind, OutcomeKind,
     },
     bytecode::Program,
-    domain::AbstractValue,
-    world::{AddressInput, ByteArray, World},
+    domain::EvmValue,
+    world::{AddressInput, EvmByteArray, EvmWorld},
 };
 use alloy_primitives::{Address, U256, keccak256};
 use revm_bytecode::opcode;
@@ -39,23 +43,27 @@ pub enum CreationBoundary {
     ReservedAddress(Address),
 }
 
-fn incomplete(result: &mut Execution, pc: usize, reason: CreationBoundary) {
+fn incomplete<N: WordElement>(result: &mut EvmExecution<N>, pc: usize, reason: CreationBoundary) {
     boundary(result, pc, FrontierReason::Creation(reason));
 }
 
-fn immediate_failure(result: &mut Execution, mut payload: MachinePayload, next: usize) {
+fn immediate_failure<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    mut payload: EvmMachinePayload<N>,
+    next: usize,
+) {
     let caller = payload.active_mut();
     caller.stack.push(zero());
-    caller.returndata = ByteArray::empty();
+    caller.returndata = EvmByteArray::<N>::empty();
     caller.key.basic_block_index = next;
     payload.normalize();
-    result.successors.push(Successor {
+    result.successors.push(EvmSuccessor {
         payload,
         kind: MachineEdgeKind::Failure,
     });
 }
 
-fn reserved(world: &World, address: Address) -> bool {
+fn reserved<N: WordElement>(world: &EvmWorld<N>, address: Address) -> bool {
     let number = U256::from_be_slice(address.as_slice());
     (number > U256::ZERO
         && number
@@ -70,20 +78,20 @@ fn reserved(world: &World, address: Address) -> bool {
 /// Suspend the caller and enter arbitrary concrete EVM initcode. Nonce bump
 /// precedes the child's savepoint: failed initcode keeps that bump, while an
 /// enclosing REVERT still restores it through the enclosing frame's savepoint.
-pub(super) fn create(
-    result: &mut Execution,
-    world: &World,
+pub(super) fn create<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    world: &EvmWorld<D::Element>,
     op: u8,
-    args: &[AbstractValue],
+    args: &[EvmValue<D::Element>],
     program: &Program,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) {
     let config = context.config;
     let domain = context.domain;
     let next = result.payload.active().key.basic_block_index + 1;
     debug_assert!(next <= program.blocks().len());
-    let Some(sizes) = args[2].constants() else {
+    let Some(sizes) = complete_candidates(&args[2]) else {
         incomplete(result, pc, CreationBoundary::UnknownInitCode);
         return;
     };
@@ -99,14 +107,14 @@ pub(super) fn create(
     let Some(memory_size) = sizes
         .iter()
         .copied()
-        .map(AbstractValue::constant)
+        .map(EvmValue::<D::Element>::constant)
         .reduce(|left, right| domain.join(&left, &right))
     else {
         return;
     };
     let offsets = if sizes.iter().all(U256::is_zero) {
         vec![U256::ZERO]
-    } else if let Some(offsets) = args[1].constants() {
+    } else if let Some(offsets) = complete_candidates(&args[1]) {
         offsets.iter().copied().collect()
     } else {
         incomplete(result, pc, CreationBoundary::UnknownInitCode);
@@ -137,16 +145,16 @@ pub(super) fn create(
         return;
     };
     let nonce = result.payload.store.nonce(caller_address);
-    let Some(nonces) = nonce.constants() else {
+    let Some(nonces) = complete_candidates(&nonce) else {
         incomplete(result, pc, CreationBoundary::UnknownNonce(caller_address));
         return;
     };
-    let Some(values) = args[0].constants() else {
+    let Some(values) = complete_candidates(&args[0]) else {
         incomplete(result, pc, CreationBoundary::UnknownEndowment);
         return;
     };
     let salts = if op == opcode::CREATE2 {
-        let Some(salts) = args[3].constants() else {
+        let Some(salts) = complete_candidates(&args[3]) else {
             incomplete(result, pc, CreationBoundary::UnknownSalt);
             return;
         };
@@ -155,7 +163,7 @@ pub(super) fn create(
         vec![U256::ZERO]
     };
     let balance = result.payload.store.read_balance(caller_address);
-    let balances = match balance.constants() {
+    let balances = match complete_candidates(&balance) {
         Some(balances) => balances.iter().copied().map(Some).collect::<Vec<_>>(),
         None if values.iter().all(U256::is_zero) => vec![None],
         None => {
@@ -167,35 +175,37 @@ pub(super) fn create(
         for offset in &offsets {
             if !context.budget.charge(byte_work(
                 &[
-                    &AbstractValue::constant(*offset),
-                    &AbstractValue::constant(*size),
+                    &EvmValue::<D::Element>::constant(*offset),
+                    &EvmValue::<D::Element>::constant(*size),
                 ],
-                maximum(&AbstractValue::constant(*size)),
+                maximum(&EvmValue::<D::Element>::constant(*size)),
                 result.payload.active().memory.work_size(),
                 domain,
             )) {
                 boundary(result, pc, FrontierReason::Work);
                 return;
             }
-            let initcode = match result.payload.active().memory.slice(
-                &AbstractValue::constant(*offset),
-                &AbstractValue::constant(*size),
+            let initcode = match result.payload.active().memory.slice_with(
+                &EvmValue::<D::Element>::constant(*offset),
+                &EvmValue::<D::Element>::constant(*size),
                 config.max_memory_bytes,
                 domain,
             ) {
-                Ok(bytes) => match bytes.exact_bytes_bounded(config.max_memory_bytes) {
-                    Some(bytes) => bytes,
-                    None => {
-                        incomplete(result, pc, CreationBoundary::UnknownInitCode);
-                        continue;
+                Ok(bytes) => {
+                    match bytes.exact_bytes_bounded_with(config.max_memory_bytes, domain) {
+                        Some(bytes) => bytes,
+                        None => {
+                            incomplete(result, pc, CreationBoundary::UnknownInitCode);
+                            continue;
+                        }
                     }
-                },
+                }
                 Err(error) => {
                     boundary(result, pc, super::errors::bytes(error));
                     continue;
                 }
             };
-            for nonce in nonces {
+            for nonce in nonces.iter() {
                 if *nonce > U256::from(u64::MAX) {
                     incomplete(result, pc, CreationBoundary::NonceOverflow(caller_address));
                     continue;
@@ -204,20 +214,21 @@ pub(super) fn create(
                     let mut payload = result.payload.clone();
                     payload
                         .store
-                        .write_nonce(caller_address, AbstractValue::constant(*nonce));
+                        .write_nonce(caller_address, EvmValue::<D::Element>::constant(*nonce));
                     immediate_failure(result, payload, next);
                     continue;
                 }
-                for value in values {
+                for value in values.iter() {
                     for balance in &balances {
                         if balance.is_some_and(|balance| *value > balance) {
                             let mut payload = result.payload.clone();
-                            payload
-                                .store
-                                .write_nonce(caller_address, AbstractValue::constant(*nonce));
+                            payload.store.write_nonce(
+                                caller_address,
+                                EvmValue::<D::Element>::constant(*nonce),
+                            );
                             payload.store.write_balance(
                                 caller_address,
-                                AbstractValue::constant(
+                                EvmValue::<D::Element>::constant(
                                     balance
                                         .expect("insufficient funds require an observed balance"),
                                 ),
@@ -246,7 +257,7 @@ pub(super) fn create(
                             if let Some(balance) = balance {
                                 payload.store.write_balance(
                                     caller_address,
-                                    AbstractValue::constant(*balance),
+                                    EvmValue::<D::Element>::constant(*balance),
                                 );
                             }
                             // The creator's nonce change survives a failed
@@ -254,7 +265,7 @@ pub(super) fn create(
                             payload.store.touch_account(caller_address);
                             payload.store.write_nonce(
                                 caller_address,
-                                AbstractValue::constant(*nonce + U256::from(1)),
+                                EvmValue::<D::Element>::constant(*nonce + U256::from(1)),
                             );
                             // Gas remains abstract, but insufficient initcode gas
                             // fails after the caller nonce has been incremented.
@@ -272,7 +283,7 @@ pub(super) fn create(
                             let destination_nonce = payload.store.nonce(destination);
                             let code = payload.store.raw_account_code(destination);
                             if code.as_ref().is_some_and(|code| !code.is_empty())
-                                || destination_nonce.constants().is_some_and(|nonces| {
+                                || complete_candidates(&destination_nonce).is_some_and(|nonces| {
                                     nonces.iter().all(|nonce| !nonce.is_zero())
                                 })
                             {
@@ -281,7 +292,8 @@ pub(super) fn create(
                                 immediate_failure(result, payload, next);
                                 continue;
                             }
-                            let Some(destination_nonces) = destination_nonce.constants() else {
+                            let Some(destination_nonces) = complete_candidates(&destination_nonce)
+                            else {
                                 incomplete(
                                     result,
                                     pc,
@@ -314,7 +326,7 @@ pub(super) fn create(
                             let init_program = Program::decode_with_fork(&initcode, world.fork())
                                 .expect("EVM initcode with a non-EF first byte always decodes");
                             let recipient = payload.store.read_balance(destination);
-                            let recipients = match recipient.constants() {
+                            let recipients = match complete_candidates(&recipient) {
                                 Some(balances) => {
                                     balances.iter().copied().map(Some).collect::<Vec<_>>()
                                 }
@@ -331,19 +343,20 @@ pub(super) fn create(
                                         immediate_failure(result, branch, next);
                                         continue;
                                     };
-                                    branch
-                                        .store
-                                        .write_balance(destination, AbstractValue::constant(total));
+                                    branch.store.write_balance(
+                                        destination,
+                                        EvmValue::<D::Element>::constant(total),
+                                    );
                                 }
                                 if let Some(balance) = balance {
                                     branch.store.write_balance(
                                         caller_address,
-                                        AbstractValue::constant(*balance - *value),
+                                        EvmValue::<D::Element>::constant(*balance - *value),
                                     );
                                 }
                                 branch.store.begin_creation(destination);
-                                branch.call_stack.push_child(ChildFrame {
-                                    state: FrameState {
+                                branch.call_stack.push_child(EvmChildFrame {
+                                    state: EvmFrameState {
                                         key: FrameKey {
                                             mode: FrameCode::InitCode,
                                             code_address: destination,
@@ -359,16 +372,16 @@ pub(super) fn create(
                                         code: FrameCode::InitCode,
                                         program: Some(init_program.clone()),
                                         stack: Vec::new(),
-                                        memory: ByteArray::memory(),
-                                        calldata: ByteArray::empty(),
+                                        memory: EvmByteArray::<D::Element>::memory(),
+                                        calldata: EvmByteArray::<D::Element>::empty(),
                                         environment_calldata: false,
                                         address_operand: None,
                                         caller_operand: None,
-                                        returndata: ByteArray::empty(),
-                                        call_value: AbstractValue::constant(*value),
+                                        returndata: EvmByteArray::<D::Element>::empty(),
+                                        call_value: EvmValue::<D::Element>::constant(*value),
                                         saved_store: saved_store.clone(),
                                     },
-                                    continuation: Continuation {
+                                    continuation: EvmContinuation {
                                         return_block: Some(next),
                                         output_offset: zero(),
                                         output_size: zero(),
@@ -376,7 +389,7 @@ pub(super) fn create(
                                     },
                                 });
                                 branch.normalize();
-                                result.successors.push(Successor {
+                                result.successors.push(EvmSuccessor {
                                     payload: branch,
                                     kind: MachineEdgeKind::Call,
                                 });
@@ -391,11 +404,11 @@ pub(super) fn create(
 
 /// Validate and deploy initcode's RETURN before normal frame completion. Invalid
 /// deployed code is child failure; unknown code leaves an explicit frontier.
-pub(super) fn finish_creation(
-    payload: &mut MachinePayload,
+pub(super) fn finish_creation<D: EvmNumericAlgebra>(
+    payload: &mut EvmMachinePayload<D::Element>,
     kind: &mut OutcomeKind,
-    data: &mut ByteArray,
-    context: &mut TransferContext<'_>,
+    data: &mut EvmByteArray<D::Element>,
+    context: &mut TransferContext<'_, D>,
     _pc: usize,
 ) -> Result<(), FrontierReason> {
     let Some(address) = payload
@@ -414,27 +427,23 @@ pub(super) fn finish_creation(
     {
         return Err(FrontierReason::Work);
     }
-    if data
-        .len()
-        .constants()
+    if complete_candidates(data.len())
         .is_some_and(|lengths| lengths.iter().all(|length| *length > U256::from(24_576)))
-        || data
-            .byte_at(0, context.domain)
-            .constants()
+        || complete_candidates(&data.byte_at_with(0, context.domain))
             .is_some_and(|bytes| bytes.len() == 1 && bytes.contains(&U256::from(0xef)))
     {
         *kind = OutcomeKind::Failure;
-        *data = ByteArray::empty();
+        *data = EvmByteArray::<D::Element>::empty();
         return Ok(());
     }
     let bytes = data
-        .exact_bytes_bounded(context.config.max_memory_bytes)
+        .exact_bytes_bounded_with(context.config.max_memory_bytes, context.domain)
         .ok_or(FrontierReason::Creation(
             CreationBoundary::UnknownRuntimeCode,
         ))?;
     if bytes.len() > 24_576 || bytes.first() == Some(&0xef) {
         *kind = OutcomeKind::Failure;
-        *data = ByteArray::empty();
+        *data = EvmByteArray::<D::Element>::empty();
         return Ok(());
     }
     let runtime = Program::decode_with_fork(
@@ -449,12 +458,13 @@ pub(super) fn finish_creation(
     .expect("validated EVM runtime bytecode with a non-EF first byte always decodes");
     payload.store.deploy_code(address, runtime);
     // Successful CREATE never exposes its runtime as RETURNDATA in the caller.
-    *data = ByteArray::empty();
+    *data = EvmByteArray::<D::Element>::empty();
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::reserved;
     use crate::{Fork, world::World};
     use alloy_primitives::{Address, U256};

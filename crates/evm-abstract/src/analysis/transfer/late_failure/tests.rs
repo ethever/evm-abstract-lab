@@ -1,4 +1,9 @@
 use super::*;
+use crate::analysis::MachinePayload;
+use crate::analysis::transfer::Execution;
+use crate::domain::ValueAlgebra;
+use crate::world::ByteArray;
+use crate::world::Store;
 use crate::{
     Fork,
     analysis::{
@@ -39,7 +44,7 @@ fn fixture() -> (World, Entry, ExecutionConfig, Domain, MachinePayload) {
     let mut config = ExecutionConfig::default();
     config.analysis.relations.enabled = false;
     let domain = config.domain().unwrap();
-    let payload = initial(&world, &entry, domain).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     (world, entry, config, domain, payload)
 }
 
@@ -103,7 +108,7 @@ fn relative_failure_restores_effects_without_finalizing_and_normal_execution_con
 fn precompile_root_has_a_post_touch_failure_before_native_dispatch() {
     let (world, _, config, domain, _) = fixture();
     let entry = Entry::concrete(address(3), address(0x1000), word(0), ByteArray::empty());
-    let input = initial(&world, &entry, domain).unwrap();
+    let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     assert_eq!(input.store.touched_in_transaction(address(3)), Some(true));
     let result = execute_inner(
         &world,
@@ -502,7 +507,7 @@ fn exact_reservation_admits_failure_and_one_short_keeps_input_and_prior_debits()
         let mut result = super::super::empty_execution(input.clone());
         let mut context = TransferContext {
             config: &config,
-            domain,
+            domain: ValueAlgebra::new(&domain),
             budget: &mut budget,
             root_address: None,
             input_scope: None,

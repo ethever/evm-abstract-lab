@@ -1,43 +1,45 @@
 //! Shared work accounting before domain, byte-range and join operations.
-use super::Execution;
-use super::address;
+
+use super::EvmExecution;
+use super::{address, complete_candidates};
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use crate::{
     analysis::ExecutionConfig,
     bytecode::Program,
-    domain::{AbstractValue, Domain},
-    world::{Code, Store},
+    domain::{AlgebraRef, EvmValue},
+    world::{Code, EvmStore},
 };
 use revm_bytecode::opcode;
 
 #[cfg(test)]
 mod tests;
 
-pub(super) fn arithmetic_work(args: &[AbstractValue]) -> usize {
+pub(super) fn arithmetic_work<N: WordElement>(args: &[EvmValue<N>]) -> usize {
     args.iter()
         .try_fold(1usize, |size, value| {
-            value.constants().map(|set| size.saturating_mul(set.len()))
+            complete_candidates(value).map(|set| size.saturating_mul(set.len()))
         })
         .unwrap_or(1)
 }
 
-pub(super) fn maximum(value: &AbstractValue) -> usize {
-    value
-        .constants()
-        .and_then(|values| values.iter().max())
-        .and_then(|v| usize::try_from(*v).ok())
+pub(super) fn maximum<N: WordElement>(value: &EvmValue<N>) -> usize {
+    complete_candidates(value)
+        .and_then(|values| values.iter().max().copied())
+        .and_then(|v| usize::try_from(v).ok())
         .unwrap_or(0)
 }
 
 // A conservative precharge includes finite domain combinations, byte visits,
 // and copying/joining sparse arrays. It happens before an allocating operation.
-pub(super) fn byte_work(
-    args: &[&AbstractValue],
+pub(super) fn byte_work<D: EvmNumericAlgebra>(
+    args: &[&EvmValue<D::Element>],
     bytes: usize,
     existing: usize,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
 ) -> usize {
     let branches = args.iter().fold(1usize, |cost, value| {
-        cost.saturating_mul(value.constants().map_or(1, |set| set.len()))
+        cost.saturating_mul(complete_candidates(value).map_or(1, |set| set.len()))
     });
     branches.saturating_mul(
         bytes
@@ -52,14 +54,14 @@ pub(super) fn byte_work(
     )
 }
 
-pub(super) fn operation_work(
-    result: &Execution,
+pub(super) fn operation_work<D: EvmNumericAlgebra>(
+    result: &EvmExecution<D::Element>,
     op: u8,
-    args: &[AbstractValue],
+    args: &[EvmValue<D::Element>],
     program: &Program,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
     config: &ExecutionConfig,
-    entry: &crate::world::Entry,
+    entry: &crate::world::EvmEntry<D::Element>,
 ) -> usize {
     let frame = result.payload.active();
     let environment = &entry.environment;
@@ -69,7 +71,7 @@ pub(super) fn operation_work(
     ) {
         // Slice retains the graph and translates only certified presentation
         // coordinates. Its cheap precharge does not census unrelated arrays.
-        return frame.memory.slice_work(&args[0], &args[1], domain);
+        return frame.memory.slice_work_with(&args[0], &args[1], domain);
     }
     if matches!(
         op,
@@ -78,9 +80,14 @@ pub(super) fn operation_work(
         // Quote from cached counts before any whole-array/root census. COPY
         // retains its complete graph but no longer refreshes every coordinate.
         return if op == opcode::CODECOPY {
-            frame
-                .memory
-                .copy_code_work(program.byte_len(), 1, &args[0], &args[1], &args[2], domain)
+            frame.memory.copy_code_work_with(
+                program.byte_len(),
+                1,
+                &args[0],
+                &args[1],
+                &args[2],
+                domain,
+            )
         } else {
             let source = match op {
                 opcode::CALLDATACOPY => &frame.calldata,
@@ -89,20 +96,20 @@ pub(super) fn operation_work(
             };
             frame
                 .memory
-                .copy_work(source, &args[0], &args[1], &args[2], domain)
+                .copy_work_with(source, &args[0], &args[1], &args[2], domain)
         };
     }
     if op == opcode::EXTCODECOPY {
         let (bytes, accounts) = external_code_shape(&result.payload.store, &args[0], entry);
         return frame
             .memory
-            .copy_code_work(bytes, accounts, &args[1], &args[2], &args[3], domain)
+            .copy_code_work_with(bytes, accounts, &args[1], &args[2], &args[3], domain)
             .saturating_add(external_code_fee(bytes, accounts, domain, true));
     }
     if op == opcode::MSTORE
         && let Some(work) = frame
             .memory
-            .uniform_word_write_work(&args[0], &args[1], domain)
+            .uniform_word_write_work_with(&args[0], &args[1], domain)
     {
         return work;
     }
@@ -124,11 +131,9 @@ pub(super) fn operation_work(
             .work_size()
             .saturating_add(args[0].work_size())
             .saturating_add(
-                domain.operation_work(&[]).saturating_mul(
-                    args[0]
-                        .constants()
-                        .map_or(1, std::collections::BTreeSet::len),
-                ),
+                domain
+                    .operation_work(&[])
+                    .saturating_mul(complete_candidates(&args[0]).map_or(1, |set| set.len())),
             ),
         opcode::ADDRESS
         | opcode::CALLER
@@ -145,25 +150,22 @@ pub(super) fn operation_work(
         | opcode::BLOBBASEFEE
         | opcode::GAS => environment
             .work_size()
-            .saturating_add(environment.projection_work(domain)),
+            .saturating_add(environment.projection_work_with(domain)),
         opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain),
         opcode::MSTORE => byte_work(&args.iter().collect::<Vec<_>>(), 32, array_size, domain)
-            .saturating_add(
-                32usize.saturating_mul(domain.operation_work(&[
-                    AbstractValue::constant(crate::U256::ZERO),
-                    args[1].clone(),
-                ])),
-            ),
+            .saturating_add(32usize.saturating_mul(domain.operation_work(&[
+                EvmValue::<D::Element>::constant(crate::U256::ZERO),
+                args[1].clone(),
+            ]))),
         opcode::MSTORE8 => byte_work(&args.iter().collect::<Vec<_>>(), 1, array_size, domain)
             .saturating_add(domain.operation_work(&[
                 args[1].clone(),
-                AbstractValue::constant(crate::U256::from(255)),
+                EvmValue::<D::Element>::constant(crate::U256::from(255)),
             ])),
         opcode::EXTCODEHASH => {
             external_code_work(&result.payload.store, &args[0], domain, false, entry)
         }
-        opcode::EXTCODESIZE | opcode::BALANCE => args[0]
-            .constants()
+        opcode::EXTCODESIZE | opcode::BALANCE => complete_candidates(&args[0])
             .map_or(1, |values| values.len())
             .saturating_mul(domain.capacity())
             .saturating_add(1),
@@ -185,21 +187,21 @@ pub(super) fn operation_work(
     }
 }
 
-fn external_code_work(
-    store: &Store,
-    targets: &AbstractValue,
-    domain: Domain,
+fn external_code_work<D: EvmNumericAlgebra>(
+    store: &EvmStore<D::Element>,
+    targets: &EvmValue<D::Element>,
+    domain: AlgebraRef<'_, D>,
     copied: bool,
-    entry: &crate::world::Entry,
+    entry: &crate::world::EvmEntry<D::Element>,
 ) -> usize {
     let (bytes, accounts) = external_code_shape(store, targets, entry);
     external_code_fee(bytes, accounts, domain, copied)
 }
 
-fn external_code_shape(
-    store: &Store,
-    targets: &AbstractValue,
-    entry: &crate::world::Entry,
+fn external_code_shape<N: WordElement>(
+    store: &EvmStore<N>,
+    targets: &EvmValue<N>,
+    entry: &crate::world::EvmEntry<N>,
 ) -> (usize, usize) {
     let actual;
     let targets = if entry.environment.to.as_concrete().is_none()
@@ -209,12 +211,12 @@ fn external_code_shape(
                 .address_value(entry.environment.to)
                 .identity(),
         ) {
-        actual = AbstractValue::constant(crate::U256::from_be_slice(entry.address.as_slice()));
+        actual = EvmValue::<N>::constant(crate::U256::from_be_slice(entry.address.as_slice()));
         &actual
     } else {
         targets
     };
-    let Some(targets) = targets.constants() else {
+    let Some(targets) = complete_candidates(targets) else {
         return (0, 0);
     };
     let source_bytes = targets.iter().fold(0usize, |cost, target| {
@@ -228,7 +230,12 @@ fn external_code_shape(
     (source_bytes, targets.len())
 }
 
-fn external_code_fee(source_bytes: usize, accounts: usize, domain: Domain, copied: bool) -> usize {
+fn external_code_fee<D: EvmNumericAlgebra>(
+    source_bytes: usize,
+    accounts: usize,
+    domain: AlgebraRef<'_, D>,
+    copied: bool,
+) -> usize {
     // Copy constructs source byte maps and joins possible accounts; hash visits
     // every source byte even if no memory output is requested.
     let factor = if copied {

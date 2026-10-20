@@ -1,19 +1,23 @@
 //! Basic-block execution on a transaction-wide machine. Calls suspend a frame;
 //! returns resume it with the same transaction store and an explicit result.
 
+use crate::domain::EvmNumericAlgebra;
+
+use super::engine::policy::ContextPolicy;
 use super::{
     DiagnosticKind, EdgeKind, InvalidOpcodeDiagnostic,
     machine::{
-        ExecutionConfig, FrameCode, FrontierReason, MachineEdgeKind, MachineKey, MachinePayload,
+        EvmMachinePayload, ExecutionConfig, FrameCode, FrontierReason, MachineEdgeKind, MachineKey,
         OutcomeKind,
     },
 };
-use super::{InstructionProgress, InstructionValue};
+use super::{EvmInstructionValue, InstructionProgress};
+
 use crate::{
-    domain::{AbstractValue, Domain, provenance::Origin},
+    domain::{AlgebraRef, EvmValue, provenance::Origin},
     world::{
-        AbstractLog, AddressInput, ByteArray, Code, Entry, LogKey, LogSourceKind, Store, Symbol,
-        World,
+        AddressInput, Code, EvmByteArray, EvmEntry, EvmLog, EvmStore, EvmWorld, LogKey,
+        LogSourceKind, Symbol,
     },
 };
 use alloy_primitives::{Address, U256, keccak256};
@@ -30,9 +34,13 @@ fn identity_scope() -> Option<u64> {
 
 mod budget;
 mod calls;
+mod candidates;
+use candidates::complete as complete_candidates;
 pub(super) mod create;
 mod errors;
 mod hash;
+#[cfg(test)]
+mod injection_tests;
 mod late_failure;
 mod precompile;
 pub(super) mod procedure;
@@ -45,13 +53,13 @@ pub(super) use crate::resource::WorkBudget;
 use budget::{byte_work, operation_work};
 use calls::{call, failure, finish};
 
-struct TransferContext<'a> {
+struct TransferContext<'a, D: EvmNumericAlgebra> {
     config: &'a ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'a, D>,
     budget: &'a mut WorkBudget,
     root_address: Option<(Address, AddressInput)>,
     input_scope: Option<u64>,
-    query_cache: relations::QueryCache,
+    query_cache: relations::QueryCache<D::Element>,
     /// Relative procedures finish without committing transaction lifecycle effects.
     procedure: bool,
     /// RPC discovery leaves concrete missing code for acquisition before abstraction.
@@ -65,33 +73,33 @@ pub(super) enum StorageReadPolicy {
     Discover,
 }
 
-pub(super) fn initial(
-    world: &World,
-    entry: &Entry,
-    domain: Domain,
-) -> Result<MachinePayload, FrontierReason> {
+pub(super) fn initial<D: EvmNumericAlgebra>(
+    world: &EvmWorld<D::Element>,
+    entry: &EvmEntry<D::Element>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<EvmMachinePayload<D::Element>, FrontierReason> {
     calls::initial(world, entry, domain)
 }
 
-pub(super) struct Successor {
-    pub payload: MachinePayload,
+pub(super) struct EvmSuccessor<N: WordElement> {
+    pub payload: EvmMachinePayload<N>,
     pub kind: MachineEdgeKind,
 }
-pub(super) struct Outcome {
+pub(super) struct EvmOutcome<N: WordElement> {
     pub kind: OutcomeKind,
-    pub data: ByteArray,
-    pub store: Store,
+    pub data: EvmByteArray<N>,
+    pub store: EvmStore<N>,
 }
-pub(super) struct Execution {
-    pub payload: MachinePayload,
+pub(super) struct EvmExecution<N: WordElement> {
+    pub payload: EvmMachinePayload<N>,
     pub executed_pcs: Vec<usize>,
     pub instruction_progress: Vec<InstructionProgress>,
-    pub instruction_values: Vec<InstructionValue>,
-    pub successors: Vec<Successor>,
+    pub instruction_values: Vec<EvmInstructionValue<N>>,
+    pub successors: Vec<EvmSuccessor<N>>,
     pub diagnostics: Vec<(usize, DiagnosticKind)>,
-    pub frontiers: Vec<ExecutionFrontier>,
-    pub outcomes: Vec<Outcome>,
-    pub completed_calls: Vec<CompletedCall>,
+    pub frontiers: Vec<EvmExecutionFrontier<N>>,
+    pub outcomes: Vec<EvmOutcome<N>>,
+    pub completed_calls: Vec<EvmCompletedCall<N>>,
     /// Raw finite retention failures, indexed into this execution's frontiers.
     /// Public reasons alone cannot distinguish identity exhaustion or semantics.
     pub retention_failures: Vec<(usize, RetentionCause)>,
@@ -103,8 +111,8 @@ pub(super) enum RetentionCause {
     State,
 }
 
-fn empty_execution(payload: MachinePayload) -> Execution {
-    Execution {
+fn empty_execution<N: WordElement>(payload: EvmMachinePayload<N>) -> EvmExecution {
+    EvmExecution {
         payload,
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
@@ -119,16 +127,16 @@ fn empty_execution(payload: MachinePayload) -> Execution {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct ExecutionFrontier {
+pub(super) struct EvmExecutionFrontier<N: WordElement> {
     pub pc: usize,
     pub reason: FrontierReason,
     pub target: Option<MachineKey>,
-    pub range: Option<super::RangeWitness>,
+    pub range: Option<super::EvmRangeWitness<N>>,
     /// Relative procedure state left unexpanded, when a folded execution stops.
-    pub payload: Option<std::sync::Arc<MachinePayload>>,
+    pub payload: Option<std::sync::Arc<EvmMachinePayload<N>>>,
 }
 
-impl Execution {
+impl<N: WordElement> EvmExecution {
     fn mark_instruction(&mut self, progress: InstructionProgress) {
         *self
             .instruction_progress
@@ -139,36 +147,43 @@ impl Execution {
 
 /// A specific child terminal before caller joins, with qualified world effects.
 #[derive(Clone, Debug)]
-pub(super) struct CompletedCall {
-    pub payload: MachinePayload,
+pub(super) struct EvmCompletedCall<N: WordElement> {
+    pub payload: EvmMachinePayload<N>,
     pub kind: OutcomeKind,
-    pub data: ByteArray,
-    pub output_store: Store,
+    pub data: EvmByteArray<N>,
+    pub output_store: EvmStore<N>,
     pub output_kind: OutcomeKind,
-    pub output_data: ByteArray,
+    pub output_data: EvmByteArray<N>,
 }
 
-pub(super) fn resume_summary(
-    payload: MachinePayload,
+// Default aliases keep concrete consumers and regression fixtures unambiguous.
+pub(super) type Execution = EvmExecution<crate::domain::NumericValue>;
+pub(super) type Successor = EvmSuccessor<crate::domain::NumericValue>;
+pub(super) type Outcome = EvmOutcome<crate::domain::NumericValue>;
+pub(super) type ExecutionFrontier = EvmExecutionFrontier<crate::domain::NumericValue>;
+pub(super) type CompletedCall = EvmCompletedCall<crate::domain::NumericValue>;
+
+pub(super) fn resume_summary<D: EvmNumericAlgebra>(
+    payload: EvmMachinePayload<D::Element>,
     kind: OutcomeKind,
-    data: ByteArray,
+    data: EvmByteArray<D::Element>,
     config: &ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
-) -> Execution {
+) -> EvmExecution {
     resume_summary_inner(payload, kind, data, config, domain, budget, false)
 }
 
-fn resume_summary_inner(
-    payload: MachinePayload,
+fn resume_summary_inner<D: EvmNumericAlgebra>(
+    payload: EvmMachinePayload<D::Element>,
     kind: OutcomeKind,
-    data: ByteArray,
+    data: EvmByteArray<D::Element>,
     config: &ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
     procedure: bool,
-) -> Execution {
-    let mut result = Execution {
+) -> EvmExecution {
+    let mut result = EvmExecution {
         payload: payload.clone(),
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
@@ -204,13 +219,13 @@ fn resume_summary_inner(
 fn address(value: U256) -> Address {
     Address::from_slice(&value.to_be_bytes::<32>()[12..])
 }
-fn constant(value: usize) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+fn constant<N: WordElement>(value: usize) -> EvmValue {
+    EvmValue::<N>::constant(U256::from(value))
 }
-fn zero() -> AbstractValue {
-    AbstractValue::constant(U256::ZERO)
+fn zero<N: WordElement>() -> EvmValue {
+    EvmValue::<N>::constant(U256::ZERO)
 }
-fn boundary(result: &mut Execution, pc: usize, reason: FrontierReason) {
+fn boundary<N: WordElement>(result: &mut EvmExecution<N>, pc: usize, reason: FrontierReason) {
     boundary_on(result, pc, reason, result.payload.key());
 }
 
@@ -225,8 +240,13 @@ fn boundary_reason(reason: FrontierReason) -> FrontierReason {
     }
 }
 
-fn boundary_on(result: &mut Execution, pc: usize, reason: FrontierReason, target: MachineKey) {
-    result.frontiers.push(ExecutionFrontier {
+fn boundary_on<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    pc: usize,
+    reason: FrontierReason,
+    target: MachineKey,
+) {
+    result.frontiers.push(EvmExecutionFrontier {
         pc,
         reason: boundary_reason(reason),
         target: Some(target),
@@ -235,7 +255,11 @@ fn boundary_on(result: &mut Execution, pc: usize, reason: FrontierReason, target
     });
 }
 
-fn boundary_bytes(result: &mut Execution, pc: usize, error: crate::world::RangeError) {
+fn boundary_bytes<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    pc: usize,
+    error: crate::world::RangeError,
+) {
     let cause = errors::retention_bytes(&error);
     let index = result.frontiers.len();
     boundary(result, pc, errors::bytes(error));
@@ -244,7 +268,11 @@ fn boundary_bytes(result: &mut Execution, pc: usize, error: crate::world::RangeE
     }
 }
 
-fn boundary_store(result: &mut Execution, pc: usize, error: crate::world::StoreError) {
+fn boundary_store<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    pc: usize,
+    error: crate::world::StoreError,
+) {
     let cause = errors::retention_store(&error);
     let index = result.frontiers.len();
     boundary(result, pc, errors::store(error));
@@ -253,25 +281,25 @@ fn boundary_store(result: &mut Execution, pc: usize, error: crate::world::StoreE
     }
 }
 
-fn successor(
-    result: &mut Execution,
-    mut payload: MachinePayload,
+fn successor<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    mut payload: EvmMachinePayload<N>,
     basic_block_index: usize,
     kind: EdgeKind,
 ) {
     payload.active_mut().key.basic_block_index = basic_block_index;
     payload.normalize();
-    result.successors.push(Successor {
+    result.successors.push(EvmSuccessor {
         payload,
         kind: MachineEdgeKind::Intraprocedural(kind),
     });
 }
 
-fn touch_memory(
-    result: &mut Execution,
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    context: &mut TransferContext<'_>,
+fn touch_memory<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
     if !ranges::memory(result, offset, size, context, pc) {
@@ -280,11 +308,11 @@ fn touch_memory(
     expand_memory(result, offset, size, context, pc)
 }
 
-fn expand_memory(
-    result: &mut Execution,
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    context: &mut TransferContext<'_>,
+fn expand_memory<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
     let config = context.config;
@@ -298,29 +326,28 @@ fn expand_memory(
         boundary(result, pc, FrontierReason::Work);
         return false;
     }
-    if let Err(error) =
-        result
-            .payload
-            .active_mut()
-            .memory
-            .expand(offset, size, config.max_memory_bytes, domain)
-    {
+    if let Err(error) = result.payload.active_mut().memory.expand_with(
+        offset,
+        size,
+        config.max_memory_bytes,
+        domain,
+    ) {
         boundary_bytes(result, pc, error);
         return false;
     }
     true
 }
 
-fn code_bytes(store: &Store, target: Address) -> Option<Vec<u8>> {
+fn code_bytes<N: WordElement>(store: &EvmStore<N>, target: Address) -> Option<Vec<u8>> {
     store.raw_account_code(target)
 }
 
-fn environment_targets(
-    value: &AbstractValue,
-    domain: Domain,
-    entry: &Entry,
-    mut read: impl FnMut(Address) -> AbstractValue,
-) -> AbstractValue {
+fn environment_targets<D: EvmNumericAlgebra>(
+    value: &EvmValue<D::Element>,
+    domain: AlgebraRef<'_, D>,
+    entry: &EvmEntry<D::Element>,
+    mut read: impl FnMut(Address) -> EvmValue<D::Element>,
+) -> EvmValue {
     let symbolic_owner = entry.environment.to.as_concrete().is_none();
     if symbolic_owner
         && value.identity().same_identity(
@@ -332,15 +359,15 @@ fn environment_targets(
     {
         return read(entry.address);
     }
-    let Some(values) = value.constants() else {
-        return AbstractValue::top();
+    let Some(values) = complete_candidates(value) else {
+        return EvmValue::<D::Element>::top();
     };
     values
         .iter()
         .map(|v| {
             let target = address(*v);
             if symbolic_owner && target == entry.address {
-                AbstractValue::top()
+                EvmValue::<D::Element>::top()
             } else {
                 read(target)
             }
@@ -349,21 +376,27 @@ fn environment_targets(
         .expect("AbstractValue constant sets are nonempty")
 }
 
-pub(super) fn execute(
-    world: &World,
-    entry: &Entry,
-    payload: MachinePayload,
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared metered transfer inputs and immutable context policy"
+)]
+pub(super) fn execute<D: EvmNumericAlgebra, C: ContextPolicy>(
+    world: &EvmWorld<D::Element>,
+    entry: &EvmEntry<D::Element>,
+    payload: EvmMachinePayload<D::Element>,
     config: &ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
+    context_policy: &C,
     budget: &mut WorkBudget,
     storage_reads: StorageReadPolicy,
-) -> Execution {
+) -> EvmExecution {
     execute_inner(
         world,
         entry,
         payload,
         config,
         domain,
+        context_policy,
         budget,
         storage_reads,
         false,
@@ -374,16 +407,17 @@ pub(super) fn execute(
     clippy::too_many_arguments,
     reason = "shared metered transfer inputs and relative-frame mode"
 )]
-fn execute_inner(
-    world: &World,
-    entry: &Entry,
-    payload: MachinePayload,
+fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
+    world: &EvmWorld<D::Element>,
+    entry: &EvmEntry<D::Element>,
+    payload: EvmMachinePayload<D::Element>,
     config: &ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
+    context_policy: &C,
     budget: &mut WorkBudget,
     storage_reads: StorageReadPolicy,
     procedure: bool,
-) -> Execution {
+) -> EvmExecution {
     let mut transfer_context = TransferContext {
         config,
         domain,
@@ -395,7 +429,7 @@ fn execute_inner(
         discover_code: storage_reads == StorageReadPolicy::Discover,
     };
     let context = &mut transfer_context;
-    let mut result = Execution {
+    let mut result = EvmExecution {
         payload,
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
@@ -457,7 +491,7 @@ fn execute_inner(
             &mut result,
             payload,
             OutcomeKind::Return,
-            ByteArray::empty(),
+            EvmByteArray::<D::Element>::empty(),
             context,
             0,
         );
@@ -477,7 +511,7 @@ fn execute_inner(
             &mut result,
             payload,
             OutcomeKind::Return,
-            ByteArray::empty(),
+            EvmByteArray::<D::Element>::empty(),
             context,
             program.byte_len(),
         );
@@ -524,11 +558,13 @@ fn execute_inner(
             return result;
         }
         if let Some(value) = instruction.immediate {
-            stack.push(AbstractValue::constant(value));
-            result.instruction_values.push(InstructionValue::new(
-                result.executed_pcs.len() - 1,
-                stack.last().expect("PUSH produced its normal result"),
-            ));
+            stack.push(EvmValue::<D::Element>::constant(value));
+            result
+                .instruction_values
+                .push(EvmInstructionValue::<D::Element>::new(
+                    result.executed_pcs.len() - 1,
+                    stack.last().expect("PUSH produced its normal result"),
+                ));
             result.mark_instruction(InstructionProgress::Completed);
             continue;
         }
@@ -544,11 +580,13 @@ fn execute_inner(
             result.mark_instruction(InstructionProgress::Completed);
             continue;
         }
-        let mut args: Vec<AbstractValue> = stack.drain(stack.len() - inputs..).collect();
+        let mut args: Vec<EvmValue<D::Element>> = stack.drain(stack.len() - inputs..).collect();
         result.mark_instruction(InstructionProgress::OperandsConsumed);
         args.reverse();
         if config.analysis.relations.enabled
-            && args.iter().any(AbstractValue::symbolic_limit_reached)
+            && args
+                .iter()
+                .any(EvmValue::<D::Element>::symbolic_limit_reached)
         {
             boundary(
                 &mut result,
@@ -558,7 +596,9 @@ fn execute_inner(
         }
         // Refinement can make a flagged operand singleton. Its inherited
         // refusal must still be distinguished from this result's optional term.
-        let inherited_symbolic_limit = args.iter().any(AbstractValue::symbolic_limit_reached);
+        let inherited_symbolic_limit = args
+            .iter()
+            .any(EvmValue::<D::Element>::symbolic_limit_reached);
         for value in &mut args {
             match relations::refine(value, &result.payload.relations, context) {
                 Ok(false) => return result,
@@ -606,8 +646,7 @@ fn execute_inner(
             }
         }
         if matches!(op, opcode::MLOAD | opcode::CALLDATALOAD) {
-            let scan = args[0]
-                .constants()
+            let scan = complete_candidates(&args[0])
                 .map_or(1, |s| s.len())
                 .saturating_mul(32)
                 .saturating_mul(domain.capacity().saturating_add(32));
@@ -639,36 +678,22 @@ fn execute_inner(
         }
         match op {
             opcode::JUMP | opcode::JUMPI => {
-                let history_work = result
-                    .payload
-                    .active()
-                    .key
-                    .jump_history
-                    .len()
-                    .saturating_mul(2)
-                    .saturating_add(1);
+                let history_work =
+                    context_policy.work(result.payload.active().key.jump_history.len());
                 if !context.budget.charge(history_work) {
                     boundary(&mut result, pc, FrontierReason::Work);
                     return result;
                 }
                 result.mark_instruction(InstructionProgress::Dispatched);
                 let frame = result.payload.active_mut();
-                // Only the most recent occurrence partitions analysis contexts.
-                // Repeated loop sources must reach the same key before the
-                // configured history window fills with duplicate iterations.
-                frame
-                    .key
-                    .jump_history
-                    .retain(|source| *source != block.start_pc);
-                frame.key.jump_history.push(block.start_pc);
-                let discard = frame
-                    .key
-                    .jump_history
-                    .len()
-                    .saturating_sub(config.analysis.context_depth);
-                frame.key.jump_history.drain(..discard);
+                // Ordinary and relative execution share this immutable policy.
+                context_policy.advance(
+                    &mut frame.key.jump_history,
+                    block.start_pc,
+                    config.analysis.context_depth,
+                );
                 let condition = args.get(1);
-                let constrained = if condition.is_none_or(AbstractValue::may_be_nonzero) {
+                let constrained = if condition.is_none_or(EvmValue::<D::Element>::may_be_nonzero) {
                     if let Some(condition) = condition {
                         relations::branch(&mut result, condition, true, context, pc)
                     } else {
@@ -683,9 +708,9 @@ fn execute_inner(
                     } else {
                         EdgeKind::BranchTrue
                     };
-                    match args[0].constants() {
+                    match complete_candidates(&args[0]) {
                         Some(targets) => {
-                            for target in targets {
+                            for target in targets.iter() {
                                 if !context.budget.charge(1) {
                                     boundary(&mut result, pc, FrontierReason::Work);
                                     break;
@@ -717,7 +742,7 @@ fn execute_inner(
                         }
                     }
                 }
-                if condition.is_some_and(AbstractValue::may_be_zero) {
+                if condition.is_some_and(EvmValue::<D::Element>::may_be_zero) {
                     let Some(payload) = relations::branch(
                         &mut result,
                         condition.expect("JUMPI condition"),
@@ -739,7 +764,7 @@ fn execute_inner(
                             &mut result,
                             payload,
                             OutcomeKind::Return,
-                            ByteArray::empty(),
+                            EvmByteArray::<D::Element>::empty(),
                             context,
                             pc,
                         );
@@ -749,13 +774,13 @@ fn execute_inner(
             }
             opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
                 result.mark_instruction(InstructionProgress::Dispatched);
-                result.payload.active_mut().returndata = ByteArray::empty();
+                result.payload.active_mut().returndata = EvmByteArray::<D::Element>::empty();
                 call(&mut result, world, op, &args, program, context, pc);
                 return result;
             }
             opcode::CREATE | opcode::CREATE2 => {
                 result.mark_instruction(InstructionProgress::Dispatched);
-                result.payload.active_mut().returndata = ByteArray::empty();
+                result.payload.active_mut().returndata = EvmByteArray::<D::Element>::empty();
                 create::create(&mut result, world, op, &args, program, context, pc);
                 return result;
             }
@@ -766,7 +791,7 @@ fn execute_inner(
                     &mut result,
                     payload,
                     OutcomeKind::Return,
-                    ByteArray::empty(),
+                    EvmByteArray::<D::Element>::empty(),
                     context,
                     pc,
                 );
@@ -776,7 +801,7 @@ fn execute_inner(
                 if !touch_memory(&mut result, &args[0], &args[1], context, pc) {
                     return result;
                 }
-                let data = match result.payload.active().memory.slice(
+                let data = match result.payload.active().memory.slice_with(
                     &args[0],
                     &args[1],
                     config.max_memory_bytes,
@@ -818,13 +843,13 @@ fn execute_inner(
                     boundary(&mut result, pc, FrontierReason::UnknownTarget);
                     return result;
                 }
-                let Some(beneficiaries) = args[0].constants() else {
+                let Some(beneficiaries) = complete_candidates(&args[0]) else {
                     boundary(&mut result, pc, FrontierReason::UnknownTarget);
                     return result;
                 };
                 let owner = result.payload.active().key.address;
                 result.mark_instruction(InstructionProgress::Dispatched);
-                for beneficiary in beneficiaries {
+                for beneficiary in beneficiaries.iter() {
                     if !context
                         .budget
                         .charge(result.payload.work_size().saturating_add(1))
@@ -835,7 +860,7 @@ fn execute_inner(
                     let mut payload = result.payload.clone();
                     payload
                         .store
-                        .selfdestruct(owner, address(*beneficiary), domain);
+                        .selfdestruct_with(owner, address(*beneficiary), domain);
                     if !late_failure::after_selfdestruct(&mut result, &payload, context, pc) {
                         break;
                     }
@@ -843,7 +868,7 @@ fn execute_inner(
                         &mut result,
                         payload,
                         OutcomeKind::Return,
-                        ByteArray::empty(),
+                        EvmByteArray::<D::Element>::empty(),
                         context,
                         pc,
                     );
@@ -853,12 +878,14 @@ fn execute_inner(
             opcode::SSTORE | opcode::TSTORE => {
                 let state_address = result.payload.active().key.address;
                 let write = if op == opcode::SSTORE {
-                    result
-                        .payload
-                        .store
-                        .write_checked(state_address, &args[0], &args[1], domain)
+                    result.payload.store.write_checked_with(
+                        state_address,
+                        &args[0],
+                        &args[1],
+                        domain,
+                    )
                 } else {
-                    result.payload.store.write_transient_checked(
+                    result.payload.store.write_transient_checked_with(
                         state_address,
                         &args[0],
                         &args[1],
@@ -877,7 +904,7 @@ fn execute_inner(
                 }
                 let memory = &mut result.payload.active_mut().memory;
                 let write = if op == opcode::MSTORE {
-                    memory.write_word_budgeted(
+                    memory.write_word_budgeted_with(
                         &args[0],
                         &args[1],
                         config.max_memory_bytes,
@@ -885,7 +912,7 @@ fn execute_inner(
                         context.budget,
                     )
                 } else {
-                    memory.write_byte_budgeted(
+                    memory.write_byte_budgeted_with(
                         &args[0],
                         &args[1],
                         config.max_memory_bytes,
@@ -917,7 +944,7 @@ fn execute_inner(
             opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY => {
                 let source = match op {
                     opcode::CALLDATACOPY => result.payload.active().calldata.clone(),
-                    opcode::CODECOPY => ByteArray::exact(program.bytes()),
+                    opcode::CODECOPY => EvmByteArray::<D::Element>::exact(program.bytes()),
                     opcode::RETURNDATACOPY => result.payload.active().returndata.clone(),
                     _ => result.payload.active().memory.clone(),
                 };
@@ -944,7 +971,7 @@ fn execute_inner(
                 if !admitted {
                     return result;
                 }
-                if let Err(error) = result.payload.active_mut().memory.copy_from(
+                if let Err(error) = result.payload.active_mut().memory.copy_from_with(
                     &args[0],
                     &source,
                     &args[1],
@@ -970,19 +997,19 @@ fn execute_inner(
                     );
                 let source = if exact_self {
                     code_bytes(&result.payload.store, entry.address)
-                        .map(|bytes| ByteArray::exact(&bytes))
-                        .unwrap_or_else(ByteArray::unknown)
+                        .map(|bytes| EvmByteArray::<D::Element>::exact(&bytes))
+                        .unwrap_or_else(EvmByteArray::<D::Element>::unknown)
                 } else {
-                    match args[0].constants() {
+                    match complete_candidates(&args[0]) {
                         Some(targets) => {
                             let mut sources = targets.iter().map(|target| {
                                 let target = address(*target);
                                 if symbolic_owner && target == entry.address {
-                                    ByteArray::unknown()
+                                    EvmByteArray::<D::Element>::unknown()
                                 } else {
                                     code_bytes(&result.payload.store, target)
-                                        .map(|bytes| ByteArray::exact(&bytes))
-                                        .unwrap_or_else(ByteArray::unknown)
+                                        .map(|bytes| EvmByteArray::<D::Element>::exact(&bytes))
+                                        .unwrap_or_else(EvmByteArray::<D::Element>::unknown)
                                 }
                             });
                             let first = sources.next().expect("nonempty value");
@@ -992,7 +1019,7 @@ fn execute_inner(
                                         crate::domain::symbolic::StateError::IdentityExhausted,
                                     ),
                                 )?;
-                                left.join_guarded(
+                                left.join_guarded_with(
                                     &right,
                                     domain,
                                     selector,
@@ -1007,10 +1034,10 @@ fn execute_inner(
                                 }
                             }
                         }
-                        None => ByteArray::unknown(),
+                        None => EvmByteArray::<D::Element>::unknown(),
                     }
                 };
-                if let Err(error) = result.payload.active_mut().memory.copy_from(
+                if let Err(error) = result.payload.active_mut().memory.copy_from_with(
                     &args[1],
                     &source,
                     &args[2],
@@ -1026,7 +1053,7 @@ fn execute_inner(
                 if !touch_memory(&mut result, &args[0], &args[1], context, pc) {
                     return result;
                 }
-                let data = match result.payload.active().memory.slice(
+                let data = match result.payload.active().memory.slice_with(
                     &args[0],
                     &args[1],
                     config.max_memory_bytes,
@@ -1053,9 +1080,9 @@ fn execute_inner(
                 if result
                     .payload
                     .store
-                    .emit_log(
+                    .emit_log_with(
                         source,
-                        AbstractLog {
+                        EvmLog {
                             topics: args[2..].to_vec(),
                             data,
                         },
@@ -1118,13 +1145,13 @@ fn execute_inner(
                         .blob_base_fee
                         .clone()
                         .with_symbol(Symbol::BlobBaseFee, entry.environment.input_scope.id()),
-                    opcode::BLOCKHASH => entry.environment.block_hash(&args[0], domain),
-                    opcode::BLOBHASH => entry.environment.blob_hashes.get(
+                    opcode::BLOCKHASH => entry.environment.block_hash_with(&args[0], domain),
+                    opcode::BLOBHASH => entry.environment.blob_hashes.get_with(
                         &args[0],
                         domain,
                         entry.environment.input_scope.id(),
                     ),
-                    opcode::GAS => entry.environment.gas.value(),
+                    opcode::GAS => entry.environment.gas.value_with(),
                     opcode::PC => constant(pc),
                     opcode::CODESIZE => constant(program.byte_len()),
                     opcode::CALLDATASIZE => frame.calldata.len().clone(),
@@ -1160,12 +1187,13 @@ fn execute_inner(
                     }
                     opcode::SLOAD | opcode::TLOAD => {
                         let read = if op == opcode::SLOAD {
-                            result
-                                .payload
-                                .store
-                                .read_checked(frame.key.address, &args[0], domain)
+                            result.payload.store.read_checked_with(
+                                frame.key.address,
+                                &args[0],
+                                domain,
+                            )
                         } else {
-                            result.payload.store.read_transient_checked(
+                            result.payload.store.read_transient_checked_with(
                                 frame.key.address,
                                 &args[0],
                                 domain,
@@ -1188,13 +1216,13 @@ fn execute_inner(
                             Some(Code::Runtime(program)) => constant(program.byte_len()),
                             Some(Code::Delegation(_)) => constant(23),
                             Some(Code::Empty) => zero(),
-                            _ => AbstractValue::top(),
+                            _ => EvmValue::<D::Element>::top(),
                         }
                     }),
                     opcode::EXTCODEHASH => environment_targets(&args[0], domain, entry, |target| {
                         code_bytes(&result.payload.store, target)
                             .map(|bytes| {
-                                let hash = AbstractValue::constant(U256::from_be_slice(
+                                let hash = EvmValue::<D::Element>::constant(U256::from_be_slice(
                                     keccak256(&bytes).as_slice(),
                                 ));
                                 if !bytes.is_empty() {
@@ -1212,7 +1240,7 @@ fn execute_inner(
                                     hash
                                 }
                             })
-                            .unwrap_or_else(AbstractValue::top)
+                            .unwrap_or_else(EvmValue::<D::Element>::top)
                     }),
                     opcode::MLOAD => {
                         let plan =
@@ -1249,7 +1277,7 @@ fn execute_inner(
                         if !touch_memory(&mut result, &args[0], &args[1], context, pc) {
                             return result;
                         }
-                        match result.payload.active().memory.slice(
+                        match result.payload.active().memory.slice_with(
                             &args[0],
                             &args[1],
                             config.max_memory_bytes,
@@ -1356,7 +1384,10 @@ fn execute_inner(
                 }
                 result
                     .instruction_values
-                    .push(InstructionValue::new(result.executed_pcs.len() - 1, &value));
+                    .push(EvmInstructionValue::<D::Element>::new(
+                        result.executed_pcs.len() - 1,
+                        &value,
+                    ));
                 result
                     .payload
                     .active_mut()
@@ -1381,7 +1412,7 @@ fn execute_inner(
             &mut result,
             payload,
             OutcomeKind::Return,
-            ByteArray::empty(),
+            EvmByteArray::<D::Element>::empty(),
             context,
             program.byte_len(),
         );
@@ -1391,6 +1422,11 @@ fn execute_inner(
 
 #[cfg(test)]
 mod tests {
+    use crate::analysis::transfer::ExecutionFrontier;
+    use crate::domain::ValueAlgebra;
+    use crate::world::Entry;
+    use crate::world::World;
+
     use super::*;
     use crate::{Fork, world::Account};
 
@@ -1404,7 +1440,7 @@ mod tests {
         let entry = Entry::new(owner);
         let config = ExecutionConfig::default();
         let domain = config.domain().unwrap();
-        let input = initial(&world, &entry, domain).unwrap();
+        let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
         for cancelled in [false, true] {
             let control = crate::analysis::control::Control::new(Default::default());
             let (result, budget) = control.scope(|| {
@@ -1417,7 +1453,8 @@ mod tests {
                     &entry,
                     input.clone(),
                     &config,
-                    domain,
+                    ValueAlgebra::new(&domain),
+                    &crate::analysis::RecentDistinctJumps,
                     &mut budget,
                     StorageReadPolicy::Abstract,
                 );
@@ -1459,7 +1496,7 @@ mod tests {
         let entry = Entry::new(owner);
         let config = ExecutionConfig::default();
         let domain = config.domain().unwrap();
-        let mut payload = initial(&world, &entry, domain).unwrap();
+        let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
         // Exercise the defensive evidence boundary directly: ordinary validated
         // delegation facts normally provide the marker bytes at resolution.
         let frame = payload.active_mut();
@@ -1471,7 +1508,8 @@ mod tests {
             &entry,
             payload,
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut WorkBudget::new(config.max_work),
             StorageReadPolicy::Abstract,
         );

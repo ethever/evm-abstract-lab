@@ -16,8 +16,11 @@
 //! exact affordability inside B: retain success and possible failure there,
 //! independently of host memory caps and of the analysis work ledger.
 
-use super::{Execution, TransferContext};
-use crate::{analysis::OutcomeKind, world::ByteArray};
+use crate::domain::EvmNumericAlgebra;
+
+use super::{EvmExecution, TransferContext};
+
+use crate::{analysis::OutcomeKind, world::EvmByteArray};
 use alloy_primitives::U256;
 
 pub(super) const MAX_END: U256 = U256::from_limbs([u64::MAX - 31, u64::MAX, u64::MAX, u64::MAX]);
@@ -25,9 +28,9 @@ pub(super) const MAX_END: U256 = U256::from_limbs([u64::MAX - 31, u64::MAX, u64:
 /// Reserve the failure envelope's payload copies before normal frame completion.
 /// Root completion meters rollback and its actual finalization plan in
 /// calls::finish; child completion retains its output-copy reservation there.
-pub(super) fn failure(
-    result: &mut Execution,
-    context: &mut TransferContext<'_>,
+pub(super) fn failure<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
     let payload = &result.payload;
@@ -44,7 +47,7 @@ pub(super) fn failure(
         result,
         result.payload.clone(),
         OutcomeKind::Failure,
-        ByteArray::empty(),
+        EvmByteArray::<D::Element>::empty(),
         context,
         pc,
     );

@@ -1,5 +1,12 @@
 //! Compare the Store-only path with ordinary completion, preserving captured symbols.
 
+use crate::analysis::MachinePayload;
+use crate::analysis::transfer::Execution;
+use crate::domain::AbstractValue;
+use crate::domain::ValueAlgebra;
+use crate::world::ByteArray;
+use crate::world::Store;
+
 use super::*;
 use crate::{
     Fork,
@@ -39,10 +46,11 @@ fn context<'a>(
     config: &'a ExecutionConfig,
     budget: &'a mut WorkBudget,
     procedure: bool,
-) -> TransferContext<'a> {
+    algebra: crate::domain::AlgebraRef<'a, Domain>,
+) -> TransferContext<'a, Domain> {
     TransferContext {
         config,
-        domain: config.domain().unwrap(),
+        domain: algebra,
         budget,
         root_address: None,
         input_scope: None,
@@ -60,7 +68,7 @@ fn native_input_payload(target: u64, input: ByteArray, config: &ExecutionConfig)
     let mut world = World::new(Fork::Osaka, "native root completion");
     world.insert(address(target), Account::empty()).unwrap();
     let entry = Entry::concrete(address(target), address(0x900), word(0), input);
-    initial(&world, &entry, config.domain().unwrap()).unwrap()
+    initial(&world, &entry, ValueAlgebra::new(&config.domain().unwrap())).unwrap()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -85,8 +93,17 @@ pub(in crate::analysis::transfer::precompile) fn admission_receipts(
     let key_census = budget.used();
     assert!(reserve(&mut budget, key.total()).is_some());
     let key_admitted = budget.used();
-    let completion =
-        CompletionWork::measure(payload, id, &mut context(config, &mut budget, false)).unwrap();
+    let completion = CompletionWork::measure(
+        payload,
+        id,
+        &mut context(
+            config,
+            &mut budget,
+            false,
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
+    )
+    .unwrap();
     let completion_census = budget.used();
     assert!(reserve(&mut budget, completion.total()).is_some());
     let construction_ready = budget.used();
@@ -141,7 +158,7 @@ fn joined_payload(target: u64, config: &ExecutionConfig) -> MachinePayload {
         word(0),
         ByteArray::unknown(),
     );
-    let mut payload = initial(&world, &entry, domain).unwrap();
+    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     let log_key = LogKey {
         address: owner,
         code_address: owner,
@@ -254,7 +271,12 @@ fn assert_ordinary_root_reference(
             original.clone(),
             outcome.kind,
             outcome.data.clone(),
-            &mut context(config, &mut budget, procedure),
+            &mut context(
+                config,
+                &mut budget,
+                procedure,
+                ValueAlgebra::new(&config.domain().unwrap()),
+            ),
             0,
         );
     }
@@ -339,7 +361,12 @@ fn native_root_shapes_match_ordinary_completion_for_true_and_relative_roots() {
                     .get(&address(target))
                     .unwrap()
                     .id(),
-                &mut context(&config, &mut budget, procedure),
+                &mut context(
+                    &config,
+                    &mut budget,
+                    procedure,
+                    ValueAlgebra::new(&config.domain().unwrap()),
+                ),
             );
             assert_shapes(&result, &payload, target, config.domain().unwrap());
             assert_ordinary_root_reference(&result, &payload, &config, procedure);
@@ -413,7 +440,12 @@ fn root_refusals_distinguish_key_admission_and_keep_exact_phase_receipts() {
         summarize(
             &mut result,
             &PrecompileId::Bn254Add,
-            &mut context(&config, &mut budget, false),
+            &mut context(
+                &config,
+                &mut budget,
+                false,
+                ValueAlgebra::new(&config.domain().unwrap()),
+            ),
         );
         assert_refusal(&result, &payload, FrontierReason::Work, target);
         assert!(budget.exhausted());
@@ -446,7 +478,12 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
     summarize(
         &mut result,
         &PrecompileId::Bn254Add,
-        &mut context(&limited, &mut budget, false),
+        &mut context(
+            &limited,
+            &mut budget,
+            false,
+            ValueAlgebra::new(&limited.domain().unwrap()),
+        ),
     );
     assert_refusal(&result, &payload, reason, Some(payload.key()));
     assert_eq!(
@@ -474,7 +511,12 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
     summarize(
         &mut result,
         &PrecompileId::Identity,
-        &mut context(&limited, &mut budget, false),
+        &mut context(
+            &limited,
+            &mut budget,
+            false,
+            ValueAlgebra::new(&limited.domain().unwrap()),
+        ),
     );
     assert_refusal(
         &result,
@@ -522,7 +564,12 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
         payload.clone(),
         OutcomeKind::Return,
         payload.active().calldata.clone(),
-        &mut context(&limited, &mut finish_budget, false),
+        &mut context(
+            &limited,
+            &mut finish_budget,
+            false,
+            ValueAlgebra::new(&limited.domain().unwrap()),
+        ),
         0,
     );
     assert_refusal(&reference, &payload, expected.clone(), Some(payload.key()));
@@ -531,7 +578,12 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
     summarize(
         &mut result,
         &PrecompileId::Identity,
-        &mut context(&limited, &mut budget, false),
+        &mut context(
+            &limited,
+            &mut budget,
+            false,
+            ValueAlgebra::new(&limited.domain().unwrap()),
+        ),
     );
     assert_refusal(&result, &payload, expected, Some(payload.key()));
     assert_eq!(
@@ -554,7 +606,12 @@ fn cancelled_root_has_a_typed_no_key_frontier_before_its_first_receipt() {
         summarize(
             &mut result,
             &PrecompileId::Identity,
-            &mut context(&config, &mut budget, false),
+            &mut context(
+                &config,
+                &mut budget,
+                false,
+                ValueAlgebra::new(&config.domain().unwrap()),
+            ),
         );
         assert_refusal(
             &result,
@@ -584,7 +641,12 @@ fn cancellation_after_key_admission_uses_the_original_key_and_paid_receipt() {
             CompletionWork::measure(
                 &payload,
                 &PrecompileId::Identity,
-                &mut context(&config, &mut budget, false),
+                &mut context(
+                    &config,
+                    &mut budget,
+                    false,
+                    ValueAlgebra::new(&config.domain().unwrap())
+                ),
             )
             .is_none()
         );
@@ -610,13 +672,14 @@ fn entered_child(code: &str, native: bool, config: &ExecutionConfig) -> MachineP
             .insert(address(0x101).create(0), Account::absent())
             .unwrap();
     }
-    let payload = initial(&world, &entry, config.domain().unwrap()).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&config.domain().unwrap())).unwrap();
     let result = super::super::super::execute(
         &world,
         &entry,
         payload,
         config,
-        config.domain().unwrap(),
+        ValueAlgebra::new(&config.domain().unwrap()),
+        &crate::analysis::RecentDistinctJumps,
         &mut WorkBudget::new(config.max_work),
         StorageReadPolicy::Abstract,
     );
@@ -648,7 +711,12 @@ fn child_and_runtime_fallback_keep_the_legacy_atomic_summary_price() {
         super::super::summarize(
             &mut result,
             &PrecompileId::Bn254Add,
-            &mut context(&config, &mut budget, true),
+            &mut context(
+                &config,
+                &mut budget,
+                true,
+                ValueAlgebra::new(&config.domain().unwrap()),
+            ),
         );
         assert_refusal(&result, &payload, FrontierReason::Work, Some(payload.key()));
         assert_eq!(budget.used(), 0);
@@ -658,7 +726,12 @@ fn child_and_runtime_fallback_keep_the_legacy_atomic_summary_price() {
         super::super::summarize(
             &mut at_price,
             &PrecompileId::Bn254Add,
-            &mut context(&config, &mut at_price_budget, true),
+            &mut context(
+                &config,
+                &mut at_price_budget,
+                true,
+                ValueAlgebra::new(&config.domain().unwrap()),
+            ),
         );
         assert_eq!(at_price_budget.used(), work);
         assert_eq!(at_price.payload, payload);
@@ -682,7 +755,12 @@ fn child_and_runtime_fallback_keep_the_legacy_atomic_summary_price() {
         super::super::summarize(
             &mut result,
             &PrecompileId::Bn254Add,
-            &mut context(&config, &mut budget, true),
+            &mut context(
+                &config,
+                &mut budget,
+                true,
+                ValueAlgebra::new(&config.domain().unwrap()),
+            ),
         );
         assert!(result.frontiers.is_empty());
         assert_eq!(result.payload, payload);
@@ -712,7 +790,12 @@ fn child_and_runtime_fallback_keep_the_legacy_atomic_summary_price() {
                 payload.clone(),
                 kind,
                 data,
-                &mut context(&config, &mut finish_budget, true),
+                &mut context(
+                    &config,
+                    &mut finish_budget,
+                    true,
+                    ValueAlgebra::new(&config.domain().unwrap()),
+                ),
                 0,
             );
         }
@@ -759,7 +842,12 @@ fn creation_child_still_deploys_code_before_ordinary_completion() {
         child,
         OutcomeKind::Return,
         ByteArray::exact(&[0]),
-        &mut context(&config, &mut budget, false),
+        &mut context(
+            &config,
+            &mut budget,
+            false,
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
         0,
     );
     assert!(result.frontiers.is_empty());

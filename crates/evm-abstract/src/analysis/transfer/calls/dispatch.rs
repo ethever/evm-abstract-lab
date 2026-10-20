@@ -1,25 +1,25 @@
 //! Guarded target partitioning leaves caller roots and their identities intact.
 
-use super::{AbstractValue, Execution, FrontierReason, MachinePayload, TransferContext, boundary};
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
+use super::{EvmExecution, EvmMachinePayload, EvmValue, FrontierReason, TransferContext, boundary};
+
 use crate::{
     analysis::DiagnosticKind,
-    domain::{
-        NumericValue,
-        relational::{CheckResult, QueryReason},
-    },
+    domain::relational::{CheckResult, QueryReason},
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
-pub(super) fn target_guard(
-    result: &mut Execution,
-    payload: &MachinePayload,
-    projected: &AbstractValue,
-    candidate: &AbstractValue,
+pub(super) fn target_guard<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    payload: &EvmMachinePayload<D::Element>,
+    projected: &EvmValue<D::Element>,
+    candidate: &EvmValue<D::Element>,
     equal: bool,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
-) -> Option<MachinePayload> {
+) -> Option<EvmMachinePayload<D::Element>> {
     let operands = [projected.clone(), candidate.clone()];
     if !context
         .budget
@@ -76,16 +76,19 @@ pub(super) fn target_guard(
         if let Err(reason) =
             guarded
                 .relations
-                .observe(&expression, &NumericValue::constant(U256::ZERO), &limits)
+                .observe(&expression, &D::Element::constant(U256::ZERO), &limits)
         {
             boundary(result, pc, FrontierReason::Relations(reason));
         }
         return Some(guarded);
     }
-    let answer =
-        guarded
-            .relations
-            .assume_checked_budgeted(&expression, true, &limits, context.budget);
+    let answer = guarded.relations.assume_checked_budgeted_with(
+        &expression,
+        true,
+        &limits,
+        context.budget,
+        context.domain,
+    );
     if context.budget.exhausted() {
         boundary(result, pc, FrontierReason::Work);
         return None;
