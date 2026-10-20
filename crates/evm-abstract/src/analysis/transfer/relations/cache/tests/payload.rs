@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    analysis::transfer::resource_tests::words::{Heavy, Policy, copies, reset},
+    analysis::transfer::resource_tests::words::{COPIES, Heavy, Policy, copies, reset},
     domain::{Domain, ValueAlgebra, WordElement, relational::EvmValueQuery},
 };
 
@@ -24,6 +24,7 @@ fn query(limits: RelationLimits) -> (RelationState, ExprId, EvmValueQuery<Heavy>
 
 #[test]
 fn real_large_query_answer_cannot_escape_the_memo_retention_allowance() {
+    let _copies = COPIES.scope();
     let limits = RelationLimits {
         max_nodes: 32,
         ..RelationLimits::default()
@@ -48,6 +49,7 @@ fn real_large_query_answer_cannot_escape_the_memo_retention_allowance() {
 
 #[test]
 fn optional_retention_and_hits_pay_before_any_owned_numeric_copy() {
+    let _copies = COPIES.scope();
     let limits = RelationLimits {
         max_nodes: 65_536,
         ..RelationLimits::default()
