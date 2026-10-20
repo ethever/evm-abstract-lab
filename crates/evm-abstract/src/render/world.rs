@@ -7,8 +7,9 @@
 use evm_abstract_notation::Symbol;
 
 use crate::{
-    analysis::WorldAnalysis,
-    world::{Existence, SnapshotIdentity, Store},
+    analysis::{EvmWorldAnalysis, WorldAnalysis},
+    domain::{EvmValue, WordElement},
+    world::{EvmStore, Existence, SnapshotIdentity},
 };
 use alloy_primitives::{Address, B256, keccak256};
 use serde::Serialize;
@@ -17,7 +18,7 @@ use std::fmt::Write;
 pub(crate) mod environment;
 mod explain;
 mod json;
-pub use json::{JsonEvidence, evidence};
+pub use json::{EvmJsonEvidence, JsonEvidence, evidence, evidence_with};
 mod partial;
 mod ssa;
 mod teaching;
@@ -254,6 +255,16 @@ pub fn json(analysis: &WorldAnalysis) -> Result<serde_json::Value, crate::render
     Ok(serde_json::from_str(&encoded)?)
 }
 
+/// Native JSON evidence for the selected numeric element, without projecting
+/// execution into the default domain. Account observations and terminal tuples
+/// retain the same element family as the analysis.
+pub fn json_with<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+) -> Result<serde_json::Value, crate::render::json::JsonError> {
+    let encoded = crate::render::json::compact(&evidence_with(analysis)?)?;
+    Ok(serde_json::from_str(&encoded)?)
+}
+
 fn identity(identity: &SnapshotIdentity) -> String {
     match identity {
         SnapshotIdentity::Offline { label } => format!("offline:{label:?}"),
@@ -269,10 +280,10 @@ fn hash_label(hash: Option<B256>) -> String {
 }
 
 #[derive(Serialize)]
-struct AccountObservation {
+struct AccountObservation<N: WordElement> {
     address: Address,
-    balance: crate::domain::AbstractValue,
-    nonce: crate::domain::AbstractValue,
+    balance: EvmValue<N>,
+    nonce: EvmValue<N>,
     existence: Existence,
     code_hash: Option<B256>,
     code_size: Option<usize>,
@@ -280,7 +291,7 @@ struct AccountObservation {
     pending_destruction: Option<bool>,
 }
 
-fn observations(store: &Store) -> Vec<AccountObservation> {
+fn observations<N: WordElement>(store: &EvmStore<N>) -> Vec<AccountObservation<N>> {
     store
         .addresses()
         .into_iter()
@@ -288,7 +299,7 @@ fn observations(store: &Store) -> Vec<AccountObservation> {
         .collect()
 }
 
-fn observation(store: &Store, address: Address) -> AccountObservation {
+fn observation<N: WordElement>(store: &EvmStore<N>, address: Address) -> AccountObservation<N> {
     let code = store.raw_account_code(address);
     let code_hash = if store.existence(address) == Existence::Absent {
         Some(B256::ZERO)

@@ -28,12 +28,19 @@ mod terminal;
 mod transfer;
 mod worklist;
 
+#[cfg(test)]
+mod compatibility;
+
 use crate::{bytecode::Program, domain::AbstractValue};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use std::fmt;
 
 pub use crate::bytecode::InvalidOpcodeReason;
 pub use config::{Config, ConfigError, ValidatedConfig};
+pub use engine::{
+    Arrival, ContextInsensitive, ContextPolicy, EnginePolicies, FirstResumeStatus,
+    MergeResumeStatus, PartitionPolicy, RecentDistinctJumps,
+};
 pub use machine::{
     ByteRangeBoundary, CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence,
     FrameCode, FrameKey, FrameState, FrontierReason, InstructionProgress, InstructionValue,
@@ -42,12 +49,19 @@ pub use machine::{
     ProcedureSummaryKind, ProcedureSummaryOutput, ProcedureSummaryRecord, RangeKind, RangeRequest,
     RangeWitness, RootFrame, WorldAnalysis,
 };
+pub use machine::{
+    EvmCallStack, EvmChildFrame, EvmContinuation, EvmExecutionEvidence, EvmFrame, EvmFrameState,
+    EvmInstructionValue, EvmMachineFrontier, EvmMachineOutcome, EvmMachinePayload, EvmMachineState,
+    EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord, EvmRootFrame,
+    EvmWorldAnalysis,
+};
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
     analyze_rpc_with_control, analyze_rpc_with_observer,
 };
 pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
 pub use terminal::{
+    EvmRootTerminalCoverage, EvmRootTerminalInputBinding, EvmRootTerminalOutcome,
     RootTerminalCoverage, RootTerminalInputBinding, RootTerminalOutcome, RootTerminalRetention,
     RootTerminalScope, RootTerminalTrigger,
 };
@@ -347,6 +361,71 @@ pub fn analyze_world(
     engine::run_world(world, entry, config)
 }
 
+/// Analyze with an explicitly selected numeric algebra and execution policies.
+///
+/// The algebra and its static analyzer/reduction bundle are borrowed for the
+/// whole run. All executable values, including memory, saved rollback state and
+/// recursive summaries, retain `D::Element` in the returned native analysis.
+/// The default observation/session adapter is not part of this entrypoint.
+///
+/// Context and partition policies are the same contracts used by ordinary
+/// propagation and relative procedure execution. They are immutable during the
+/// run and need not implement `Copy` or `Clone`.
+///
+/// ```
+/// use evm_abstract::{Address, Fork, analysis, domain::{Domain, ValueAlgebra}, world};
+/// let address = Address::repeat_byte(0x11);
+/// let mut world = world::World::new(Fork::Osaka, "explicit composition");
+/// world.insert(address, world::Account::from_hex("00", Fork::Osaka).unwrap()).unwrap();
+/// let algebra = ValueAlgebra::new(Domain::default());
+/// let policies = analysis::EnginePolicies::new(
+///     analysis::ContextInsensitive, analysis::MergeResumeStatus,
+/// );
+/// let result = analysis::analyze_world_with(
+///     world, world::Entry::new(address), analysis::ExecutionConfig::default(),
+///     &algebra, &policies,
+/// ).unwrap();
+/// assert_eq!(result.status(), analysis::Status::Converged);
+/// ```
+pub fn analyze_world_with<D, C, P>(
+    world: crate::world::EvmWorld<D::Element>,
+    entry: crate::world::EvmEntry<D::Element>,
+    config: ExecutionConfig,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    policies: &EnginePolicies<C, P>,
+) -> Result<EvmWorldAnalysis<D::Element>, ConfigError>
+where
+    D: crate::domain::EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+{
+    analyze_world_with_components_observer(
+        world,
+        entry,
+        config,
+        algebra,
+        policies,
+        &progress::Observer::default(),
+    )
+}
+
+/// Analyze a custom numeric element while publishing bounded observations.
+pub fn analyze_world_with_components_observer<D, C, P>(
+    world: crate::world::EvmWorld<D::Element>,
+    entry: crate::world::EvmEntry<D::Element>,
+    config: ExecutionConfig,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    policies: &EnginePolicies<C, P>,
+    observer: &progress::Observer,
+) -> Result<EvmWorldAnalysis<D::Element>, ConfigError>
+where
+    D: crate::domain::EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+{
+    engine::run_world_with(world, entry, config, algebra, policies, observer)
+}
+
 /// Analyze a world while publishing bounded, discrete execution observations.
 pub fn analyze_world_with_observer(
     world: crate::world::World,
@@ -380,6 +459,43 @@ pub fn analyze_world_with_control(
         .map_err(|_| ControlledAnalysisError::Cancelled)?;
     let result =
         control.scope(|| engine::run_world_with_observer(world, entry, config, control.observer()));
+    control
+        .checkpoint()
+        .map_err(|_| ControlledAnalysisError::Cancelled)?;
+    result.map_err(ControlledAnalysisError::Config)
+}
+
+/// Run a custom composition under the application's cancellation scope.
+///
+/// A cancelled run never publishes a partial report. The policies are borrowed
+/// only within the synchronous control scope; no snapshot or policy reference
+/// is retained in an application task after the call returns.
+pub fn analyze_world_with_components_control<D, C, P>(
+    world: crate::world::EvmWorld<D::Element>,
+    entry: crate::world::EvmEntry<D::Element>,
+    config: ExecutionConfig,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    policies: &EnginePolicies<C, P>,
+    control: &control::Control,
+) -> Result<EvmWorldAnalysis<D::Element>, ControlledAnalysisError>
+where
+    D: crate::domain::EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+{
+    control
+        .checkpoint()
+        .map_err(|_| ControlledAnalysisError::Cancelled)?;
+    let result = control.scope(|| {
+        analyze_world_with_components_observer(
+            world,
+            entry,
+            config,
+            algebra,
+            policies,
+            control.observer(),
+        )
+    });
     control
         .checkpoint()
         .map_err(|_| ControlledAnalysisError::Cancelled)?;

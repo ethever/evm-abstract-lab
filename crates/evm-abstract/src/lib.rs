@@ -51,3 +51,8 @@ mod test_instrumentation;
 pub use alloy_primitives::Address;
 pub use alloy_primitives::U256;
 pub use fork::Fork;
+
+/// Typed facts, registered reductions and dependency scheduling used by the
+/// production analysis composition. Downstream components can implement these
+/// exact protocols through the same dependency instance as the EVM adapters.
+pub use analysis_kernel as kernel;

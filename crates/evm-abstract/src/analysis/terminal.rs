@@ -12,8 +12,8 @@ use super::{
 use crate::{
     Fork,
     bytecode::Program,
-    domain::{AbstractValue, DomainSpec, symbolic::ExprId},
-    world::{ByteArray, Entry, Snapshot, Store},
+    domain::{DomainSpec, EvmValue, NumericValue, WordElement, symbolic::ExprId},
+    world::{EvmByteArray, EvmEntry, EvmSnapshot, EvmStore},
 };
 use serde::Serialize;
 
@@ -61,26 +61,29 @@ pub enum RootTerminalTrigger {
 /// when the Return envelope has independent current effects. Captured executing
 /// code is independent of any later account-code choice. Snapshot/revision are
 /// the actual session identities; no digest or late mutable state grants entry
-/// authority. There is no public constructor or deserialization path.
+/// authority. Numeric elements remain native in the captured input, rollback
+/// checkpoint and terminal effects. There is no report projection during
+/// execution, public constructor or deserialization path.
 #[derive(Clone, Debug, Serialize)]
-pub struct RootTerminalInputBinding {
+#[serde(rename = "RootTerminalInputBinding")]
+pub struct EvmRootTerminalInputBinding<N: WordElement> {
     pub(in crate::analysis) snapshot: SnapshotId,
     pub(in crate::analysis) revision: FactRevision,
     pub(in crate::analysis) storage_source: ExprId,
     pub(in crate::analysis) input_scope: Option<u64>,
     pub(in crate::analysis) fork: Fork,
-    pub(in crate::analysis) entry: Entry,
+    pub(in crate::analysis) entry: EvmEntry<N>,
     pub(in crate::analysis) config: ExecutionConfig,
     pub(in crate::analysis) domain_spec: DomainSpec,
     pub(in crate::analysis) frame: FrameKey,
     pub(in crate::analysis) program: Program,
-    pub(in crate::analysis) calldata: ByteArray,
-    pub(in crate::analysis) call_value: AbstractValue,
-    pub(in crate::analysis) saved_store: Snapshot,
-    pub(in crate::analysis) initial_store: Store,
+    pub(in crate::analysis) calldata: EvmByteArray<N>,
+    pub(in crate::analysis) call_value: EvmValue<N>,
+    pub(in crate::analysis) saved_store: EvmSnapshot<N>,
+    pub(in crate::analysis) initial_store: EvmStore<N>,
 }
 
-impl RootTerminalInputBinding {
+impl<N: WordElement> EvmRootTerminalInputBinding<N> {
     /// Exact immutable session snapshot, including offline namespace identity.
     pub fn snapshot(&self) -> &SnapshotId {
         &self.snapshot
@@ -102,7 +105,7 @@ impl RootTerminalInputBinding {
         self.fork
     }
     /// Original effective request, including snapshot-derived environment facts.
-    pub fn entry(&self) -> &Entry {
+    pub fn entry(&self) -> &EvmEntry<N> {
         &self.entry
     }
     /// Original complete execution policy.
@@ -122,42 +125,43 @@ impl RootTerminalInputBinding {
         &self.program
     }
     /// Actual lifted and scoped original calldata.
-    pub fn calldata(&self) -> &ByteArray {
+    pub fn calldata(&self) -> &EvmByteArray<N> {
         &self.calldata
     }
     /// Actual lifted and scoped original call value.
-    pub fn call_value(&self) -> &AbstractValue {
+    pub fn call_value(&self) -> &EvmValue<N> {
         &self.call_value
     }
     /// Original pre-entry rollback checkpoint, with all immutable source facts.
-    pub fn saved_store(&self) -> &Snapshot {
+    pub fn saved_store(&self) -> &EvmSnapshot<N> {
         &self.saved_store
     }
     /// Original entered Store before any detailed block or callback executed.
-    pub fn initial_store(&self) -> &Store {
+    pub fn initial_store(&self) -> &EvmStore<N> {
         &self.initial_store
     }
 }
 
 /// One complete terminal data/Store tuple, without a synthetic machine state.
 #[derive(Clone, Debug, Serialize)]
-pub struct RootTerminalOutcome {
+#[serde(rename = "RootTerminalOutcome")]
+pub struct EvmRootTerminalOutcome<N: WordElement> {
     pub(in crate::analysis) kind: OutcomeKind,
-    pub(in crate::analysis) data: ByteArray,
-    pub(in crate::analysis) store: Store,
+    pub(in crate::analysis) data: EvmByteArray<N>,
+    pub(in crate::analysis) store: EvmStore<N>,
 }
 
-impl RootTerminalOutcome {
+impl<N: WordElement> EvmRootTerminalOutcome<N> {
     /// Return, Revert or Failure.
     pub fn kind(&self) -> OutcomeKind {
         self.kind
     }
     /// Complete arbitrary return/revert bytes; Failure is exactly empty.
-    pub fn data(&self) -> &ByteArray {
+    pub fn data(&self) -> &EvmByteArray<N> {
         &self.data
     }
     /// Actual transaction-finalized effect bound for this alternative.
-    pub fn store(&self) -> &Store {
+    pub fn store(&self) -> &EvmStore<N> {
         &self.store
     }
 }
@@ -169,26 +173,27 @@ impl RootTerminalOutcome {
 /// detail starts. This representation is not a whole-Rust/EVM verification
 /// claim; the semantic proof remains scoped to the implemented operator.
 #[derive(Clone, Debug, Serialize)]
-pub struct RootTerminalCoverage {
+#[serde(rename = "RootTerminalCoverage")]
+pub struct EvmRootTerminalCoverage<N: WordElement> {
     pub(in crate::analysis) scope: RootTerminalScope,
     // Preparation allocates these once; publication only moves their ownership.
     // Keep the captured Stores out of every graph/result stack frame.
-    pub(in crate::analysis) input: Box<RootTerminalInputBinding>,
-    pub(in crate::analysis) outcomes: Box<[RootTerminalOutcome; 3]>,
+    pub(in crate::analysis) input: Box<EvmRootTerminalInputBinding<N>>,
+    pub(in crate::analysis) outcomes: Box<[EvmRootTerminalOutcome<N>; 3]>,
     pub(in crate::analysis) trigger: RootTerminalTrigger,
 }
 
-impl RootTerminalCoverage {
+impl<N: WordElement> EvmRootTerminalCoverage<N> {
     /// Whole original input-state scope of the separate terminal relation.
     pub fn scope(&self) -> RootTerminalScope {
         self.scope
     }
     /// Exact owned original assumptions shared by every alternative.
-    pub fn input(&self) -> &RootTerminalInputBinding {
+    pub fn input(&self) -> &EvmRootTerminalInputBinding<N> {
         &self.input
     }
     /// Fixed order: Return, Revert, Failure.
-    pub fn outcomes(&self) -> &[RootTerminalOutcome; 3] {
+    pub fn outcomes(&self) -> &[EvmRootTerminalOutcome<N>; 3] {
         &self.outcomes
     }
     /// Actual admissible detailed boundary at publication.
@@ -196,3 +201,10 @@ impl RootTerminalCoverage {
         &self.trigger
     }
 }
+
+/// Root input binding for the default numeric assembly.
+pub type RootTerminalInputBinding = EvmRootTerminalInputBinding<NumericValue>;
+/// Terminal tuple for the default numeric assembly.
+pub type RootTerminalOutcome = EvmRootTerminalOutcome<NumericValue>;
+/// Separate root terminal relation for the default numeric assembly.
+pub type RootTerminalCoverage = EvmRootTerminalCoverage<NumericValue>;

@@ -11,7 +11,8 @@ use super::{
 };
 use crate::{
     Address,
-    analysis::{FrameCode, MachineEdge, MachinePayload},
+    analysis::{EvmMachinePayload, FrameCode, MachineEdge},
+    domain::WordElement,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -117,7 +118,12 @@ impl FactDependencies {
         }
     }
 
-    pub(crate) fn record(&mut self, state: usize, payload: &MachinePayload, catalog: &CodeCatalog) {
+    pub(crate) fn record<N: WordElement>(
+        &mut self,
+        state: usize,
+        payload: &EvmMachinePayload<N>,
+        catalog: &CodeCatalog,
+    ) {
         let frame = payload.active();
         self.add(state, FactDependency::Code(Some(frame.key.code_address)));
         if frame.code != FrameCode::Runtime && frame.code != FrameCode::InitCode {

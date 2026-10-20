@@ -99,6 +99,17 @@ impl Config {
     /// # Ok::<(), evm_abstract::analysis::ConfigError>(())
     /// ```
     pub fn validate(self) -> Result<ValidatedConfig, ConfigError> {
+        let spec = self.validated_spec()?;
+        Ok(ValidatedConfig {
+            domain: Domain::from_spec(spec),
+            config: self,
+        })
+    }
+
+    /// Validate common configuration without constructing the default algebra.
+    /// Generic execution borrows its numeric policy separately; admission must
+    /// not manufacture a second default policy for that run.
+    pub(super) fn validated_spec(&self) -> Result<DomainSpec, ConfigError> {
         let capacity = NonZeroUsize::new(self.max_constants).ok_or(ConfigError::Constants)?;
         if self.max_states == 0 || self.max_transfers == 0 {
             return Err(ConfigError::Budget);
@@ -111,13 +122,10 @@ impl Config {
         {
             return Err(ConfigError::Relations);
         }
-        Ok(ValidatedConfig {
-            domain: Domain::from_spec(
-                DomainSpec::new(self.domain_profile, capacity, rounds, facts)
-                    .with_relations(self.relations),
-            ),
-            config: self,
-        })
+        Ok(
+            DomainSpec::new(self.domain_profile, capacity, rounds, facts)
+                .with_relations(self.relations),
+        )
     }
 }
 
