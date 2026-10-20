@@ -59,6 +59,7 @@ use super::cooperation::{
 };
 use analysis_kernel::Analyzer;
 use cooperation::{Borrowed, Composition, Cooperation, Empty};
+mod installation;
 mod reuse;
 mod terminal;
 pub use policy::ContextPolicy as EvmContextPolicy;
@@ -1160,11 +1161,11 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     return None;
                 }
             };
-            if !self.budget.charge(
-                self.alternatives[existing]
-                    .work_size()
-                    .saturating_add(successor.payload.work_size()),
-            ) {
+            let old_alternatives_work = self.alternatives[existing].work_size();
+            if !self
+                .budget
+                .charge(old_alternatives_work.saturating_add(successor.payload.work_size()))
+            {
                 self.frontier_payload(Some(from), work_reason, successor.payload);
                 return None;
             }
@@ -1190,9 +1191,13 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     return None;
                 }
             };
-            if let Err(error) =
-                self.install_join(existing, successor.payload.clone(), joined, alternatives)
-            {
+            if let Err(error) = self.install_join(
+                existing,
+                successor.payload.clone(),
+                joined,
+                alternatives,
+                old_alternatives_work,
+            ) {
                 self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
                 return None;
             }
@@ -1275,6 +1280,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         incoming: EvmMachinePayload<D::Element>,
         joined: Option<EvmMachinePayload<D::Element>>,
         mut alternatives: EvmEntryAlternatives<D::Element>,
+        old_alternatives_work: usize,
     ) -> Result<(), MachineError> {
         // None is the state adapter's whole-input coverage proof. It has not
         // changed admission metadata; retaining that covered contribution again
@@ -1282,15 +1288,15 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         if joined.is_none() {
             return Ok(());
         }
-        let work = self.result.states[id]
-            .entry
-            .work_size()
-            .saturating_add(incoming.work_size())
-            .saturating_add(joined.as_ref().map_or(0, EvmMachinePayload::work_size))
-            .saturating_add(alternatives.work_size())
-            .saturating_add(self.selectors.len())
-            .saturating_mul(4);
-        if work == usize::MAX || !self.budget.charge(work) {
+        let work = installation::JoinWork::quote::<D::Element>(
+            self.result.states[id].entry.work_size(),
+            incoming.work_size(),
+            joined.as_ref().map_or(0, EvmMachinePayload::work_size),
+            alternatives.work_size(),
+            old_alternatives_work,
+            self.selectors.len(),
+        );
+        if work.preparation == usize::MAX || !self.budget.charge(work.preparation) {
             return Err(MachineError::work_failure());
         }
         let mut selectors = self.selectors.clone();
@@ -1317,7 +1323,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             self.active.as_mut().ok_or(MachineError::Shape)?,
             self.budget,
             |run| {
-                run.publish_prepared_with(&self.inputs[id], changed, work, || {
+                run.publish_prepared_with(&self.inputs[id], changed, work.installation, || {
                     *current_alternatives = alternatives;
                     *current_selectors = selectors;
                     if let Some(joined) = joined {
@@ -1694,6 +1700,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             // its graph must not merge success with a previously seen failure.
             let entry_key = (key.clone(), node.partition.clone());
             let id = if let Some(existing) = self.ids.get(&entry_key).copied() {
+                // The replay copy reservation covers inspecting this retained
+                // metadata. Reuse the quote at installation rather than walking
+                // the old payload histories again before its preparation fee.
+                let old_alternatives_work = self.alternatives[existing].work_size();
                 let mut alternatives = self.alternatives[existing].clone();
                 let joined = alternatives
                     .join_entry(
@@ -1713,8 +1723,14 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     .content_form()
                     .and_then(|entry| Ok(entry == node.entry.content_form()?))
                     .map_err(MachineError::frontier_reason)?;
-                self.install_join(existing, node.entry.clone(), joined, alternatives)
-                    .map_err(MachineError::frontier_reason)?;
+                self.install_join(
+                    existing,
+                    node.entry.clone(),
+                    joined,
+                    alternatives,
+                    old_alternatives_work,
+                )
+                .map_err(MachineError::frontier_reason)?;
                 if compatible {
                     let state = &self.result.states[existing];
                     self.runtime

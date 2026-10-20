@@ -9,6 +9,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 mod bounded_promotion;
 mod decided_cache;
+mod installation;
 mod interruption;
 mod loop_bound;
 mod replay_evidence;
