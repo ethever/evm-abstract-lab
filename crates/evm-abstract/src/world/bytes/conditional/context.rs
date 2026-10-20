@@ -178,6 +178,41 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
         }
     }
 
+    /// The pack quote owns certification and result construction, even when
+    /// the hook declines. Both metered paths retain that trial on their original
+    /// ledger; the no-ledger library path keeps its pure, unmetered contract.
+    pub(in crate::world::bytes) fn pack_word_numeric(
+        &self,
+        domain: AlgebraRef<'_, D>,
+        bytes: &[&N; 32],
+    ) -> Option<N> {
+        if self.stopped()
+            || self
+                .demand
+                .as_ref()
+                .is_some_and(|demand| !demand.policy(domain))
+        {
+            return None;
+        }
+        if self.demand.is_some() || self.binding_budget.is_some() {
+            let work = domain.pack_word_work(bytes);
+            if self.stopped() {
+                return None;
+            }
+            let work = work?;
+            if !self.pay_extra(work) {
+                return None;
+            }
+        }
+        // A quote/payment or a custom hook can observe cancellation. Neither
+        // its result nor an ordinary fallback may escape that shared stop.
+        if self.stopped() {
+            return None;
+        }
+        let value = domain.pack_word_numeric(bytes);
+        if self.stopped() { None } else { value }
+    }
+
     /// Metadata and numeric actions share the original ledger. Fixed setup is
     /// funded before constructing its first Rc; refusal creates no Context.
     /// Facts and budget share only this trial's lifetime.

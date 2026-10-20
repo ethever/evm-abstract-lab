@@ -3,15 +3,18 @@
 use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{EvmValue, provenance::Origin};
+use crate::world::bytes::conditional::Context;
 
 /// Reconstruct only cases equivalent to the scalar fold, including metadata.
 /// The caller still owns the original word expression and its byte-state root.
 pub(super) fn pack<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     bytes: &[EvmValue<N>],
     domain: AlgebraRef<'_, D>,
+    context: &Context<'_, N, D>,
 ) -> Option<EvmValue<N>> {
     let bytes: &[EvmValue<N>; 32] = bytes.try_into().ok()?;
-    let numeric = domain.pack_word_numeric(&std::array::from_fn(|i| bytes[i].numeric()))?;
+    let numeric =
+        context.pack_word_numeric(domain, &std::array::from_fn(|i| bytes[i].numeric()))?;
 
     // Every SHL adds Constant (its shift) and Arithmetic. OR unions all byte
     // sources. Construct a fresh value: neither input/copy identity, expression
@@ -42,7 +45,7 @@ pub(super) fn pack<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     if value.singleton().is_none() && bytes.iter().any(EvmValue::<N>::symbolic_limit_reached) {
         value = value.with_symbolic_limit();
     }
-    Some(value)
+    (!context.stopped()).then_some(value)
 }
 
 #[cfg(test)]

@@ -41,7 +41,12 @@ impl<'a> BindingBudget<'a> {
         if self.check().is_err() || self.exhausted() {
             return false;
         }
-        let paid = self.budget.borrow_mut().charge(work);
+        // Pack quotes use MAX for an unrepresentable complete fee. Even an
+        // otherwise empty unlimited ledger cannot authorize that opaque hook.
+        let paid = {
+            let mut budget = self.budget.borrow_mut();
+            !(work == usize::MAX && budget.used() == 0) && budget.charge(work)
+        };
         if !paid {
             self.exhausted.set(true);
         }

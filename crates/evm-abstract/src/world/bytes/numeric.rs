@@ -658,9 +658,12 @@ impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
             if context.stopped() {
                 return EvmValue::<N>::top();
             }
-            if let Some(value) = packing::pack(&bytes, domain) {
+            if let Some(value) = packing::pack(&bytes, domain, &context) {
                 out = Some(join(out, value, domain, &context));
                 continue;
+            }
+            if context.stopped() {
+                return EvmValue::<N>::top();
             }
             let mut parts = bytes
                 .into_iter()

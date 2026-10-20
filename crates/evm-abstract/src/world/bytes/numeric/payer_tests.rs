@@ -3,7 +3,7 @@
 use super::{Context, Facts, Reader, constant, numeric_domain, packing, scalar_in, zero};
 use crate::{
     domain::{
-        AbstractValue, Domain,
+        AbstractValue, Domain, EvmNumericAlgebra,
         provenance::Origin,
         symbolic::{
             ByteStateId, ByteStateKind, ExprError, ExprId, ExprLimits, SourceId, StateLimits,
@@ -226,10 +226,16 @@ fn numeric(trace: &[(bool, usize)]) -> Vec<usize> {
         .collect()
 }
 
-fn calls(actions: &[(bool, usize)]) -> (usize, usize) {
+fn calls<K: Copy + Into<Option<bool>>>(actions: &[(K, usize)]) -> (usize, usize) {
     (
-        actions.iter().filter(|(join, _)| !join).count(),
-        actions.iter().filter(|(join, _)| *join).count(),
+        actions
+            .iter()
+            .filter(|(join, _)| (*join).into() == Some(false))
+            .count(),
+        actions
+            .iter()
+            .filter(|(join, _)| (*join).into() == Some(true))
+            .count(),
     )
 }
 
@@ -242,6 +248,22 @@ fn check(
     domain: &Domain,
     probe: &AbstractValue,
     actions: &[(bool, usize)],
+    action: impl Fn(&Context<'_>) -> AbstractValue,
+) {
+    let actions: Vec<_> = actions
+        .iter()
+        .map(|(join, fee)| (Some(*join), *fee))
+        .collect();
+    check_receipts(root_work, facts, domain, probe, &actions, action);
+}
+
+// A pack trial is a numeric payment without a synthetic apply/join call.
+fn check_receipts(
+    root_work: usize,
+    facts: &Facts,
+    domain: &Domain,
+    probe: &AbstractValue,
+    actions: &[(Option<bool>, usize)],
     action: impl Fn(&Context<'_>) -> AbstractValue,
 ) {
     let conditional = ConditionalFacts::default();
@@ -570,26 +592,36 @@ fn whole_word_ite_joins_once_after_complete_branch_packing() {
         .join_guarded(&no, ExprId::fresh().unwrap(), StateLimits::default())
         .unwrap();
     assert!(matches!(state.kind(), ByteStateKind::Ite { .. }));
+    let empty = Facts::new();
+    let unmetered = Context::new(&empty, None, crate::domain::ValueAlgebra::new(&domain));
     let left = packing::pack(
         &vec![constant(5); 32],
         crate::domain::ValueAlgebra::new(&domain),
+        &unmetered,
     )
     .unwrap();
     let right = packing::pack(
         &vec![constant(7); 32],
         crate::domain::ValueAlgebra::new(&domain),
+        &unmetered,
     )
     .unwrap();
     let probe = sourced(1, 9, &ExprId::fresh().unwrap());
-    check(
+    let five = crate::domain::NumericValue::constant(U256::from(5));
+    let seven = crate::domain::NumericValue::constant(U256::from(7));
+    check_receipts(
         state.work_size(),
         &Facts::new(),
         &domain,
         &probe,
-        &[(
-            true,
-            Context::reader_join_work(crate::domain::ValueAlgebra::new(&domain), &left, &right),
-        )],
+        &[
+            (None, domain.pack_word_work(&[&five; 32]).unwrap()),
+            (None, domain.pack_word_work(&[&seven; 32]).unwrap()),
+            (
+                Some(true),
+                Context::reader_join_work(crate::domain::ValueAlgebra::new(&domain), &left, &right),
+            ),
+        ],
         |context| {
             Reader::with_context(context.clone(), context.algebra())
                 .word(&state, &ExprId::constant(U256::ZERO))
@@ -885,7 +917,18 @@ fn successful_packing_has_no_synthetic_transfers_and_fallback_pays_all_original_
     let bytes: Vec<_> = (0..32)
         .map(|index| reference.read(&state, &ExprId::constant(U256::from(index))))
         .collect();
-    assert!(packing::pack(&bytes, crate::domain::ValueAlgebra::new(&domain)).is_none());
+    let unmetered = Context::new(&facts, None, crate::domain::ValueAlgebra::new(&domain));
+    assert!(
+        packing::pack(
+            &bytes,
+            crate::domain::ValueAlgebra::new(&domain),
+            &unmetered
+        )
+        .is_none()
+    );
+    let pack_fee = domain
+        .pack_word_work(&std::array::from_fn(|i| bytes[i].numeric()))
+        .unwrap();
     let mut actions = vec![(
         false,
         domain.operation_work(&[value.clone(), constant(255)]),
@@ -909,31 +952,38 @@ fn successful_packing_has_no_synthetic_transfers_and_fallback_pays_all_original_
             .collect();
     }
     assert_eq!(actions.len(), 1 + 32 + 31);
-    check(
+    let mut receipts: Vec<_> = actions
+        .iter()
+        .map(|(join, fee)| (Some(*join), *fee))
+        .collect();
+    receipts.insert(1, (None, pack_fee));
+    check_receipts(
         state.work_size(),
         &facts,
         &domain,
         &value,
-        &actions,
+        &receipts,
         |context| Reader::with_context(context.clone(), context.algebra()).word(&state, &at),
     );
 
     let exact = ByteStateId::exact(Arc::from([7_u8; 32]));
-    check(
+    let seven = crate::domain::NumericValue::constant(U256::from(7));
+    check_receipts(
         exact.work_size(),
         &Facts::new(),
         &domain,
         &value,
-        &[],
+        &[(None, domain.pack_word_work(&[&seven; 32]).unwrap())],
         |context| Reader::with_context(context.clone(), context.algebra()).word(&exact, &at),
     );
     let unknown = ByteStateId::input(SourceId::fresh().unwrap(), ExprId::constant(U256::from(32)));
-    check(
+    let byte = crate::domain::NumericValue::unknown_byte();
+    check_receipts(
         unknown.work_size(),
         &Facts::new(),
         &domain,
         &value,
-        &[],
+        &[(None, domain.pack_word_work(&[&byte; 32]).unwrap())],
         |context| Reader::with_context(context.clone(), context.algebra()).word(&unknown, &at),
     );
 }
