@@ -5,7 +5,10 @@ mod conditional_normalization;
 
 use super::{EntryAlternatives, MachineError};
 use crate::{
-    analysis::{Continuation, OutcomeKind, RootFrame, Status, machine::fixtures},
+    analysis::{
+        Continuation, OutcomeKind, RootFrame, Status, engine::policy::RecentDistinctJumps,
+        machine::fixtures,
+    },
     domain::{
         AbstractValue, Domain,
         relational::{CheckResult, ValueQuery},
@@ -111,7 +114,8 @@ fn actual_machine_join_keeps_zero_and_nonzero_branches_after_one_sided_world_pro
                 &entry,
                 joined,
                 &config,
-                domain,
+                ValueAlgebra::new(domain).borrowed(),
+                &RecentDistinctJumps,
                 &mut WorkBudget::new(config.max_work),
                 transfer::StorageReadPolicy::Abstract,
             );

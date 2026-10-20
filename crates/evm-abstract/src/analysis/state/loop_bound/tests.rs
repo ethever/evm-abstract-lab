@@ -2,7 +2,7 @@
 
 use crate::domain::ValueAlgebra;
 
-use super::super::instantiate;
+use super::super::{form, instantiate};
 use super::*;
 use crate::{
     analysis::{machine::fixtures, transfer},

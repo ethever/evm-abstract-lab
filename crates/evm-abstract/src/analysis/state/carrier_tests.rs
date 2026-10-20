@@ -207,7 +207,11 @@ fn custom_guarded_join_uses_one_selector_and_borrowed_numeric_policy() {
     right.store.write_balance(owner, replacement);
     let joined = left.join(&right, domain).unwrap();
     let selector = |scalar: &EvmValue<ExcludingWord>| {
-        let ExprKind::Ite { selector, .. } = scalar.expression().unwrap().kind() else {
+        let ExprKind::Ite {
+            condition: selector,
+            ..
+        } = scalar.expression().unwrap().kind()
+        else {
             panic!("whole-state scalar has no guarded join");
         };
         selector.clone()

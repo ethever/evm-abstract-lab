@@ -2,7 +2,11 @@ use super::*;
 use crate::domain::{relational::RelationPathKind, symbolic::ExprKind};
 
 fn selector(scalar: &EvmValue<ExcludingWord>) -> ExprId {
-    let ExprKind::Ite { selector, .. } = scalar.expression().unwrap().kind() else {
+    let ExprKind::Ite {
+        condition: selector,
+        ..
+    } = scalar.expression().unwrap().kind()
+    else {
         panic!("changed whole-state scalar has no guarded join");
     };
     selector.clone()

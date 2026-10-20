@@ -840,7 +840,12 @@ fn an_existing_promoted_entry_keeps_its_old_proof_when_an_update_is_interrupted(
 fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
     let construction = fixtures::config().domain().unwrap();
     let (world, environment) = fixtures::fixture(&[(0x101, "00")]);
-    let base = crate::analysis::transfer::initial(&world, &environment, construction).unwrap();
+    let base = crate::analysis::transfer::initial(
+        &world,
+        &environment,
+        ValueAlgebra::new(construction).borrowed(),
+    )
+    .unwrap();
     for scalar_expression in [false, true] {
         let mut old = word_payload(&base, 1, construction);
         let mut incoming = word_payload(&base, 2, construction);

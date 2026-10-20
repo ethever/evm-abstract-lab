@@ -4,6 +4,7 @@ use crate::{
     Address, Fork, U256,
     analysis::{
         self, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status, WorldAnalysis,
+        engine::policy::RecentDistinctJumps,
         transfer::{self, StorageReadPolicy, WorkBudget},
     },
     domain::{AbstractValue, provenance::Origin},
@@ -211,7 +212,8 @@ fn result_observations_preserve_small_work_budget_receipts() {
                 entry,
                 input.clone(),
                 &config,
-                domain,
+                ValueAlgebra::new(domain).borrowed(),
+                &RecentDistinctJumps,
                 &mut budget,
                 StorageReadPolicy::Abstract,
             );
@@ -293,7 +295,8 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &entry,
             initial.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
+            &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
@@ -369,7 +372,8 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &entry,
             initial.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
+            &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
@@ -433,7 +437,8 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &entry,
             initial.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
+            &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
@@ -513,7 +518,8 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &entry,
             initial.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
+            &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
