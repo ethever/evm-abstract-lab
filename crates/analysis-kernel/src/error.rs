@@ -43,6 +43,9 @@ pub enum KernelError<S> {
     StaleFork,
     /// A replacement generation has not completed its initial admission.
     UnsealedScope,
+    /// A scope is already selected by an entry or is a stable entry owner.
+    /// Its lifecycle cannot be taken over or retired independently.
+    GenerationInUse,
 }
 impl<S: fmt::Display> fmt::Display for KernelError<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -61,6 +64,7 @@ impl<S: fmt::Display> fmt::Display for KernelError<S> {
             Self::CannotErase => f.write_str("published information cannot be retracted"),
             Self::StaleFork => f.write_str("live analysis changed after the snapshot"),
             Self::UnsealedScope => f.write_str("replacement generation is not sealed"),
+            Self::GenerationInUse => f.write_str("scope is already bound to a generation entry"),
         }
     }
 }

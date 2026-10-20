@@ -50,11 +50,11 @@ pub struct RunningJob {
 /// Stable current-generation selector owned outside the replaceable generation.
 ///
 /// Read this entry before reading local guarantees. Historical scopes are never
-/// joined into it. Copy only into a detached semantic snapshot, like SlotMeta.
+/// joined into it. Clones share the authoritative selector in the same graph;
+/// a detached fork has its own staged selection behind that same checked handle.
 #[derive(Clone)]
 pub struct GenerationEntry {
     slot: SlotMeta<Scope>,
-    current: Scope,
 }
 
 impl<J> Kernel<J> {
@@ -85,21 +85,48 @@ impl<J> Kernel<J> {
     }
 
     /// Initialize a stable entry after paying construction of its first input.
-    /// `owner` outlives all generations subsequently selected by this entry.
+    /// `owner` cannot itself be replaceable and lives until the kernel is dropped.
+    /// Each selected scope has one authoritative entry; share that entry with
+    /// readers rather than constructing another selector over the same scope.
     pub fn generation_entry<M: Meter>(
         &mut self,
         owner: Scope,
         initial: Scope,
         meter: &mut M,
     ) -> Result<GenerationEntry, KernelError<M::Stop>> {
+        self.check_scope(owner)?;
         self.check_scope(initial)?;
         if owner == initial {
             return Err(KernelError::WrongScope);
         }
-        Ok(GenerationEntry {
-            slot: self.slot(owner, meter)?,
-            current: initial,
-        })
+        if self.scopes[owner.index].entry.is_some()
+            || self.scopes[initial.index].entry.is_some()
+            || self.scopes[initial.index].entry_owner
+        {
+            return Err(KernelError::GenerationInUse);
+        }
+        // Prepay the ownership updates as well as slot allocation. No failure
+        // follows slot creation, so a refused constructor cannot claim a scope.
+        reserve(meter, 3)?;
+        let slot = self.slot(owner, meter)?;
+        self.facts[slot.id.index].selected = Some(initial);
+        self.scopes[initial.index].entry = Some(slot.id);
+        self.scopes[owner.index].entry_owner = true;
+        self.touch();
+        Ok(GenerationEntry { slot })
+    }
+
+    fn selected_generation<S>(&self, entry: &GenerationEntry) -> Result<Scope, KernelError<S>> {
+        self.check_scope(entry.slot.scope)?;
+        self.check_fact(entry.slot.id)?;
+        let current = self.facts[entry.slot.id.index]
+            .selected
+            .ok_or(KernelError::InvalidHandle)?;
+        self.check_scope(current)?;
+        if self.scopes[current.index].entry != Some(entry.slot.id) {
+            return Err(KernelError::InvalidHandle);
+        }
+        Ok(current)
     }
 
     /// Register metadata for an already initialized external semantic value.
@@ -337,7 +364,8 @@ impl<J, M: Meter> Run<'_, J, M> {
         &mut self,
         entry: &GenerationEntry,
     ) -> Result<Answer<Scope>, KernelError<M::Stop>> {
-        self.read_slot(&entry.slot, &entry.current, 1)
+        let current = self.kernel.selected_generation(entry)?;
+        self.read_slot(&entry.slot, &current, 1)
     }
 
     /// Atomically switch a seeded selector and retire the old fixed-input scope.
@@ -347,20 +375,18 @@ impl<J, M: Meter> Run<'_, J, M> {
     /// the old concrete input and be independently seeded by registered rules;
     /// old narrowed values must never be copied into the enlarged input. Pending
     /// jobs/reads in the new generation remain ordinary closure obligations.
+    /// A replacement cannot take another entry's scope or a stable owner.
     pub fn replace_generation(
         &mut self,
         entry: &mut GenerationEntry,
         next: Scope,
     ) -> Result<Change, KernelError<M::Stop>> {
         self.live()?;
-        self.kernel.check_scope(entry.slot.scope)?;
-        self.kernel.check_fact(entry.slot.id)?;
-        self.kernel.check_scope(entry.current)?;
+        let old = self.kernel.selected_generation(entry)?;
         self.kernel.check_scope(next)?;
-        if entry.current == next {
+        if old == next {
             return Ok(Change::Unchanged);
         }
-        let old = entry.current;
         if old == entry.slot.scope
             || old == self.scope()
             || next == entry.slot.scope
@@ -370,14 +396,21 @@ impl<J, M: Meter> Run<'_, J, M> {
         {
             return Err(KernelError::WrongScope);
         }
+        if self.kernel.scopes[next.index].entry.is_some()
+            || self.kernel.scopes[next.index].entry_owner
+        {
+            return Err(KernelError::GenerationInUse);
+        }
         if !self.kernel.scopes[next.index].sealed {
             return Err(KernelError::UnsealedScope);
         }
         let changes = [entry.slot.id, self.kernel.scopes[old.index].head];
         let retire_work = self.kernel.retirement_work(old, self.meter)?;
         self.kernel
-            .prepare_changes(&changes, self.meter, retire_work.saturating_add(1))?;
-        entry.current = next;
+            .prepare_changes(&changes, self.meter, retire_work.saturating_add(3))?;
+        self.kernel.facts[entry.slot.id.index].selected = Some(next);
+        self.kernel.scopes[old.index].entry = None;
+        self.kernel.scopes[next.index].entry = Some(entry.slot.id);
         self.kernel.install_retirement(old);
         self.kernel.install_changes(&changes);
         self.kernel.release_generation(old);

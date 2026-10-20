@@ -219,6 +219,8 @@ impl<Cx, A: Analyzer<Cx>, B: Analyzer<Cx>> Analyzer<Cx> for Pair<A, B> {
 /// A local precision limit can be accepted with a sound coarse answer; pending
 /// required jobs, missing providers and explicit semantic obligations remain in
 /// the returned closure. Errors retain the currently admitted/in-flight job.
+/// The final report traversal is reserved on the same meter even with zero steps
+/// or an empty ready queue; cancellation/resource refusal cannot bypass it.
 pub fn solve<J, A, S, M, E>(
     kernel: &mut Kernel<J>,
     analyzer: &mut A,
@@ -246,9 +248,7 @@ where
         run.finish(local).map_err(SolveError::Kernel)?;
         steps += 1;
     }
-    Ok(SolveReport {
-        closure: kernel.closure(),
-        local_limits: kernel.local_limits(),
-        steps,
-    })
+    kernel
+        .solve_report(meter, steps)
+        .map_err(SolveError::Kernel)
 }

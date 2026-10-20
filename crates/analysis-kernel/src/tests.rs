@@ -1,8 +1,10 @@
 //! Kernel-owned regressions; external acceptance tests have separate ownership.
 
 mod admission;
+mod entry_lifecycle;
 mod generations;
 mod refinement;
+mod reporting;
 mod snapshot;
 mod suspension;
 

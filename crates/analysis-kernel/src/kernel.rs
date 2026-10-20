@@ -13,6 +13,7 @@ use std::{
     sync::Arc,
 };
 
+mod report;
 mod run;
 mod snapshot;
 pub use run::{GenerationEntry, Run, RunningJob, SlotMeta};
@@ -57,6 +58,9 @@ struct Fact {
     ready: bool,
     readers: BTreeSet<JobId>,
     providers: BTreeSet<JobId>,
+    // A selector's current scope is lifecycle metadata shared by every handle.
+    // Keeping it here also gives a fork its own authoritative staged selection.
+    selected: Option<Scope>,
 }
 impl Fact {
     fn new(id: FactId, scope: Option<Scope>, ready: bool) -> Self {
@@ -67,6 +71,7 @@ impl Fact {
             ready,
             readers: BTreeSet::new(),
             providers: BTreeSet::new(),
+            selected: None,
         }
     }
 }
@@ -96,6 +101,8 @@ struct Generation {
     active: bool,
     sealed: bool,
     jobs: BTreeSet<JobId>,
+    entry: Option<FactId>,
+    entry_owner: bool,
 }
 #[derive(Clone)]
 struct Obligation {
@@ -250,6 +257,8 @@ impl<J> Kernel<J> {
             active: true,
             sealed: false,
             jobs: BTreeSet::new(),
+            entry: None,
+            entry_owner: false,
         });
         self.scope_ids.insert(key, scope);
         Ok(scope)
@@ -274,12 +283,17 @@ impl<J> Kernel<J> {
     /// The adapter asserts replacement covers the old input; global contributions
     /// are not retracted. Cross-scope readers of its head are awakened. New local
     /// facts must be seeded independently, rather than copying old must-facts.
+    /// A selected generation must instead be retired by `replace_generation`;
+    /// stable entry owners live until the kernel is dropped.
     pub fn retire_scope<M: Meter>(
         &mut self,
         scope: Scope,
         meter: &mut M,
     ) -> Result<(), KernelError<M::Stop>> {
         self.check_scope(scope)?;
+        if self.scopes[scope.index].entry.is_some() || self.scopes[scope.index].entry_owner {
+            return Err(KernelError::GenerationInUse);
+        }
         let head = self.scopes[scope.index].head;
         let work = self.retirement_work(scope, meter)?;
         self.prepare_changes(&[head], meter, work)?;

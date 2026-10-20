@@ -26,6 +26,12 @@ evaluation order; another fixture aggregates two independent provider routes.
   owner obligation until required seeding and selector publication succeed.
   `replace_generation` atomically switches the entry, retires the old scope and
   wakes readers. Retired handles never reactivate.
+  Each target has one authoritative entry; clones share its current selection
+  within a kernel view, and forks keep separate staged selections. Duplicate
+  ownership, taking another entry's target, selecting a stable owner, or directly
+  retiring either a selected scope or a stable owner returns `GenerationInUse`.
+  Equal owner/target is `WrongScope`. Stable owners live until the kernel is
+  dropped; independent chains may share the same stable owner.
 - `Availability::Pending` is outstanding computation. `Absent` means no answer
   currently published on that route; it is not an immutable negative proof or a
   semantic Bottom. Both retain dependencies. First values can replace absence;
@@ -91,3 +97,9 @@ selection preserves its `2 * records + 1` tariff and cancellation atomicity.
 interrupted, missing-read, unsealed-scope or explicit semantic obligations.
 Bounded `solve` never fabricates global closure from queue emptiness or a local
 precision limit.
+
+`solve` also pays for its final report: it reserves a metadata pass before
+counting nested readers, then reserves the checked full traversal cost before
+inspecting closure and local limits. Empty queues and zero-step calls still
+check the same root meter for refusal/cancellation. The read-only `closure`,
+`closure_in`, `local_limits` and `statistics` APIs remain caller-accounted.
