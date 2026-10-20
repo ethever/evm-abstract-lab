@@ -6,11 +6,11 @@ use crate::domain::{
     known_bits::KnownBits,
 };
 use serde::Serialize;
-use std::{collections::BTreeSet, sync::LazyLock};
+use std::{collections::BTreeSet, sync::OnceLock};
 
-static FINITE: LazyLock<FiniteConstantSet> = LazyLock::new(FiniteConstantSet::top);
-static BITS: LazyLock<KnownBits> = LazyLock::new(KnownBits::top);
-static CONGRUENCE: LazyLock<Congruence> = LazyLock::new(Congruence::top);
+static FINITE: OnceLock<FiniteConstantSet> = OnceLock::new();
+static BITS: OnceLock<KnownBits> = OnceLock::new();
+static CONGRUENCE: OnceLock<Congruence> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct ExcludingWord {
@@ -109,16 +109,16 @@ impl WordElement for ExcludingWord {
         None
     }
     fn finite_constants(&self) -> &FiniteConstantSet {
-        &FINITE
+        FINITE.get_or_init(FiniteConstantSet::top)
     }
     fn known_bits(&self) -> &KnownBits {
-        &BITS
+        BITS.get_or_init(KnownBits::top)
     }
     fn interval(&self) -> &Interval {
         &self.bounds
     }
     fn congruence(&self) -> &Congruence {
-        &CONGRUENCE
+        CONGRUENCE.get_or_init(Congruence::top)
     }
     fn contains(&self, word: U256) -> bool {
         self.bounds.contains(word) && self.excluded != Some(word)

@@ -8,7 +8,7 @@ use crate::{
 use revm_bytecode::opcode;
 
 pub(in crate::analysis::transfer) mod words;
-use words::{Heavy, Policy, copies, reset};
+use words::{COPIES, Heavy, Policy, copies, reset};
 
 const OWNED_BYTES: usize = 16_384;
 
@@ -48,6 +48,7 @@ fn fixture(
 
 #[test]
 fn public_dup_loop_cannot_converge_below_its_copy_bill() {
+    let _copies = COPIES.scope();
     let run = |pairs: usize, max_work| {
         let code = format!("34{}00", "8050".repeat(pairs));
         let (world, entry, mut config, domain) = fixture(&code);
@@ -93,6 +94,7 @@ fn public_dup_loop_cannot_converge_below_its_copy_bill() {
 
 #[test]
 fn rejected_dup_keeps_the_selected_stack_value_without_copying_it() {
+    let _copies = COPIES.scope();
     let (world, entry, config, domain) = fixture("8000");
     let mut input = initial(&world, &entry, domain.borrowed()).unwrap();
     input
@@ -137,6 +139,7 @@ fn rejected_dup_keeps_the_selected_stack_value_without_copying_it() {
 
 #[test]
 fn environment_and_receipt_copies_are_separately_admitted_before_output() {
+    let _copies = COPIES.scope();
     let (world, entry, config, domain) = fixture("3400");
     let make_input = || initial(&world, &entry, domain.borrowed()).unwrap();
     let input = make_input();

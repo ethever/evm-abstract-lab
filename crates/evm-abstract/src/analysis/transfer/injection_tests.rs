@@ -17,13 +17,12 @@ use std::{cell::Cell, collections::BTreeSet, fmt};
 #[derive(Debug, PartialEq, Eq, Serialize)]
 struct Bits(KnownBits, Vec<U256>);
 
-thread_local! {
-    static NUMERIC_CLONES: Cell<usize> = const { Cell::new(0) };
-}
+static NUMERIC_CLONES: crate::test_instrumentation::Counter<usize> =
+    crate::test_instrumentation::Counter::new(0);
 
 impl Clone for Bits {
     fn clone(&self) -> Self {
-        NUMERIC_CLONES.set(NUMERIC_CLONES.get() + 1);
+        NUMERIC_CLONES.update(|clones| *clones += 1);
         Self(self.0, self.1.clone())
     }
 }
@@ -428,6 +427,7 @@ fn native_identity_keeps_the_injected_byte_carrier() {
 
 #[test]
 fn declined_failure_reservation_never_clones_an_owned_numeric_payload() {
+    let _numeric_clones = NUMERIC_CLONES.scope();
     let (config, algebra) = setup();
     let mut world = EvmWorld::new(Fork::Osaka, "injected clone tariff");
     world.insert(owner(), account("00")).unwrap();

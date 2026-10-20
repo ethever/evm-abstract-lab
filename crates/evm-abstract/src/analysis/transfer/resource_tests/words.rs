@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use serde::Serialize;
-use std::{cell::Cell, collections::BTreeSet, fmt};
+use std::{collections::BTreeSet, fmt};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(in crate::analysis::transfer) struct Copies {
@@ -18,9 +18,12 @@ pub(in crate::analysis::transfer) struct Copies {
     pub bytes_at_last_quote: usize,
 }
 
-thread_local! {
-    static COPIES: Cell<Copies> = const { Cell::new(Copies { bytes: 0, quotes: 0, bytes_at_last_quote: 0 }) };
-}
+pub(in crate::analysis::transfer) static COPIES: crate::test_instrumentation::Counter<Copies> =
+    crate::test_instrumentation::Counter::new(Copies {
+        bytes: 0,
+        quotes: 0,
+        bytes_at_last_quote: 0,
+    });
 
 pub(in crate::analysis::transfer) fn reset() {
     COPIES.set(Copies::default());
@@ -56,9 +59,8 @@ impl Heavy {
 
 impl Clone for Heavy {
     fn clone(&self) -> Self {
-        COPIES.update(|mut copies| {
+        COPIES.update(|copies| {
             copies.bytes += self.owned.len();
-            copies
         });
         Self {
             word: self.word.clone(),
@@ -104,10 +106,9 @@ impl WordElement for Heavy {
     }
     fn clone_work(&self) -> usize {
         if !self.owned.is_empty() {
-            COPIES.update(|mut copies| {
+            COPIES.update(|copies| {
                 copies.quotes += 1;
                 copies.bytes_at_last_quote = copies.bytes;
-                copies
             });
         }
         self.work_size().saturating_mul(self.clone_multiplier)
