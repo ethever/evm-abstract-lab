@@ -67,7 +67,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     .precision_losses
                     .extend(limited.into_iter().map(DiagnosticKind::FactExchangeLimited));
                 self.table.nodes[id].excluded = false;
-                Ok(Some(payload))
+                Ok(Some(*payload))
             }
         }
     }
@@ -139,7 +139,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 self.table
                     .precision_losses
                     .extend(limited.into_iter().map(DiagnosticKind::FactExchangeLimited));
-                Ok(Some(payload))
+                Ok(Some(*payload))
             }
         }
     }

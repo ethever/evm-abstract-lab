@@ -218,12 +218,9 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
         consumer: &mut RunningJob,
         budget: &mut WorkBudget,
     ) -> Result<LocalInput<N>, CooperationError<E>> {
-        if !X::ENABLED {
-            return Ok(LocalInput::Reachable {
-                payload,
-                limited: Vec::new(),
-            });
-        }
+        // Disabled extensions bypass this owned local-view allocation at every
+        // caller, preserving the default execution path and its work tariff.
+        debug_assert!(X::ENABLED);
         // Point/scope keys have fixed width; reserve a usize-sized tree-height
         // envelope before either route lookup or retained generation metadata.
         analysis_kernel::Meter::reserve(

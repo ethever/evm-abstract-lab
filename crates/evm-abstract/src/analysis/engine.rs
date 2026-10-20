@@ -729,6 +729,15 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 return Err(MachineError::Shape);
             };
             let cooperation = self.cooperation.as_mut().ok_or(MachineError::Shape)?;
+            if !X::ENABLED {
+                // No cooperative view is required: retain the original owned
+                // transfer input without a box allocation or an extra charge.
+                // Preserve the previous empty-limit reservation's cancel guard.
+                if !self.budget.charge(0) {
+                    return Err(MachineError::work_failure());
+                }
+                return Ok(Some(WorldWork { id, payload: input }));
+            }
             let view = cooperation
                 .input(
                     Point {
@@ -759,7 +768,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                             kind: super::DiagnosticKind::FactExchangeLimited(status),
                         });
                     }
-                    return Ok(Some(WorldWork { id, payload }));
+                    return Ok(Some(WorldWork {
+                        id,
+                        payload: *payload,
+                    }));
                 }
                 LocalInput::Unreachable => {
                     if !self.budget.charge(self.result.states[id].entry.work_size()) {

@@ -39,6 +39,96 @@ fn contradictory_guarantees_are_explicit_unreachable_and_top_is_ready() {
     );
 }
 
+#[test]
+fn reachable_view_allocation_is_prepaid_and_keeps_the_anchor_detached() {
+    use super::{LocalInput, RefinementError, apply_refinements};
+    use crate::{
+        analysis::{MachineError, machine::fixtures},
+        domain::{Domain, NumericValue, ValueAlgebra},
+        resource::WorkBudget,
+    };
+
+    let domain = Domain::default();
+    let algebra = ValueAlgebra::new(domain);
+    let anchor = fixtures::payload(domain);
+    let mut budget = WorkBudget::new(usize::MAX);
+    let result = apply_refinements(
+        anchor.clone(),
+        &StackFacts::none(),
+        algebra.borrowed(),
+        &mut budget,
+    )
+    .unwrap();
+    let LocalInput::Reachable { payload, limited } = result else {
+        panic!("a ready Top guarantee must preserve the reachable input");
+    };
+    assert_eq!(*payload, anchor);
+    assert!(limited.is_empty());
+    assert!(std::mem::size_of::<LocalInput<NumericValue>>() <= 5 * std::mem::size_of::<usize>());
+    let paid = budget.used();
+    assert!(paid > 0, "the added allocation must be reserved first");
+    let mut refused = WorkBudget::new(paid - 1);
+    assert!(matches!(
+        apply_refinements(
+            anchor.clone(),
+            &StackFacts::none(),
+            algebra.borrowed(),
+            &mut refused,
+        ),
+        Err(RefinementError::Stopped(MachineError::Work))
+    ));
+    assert_eq!(refused.used(), 0, "the new reservation is all-or-nothing");
+    assert!(refused.exhausted());
+    // Owning the executable view does not grant access to the ascending anchor.
+    let mut moved = *payload;
+    moved.active_mut().stack.push(fixtures::word(7));
+    assert!(anchor.active().stack.is_empty());
+}
+
+#[test]
+fn unreachable_needs_no_view_allocation_and_cancelled_reachable_stays_an_error() {
+    use super::{LocalInput, RefinementError, apply_refinements};
+    use crate::{
+        analysis::{MachineError, control::Control, machine::fixtures},
+        domain::{Domain, ValueAlgebra, relational::QueryReason},
+        resource::WorkBudget,
+    };
+
+    let domain = Domain::default();
+    let algebra = ValueAlgebra::new(domain);
+    let mut budget = WorkBudget::new(0);
+    assert!(matches!(
+        apply_refinements(
+            fixtures::payload(domain),
+            &StackFacts::Unreachable,
+            algebra.borrowed(),
+            &mut budget,
+        ),
+        Ok(LocalInput::Unreachable)
+    ));
+    assert_eq!(budget.used(), 0);
+    assert!(!budget.exhausted());
+
+    let payload = fixtures::payload(domain);
+    let control = Control::new(crate::analysis::progress::Observer::default());
+    control.cancellation().cancel();
+    control.scope(|| {
+        let mut budget = WorkBudget::new(usize::MAX);
+        assert!(matches!(
+            apply_refinements(
+                payload,
+                &StackFacts::none(),
+                algebra.borrowed(),
+                &mut budget
+            ),
+            Err(RefinementError::Stopped(MachineError::Relations(
+                QueryReason::Cancelled
+            )))
+        ));
+        assert_eq!(budget.used(), 0);
+    });
+}
+
 struct TestMeter;
 
 impl Meter for TestMeter {

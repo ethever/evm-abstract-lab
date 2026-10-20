@@ -119,8 +119,9 @@ pub enum LocalInput<N: WordElement> {
     /// The original carrier and metadata survive; precision limits do not remove
     /// this path. Global anchors and previous generations are never mutated.
     Reachable {
-        /// Reduced local machine input consumed by bytecode transfer.
-        payload: EvmMachinePayload<N>,
+        /// Owned detached input; unboxing transfers it to bytecode transfer
+        /// without cloning the actual numeric carrier or its metadata.
+        payload: Box<EvmMachinePayload<N>>,
         /// Optional bounded numerical closure results, for native diagnostics.
         limited: Vec<ReductionStatus>,
     },
@@ -212,5 +213,15 @@ pub(crate) fn apply_refinements<D: EvmNumericAlgebra>(
             .with_numeric(numeric.value);
         payload.active_mut().stack[*slot] = next;
     }
-    Ok(LocalInput::Reachable { payload, limited })
+    // The detached state and scalar copies were paid by their callers above.
+    // This new allocation only moves the shallow payload layout into the box;
+    // do not charge another deep traversal/clone of its frames or numeric values.
+    let allocation_work = 1usize.saturating_add(
+        std::mem::size_of::<EvmMachinePayload<D::Element>>().div_ceil(std::mem::size_of::<usize>()),
+    );
+    reserve(budget, allocation_work)?;
+    Ok(LocalInput::Reachable {
+        payload: Box::new(payload),
+        limited,
+    })
 }
