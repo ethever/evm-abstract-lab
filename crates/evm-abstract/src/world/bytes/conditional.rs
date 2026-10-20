@@ -8,7 +8,7 @@ use crate::domain::{EvmNumericAlgebra, WordElement};
 mod context;
 mod length;
 mod normalize;
-pub(super) use context::Context;
+pub(in crate::world) use context::Context;
 pub(super) use context::{BindingBudget, CONTEXTS, Preparation, preparation};
 
 use super::{RangeError, native};
@@ -27,7 +27,7 @@ use std::{collections::BTreeMap, sync::Arc};
 type Facts<N = crate::domain::NumericValue> = BTreeMap<ExprId, EvmValue<N>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ConditionalFacts<N: WordElement = crate::domain::NumericValue> {
+pub(in crate::world) struct ConditionalFacts<N: WordElement = crate::domain::NumericValue> {
     branches: Vec<Arc<Branch<N>>>,
     entries: usize,
     depth: usize,
@@ -37,6 +37,7 @@ pub(super) struct ConditionalFacts<N: WordElement = crate::domain::NumericValue>
     lookup_scopes: usize,
     lookup_numeric_work: usize,
     fact_entries: usize,
+    retained_words: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -76,7 +77,7 @@ impl<N: WordElement> Serialize for ConditionalFacts<N> {
 
 impl<N: WordElement> ConditionalFacts<N> {
     /// Only these handles are copied by Clone; nested scopes remain shared.
-    pub(super) fn cloned_branches(&self) -> usize {
+    pub(in crate::world) fn cloned_branches(&self) -> usize {
         self.branches.len()
     }
 
@@ -93,6 +94,7 @@ impl<N: WordElement> ConditionalFacts<N> {
             let mut lookup_scopes = 0;
             let mut lookup_numeric_work = 0;
             for scope in [&branch.then_facts, &branch.else_facts] {
+                out.retained_words |= scope.conditional.retained_words;
                 out.fact_entries = out
                     .fact_entries
                     .saturating_add(scope.facts.len())
@@ -115,6 +117,10 @@ impl<N: WordElement> ConditionalFacts<N> {
                 depth = depth.max(scope.conditional.depth);
                 let mut numeric_work = 0;
                 for (expression, value) in &scope.facts {
+                    out.retained_words |= matches!(
+                        expression.kind(),
+                        crate::domain::symbolic::ExprKind::WordRead { .. }
+                    ) && value.numeric().requires_retained_binding();
                     numeric_work = numeric_work.max(value.numeric().work_size());
                     out.work = out
                         .work
@@ -142,17 +148,42 @@ impl<N: WordElement> ConditionalFacts<N> {
         out
     }
 
-    pub(super) fn join(
+    pub(in crate::world) fn join(
         left: (&Facts<N>, &Self),
         right: (&Facts<N>, &Self),
         common: &Facts<N>,
         condition: ExprId,
         limits: ExprLimits,
     ) -> Result<Self, ExprError> {
+        Self::join_filtered(left, right, common, condition, limits, |_| true)
+    }
+
+    pub(in crate::world) fn join_retained(
+        left: (&Facts<N>, &Self),
+        right: (&Facts<N>, &Self),
+        common: &Facts<N>,
+        condition: ExprId,
+        limits: ExprLimits,
+    ) -> Result<Self, ExprError> {
+        Self::join_filtered(left, right, common, condition, limits, |value| {
+            value.requires_retained_binding()
+        })
+    }
+
+    fn join_filtered(
+        left: (&Facts<N>, &Self),
+        right: (&Facts<N>, &Self),
+        common: &Facts<N>,
+        condition: ExprId,
+        limits: ExprLimits,
+        retain: impl Fn(&N) -> bool,
+    ) -> Result<Self, ExprError> {
         let scope = |(facts, conditional): (&Facts<N>, &Self)| Scope {
             facts: facts
                 .iter()
-                .filter(|(expression, value)| common.get(*expression) != Some(*value))
+                .filter(|(expression, value)| {
+                    retain(value.numeric()) && common.get(*expression) != Some(*value)
+                })
                 .map(|(expression, value)| (expression.clone(), value.clone()))
                 .collect(),
             conditional: conditional.clone(),
@@ -180,7 +211,11 @@ impl<N: WordElement> ConditionalFacts<N> {
 
     /// Copy captures both snapshots' implications. No guard is selected and no
     /// branch-local bound becomes an unconditional guarantee of its source.
-    pub(super) fn extend(&mut self, other: &Self, limits: ExprLimits) -> Result<(), ExprError> {
+    pub(in crate::world) fn extend(
+        &mut self,
+        other: &Self,
+        limits: ExprLimits,
+    ) -> Result<(), ExprError> {
         let mut branches = self.branches.clone();
         for branch in &other.branches {
             if !branches.iter().any(|old| Arc::ptr_eq(old, branch)) {
@@ -193,7 +228,7 @@ impl<N: WordElement> ConditionalFacts<N> {
         Ok(())
     }
 
-    pub(super) fn check(&self, limits: ExprLimits) -> Result<(), ExprError> {
+    pub(in crate::world) fn check(&self, limits: ExprLimits) -> Result<(), ExprError> {
         if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled);
         }
@@ -211,16 +246,20 @@ impl<N: WordElement> ConditionalFacts<N> {
         Ok(())
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(in crate::world) fn has_no_scopes(&self) -> bool {
+        self.entries == 0
+    }
+
+    pub(in crate::world) fn len(&self) -> usize {
         self.entries
     }
 
-    pub(super) fn work_size(&self) -> usize {
+    pub(in crate::world) fn work_size(&self) -> usize {
         self.work
     }
 
     /// Conservative fallback for readers without a prepared metadata demand.
-    pub(super) fn lookup_work<D: EvmNumericAlgebra<Element = N>>(
+    pub(in crate::world) fn lookup_work<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> usize {
@@ -233,13 +272,13 @@ impl<N: WordElement> ConditionalFacts<N> {
             .saturating_add(self.lookup_numeric_work.saturating_mul(2))
     }
 
-    pub(super) fn symbolic_limit_reached(&self) -> bool {
+    pub(in crate::world) fn symbolic_limit_reached(&self) -> bool {
         self.limited
     }
 
     // Each shared branch is visited once for metadata operations. Reads instead
     // use lookup below, which stops immediately at an undetermined selector.
-    pub(super) fn visit(&self, visit: &mut impl FnMut(&ExprId, Option<&EvmValue<N>>)) {
+    pub(in crate::world) fn visit(&self, visit: &mut impl FnMut(&ExprId, Option<&EvmValue<N>>)) {
         let mut seen = std::collections::BTreeSet::new();
         let mut pending = self.branches.iter().collect::<Vec<_>>();
         while let Some(branch) = pending.pop() {
@@ -256,7 +295,7 @@ impl<N: WordElement> ConditionalFacts<N> {
         }
     }
 
-    pub(super) fn map<D: EvmNumericAlgebra<Element = N>>(
+    pub(in crate::world) fn map<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
         map: &mut impl FnMut(
@@ -342,7 +381,7 @@ impl<N: WordElement> ConditionalFacts<N> {
         mapped(self, domain, map, &mut BTreeMap::new())
     }
 
-    pub(super) fn relations(
+    pub(in crate::world) fn relations(
         &self,
         mut incoming: RelationState,
         limits: &RelationLimits,
@@ -414,6 +453,7 @@ impl<N: WordElement> Default for ConditionalFacts<N> {
             lookup_scopes: 0,
             lookup_numeric_work: 0,
             fact_entries: 0,
+            retained_words: false,
         }
     }
 }

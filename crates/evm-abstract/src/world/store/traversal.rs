@@ -85,6 +85,14 @@ impl<N: WordElement> EvmStore<N> {
                     limits,
                 )?;
             }
+            plane.conditional = plane.conditional.map(domain, &mut |expression, value| {
+                let mut value = value.cloned();
+                if let Some(value) = &mut value {
+                    value.rename_fresh(map, limits)?;
+                }
+                Ok((expression.rename_fresh(map, limits)?, value))
+            })?;
+            plane.conditional.check(limits)?;
         }
         for (address, value) in out
             .balances

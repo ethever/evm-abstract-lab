@@ -21,7 +21,7 @@ pub(in crate::world::bytes) use memo::{CONTEXTS, Preparation, preparation};
 /// lookups then inspect only their own key in those maps, never the fact DAG.
 /// Clones share a complete-value memo; changed choices start a separate memo.
 /// The shared demand owns no snapshots and dies before its borrowed facts.
-pub(in crate::world::bytes) struct Context<
+pub(in crate::world) struct Context<
     'a,
     N: WordElement = crate::domain::NumericValue,
     D: EvmNumericAlgebra<Element = N> = crate::domain::Domain,
@@ -34,10 +34,11 @@ pub(in crate::world::bytes) struct Context<
     memo: Rc<RefCell<memo::Memo<'a, N, D>>>,
     demand: Option<Rc<memo::Demand<'a, D>>>,
     binding_budget: Option<&'a BindingBudget<'a>>,
+    retained_words: bool,
 }
 
 impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
-    pub(in crate::world::bytes) fn new(
+    pub(in crate::world) fn new(
         facts: &'a Facts<N>,
         conditional: Option<&'a ConditionalFacts<N>>,
         domain: AlgebraRef<'a, D>,
@@ -51,7 +52,14 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
             memo: Rc::new(RefCell::new(memo::Memo::<N, D>::default())),
             demand: None,
             binding_budget: None,
+            retained_words: conditional.is_some_and(|facts| facts.retained_words),
         };
+        out.retained_words |= facts.iter().any(|(expression, value)| {
+            matches!(
+                expression.kind(),
+                crate::domain::symbolic::ExprKind::WordRead { .. }
+            ) && value.numeric().requires_retained_binding()
+        });
         out.select();
         out
     }
@@ -73,7 +81,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
     }
 
     /// Retention follows the expression association, never equality of exports.
-    pub(in crate::world::bytes) fn has_binding_value(&self, expression: &ExprId) -> bool {
+    pub(in crate::world) fn has_binding_value(&self, expression: &ExprId) -> bool {
         self.fact(self.facts, expression).is_some()
             || self
                 .active
@@ -81,7 +89,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
                 .any(|facts| self.fact(facts, expression).is_some())
     }
 
-    pub(in crate::world::bytes) fn pay_binding(
+    pub(in crate::world) fn pay_binding(
         &self,
         numeric: &N,
         observation: &crate::domain::WordObservation,
@@ -102,6 +110,37 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
         expression: &ExprId,
         domain: AlgebraRef<'_, D>,
     ) -> Option<EvmValue<N>> {
+        if !self.retained_words {
+            return None;
+        }
+        if let crate::domain::symbolic::ExprKind::Ite {
+            condition,
+            then_value,
+            else_value,
+        } = expression.kind()
+        {
+            let selected = super::super::numeric::scalar_in(condition, self, domain);
+            if !selected.may_be_zero() {
+                return self
+                    .branch(condition, true)
+                    .retained_word(then_value, domain);
+            }
+            if !selected.may_be_nonzero() {
+                return self
+                    .branch(condition, false)
+                    .retained_word(else_value, domain);
+            }
+            let left = self
+                .branch(condition, true)
+                .retained_word(then_value, domain)?;
+            let right = self
+                .branch(condition, false)
+                .retained_word(else_value, domain)?;
+            return Some(self.join_with(domain, &left, &right));
+        }
+        if expression.as_constant().is_some() {
+            return Some(super::super::numeric::scalar_in(expression, self, domain));
+        }
         if !matches!(
             expression.kind(),
             crate::domain::symbolic::ExprKind::WordRead { .. }
@@ -192,20 +231,25 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
             memo: Rc::new(RefCell::new(memo::Memo::<N, D>::default())),
             demand: Some(demand),
             binding_budget: None,
+            retained_words: conditional.retained_words,
         };
         // Immutable source keys are sized once, before any prepared lookups.
         // All fixed scaffolding above was funded before its first allocation.
         let demand = out.demand.as_deref().expect("prepared context");
         if demand.reserve(facts.len().saturating_add(1)) {
-            for key in facts.keys() {
+            for (key, value) in facts {
                 demand.source_key(key.work_size());
+                out.retained_words |= matches!(
+                    key.kind(),
+                    crate::domain::symbolic::ExprKind::WordRead { .. }
+                ) && value.numeric().requires_retained_binding();
             }
             out.select();
         }
         out
     }
 
-    pub(in crate::world::bytes) fn check(&self) -> Result<(), ExprError> {
+    pub(in crate::world) fn check(&self) -> Result<(), ExprError> {
         if let Some(budget) = self.binding_budget {
             budget.check()?;
         }
@@ -467,7 +511,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
         }
     }
 
-    pub(in crate::world::bytes) fn branch(&self, condition: &ExprId, nonzero: bool) -> Self {
+    pub(in crate::world) fn branch(&self, condition: &ExprId, nonzero: bool) -> Self {
         if !self.reserve(1) || self.choice(condition) == Some(nonzero) {
             return self.clone();
         }
@@ -517,6 +561,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
             memo: Rc::new(RefCell::new(memo::Memo::<N, D>::default())),
             demand: self.demand.as_ref().map(Rc::clone),
             binding_budget: self.binding_budget,
+            retained_words: self.retained_words,
         };
         out.select();
         // The unchanged construction envelope above already funded this
@@ -536,6 +581,16 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
             demand.record_retained_context();
         }
         out
+    }
+
+    /// Slot roots previously evaluated selectors without selecting scalar
+    /// assumptions. Preserve that path when no retained branch facts exist.
+    pub(in crate::world) fn branch_when_scoped(&self, condition: &ExprId, nonzero: bool) -> Self {
+        if self.conditional.is_none_or(|facts| facts.has_no_scopes()) {
+            self.clone()
+        } else {
+            self.branch(condition, nonzero)
+        }
     }
 
     pub(in crate::world::bytes) fn value(
@@ -694,6 +749,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Clone for Context<'a
             memo: Rc::clone(&self.memo),
             demand: self.demand.clone(),
             binding_budget: self.binding_budget,
+            retained_words: self.retained_words,
         }
     }
 }

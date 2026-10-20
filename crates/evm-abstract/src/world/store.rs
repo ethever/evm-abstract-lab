@@ -148,6 +148,8 @@ struct Plane<N: WordElement> {
     base: SlotStateId,
     #[serde(serialize_with = "super::bytes::native::serialize_facts")]
     operands: BTreeMap<ExprId, EvmValue<N>>,
+    #[serde(skip_serializing_if = "super::bytes::conditional::ConditionalFacts::has_no_scopes")]
+    conditional: super::bytes::conditional::ConditionalFacts<N>,
     #[serde(serialize_with = "super::bytes::native::serialize_failure")]
     failure: Option<StoreError>,
     #[serde(serialize_with = "serialize_slots")]
@@ -278,6 +280,7 @@ impl<N: WordElement> Plane<N> {
                 SlotStateId::input(SourceId::fresh().expect("storage source identities available"))
             },
             operands: BTreeMap::new(),
+            conditional: Default::default(),
             failure: None,
             slots: OrderedMap::new(),
             defaults: OrderedMap::new(),
@@ -378,6 +381,7 @@ impl<N: WordElement> Plane<N> {
     fn havoc_all(&mut self) {
         self.roots.clear();
         self.operands.clear();
+        self.conditional = Default::default();
         self.base = SlotStateId::input(
             SourceId::fresh().expect("storage havoc source identities available"),
         );
@@ -527,6 +531,14 @@ impl<N: WordElement> EvmStore<N> {
             for value in plane.operands.values() {
                 visit(value);
             }
+            plane.conditional.visit(&mut |expression, value| {
+                if value.is_none_or(|value| value.expression() != Some(expression)) {
+                    visit(&EvmValue::<N>::top().with_expression(expression.clone()));
+                }
+                if let Some(value) = value {
+                    visit(value);
+                }
+            });
             for expression in slots::expressions(&plane.base)
                 .into_iter()
                 .chain(plane.roots.values().flat_map(slots::expressions))
@@ -578,6 +590,12 @@ impl<N: WordElement> EvmStore<N> {
             for value in plane.operands.values_mut() {
                 project(value);
             }
+            plane.conditional = plane
+                .conditional
+                .map(domain, &mut |expression, value| {
+                    Ok((expression.clone(), value.map(|value| domain.project(value))))
+                })
+                .expect("numeric projection is infallible");
         }
         self.balances.update_values(project);
         self.nonces.update_values(project);
@@ -1355,6 +1373,7 @@ impl<N: WordElement> EvmStore<N> {
                                 .values()
                                 .fold(0usize, |n, value| n.saturating_add(value.work_size())),
                         )
+                        .saturating_add(plane.conditional.work_size())
                 });
         let lifecycle_work = self
             .codes

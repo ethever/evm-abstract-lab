@@ -306,6 +306,23 @@ fn full_hull_custom_word_keeps_identity_without_complete_standard_views() {
     assert_ne!(first.state_root(), second.state_root());
     assert_eq!(summary, first.summary_projection_with(domain).unwrap());
     assert!(summary.work_size() >= first.work_size());
+    let combined = first
+        .join_guarded_with(
+            &second,
+            domain,
+            ExprId::fresh().unwrap(),
+            super::limits(domain),
+        )
+        .unwrap();
+    assert_odd(&combined.read_word_with(&literal(0), domain));
+    assert_odd(
+        &combined
+            .summary_projection_with(domain)
+            .unwrap()
+            .instantiate_with(domain)
+            .unwrap()
+            .read_word_with(&literal(0), domain),
+    );
     let joined = summary.join_with(&summary, domain, false);
     assert_eq!(joined, summary);
     assert_odd(
@@ -680,6 +697,121 @@ fn custom_store_checkpoints_and_summaries_keep_values_effects_and_owners() {
     assert_odd(&event.topics[0]);
     assert_odd(&event.data.byte_at_with(0, domain));
     assert_eq!(summary, fresh.summary_projection_with(domain).unwrap());
+}
+
+#[test]
+fn independently_instantiated_stores_keep_native_facts_under_their_shared_guard() {
+    let algebra = ValueAlgebra::new(Words::new("scoped stores"));
+    let domain = algebra.borrowed();
+    let owner = Address::repeat_byte(0x51);
+    let other = Address::repeat_byte(0x52);
+    let original = EvmValue::from_numeric(Word {
+        lower: U256::ZERO,
+        upper: U256::MAX,
+        odd: true,
+    });
+    let mut world = EvmWorld::new(Fork::Osaka, "scoped stores");
+    let mut account = EvmAccount::empty();
+    account.storage.insert(U256::ZERO, original.clone());
+    world.insert(owner, account).unwrap();
+    world.insert(other, EvmAccount::empty()).unwrap();
+    let mut store = EvmStore::new_checked_with(&world, domain).unwrap();
+    store.write_transient_with(owner, &literal(7), &original, domain);
+    let summary = store.summary_projection_with(domain).unwrap();
+    let left = summary.instantiate_with(domain).unwrap();
+    let right = summary.instantiate_with(domain).unwrap();
+    let selector = ExprId::fresh().unwrap();
+    let joined = left
+        .join_guarded_with(&right, domain, selector.clone(), super::limits(domain))
+        .unwrap();
+    for transient in [false, true] {
+        for (key, _) in left.symbolic_facts(transient) {
+            if !right
+                .symbolic_facts(transient)
+                .any(|(other, _)| other == key)
+            {
+                assert!(
+                    !joined
+                        .symbolic_facts(transient)
+                        .any(|(other, _)| other == key),
+                    "one-sided native facts became unconditional"
+                );
+            }
+        }
+    }
+    assert_odd(&joined.read_with(owner, &literal(0), domain));
+    assert_odd(&joined.read_transient_with(owner, &literal(7), domain));
+    assert_eq!(
+        joined.read_with(other, &literal(0), domain).singleton(),
+        Some(U256::ZERO)
+    );
+    let replay = joined
+        .summary_projection_with(domain)
+        .unwrap()
+        .instantiate_with(domain)
+        .unwrap();
+    assert_odd(&replay.read_with(owner, &literal(0), domain));
+    assert_odd(&replay.read_transient_with(owner, &literal(7), domain));
+
+    let mut renamed = joined.clone();
+    let names = renamed
+        .fresh_leaves()
+        .into_iter()
+        .map(|old| (old, ExprId::fresh().unwrap()))
+        .collect();
+    renamed
+        .rename_fresh_with(&names, super::limits(domain), domain)
+        .unwrap();
+    assert_odd(&renamed.read_with(owner, &literal(0), domain));
+    assert_odd(&renamed.read_transient_with(owner, &literal(7), domain));
+    let saved = renamed.snapshot();
+    renamed.write_with(owner, &literal(0), &literal(2), domain);
+    renamed.restore(saved);
+    assert_odd(&renamed.read_with(owner, &literal(0), domain));
+
+    let mut broad = right;
+    broad.write_with(owner, &literal(0), &EvmValue::top(), domain);
+    broad.write_transient_with(owner, &literal(7), &literal(2), domain);
+    let selector = ExprId::fresh().unwrap();
+    let mixed = left
+        .join_guarded_with(&broad, domain, selector.clone(), super::limits(domain))
+        .unwrap();
+    assert!(
+        mixed
+            .read_with(owner, &literal(0), domain)
+            .contains(U256::from(2))
+    );
+    assert!(
+        mixed
+            .read_transient_with(owner, &literal(7), domain)
+            .contains(U256::from(2))
+    );
+    for nonzero in [true, false] {
+        let mut selected = mixed.clone();
+        assert!(
+            selected
+                .refine_guards_with(domain, super::limits(domain), &mut |condition| {
+                    Ok::<_, ()>((condition == &selector).then_some(nonzero))
+                })
+                .unwrap()
+        );
+        if nonzero {
+            assert_odd(&selected.read_with(owner, &literal(0), domain));
+            assert_odd(&selected.read_transient_with(owner, &literal(7), domain));
+        } else {
+            assert!(
+                selected
+                    .read_with(owner, &literal(0), domain)
+                    .contains(U256::from(2))
+            );
+            assert_eq!(
+                selected
+                    .read_transient_with(owner, &literal(7), domain)
+                    .singleton(),
+                Some(U256::from(2))
+            );
+        }
+    }
 }
 
 #[test]

@@ -259,7 +259,12 @@ pub(super) fn evaluate<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     // A summary may retain an unsupported whole-word predicate for precisely
     // this normalized read. Different roots, padding and overlapping writes
     // produce different terms and cannot use the old guarantee.
-    if let Some(value) = context.retained_word(&expression, domain) {
+    let retained = context.retained_word(&expression, domain);
+    context.check()?;
+    if context.stopped() {
+        return Ok(None);
+    }
+    if let Some(value) = retained {
         return Ok(Some(numeric::attach(value, expression)));
     }
     let numeric = numeric::Reader::<N, D>::with_context(context.clone(), domain).word(root, offset);

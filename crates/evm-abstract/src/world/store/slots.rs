@@ -7,9 +7,12 @@ use crate::domain::{
     EvmValue,
     symbolic::{ExprId, ExprLimits, SlotStateId, SlotStateKind, SourceId, StateBinding},
 };
-use crate::world::bytes::{numeric, operands};
+use crate::world::bytes::{
+    conditional::{ConditionalFacts, Context},
+    numeric, operands,
+};
 use alloy_primitives::{Address, U256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 fn limits<D: EvmNumericAlgebra>(domain: AlgebraRef<'_, D>) -> ExprLimits {
     domain.spec().relations().expressions()
@@ -53,28 +56,29 @@ fn key_disjoint<N: WordElement>(a: &EvmValue<N>, b: &EvmValue<N>) -> bool {
             _ => false,
         }
 }
-pub(super) fn read_numeric<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+pub(super) fn read_numeric_in<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     root: &SlotStateId,
     key: &ExprId,
-    facts: &BTreeMap<ExprId, EvmValue<N>>,
+    context: &Context<'_, N, D>,
     domain: AlgebraRef<'_, D>,
 ) -> EvmValue<N> {
     let domain = numeric::numeric_domain_with(domain);
     match root.kind() {
-        SlotStateKind::Zero => numeric::scalar(&ExprId::constant(U256::ZERO), facts, domain),
+        SlotStateKind::Zero => numeric::scalar_in(&ExprId::constant(U256::ZERO), context, domain),
         SlotStateKind::Input { bindings, .. } => {
-            let key = numeric::scalar(key, facts, domain);
+            let key = numeric::scalar_in(key, context, domain);
             if let Some(keys) = crate::world::candidates(&key) {
                 let mut out = None;
                 for k in keys.iter() {
                     let value = bindings.iter().find(|b| b.index == *k).map_or_else(
                         EvmValue::<N>::top,
                         |b| {
-                            numeric::bound(
-                                numeric::scalar(&b.value, facts, domain),
-                                facts.contains_key(&b.value),
-                                &b.numeric,
-                            )
+                            let value = numeric::scalar_in(&b.value, context, domain);
+                            let retained = context.has_binding_value(&b.value);
+                            if retained && !context.pay_binding(value.numeric(), &b.numeric) {
+                                return EvmValue::<N>::top();
+                            }
+                            numeric::bound(value, retained, &b.numeric)
                         },
                     );
                     out = Some(out.map_or_else(|| value.clone(), |old| domain.join(&old, &value)));
@@ -90,23 +94,23 @@ pub(super) fn read_numeric<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             value,
         } => {
             if key == written {
-                return numeric::scalar(value, facts, domain);
+                return numeric::scalar_in(value, context, domain);
             }
-            let requested = numeric::scalar(key, facts, domain);
-            let stored = numeric::scalar(written, facts, domain);
+            let requested = numeric::scalar_in(key, context, domain);
+            let stored = numeric::scalar_in(written, context, domain);
             if let (Some(requested), Some(stored)) = (requested.singleton(), stored.singleton()) {
                 return if requested == stored {
-                    numeric::scalar(value, facts, domain)
+                    numeric::scalar_in(value, context, domain)
                 } else {
-                    read_numeric(previous, key, facts, domain)
+                    read_numeric_in(previous, key, context, domain)
                 };
             }
             if key_disjoint(&requested, &stored) {
-                read_numeric(previous, key, facts, domain)
+                read_numeric_in(previous, key, context, domain)
             } else {
                 domain.join(
-                    &read_numeric(previous, key, facts, domain),
-                    &numeric::scalar(value, facts, domain),
+                    &read_numeric_in(previous, key, context, domain),
+                    &numeric::scalar_in(value, context, domain),
                 )
             }
         }
@@ -115,15 +119,35 @@ pub(super) fn read_numeric<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             then_state,
             else_state,
         } => {
-            let c = numeric::scalar(condition, facts, domain);
+            let c = numeric::scalar_in(condition, context, domain);
             if !c.may_be_zero() {
-                read_numeric(then_state, key, facts, domain)
+                read_numeric_in(
+                    then_state,
+                    key,
+                    &context.branch_when_scoped(condition, true),
+                    domain,
+                )
             } else if !c.may_be_nonzero() {
-                read_numeric(else_state, key, facts, domain)
+                read_numeric_in(
+                    else_state,
+                    key,
+                    &context.branch_when_scoped(condition, false),
+                    domain,
+                )
             } else {
                 domain.join(
-                    &read_numeric(then_state, key, facts, domain),
-                    &read_numeric(else_state, key, facts, domain),
+                    &read_numeric_in(
+                        then_state,
+                        key,
+                        &context.branch_when_scoped(condition, true),
+                        domain,
+                    ),
+                    &read_numeric_in(
+                        else_state,
+                        key,
+                        &context.branch_when_scoped(condition, false),
+                        domain,
+                    ),
                 )
             }
         }
@@ -304,7 +328,12 @@ impl<N: WordElement> Plane<N> {
         let mut facts = self.operands.clone();
         operands::remember(&mut facts, key_expr.clone(), key, domain, limits(domain))?;
         let expr = ExprId::slot_read(root.clone(), key_expr.clone(), limits(domain))?;
-        let mut value = read_numeric(&root, &key_expr, &facts, domain);
+        let mut value = read_numeric_in(
+            &root,
+            &key_expr,
+            &Context::new(&facts, Some(&self.conditional), domain),
+            domain,
+        );
         if crate::world::candidates(key).is_some() && value.identity().input().is_none() {
             // The pointwise cache keeps possible sources from either branch,
             // even when A1 drops a one-sided unconditional operand guarantee.
@@ -360,6 +389,9 @@ impl<N: WordElement> Plane<N> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
+        if !self.conditional.has_no_scopes() {
+            self.conditional.check(limits)?;
+        }
         for root in std::iter::once(&self.base).chain(self.roots.values()) {
             root.join_guarded(root, ExprId::constant(U256::ZERO), limits.into())?;
         }
@@ -394,6 +426,13 @@ impl<N: WordElement> Plane<N> {
             .base
             .join_guarded(&other.base, selector.clone(), limits.into())?;
         out.operands = operands::join_common(&self.operands, &other.operands, domain);
+        out.conditional = ConditionalFacts::join_retained(
+            (&self.operands, &self.conditional),
+            (&other.operands, &other.conditional),
+            &out.operands,
+            selector.clone(),
+            limits,
+        )?;
         let addresses = self
             .roots
             .keys()

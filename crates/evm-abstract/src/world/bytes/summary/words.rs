@@ -147,7 +147,7 @@ pub(super) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     let mut coordinates = coordinates(&array.root);
     // An instantiated summary has a fresh observed root rather than writes.
     // Its exact read facts provide candidate coordinates for the next summary.
-    for expression in array.operands.keys() {
+    let mut candidate = |expression: &ExprId| {
         if let ExprKind::WordRead { view, offset } = expression.kind()
             && let Some(index) = view
                 .offset
@@ -158,7 +158,13 @@ pub(super) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         {
             insert(&mut coordinates, index);
         }
+    };
+    for expression in array.operands.keys() {
+        candidate(expression);
     }
+    array
+        .conditional
+        .visit(&mut |expression, _| candidate(expression));
     let mut out = BTreeMap::new();
     for index in coordinates {
         if analysis_control::current_cancellation().is_cancelled() {

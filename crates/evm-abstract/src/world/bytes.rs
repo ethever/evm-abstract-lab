@@ -7,7 +7,7 @@ use crate::domain::AlgebraRef;
 #[cfg(test)]
 use crate::domain::{AbstractValue, Domain};
 use crate::domain::{EvmNumericAlgebra, WordElement};
-mod conditional;
+pub(in crate::world) mod conditional;
 mod copy;
 mod metadata;
 pub(super) mod native;

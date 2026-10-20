@@ -33,7 +33,7 @@ pub(in crate::world) fn scalar<N: WordElement, D: EvmNumericAlgebra<Element = N>
     )
 }
 
-pub(super) fn scalar_in<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+pub(in crate::world) fn scalar_in<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     expression: &ExprId,
     context: &Context<'_, N, D>,
     domain: AlgebraRef<'_, D>,

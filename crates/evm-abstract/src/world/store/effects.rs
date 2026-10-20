@@ -63,6 +63,7 @@ impl<N: WordElement> Plane<N> {
             roots: OrderedMap::new(),
             base,
             operands: self.operands.clone(),
+            conditional: self.conditional.clone(),
             failure: None,
             slots: OrderedMap::new(),
             defaults: OrderedMap::new(),

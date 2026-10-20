@@ -17,6 +17,7 @@ fn effects_plane<N: WordElement>() -> Result<Plane<N>, StoreError> {
         roots: OrderedMap::new(),
         base: SlotStateId::input(SourceId::fresh()?),
         operands: BTreeMap::new(),
+        conditional: Default::default(),
         failure: None,
         slots: OrderedMap::new(),
         defaults: OrderedMap::new(),

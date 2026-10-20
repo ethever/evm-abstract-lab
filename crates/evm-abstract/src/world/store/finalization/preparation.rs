@@ -84,7 +84,9 @@ impl PreparationWork {
         Self {
             // Fresh identity, checked input root, Top and empty containers.
             setup: 32,
-            maps,
+            // Conditional branches share their payloads; cloning this Plane
+            // copies/releases only its top-level Arc handles.
+            maps: maps.saturating_add(plane.conditional.cloned_branches().saturating_mul(2)),
             // One owned copy and one success/refusal disposal. Prior staging
             // already funds destruction of the old private Plane's containers.
             values: values.saturating_mul(2),

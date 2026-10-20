@@ -225,10 +225,14 @@ impl<N: WordElement> Plane<N> {
             }
             for key in keys {
                 let value = scalar(
-                    &super::slots::read_numeric(
+                    &super::slots::read_numeric_in(
                         &root,
                         &ExprId::constant(key),
-                        &self.operands,
+                        &crate::world::bytes::conditional::Context::new(
+                            &self.operands,
+                            Some(&self.conditional),
+                            domain,
+                        ),
                         domain,
                     ),
                     domain,
