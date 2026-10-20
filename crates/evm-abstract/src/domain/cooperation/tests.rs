@@ -269,3 +269,52 @@ fn an_unavailable_component_is_not_a_numeric_contradiction() {
         assert!(result.value.contains(U256::from(member)));
     }
 }
+
+#[test]
+fn rule_fact_conversions_preserve_payloads_and_display() {
+    use crate::domain::facts::{FactError, Symbol};
+    use analysis_kernel::PublishError;
+
+    for fact in [
+        FactError::Contradiction {
+            subject: Symbol::new(17),
+        },
+        FactError::Capacity {
+            max_atoms: 3,
+            required: 5,
+        },
+        FactError::UnsupportedOperation(0xfe),
+    ] {
+        let direct = RuleError::from(fact.clone());
+        let published = RuleError::from(PublishError::Policy(fact.clone()));
+        for error in [direct, published] {
+            assert_eq!(error.to_string(), fact.to_string());
+            let RuleError::Fact(retained) = error else {
+                panic!("a semantic-policy error became a kernel failure");
+            };
+            assert_eq!(retained, fact);
+        }
+    }
+}
+
+#[test]
+fn rule_kernel_conversions_keep_interruptions_distinct_from_numeric_bottom() {
+    use crate::domain::WorkExhausted;
+    use analysis_kernel::{KernelError, PublishError};
+
+    for kernel in [
+        KernelError::Stopped(WorkExhausted),
+        KernelError::CostOverflow,
+        KernelError::WrongEpoch,
+    ] {
+        let direct = RuleError::from(kernel.clone());
+        let published = RuleError::from(PublishError::Kernel(kernel.clone()));
+        for error in [direct, published] {
+            assert_eq!(error.to_string(), kernel.to_string());
+            let RuleError::Kernel(retained) = error else {
+                panic!("a kernel failure became a numerical contradiction");
+            };
+            assert_eq!(retained, kernel);
+        }
+    }
+}

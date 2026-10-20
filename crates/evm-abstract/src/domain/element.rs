@@ -6,12 +6,13 @@ use super::{
 };
 use alloy_primitives::U256;
 use serde::Serialize;
-use std::{collections::BTreeSet, fmt, sync::LazyLock};
+use std::{collections::BTreeSet, fmt, sync::OnceLock};
 
-static FINITE_TOP: LazyLock<FiniteConstantSet> = LazyLock::new(FiniteConstantSet::top);
-static BITS_TOP: LazyLock<KnownBits> = LazyLock::new(KnownBits::top);
-static INTERVAL_TOP: LazyLock<Interval> = LazyLock::new(Interval::top);
-static CONGRUENCE_TOP: LazyLock<Congruence> = LazyLock::new(Congruence::top);
+// Keep stable shared views without storing LazyLock's default function pointer.
+static FINITE_TOP: OnceLock<FiniteConstantSet> = OnceLock::new();
+static BITS_TOP: OnceLock<KnownBits> = OnceLock::new();
+static INTERVAL_TOP: OnceLock<Interval> = OnceLock::new();
+static CONGRUENCE_TOP: OnceLock<Congruence> = OnceLock::new();
 
 /// An upper approximation of Word256, without mutable run policy.
 ///
@@ -89,19 +90,19 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
     }
     /// Conservative finite guarantee view. Top need not mean whole-element Top.
     fn finite_constants(&self) -> &FiniteConstantSet {
-        &FINITE_TOP
+        FINITE_TOP.get_or_init(FiniteConstantSet::top)
     }
     /// Conservative fixed-bit guarantee view.
     fn known_bits(&self) -> &KnownBits {
-        &BITS_TOP
+        BITS_TOP.get_or_init(KnownBits::top)
     }
     /// Conservative unsigned/signed range guarantee view.
     fn interval(&self) -> &Interval {
-        &INTERVAL_TOP
+        INTERVAL_TOP.get_or_init(Interval::top)
     }
     /// Conservative integer-congruence guarantee view.
     fn congruence(&self) -> &Congruence {
-        &CONGRUENCE_TOP
+        CONGRUENCE_TOP.get_or_init(Congruence::top)
     }
     /// False proves exclusion; true is not a concrete reachability witness.
     fn contains(&self, word: U256) -> bool {

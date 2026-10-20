@@ -122,6 +122,30 @@ fn narrowed() -> ExcludingWord {
 }
 
 #[test]
+fn custom_default_views_share_stable_top_values_without_copying_the_carrier() {
+    let first = narrowed();
+    let second = ExcludingWord::constant(U256::from(9));
+    let expected = NumericValue::top();
+    for value in [&first, &second] {
+        assert_eq!(value.finite_constants(), expected.finite_constants());
+        assert_eq!(value.known_bits(), expected.known_bits());
+        assert_eq!(value.interval(), expected.interval());
+        assert_eq!(value.congruence(), expected.congruence());
+        assert!(std::ptr::eq(
+            value.finite_constants(),
+            first.finite_constants()
+        ));
+        assert!(std::ptr::eq(value.known_bits(), first.known_bits()));
+        assert!(std::ptr::eq(value.interval(), first.interval()));
+        assert!(std::ptr::eq(value.congruence(), first.congruence()));
+        assert_eq!((value.copies.get(), value.imports.get()), (0, 0));
+    }
+    // Conservative default views do not replace the custom element's knowledge.
+    assert!(!first.contains(U256::from(42)));
+    assert_eq!(second.singleton(), Some(U256::from(9)));
+}
+
+#[test]
 fn retained_binding_import_keeps_path_bounds_and_unexported_predicates() {
     let observation = WordObservation::unsigned_range(U256::ZERO, U256::from(255)).unwrap();
     let value = narrowed();

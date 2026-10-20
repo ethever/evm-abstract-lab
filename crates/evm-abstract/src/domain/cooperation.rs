@@ -78,14 +78,32 @@ impl Capability for Scalars {
 }
 
 /// Scoped numerical contradiction or a distinct kernel/resource refusal.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum RuleError {
     /// A numerical fact operation proved a contradiction or hit its capacity.
-    #[error(transparent)]
-    Fact(#[from] FactError),
+    Fact(FactError),
     /// Infrastructure failure is never a proof of numerical bottom.
-    #[error(transparent)]
-    Kernel(#[from] KernelError<WorkExhausted>),
+    Kernel(KernelError<WorkExhausted>),
+}
+impl std::fmt::Display for RuleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fact(error) => error.fmt(f),
+            Self::Kernel(error) => error.fmt(f),
+        }
+    }
+}
+// Keep typed payloads above; Error::source uses the default None, without dyn.
+impl std::error::Error for RuleError {}
+impl From<FactError> for RuleError {
+    fn from(error: FactError) -> Self {
+        Self::Fact(error)
+    }
+}
+impl From<KernelError<WorkExhausted>> for RuleError {
+    fn from(error: KernelError<WorkExhausted>) -> Self {
+        Self::Kernel(error)
+    }
 }
 impl From<PublishError<FactError, WorkExhausted>> for RuleError {
     fn from(error: PublishError<FactError, WorkExhausted>) -> Self {
