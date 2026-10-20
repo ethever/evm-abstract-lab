@@ -12,6 +12,7 @@ use analysis_kernel::{LocalClosure, Reduction, Scope};
 use revm_bytecode::opcode;
 use std::{cell::Cell, num::NonZeroUsize};
 
+mod integration;
 mod work;
 
 fn spec(rounds: usize, facts: usize) -> DomainSpec {

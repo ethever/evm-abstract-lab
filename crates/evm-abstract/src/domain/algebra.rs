@@ -657,14 +657,18 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         args: &[EvmValue<D::Element>],
         budget: &mut crate::resource::WorkBudget,
     ) -> Result<EvmReduction<D::Element>, WorkExhausted> {
+        let current = analysis_control::current_cancellation();
+        if budget.exhausted() || current.is_cancelled() {
+            return Err(WorkExhausted);
+        }
         let work = self.operation_work(args);
-        if work == usize::MAX || !budget.charge(work) {
+        if work == usize::MAX || current.is_cancelled() || !budget.charge(work) {
             return Err(WorkExhausted);
         }
         let cancellation = budget.cancellation();
         let result =
             analysis_control::with_cancellation(&cancellation, || self.apply_detailed(op, args));
-        if !budget.charge(0) {
+        if budget.exhausted() || current.is_cancelled() || !budget.charge(0) {
             return Err(WorkExhausted);
         }
         Ok(result)

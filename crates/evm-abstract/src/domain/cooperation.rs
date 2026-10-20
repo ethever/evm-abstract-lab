@@ -306,6 +306,9 @@ where
     for<'r, 'k> M: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
     for<'r, 'k> R: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
 {
+    if analysis_control::current_cancellation().is_cancelled() {
+        return limited(value, ReductionStatus::Cancelled);
+    }
     let Some(cap) = domain
         .spec()
         .reduction_rounds()
