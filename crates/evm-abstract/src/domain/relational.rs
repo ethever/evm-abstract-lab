@@ -5,7 +5,7 @@
 //! A consistent local approximation is not a satisfiability proof.
 
 use super::{
-    NumericValue,
+    AlgebraRef, EvmNumericAlgebra, EvmValue, NumericValue, WordElement, WordObservation,
     symbolic::{ExprError, ExprId, ExprKind, ExprLimits},
 };
 use alloy_primitives::U256;
@@ -16,7 +16,7 @@ mod local;
 mod path;
 mod scalar;
 pub use path::{RelationPath, RelationPathKind};
-pub use scalar::ScalarQuery;
+pub use scalar::{EvmScalarQuery, ScalarQuery};
 #[cfg(test)]
 mod tests;
 
@@ -88,38 +88,45 @@ pub enum CheckResult {
 
 /// A value obtained from sound bounded local consequences.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub enum ValueQuery {
+pub enum EvmValueQuery<N: WordElement> {
     /// Every valuation of the retained guarantees has this value.
     Exact(U256),
     /// The state is proved impossible.
     ProvenImpossible,
     /// A sound local upper approximation; top is ordinary imprecision.
-    Bounds(Box<NumericValue>),
+    Bounds(Box<N>),
     /// A real bound or cancellation prevented the query from completing.
     Undetermined(QueryReason),
 }
 
+/// Default-domain compatibility query result.
+pub type ValueQuery = EvmValueQuery<NumericValue>;
+
 /// Intersect two numeric upper approximations without changing expression identity.
 /// The caller pays scalar reduction work before invoking this helper.
-pub(crate) fn intersect_numeric(
-    left: &NumericValue,
-    right: &NumericValue,
-    domain: super::Domain,
-) -> Option<NumericValue> {
-    let numeric = NumericValue {
-        finite: left.finite.meet(&right.finite).ok()?,
-        bits: left.bits.meet(&right.bits)?,
-        interval: left.interval.meet(&right.interval)?,
-        congruence: left.congruence.meet(&right.congruence)?,
-        nonzero: left.nonzero || right.nonzero,
+pub(crate) fn intersect_numeric<D: EvmNumericAlgebra>(
+    left: &D::Element,
+    right: &D::Element,
+    domain: AlgebraRef<'_, D>,
+) -> Option<D::Element> {
+    let numeric = match left.constrain(&right.observation()) {
+        Ok(numeric) => numeric,
+        Err(
+            super::facts::FactError::Contradiction { .. }
+            | super::facts::FactError::ConflictingBits
+            | super::facts::FactError::InvalidBounds
+            | super::facts::FactError::EmptyFiniteSet,
+        ) => return None,
+        // Optional import failure is not a contradiction of this universe.
+        Err(_) => return Some(left.clone()),
     };
     if numeric
         .constants()
-        .is_some_and(|values| !values.iter().any(|value| numeric.contains(*value)))
+        .is_some_and(|values| !values.iter().any(|v| numeric.contains(*v)))
     {
         return None;
     }
-    let reduced = domain.reduce(&super::AbstractValue::from_numeric(numeric));
+    let reduced = domain.reduce(&EvmValue::from_numeric(numeric));
     if reduced.status == super::ReductionStatus::Empty {
         return None;
     }
@@ -331,10 +338,20 @@ impl RelationState {
     }
     /// Import sound scalar guarantees without checking each component separately.
     /// Budget failure may leave a sound subset installed; it never creates bottom.
-    pub fn observe(
+    pub fn observe<N: WordElement>(
         &mut self,
         expression: &ExprId,
-        numeric: &NumericValue,
+        numeric: &N,
+        limits: &RelationLimits,
+    ) -> Result<(), QueryReason> {
+        self.observe_observation(expression, &numeric.observation(), limits)
+    }
+
+    /// Retain guarantees about this exact expression/source occurrence.
+    pub fn observe_observation(
+        &mut self,
+        expression: &ExprId,
+        numeric: &WordObservation,
         limits: &RelationLimits,
     ) -> Result<(), QueryReason> {
         if !limits.enabled {
@@ -596,14 +613,12 @@ impl RelationState {
         limits: &RelationLimits,
         budget: &mut crate::resource::WorkBudget,
     ) -> ValueQuery {
-        match local::project(self, Some(expression), None, limits, Some(budget)) {
-            Ok(None) => ValueQuery::ProvenImpossible,
-            Ok(Some(value)) => value.singleton().map_or_else(
-                || ValueQuery::Bounds(Box::new(value.clone())),
-                ValueQuery::Exact,
-            ),
-            Err(reason) => ValueQuery::Undetermined(reason),
-        }
+        self.local_value_budgeted_with(
+            expression,
+            limits,
+            budget,
+            super::ValueAlgebra::new(super::Domain::default()).borrowed(),
+        )
     }
     pub(crate) fn can_equal_budgeted(
         &self,
@@ -612,11 +627,13 @@ impl RelationState {
         limits: &RelationLimits,
         budget: &mut crate::resource::WorkBudget,
     ) -> CheckResult {
-        match local::project(self, Some(expression), Some(value), limits, Some(budget)) {
-            Ok(None) => CheckResult::ProvenImpossible,
-            Ok(Some(_)) => CheckResult::MayBeFeasible,
-            Err(reason) => CheckResult::Undetermined(reason),
-        }
+        self.can_equal_budgeted_with(
+            expression,
+            value,
+            limits,
+            budget,
+            super::ValueAlgebra::new(super::Domain::default()).borrowed(),
+        )
     }
     pub(crate) fn assume_checked_budgeted(
         &mut self,
@@ -625,25 +642,13 @@ impl RelationState {
         limits: &RelationLimits,
         budget: &mut crate::resource::WorkBudget,
     ) -> Result<CheckResult, QueryReason> {
-        if self.bottom {
-            return Ok(CheckResult::ProvenImpossible);
-        }
-        self.retain(
-            Constraint::Truth {
-                expression: expression.clone(),
-                nonzero,
-            },
+        self.assume_checked_budgeted_with(
+            expression,
+            nonzero,
             limits,
-        )?;
-        let answer = match local::project(self, None, None, limits, Some(budget)) {
-            Ok(None) => CheckResult::ProvenImpossible,
-            Ok(Some(_)) => CheckResult::MayBeFeasible,
-            Err(reason) => CheckResult::Undetermined(reason),
-        };
-        if answer == CheckResult::ProvenImpossible {
-            self.bottom = true;
-        }
-        Ok(answer)
+            budget,
+            super::ValueAlgebra::new(super::Domain::default()).borrowed(),
+        )
     }
     /// Cover both paths by keeping only guarantees common to both.
     /// This intentionally loses disjunction precision, never intersects paths.
@@ -785,5 +790,218 @@ impl RelationState {
             bottom: self.bottom,
             path: self.path.rename(map, limits)?,
         })
+    }
+}
+
+impl RelationState {
+    /// Evaluate using the same injected numeric policy as the current execution.
+    pub fn check_with<D: EvmNumericAlgebra>(
+        &self,
+        limits: &RelationLimits,
+        domain: AlgebraRef<'_, D>,
+    ) -> CheckResult {
+        match local::project_with(self, None, None, limits, None, domain) {
+            Ok(None) => CheckResult::ProvenImpossible,
+            Ok(Some(_)) => CheckResult::MayBeFeasible,
+            Err(reason) => CheckResult::Undetermined(reason),
+        }
+    }
+
+    /// Evaluate using the same injected numeric policy as the current execution.
+    pub fn can_equal_with<D: EvmNumericAlgebra>(
+        &self,
+        expression: &ExprId,
+        value: U256,
+        limits: &RelationLimits,
+        domain: AlgebraRef<'_, D>,
+    ) -> CheckResult {
+        match local::project_with(self, Some(expression), Some(value), limits, None, domain) {
+            Ok(None) => CheckResult::ProvenImpossible,
+            Ok(Some(_)) => CheckResult::MayBeFeasible,
+            Err(reason) => CheckResult::Undetermined(reason),
+        }
+    }
+
+    /// Evaluate using the same injected numeric policy as the current execution.
+    pub fn local_value_with<D: EvmNumericAlgebra>(
+        &self,
+        expression: &ExprId,
+        limits: &RelationLimits,
+        domain: AlgebraRef<'_, D>,
+    ) -> EvmValueQuery<D::Element> {
+        match local::project_with(self, Some(expression), None, limits, None, domain) {
+            Ok(None) => EvmValueQuery::ProvenImpossible,
+            Ok(Some(value)) => value.singleton().map_or_else(
+                || EvmValueQuery::Bounds(Box::new(value.clone())),
+                EvmValueQuery::Exact,
+            ),
+            Err(reason) => EvmValueQuery::Undetermined(reason),
+        }
+    }
+
+    /// Evaluate using the same injected numeric policy as the current execution.
+    pub(crate) fn local_value_budgeted_with<D: EvmNumericAlgebra>(
+        &self,
+        expression: &ExprId,
+        limits: &RelationLimits,
+        budget: &mut crate::resource::WorkBudget,
+        domain: AlgebraRef<'_, D>,
+    ) -> EvmValueQuery<D::Element> {
+        match local::project_with(self, Some(expression), None, limits, Some(budget), domain) {
+            Ok(None) => EvmValueQuery::ProvenImpossible,
+            Ok(Some(value)) => value.singleton().map_or_else(
+                || EvmValueQuery::Bounds(Box::new(value.clone())),
+                EvmValueQuery::Exact,
+            ),
+            Err(reason) => EvmValueQuery::Undetermined(reason),
+        }
+    }
+
+    /// Evaluate using the same injected numeric policy as the current execution.
+    pub(crate) fn can_equal_budgeted_with<D: EvmNumericAlgebra>(
+        &self,
+        expression: &ExprId,
+        value: U256,
+        limits: &RelationLimits,
+        budget: &mut crate::resource::WorkBudget,
+        domain: AlgebraRef<'_, D>,
+    ) -> CheckResult {
+        match local::project_with(
+            self,
+            Some(expression),
+            Some(value),
+            limits,
+            Some(budget),
+            domain,
+        ) {
+            Ok(None) => CheckResult::ProvenImpossible,
+            Ok(Some(_)) => CheckResult::MayBeFeasible,
+            Err(reason) => CheckResult::Undetermined(reason),
+        }
+    }
+
+    /// Evaluate using the same injected numeric policy as the current execution.
+    pub(crate) fn assume_checked_budgeted_with<D: EvmNumericAlgebra>(
+        &mut self,
+        expression: &ExprId,
+        nonzero: bool,
+        limits: &RelationLimits,
+        budget: &mut crate::resource::WorkBudget,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<CheckResult, QueryReason> {
+        if self.bottom {
+            return Ok(CheckResult::ProvenImpossible);
+        }
+        self.retain(
+            Constraint::Truth {
+                expression: expression.clone(),
+                nonzero,
+            },
+            limits,
+        )?;
+        let answer = match local::project_with(self, None, None, limits, Some(budget), domain) {
+            Ok(None) => CheckResult::ProvenImpossible,
+            Ok(Some(_)) => CheckResult::MayBeFeasible,
+            Err(reason) => CheckResult::Undetermined(reason),
+        };
+        if answer == CheckResult::ProvenImpossible {
+            self.bottom = true;
+        }
+        Ok(answer)
+    }
+
+    /// Retain this scoped guarantee and check through the injected algebra.
+    pub fn assume_checked_with<D: EvmNumericAlgebra>(
+        &mut self,
+        expression: &ExprId,
+        nonzero: bool,
+        limits: &RelationLimits,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<CheckResult, QueryReason> {
+        self.insert_with(
+            Constraint::Truth {
+                expression: expression.clone(),
+                nonzero,
+            },
+            limits,
+            domain,
+        )
+    }
+
+    /// Retain this scoped guarantee and check through the injected algebra.
+    pub fn add_unsigned_bounds_with<D: EvmNumericAlgebra>(
+        &mut self,
+        expression: &ExprId,
+        lower: U256,
+        upper: U256,
+        limits: &RelationLimits,
+        domain: AlgebraRef<'_, D>,
+    ) -> CheckResult {
+        self.insert_with(
+            Constraint::Range {
+                expression: expression.clone(),
+                lower,
+                upper,
+            },
+            limits,
+            domain,
+        )
+        .unwrap_or_else(CheckResult::Undetermined)
+    }
+
+    /// Retain this scoped guarantee and check through the injected algebra.
+    pub fn add_known_bits_with<D: EvmNumericAlgebra>(
+        &mut self,
+        expression: &ExprId,
+        zero: U256,
+        one: U256,
+        limits: &RelationLimits,
+        domain: AlgebraRef<'_, D>,
+    ) -> CheckResult {
+        self.insert_with(
+            Constraint::Bits {
+                expression: expression.clone(),
+                zero,
+                one,
+            },
+            limits,
+            domain,
+        )
+        .unwrap_or_else(CheckResult::Undetermined)
+    }
+
+    /// Retain this scoped guarantee and check through the injected algebra.
+    pub fn add_equal_with<D: EvmNumericAlgebra>(
+        &mut self,
+        left: &ExprId,
+        right: &ExprId,
+        limits: &RelationLimits,
+        domain: AlgebraRef<'_, D>,
+    ) -> CheckResult {
+        self.insert_with(
+            Constraint::Equal {
+                left: left.clone(),
+                right: right.clone(),
+            },
+            limits,
+            domain,
+        )
+        .unwrap_or_else(CheckResult::Undetermined)
+    }
+    fn insert_with<D: EvmNumericAlgebra>(
+        &mut self,
+        constraint: Constraint,
+        limits: &RelationLimits,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<CheckResult, QueryReason> {
+        if self.bottom {
+            return Ok(CheckResult::ProvenImpossible);
+        }
+        self.retain(constraint, limits)?;
+        let checked = self.check_with(limits, domain);
+        if checked == CheckResult::ProvenImpossible {
+            self.bottom = true;
+        }
+        Ok(checked)
     }
 }

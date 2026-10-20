@@ -42,7 +42,7 @@ fn local_slot_reads_preserve_aliasing_mixed_write_order_and_history() {
             vec![StateBinding {
                 index: U256::from(3),
                 value: c(11),
-                numeric: NumericValue::constant(U256::from(11)),
+                numeric: NumericValue::constant(U256::from(11)).into(),
             }],
             state_limits(),
         )
@@ -411,7 +411,7 @@ fn concrete_initial_slots_and_byte_numeric_facts_constrain_actual_arrays() {
         vec![StateBinding {
             index: U256::from(3),
             value: v,
-            numeric,
+            numeric: numeric.into(),
         }],
         state_limits(),
     )
@@ -432,7 +432,7 @@ fn concrete_initial_slots_and_byte_numeric_facts_constrain_actual_arrays() {
         vec![StateBinding {
             index: U256::ZERO,
             value: ExprId::fresh().unwrap(),
-            numeric: NumericValue::constant(U256::from(0xaa)),
+            numeric: NumericValue::constant(U256::from(0xaa)).into(),
         }],
         state_limits(),
     )
@@ -530,12 +530,12 @@ fn newly_observed_source_content_binds_an_older_hash_application() {
             StateBinding {
                 index: U256::ZERO,
                 value: c(0xaa),
-                numeric: NumericValue::constant(U256::from(0xaa)),
+                numeric: NumericValue::constant(U256::from(0xaa)).into(),
             },
             StateBinding {
                 index: U256::from(1),
                 value: c(0xbb),
-                numeric: NumericValue::constant(U256::from(0xbb)),
+                numeric: NumericValue::constant(U256::from(0xbb)).into(),
             },
         ],
         state_limits(),

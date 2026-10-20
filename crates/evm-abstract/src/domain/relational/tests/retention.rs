@@ -120,7 +120,7 @@ fn shared_updates_preserve_guarded_words_byte_overlays_and_slot_aliases_at_defau
             vec![StateBinding {
                 index: U256::from(1),
                 value: ExprId::fresh().unwrap(),
-                numeric: NumericValue::constant(U256::from(7)),
+                numeric: NumericValue::constant(U256::from(7)).into(),
             }],
             states,
         )
@@ -191,7 +191,7 @@ fn shared_copy_keeps_observed_array_facts_and_captured_history_at_default_limits
             vec![StateBinding {
                 index: U256::from(31),
                 value: observed,
-                numeric: NumericValue::constant(U256::from(12)),
+                numeric: NumericValue::constant(U256::from(12)).into(),
             }],
             states,
         )
@@ -480,7 +480,7 @@ fn fixed_slot_reads_keep_guarded_history_initial_facts_and_symbolic_aliases() {
             vec![StateBinding {
                 index: U256::ZERO,
                 value: x,
-                numeric: NumericValue::constant(U256::from(7)),
+                numeric: NumericValue::constant(U256::from(7)).into(),
             }],
             states,
         )

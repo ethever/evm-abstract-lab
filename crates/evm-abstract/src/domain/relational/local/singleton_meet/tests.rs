@@ -27,11 +27,20 @@ fn engine_meet(
         cancellation: analysis_control::current_cancellation(),
         ledger: Some(budget),
     };
-    Engine::new(&mut work, &limits, domain).meet(left, right)
+    Engine::new(
+        &mut work,
+        &limits,
+        crate::domain::ValueAlgebra::new(domain).borrowed(),
+    )
+    .meet(left, right)
 }
 
 fn assert_generic(left: &NumericValue, right: &NumericValue, domain: Domain) {
-    let expected = intersect_numeric(left, right, domain);
+    let expected = intersect_numeric(
+        left,
+        right,
+        crate::domain::ValueAlgebra::new(domain).borrowed(),
+    );
     let mut budget = WorkBudget::new(20_000_000);
     match engine_meet(left, right, domain, &mut budget) {
         Ok(value) => assert_eq!(Some(value), expected),
@@ -181,9 +190,14 @@ fn noncanonical_singletons_general_modulo_and_unproved_ranges_keep_generic_path(
                 ledger: None,
             };
             assert!(
-                super::meet(left, right, Domain::default(), &mut work)
-                    .unwrap()
-                    .is_none()
+                super::meet_with(
+                    left,
+                    right,
+                    crate::domain::ValueAlgebra::new(Domain::default()).borrowed(),
+                    &mut work
+                )
+                .unwrap()
+                .is_none()
             );
             for domain in frozen_domains() {
                 assert_generic(left, right, domain);
@@ -200,10 +214,10 @@ fn noncanonical_singletons_general_modulo_and_unproved_ranges_keep_generic_path(
         ledger: None,
     };
     assert!(
-        super::meet(
+        super::meet_with(
             &NumericValue::constant(word),
             &modulo,
-            Domain::default(),
+            crate::domain::ValueAlgebra::new(Domain::default()).borrowed(),
             &mut work
         )
         .unwrap()
@@ -327,7 +341,8 @@ fn refused_learning_and_cancellation_preserve_retained_numeric_facts() {
             cancellation: cancellation.clone(),
             ledger: None,
         };
-        let mut engine = Engine::new(&mut work, &limits, Domain::default());
+        let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+        let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
         engine
             .facts
             .insert(expression.clone(), retained.clone(), engine.work)

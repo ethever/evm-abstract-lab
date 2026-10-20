@@ -104,7 +104,7 @@ fn malformed_or_metadata_facts_never_claim_numerical_bottom() {
             subject: Symbol::THIS,
         },
     ] {
-        assert_eq!(failed(error), ScalarQuery::Infeasible);
+        assert_eq!(failed::<NumericValue>(error), ScalarQuery::Infeasible);
     }
 }
 #[test]
@@ -153,7 +153,7 @@ fn malformed_operation_and_origin_subject_survive_serialized_query_boundaries() 
     ];
     let reports: Vec<_> = errors
         .into_iter()
-        .map(|error| serde_json::to_value(failed(error)).unwrap())
+        .map(|error| serde_json::to_value(failed::<NumericValue>(error)).unwrap())
         .collect();
     let operation = &reports[0]["Unknown"]["ScalarFactError"]["InvalidOperation"];
     assert_eq!(operation["opcode"], opcode::ADD);

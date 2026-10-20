@@ -17,7 +17,8 @@ fn a_structurally_different_key_in_the_same_index_bucket_cannot_supply_a_fact() 
         cancellation: analysis_control::current_cancellation(),
         ledger: None,
     };
-    let mut engine = Engine::new(&mut work, &limits, Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+    let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
     // Force an index collision independently of the real fingerprint hash.
     // A bucket match must still compare the stored expression structurally.
     engine.facts = KeyMap {

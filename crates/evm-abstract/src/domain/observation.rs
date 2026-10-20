@@ -73,6 +73,14 @@ impl WordObservation {
         Self::top().with_known_bits(bits)
     }
 
+    /// Exclude zero without claiming a particular nonzero witness.
+    pub fn nonzero_word() -> Self {
+        Self {
+            nonzero: true,
+            ..Self::top()
+        }
+    }
+
     fn with_known_bits(mut self, bits: KnownBits) -> Self {
         self.bits = bits;
         self
@@ -266,6 +274,23 @@ impl From<NumericValue> for WordObservation {
             congruence: value.congruence,
             nonzero: value.nonzero,
         }
+    }
+}
+// Default-product callers can compare a binding's exported guarantees with the
+// original numeric carrier. This compares every component, never source/value
+// identity, and introduces no implicit conversion on generic executable paths.
+impl PartialEq<NumericValue> for WordObservation {
+    fn eq(&self, other: &NumericValue) -> bool {
+        self.finite == other.finite
+            && self.bits == other.bits
+            && self.interval == other.interval
+            && self.congruence == other.congruence
+            && self.nonzero == other.nonzero
+    }
+}
+impl PartialEq<WordObservation> for NumericValue {
+    fn eq(&self, other: &WordObservation) -> bool {
+        other == self
     }
 }
 impl Serialize for WordObservation {

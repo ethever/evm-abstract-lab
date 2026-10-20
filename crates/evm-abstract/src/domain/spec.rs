@@ -43,8 +43,8 @@ impl DomainSpec {
             capacity,
             reduction_rounds,
             fact_limit,
-            // Version 4 accounts for shared replay evidence and canonical bounds.
-            cost_version: 4,
+            // Version 5 includes typed scalar dependencies and paid operand clones.
+            cost_version: 5,
             widening_after_updates: 2,
             provenance_policy: "scoped-expressions-and-value-identities-v3",
             relations: super::relational::RelationLimits::default(),

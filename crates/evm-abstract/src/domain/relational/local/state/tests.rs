@@ -296,9 +296,13 @@ fn residual_echo_bulk_admission_is_paid_atomic_and_cancellable() {
         ledger: Some(&mut paid),
     };
     assert_eq!(
-        Engine::new(&mut work, &limits, Domain::default())
-            .literal_hash(&literal)
-            .unwrap(),
+        Engine::new(
+            &mut work,
+            &limits,
+            crate::domain::ValueAlgebra::new(Domain::default()).borrowed()
+        )
+        .literal_hash(&literal)
+        .unwrap(),
         Some(digest(&bytes))
     );
     let full_fee = paid.used();
@@ -311,7 +315,8 @@ fn residual_echo_bulk_admission_is_paid_atomic_and_cancellable() {
             cancellation: analysis_control::Cancellation::default(),
             ledger: Some(&mut budget),
         };
-        let mut engine = Engine::new(&mut work, &limits, Domain::default());
+        let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+        let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
         assert!(matches!(
             engine.literal_hash(&literal),
             Err(Stop::Pending(QueryReason::ExpressionLimit))
@@ -329,7 +334,8 @@ fn residual_echo_bulk_admission_is_paid_atomic_and_cancellable() {
             cancellation: analysis_control::Cancellation::default(),
             ledger: None,
         };
-        let mut engine = Engine::new(&mut work, &limits, Domain::default());
+        let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+        let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
         for atom in &state.constraints {
             engine.atom(atom).unwrap();
             engine.validate(atom).unwrap();
@@ -367,7 +373,12 @@ fn residual_echo_bulk_admission_is_paid_atomic_and_cancellable() {
         ledger: Some(&mut budget),
     };
     assert!(matches!(
-        Engine::new(&mut work, &limits, Domain::default()).literal_hash(&literal),
+        Engine::new(
+            &mut work,
+            &limits,
+            crate::domain::ValueAlgebra::new(Domain::default()).borrowed()
+        )
+        .literal_hash(&literal),
         Err(Stop::Pending(QueryReason::Cancelled))
     ));
     assert_eq!(work.remaining, limits.max_nodes);

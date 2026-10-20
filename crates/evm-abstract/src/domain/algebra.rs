@@ -5,8 +5,8 @@
 //! immutable-source observations cross the explicitly coarsening vocabulary.
 
 use super::{
-    AbstractValue, Domain, DomainSpec, EvmReduction, EvmValue, NumericValue, ReductionStatus,
-    WordElement, WorkExhausted, facts, provenance::Provenance, symbolic,
+    Domain, DomainSpec, EvmReduction, EvmValue, NumericValue, ReductionStatus, WordElement,
+    WorkExhausted, facts, provenance::Provenance, symbolic,
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -34,17 +34,9 @@ impl<N: WordElement> NumericReduction<N> {
             strengthened: 0,
         }
     }
-    fn from_value_result(result: EvmReduction<N>) -> Self {
-        Self {
-            value: result.value.numeric,
-            status: result.status,
-            rounds: result.rounds,
-            strengthened: result.strengthened,
-        }
-    }
-    fn attach(self, value: EvmValue<N>) -> EvmReduction<N> {
+    fn attach(self, value: &EvmValue<N>) -> EvmReduction<N> {
         EvmReduction {
-            value: value.with_numeric(self.value),
+            value: value.copy_metadata(self.value),
             status: self.status,
             rounds: self.rounds,
             strengthened: self.strengthened,
@@ -79,7 +71,9 @@ pub trait EvmNumericAlgebra: Debug {
     /// Pure numeric instruction, with stack top first in `args`.
     fn apply_numeric(&self, op: u8, args: &[Self::Element]) -> NumericReduction<Self::Element>;
     /// Upper bound for numeric transfer and its dependency/reduction work.
-    fn operation_work(&self, args: &[Self::Element]) -> usize;
+    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    where
+        Self::Element: 'a;
     /// Upper bound for policy projection beyond ordinary input cloning.
     fn projection_work(&self, value: &Self::Element) -> usize;
     /// Upper bound for guarantee import and reduction.
@@ -87,6 +81,27 @@ pub trait EvmNumericAlgebra: Debug {
     /// Optional byte observation shortcut; the default runs ordinary transfer.
     fn observe_byte_numeric(&self, op: u8, args: &[Self::Element]) -> Self::Element {
         self.apply_numeric(op, args).value
+    }
+    /// Cheap admission for an explicitly paid full-byte-image certificate.
+    fn byte_image_candidate(&self, _value: &Self::Element) -> bool {
+        false
+    }
+    /// Full-byte-image certificate, called only after its fixed-width payment.
+    fn byte_image_complete(&self, _value: &Self::Element) -> bool {
+        false
+    }
+    /// Optional numeric replacement for the ordered 32-byte SHL/OR fold.
+    fn pack_word_numeric(&self, _bytes: &[&Self::Element; 32]) -> Option<Self::Element> {
+        None
+    }
+    /// Recognize the default scalar fold's unconstrained-byte normal form.
+    fn uniform_byte_top(&self, _value: &Self::Element) -> bool {
+        false
+    }
+    /// Opt into the default product's fixed-width scalar import/singleton cost proofs.
+    /// Custom representations decline unless those representation/work contracts hold.
+    fn supports_product_scalar_shortcuts(&self) -> bool {
+        false
     }
 }
 
@@ -113,7 +128,10 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     fn apply_numeric(&self, op: u8, args: &[Self::Element]) -> NumericReduction<Self::Element> {
         D::apply_numeric(self, op, args)
     }
-    fn operation_work(&self, args: &[Self::Element]) -> usize {
+    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    where
+        Self::Element: 'a,
+    {
         D::operation_work(self, args)
     }
     fn projection_work(&self, value: &Self::Element) -> usize {
@@ -125,18 +143,40 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     fn observe_byte_numeric(&self, op: u8, args: &[Self::Element]) -> Self::Element {
         D::observe_byte_numeric(self, op, args)
     }
+    fn byte_image_candidate(&self, value: &Self::Element) -> bool {
+        D::byte_image_candidate(self, value)
+    }
+    fn byte_image_complete(&self, value: &Self::Element) -> bool {
+        D::byte_image_complete(self, value)
+    }
+    fn pack_word_numeric(&self, bytes: &[&Self::Element; 32]) -> Option<Self::Element> {
+        D::pack_word_numeric(self, bytes)
+    }
+    fn uniform_byte_top(&self, value: &Self::Element) -> bool {
+        D::uniform_byte_top(self, value)
+    }
+    fn supports_product_scalar_shortcuts(&self) -> bool {
+        D::supports_product_scalar_shortcuts(self)
+    }
 }
+
+/// Cheap recursive view over the original immutable numeric policy.
+pub type AlgebraRef<'a, D> = ValueAlgebra<&'a D>;
 
 /// Common source/identity/expression algebra around an injected numeric policy.
 #[derive(Clone, Copy, Debug)]
 pub struct ValueAlgebra<D: EvmNumericAlgebra> {
     numeric: D,
+    relations: Option<super::relational::RelationLimits>,
 }
 
 impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     /// Freeze an owned or borrowed numeric policy handle.
     pub fn new(numeric: D) -> Self {
-        Self { numeric }
+        Self {
+            numeric,
+            relations: None,
+        }
     }
     /// The exact injected numeric policy; no default domain is substituted.
     pub fn numeric_algebra(&self) -> &D {
@@ -144,11 +184,41 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     }
     /// A cheap handle even when the policy owns a large immutable configuration.
     pub fn borrowed(&self) -> ValueAlgebra<&D> {
-        ValueAlgebra::new(&self.numeric)
+        ValueAlgebra {
+            numeric: &self.numeric,
+            relations: self.relations,
+        }
     }
     /// Common frozen limits used by metadata/retention and public reports.
     pub fn spec(&self) -> DomainSpec {
-        self.numeric.spec()
+        let spec = self.numeric.spec();
+        self.relations
+            .map_or(spec, |relations| spec.with_relations(relations))
+    }
+    /// Refine existing custom state; never rebuild it through an exported snapshot.
+    pub fn constrain_numeric(
+        &self,
+        value: &D::Element,
+        facts: &super::WordObservation,
+    ) -> Result<NumericReduction<D::Element>, facts::FactError> {
+        let constrained = value.constrain(facts)?;
+        Ok(self.numeric.reduce_numeric(&constrained))
+    }
+    /// Cheap admission for the selected domain's full-byte-image certificate.
+    pub fn byte_image_candidate(&self, value: &D::Element) -> bool {
+        self.numeric.byte_image_candidate(value)
+    }
+    /// Explicitly paid full-byte-image certificate of the selected domain.
+    pub fn byte_image_complete(&self, value: &D::Element) -> bool {
+        self.numeric.byte_image_complete(value)
+    }
+    /// Optional domain-owned replacement for the 32-byte numeric scalar fold.
+    pub fn pack_word_numeric(&self, bytes: &[&D::Element; 32]) -> Option<D::Element> {
+        self.numeric.pack_word_numeric(bytes)
+    }
+    /// Domain-owned canonical unknown-byte recognition.
+    pub fn uniform_byte_top(&self, value: &D::Element) -> bool {
+        self.numeric.uniform_byte_top(value)
     }
     /// Full-candidate storage capacity from the frozen common policy.
     pub fn capacity(&self) -> usize {
@@ -156,9 +226,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     }
     /// Numeric policy projection, preserving immutable-input identity.
     pub fn project(&self, value: &EvmValue<D::Element>) -> EvmValue<D::Element> {
-        let mut out = value
-            .clone()
-            .with_numeric(self.numeric.project_numeric(value.numeric()));
+        let mut out = value.copy_metadata(self.numeric.project_numeric(value.numeric()));
         out.forget_identity();
         if !self.spec().relations().enabled {
             out.forget_expression();
@@ -194,9 +262,19 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         old: &EvmValue<D::Element>,
         next: &EvmValue<D::Element>,
     ) -> EvmValue<D::Element> {
-        let mut out = next
-            .clone()
-            .with_numeric(self.numeric.widen_numeric(old.numeric(), next.numeric()));
+        self.widen_metadata(
+            old,
+            next,
+            self.numeric.widen_numeric(old.numeric(), next.numeric()),
+        )
+    }
+    fn widen_metadata(
+        &self,
+        old: &EvmValue<D::Element>,
+        next: &EvmValue<D::Element>,
+        numeric: D::Element,
+    ) -> EvmValue<D::Element> {
+        let mut out = next.copy_metadata(numeric);
         out.identity = old.identity.join(&next.identity);
         out.provenance = old.provenance.join(&next.provenance);
         out.symbolic_limit =
@@ -215,19 +293,23 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         let numeric = self
             .numeric
             .widen_procedure_numeric(old.numeric(), next.numeric());
-        if &numeric == next.numeric() {
-            return next.clone();
+        let no_acceleration = old.numeric() == next.numeric()
+            || next.constants().is_some_and(|values| {
+                values.len() <= self.spec().widening_after_updates().saturating_add(1)
+            })
+            || (self.spec().profile() == super::Profile::Product
+                && old.interval().unsigned_bounds() == next.interval().unsigned_bounds());
+        if &numeric == next.numeric() && no_acceleration {
+            return next.copy_metadata(numeric);
         }
         if self.spec().profile() == super::Profile::ConstantsOnly {
             return EvmValue::from_numeric(numeric);
         }
-        self.widen(old, next).with_numeric(numeric)
+        self.widen_metadata(old, next, numeric)
     }
     /// Sound local closure; input and all metadata remain independently owned.
     pub fn reduce(&self, value: &EvmValue<D::Element>) -> EvmReduction<D::Element> {
-        self.numeric
-            .reduce_numeric(value.numeric())
-            .attach(value.clone())
+        self.numeric.reduce_numeric(value.numeric()).attach(value)
     }
     /// Construct from validated guarantees; unsupported custom constraints may coarsen.
     pub fn from_facts(
@@ -286,7 +368,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
                 &args.iter().map(|v| v.numeric.clone()).collect::<Vec<_>>(),
             )
         };
-        let mut reduced = numeric.attach(EvmValue::top());
+        let mut reduced = numeric.attach(&EvmValue::top());
         reduced.value.symbolic_limit = args.iter().any(EvmValue::symbolic_limit_reached)
             && reduced.value.singleton().is_none();
         if supported {
@@ -350,6 +432,9 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     }
     /// Precharged numeric byte observation with ordinary metadata transfer.
     pub fn observe_byte(&self, op: u8, args: &[EvmValue<D::Element>]) -> EvmValue<D::Element> {
+        if self.spec().relations().enabled {
+            return self.apply(op, args);
+        }
         let numeric = self.numeric.observe_byte_numeric(
             op,
             &args.iter().map(|v| v.numeric.clone()).collect::<Vec<_>>(),
@@ -377,12 +462,17 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
             0
         };
         self.numeric
-            .operation_work(&args.iter().map(|v| v.numeric.clone()).collect::<Vec<_>>())
+            .operation_work(args.iter().map(EvmValue::numeric))
             .saturating_add(symbolic)
+            // Numeric execution materializes the operand slice only after payment.
+            .saturating_add(
+                args.iter()
+                    .fold(0usize, |n, v| n.saturating_add(v.numeric.clone_work())),
+            )
             .saturating_add(
                 args.iter()
                     .map(|v| v.work_size().saturating_sub(v.numeric.work_size()))
-                    .sum::<usize>(),
+                    .fold(0usize, usize::saturating_add),
             )
     }
     /// Numeric policy-projection work beyond existing copying.
@@ -405,72 +495,63 @@ impl EvmNumericAlgebra for Domain {
         Domain::spec(*self)
     }
     fn project_numeric(&self, value: &NumericValue) -> NumericValue {
-        self.project(&AbstractValue::from_numeric(value.clone()))
-            .numeric
+        self.numeric_project(value)
     }
     fn join_numeric(&self, left: &NumericValue, right: &NumericValue) -> NumericValue {
-        self.join(
-            &AbstractValue::from_numeric(left.clone()),
-            &AbstractValue::from_numeric(right.clone()),
-        )
-        .numeric
+        self.numeric_join(left, right)
     }
     fn widen_numeric(&self, old: &NumericValue, next: &NumericValue) -> NumericValue {
-        self.widen(
-            &AbstractValue::from_numeric(old.clone()),
-            &AbstractValue::from_numeric(next.clone()),
-        )
-        .numeric
+        self.numeric_widen(old, next)
     }
     fn widen_procedure_numeric(&self, old: &NumericValue, next: &NumericValue) -> NumericValue {
-        self.widen_procedure(
-            &AbstractValue::from_numeric(old.clone()),
-            &AbstractValue::from_numeric(next.clone()),
-        )
-        .numeric
+        self.numeric_widen_procedure(old, next)
     }
     fn reduce_numeric(&self, value: &NumericValue) -> NumericReduction<NumericValue> {
-        NumericReduction::from_value_result(super::reduce::reduce(
-            *self,
-            AbstractValue::from_numeric(value.clone()),
-        ))
+        super::reduce::numeric(*self, value.clone())
     }
     fn apply_numeric(&self, op: u8, args: &[NumericValue]) -> NumericReduction<NumericValue> {
-        NumericReduction::from_value_result(
-            self.numeric_apply_detailed(
-                op,
-                &args
-                    .iter()
-                    .cloned()
-                    .map(AbstractValue::from_numeric)
-                    .collect::<Vec<_>>(),
-            ),
-        )
+        self.numeric_apply(op, args)
     }
-    fn operation_work(&self, args: &[NumericValue]) -> usize {
-        self.numeric_operation_work(
-            &args
-                .iter()
-                .cloned()
-                .map(AbstractValue::from_numeric)
-                .collect::<Vec<_>>(),
-        )
+    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a NumericValue>) -> usize {
+        self.numeric_operation_work(args)
     }
     fn projection_work(&self, value: &NumericValue) -> usize {
-        Domain::projection_work(*self, &AbstractValue::from_numeric(value.clone()))
+        self.numeric_projection_work(value)
     }
     fn refinement_work(&self, value: &NumericValue, facts: usize) -> usize {
-        Domain::refinement_work(*self, &AbstractValue::from_numeric(value.clone()), facts)
+        self.numeric_refinement_work(value, facts)
     }
     fn observe_byte_numeric(&self, op: u8, args: &[NumericValue]) -> NumericValue {
-        self.observe_byte(
-            op,
-            &args
-                .iter()
-                .cloned()
-                .map(AbstractValue::from_numeric)
-                .collect::<Vec<_>>(),
-        )
-        .numeric
+        super::byte_projection::observe(*self, op, args)
+    }
+    fn byte_image_candidate(&self, value: &NumericValue) -> bool {
+        self.spec().profile() == super::Profile::Product
+            && value.finite_constants().is_top()
+            && value.congruence().is_top()
+    }
+    fn byte_image_complete(&self, value: &NumericValue) -> bool {
+        super::byte_projection::full_byte_image(value)
+    }
+    fn pack_word_numeric(&self, bytes: &[&NumericValue; 32]) -> Option<NumericValue> {
+        super::byte_projection::pack_numeric(*self, bytes)
+    }
+    fn uniform_byte_top(&self, value: &NumericValue) -> bool {
+        value == &NumericValue::unknown_byte()
+    }
+    fn supports_product_scalar_shortcuts(&self) -> bool {
+        true
     }
 }
+
+impl<D: EvmNumericAlgebra> AlgebraRef<'_, D> {
+    /// Same borrowed policy and view type, with expression construction disabled.
+    pub fn without_relations(mut self) -> Self {
+        let mut relations = self.spec().relations();
+        relations.enabled = false;
+        self.relations = Some(relations);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests;

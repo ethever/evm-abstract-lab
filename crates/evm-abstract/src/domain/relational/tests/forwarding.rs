@@ -203,7 +203,7 @@ fn input_word_prefix_padding_matches_observed_bytes_and_view_boundaries() {
                         } else {
                             c(j + 1)
                         },
-                        numeric: NumericValue::constant(U256::from(j + 1)),
+                        numeric: NumericValue::constant(U256::from(j + 1)).into(),
                     })
                 })
                 .collect();

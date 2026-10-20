@@ -91,8 +91,24 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
     }
     /// Whether this element has no numeric constraints. A conservative false is valid.
     fn is_top(&self) -> bool;
-    /// Retained/copy/query work bound; must include custom payload traversal.
+    /// Retained/copy/query work bound, including observation construction and
+    /// retention. A custom export cannot inspect or allocate more than this quote.
     fn work_size(&self) -> usize;
+    /// Cost of copying this numeric payload, quoted without doing the copy.
+    /// Deep custom storage must be included; metadata wrappers are separate.
+    fn clone_work(&self) -> usize {
+        self.work_size()
+    }
+    /// Cost of singleton discovery and validation, without running that query.
+    /// Overrides may use cached shape/cardinality, never unpaid enumeration.
+    fn singleton_work(&self) -> usize {
+        self.work_size().saturating_mul(256)
+    }
+    /// Optional scalar normalization at a paid summary boundary. Extra guarantees
+    /// of nonsingletons survive; canonicalizing a true singleton is sound.
+    fn canonical_for_summary(&self) -> Self {
+        self.clone()
+    }
     /// Optional representation compaction preserving concretization exactly.
     fn compact_for_retention(&self) -> Self {
         self.clone()
@@ -160,6 +176,30 @@ impl WordElement for NumericValue {
     }
     fn work_size(&self) -> usize {
         self.work_size()
+    }
+    fn clone_work(&self) -> usize {
+        // Inline component words and the shared finite-allocation handle.
+        12
+    }
+    fn singleton_work(&self) -> usize {
+        let limbs = 4;
+        let finite = self.finite_constants().cardinality().map_or(0, |len| {
+            // Conservative height/key bound of the existing finite BTreeSet.
+            let levels = if len < 11 {
+                1
+            } else {
+                1 + (len / 2 + len % 2).ilog2() as usize / 2
+            };
+            let first = if len == 1 { 8 * limbs } else { 0 };
+            let contains = levels * (len.min(11) * (6 * limbs + 8) + 8 * limbs);
+            first + contains
+        });
+        let modulo = !self.congruence().is_top() && self.congruence().modulus_residue().is_some();
+        128 * limbs + finite + usize::from(modulo) * 256 * limbs * limbs
+    }
+    fn canonical_for_summary(&self) -> Self {
+        self.singleton()
+            .map_or_else(|| self.clone(), Self::constant)
     }
     fn compact_for_retention(&self) -> Self {
         self.compact_for_retention()

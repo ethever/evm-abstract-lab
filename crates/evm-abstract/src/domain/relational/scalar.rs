@@ -6,7 +6,8 @@
 
 use super::{Constraint, QueryReason, RelationLimits, RelationState};
 use crate::domain::{
-    AbstractValue, Domain, NumericValue, ReductionStatus,
+    AlgebraRef, Domain, EvmNumericAlgebra, EvmValue, NumericValue, ReductionStatus, ValueAlgebra,
+    WordElement,
     facts::{
         BinaryFact, BinaryPredicate, BitConstraints, Fact, FactError, FactLattice, FiniteSet,
         Symbol, Term, UnaryFact, UnaryPredicate, WordBounds,
@@ -23,11 +24,11 @@ mod tests;
 
 /// Result of direct-guarantee scalar projection; this is not a uniqueness claim.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub enum ScalarQuery {
+pub enum EvmScalarQuery<N: WordElement> {
     /// Direct consequences were imported, possibly retaining the same bounds.
     Refined {
         /// Safe intersection of the old scalar and direct guarantees.
-        numeric: Box<NumericValue>,
+        numeric: Box<N>,
         /// All related constraints had a direct scalar translation. This does
         /// not assert an exact value or an exact union of possible executions.
         complete: bool,
@@ -39,6 +40,9 @@ pub enum ScalarQuery {
     /// No bottom claim; keep the old scalar or any already returned refinement.
     Unknown(QueryReason),
 }
+
+/// Default-domain compatibility scalar query.
+pub type ScalarQuery = EvmScalarQuery<NumericValue>;
 
 fn binary(left: Term, predicate: BinaryPredicate, right: Term) -> Fact {
     Fact::Binary(BinaryFact::new(left, predicate, right))
@@ -211,14 +215,14 @@ pub(super) fn direct(constraint: &Constraint, target: &ExprId) -> Result<Option<
         _ => None,
     })
 }
-fn failed(error: FactError) -> ScalarQuery {
+fn failed<N: WordElement>(error: FactError) -> EvmScalarQuery<N> {
     match error {
-        FactError::Capacity { .. } => ScalarQuery::Unknown(QueryReason::ScalarFactLimit),
+        FactError::Capacity { .. } => EvmScalarQuery::Unknown(QueryReason::ScalarFactLimit),
         FactError::Contradiction { .. }
         | FactError::EmptyFiniteSet
         | FactError::ConflictingBits
-        | FactError::InvalidBounds => ScalarQuery::Infeasible,
-        other => ScalarQuery::Unknown(QueryReason::ScalarFactError(other)),
+        | FactError::InvalidBounds => EvmScalarQuery::Infeasible,
+        other => EvmScalarQuery::Unknown(QueryReason::ScalarFactError(other)),
     }
 }
 impl RelationState {
@@ -233,24 +237,24 @@ impl RelationState {
     /// Project direct EQ/ISZERO/ordered constant guards through the existing
     /// scalar fact language. A useful range can avoid a larger local traversal; nonlocal inverse
     /// constraints remain explicitly incomplete here.
-    pub fn refine_numeric(
+    pub fn refine_numeric_with<D: EvmNumericAlgebra>(
         &self,
         expression: &ExprId,
-        numeric: &NumericValue,
-        domain: Domain,
+        numeric: &D::Element,
+        domain: AlgebraRef<'_, D>,
         limits: &RelationLimits,
-    ) -> ScalarQuery {
+    ) -> EvmScalarQuery<D::Element> {
         if self.bottom {
-            return ScalarQuery::Infeasible;
+            return EvmScalarQuery::Infeasible;
         }
         if !limits.enabled {
-            return ScalarQuery::Unknown(QueryReason::Disabled);
+            return EvmScalarQuery::Unknown(QueryReason::Disabled);
         }
         if !limits.valid() {
-            return ScalarQuery::Unknown(QueryReason::Configuration);
+            return EvmScalarQuery::Unknown(QueryReason::Configuration);
         }
         if expression.nodes() > limits.max_nodes || expression.depth() > limits.max_depth {
-            return ScalarQuery::Unknown(QueryReason::ExpressionLimit);
+            return EvmScalarQuery::Unknown(QueryReason::ExpressionLimit);
         }
         let variables = expression.variables();
         let mut lattice = FactLattice::new(domain.spec().fact_limit());
@@ -284,7 +288,7 @@ impl RelationState {
                 .iter()
                 .fold(work, |total, expr| total.saturating_add(expr.nodes()));
             if work > limits.max_nodes {
-                return ScalarQuery::Unknown(QueryReason::ExpressionLimit);
+                return EvmScalarQuery::Unknown(QueryReason::ExpressionLimit);
             }
             match direct(constraint, expression) {
                 Ok(Some(fact)) => {
@@ -306,26 +310,44 @@ impl RelationState {
             }
         }
         if !found {
-            return ScalarQuery::Unchanged;
+            return EvmScalarQuery::Unchanged;
         }
-        let value = AbstractValue::from_numeric(numeric.clone());
+        let value = EvmValue::from_numeric(numeric.clone());
         let value = match reduce::import(&value, &lattice) {
             Ok(value) => value,
             Err(error) => return failed(error),
         };
         let reduced = domain.reduce(&value);
         match reduced.status {
-            ReductionStatus::Empty => ScalarQuery::Infeasible,
+            ReductionStatus::Empty => EvmScalarQuery::Infeasible,
             // These limits only stop further reductions. The already imported
             // conjunction remains sound and must not be mistaken for bottom.
-            ReductionStatus::FactLimit | ReductionStatus::RoundLimit => ScalarQuery::Refined {
+            ReductionStatus::FactLimit | ReductionStatus::RoundLimit => EvmScalarQuery::Refined {
                 numeric: Box::new(domain.project(&reduced.value).numeric().clone()),
                 complete: false,
             },
-            _ => ScalarQuery::Refined {
+            _ => EvmScalarQuery::Refined {
                 numeric: Box::new(domain.project(&reduced.value).numeric().clone()),
                 complete,
             },
         }
+    }
+}
+
+impl RelationState {
+    /// Default-domain compatibility entrypoint. Generic execution uses refine_numeric_with.
+    pub fn refine_numeric(
+        &self,
+        expression: &ExprId,
+        numeric: &NumericValue,
+        domain: Domain,
+        limits: &RelationLimits,
+    ) -> ScalarQuery {
+        self.refine_numeric_with(
+            expression,
+            numeric,
+            ValueAlgebra::new(domain).borrowed(),
+            limits,
+        )
     }
 }

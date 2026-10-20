@@ -1,7 +1,7 @@
 //! Freeze serde's complete enum metadata, which JSON alone cannot observe.
 use super::*;
 use crate::domain::{
-    NumericValue,
+    WordObservation,
     symbolic::{
         ByteStateKind, ExprKind, InputAtom, SlotStateKind, StateBinding, SymbolicGraphNode,
     },
@@ -467,10 +467,10 @@ fn numeric_binding_hash_collisions_keep_distinct_interned_states() {
     let a = StateBinding {
         index: U256::ZERO,
         value,
-        numeric: NumericValue::constant(U256::from(7)),
+        numeric: WordObservation::constant(U256::from(7)),
     };
     let b = StateBinding {
-        numeric: NumericValue::constant(U256::from(9)),
+        numeric: WordObservation::constant(U256::from(9)),
         ..a.clone()
     };
     assert_eq!(

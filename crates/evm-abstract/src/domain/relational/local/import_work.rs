@@ -3,8 +3,11 @@
 //! The caller supplies `AbstractValue::from_numeric(known)`; `known` and `learn`
 //! keep their independent charges. These are logical source actions, not time.
 
-use super::{AbstractValue, Domain, Fact};
+use super::Fact;
 use crate::domain::facts::{BinaryPredicate, Symbol, Term, UnaryPredicate};
+#[cfg(test)]
+use crate::domain::{AbstractValue, Domain};
+use crate::domain::{AlgebraRef, EvmNumericAlgebra, EvmValue, WordElement};
 use alloy_primitives::U256;
 
 #[cfg(test)]
@@ -93,7 +96,23 @@ struct Shape {
     binary: bool,
 }
 
+#[cfg(test)]
 pub(super) fn reservation(domain: Domain, input: &AbstractValue, fact: &Fact) -> usize {
+    reservation_with(
+        crate::domain::ValueAlgebra::new(domain).borrowed(),
+        input,
+        fact,
+    )
+}
+
+pub(super) fn reservation_with<D: EvmNumericAlgebra>(
+    domain: AlgebraRef<'_, D>,
+    input: &EvmValue<D::Element>,
+    fact: &Fact,
+) -> usize {
+    if !domain.numeric_algebra().supports_product_scalar_shortcuts() {
+        return domain.refinement_work(input, 1);
+    }
     let Some(shape) = eligible(input, fact) else {
         return domain.refinement_work(input, 1);
     };
@@ -123,7 +142,7 @@ pub(super) fn reservation(domain: Domain, input: &AbstractValue, fact: &Fact) ->
 }
 
 // Only tags and fixed-size fields: never enumerate candidates to obtain a fee.
-fn eligible(input: &AbstractValue, fact: &Fact) -> Option<Shape> {
+fn eligible<N: WordElement>(input: &EvmValue<N>, fact: &Fact) -> Option<Shape> {
     let (exact, binary) = match fact {
         Fact::Unary(fact) if fact.subject == Symbol::THIS => {
             let exact = match &fact.predicate {

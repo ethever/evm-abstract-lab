@@ -1,7 +1,7 @@
 //! An abstract value separates numeric constraints, source metadata and identity.
 
 use super::{
-    EvmNumericAlgebra, NumericValue, ValueAlgebra, WordElement,
+    AlgebraRef, EvmNumericAlgebra, NumericValue, ValueAlgebra, WordElement,
     identity::{InputIdentity, RuntimeIdentity, Symbol, ValueIdentity},
     provenance::{Origin, Provenance},
     symbolic::{ExprError, ExprId, ExprLimits},
@@ -63,6 +63,17 @@ impl<N: WordElement> EvmValue<N> {
     pub fn numeric(&self) -> &N {
         &self.numeric
     }
+    /// Complete value-copy envelope, retaining shared expression handles. Numeric
+    /// deep copies use the actual carrier quote, not the default product tariff.
+    pub fn clone_work(&self) -> usize {
+        8usize
+            .saturating_add(self.numeric.clone_work())
+            .saturating_add(self.provenance.origins().work_size().saturating_mul(4))
+    }
+    /// Numeric singleton-query quote; evaluating an expression is separate work.
+    pub fn singleton_work(&self) -> usize {
+        self.numeric.singleton_work()
+    }
     /// Replace numeric facts after a caller has proved a sound refinement; all
     /// source, identity and expression layers retain the same semantic value.
     pub(crate) fn with_numeric(mut self, numeric: N) -> Self {
@@ -71,6 +82,17 @@ impl<N: WordElement> EvmValue<N> {
             self.symbolic_limit = false;
         }
         self
+    }
+    /// Copy metadata around an already owned replacement without cloning and
+    /// discarding the old numeric payload.
+    pub(super) fn copy_metadata(&self, numeric: N) -> Self {
+        Self {
+            numeric,
+            provenance: self.provenance.clone(),
+            identity: self.identity,
+            expression: self.expression.clone(),
+            symbolic_limit: self.symbolic_limit,
+        }
     }
     /// Possible sources and a code-address role, without equality identities.
     pub fn provenance(&self) -> &Provenance {
@@ -124,7 +146,7 @@ impl<N: WordElement> EvmValue<N> {
     pub fn join_guarded_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
-        domain: &ValueAlgebra<D>,
+        domain: AlgebraRef<'_, D>,
         selector: ExprId,
         limits: ExprLimits,
     ) -> Result<Self, ExprError> {
@@ -268,7 +290,7 @@ impl<N: WordElement> Serialize for EvmValue<N> {
 }
 impl<N: WordElement> fmt::Display for EvmValue<N> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.numeric.fmt(formatter)
+        std::fmt::Display::fmt(&self.numeric, formatter)
     }
 }
 
@@ -284,7 +306,12 @@ impl EvmValue<NumericValue> {
         selector: ExprId,
         limits: ExprLimits,
     ) -> Result<Self, ExprError> {
-        self.join_guarded_with(other, &ValueAlgebra::new(domain), selector, limits)
+        self.join_guarded_with(
+            other,
+            ValueAlgebra::new(domain).borrowed(),
+            selector,
+            limits,
+        )
     }
 }
 
