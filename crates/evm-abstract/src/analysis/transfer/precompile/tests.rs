@@ -881,7 +881,8 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         .iter()
         .map(|kind| root_finalization_work(&payload, *kind, &config))
         .sum::<usize>();
-    let prefix = entry_work + retained_input;
+    let retained_prefix = entry_work + retained_input;
+    let prefix = retained_prefix + payload.active().calldata.len().singleton_work();
     assert_eq!(
         full_budget.used(),
         prefix + receipts.validation_ready + finalization_work
@@ -894,6 +895,7 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         // Input preflight precedes the optimized summary and keeps its receipt.
         (entry_work, entry_work, original_key.clone()),
         (entry_work + scan, entry_work + scan, original_key.clone()),
+        (retained_prefix, retained_prefix, original_key.clone()),
         (prefix + receipts.key_census - 1, prefix, None),
         (
             prefix + receipts.key_admitted - 1,

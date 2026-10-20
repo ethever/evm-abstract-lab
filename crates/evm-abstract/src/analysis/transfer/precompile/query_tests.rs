@@ -144,3 +144,57 @@ fn native_byte_query_pays_for_the_actual_opaque_read_result() {
         assert_eq!(budget.used(), paid_prefix + 61);
     });
 }
+
+#[test]
+fn native_literal_length_can_decline_extraction_without_an_opaque_query() {
+    let config = ExecutionConfig {
+        max_memory_bytes: 6,
+        ..ExecutionConfig::default()
+    };
+    let algebra = ValueAlgebra::new(Policy);
+    let input = EvmByteArray::<Word>::exact(&[1; 8])
+        .slice_with(
+            &EvmValue::constant(U256::ZERO),
+            &EvmValue::constant(U256::from(7)),
+            config.max_memory_bytes,
+            algebra.borrowed(),
+        )
+        .unwrap();
+    let _receipt = RECEIPT.scope();
+    RECEIPT.update(|receipt| {
+        receipt.fee = usize::MAX;
+        receipt.cancel_on_quote = true;
+        receipt.cancel_on_query = true;
+    });
+    let mut budget = WorkBudget::new(1_000_000);
+    assert_eq!(
+        materialize(
+            &input,
+            &mut context(&config, &mut budget, algebra.borrowed())
+        ),
+        Ok(None)
+    );
+    assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
+    let owner = analysis_control::Cancellation::new();
+    let mut captured = analysis_control::with_cancellation(&owner, || WorkBudget::new(1_000_000));
+    owner.cancel();
+    assert_eq!(
+        materialize(
+            &input,
+            &mut context(&config, &mut captured, algebra.borrowed())
+        ),
+        Err(FrontierReason::Relations(QueryReason::Cancelled))
+    );
+    assert_eq!(captured.used(), 0);
+    let current = analysis_control::Cancellation::new();
+    current.cancel();
+    analysis_control::with_cancellation(&current, || {
+        assert_eq!(
+            materialize(
+                &input,
+                &mut context(&config, &mut budget, algebra.borrowed())
+            ),
+            Err(FrontierReason::Relations(QueryReason::Cancelled))
+        );
+    });
+}

@@ -161,9 +161,14 @@ fn materialize<D: EvmNumericAlgebra>(
     input: &EvmByteArray<D::Element>,
     context: &mut TransferContext<'_, D>,
 ) -> Result<Option<Vec<u8>>, FrontierReason> {
-    let Some(length) = super::query::singleton(input.len().numeric(), context.budget)?
-        .and_then(|n| usize::try_from(n).ok())
-    else {
+    super::query::checkpoint(context.budget)?;
+    // A retained literal expression already proves this length. Reuse that
+    // independent proof before asking an opaque numeric element to rediscover it.
+    let length = match input.len().expression().and_then(ExprId::as_constant) {
+        Some(length) => Some(length),
+        None => super::query::singleton(input.len().numeric(), context.budget)?,
+    };
+    let Some(length) = length.and_then(|n| usize::try_from(n).ok()) else {
         return Ok(None);
     };
     if length > context.config.max_memory_bytes {
