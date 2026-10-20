@@ -22,7 +22,7 @@ pub enum ReductionStatus {
     Stable,
     /// 已证明的信息保留，尚未声称闭包。
     RoundLimit,
-    /// 事实原子容量不足，保留此前完整轮的安全结果。
+    /// 事实原子容量不足，保留此前完整导入的安全结果。
     FactLimit,
     /// 数值约束已证明相互矛盾；不表示资源中断。
     Empty,
@@ -38,7 +38,8 @@ pub struct EvmReduction<N: WordElement> {
     pub value: EvmValue<N>,
     /// 终止边界。
     pub status: ReductionStatus,
-    /// 实际执行的完整轮数。
+    /// 策略报告的已完成数值规约次数。默认协作 product 计数 scalar
+    /// 事实导出/导入的完整执行；其他依赖任务是否稳定由 `status` 表示。
     pub rounds: usize,
     /// 已接纳的严格增强事实次数。
     pub strengthened: usize,
