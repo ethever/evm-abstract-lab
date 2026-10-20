@@ -91,7 +91,7 @@ fn optional_expression_refusal_preserves_completion_and_a_typed_work_frontier() 
     entry.environment.value = AbstractValue::top();
     entry.environment.calldata = ByteArray::empty();
     let mut config = ExecutionConfig {
-        // complete.work() - 1 must isolate the mandatory STOP finalization fee.
+        // Keep optional preparation out of the semantic STOP boundary.
         root_terminal_coverage: false,
         use_summaries: false,
         ..ExecutionConfig::default()
@@ -113,9 +113,36 @@ fn optional_expression_refusal_preserves_completion_and_a_typed_work_frontier() 
         .verify(&complete)
         .unwrap();
 
-    // This acyclic leaf's last mandatory charge finalizes STOP. Refusing it
-    // leaves a real Work frontier in addition to ADD's precision diagnostic.
-    config.max_work = complete.work().checked_sub(1).unwrap();
+    // Bracket this acyclic leaf's first normal Return at STOP. Kernel
+    // finish/closure adds later charges, so complete.work() - 1 can already
+    // have returned. This search observes the semantic phase, not its tariff.
+    let (mut minimum, mut maximum) = (1, config.max_work);
+    while minimum < maximum {
+        let midpoint = minimum + (maximum - minimum) / 2;
+        config.max_work = midpoint;
+        let candidate =
+            analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+        if candidate
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == OutcomeKind::Return)
+        {
+            maximum = midpoint;
+        } else {
+            minimum = midpoint + 1;
+        }
+    }
+    config.max_work = minimum;
+    let returned = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    assert!(
+        returned
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == OutcomeKind::Return)
+    );
+    // Exactly one unit short refuses STOP finalization while retaining ADD's
+    // optional precision diagnostic and the original partial-SSA assertions.
+    config.max_work = minimum.checked_sub(1).unwrap();
     let work_limit = config.max_work;
     let refused = analysis::analyze_world(world, entry, config).unwrap();
     assert_eq!(refused.status(), Status::Incomplete);

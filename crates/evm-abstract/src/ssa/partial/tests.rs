@@ -390,7 +390,7 @@ fn completed_fault_has_no_fabricated_operands_or_results() {
 #[test]
 fn optional_expression_limit_preserves_completion_and_a_separate_real_work_frontier() {
     let mut config = config();
-    // complete.work() - 1 must isolate the mandatory STOP finalization fee.
+    // Isolate the semantic STOP boundary from shared Kernel bookkeeping.
     config.root_terminal_coverage = false;
     config.analysis.relations.enabled = true;
     config.analysis.relations.max_nodes = 2;
@@ -410,9 +410,35 @@ fn optional_expression_limit_preserves_completion_and_a_separate_real_work_front
         .verify(&complete)
         .unwrap();
 
-    // Refuse the last root-finalization charge, after ADD and STOP. This is a
-    // genuine coverage gap, separately from ADD's optional precision diagnostic.
-    config.max_work = complete.work().checked_sub(1).unwrap();
+    // This straight-line leaf has one normal Return, produced by STOP. Locate
+    // its first budget independently of the later Kernel finish/closure fees;
+    // total consumed work minus one may already include that Return.
+    let (mut minimum, mut maximum) = (1, config.max_work);
+    while minimum < maximum {
+        let midpoint = minimum + (maximum - minimum) / 2;
+        config.max_work = midpoint;
+        let candidate = run_with_value("3460010100", config.clone(), AbstractValue::top());
+        if candidate
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == OutcomeKind::Return)
+        {
+            maximum = midpoint;
+        } else {
+            minimum = midpoint + 1;
+        }
+    }
+    config.max_work = minimum;
+    let returned = run_with_value("3460010100", config.clone(), AbstractValue::top());
+    assert!(
+        returned
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == OutcomeKind::Return)
+    );
+    // One unit below this semantic boundary still dispatches STOP but refuses
+    // its mandatory finalization, separately from ADD's optional proof refusal.
+    config.max_work = minimum.checked_sub(1).unwrap();
     let refused = run_with_value("3460010100", config, AbstractValue::top());
     assert_eq!(refused.status(), Status::Incomplete);
     let [frontier] = refused.frontiers() else {

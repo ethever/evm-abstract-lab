@@ -265,9 +265,13 @@ fn result_observations_preserve_small_work_budget_receipts() {
     let (world, entry) = fixture(&[(0x101, "600200")]);
     let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let admission = admission_work(&world, &entry, &initial);
-    // Keep the original semantic deltas separate from entry admission: PUSH
-    // costs one visit, STOP one visit plus its operation. Its dispatch still
-    // needs checked transaction finalization before it can install an outcome.
+    let pushed = U256::from(2);
+    let push_setup_work = ValueAlgebra::new(domain)
+        .literal_quote_work(pushed)
+        .saturating_add(AbstractValue::constant(pushed).clone_work());
+    // Keep the declared PUSH factory/receipt setup separate from entry
+    // admission and semantic visits. STOP costs one visit plus its operation,
+    // then needs checked finalization before it can install an outcome.
     for (semantic_work, expected_pcs, expected_progress) in [
         (0, vec![], vec![]),
         (1, vec![0], vec![InstructionProgress::Completed]),
@@ -288,7 +292,12 @@ fn result_observations_preserve_small_work_budget_receipts() {
             ],
         ),
     ] {
-        let maximum = admission + semantic_work;
+        let setup_work = if semantic_work == 0 {
+            0
+        } else {
+            push_setup_work
+        };
+        let maximum = admission + setup_work + semantic_work;
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
@@ -302,7 +311,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
         );
         assert!(budget.exhausted());
         assert_eq!(budget.used(), maximum);
-        assert_eq!(budget.used() - admission, semantic_work);
+        assert_eq!(budget.used() - admission - setup_work, semantic_work);
         assert_eq!(execution.executed_pcs, expected_pcs);
         assert_eq!(execution.instruction_progress, expected_progress);
         assert!(execution.successors.is_empty());
@@ -366,7 +375,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
             .finalize_transaction_checked(domain, None, &mut cleanup_budget)
             .is_ok();
         assert_eq!(completed, remaining == finalization_work);
-        let mut budget = WorkBudget::new(admission + 3 + remaining);
+        let mut budget = WorkBudget::new(admission + push_setup_work + 3 + remaining);
         let execution = transfer::execute(
             &world,
             &entry,
@@ -377,7 +386,10 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &mut budget,
             StorageReadPolicy::Abstract,
         );
-        assert_eq!(budget.used(), admission + 3 + cleanup_budget.used());
+        assert_eq!(
+            budget.used(),
+            admission + push_setup_work + 3 + cleanup_budget.used()
+        );
         assert_eq!(budget.exhausted(), !completed);
         assert_eq!(execution.executed_pcs, vec![0, 2]);
         assert_eq!(
@@ -427,10 +439,14 @@ fn result_observations_preserve_small_work_budget_receipts() {
     let (world, entry) = fixture(&[(0x101, "6003565b00")]);
     let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let admission = admission_work(&world, &entry, &initial);
+    let pushed = U256::from(3);
+    let push_setup_work = ValueAlgebra::new(domain)
+        .literal_quote_work(pushed)
+        .saturating_add(AbstractValue::constant(pushed).clone_work());
     // JUMP pays its history-navigation work before dispatch, then reserves a
     // separate successor visit. Neither refusal may invent a completed edge.
     for semantic_work in [3, 4, 5] {
-        let maximum = admission + semantic_work;
+        let maximum = admission + push_setup_work + semantic_work;
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
@@ -443,7 +459,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
             StorageReadPolicy::Abstract,
         );
         assert_eq!(budget.used(), maximum);
-        assert_eq!(budget.used() - admission, semantic_work);
+        assert_eq!(budget.used() - admission - push_setup_work, semantic_work);
         assert_eq!(budget.exhausted(), semantic_work < 5);
         assert_eq!(execution.executed_pcs, vec![0, 2]);
         assert_eq!(
@@ -500,6 +516,10 @@ fn result_observations_preserve_small_work_budget_receipts() {
     let (world, entry) = fixture(&[(0x101, "5f3500")]);
     let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let admission = admission_work(&world, &entry, &initial);
+    let pushed = U256::from(0);
+    let push_setup_work = ValueAlgebra::new(domain)
+        .literal_quote_work(pushed)
+        .saturating_add(AbstractValue::constant(pushed).clone_work());
     let initial_snapshots = serde_json::to_value((
         &initial.store,
         &initial.active().calldata,
@@ -511,7 +531,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
     // but cannot pay the complete word plan. Retain its popped-operand phase,
     // without an output value or any installed state change.
     for semantic_work in [1, 10_000] {
-        let maximum = admission + semantic_work;
+        let maximum = admission + push_setup_work + semantic_work;
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
@@ -526,11 +546,11 @@ fn result_observations_preserve_small_work_budget_receipts() {
         let before_load = semantic_work == 1;
         assert!(budget.exhausted());
         if before_load {
-            assert_eq!(budget.used() - admission, 1);
+            assert_eq!(budget.used() - admission - push_setup_work, 1);
         } else {
             let scalar_scan = 32 * (domain.capacity() + 32);
-            assert!(budget.used() - admission > 2 + scalar_scan);
-            assert!(budget.used() - admission <= semantic_work);
+            assert!(budget.used() - admission - push_setup_work > 2 + scalar_scan);
+            assert!(budget.used() - admission - push_setup_work <= semantic_work);
         }
         assert_eq!(
             execution.executed_pcs,
