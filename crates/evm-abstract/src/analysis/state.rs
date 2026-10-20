@@ -30,8 +30,10 @@ pub(super) mod stack_alias;
 pub(super) mod storage_observations;
 mod transform;
 
-pub(super) use loop_bound::{EvmLoopBound, LoopBound};
-pub(super) use payload::{form, form_normalized, instantiate, join, semantic_eq};
+pub(super) use loop_bound::EvmLoopBound;
+#[cfg(test)]
+pub(super) use payload::form;
+pub(super) use payload::{form_normalized, instantiate, join, semantic_eq};
 pub(super) use transform::StatePart;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,6 +79,5 @@ pub(super) fn identify<N: WordElement>(value: EvmValue<N>, enabled: bool) -> Evm
     value
 }
 
-pub(in crate::analysis) type FrameSummary = EvmFrameSummary<crate::domain::NumericValue>;
-
+#[cfg(test)]
 pub(in crate::analysis) type PayloadSummary = EvmPayloadSummary<crate::domain::NumericValue>;

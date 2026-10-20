@@ -1,7 +1,9 @@
 //! Capture-avoiding traversal includes immutable byte/slot roots and source
 //! tokens. Numeric visit_values is intentionally insufficient for this job.
 
-use crate::domain::{AlgebraRef, EvmNumericAlgebra, ValueAlgebra, WordElement};
+#[cfg(test)]
+use crate::domain::ValueAlgebra;
+use crate::domain::{AlgebraRef, EvmNumericAlgebra, WordElement};
 
 use super::{EvmFrameState, EvmMachinePayload, MachineError, join::checkpoint};
 use crate::{
@@ -76,8 +78,9 @@ impl<N: WordElement> EvmMachinePayload<N> {
     }
 }
 
-// Existing default replay/SSA helpers retain their scalar-free call syntax.
-// Generic executable paths must carry their run's algebra into `_with`.
+// Default regression fixtures retain their scalar-free call syntax.
+// Executable paths carry their run's algebra into `_with`.
+#[cfg(test)]
 impl super::MachinePayload {
     pub(crate) fn rename_fresh(
         &mut self,

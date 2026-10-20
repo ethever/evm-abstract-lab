@@ -167,4 +167,5 @@ impl<N: WordElement> EvmCallStack<N> {
     }
 }
 
+/// Default numeric assembly for [`EvmCallStack`].
 pub type CallStack = EvmCallStack<crate::domain::NumericValue>;

@@ -95,6 +95,7 @@ pub(in crate::analysis) fn alias_form_work<N: WordElement>(
     })
 }
 
+#[cfg(test)]
 pub(in crate::analysis) fn form<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     payload: &EvmMachinePayload<N>,
     entry: &EvmEntry<N>,

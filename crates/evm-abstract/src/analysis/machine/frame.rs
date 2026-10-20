@@ -303,10 +303,11 @@ impl<N: WordElement> EvmChildFrame<N> {
     }
 }
 
+/// Default numeric assembly for [`EvmFrameState`].
 pub type FrameState = EvmFrameState<crate::domain::NumericValue>;
 
+/// Default numeric assembly for [`EvmRootFrame`].
 pub type RootFrame = EvmRootFrame<crate::domain::NumericValue>;
 
+/// Default numeric assembly for [`EvmChildFrame`].
 pub type ChildFrame = EvmChildFrame<crate::domain::NumericValue>;
-
-pub(in crate::analysis) type Frame<B, C, O> = EvmFrame<crate::domain::NumericValue, B, C, O>;

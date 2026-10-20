@@ -172,5 +172,3 @@ impl<N: WordElement> EvmBoundedState<N> {
         Ok((self, bound, payload))
     }
 }
-
-pub(in crate::analysis) type BoundedState = EvmBoundedState<crate::domain::NumericValue>;

@@ -116,4 +116,5 @@ impl<N: WordElement> EvmLoopBound<N> {
     }
 }
 
+#[cfg(test)]
 pub(in crate::analysis) type LoopBound = EvmLoopBound<crate::domain::NumericValue>;

@@ -497,4 +497,5 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 pub(crate) type EntryAlternatives = EvmEntryAlternatives<crate::domain::NumericValue>;

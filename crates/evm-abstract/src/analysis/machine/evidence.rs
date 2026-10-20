@@ -111,6 +111,8 @@ impl<N: WordElement> EvmExecutionEvidence<N> {
 #[cfg(test)]
 mod tests;
 
+/// Default numeric assembly for [`EvmInstructionValue`].
 pub type InstructionValue = EvmInstructionValue<crate::domain::NumericValue>;
 
+/// Default numeric assembly for [`EvmExecutionEvidence`].
 pub type ExecutionEvidence = EvmExecutionEvidence<crate::domain::NumericValue>;

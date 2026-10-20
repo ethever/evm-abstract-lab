@@ -426,6 +426,7 @@ impl<N: WordElement> EvmStorageObservations<N> {
     }
 }
 
+#[cfg(test)]
 pub(in crate::analysis) type StorageObservations =
     EvmStorageObservations<crate::domain::NumericValue>;
 

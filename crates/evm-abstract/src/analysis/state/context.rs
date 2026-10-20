@@ -10,6 +10,7 @@ use super::{BTreeSet, MachineError};
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 pub(in crate::analysis) fn work_size(length: usize) -> usize {
     let levels = usize::try_from(length.max(1).ilog2())
         .unwrap_or(usize::MAX)

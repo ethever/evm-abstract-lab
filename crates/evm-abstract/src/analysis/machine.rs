@@ -29,8 +29,10 @@ pub use evidence::{
 pub use frame::{
     ChildFrame, EvmChildFrame, EvmFrame, EvmFrameState, EvmRootFrame, FrameState, RootFrame,
 };
-pub(in crate::analysis) use frame::{Frame, FrameByteKind, FrameMapOrder};
-pub(crate) use join::{EntryAlternatives, EvmEntryAlternatives};
+pub(in crate::analysis) use frame::{FrameByteKind, FrameMapOrder};
+#[cfg(test)]
+pub(crate) use join::EntryAlternatives;
+pub(crate) use join::EvmEntryAlternatives;
 pub use join::{JoinBoundary, MachineError};
 pub use range::{
     ByteRangeBoundary, EvmRangeRequest, EvmRangeWitness, RangeKind, RangeRequest, RangeWitness,
@@ -589,8 +591,6 @@ pub type ProcedureSummaryRecord = EvmProcedureSummaryRecord<NumericValue>;
 
 /// Default numeric assembly for [`EvmWorldAnalysis`].
 pub type WorldAnalysis = EvmWorldAnalysis<NumericValue>;
-
-pub(super) type ProcedureEvidence = EvmProcedureEvidence<NumericValue>;
 
 impl<N: WordElement> Default for EvmProcedureEvidence<N> {
     fn default() -> Self {
