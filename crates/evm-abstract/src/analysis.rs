@@ -52,14 +52,17 @@ pub use machine::{
 pub use machine::{
     EvmCallStack, EvmChildFrame, EvmContinuation, EvmExecutionEvidence, EvmFrame, EvmFrameState,
     EvmInstructionValue, EvmMachineFrontier, EvmMachineOutcome, EvmMachinePayload, EvmMachineState,
-    EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord, EvmRootFrame,
-    EvmWorldAnalysis,
+    EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord, EvmRangeRequest,
+    EvmRangeWitness, EvmRootFrame, EvmWorldAnalysis,
 };
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
     analyze_rpc_with_control, analyze_rpc_with_observer,
 };
-pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
+pub use summary::{
+    EvmSummaryInput, EvmSummaryOutput, EvmSummaryRecord, SummaryInput, SummaryOutput,
+    SummaryRecord, SummaryStats,
+};
 pub use terminal::{
     EvmRootTerminalCoverage, EvmRootTerminalInputBinding, EvmRootTerminalOutcome,
     RootTerminalCoverage, RootTerminalInputBinding, RootTerminalOutcome, RootTerminalRetention,

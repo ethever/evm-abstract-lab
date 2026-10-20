@@ -57,6 +57,7 @@ impl PartitionPolicy for PartitionProbe<'_> {
 struct NumericProbe<'a> {
     domain: Domain,
     operations: &'a Cell<usize>,
+    coarse_add: bool,
 }
 
 impl EvmNumericAlgebra for NumericProbe<'_> {
@@ -88,6 +89,9 @@ impl EvmNumericAlgebra for NumericProbe<'_> {
 
     fn apply_numeric(&self, op: u8, args: &[NumericValue]) -> NumericReduction<NumericValue> {
         self.operations.set(self.operations.get() + 1);
+        if self.coarse_add && op == revm_bytecode::opcode::ADD {
+            return NumericReduction::stable(NumericValue::top());
+        }
         EvmNumericAlgebra::apply_numeric(&self.domain, op, args)
     }
 
@@ -126,26 +130,30 @@ fn borrowed_numeric_context_and_partition_policies_drive_production_execution() 
     let numeric_calls = Cell::new(0);
     let context_calls = Cell::new(0);
     let partition_calls = Cell::new(0);
-    let algebra = ValueAlgebra::new(NumericProbe {
-        domain: Domain::default(),
-        operations: &numeric_calls,
-    });
-    let policies = EnginePolicies::new(
-        ContextProbe {
-            calls: &context_calls,
-            cancel: None,
-        },
-        PartitionProbe(&partition_calls),
-    );
-    let (world, entry) = fixture();
-    let graph = analyze_world_with(
-        world,
-        entry,
-        ExecutionConfig::default(),
-        &algebra,
-        &policies,
-    )
-    .unwrap();
+    let graph = {
+        let algebra = ValueAlgebra::new(NumericProbe {
+            domain: Domain::default(),
+            operations: &numeric_calls,
+            coarse_add: false,
+        });
+        let policies = EnginePolicies::new(
+            ContextProbe {
+                calls: &context_calls,
+                cancel: None,
+            },
+            PartitionProbe(&partition_calls),
+        );
+        let (world, entry) = fixture();
+        analyze_world_with(
+            world,
+            entry,
+            ExecutionConfig::default(),
+            &algebra,
+            &policies,
+        )
+        .unwrap()
+    };
+    // Native results outlive the borrowed policy handles used for execution.
     assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
     assert!(
         numeric_calls.get() > 0,
@@ -185,6 +193,68 @@ fn borrowed_numeric_context_and_partition_policies_drive_production_execution() 
         crate::render::world::json(&graph).unwrap(),
         crate::render::world::json_with(&graph).unwrap()
     );
+}
+
+#[test]
+fn equal_domain_specs_do_not_share_results_between_numeric_instances() {
+    // Disable expression constant recovery so the deliberately coarser ADD
+    // implementation remains observable at this numeric injection boundary.
+    let config = ExecutionConfig {
+        analysis: super::Config {
+            relations: crate::domain::relational::RelationLimits {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let domain = Domain::from_spec(config.analysis.validated_spec().unwrap());
+    let policies: EnginePolicies = EnginePolicies::default();
+    let (world, entry) = fixture();
+    let mut observations = Vec::new();
+    for coarse_add in [false, true, false] {
+        let operations = Cell::new(0);
+        let algebra = ValueAlgebra::new(NumericProbe {
+            domain,
+            operations: &operations,
+            coarse_add,
+        });
+        assert_eq!(algebra.spec(), domain.spec());
+        let graph = analyze_world_with(
+            world.clone(),
+            entry.clone(),
+            config.clone(),
+            &algebra,
+            &policies,
+        )
+        .unwrap();
+        assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
+        assert!(operations.get() > 0);
+        let values = graph
+            .outcomes()
+            .iter()
+            .filter(|outcome| outcome.kind == OutcomeKind::Return)
+            .map(|outcome| {
+                outcome
+                    .data
+                    .read_word(&AbstractValue::constant(U256::ZERO), domain)
+                    .singleton()
+            })
+            .collect::<Vec<_>>();
+        assert!(!values.is_empty());
+        assert!(values.iter().all(|value| {
+            *value
+                == if coarse_add {
+                    None
+                } else {
+                    Some(U256::from(43))
+                }
+        }));
+        observations.push(values);
+    }
+    assert_eq!(observations[0], observations[2]);
+    assert_ne!(observations[0], observations[1]);
 }
 
 #[test]
