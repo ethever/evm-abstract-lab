@@ -3,7 +3,7 @@ use crate::{
         AbstractValue, Domain, DomainSpec, EvmNumericAlgebra, FiniteConstantSet, NumericValue,
         Profile, ReductionStatus, ValueAlgebra, WordElement, WordObservation,
         congruence::Congruence,
-        cooperation::{self, BoundsToMask, MaskToBounds, ProductAlgebra, RuleError},
+        cooperation::{self, BoundsToMask, MaskToBounds, ProductAlgebra, RuleError, RuleWork},
         interval::Interval,
         known_bits::KnownBits,
         relational::{CheckResult, EvmScalarQuery, RelationLimits, RelationState},
@@ -42,6 +42,11 @@ fn finite(size: usize) -> NumericValue {
 
 #[derive(Clone, Copy, Debug)]
 struct CountMasks<'a>(&'a Cell<usize>);
+impl RuleWork for CountMasks<'_> {
+    fn evaluation_work(&self, spec: DomainSpec, finite: usize) -> usize {
+        BoundsToMask.evaluation_work(spec, finite)
+    }
+}
 impl<Cx> Reduction<Cx> for CountMasks<'_>
 where
     BoundsToMask: Reduction<Cx, Task = Scope, Error = RuleError>,
@@ -56,6 +61,11 @@ where
 
 #[derive(Clone, Copy, Debug)]
 struct CountBounds<'a>(&'a Cell<usize>);
+impl RuleWork for CountBounds<'_> {
+    fn evaluation_work(&self, spec: DomainSpec, finite: usize) -> usize {
+        MaskToBounds.evaluation_work(spec, finite)
+    }
+}
 impl<Cx> Reduction<Cx> for CountBounds<'_>
 where
     MaskToBounds: Reduction<Cx, Task = Scope, Error = RuleError>,

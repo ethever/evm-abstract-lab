@@ -455,7 +455,11 @@ impl RelationState {
             ReductionStatus::Empty => EvmScalarQuery::Infeasible,
             // These limits only stop further reductions. The already imported
             // conjunction remains sound and must not be mistaken for bottom.
-            ReductionStatus::FactLimit | ReductionStatus::RoundLimit => EvmScalarQuery::Refined {
+            ReductionStatus::FactLimit
+            | ReductionStatus::RoundLimit
+            | ReductionStatus::WorkLimit
+            | ReductionStatus::Cancelled
+            | ReductionStatus::KernelFailure => EvmScalarQuery::Refined {
                 numeric: Box::new(domain.project(&reduced.value).numeric().clone()),
                 complete: false,
             },
