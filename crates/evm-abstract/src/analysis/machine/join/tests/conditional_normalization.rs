@@ -1,5 +1,7 @@
 //! Retired metadata guards must not become artificial machine alternatives.
 
+use crate::domain::ValueAlgebra;
+
 use super::*;
 use crate::domain::NumericValue;
 use std::collections::BTreeMap;
@@ -64,8 +66,15 @@ fn twelve_same_root_guard_joins_drop_inactive_scopes_before_case_enumeration() {
     let mut payload = fixtures::payload(domain);
     payload.active_mut().memory = projected;
     let mut budget = WorkBudget::new(1_000_000_000_000);
-    let cases =
-        super::super::cases::prepare(&[], None, &payload, &selectors, domain, &mut budget).unwrap();
+    let cases = super::super::cases::prepare(
+        &[],
+        None,
+        &payload,
+        &selectors,
+        ValueAlgebra::new(domain).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     assert_eq!(
         cases.len(),
         1,

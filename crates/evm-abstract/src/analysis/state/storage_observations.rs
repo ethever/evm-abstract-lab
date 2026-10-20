@@ -4,8 +4,10 @@
 //! direct numeric guarantee for exactly the current immutable read. It never
 //! traverses another owner's storage or copies the Store's complete operand map.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use super::{
-    AbstractValue, Address, Domain, FrameCode, MachineError, MachinePayload, NumericValue,
+    Address, AlgebraRef, EvmMachinePayload, EvmValue, FrameCode, MachineError,
     stack_alias::StackAliases,
 };
 use crate::{
@@ -28,16 +30,16 @@ const MAX_FACT_WORK: usize = 512;
 const MAX_MEMBERS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Observation {
+struct Observation<N: WordElement> {
     owner: Address,
     stack_position: usize,
-    numeric: NumericValue,
+    numeric: N,
 }
 
 /// No expression, root or historical payload survives in this template.
 /// Persistent is the only plane, so it is implicit in every stable key.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(in crate::analysis) struct StorageObservations(Vec<Observation>);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::analysis) struct EvmStorageObservations<N: WordElement>(Vec<Observation<N>>);
 
 // slot_read may compare the requested key while traversing a bounded root. This
 // local product covers those structural comparisons; unrelated code and accounts
@@ -53,7 +55,10 @@ fn read_work(root: usize, key: usize) -> usize {
         )
 }
 
-fn in_scope(payload: &MachinePayload, domain: Domain) -> bool {
+fn in_scope<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    payload: &EvmMachinePayload<N>,
+    domain: AlgebraRef<'_, D>,
+) -> bool {
     let frame = payload.active();
     frame.code != FrameCode::Unknown
         && domain.spec().relations().enabled
@@ -62,27 +67,30 @@ fn in_scope(payload: &MachinePayload, domain: Domain) -> bool {
         && frame.key.address_value.as_concrete() == Some(frame.key.address)
 }
 
-fn key_work(key: &AbstractValue) -> Option<usize> {
+fn key_work<N: WordElement>(key: &EvmValue<N>) -> Option<usize> {
     let work = key
         .expression()
         .map_or_else(|| key.singleton().map(|_| 1), |e| Some(e.nodes()))?;
     (work <= MAX_KEY_WORK).then_some(work)
 }
 
-fn key_expression(key: &AbstractValue) -> Option<ExprId> {
+fn key_expression<N: WordElement>(key: &EvmValue<N>) -> Option<ExprId> {
     key_work(key)?;
     key.expression()
         .cloned()
         .or_else(|| key.singleton().map(ExprId::constant))
 }
 
-fn same_key(expression: &ExprId, key: &AbstractValue) -> bool {
+fn same_key<N: WordElement>(expression: &ExprId, key: &EvmValue<N>) -> bool {
     key.expression()
         .is_some_and(|e| e.immutable_node_key() == expression.immutable_node_key())
         || matches!((key.singleton(), expression.as_constant()), (Some(a), Some(b)) if a == b)
 }
 
-fn latest_literal(root: &SlotStateId, key: &AbstractValue) -> Option<alloy_primitives::U256> {
+fn latest_literal<N: WordElement>(
+    root: &SlotStateId,
+    key: &EvmValue<N>,
+) -> Option<alloy_primitives::U256> {
     let SlotStateKind::Store {
         key: written,
         value,
@@ -102,13 +110,16 @@ enum ReadFact<'a> {
 }
 
 impl ReadFact<'_> {
-    fn numeric(&self, domain: Domain) -> NumericValue {
+    fn numeric<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: AlgebraRef<'_, D>,
+    ) -> N {
         match self {
-            Self::Literal(value) => NumericValue::constant(*value),
+            Self::Literal(value) => N::constant(*value),
             Self::Members(values) => values
                 .iter()
                 .copied()
-                .map(AbstractValue::constant)
+                .map(EvmValue::constant)
                 .reduce(|left, right| domain.join(&left, &right))
                 .expect("nonempty finite read fact")
                 .numeric()
@@ -117,17 +128,21 @@ impl ReadFact<'_> {
     }
 }
 
-fn matches_read(expression: &ExprId, root: &SlotStateId, key: &AbstractValue) -> bool {
+fn matches_read<N: WordElement>(
+    expression: &ExprId,
+    root: &SlotStateId,
+    key: &EvmValue<N>,
+) -> bool {
     matches!(expression.kind(), ExprKind::SlotRead { state, key: read_key }
         if state.id() == root.id() && same_key(read_key, key))
 }
 
 // These are already retained guarantees. No solver rule is added: require the
 // exact immutable snapshot and immutable key identity (or the same literal key).
-fn read_fact<'a>(
-    payload: &'a MachinePayload,
+fn read_fact<'a, N: WordElement>(
+    payload: &'a EvmMachinePayload<N>,
     root: &SlotStateId,
-    key: &AbstractValue,
+    key: &EvmValue<N>,
 ) -> Option<ReadFact<'a>> {
     // The caller checked the aggregate fact cap once, before this bounded scan.
     payload
@@ -151,7 +166,7 @@ fn read_fact<'a>(
         })
 }
 
-// Cancellation is typed even when a Store carries a previously recorded failure.
+// Cancellation is typed even when a store carries a previously recorded failure.
 fn drop_read_error(error: StoreError) -> Result<(), MachineError> {
     if matches!(
         &error,
@@ -166,7 +181,10 @@ fn drop_read_error(error: StoreError) -> Result<(), MachineError> {
 }
 
 /// Prepay bounded key/root comparisons and, only when relevant, local fact import.
-pub(in crate::analysis) fn form_work(payload: &MachinePayload, domain: Domain) -> usize {
+pub(in crate::analysis) fn form_work<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    payload: &EvmMachinePayload<N>,
+    domain: AlgebraRef<'_, D>,
+) -> usize {
     if !in_scope(payload, domain) {
         return 0;
     }
@@ -205,10 +223,10 @@ pub(in crate::analysis) fn form_work(payload: &MachinePayload, domain: Domain) -
         })
 }
 
-impl StorageObservations {
-    pub(in crate::analysis) fn form(
-        payload: &MachinePayload,
-        domain: Domain,
+impl<N: WordElement> EvmStorageObservations<N> {
+    pub(in crate::analysis) fn form<D: EvmNumericAlgebra<Element = N>>(
+        payload: &EvmMachinePayload<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<Self, MachineError> {
         MachineError::check_cancelled()?;
         if !in_scope(payload, domain) {
@@ -236,7 +254,7 @@ impl StorageObservations {
                 continue;
             }
             let numeric = if let Some(value) = latest_literal(&root, key) {
-                NumericValue::constant(value)
+                N::constant(value)
             } else if let Some(fact) = use_facts.then(|| read_fact(payload, &root, key)).flatten() {
                 fact.numeric(domain)
             } else {
@@ -254,10 +272,10 @@ impl StorageObservations {
         Ok(Self(observations))
     }
 
-    pub(in crate::analysis) fn join(
+    pub(in crate::analysis) fn join<D: EvmNumericAlgebra<Element = N>>(
         &self,
         next: &Self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         widen: bool,
     ) -> Result<Self, MachineError> {
         MachineError::check_cancelled()?;
@@ -275,8 +293,8 @@ impl StorageObservations {
             let Some(other) = right.peek().filter(|r| (r.owner, r.stack_position) == key) else {
                 continue;
             };
-            let old = AbstractValue::from_numeric(left.numeric.clone());
-            let new = AbstractValue::from_numeric(other.numeric.clone());
+            let old = EvmValue::from_numeric(left.numeric.clone());
+            let new = EvmValue::from_numeric(other.numeric.clone());
             let joined = domain.join(&old, &new);
             let numeric = if widen {
                 domain.widen_procedure(&old, &joined)
@@ -310,7 +328,7 @@ impl StorageObservations {
     /// Prepay all retained numeric work, but reconstruct each equal alias fact once.
     pub(in crate::analysis) fn work_size(
         &self,
-        stack: &[AbstractValue],
+        stack: &[EvmValue<N>],
         aliases: &StackAliases,
     ) -> usize {
         let installations: Vec<_> = (0..self.0.len())
@@ -333,7 +351,7 @@ impl StorageObservations {
         installations.into_iter().fold(retained, |work, index| {
             let observation = &self.0[index];
             // Instantiation only reads roots within this cap. SummaryPlane is
-            // deliberately opaque here; no World traversal is needed to bound it.
+            // deliberately opaque here; no world traversal is needed to bound it.
             let root = MAX_ROOT_WORK;
             let key = stack.get(observation.stack_position).map_or(1, |k| {
                 k.expression().map_or(1, ExprId::nodes).min(MAX_KEY_WORK)
@@ -348,11 +366,11 @@ impl StorageObservations {
         })
     }
 
-    pub(in crate::analysis) fn install(
+    pub(in crate::analysis) fn install<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        payload: &mut MachinePayload,
+        payload: &mut EvmMachinePayload<N>,
         aliases: &StackAliases,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<(), MachineError> {
         for (index, observation) in self.0.iter().enumerate() {
             MachineError::check_cancelled()?;
@@ -389,7 +407,7 @@ impl StorageObservations {
                     }
                 };
             // The fact is attached only to this immutable instantiated root. A
-            // later Store replacement does not reinstall it on the new root.
+            // later store replacement does not reinstall it on the new root.
             let mut relations = payload.relations.clone();
             match relations.observe(
                 &expression,
@@ -405,5 +423,14 @@ impl StorageObservations {
         }
         MachineError::check_cancelled()?;
         Ok(())
+    }
+}
+
+pub(in crate::analysis) type StorageObservations =
+    EvmStorageObservations<crate::domain::NumericValue>;
+
+impl<N: WordElement> Default for EvmStorageObservations<N> {
+    fn default() -> Self {
+        Self(Vec::new())
     }
 }

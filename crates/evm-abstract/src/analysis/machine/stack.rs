@@ -1,8 +1,10 @@
 //! A nonempty call stack with exactly one root and typed child continuations.
 
-use super::{ChildFrame, FrameState, MachineError, RootFrame, join};
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
+use super::{EvmChildFrame, EvmFrameState, EvmRootFrame, MachineError, join};
 use crate::domain::{
-    Domain,
+    AlgebraRef,
     symbolic::{ExprId, ExprLimits},
 };
 use serde::Serialize;
@@ -22,35 +24,35 @@ use serde::Serialize;
 /// }
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct CallStack {
-    root: RootFrame,
-    children: Vec<ChildFrame>,
+pub struct EvmCallStack<N: WordElement> {
+    root: EvmRootFrame<N>,
+    children: Vec<EvmChildFrame<N>>,
 }
 
-impl CallStack {
+impl<N: WordElement> EvmCallStack<N> {
     /// Start a call stack at its entry frame.
-    pub fn new(root: RootFrame) -> Self {
+    pub fn new(root: EvmRootFrame<N>) -> Self {
         Self {
             root,
             children: Vec::new(),
         }
     }
 
-    pub(crate) fn from_parts(root: RootFrame, children: Vec<ChildFrame>) -> Self {
+    pub(crate) fn from_parts(root: EvmRootFrame<N>, children: Vec<EvmChildFrame<N>>) -> Self {
         Self { root, children }
     }
 
     /// The entry frame of this stack, whether active or suspended.
-    pub fn root(&self) -> &RootFrame {
+    pub fn root(&self) -> &EvmRootFrame<N> {
         &self.root
     }
 
     /// Nested frames from oldest child to active child.
-    pub fn children(&self) -> &[ChildFrame] {
+    pub fn children(&self) -> &[EvmChildFrame<N>] {
         &self.children
     }
 
-    pub(crate) fn children_mut(&mut self) -> &mut [ChildFrame] {
+    pub(crate) fn children_mut(&mut self) -> &mut [EvmChildFrame<N>] {
         &mut self.children
     }
 
@@ -60,26 +62,26 @@ impl CallStack {
     }
 
     /// Common execution data of the active root or child.
-    pub fn active(&self) -> &FrameState {
+    pub fn active(&self) -> &EvmFrameState<N> {
         self.children
             .last()
             .map_or(&self.root.state, |child| &child.state)
     }
 
     /// Mutable execution data without exposing the stack's structural storage.
-    pub fn active_mut(&mut self) -> &mut FrameState {
+    pub fn active_mut(&mut self) -> &mut EvmFrameState<N> {
         self.children
             .last_mut()
             .map_or(&mut self.root.state, |child| &mut child.state)
     }
 
     /// The active child, or no child when the root is active.
-    pub fn active_child(&self) -> Option<&ChildFrame> {
+    pub fn active_child(&self) -> Option<&EvmChildFrame<N>> {
         self.children.last()
     }
 
     /// The active child's suspended parent; absent while the root is active.
-    pub fn parent(&self) -> Option<&FrameState> {
+    pub fn parent(&self) -> Option<&EvmFrameState<N>> {
         match self.children.len() {
             0 => None,
             1 => Some(&self.root.state),
@@ -88,17 +90,17 @@ impl CallStack {
     }
 
     /// Suspend the active frame and enter a child with its return contract.
-    pub fn push_child(&mut self, child: ChildFrame) {
+    pub fn push_child(&mut self, child: EvmChildFrame<N>) {
         self.children.push(child);
     }
 
     /// Complete the active child and resume its parent; never remove the root.
-    pub fn pop_child(&mut self) -> Option<ChildFrame> {
+    pub fn pop_child(&mut self) -> Option<EvmChildFrame<N>> {
         self.children.pop()
     }
 
     /// Common execution data in root-to-active order.
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &FrameState> {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &EvmFrameState<N>> {
         std::iter::once(&self.root.state).chain(self.children.iter().map(|child| &child.state))
     }
 
@@ -114,15 +116,15 @@ impl CallStack {
         }
     }
 
-    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut FrameState> {
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut EvmFrameState<N>> {
         std::iter::once(&mut self.root.state)
             .chain(self.children.iter_mut().map(|child| &mut child.state))
     }
 
-    pub(super) fn join_guarded(
+    pub(super) fn join_guarded<D: EvmNumericAlgebra<Element = N>>(
         &self,
         incoming: &Self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         selector: ExprId,
         limits: ExprLimits,
     ) -> Result<Self, MachineError> {
@@ -164,3 +166,5 @@ impl CallStack {
         Ok(out)
     }
 }
+
+pub type CallStack = EvmCallStack<crate::domain::NumericValue>;

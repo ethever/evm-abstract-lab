@@ -1,27 +1,30 @@
 //! Header-local numerical invariants. Executable identities are never the
 //! convergence criterion; independent roots are built only after a bound grows.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use super::{
-    Domain, Entry, FrameCode, MachineError, MachinePayload, PayloadSummary, WorkBudget,
-    bounded::{BoundedState, erase_guarantees, reserve},
-    form, join, semantic_eq,
+    AlgebraRef, EvmEntry, EvmMachinePayload, EvmPayloadSummary, FrameCode, MachineError,
+    WorkBudget,
+    bounded::{EvmBoundedState, erase_guarantees, reserve},
+    form_normalized, join, semantic_eq,
 };
 
 #[cfg(test)]
 mod tests;
 
 #[derive(Clone)]
-pub(in crate::analysis) struct LoopBound {
-    representation: BoundedState,
-    bound: PayloadSummary,
+pub(in crate::analysis) struct EvmLoopBound<N: WordElement> {
+    representation: EvmBoundedState<N>,
+    bound: EvmPayloadSummary<N>,
 }
 
-fn project(
-    payload: &MachinePayload,
-    entry: &Entry,
-    domain: Domain,
+fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    payload: &EvmMachinePayload<N>,
+    entry: &EvmEntry<N>,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
-) -> Result<PayloadSummary, MachineError> {
+) -> Result<EvmPayloadSummary<N>, MachineError> {
     if payload
         .call_stack
         .iter()
@@ -39,17 +42,17 @@ fn project(
     )?;
     // These are optional guarantees, not coordinates of the loop lattice.
     // Erase them consistently before comparing or independently replaying roots.
-    erase_guarantees(form(payload, entry, domain)?)
+    erase_guarantees(form_normalized(payload, entry, domain)?)
 }
 
-impl LoopBound {
-    pub(in crate::analysis) fn new(
-        old: &MachinePayload,
-        incoming: &MachinePayload,
-        entry: &Entry,
-        domain: Domain,
+impl<N: WordElement> EvmLoopBound<N> {
+    pub(in crate::analysis) fn new<D: EvmNumericAlgebra<Element = N>>(
+        old: &EvmMachinePayload<N>,
+        incoming: &EvmMachinePayload<N>,
+        entry: &EvmEntry<N>,
+        domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
-    ) -> Result<(Self, MachinePayload), MachineError> {
+    ) -> Result<(Self, EvmMachinePayload<N>), MachineError> {
         if old.key() != incoming.key() {
             return Err(MachineError::Shape);
         }
@@ -62,7 +65,7 @@ impl LoopBound {
                 .saturating_mul(8),
         )?;
         let layout = join(&old, &incoming, domain, false)?;
-        let representation = BoundedState::freeze(&layout, false, domain)?;
+        let representation = EvmBoundedState::freeze(&layout, false, domain)?;
         let bound = join(&old, &incoming, domain, true)?;
         let (representation, bound, payload) = representation.materialize(bound, domain, budget)?;
         Ok((
@@ -80,13 +83,13 @@ impl LoopBound {
             .saturating_add(self.bound.work_size())
     }
 
-    pub(in crate::analysis) fn update(
+    pub(in crate::analysis) fn update<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        incoming: &MachinePayload,
-        entry: &Entry,
-        domain: Domain,
+        incoming: &EvmMachinePayload<N>,
+        entry: &EvmEntry<N>,
+        domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
-    ) -> Result<Option<(Self, MachinePayload)>, MachineError> {
+    ) -> Result<Option<(Self, EvmMachinePayload<N>)>, MachineError> {
         if incoming.key() != *self.representation.location() {
             return Err(MachineError::Shape);
         }
@@ -112,3 +115,5 @@ impl LoopBound {
         )))
     }
 }
+
+pub(in crate::analysis) type LoopBound = EvmLoopBound<crate::domain::NumericValue>;

@@ -1,5 +1,7 @@
 //! Rejected roots cannot absorb an alternative or prepare incoming content.
 
+use crate::domain::ValueAlgebra;
+
 use super::{EntryAlternatives, MachineError, fixtures};
 use crate::{
     domain::{relational::QueryReason, symbolic::ExprId},
@@ -42,7 +44,12 @@ fn later_matching_content_keeps_its_full_fee_after_root_mismatches() {
     let mut budget = WorkBudget::new(15 + full_fee);
     assert!(
         alternatives
-            .join(&entry, &incoming, domain, &mut budget)
+            .join(
+                &entry,
+                &incoming,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut budget
+            )
             .unwrap()
             .is_none()
     );
@@ -64,7 +71,12 @@ fn matching_byte_roots_do_not_absorb_different_transaction_metadata() {
     let retained = alternatives.represented.clone();
     let mut budget = WorkBudget::new(100_000_000);
     let joined = alternatives
-        .join(&entry, &incoming, domain, &mut budget)
+        .join(
+            &entry,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+        )
         .unwrap()
         .expect("root agreement cannot prove complete coverage");
     let balance = joined.store.read_balance(owner);
@@ -85,13 +97,23 @@ fn root_rejected_join_still_pays_construction_and_preserves_failed_inputs() {
     let retained = alternatives.represented.clone();
     let mut unpaid = WorkBudget::new(0);
     assert_eq!(
-        alternatives.join(&entry, &incoming, domain, &mut unpaid),
+        alternatives.join(
+            &entry,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut unpaid
+        ),
         Err(MachineError::Work)
     );
     assert_eq!(unpaid.used(), 0);
     let mut rejected = WorkBudget::new(10);
     assert_eq!(
-        alternatives.join(&entry, &incoming, domain, &mut rejected),
+        alternatives.join(
+            &entry,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut rejected
+        ),
         Err(MachineError::Work)
     );
     assert_eq!(rejected.used(), 10);
@@ -101,7 +123,12 @@ fn root_rejected_join_still_pays_construction_and_preserves_failed_inputs() {
     token.cancel();
     with_cancellation(&token, || {
         assert_eq!(
-            alternatives.join(&entry, &incoming, domain, &mut warm),
+            alternatives.join(
+                &entry,
+                &incoming,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut warm
+            ),
             Err(MachineError::Relations(QueryReason::Cancelled))
         );
     });

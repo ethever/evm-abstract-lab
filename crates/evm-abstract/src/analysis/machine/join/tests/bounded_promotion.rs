@@ -1,5 +1,7 @@
 //! Whole-entry admission, canonical joint witnesses and failed publication.
 
+use crate::domain::ValueAlgebra;
+
 use super::*;
 use crate::{
     analysis::{FrameCode, MachinePayload},
@@ -223,9 +225,7 @@ fn canonical_word_assignment(
         let index = usize::try_from(binding.index).unwrap();
         assert!(matches!(binding.value.kind(), ExprKind::Fresh(_)));
         assert!(independent.insert(binding.value.clone()));
-        assert!(
-            AbstractValue::from_numeric(binding.numeric.clone()).contains(U256::from(bytes[index]))
-        );
+        assert!(binding.numeric.contains(U256::from(bytes[index])));
         assignment.insert(
             binding.value.clone(),
             ExprId::constant(U256::from(bytes[index])),
@@ -461,7 +461,9 @@ fn joint_selector_witness_rejects_a_tuple_with_only_valid_marginals() {
             .write_checked(owner, &fixtures::word(0), &fixtures::word(word), domain)
             .unwrap();
     }
-    let joined = first.join(&second, domain).unwrap();
+    let joined = first
+        .join(&second, ValueAlgebra::new(domain).borrowed())
+        .unwrap();
     let ByteStateKind::Ite { condition, .. } = joined.active().memory.state_root().kind() else {
         panic!("the complete join must share one selector");
     };
@@ -516,7 +518,12 @@ fn exact_retention_precedes_alternatives_promotion_of_both_complete_operands() {
     config.analysis.relations.max_constraints = 2;
     let domain = config.domain().unwrap();
     let (world, environment) = fixtures::fixture(&[(0x101, "00")]);
-    let base = crate::analysis::transfer::initial(&world, &environment, domain).unwrap();
+    let base = crate::analysis::transfer::initial(
+        &world,
+        &environment,
+        ValueAlgebra::new(domain).borrowed(),
+    )
+    .unwrap();
     let [first, second, third] = [1, 2, 3].map(|n| word_payload(&base, n, domain));
     let originals = [first.clone(), second.clone(), third.clone()];
     let mut alternatives = EntryAlternatives::new(&first);
@@ -527,7 +534,7 @@ fn exact_retention_precedes_alternatives_promotion_of_both_complete_operands() {
             &first,
             &second,
             &environment,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
             &mut budget,
             &selectors,
             false,
@@ -547,7 +554,7 @@ fn exact_retention_precedes_alternatives_promotion_of_both_complete_operands() {
                 &exact,
                 &second,
                 &environment,
-                domain,
+                ValueAlgebra::new(domain).borrowed(),
                 &mut budget,
                 &selectors,
                 false,
@@ -561,7 +568,7 @@ fn exact_retention_precedes_alternatives_promotion_of_both_complete_operands() {
             &exact,
             &third,
             &environment,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
             &mut budget,
             &selectors,
             false,
@@ -583,7 +590,7 @@ fn exact_retention_precedes_alternatives_promotion_of_both_complete_operands() {
                     &promoted,
                     input,
                     &environment,
-                    domain,
+                    ValueAlgebra::new(domain).borrowed(),
                     &mut budget,
                     &selectors,
                     false,
@@ -612,7 +619,12 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
     config.analysis.relations.max_constraints = 1;
     let domain = config.domain().unwrap();
     let (world, environment) = fixtures::fixture(&[(0x101, "00")]);
-    let base = crate::analysis::transfer::initial(&world, &environment, domain).unwrap();
+    let base = crate::analysis::transfer::initial(
+        &world,
+        &environment,
+        ValueAlgebra::new(domain).borrowed(),
+    )
+    .unwrap();
     let old = word_payload(&base, 1, domain);
     let incoming = word_payload(&base, 2, domain);
     let inputs = (old.clone(), incoming.clone());
@@ -623,7 +635,7 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
         alternatives.clone().join_cyclic(
             &old,
             &incoming,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
             &mut exact_work,
             &selectors,
             false,
@@ -637,7 +649,7 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
             &old,
             &incoming,
             &environment,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
             &mut complete_work,
             &selectors,
             false,
@@ -653,7 +665,7 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
                 &old,
                 &incoming,
                 &environment,
-                domain,
+                ValueAlgebra::new(domain).borrowed(),
                 &mut budget,
                 &selectors,
                 false,
@@ -677,7 +689,7 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
                 &old,
                 &incoming,
                 &environment,
-                domain,
+                ValueAlgebra::new(domain).borrowed(),
                 &mut budget,
                 &selectors,
                 false,
@@ -696,7 +708,7 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
             &old,
             &incoming,
             &environment,
-            config.domain().unwrap(),
+            ValueAlgebra::new(config.domain().unwrap()).borrowed(),
             &mut budget,
             &selectors,
             false,
@@ -736,7 +748,7 @@ fn incompatible_and_unknown_frames_cannot_publish_a_bound() {
                 &old,
                 &incoming,
                 &environment,
-                domain,
+                ValueAlgebra::new(domain).borrowed(),
                 &mut budget,
                 &BTreeSet::new(),
                 false,
@@ -765,7 +777,7 @@ fn an_existing_promoted_entry_keeps_its_old_proof_when_an_update_is_interrupted(
             &old,
             &incoming,
             &environment,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
             &mut budget,
             &BTreeSet::new(),
             false,
@@ -791,7 +803,7 @@ fn an_existing_promoted_entry_keeps_its_old_proof_when_an_update_is_interrupted(
                     &promoted,
                     &later,
                     &environment,
-                    domain,
+                    ValueAlgebra::new(domain).borrowed(),
                     &mut budget,
                     &BTreeSet::new(),
                     false,
@@ -811,7 +823,7 @@ fn an_existing_promoted_entry_keeps_its_old_proof_when_an_update_is_interrupted(
                     &promoted,
                     input,
                     &environment,
-                    domain,
+                    ValueAlgebra::new(domain).borrowed(),
                     &mut budget,
                     &BTreeSet::new(),
                     false,
@@ -854,7 +866,7 @@ fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
             .join_cyclic(
                 &old,
                 &incoming,
-                domain,
+                ValueAlgebra::new(domain).borrowed(),
                 &mut budget,
                 &BTreeSet::new(),
                 false,
@@ -884,7 +896,7 @@ fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
                 &old,
                 &incoming,
                 &environment,
-                domain,
+                ValueAlgebra::new(domain).borrowed(),
                 &mut budget,
                 &BTreeSet::new(),
                 false,
@@ -947,7 +959,7 @@ fn complete_path_constraint_refusal_can_forget_the_whole_path() {
         alternatives.clone().join_cyclic(
             &old,
             &incoming,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
             &mut budget,
             &BTreeSet::new(),
             false,
@@ -959,7 +971,7 @@ fn complete_path_constraint_refusal_can_forget_the_whole_path() {
             &old,
             &incoming,
             &environment,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
             &mut budget,
             &BTreeSet::new(),
             false,
@@ -1008,7 +1020,7 @@ fn same_byte_roots_still_require_the_complete_old_metadata_proof() {
             &old,
             &incoming,
             &environment,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
             &mut budget,
             &BTreeSet::new(),
             false,
@@ -1092,7 +1104,7 @@ fn promotion_keeps_current_every_saved_frame_and_continuation_independent() {
             &inputs[0],
             &inputs[1],
             &environment,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
             &mut budget,
             &BTreeSet::new(),
             false,

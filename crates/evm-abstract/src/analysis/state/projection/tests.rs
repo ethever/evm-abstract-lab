@@ -1,4 +1,5 @@
 use super::{MachineError, Policy, Projection};
+use crate::domain::ValueAlgebra;
 use crate::{
     analysis::{
         ExecutionConfig,
@@ -31,6 +32,7 @@ fn bounded_relations(expressions: &[ExprId], limits: &RelationLimits) -> Relatio
 #[test]
 fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
     let domain = Domain::default();
+    let algebra = ValueAlgebra::new(domain);
     let limits = RelationLimits::default();
     let expression = ExprId::fresh().unwrap();
     let relations = bounded_relations(std::slice::from_ref(&expression), &limits);
@@ -49,7 +51,8 @@ fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
                 pc: 17,
             }
         };
-        let mut projection = Projection::new(&relations, domain, &limits, &mut budget, policy);
+        let mut projection =
+            Projection::new(&relations, algebra.borrowed(), &limits, &mut budget, policy);
         for _ in 0..2 {
             let mut value = raw.clone();
             projection.value(&mut value);
@@ -76,7 +79,8 @@ fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
                 pc: 17,
             }
         };
-        let mut projection = Projection::new(&relations, domain, &limits, &mut budget, policy);
+        let mut projection =
+            Projection::new(&relations, algebra.borrowed(), &limits, &mut budget, policy);
         projection.value(&mut contradictory);
         assert_eq!(projection.finish(), Ok(summary));
         assert_eq!(contradictory, before);
@@ -88,8 +92,10 @@ fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
 fn whole_projection_and_independent_replay_preserve_distinct_rollback_versions() {
     use crate::analysis::{ChildFrame, Continuation, machine::fixtures::fixture, state, transfer};
     let domain = Domain::default();
+    let algebra = ValueAlgebra::new(domain);
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut input = transfer::initial(&world, &entry, domain).unwrap();
+    let mut input =
+        transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let expression = ExprId::fresh().unwrap();
     let value = AbstractValue::top().with_expression(expression.clone());
     let owner = address(0x101);
@@ -127,7 +133,7 @@ fn whole_projection_and_independent_replay_preserve_distinct_rollback_versions()
     let mut refined = input.clone();
     let mut projection = Projection::new(
         &input.relations,
-        domain,
+        algebra.borrowed(),
         &limits,
         &mut budget,
         Policy::Summary,
@@ -138,9 +144,9 @@ fn whole_projection_and_independent_replay_preserve_distinct_rollback_versions()
         refined.store.slot_root(owner, false),
         original.store.slot_root(owner, false)
     );
-    let bound = state::form(&refined, &entry, domain).unwrap();
-    let mut replay = state::instantiate(&bound, domain).unwrap();
-    let independent = state::instantiate(&bound, domain).unwrap();
+    let bound = state::form(&refined, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
+    let mut replay = state::instantiate(&bound, ValueAlgebra::new(domain).borrowed()).unwrap();
+    let independent = state::instantiate(&bound, ValueAlgebra::new(domain).borrowed()).unwrap();
     assert_ne!(
         replay.store.slot_root(owner, false),
         independent.store.slot_root(owner, false)
@@ -176,6 +182,7 @@ fn whole_projection_and_independent_replay_preserve_distinct_rollback_versions()
 #[test]
 fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
     let domain = Domain::default();
+    let algebra = ValueAlgebra::new(domain);
     let limits = RelationLimits::default();
     let expressions = [ExprId::fresh().unwrap(), ExprId::fresh().unwrap()];
     let relations = bounded_relations(&expressions, &limits);
@@ -190,7 +197,13 @@ fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
         (1, AbstractValue::top(), 5),
     ];
     let mut budget = WorkBudget::new(usize::MAX);
-    let mut projection = Projection::new(&relations, domain, &limits, &mut budget, Policy::Summary);
+    let mut projection = Projection::new(
+        &relations,
+        algebra.borrowed(),
+        &limits,
+        &mut budget,
+        Policy::Summary,
+    );
     let mut expected_work = 0;
     for (index, value, lower) in cases {
         let original = value.with_expression(expressions[index].clone());
@@ -221,6 +234,7 @@ fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
 #[test]
 fn lazy_size_keeps_the_exact_and_one_short_work_boundaries() {
     let domain = Domain::default();
+    let algebra = ValueAlgebra::new(domain);
     let limits = RelationLimits::default();
     let expression = ExprId::fresh().unwrap();
     let relations = bounded_relations(std::slice::from_ref(&expression), &limits);
@@ -229,8 +243,13 @@ fn lazy_size_keeps_the_exact_and_one_short_work_boundaries() {
     let fee = admission + domain.refinement_work(&original, relations.len());
     for maximum in [fee, fee - 1] {
         let mut budget = WorkBudget::new(maximum);
-        let mut projection =
-            Projection::new(&relations, domain, &limits, &mut budget, Policy::Summary);
+        let mut projection = Projection::new(
+            &relations,
+            algebra.borrowed(),
+            &limits,
+            &mut budget,
+            Policy::Summary,
+        );
         let mut value = original.clone();
         projection.value(&mut value);
         assert_eq!(projection.relations_work_size_scans, 1);
@@ -254,14 +273,20 @@ fn lazy_size_keeps_the_exact_and_one_short_work_boundaries() {
 #[test]
 fn concrete_values_and_empty_relations_do_not_scan() {
     let domain = Domain::default();
+    let algebra = ValueAlgebra::new(domain);
     let limits = RelationLimits::default();
     let expression = ExprId::fresh().unwrap();
     let relations = bounded_relations(std::slice::from_ref(&expression), &limits);
     let empty = RelationState::default();
     for relations in [&relations, &empty] {
         let mut budget = WorkBudget::new(0);
-        let mut projection =
-            Projection::new(relations, domain, &limits, &mut budget, Policy::Summary);
+        let mut projection = Projection::new(
+            relations,
+            algebra.borrowed(),
+            &limits,
+            &mut budget,
+            Policy::Summary,
+        );
         assert_eq!(projection.relations_work_size_scans, 0);
         let mut values = vec![
             AbstractValue::constant(U256::ONE).with_expression(expression.clone()),
@@ -284,6 +309,7 @@ fn concrete_values_and_empty_relations_do_not_scan() {
 #[test]
 fn call_guard_survives_a_stored_word_projection_without_fixing_high_bits() {
     let domain = Domain::default();
+    let algebra = ValueAlgebra::new(domain);
     let config = ExecutionConfig::default();
     let limits = &config.analysis.relations;
     let mut input = payload(domain);
@@ -314,7 +340,7 @@ fn call_guard_survives_a_stored_word_projection_without_fixing_high_bits() {
     let mut budget = WorkBudget::new(config.max_work);
     let mut projection = Projection::new(
         &input.relations,
-        domain,
+        algebra.borrowed(),
         limits,
         &mut budget,
         Policy::Summary,
@@ -335,6 +361,7 @@ fn call_guard_survives_a_stored_word_projection_without_fixing_high_bits() {
 #[test]
 fn failed_projection_preserves_original_path_and_roots() {
     let domain = Domain::default();
+    let algebra = ValueAlgebra::new(domain);
     let config = ExecutionConfig::default();
     let mut input = payload(domain);
     let expression = ExprId::fresh().unwrap();
@@ -359,7 +386,7 @@ fn failed_projection_preserves_original_path_and_roots() {
     let mut budget = WorkBudget::new(0);
     let mut projection = Projection::new(
         &input.relations,
-        domain,
+        algebra.borrowed(),
         &config.analysis.relations,
         &mut budget,
         Policy::Summary,

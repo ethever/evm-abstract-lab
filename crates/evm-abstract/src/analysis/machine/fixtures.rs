@@ -1,5 +1,7 @@
 //! Shared small machine fixtures for join and certificate regressions.
 
+use crate::domain::ValueAlgebra;
+
 use super::{ExecutionConfig, MachinePayload};
 use crate::{
     Fork,
@@ -60,7 +62,7 @@ pub(in crate::analysis) fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
 
 pub(in crate::analysis) fn payload(domain: Domain) -> MachinePayload {
     let (world, entry) = fixture(&[(0x101, "00")]);
-    transfer::initial(&world, &entry, domain).unwrap()
+    transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap()
 }
 
 pub(in crate::analysis) fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {

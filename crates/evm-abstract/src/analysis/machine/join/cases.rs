@@ -2,11 +2,13 @@
 //! whole payloads. Source/GAS/manual identities are never enumerated. This
 //! explicit widening forgets old path guarantees and preserves old snapshots.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use super::{MachineError, checkpoint};
 use crate::{
-    analysis::{MachinePayload, state::StatePart},
+    analysis::{machine::EvmMachinePayload, state::StatePart},
     domain::{
-        AbstractValue, Domain, NumericValue,
+        AlgebraRef, EvmValue,
         symbolic::{ExprId, ExprLimits},
     },
     resource::WorkBudget,
@@ -27,41 +29,43 @@ fn reserve(budget: &mut WorkBudget, cost: usize) -> Result<(), MachineError> {
     }
 }
 
-fn scalar(value: &mut AbstractValue) {
+fn scalar<N: WordElement>(value: &mut EvmValue<N>) {
     value.forget_identity();
     if let Some(constant) = value.expression().and_then(ExprId::as_constant) {
-        *value = value.clone().with_numeric(NumericValue::constant(constant));
+        *value = value.clone().with_numeric(N::constant(constant));
     }
 }
 
-fn form(
-    payload: &MachinePayload,
-    domain: Domain,
+fn form<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    payload: &EvmMachinePayload<N>,
+    domain: AlgebraRef<'_, D>,
     limits: ExprLimits,
-) -> Result<MachinePayload, MachineError> {
+) -> Result<EvmMachinePayload<N>, MachineError> {
     checkpoint()?;
     let mut result = payload.clone();
     result.relations.forget();
-    result.store = result.store.widening_form(domain, limits)?;
+    result.store = result.store.widening_form_with(domain, limits)?;
     result.call_stack.transform(&mut |part| {
         match part {
             StatePart::Value(value) => scalar(value),
-            StatePart::Bytes(bytes) => *bytes = bytes.widening_form(domain, limits)?,
-            StatePart::Store(store) => *store = Cow::Owned(store.widening_form(domain, limits)?),
+            StatePart::Bytes(bytes) => *bytes = bytes.widening_form_with(domain, limits)?,
+            StatePart::Store(store) => {
+                *store = Cow::Owned(store.widening_form_with(domain, limits)?)
+            }
         }
         Ok(())
     })?;
     result.content_form()
 }
 
-pub(super) fn prepare(
-    previous: &[Arc<MachinePayload>],
-    initial: Option<&MachinePayload>,
-    incoming: &MachinePayload,
+pub(super) fn prepare<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    previous: &[Arc<EvmMachinePayload<N>>],
+    initial: Option<&EvmMachinePayload<N>>,
+    incoming: &EvmMachinePayload<N>,
     selectors: &BTreeSet<ExprId>,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
-) -> Result<Vec<Arc<MachinePayload>>, MachineError> {
+) -> Result<Vec<Arc<EvmMachinePayload<N>>>, MachineError> {
     let policy = domain.spec().relations();
     let limit = policy.max_constraints;
     let limits = policy.expressions();
@@ -96,9 +100,10 @@ pub(super) fn prepare(
                 }
                 for value in [U256::ZERO, U256::from(1)] {
                     let mut branch = payload.clone();
-                    branch.rename_fresh(
+                    branch.rename_fresh_with(
                         &BTreeMap::from([(selector.clone(), ExprId::constant(value))]),
                         limits,
+                        domain,
                     )?;
                     pending.push(branch);
                 }

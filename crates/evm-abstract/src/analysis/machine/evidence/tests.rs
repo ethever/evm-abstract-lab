@@ -1,4 +1,5 @@
 use super::{InstructionProgress, InstructionValue};
+use crate::domain::ValueAlgebra;
 use crate::{
     Address, Fork, U256,
     analysis::{
@@ -260,7 +261,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
     };
 
     let (world, entry) = fixture(&[(0x101, "600200")]);
-    let initial = transfer::initial(&world, &entry, domain).unwrap();
+    let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let admission = admission_work(&world, &entry, &initial);
     // Keep the original semantic deltas separate from entry admission: PUSH
     // costs one visit, STOP one visit plus its operation. Its dispatch still
@@ -420,7 +421,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
     }
 
     let (world, entry) = fixture(&[(0x101, "6003565b00")]);
-    let initial = transfer::initial(&world, &entry, domain).unwrap();
+    let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let admission = admission_work(&world, &entry, &initial);
     // JUMP pays its history-navigation work before dispatch, then reserves a
     // separate successor visit. Neither refusal may invent a completed edge.
@@ -492,7 +493,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
     }
 
     let (world, entry) = fixture(&[(0x101, "5f3500")]);
-    let initial = transfer::initial(&world, &entry, domain).unwrap();
+    let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let admission = admission_work(&world, &entry, &initial);
     let initial_snapshots = serde_json::to_value((
         &initial.store,

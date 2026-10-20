@@ -2,11 +2,13 @@
 //! shape must agree first; local impossibility establishes required scalar
 //! bindings and old path guarantees when these cheap rules suffice. A failed/unknown proof never removes the incoming alternative.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use super::{MachineError, checkpoint};
 use crate::{
-    analysis::MachinePayload,
+    analysis::machine::EvmMachinePayload,
     domain::{
-        AbstractValue, Domain,
+        AlgebraRef, EvmValue,
         relational::{
             CheckResult, Constraint, QueryReason, RelationPath, RelationPathKind, RelationState,
         },
@@ -28,9 +30,9 @@ fn reserve(budget: &mut WorkBudget, cost: usize) -> Result<(), MachineError> {
 
 /// These roots survive both content normalization and coverage's scalar erase.
 /// A mismatch rules out either comparison; agreement grants no coverage proof.
-pub(super) fn same_byte_roots(
-    previous: &MachinePayload,
-    incoming: &MachinePayload,
+pub(super) fn same_byte_roots<N: WordElement>(
+    previous: &EvmMachinePayload<N>,
+    incoming: &EvmMachinePayload<N>,
     budget: &mut WorkBudget,
 ) -> Result<bool, MachineError> {
     if budget.exhausted() {
@@ -60,10 +62,12 @@ pub(super) fn same_byte_roots(
     Ok(true)
 }
 
-fn shape(payload: &MachinePayload) -> Result<(MachinePayload, Vec<Option<ExprId>>), MachineError> {
+fn shape<N: WordElement>(
+    payload: &EvmMachinePayload<N>,
+) -> Result<(EvmMachinePayload<N>, Vec<Option<ExprId>>), MachineError> {
     let mut copy = payload.clone();
     let mut expressions = Vec::new();
-    let mut erase = |value: &mut AbstractValue| {
+    let mut erase = |value: &mut EvmValue<N>| {
         expressions.push(value.symbolic_expression());
         value.forget_expression();
         value.forget_identity();
@@ -260,10 +264,10 @@ fn condition(
     combine(equalities, opcode::AND, limits)
 }
 
-pub(super) fn covers(
-    previous: &MachinePayload,
-    incoming: &MachinePayload,
-    domain: Domain,
+pub(super) fn covers<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    previous: &EvmMachinePayload<N>,
+    incoming: &EvmMachinePayload<N>,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
 ) -> Result<bool, MachineError> {
     let policy = domain.spec().relations();
@@ -322,9 +326,10 @@ pub(super) fn covers(
         .work_size()
         .saturating_add(predicate.work_size());
     reserve(budget, query_fee)?;
-    let answer = incoming
-        .relations
-        .can_equal_budgeted(&predicate, U256::ZERO, &policy, budget);
+    let answer =
+        incoming
+            .relations
+            .can_equal_budgeted_with(&predicate, U256::ZERO, &policy, budget, domain);
     if budget.exhausted() {
         return Err(MachineError::work_failure());
     }
