@@ -112,7 +112,7 @@ jq '.states[] | select(.key.basic_block_index == 2)
 
 `entry_constants` 为 `["0x1"]`。constraints 中的 `Truth` 保存 `nonzero:true` 和一份 flat expression graph：`root` 指向 `nodes` 中的 Operation，opcode 20 即 EQ，`args` 是常量 1 与 Input(CallValue) 的本图索引。Input 还带 scope，图带 identity_scope。输入表达式仍表示原来的 v，数值层证明它在这个状态里只能为 1；不能把不同图中的同一个索引当成同一节点，也不会为每条分支伪造新交易。
 
-结果 JSON 的 `schema_version` 为 10；`domain_spec.schema_version` 为 2，`cost_version` 为 4。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
+结果 JSON 的 `schema_version` 为 10；`domain_spec.schema_version` 为 2，`cost_version` 为 5。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
 
 Native schema 10 和 Web schema 15 延续此前的移除：provider / `rlimit` 与 solver 结果不再导出。Web 展示协议独立使用版本 15。数值事实错误继续保留为带参数的 `ScalarFactError`；取消、配置、约束容量、事实容量和表达式界限仍类型化传输。旧 solver/provider/model 结果不再属于当前协议。
 

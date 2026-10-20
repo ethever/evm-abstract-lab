@@ -4,6 +4,9 @@
 Only writes a command profile and optional wire 15 requests; never builds or
 runs analysis. Keep outputs separate from frozen baselines. Regenerate the
 profile for the final build's exact source commit.
+
+The current interface requires native 10 / wire 15 / cost 5. Historical cost 4
+profiles stay bound to their frozen source and generator; they are not upgraded.
 """
 
 import argparse
@@ -30,8 +33,8 @@ def generate(repository, source):
         match = re.search(r"pub const SCHEMA_VERSION: u16 = (\d+);", texts[key])
         if match is None or int(match[1]) != expected:
             raise ValueError(f"expected {key} schema {expected}")
-    if not re.search(r"cost_version:\s*4\s*,", texts["cost"]):
-        raise ValueError("expected logical cost version 4")
+    if not re.search(r"cost_version:\s*5\s*,", texts["cost"]):
+        raise ValueError("expected logical cost version 5")
     if re.search(r"smt_provider|smt_rlimit|embedded_smt", texts["relations"]):
         raise ValueError("selected CLI still exposes native solver policy")
     commit = subprocess.check_output(
@@ -39,7 +42,7 @@ def generate(repository, source):
     profile["interface"] = {
         "name": "no-smt-cli-world",
         "source_commit": commit,
-        "versions": {"native": 10, "wire": 15, "cost": 4},
+        "versions": {"native": 10, "wire": 15, "cost": 5},
         "source_witnesses": {
             path: hashlib.sha256((source / path).read_bytes()).hexdigest()
             for path in witnesses.values()
