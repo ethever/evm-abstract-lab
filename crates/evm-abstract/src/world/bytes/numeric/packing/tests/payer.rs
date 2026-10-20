@@ -18,6 +18,8 @@ use std::{
 const PRIOR: usize = 17;
 const FEE: usize = 50_000;
 
+mod query;
+
 #[derive(Clone, Copy, Debug)]
 enum Path {
     Prepared,
@@ -170,6 +172,7 @@ fn numeric_receipts<D: EvmNumericAlgebra>(
 fn exact_pack_fee_and_receipt_minus_one_precede_the_hook_on_both_ledgers() {
     let bytes = vec![AbstractValue::constant(U256::from(7)); 32];
     let expected = original(&bytes, default_domain());
+    let query_fee = expected.singleton_work();
     for path in PATHS {
         let policy = Paid::new(default_domain(), Some(FEE), Hook::Delegate);
         let (_, full, exhausted) = context(path, usize::MAX, &policy, |context| {
@@ -182,37 +185,41 @@ fn exact_pack_fee_and_receipt_minus_one_precede_the_hook_on_both_ledgers() {
             }
         });
         assert!(!exhausted);
-        for exact in [false, true] {
+        let prefix = full - FEE - query_fee;
+        for (available, hooks, receipts, complete) in [
+            (prefix + FEE - 1, 0, vec![], false),
+            (prefix + FEE, 1, vec![FEE], false),
+            (full - 1, 1, vec![FEE], false),
+            (full, 1, vec![FEE, query_fee], true),
+        ] {
             let policy = Paid::new(default_domain(), Some(FEE), Hook::Delegate);
-            let (_, used, exhausted) =
-                context(path, full - usize::from(!exact), &policy, |context| {
-                    let clone = context.clone();
-                    let before = context.demand_usage();
-                    let result = super::super::pack(&bytes, context.algebra(), context);
-                    assert_eq!(result, exact.then(|| expected.clone()));
-                    assert_eq!(
-                        context.demand_usage(),
-                        before,
-                        "pack retains no context memo entry"
-                    );
+            let (_, used, exhausted) = context(path, available, &policy, |context| {
+                let clone = context.clone();
+                let before = context.demand_usage();
+                let result = super::super::pack(&bytes, context.algebra(), context);
+                assert_eq!(result, complete.then(|| expected.clone()));
+                assert_eq!(
+                    context.demand_usage(),
+                    before,
+                    "pack retains no context memo entry"
+                );
+                assert_eq!(policy.quotes.get(), 1);
+                assert_eq!(policy.packs.get(), hooks);
+                assert!(policy.actions.borrow().is_empty());
+                if matches!(path, Path::Prepared) {
+                    assert_eq!(numeric_receipts(path, context), receipts);
+                }
+                if complete {
+                    assert!(!context.stopped());
+                } else {
+                    assert!(context.work_exhausted());
+                    assert!(!context.cache_refused());
+                    assert!(super::super::pack(&bytes, clone.algebra(), &clone).is_none());
                     assert_eq!(policy.quotes.get(), 1);
-                    assert_eq!(policy.packs.get(), usize::from(exact));
-                    assert!(policy.actions.borrow().is_empty());
-                    if exact {
-                        assert!(!context.stopped());
-                        if matches!(path, Path::Prepared) {
-                            assert_eq!(numeric_receipts(path, context), [FEE]);
-                        }
-                    } else {
-                        assert!(context.work_exhausted());
-                        assert!(!context.cache_refused());
-                        assert!(numeric_receipts(path, context).is_empty());
-                        assert!(super::super::pack(&bytes, clone.algebra(), &clone).is_none());
-                        assert_eq!(policy.quotes.get(), 1);
-                    }
-                });
-            assert_eq!(used, if exact { full } else { full - FEE });
-            assert_eq!(exhausted, !exact);
+                }
+            });
+            assert_eq!(used, prefix + receipts.iter().sum::<usize>());
+            assert_eq!(exhausted, !complete);
         }
     }
 }

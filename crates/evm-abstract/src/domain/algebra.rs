@@ -198,16 +198,20 @@ pub trait EvmNumericAlgebra: Debug {
     }
     /// Optional complete fee for `pack_word_numeric`, including failed admission,
     /// predicates, allocation and construction. Inspect only cached metadata.
-    /// None declines without calling the hook; MAX refuses before doing work.
+    /// Metered callers decline None without calling the hook and refuse MAX
+    /// before doing work. Pure library calls remain caller-funded/unmetered:
+    /// they may invoke the hook but cannot infer its price from an absent quote.
     /// This separate opt-in is needed because ordinary operation quotes cannot
     /// price an opaque carrier's whole-word certificate or custom cooperation.
     fn pack_word_work(&self, _bytes: &[&Self::Element; 32]) -> Option<usize> {
         None
     }
-    /// Paid numeric replacement for the ordered 32-byte SHL/OR fold under this
+    /// Numeric replacement for the ordered 32-byte SHL/OR fold under this
     /// exact policy. Some promises equivalent numeric results, including hidden
     /// carrier constraints and required custom reductions. Matching standard
     /// observations alone cannot establish this law. None keeps ordinary apply.
+    /// Metered callers first pay `pack_word_work`; pure library callers fund
+    /// the work themselves. Queries on the returned element owe their own fees.
     fn pack_word_numeric(&self, _bytes: &[&Self::Element; 32]) -> Option<Self::Element> {
         None
     }
@@ -388,10 +392,14 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         self.numeric.byte_image_complete(value)
     }
     /// Cached-metadata fee for the optional domain-owned numeric fold replacement.
+    /// Metered callers decline None and refuse MAX before invoking the hook;
+    /// an absent quote supplies no price for a pure caller-funded library call.
     pub fn pack_word_work(&self, bytes: &[&D::Element; 32]) -> Option<usize> {
         self.numeric.pack_word_work(bytes)
     }
-    /// Call only after the complete domain-owned pack fee has been paid.
+    /// Metered callers must first pay the complete domain-owned pack fee.
+    /// Pure library callers fund the hook themselves, even without a quote.
+    /// Queries on the returned element require their separate query fees.
     pub fn pack_word_numeric(&self, bytes: &[&D::Element; 32]) -> Option<D::Element> {
         self.numeric.pack_word_numeric(bytes)
     }

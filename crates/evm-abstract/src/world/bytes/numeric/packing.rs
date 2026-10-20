@@ -20,7 +20,11 @@ pub(super) fn pack<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     // sources. Construct a fresh value: neither input/copy identity, expression
     // nor the code-address role survives these arithmetic operations.
     let mut value = EvmValue::<N>::from_numeric(numeric);
-    if domain.spec().relations().enabled && value.singleton().is_none() {
+    // The pack fee funds the numeric hook, not a query on its opaque result.
+    // One paid proof serves both metadata decisions; a refused/cancelled proof
+    // must stop before assembling metadata or entering the scalar fallback.
+    let singleton = context.prove_singleton(&value);
+    if context.stopped() || (domain.spec().relations().enabled && singleton.is_none()) {
         return None;
     }
     if bytes
@@ -42,7 +46,7 @@ pub(super) fn pack<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     }
     // apply propagates this marker even with relations disabled, but every
     // concrete SHL clears it. Do not use project, which would clear it on Top.
-    if value.singleton().is_none() && bytes.iter().any(EvmValue::<N>::symbolic_limit_reached) {
+    if singleton.is_none() && bytes.iter().any(EvmValue::<N>::symbolic_limit_reached) {
         value = value.with_symbolic_limit();
     }
     (!context.stopped()).then_some(value)

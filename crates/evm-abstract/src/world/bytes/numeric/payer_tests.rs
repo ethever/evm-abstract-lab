@@ -3,7 +3,7 @@
 use super::{Context, Facts, Reader, constant, numeric_domain, packing, scalar_in, zero};
 use crate::{
     domain::{
-        AbstractValue, Domain, EvmNumericAlgebra,
+        AbstractValue, Domain, EvmNumericAlgebra, WordElement,
         provenance::Origin,
         symbolic::{
             ByteStateId, ByteStateKind, ExprError, ExprId, ExprLimits, SourceId, StateLimits,
@@ -616,7 +616,9 @@ fn whole_word_ite_joins_once_after_complete_branch_packing() {
         &probe,
         &[
             (None, domain.pack_word_work(&[&five; 32]).unwrap()),
+            (None, left.singleton_work()),
             (None, domain.pack_word_work(&[&seven; 32]).unwrap()),
+            (None, right.singleton_work()),
             (
                 Some(true),
                 Context::reader_join_work(crate::domain::ValueAlgebra::new(&domain), &left, &right),
@@ -973,7 +975,14 @@ fn successful_packing_has_no_synthetic_transfers_and_fallback_pays_all_original_
         &Facts::new(),
         &domain,
         &value,
-        &[(None, domain.pack_word_work(&[&seven; 32]).unwrap())],
+        &[
+            (None, domain.pack_word_work(&[&seven; 32]).unwrap()),
+            (
+                None,
+                crate::domain::NumericValue::constant(U256::from_be_bytes([7_u8; 32]))
+                    .singleton_work(),
+            ),
+        ],
         |context| Reader::with_context(context.clone(), context.algebra()).word(&exact, &at),
     );
     let unknown = ByteStateId::input(SourceId::fresh().unwrap(), ExprId::constant(U256::from(32)));
@@ -983,7 +992,10 @@ fn successful_packing_has_no_synthetic_transfers_and_fallback_pays_all_original_
         &Facts::new(),
         &domain,
         &value,
-        &[(None, domain.pack_word_work(&[&byte; 32]).unwrap())],
+        &[
+            (None, domain.pack_word_work(&[&byte; 32]).unwrap()),
+            (None, crate::domain::NumericValue::top().singleton_work()),
+        ],
         |context| Reader::with_context(context.clone(), context.algebra()).word(&unknown, &at),
     );
 }
