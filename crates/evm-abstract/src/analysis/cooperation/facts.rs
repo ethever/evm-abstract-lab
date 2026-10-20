@@ -2,12 +2,14 @@ use crate::domain::{WordObservation, facts::FactError};
 use analysis_kernel::{Capability, RefinePolicy};
 use std::collections::BTreeMap;
 
-/// Entailed stack guarantees for one fixed Subject, with explicit contradiction.
+/// Stack guarantees proved for every concrete execution reaching one Subject
+/// under its frozen program/world/context assumptions, with explicit contradiction.
+/// They need not be derivable from the EVM abstract value representation alone.
 /// Indices count from the bottom of the active frame's stack. A missing entry
 /// contributes no extra guarantee; pending computation uses kernel Availability.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StackFacts {
-    /// Conjunction of consequences of this exact immutable input universe.
+    /// Conjunction of valid provider guarantees for the same scoped executions.
     Reachable(BTreeMap<usize, WordObservation>),
     /// A registered rule proved this universe has no concrete input valuation.
     Unreachable,

@@ -338,3 +338,70 @@ fn refused_optional_feedback_keeps_the_input_reachable_and_unmodified() {
     assert!(payload.active().stack[0].numeric().is_top());
     assert_eq!(limited, vec![ReductionStatus::Empty]);
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("independent component test failure")]
+struct ComponentFailure;
+
+struct FailingComponent<'a> {
+    calls: &'a Cell<usize>,
+    cancel: Option<&'a CancelToken>,
+}
+
+impl<Cx> analysis_kernel::Analyzer<Cx> for FailingComponent<'_> {
+    type Task = super::cooperation::Subject;
+    type Error = ComponentFailure;
+
+    fn evaluate(
+        &mut self,
+        _: &Self::Task,
+        _: &mut Cx,
+    ) -> Result<analysis_kernel::LocalClosure, ComponentFailure> {
+        self.calls.set(self.calls.get() + 1);
+        if let Some(cancel) = self.cancel {
+            cancel.cancel();
+        }
+        Err(ComponentFailure)
+    }
+}
+
+#[test]
+fn independent_component_errors_and_cancellation_publish_no_native_result() {
+    use super::cooperation::{CooperationError, Extension, analyze_world_cooperating_with_control};
+
+    for (cancel_before, cancel_during) in [(false, false), (true, false), (false, true)] {
+        let calls = Cell::new(0);
+        let control = Control::new(super::progress::Observer::default());
+        let mut extension = Extension::new(FailingComponent {
+            calls: &calls,
+            cancel: cancel_during.then_some(control.cancellation()),
+        });
+        if cancel_before {
+            control.cancellation().cancel();
+        }
+        let algebra = ValueAlgebra::new(Domain::default());
+        let (world, entry) = fixture();
+        let result = analyze_world_cooperating_with_control(
+            world,
+            entry,
+            ExecutionConfig::default(),
+            &algebra,
+            &EnginePolicies::default(),
+            &mut extension,
+            &control,
+        );
+        if cancel_before {
+            assert!(matches!(result, Err(CooperationError::Cancelled)));
+            assert_eq!(calls.get(), 0);
+        } else if cancel_during {
+            assert!(matches!(result, Err(CooperationError::Cancelled)));
+            assert_eq!(calls.get(), 1);
+        } else {
+            assert!(matches!(
+                result,
+                Err(CooperationError::Extension(ComponentFailure))
+            ));
+            assert_eq!(calls.get(), 1);
+        }
+    }
+}

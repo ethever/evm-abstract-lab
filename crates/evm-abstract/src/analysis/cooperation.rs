@@ -3,10 +3,15 @@
 //! Components use the kernel's [`Analyzer`](analysis_kernel::Analyzer), typed
 //! [`Read`](analysis_kernel::Read), [`Accepts`](analysis_kernel::Accepts) and
 //! [`Registered`](analysis_kernel::Registered) protocols. Each [`Subject`] names
-//! one immutable EVM input universe. Registered stack facts must be consequences
-//! of that exact input; they refine a detached execution view, never its global
-//! ascending anchor. Wider inputs, including summary-induced growth, require a
-//! fresh seeded generation and retirement of the previous local facts.
+//! one immutable set of scoped analysis assumptions and reaching executions.
+//! Registered stack facts must hold for every concrete execution reaching that
+//! subject under those assumptions. They may be independently proved invariants
+//! absent from the EVM carrier; the published payload is only the EVM component's
+//! bound. Applying them preserves the joint product's concrete coverage and
+//! refines a detached execution view, never its global ascending anchor. Wider
+//! inputs, including summary-induced growth, require a fresh seeded generation
+//! and retirement of the previous local facts. Registration accepts this trusted
+//! semantic contract; it is not a Rust proof that an arbitrary rule is sound.
 //!
 //! [`ExtraStores`] adds independently defined capability families after the two
 //! builtin routes. Each factory uses the same kernel/meter and creates fresh

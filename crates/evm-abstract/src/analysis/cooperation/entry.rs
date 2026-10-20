@@ -13,11 +13,14 @@ use analysis_kernel::Analyzer;
 ///
 /// Components implement the same Analyzer/Read/Accepts/Registered contracts as
 /// the kernel. The interpreter publishes immutable production inputs, consumes
-/// entailed local stack facts and automatically replaces their generations when
+/// valid provider stack guarantees and automatically replaces their generations when
 /// global inputs grow. All participants share dependency scheduling, closure,
 /// cancellation and the transaction work ledger. The returned native graph
 /// retains the actual `D::Element`; the numeric algebra is independent of this
 /// program-level extension assembly.
+/// Providers may establish invariants absent from the EVM carrier, provided
+/// they hold for every concrete execution under the same scoped assumptions.
+/// Registration is a trusted semantic contract, not automatic proof of user code.
 pub fn analyze_world_cooperating<D, C, P, A, S, F, E>(
     world: EvmWorld<D::Element>,
     entry: EvmEntry<D::Element>,

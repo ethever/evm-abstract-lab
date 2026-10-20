@@ -24,7 +24,9 @@ pub struct Point {
     pub index: usize,
 }
 
-/// Fixed concrete-input universe for one production cooperation generation.
+/// Fixed scoped analysis assumptions and reaching-execution universe for one
+/// production cooperation generation. The native EVM carrier is only one bound
+/// on that universe; external providers may prove additional valid guarantees.
 ///
 /// Facts from another subject cannot be silently used as assumptions here. When
 /// the global input grows, the interpreter seeds a new scope from its anchor;
