@@ -1,6 +1,8 @@
 //! COPY keeps a complete checked root and a separate, bounded presentation.
 
-use super::{COPY_FACT_LIMIT, EvmByteArray, RangeError, limits, zero_with};
+use super::{
+    COPY_FACT_LIMIT, EvmByteArray, RangeError, limits, ranges::numeric_singleton, zero_with,
+};
 use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
@@ -12,7 +14,7 @@ use alloy_primitives::U256;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn bounds<N: WordElement>(value: &EvmValue<N>) -> (U256, U256) {
-    crate::world::unsigned_bounds(value)
+    numeric_singleton(value).map_or_else(|| value.interval().unsigned_bounds(), |word| (word, word))
 }
 
 // Only literal leaves are display certificates. No retained expression, stale
@@ -54,10 +56,13 @@ pub(super) fn project<N: WordElement>(
 ) -> Result<BTreeMap<usize, EvmValue<N>>, RangeError> {
     let (size_lo, size_hi) = bounds(size);
     let (dst_lo, dst_hi) = bounds(destination);
-    let starts = destination
-        .singleton()
+    // Prepared terms can locate candidate coordinates without certifying their
+    // displayed values. The independent numeric check below still owns that.
+    let destination_start = super::ranges::known_singleton(destination);
+    let source_start = super::ranges::known_singleton(offset);
+    let starts = destination_start
         .and_then(|at| usize::try_from(at).ok())
-        .zip(offset.singleton().and_then(|at| usize::try_from(at).ok()));
+        .zip(source_start.and_then(|at| usize::try_from(at).ok()));
     let mut old = previous.bytes.keys().take(COPY_FACT_LIMIT);
     let mut incoming = starts.map(|(_, start)| source.bytes.range(start..).take(COPY_FACT_LIMIT));
     let mut keys = BTreeSet::new();
@@ -96,7 +101,7 @@ pub(super) fn project<N: WordElement>(
             value
                 .expression()
                 .and_then(|term| term.as_constant())
-                .is_some_and(|literal| value.singleton() == Some(literal))
+                .is_some_and(|literal| numeric_singleton(value) == Some(literal))
         });
     let mut bytes = BTreeMap::new();
     for index in keys {
@@ -110,12 +115,12 @@ pub(super) fn project<N: WordElement>(
         } else if untouched {
             literal(previous, index)
         } else {
-            destination.singleton().and_then(|dst| {
+            destination_start.and_then(|dst| {
                 let delta = at.checked_sub(dst)?;
                 if delta >= size_lo {
                     return None;
                 }
-                let index = offset.singleton()?.checked_add(delta)?;
+                let index = source_start?.checked_add(delta)?;
                 literal(source, usize::try_from(index).ok()?)
             })
         };
