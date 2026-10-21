@@ -118,7 +118,7 @@ fn disabled_discovery_keeps_unselected_storage_unknown_without_requests() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|value| value.get("Constants").is_none())
+                .any(|value| crate::native::numeric(value).get("constants").is_none())
         }));
         let requests = server.finish();
         assert!(requests_for(&requests, "eth_getStorageAt", ENTRY).is_empty());

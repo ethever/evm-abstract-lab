@@ -180,7 +180,7 @@ fn rpc_identity_and_execution_chain_id_are_independent_with_symbolic_call_defaul
                 let analysis: Json = serde_json::from_slice(&output.stdout).unwrap();
                 assert_eq!(analysis["world"]["identity"]["chain_id"], "0x38");
                 assert_eq!(
-                    analysis["states"][0]["exit_stack"][0]["Constants"],
+                    analysis["states"][0]["exit_stack"][0]["numeric"]["constants"],
                     json!([if execution_chain.is_some() {
                         "0x1"
                     } else {
@@ -188,16 +188,22 @@ fn rpc_identity_and_execution_chain_id_are_independent_with_symbolic_call_defaul
                     }])
                 );
                 assert_eq!(
-                    analysis["states"][0]["exit_stack"][1]["Constants"],
+                    analysis["states"][0]["exit_stack"][1]["numeric"]["constants"],
                     json!(["0x1"])
                 );
                 assert_eq!(
                     analysis["entry"]["environment"]["caller"],
                     json!({"Symbolic":"Caller"})
                 );
-                assert!(analysis["entry"]["environment"]["value"]["Constants"].is_null());
                 assert!(
-                    analysis["entry"]["environment"]["calldata"]["length"]["Constants"].is_null()
+                    crate::native::numeric(&analysis["entry"]["environment"]["value"])
+                        .get("constants")
+                        .is_none()
+                );
+                assert!(
+                    crate::native::numeric(&analysis["entry"]["environment"]["calldata"]["length"])
+                        .get("constants")
+                        .is_none()
                 );
                 let requests = server.finish();
                 assert_eq!(

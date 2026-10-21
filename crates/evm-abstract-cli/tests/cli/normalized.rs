@@ -1,6 +1,7 @@
 //! Real CLI defaults expose one final SSA with native identities and evidence.
 
 use super::{analyze, run_concrete};
+use evm_abstract::domain::{EvmValue, NumericValue};
 use serde_json::{Value, json};
 
 fn report(args: &[&str], exit: i32) -> Value {
@@ -76,11 +77,11 @@ fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() 
     );
     assert_eq!(complete["machine_analysis"]["frontiers"], json!([]));
     assert_eq!(
-        complete["analysis"]["states"][0]["exit_stack"][0]["Constants"],
+        complete["analysis"]["states"][0]["exit_stack"][0]["numeric"]["constants"],
         json!(["0x2a"])
     );
     assert_eq!(
-        complete["analysis"]["states"][0]["exit_stack"][1]["Constants"],
+        complete["analysis"]["states"][0]["exit_stack"][1]["numeric"]["constants"],
         json!(["0x0"])
     );
     assert_eq!(
@@ -159,7 +160,7 @@ fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() 
         1
     );
     assert_eq!(
-        machine["states"][0]["exit_stack"][0]["Constants"],
+        machine["states"][0]["exit_stack"][0]["numeric"]["constants"],
         json!(["0x2a"])
     );
     let outcomes = machine["outcomes"].as_array().unwrap();
@@ -173,7 +174,10 @@ fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() 
     let frame = &state["entry"]["call_stack"]["root"]["state"];
     let saved = &frame["saved_store"];
     assert!(saved.is_object());
-    assert_eq!(frame["returndata"]["length"]["Constants"], json!(["0x0"]));
+    assert_eq!(
+        frame["returndata"]["length"]["numeric"]["constants"],
+        json!(["0x0"])
+    );
     assert_eq!(frame["returndata"]["bytes"], json!({}));
     for outcome in outcomes {
         assert_eq!(outcome["state"], state["id"]);
@@ -195,8 +199,14 @@ fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() 
     let mut restored = post_touch["store"].clone();
     assert_ne!(restored, *saved);
     for (field, expected) in [
-        ("balances", json!("Top")),
-        ("nonces", json!("Top")),
+        (
+            "balances",
+            serde_json::to_value(EvmValue::<NumericValue>::top()).unwrap(),
+        ),
+        (
+            "nonces",
+            serde_json::to_value(EvmValue::<NumericValue>::top()).unwrap(),
+        ),
         ("codes", json!("Unknown")),
         ("existence", json!("unknown")),
     ] {
@@ -211,7 +221,7 @@ fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() 
             .as_object_mut()
             .unwrap()
             .remove(ripemd),
-        Some(json!("Top"))
+        Some(serde_json::to_value(EvmValue::<NumericValue>::top()).unwrap())
     );
     let retained = restored["persistent"]["roots"]
         .as_object_mut()
@@ -331,20 +341,172 @@ fn a_faulting_push_keeps_its_immediate_and_has_no_constant_definition() {
 
 #[test]
 fn single_program_native_precompile_does_not_acquire_a_bytecode_block_pc() {
-    let args = [
-        "ssa",
+    const ENTRY: &str = "0x0000000000000000000000000000000000000004";
+    const CODE: &str = "600160020100";
+    for command in ["cfg", "ssa", "explain"] {
+        let output = run_concrete(&[
+            command,
+            "--hex",
+            CODE,
+            "--evm.to",
+            ENTRY,
+            "--evm.calldata",
+            "0x",
+            "--evm.value",
+            "0",
+            "--evm.gas",
+            "1000000",
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(!text.contains("Single-program state mapping"), "{text}");
+        if command != "cfg" {
+            let (_, ssa) = text.split_once("Verified cross-contract SSA:").unwrap();
+            assert!(
+                ssa.contains("native execution; no bytecode instructions"),
+                "{text}"
+            );
+            assert!(
+                !ssa.lines()
+                    .any(|line| line.trim_start().starts_with('B') && line.contains(" @ 0x")),
+                "{text}"
+            );
+            assert!(
+                !ssa.lines()
+                    .any(
+                        |line| line.trim_start().split_once(": ").is_some_and(|(pc, _)| {
+                            pc.len() >= 4 && pc.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        })
+                    ),
+                "{text}"
+            );
+        }
+    }
+    for model in ["product", "finite-set"] {
+        let mut args = vec![
+            "cfg",
+            "--hex",
+            CODE,
+            "--evm.to",
+            ENTRY,
+            "--evm.calldata",
+            "0x",
+            "--evm.value",
+            "0",
+            "--evm.gas",
+            "1000000",
+            "--numeric-model",
+            model,
+            "--format",
+            "json",
+        ];
+        let cfg = report(&args, 0);
+        args[0] = "ssa";
+        let ssa = report(&args, 0);
+        assert_eq!(cfg["numeric_model"], model);
+        assert_eq!(ssa["numeric_model"], model);
+        assert_eq!(
+            super::native::canonical(&super::native::without_application_metadata(&cfg)),
+            super::native::canonical(&ssa["analysis"])
+        );
+        assert_eq!(
+            ssa["analysis"]["states"][0]["key"]["frames"][0]["mode"],
+            json!({"Precompile":ENTRY})
+        );
+        assert_eq!(ssa["analysis"]["states"][0]["executed_pcs"], json!([]));
+        assert_eq!(ssa["ssa"]["complete"], true);
+        assert_eq!(ssa["ssa"]["blocks"][0]["instructions"], json!([]));
+        assert!(ssa.get("state_mapping").is_none());
+        assert!(cfg["postprocessing_work"].as_u64().unwrap() > 0);
+        assert!(
+            ssa["postprocessing_work"].as_u64().unwrap()
+                >= cfg["postprocessing_work"].as_u64().unwrap()
+        );
+        // Native execution has no scalar instruction facts here; structural
+        // SSA can use zero additional numeric work after the paid root query.
+        super::native::without_application_metadata(&ssa);
+
+        // The minimum positive execution allowance stops before recording any
+        // frame. Paid source classification must still select the native view.
+        args[0] = "cfg";
+        args.extend(["--max-work", "1", "--no-root-terminal-coverage"]);
+        let unopened = report(&args, 2);
+        assert_eq!(unopened["status"], "Incomplete");
+        assert_eq!(unopened["states"], json!([]));
+        assert!(unopened["world"].is_object());
+        assert!(unopened.get("program").is_none());
+        assert_eq!(unopened["frontiers"][0]["reason"], "Work");
+        assert!(unopened["frontiers"][0]["pc"].is_null());
+        assert!(unopened["postprocessing_work"].as_u64().unwrap() > 0);
+        super::native::without_application_metadata(&unopened);
+        args[0] = "ssa";
+        args.push("--allow-partial-ssa");
+        let partial = report(&args, 2);
+        assert_eq!(
+            super::native::canonical(&super::native::without_application_metadata(&unopened)),
+            super::native::canonical(&partial["analysis"])
+        );
+        assert_eq!(partial["partial_ssa"]["complete"], false);
+        assert_eq!(partial["partial_ssa"]["blocks"], json!([]));
+        assert!(partial.get("ssa").is_none());
+        assert!(partial.get("state_mapping").is_none());
+        assert!(
+            partial["postprocessing_work"].as_u64().unwrap()
+                >= unopened["postprocessing_work"].as_u64().unwrap()
+        );
+        super::native::without_application_metadata(&partial);
+    }
+
+    let unopened = run_concrete(&[
+        "explain",
         "--hex",
-        "600160020100",
+        CODE,
         "--evm.to",
-        "0x0000000000000000000000000000000000000004",
+        ENTRY,
+        "--max-work",
+        "1",
+        "--no-root-terminal-coverage",
+    ]);
+    assert_eq!(unopened.status.code(), Some(2));
+    let text = String::from_utf8(unopened.stdout).unwrap();
+    assert!(
+        text.contains("Incomplete") && text.contains("SSA unavailable"),
+        "{text}"
+    );
+    assert!(!text.contains("Single-program state mapping"));
+    assert!(!text.contains("Verified cross-contract SSA:"));
+
+    // Installed bytes cannot give a native precompile a bytecode block identity.
+    let path = std::env::temp_dir().join(format!(
+        "evm-cli-native-precompile-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, json!({
+        "fork":"osaka", "provenance":"cli:native-precompile-authority",
+        "accounts":[{"address":ENTRY,"code":format!("0x{CODE}"),"balance":"0x0","nonce":"0x0","existence":"present"}],
+    }).to_string()).unwrap();
+    let mut args = vec![
+        "analyze",
+        "--world",
+        path.to_str().unwrap(),
+        "--evm.to",
+        ENTRY,
         "--evm.calldata",
         "0x",
         "--evm.value",
         "0",
         "--evm.gas",
         "1000000",
+        "--ssa",
     ];
     let output = run_concrete(&args);
+    args.extend(["--format", "json"]);
+    let machine = run_concrete(&args);
+    std::fs::remove_file(path).unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -363,29 +525,34 @@ fn single_program_native_precompile_does_not_acquire_a_bytecode_block_pc() {
         "{text}"
     );
     assert!(
-        !text.lines().any(|line| {
-            line.trim_start().split_once(": ").is_some_and(|(pc, _)| {
+        !text.lines().any(
+            |line| line.trim_start().split_once(": ").is_some_and(|(pc, _)| {
                 pc.len() >= 4 && pc.bytes().all(|byte| byte.is_ascii_hexdigit())
             })
-        }),
+        ),
         "{text}"
     );
-    assert!(text.contains("projected σᵖ₀ → machine σ₀"));
-    let mut json_args = args.to_vec();
-    json_args.extend(["--format", "json"]);
-    let report = report(&json_args, 0);
-    assert_eq!(
-        report["state_mapping"],
-        json!([{"local_state":0,"machine_state":0}])
-    );
-    assert_eq!(
-        report["machine_analysis"]["states"][0]["key"]["frames"][0]["mode"],
-        json!({"Precompile":"0x0000000000000000000000000000000000000004"})
-    );
     assert!(
-        report["ssa"]["blocks"][0]["instructions"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+        machine.status.success(),
+        "{}",
+        String::from_utf8_lossy(&machine.stderr)
     );
+    let report: Value = serde_json::from_slice(&machine.stdout).unwrap();
+    assert_eq!(
+        report["analysis"]["world"]["accounts"][ENTRY]["code"]["Runtime"]["bytecode"],
+        format!("0x{CODE}")
+    );
+    assert_eq!(
+        report["analysis"]["states"][0]["key"]["frames"][0]["mode"],
+        json!({"Precompile":ENTRY})
+    );
+    assert_eq!(report["analysis"]["states"][0]["executed_pcs"], json!([]));
+    assert_eq!(report["ssa"]["complete"], true);
+    assert_eq!(report["ssa"]["blocks"][0]["instructions"], json!([]));
+    assert!(
+        report["ssa"]["blocks"][0]
+            .get("basic_block_index")
+            .is_none()
+    );
+    assert!(report.get("state_mapping").is_none());
 }

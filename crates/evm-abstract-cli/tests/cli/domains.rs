@@ -16,35 +16,42 @@ fn cfg(code: &str, extra: &[&str]) -> Value {
 }
 
 #[test]
-fn default_product_and_constants_only_have_observable_precision_differences() {
+fn product_and_finite_set_use_distinct_native_carriers_and_precision() {
     let product = cfg("5f3560011660021600", &["--max-constants", "1"]);
-    let baseline = cfg(
+    let finite = cfg(
         "5f3560011660021600",
-        &["--max-constants", "1", "--domain", "constants-only"],
+        &["--max-constants", "1", "--numeric-model", "finite-set"],
     );
-    assert_eq!(product["schema_version"], 11);
-    assert_eq!(product["domain_spec"]["profile"], "product");
-    assert_eq!(product["config"]["domain_profile"], "product");
-    assert_eq!(baseline["domain_spec"]["profile"], "constants-only");
+    assert_eq!(product["schema_version"], 12);
+    assert_eq!(product["numeric_model"], "product");
+    assert_eq!(finite["numeric_model"], "finite-set");
     assert_eq!(
-        product["states"][0]["exit_stack"][0]["Constants"],
+        product["states"][0]["exit_stack"][0]["numeric"]["constants"],
         serde_json::json!(["0x0"])
     );
-    let numeric = &baseline["states"][0]["exit_stack"][0];
-    assert!(numeric.get("Constants").is_none());
-    assert_eq!(numeric["known_bits"]["zero"], "0x0");
-    assert_eq!(numeric["known_bits"]["one"], "0x0");
-    assert_eq!(numeric["interval"]["unsigned_lo"], "0x0");
     assert_eq!(
-        numeric["interval"]["unsigned_hi"],
-        format!("0x{}", "f".repeat(64))
+        finite["states"][0]["exit_stack"][0]["numeric"],
+        serde_json::json!({}),
+        "the finite carrier must not be a product value with precision switched off",
     );
-    assert_eq!(numeric["congruence"], "Top");
-    assert_eq!(numeric["nonzero"], false);
-    for json in [&product, &baseline] {
+    for json in [&product, &finite] {
         assert_eq!(json["status"], "Converged");
         assert_eq!(json["domain_spec"]["word_bits"], 256);
-        assert_eq!(json["domain_spec"]["cost_version"], 6);
+        assert_eq!(
+            json["domain_spec"]["cost_version"],
+            evm_abstract::domain::DomainSpec::default().cost_version()
+        );
+        assert!(json["domain_spec"].get("profile").is_none());
+        for field in [
+            "domain_profile",
+            "numeric_model",
+            "max_constants",
+            "reduction_rounds",
+            "max_facts",
+            "relations",
+        ] {
+            assert!(json["config"].get(field).is_none(), "{field}");
+        }
         assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
         assert_eq!(
             json["domain_spec"]["provenance_policy"],
@@ -58,7 +65,7 @@ fn explicit_fact_policy_is_reported_and_preserves_component_constraints() {
     let json = cfg(
         "5f351500",
         &[
-            "--domain",
+            "--numeric-model",
             "product",
             "--max-constants",
             "1",
@@ -68,16 +75,16 @@ fn explicit_fact_policy_is_reported_and_preserves_component_constraints() {
             "1",
         ],
     );
-    assert_eq!(json["config"]["reduction_rounds"], 1);
-    assert_eq!(json["config"]["max_facts"], 1);
+    assert!(json["config"].get("reduction_rounds").is_none());
+    assert!(json["config"].get("max_facts").is_none());
     assert_eq!(json["domain_spec"]["reduction_rounds"], 1);
     assert_eq!(json["domain_spec"]["fact_limit"], 1);
     let boolean = &json["states"][0]["exit_stack"][0];
     assert!(boolean.is_object());
-    assert_eq!(boolean["congruence"], "Top");
-    assert_eq!(boolean["interval"]["unsigned_lo"], "0x0");
-    assert_eq!(boolean["interval"]["unsigned_hi"], "0x1");
-    assert!(boolean.get("Constants").is_none());
+    assert!(crate::native::numeric(boolean).get("congruence").is_none());
+    assert_eq!(boolean["numeric"]["interval"]["unsigned_lo"], "0x0");
+    assert_eq!(boolean["numeric"]["interval"]["unsigned_hi"], "0x1");
+    assert!(crate::native::numeric(boolean).get("constants").is_none());
     assert!(json["frontiers"].as_array().unwrap().is_empty());
 }
 
@@ -90,7 +97,7 @@ fn zero_fact_policy_is_rejected_before_execution() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("must be positive"));
     }
     assert_eq!(
-        run_concrete(&["cfg", "--hex", "00", "--domain", "unknown"])
+        run_concrete(&["cfg", "--hex", "00", "--numeric-model", "unknown"])
             .status
             .code(),
         Some(2)
@@ -120,6 +127,8 @@ fn initial_world_budget_is_incomplete_with_an_explicit_source_free_frontier() {
     assert!(frontiers[0]["target"].is_null());
     assert!(frontiers[0]["pc"].is_null());
     assert_eq!(frontiers[0]["reason"], "Work");
-    assert_eq!(json["schema_version"], 11);
-    assert_eq!(json["domain_spec"]["profile"], "product");
+    assert_eq!(json["schema_version"], 12);
+    assert_eq!(json["numeric_model"], "product");
+    assert_eq!(json["postprocessing_max_work"], 2_000_000_000);
+    assert_eq!(json["postprocessing_work"], 0);
 }

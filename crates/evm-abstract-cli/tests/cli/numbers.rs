@@ -45,7 +45,7 @@ fn decimal_entry_value_matches_hex_and_reaches_execution() {
         let decimal_json: serde_json::Value =
             serde_json::from_slice(&decimal_output.stdout).unwrap();
         assert_eq!(
-            decimal_json["entry"]["environment"]["value"]["Constants"],
+            decimal_json["entry"]["environment"]["value"]["numeric"]["constants"],
             serde_json::json!([hexadecimal])
         );
         assert_eq!(
@@ -140,7 +140,7 @@ fn decimal_rpc_quantities_keep_full_width_and_canonical_storage_keys() {
                         .as_array()
                         .unwrap()
                         .iter()
-                        .map(|v| v["Constants"].clone())
+                        .map(|v| v["numeric"]["constants"].clone())
                         .collect::<Vec<_>>(),
                     vec![json!(["0x3e8"]), json!(["0x2a"])]
                 );

@@ -3,9 +3,11 @@
 mod defaults;
 mod error;
 mod evm;
+mod execute;
 mod explain;
 mod json;
 mod number;
+mod numeric;
 mod symbolic;
 mod world;
 
@@ -17,21 +19,20 @@ use error::CliError;
 use evm::EvmArgs;
 use evm_abstract::{
     Fork,
-    analysis::{self, Config, ExecutionConfig, Status},
+    analysis::{self, EvmAnalysis, EvmWorldAnalysis, FrameCode, Status, control::Control},
     bytecode::Program,
-    domain::Profile,
-    render, ssa,
-    world::{
-        Entry,
-        rpc::{self, AccountRequest, RpcBlock, RpcInput},
-    },
+    domain::{EvmNumericAlgebra, FiniteSetAlgebra, ProductAlgebra, ValueAlgebra, WordElement},
+    render,
+    resource::WorkBudget,
+    ssa,
 };
+use execute::ExecutionArgs;
+use numeric::{NumericArgs, NumericModel};
 use std::{
     fs,
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
-    time::Duration,
 };
 
 #[derive(Parser)]
@@ -66,7 +67,7 @@ enum Command {
         #[arg(long, value_enum, default_value = "text")]
         format: TextFormat,
     },
-    /// Recover a conservative CFG using a finite-set abstract stack.
+    /// Recover a conservative CFG using the selected native numeric algebra.
     Cfg {
         #[command(flatten)]
         args: AnalysisArgs,
@@ -93,7 +94,7 @@ enum Command {
 #[derive(Args)]
 struct WorldArgs {
     #[command(flatten)]
-    symbolic: symbolic::SymbolicArgs,
+    numeric: NumericArgs,
     /// Offline JSON world snapshot; analysis never fetches missing facts from a node.
     #[arg(
         long,
@@ -149,39 +150,9 @@ struct WorldArgs {
     #[arg(long)]
     no_summaries: bool,
     #[command(flatten)]
-    coverage: RootTerminalCoverageArgs,
+    execution: ExecutionArgs,
     #[command(flatten)]
     evm: EvmArgs,
-    /// Maximum live frames, including entry; reaching the cap retains a frontier.
-    #[arg(long, default_value_t = defaults::MAX_CALL_DEPTH)]
-    max_call_depth: usize,
-    /// Maximum cumulative execution and domain work.
-    #[arg(long, default_value_t = defaults::MAX_WORK)]
-    max_work: usize,
-    /// Maximum logical memory footprint per frame; copies retain lazy ranges.
-    #[arg(long, default_value_t = defaults::MAX_MEMORY_BYTES)]
-    max_memory_bytes: usize,
-    /// Constants retained per value; positive usize, without an additional cap.
-    #[arg(long, default_value_t = defaults::MAX_CONSTANTS)]
-    max_constants: usize,
-    /// Numerical domain: combined facts or the constants-only comparison.
-    #[arg(long, value_enum, default_value_t = DomainProfile::Product)]
-    domain: DomainProfile,
-    /// Maximum complete rounds per temporary fact exchange.
-    #[arg(long, default_value_t = defaults::REDUCTION_ROUNDS)]
-    reduction_rounds: usize,
-    /// Maximum semantic atoms per temporary fact lattice.
-    #[arg(long, default_value_t = defaults::MAX_FACTS)]
-    max_facts: usize,
-    /// Recent jump-source blocks retained within each frame; 0 disables context sensitivity.
-    #[arg(long, default_value_t = defaults::CONTEXT_DEPTH)]
-    context_depth: usize,
-    /// Maximum abstract machine states.
-    #[arg(long, default_value_t = defaults::MAX_STATES)]
-    max_states: usize,
-    /// Maximum block transfers, including revisits.
-    #[arg(long, default_value_t = defaults::MAX_TRANSFERS)]
-    max_transfers: usize,
 }
 
 #[derive(Clone)]
@@ -215,77 +186,15 @@ struct Input {
 }
 
 #[derive(Args)]
-#[group(skip)]
-struct RootTerminalCoverageArgs {
-    /// Enable conservative root terminal coverage (default); detailed frontiers still exit 2.
-    #[arg(long, conflicts_with = "no_root_terminal_coverage")]
-    root_terminal_coverage: bool,
-    /// Disable conservative root terminal coverage preparation.
-    #[arg(long, conflicts_with = "root_terminal_coverage")]
-    no_root_terminal_coverage: bool,
-}
-
-impl RootTerminalCoverageArgs {
-    fn enabled(&self) -> bool {
-        // Neither switch has a clap default, so an explicit opt-out stays valid.
-        self.root_terminal_coverage || !self.no_root_terminal_coverage
-    }
-}
-
-#[derive(Args)]
 struct AnalysisArgs {
     #[command(flatten)]
-    coverage: RootTerminalCoverageArgs,
-    /// Maximum cumulative execution and domain work.
-    #[arg(long, default_value_t = defaults::MAX_WORK)]
-    max_work: usize,
-    /// Maximum live frames, including the entry frame.
-    #[arg(long, default_value_t = defaults::MAX_CALL_DEPTH)]
-    max_call_depth: usize,
-    /// Maximum logical memory footprint per frame; copies retain lazy ranges.
-    #[arg(long, default_value_t = defaults::MAX_MEMORY_BYTES)]
-    max_memory_bytes: usize,
+    execution: ExecutionArgs,
     #[command(flatten)]
-    symbolic: symbolic::SymbolicArgs,
+    numeric: NumericArgs,
     #[command(flatten)]
     input: Input,
     #[command(flatten)]
     evm: EvmArgs,
-    /// Recent jump-source blocks retained in the context; 0 disables context sensitivity.
-    #[arg(long, default_value_t = defaults::CONTEXT_DEPTH)]
-    context_depth: usize,
-    /// Constants retained per stack slot; positive usize, without an additional cap.
-    #[arg(long, default_value_t = defaults::MAX_CONSTANTS)]
-    max_constants: usize,
-    /// Numerical domain: combined facts or the constants-only comparison.
-    #[arg(long, value_enum, default_value_t = DomainProfile::Product)]
-    domain: DomainProfile,
-    /// Maximum complete rounds per temporary fact exchange.
-    #[arg(long, default_value_t = defaults::REDUCTION_ROUNDS)]
-    reduction_rounds: usize,
-    /// Maximum semantic atoms per temporary fact lattice.
-    #[arg(long, default_value_t = defaults::MAX_FACTS)]
-    max_facts: usize,
-    /// Maximum abstract states; exhaustion returns exit code 2.
-    #[arg(long, default_value_t = defaults::MAX_STATES)]
-    max_states: usize,
-    /// Maximum block transfers, including revisits; exhaustion returns exit code 2.
-    #[arg(long, default_value_t = defaults::MAX_TRANSFERS)]
-    max_transfers: usize,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum DomainProfile {
-    Product,
-    ConstantsOnly,
-}
-impl From<DomainProfile> for Profile {
-    fn from(value: DomainProfile) -> Self {
-        match value {
-            DomainProfile::Product => Self::Product,
-            DomainProfile::ConstantsOnly => Self::ConstantsOnly,
-        }
-    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -311,113 +220,119 @@ impl Input {
     }
 }
 
-impl AnalysisArgs {
-    fn analyze(self) -> Result<analysis::Analysis, CliError> {
-        let config = Config {
-            relations: self.symbolic.limits(),
-            domain_profile: self.domain.into(),
-            reduction_rounds: self.reduction_rounds,
-            max_facts: self.max_facts,
-            max_constants: self.max_constants,
-            context_depth: self.context_depth,
-            max_states: self.max_states,
-            max_transfers: self.max_transfers,
-        };
-        let environment = self.evm.environment()?;
-        Ok(analysis::analyze_with_execution_config(
-            self.input.load()?,
-            ExecutionConfig {
-                analysis: config,
-                max_work: self.max_work,
-                max_call_depth: self.max_call_depth,
-                max_memory_bytes: self.max_memory_bytes,
-                use_summaries: true,
-                root_terminal_coverage: self.coverage.enabled(),
-            },
-            environment,
-        )?)
-    }
-}
-
-impl WorldArgs {
-    fn analyze(self) -> Result<analysis::WorldAnalysis, CliError> {
-        let entry_address = self
-            .evm
-            .to
-            .expect("clap requires --evm.to for world/RPC input");
-        let environment = self.evm.environment()?;
-        let (world, rpc_input) = match (self.world, self.rpc) {
-            (Some(path), None) => (Some(world::load(&path)?), None),
-            (None, Some(endpoint)) => {
-                let mut input = RpcInput::new(endpoint, self.fork.unwrap_or_default());
-                input.block = match (self.block_hash, self.block_number) {
-                    (Some(hash), None) => RpcBlock::Hash(world::hash(&hash, "block")?),
-                    (None, Some(number)) => RpcBlock::Number(number),
-                    (None, None) => RpcBlock::Latest,
-                    (Some(_), Some(_)) => unreachable!("clap makes block selectors exclusive"),
-                };
-                let mut accounts = std::collections::BTreeMap::new();
-                accounts.insert(entry_address, std::collections::BTreeSet::new());
-                for account in self.account {
-                    accounts
-                        .entry(world::address(&account, "RPC account")?)
-                        .or_default();
-                }
-                for slot in self.slot {
-                    accounts.entry(slot.address).or_default().insert(slot.slot);
-                }
-                input.accounts = accounts
-                    .into_iter()
-                    .map(|(address, slots)| AccountRequest { address, slots })
-                    .collect();
-                input.max_accounts = self.max_rpc_accounts;
-                input.max_requests = self.max_rpc_requests;
-                input.max_response_bytes = self.max_rpc_response_bytes;
-                input.timeout = Duration::from_millis(self.rpc_timeout_ms);
-                (None, Some(input))
-            }
-            _ => unreachable!("clap requires exactly one world input"),
-        };
-        let entry = Entry {
-            address: entry_address,
-            environment,
-        };
-        let config = ExecutionConfig {
-            analysis: Config {
-                relations: self.symbolic.limits(),
-                domain_profile: self.domain.into(),
-                reduction_rounds: self.reduction_rounds,
-                max_facts: self.max_facts,
-                max_constants: self.max_constants,
-                context_depth: self.context_depth,
-                max_states: self.max_states,
-                max_transfers: self.max_transfers,
-            },
-            max_work: self.max_work,
-            max_call_depth: self.max_call_depth,
-            max_memory_bytes: self.max_memory_bytes,
-            use_summaries: !self.no_summaries,
-            root_terminal_coverage: self.coverage.enabled(),
-        };
-        match (world, rpc_input) {
-            (Some(world), None) => Ok(analysis::analyze_world(world, entry, config)?),
-            (None, Some(input)) if self.no_rpc_discovery => {
-                Ok(analysis::analyze_world(rpc::load(&input)?, entry, config)?)
-            }
-            (None, Some(input)) => {
-                let result = analysis::analyze_rpc(&input, entry, config)?;
-                for failure in result.failures() {
-                    eprintln!("RPC discovery: {failure}");
-                }
-                Ok(result.into_analysis())
-            }
-            _ => unreachable!("clap requires exactly one world input"),
+impl Command {
+    fn numeric(&self) -> Option<&NumericArgs> {
+        match self {
+            Self::Analyze { args, .. } => Some(&args.numeric),
+            Self::Cfg { args, .. } | Self::Ssa { args, .. } => Some(&args.numeric),
+            Self::Explain { args } => Some(&args.numeric),
+            Self::Disasm { .. } => None,
         }
     }
 }
 
 fn run() -> Result<ExitCode, CliError> {
-    let (output, complete) = match Cli::parse().command {
+    let command = Cli::parse().command;
+    let (output, complete) = execute(command, &Control::default())?;
+    let mut stdout = io::stdout().lock();
+    if output.is_empty() {
+        return Ok(if complete {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(2)
+        });
+    }
+    match writeln!(stdout, "{output}") {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(if complete {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
+}
+
+/// Choose the actual carrier once. Every command below stays generic through
+/// input preparation, execution, projection and rendering.
+fn execute(command: Command, control: &Control) -> Result<(String, bool), CliError> {
+    control.scope(|| {
+        let Some(numeric) = command.numeric() else {
+            let Command::Disasm { input, format } = command else {
+                unreachable!("only disassembly does not execute bytecode")
+            };
+            let program = input.load()?;
+            return Ok((
+                match format {
+                    TextFormat::Text => render::disassembly(&program),
+                    TextFormat::Json => render::json::pretty(&program)?,
+                },
+                true,
+            ));
+        };
+        let text_output = matches!(
+            &command,
+            Command::Analyze {
+                format: CfgFormat::Text,
+                ..
+            } | Command::Cfg {
+                format: CfgFormat::Text,
+                ..
+            } | Command::Ssa {
+                format: TextFormat::Text,
+                ..
+            } | Command::Explain { .. }
+        );
+        let dot_output = matches!(
+            &command,
+            Command::Analyze {
+                format: CfgFormat::Dot,
+                ..
+            } | Command::Cfg {
+                format: CfgFormat::Dot,
+                ..
+            }
+        );
+        let model = numeric.numeric_model;
+        let spec = numeric.spec()?;
+        let (output, complete) = match model {
+            NumericModel::Product => execute_with(
+                command,
+                model,
+                &ValueAlgebra::new(ProductAlgebra::from_spec(spec)),
+                control,
+            ),
+            NumericModel::FiniteSet => execute_with(
+                command,
+                model,
+                &ValueAlgebra::new(FiniteSetAlgebra::from_spec(spec)),
+                control,
+            ),
+        }?;
+        Ok((
+            if text_output && !output.is_empty() {
+                format!("Numeric model: {model}\n{output}")
+            } else if dot_output {
+                format!("// Numeric model: {model}\n{output}")
+            } else {
+                output
+            },
+            complete,
+        ))
+    })
+}
+
+fn execute_with<D: EvmNumericAlgebra>(
+    command: Command,
+    model: NumericModel,
+    algebra: &ValueAlgebra<D>,
+    control: &Control,
+) -> Result<(String, bool), CliError> {
+    // Reporting has its own bounded ledger; a stopped execution must still be
+    // able to export its recorded prefix under the normal application policy.
+    let mut reporting = WorkBudget::new(defaults::DEFAULT_POSTPROCESS_WORK);
+    let (output, complete) = match command {
         Command::Analyze {
             args,
             format,
@@ -432,120 +347,162 @@ fn run() -> Result<ExitCode, CliError> {
                     )
                     .exit();
             }
-            let analysis = args.analyze()?;
-            let complete = analysis.status() == Status::Converged;
-            let ir = if ssa && (complete || allow_partial_ssa) {
-                Some(ssa::build_normalized_partial_world(&analysis)?)
-            } else {
-                None
-            };
-            if ssa && !complete && ir.is_none() {
-                eprintln!("SSA unavailable: cross-contract frontiers remain");
-            }
-            (
-                match format {
-                    CfgFormat::Text => {
-                        let mut output = render::world::text(&analysis);
-                        if let Some(ir) = ir {
-                            output.push('\n');
-                            output.push_str(&if complete {
-                                render::world::normalized_ssa_verbose(&analysis, &ir)
-                            } else {
-                                render::world::normalized_ssa(&analysis, &ir)
-                            });
-                        }
-                        text_with_root_terminal_coverage(output, analysis.root_terminal_coverage())
-                    }
-                    CfgFormat::Json => json::world(&analysis, ir.as_ref())?,
-                    CfgFormat::Dot => render::world::dot(&analysis),
-                },
-                complete,
-            )
+            let analysis = args.analyze(algebra, control)?;
+            world_output(
+                &analysis,
+                algebra,
+                format,
+                model,
+                ssa,
+                allow_partial_ssa,
+                &mut reporting,
+            )?
         }
-        Command::Disasm { input, format } => {
-            let program = input.load()?;
-            (
-                match format {
-                    TextFormat::Text => render::disassembly(&program),
-                    TextFormat::Json => render::json::pretty(&program)?,
-                },
-                true,
-            )
-        }
+        Command::Disasm { .. } => unreachable!("disassembly is handled before numeric dispatch"),
         Command::Cfg { args, format } => {
-            let analysis = args.analyze()?;
-            (
-                match format {
-                    CfgFormat::Text => text_with_root_terminal_coverage(
-                        render::cfg(&analysis),
-                        analysis.root_terminal_coverage(),
-                    ),
-                    CfgFormat::Json => render::json::pretty(&analysis)?,
-                    CfgFormat::Dot => render::dot(&analysis),
-                },
-                analysis.status() == Status::Converged,
-            )
+            let native = args.analyze(algebra, control)?;
+            if native.root_code(&mut reporting)? != FrameCode::Runtime {
+                world_output(
+                    &native,
+                    algebra,
+                    format,
+                    model,
+                    false,
+                    false,
+                    &mut reporting,
+                )?
+            } else {
+                let analysis = EvmAnalysis::from_execution(native, &mut reporting)?;
+                (
+                    match format {
+                        CfgFormat::Text => text_with_root_terminal_coverage(
+                            render::cfg(&analysis, algebra),
+                            analysis.root_terminal_coverage(),
+                        ),
+                        CfgFormat::Json => json::cfg(&analysis, model, &reporting)?,
+                        CfgFormat::Dot => render::dot(&analysis, algebra),
+                    },
+                    analysis.status() == Status::Converged,
+                )
+            }
         }
         Command::Ssa {
             args,
             format,
             allow_partial_ssa,
         } => {
-            let analysis = args.analyze()?;
-            if analysis.status() == Status::Incomplete {
-                if !allow_partial_ssa {
+            let native = args.analyze(algebra, control)?;
+            if native.root_code(&mut reporting)? != FrameCode::Runtime {
+                if native.status() == Status::Incomplete && !allow_partial_ssa {
                     eprintln!(
                         "{}SSA unavailable: analysis frontiers remain",
                         text_with_root_terminal_coverage(
-                            render::cfg(&analysis),
-                            analysis.root_terminal_coverage(),
+                            render::world::text(&native, algebra),
+                            native.root_terminal_coverage()
                         )
                     );
-                    return Ok(ExitCode::from(2));
+                    return Ok((String::new(), false));
                 }
-                let ir = ssa::build_normalized_partial_world(analysis.execution())?;
-                (
-                    match format {
-                        TextFormat::Text => text_with_root_terminal_coverage(
-                            render::normalized_ssa(&analysis, &ir),
-                            analysis.root_terminal_coverage(),
-                        ),
-                        TextFormat::Json => json::program(&analysis, &ir)?,
-                    },
-                    false,
-                )
-            } else {
-                let ssa = ssa::build_normalized(&analysis)?;
-                (
-                    match format {
-                        TextFormat::Text => text_with_root_terminal_coverage(
-                            render::normalized_ssa(&analysis, &ssa),
-                            analysis.root_terminal_coverage(),
-                        ),
-                        TextFormat::Json => json::program(&analysis, &ssa)?,
-                    },
+                let format = match format {
+                    TextFormat::Text => CfgFormat::Text,
+                    TextFormat::Json => CfgFormat::Json,
+                };
+                world_output(
+                    &native,
+                    algebra,
+                    format,
+                    model,
                     true,
-                )
+                    allow_partial_ssa,
+                    &mut reporting,
+                )?
+            } else {
+                let analysis = EvmAnalysis::from_execution(native, &mut reporting)?;
+                if analysis.status() == Status::Incomplete {
+                    if !allow_partial_ssa {
+                        eprintln!(
+                            "{}SSA unavailable: analysis frontiers remain",
+                            text_with_root_terminal_coverage(
+                                render::cfg(&analysis, algebra),
+                                analysis.root_terminal_coverage(),
+                            )
+                        );
+                        return Ok((String::new(), false));
+                    }
+                    let ir =
+                        ssa::build_normalized_partial_world(analysis.execution(), &mut reporting)?;
+                    (
+                        match format {
+                            TextFormat::Text => text_with_root_terminal_coverage(
+                                render::normalized_ssa(&analysis, &ir, algebra),
+                                analysis.root_terminal_coverage(),
+                            ),
+                            TextFormat::Json => json::program(&analysis, &ir, model, &reporting)?,
+                        },
+                        false,
+                    )
+                } else {
+                    let ssa = ssa::build_normalized(&analysis, &mut reporting)?;
+                    (
+                        match format {
+                            TextFormat::Text => text_with_root_terminal_coverage(
+                                render::normalized_ssa(&analysis, &ssa, algebra),
+                                analysis.root_terminal_coverage(),
+                            ),
+                            TextFormat::Json => json::program(&analysis, &ssa, model, &reporting)?,
+                        },
+                        true,
+                    )
+                }
             }
         }
-        Command::Explain { args } => args.run()?,
+        Command::Explain { args } => args.run(algebra, control, &mut reporting)?,
     };
-    let mut stdout = io::stdout().lock();
-    match writeln!(stdout, "{output}") {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
-        Err(error) => return Err(error.into()),
-    }
-    Ok(if complete {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(2)
-    })
+    Ok((output, complete))
 }
 
-fn text_with_root_terminal_coverage(
+fn world_output<D: EvmNumericAlgebra>(
+    analysis: &EvmWorldAnalysis<D::Element>,
+    algebra: &ValueAlgebra<D>,
+    format: CfgFormat,
+    model: NumericModel,
+    ssa: bool,
+    allow_partial_ssa: bool,
+    reporting: &mut WorkBudget,
+) -> Result<(String, bool), CliError> {
+    let complete = analysis.status() == Status::Converged;
+    let ir = if ssa && (complete || allow_partial_ssa) {
+        Some(ssa::build_normalized_partial_world(analysis, reporting)?)
+    } else {
+        None
+    };
+    if ssa && !complete && ir.is_none() {
+        eprintln!("SSA unavailable: cross-contract frontiers remain");
+    }
+    Ok((
+        match format {
+            CfgFormat::Text => {
+                let mut output = render::world::text(analysis, algebra);
+                if let Some(ir) = ir {
+                    output.push('\n');
+                    output.push_str(&if complete {
+                        render::world::normalized_ssa_verbose(analysis, &ir)
+                    } else {
+                        render::world::normalized_ssa(analysis, &ir)
+                    });
+                }
+                text_with_root_terminal_coverage(output, analysis.root_terminal_coverage())
+            }
+            CfgFormat::Json => json::world(analysis, ir.as_ref(), model, reporting)?,
+            CfgFormat::Dot => render::world::dot(analysis, algebra),
+        },
+        complete,
+    ))
+}
+
+fn text_with_root_terminal_coverage<N: WordElement>(
     mut output: String,
-    coverage: Option<&analysis::RootTerminalCoverage>,
+    coverage: Option<&analysis::EvmRootTerminalCoverage<N>>,
 ) -> String {
     if let Some(coverage) = coverage {
         use std::fmt::Write as _;
