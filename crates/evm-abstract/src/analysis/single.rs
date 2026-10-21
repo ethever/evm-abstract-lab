@@ -34,6 +34,49 @@ impl From<crate::resource::CloneError> for ProjectionError {
     }
 }
 
+/// Resolve source identity without cloning the Program or reconstructing a Store.
+fn root_source<'a, N: WordElement>(
+    execution: &'a EvmWorldAnalysis<N>,
+    budget: &mut WorkBudget,
+) -> Result<(super::FrameCode, Option<&'a crate::bytecode::Program>), ProjectionError> {
+    pay(budget, 8)?;
+    if let Some(state) = execution.states().first() {
+        let frame = &state.entry.call_stack.root().state;
+        pay(budget, 0)?;
+        return Ok((frame.code, frame.program.as_ref()));
+    }
+    if execution.status() != super::Status::Incomplete {
+        return Err(ProjectionError::MissingProgram);
+    }
+    let levels = execution
+        .world()
+        .accounts()
+        .len()
+        .checked_ilog2()
+        .unwrap_or(0) as usize
+        + 2;
+    pay(budget, levels.saturating_mul(128))?;
+    let (_, mode, program) = super::transfer::resolve_code(
+        execution.world().fork(),
+        execution.entry().address,
+        |address| {
+            execution
+                .world()
+                .account(address)
+                .map(|account| &account.code)
+        },
+    );
+    pay(budget, 0)?;
+    Ok((mode, program))
+}
+impl<N: WordElement> EvmWorldAnalysis<N> {
+    /// Paid source classification. Declared code in an empty incomplete result
+    /// names only an unexpanded input, never an executed frame or completion.
+    pub fn root_code(&self, budget: &mut WorkBudget) -> Result<super::FrameCode, ProjectionError> {
+        root_source(self, budget).map(|(mode, _)| mode)
+    }
+}
+
 impl<N: WordElement> EvmAnalysis<N> {
     /// Project the declared root's native graph, retaining all non-local execution.
     pub fn from_execution(
@@ -52,32 +95,26 @@ impl<N: WordElement> EvmAnalysis<N> {
                 .saturating_add(execution.diagnostics().len().saturating_mul(8))
                 .saturating_add(32),
         )?;
-        let root = &execution
+        let root = execution
             .states()
             .first()
-            .ok_or(ProjectionError::MissingProgram)?
-            .entry
-            .call_stack
-            .root()
-            .state;
-        if root.code != super::FrameCode::Runtime {
-            return Err(ProjectionError::NonRuntime(root.code));
+            .map(|state| &state.entry.call_stack.root().state);
+        let (mode, program) = root_source(&execution, budget)?;
+        if mode != super::FrameCode::Runtime {
+            return Err(ProjectionError::NonRuntime(mode));
         }
-        let captured_program = root
-            .program
-            .as_ref()
-            .ok_or(ProjectionError::MissingProgram)?;
-        let code_address = root.key.code_address;
-        let code_hash = root.key.code_hash;
+        let program = program.ok_or(ProjectionError::MissingProgram)?;
         let selected = |state: &super::EvmMachineState<N>| {
-            state.key.frames.len() == 1
-                && state.active().mode == super::FrameCode::Runtime
-                && state.active().code_address == code_address
-                && state.active().code_hash == code_hash
-                && state.entry.active().program.as_ref() == Some(captured_program)
-                && state.active().basic_block_index < captured_program.blocks().len()
+            root.is_some_and(|root| {
+                state.key.frames.len() == 1
+                    && state.active().mode == super::FrameCode::Runtime
+                    && state.active().code_address == root.key.code_address
+                    && state.active().code_hash == root.key.code_hash
+                    && state.entry.active().program.as_ref() == Some(program)
+                    && state.active().basic_block_index < program.blocks().len()
+            })
         };
-        let mut copies = captured_program.byte_len().saturating_add(32);
+        let mut copies = program.byte_len().saturating_add(32);
         for state in execution.states().iter().filter(|state| selected(state)) {
             pay(
                 budget,
@@ -104,7 +141,7 @@ impl<N: WordElement> EvmAnalysis<N> {
             }
         }
         pay(budget, copies)?;
-        let program = captured_program.clone();
+        let program = program.clone();
         let analysis_config = execution.config().analysis.clone();
         let mut states = Vec::new();
         let mut execution_state_ids = Vec::new();
@@ -214,5 +251,136 @@ impl<N: WordElement> EvmAnalysis<N> {
             execution,
             execution_state_ids,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Address, Fork,
+        analysis::{
+            AnalysisEngine, AnalysisInput, EnginePolicies, ExecutionConfig, FrameCode, Status,
+            control::Control, cooperation::NoExtension,
+        },
+        bytecode::Program,
+        domain::{NumericValue, ProductAlgebra, ValueAlgebra},
+        world::{EvmAccount, EvmEntry, EvmWorld},
+    };
+
+    #[test]
+    fn unexpanded_runtime_projects_its_declared_code_and_actual_frontier() {
+        let values = ValueAlgebra::new(ProductAlgebra::default());
+        let native = AnalysisEngine::new(&values, &EnginePolicies::default(), &mut NoExtension)
+            .run(
+                AnalysisInput::<NumericValue>::from_program(
+                    Program::from_hex("600160020100").unwrap(),
+                    Default::default(),
+                )
+                .unwrap(),
+                ExecutionConfig {
+                    max_work: 1,
+                    root_terminal_coverage: false,
+                    ..ExecutionConfig::default()
+                },
+                &Control::default(),
+            )
+            .unwrap();
+        assert_eq!(native.status(), Status::Incomplete);
+        assert!(native.states().is_empty());
+        let frontier_count = native.frontiers().len();
+        let view =
+            EvmAnalysis::from_execution(native, &mut WorkBudget::new(2_000_000_000)).unwrap();
+        assert_eq!(view.program().bytes(), &[0x60, 1, 0x60, 2, 1, 0]);
+        assert!(view.states().is_empty() && view.edges().is_empty());
+        assert_eq!(view.status(), Status::Incomplete);
+        assert_eq!(view.frontiers().len(), frontier_count);
+        assert!(view.execution().states().is_empty());
+    }
+
+    #[test]
+    fn declared_bytes_at_precompile_never_become_runtime_projection() {
+        let values = ValueAlgebra::new(ProductAlgebra::default());
+        let owner = Address::from_word(crate::U256::ONE.into());
+        for max_work in [1, ExecutionConfig::default().max_work] {
+            let mut world =
+                EvmWorld::<NumericValue>::new(Fork::Osaka, "precompile shadows declared bytes");
+            world
+                .insert(owner, EvmAccount::from_hex("600100", Fork::Osaka).unwrap())
+                .unwrap();
+            let native = AnalysisEngine::new(&values, &EnginePolicies::default(), &mut NoExtension)
+                .run(
+                    AnalysisInput::new(world, EvmEntry::new(owner)).unwrap(),
+                    ExecutionConfig {
+                        max_work,
+                        root_terminal_coverage: false,
+                        ..ExecutionConfig::default()
+                    },
+                    &Control::default(),
+                )
+                .unwrap();
+            if max_work == 1 {
+                assert!(native.states().is_empty());
+            } else {
+                assert!(!native.states().is_empty());
+            }
+            assert!(
+                matches!(EvmAnalysis::from_execution(native, &mut WorkBudget::new(2_000_000_000)),
+                Err(ProjectionError::NonRuntime(FrameCode::Precompile(address))) if address == owner)
+            );
+        }
+    }
+    #[test]
+    fn serialized_boundaries_publish_native_ids_and_the_local_mapping() {
+        let values = ValueAlgebra::new(ProductAlgebra::default());
+        let owner = Address::repeat_byte(0x31);
+        let callee = Address::from_word(crate::U256::from(0x20).into());
+        let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "JSON root child root IDs");
+        world
+            .insert(
+                owner,
+                EvmAccount::from_hex("5f5f5f5f5f602061fffff15000", Fork::Osaka).unwrap(),
+            )
+            .unwrap();
+        world
+            .insert(callee, EvmAccount::from_hex("00", Fork::Osaka).unwrap())
+            .unwrap();
+        let native = AnalysisEngine::new(&values, &EnginePolicies::default(), &mut NoExtension)
+            .run(
+                AnalysisInput::new(world, EvmEntry::new(owner)).unwrap(),
+                ExecutionConfig::default(),
+                &Control::default(),
+            )
+            .unwrap();
+        assert_eq!(native.status(), Status::Converged);
+        let view =
+            EvmAnalysis::from_execution(native, &mut WorkBudget::new(2_000_000_000)).unwrap();
+        let json = serde_json::to_value(view).unwrap();
+        assert_eq!(json["edge_endpoint_namespace"], "local");
+        assert_eq!(json["boundary_endpoint_namespace"], "native");
+        let mapping = json["execution_state_ids"].as_array().unwrap();
+        assert!(
+            mapping
+                .iter()
+                .enumerate()
+                .any(|(local, native)| native.as_u64().unwrap() != local as u64)
+        );
+        let boundaries = json["boundary_edges"].as_array().unwrap();
+        assert!(boundaries.len() >= 2);
+        for edge in boundaries {
+            let selected: Vec<_> = [edge["from"].as_u64().unwrap(), edge["to"].as_u64().unwrap()]
+                .into_iter()
+                .filter_map(|native| mapping.iter().position(|id| id.as_u64() == Some(native)))
+                .collect();
+            assert_eq!(
+                selected.len(),
+                1,
+                "exactly one endpoint is in the selected root view"
+            );
+            assert_eq!(
+                json["states"][selected[0]]["id"].as_u64(),
+                Some(selected[0] as u64)
+            );
+        }
     }
 }
