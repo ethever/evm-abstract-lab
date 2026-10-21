@@ -7,7 +7,7 @@ use crate::domain::{EvmNumericAlgebra, WordElement};
 
 #[cfg(test)]
 use crate::domain::AlgebraRef;
-use crate::domain::{EvmValue, SingletonProof};
+use crate::domain::{EvmValue, SingletonProof, symbolic::ExprId};
 #[cfg(test)]
 use revm_bytecode::opcode;
 use std::sync::Arc;
@@ -28,9 +28,57 @@ mod retention;
 use retention::{Failure, GuardRetention};
 
 #[derive(Clone, Copy, Default)]
-struct RangeQueries {
+pub(super) struct RangeQueries {
     offset: SingletonProof,
     size: SingletonProof,
+}
+
+impl RangeQueries {
+    /// Own the continuation's existing copies and retain only answers obtained
+    /// for these unchanged numeric operands. Metadata never replaces N or its
+    /// provenance/input identity, and a negative answer adds no literal.
+    pub(super) fn prepare<N: WordElement>(
+        self,
+        offset: &EvmValue<N>,
+        size: &EvmValue<N>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<(EvmValue<N>, EvmValue<N>), FrontierReason> {
+        super::query::checkpoint(budget)?;
+        let operands = [(offset, self.offset), (size, self.size)];
+        let work = operands.iter().fold(0usize, |work, (value, proof)| {
+            let metadata = match proof {
+                SingletonProof::Answer(Some(word))
+                    if value.expression().and_then(ExprId::as_constant) != Some(*word) =>
+                {
+                    // A new literal and its release, plus the displaced term.
+                    value
+                        .expression()
+                        .map_or(0, ExprId::work_size)
+                        .saturating_add(2)
+                }
+                _ => 0,
+            };
+            work.saturating_add(value.clone_work())
+                .saturating_add(metadata)
+        });
+        super::query::checkpoint(budget)?;
+        if work == usize::MAX || !budget.charge(work) {
+            return Err(FrontierReason::Work);
+        }
+        super::query::checkpoint(budget)?;
+        let retain = |value: &EvmValue<N>, proof| {
+            let mut value = value.clone();
+            if let SingletonProof::Answer(Some(word)) = proof
+                && value.expression().and_then(ExprId::as_constant) != Some(word)
+            {
+                value.set_expression(ExprId::constant(word));
+            }
+            value
+        };
+        let values = (retain(offset, self.offset), retain(size, self.size));
+        super::query::checkpoint(budget)?;
+        Ok(values)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -151,13 +199,28 @@ pub(super) fn memory_after_queries<D: EvmNumericAlgebra>(
         result,
         offset,
         size,
-        RangeQueries {
+        &mut RangeQueries {
             offset: offset_proof,
             size: size_proof,
         },
         context,
         pc,
     )
+}
+
+/// CALL retains the actual paid range answers for its unchanged continuation
+/// operands. Guard construction may discover an offset after an unknown size.
+pub(super) fn memory_with_queries<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) -> Option<RangeQueries> {
+    let mut queries = RangeQueries::default();
+    (logical::failure(result, context, pc)
+        && allow_memory_with_queries(result, offset, size, &mut queries, context, pc))
+    .then_some(queries)
 }
 
 /// MCOPY checks both endpoints against the captured, pre-instruction state.
@@ -248,18 +311,25 @@ fn allow_memory<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
-    allow_memory_with_queries(result, offset, size, RangeQueries::default(), context, pc)
+    allow_memory_with_queries(
+        result,
+        offset,
+        size,
+        &mut RangeQueries::default(),
+        context,
+        pc,
+    )
 }
 
 fn allow_memory_with_queries<D: EvmNumericAlgebra>(
     result: &mut EvmExecution<D::Element>,
     offset: &EvmValue<D::Element>,
     size: &EvmValue<D::Element>,
-    mut queries: RangeQueries,
+    queries: &mut RangeQueries,
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
-    match literal_memory_range_with_queries(offset, size, &mut queries, context) {
+    match literal_memory_range_with_queries(offset, size, queries, context) {
         Ok(Some(allowed)) => return allowed,
         Ok(None) => {}
         Err(reason) => {

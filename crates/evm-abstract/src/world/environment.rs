@@ -162,33 +162,31 @@ impl<N: WordElement> EvmBlobHashes<N> {
         }
     }
 
+    /// Consume caller-prepared length/index proofs without discovering N again.
+    /// Output construction and joins remain caller-funded.
     pub(crate) fn get_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        index: &EvmValue<N>,
+        length: Option<U256>,
+        indices: Option<impl Iterator<Item = U256>>,
         domain: AlgebraRef<'_, D>,
         scope: Option<u64>,
     ) -> EvmValue<N> {
-        let Some(indices) = crate::world::candidates(index) else {
-            return if self.length.singleton() == Some(U256::ZERO) {
+        let Some(indices) = indices else {
+            return if length == Some(U256::ZERO) {
                 EvmValue::<N>::constant(U256::ZERO)
             } else {
                 EvmValue::<N>::top()
             };
         };
-        let mut values = indices.iter().map(|index| {
-            if *index == U256::MAX
-                || self
-                    .length
-                    .singleton()
-                    .is_some_and(|length| *index >= length)
-            {
+        let mut values = indices.map(|index| {
+            if index == U256::MAX || length.is_some_and(|length| index >= length) {
                 return EvmValue::<N>::constant(U256::ZERO);
             }
-            if let Some(hash) = self.hashes.get(index) {
+            if let Some(hash) = self.hashes.get(&index) {
                 // An observed hash also establishes that this index exists.
                 return EvmValue::<N>::constant(U256::from_be_slice(hash.as_slice()));
             }
-            EvmValue::<N>::top().with_symbol(Symbol::BlobHash(*index), scope)
+            EvmValue::<N>::top().with_symbol(Symbol::BlobHash(index), scope)
         });
         let first = values.next().expect("finite value candidates are nonempty");
         values.fold(first, |value, incoming| domain.join(&value, &incoming))
@@ -393,38 +391,41 @@ impl<N: WordElement> EvmEnvironmentValues<N> {
             .with_symbol(Symbol::ChainId, self.input_scope.id())
     }
 
+    /// Evaluate an already prepared current-number proof and complete index
+    /// cover. The caller funds construction/joins; this performs no independent
+    /// opaque singleton discovery. A missing cover remains conservatively unknown.
     pub(crate) fn block_hash_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        index: &EvmValue<N>,
+        current: Option<U256>,
+        indices: Option<impl Iterator<Item = U256>>,
         domain: AlgebraRef<'_, D>,
     ) -> EvmValue<N> {
-        let current = self.number.singleton();
-        let Some(indices) = crate::world::candidates(index) else {
+        let Some(indices) = indices else {
             return if current == Some(U256::ZERO) {
                 EvmValue::<N>::constant(U256::ZERO)
             } else {
                 EvmValue::<N>::top()
             };
         };
-        let mut values = indices.iter().map(|index| {
-            if *index == U256::MAX {
+        let mut values = indices.map(|index| {
+            if index == U256::MAX {
                 return EvmValue::<N>::constant(U256::ZERO);
             }
             if let Some(current) = current {
-                if *index >= current || current - *index > U256::from(256) {
+                if index >= current || current - index > U256::from(256) {
                     return EvmValue::<N>::constant(U256::ZERO);
                 }
-                return self.block_hashes.get(index).map_or_else(
+                return self.block_hashes.get(&index).map_or_else(
                     || {
                         EvmValue::<N>::top()
-                            .with_symbol(Symbol::BlockHash(*index), self.input_scope.id())
+                            .with_symbol(Symbol::BlockHash(index), self.input_scope.id())
                     },
                     |hash| EvmValue::<N>::constant(U256::from_be_slice(hash.as_slice())),
                 );
             }
             // Without NUMBER the index can be either valid or out of range.
             self.block_hashes
-                .get(index)
+                .get(&index)
                 .map_or_else(EvmValue::<N>::top, |hash| {
                     domain.join(
                         &EvmValue::<N>::constant(U256::ZERO),

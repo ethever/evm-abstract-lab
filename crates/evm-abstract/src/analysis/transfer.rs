@@ -37,6 +37,7 @@ mod calls;
 mod candidates;
 pub(super) mod create;
 mod dispatch;
+mod environment;
 mod errors;
 mod hash;
 #[cfg(test)]
@@ -1329,12 +1330,31 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         .blob_base_fee
                         .clone()
                         .with_symbol(Symbol::BlobBaseFee, entry.environment.input_scope.id()),
-                    opcode::BLOCKHASH => entry.environment.block_hash_with(&args[0], domain),
-                    opcode::BLOBHASH => entry.environment.blob_hashes.get_with(
+                    opcode::BLOCKHASH => match environment::block_hash(
+                        &entry.environment,
                         &args[0],
                         domain,
+                        context.budget,
+                    ) {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
+                    },
+                    opcode::BLOBHASH => match environment::blob_hash(
+                        &entry.environment.blob_hashes,
+                        &args[0],
                         entry.environment.input_scope.id(),
-                    ),
+                        domain,
+                        context.budget,
+                    ) {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
+                    },
                     opcode::GAS => entry.environment.gas.value_with(),
                     opcode::PC => constant(pc),
                     opcode::CODESIZE => constant(program.byte_len()),

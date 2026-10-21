@@ -66,9 +66,13 @@ fn pending_source_availability_wakes_the_real_owner_and_consumes_the_proof_job()
         },
     );
     h.certificate(false);
+    assert!(matches!(
+        h.summary(),
+        analysis_kernel::Availability::Pending
+    ));
     let proof_scope = h.cooperation.proof.as_ref().unwrap().scope;
     assert!(
-        matches!(h.summary(),analysis_kernel::Availability::Value(summary) if !summary.closed && summary.generation == 7)
+        matches!(h.snapshot(),analysis_kernel::Availability::Value(summary) if summary.generation == 7)
     );
     {
         let mut meter = MachineMeter(&mut h.budget);
@@ -91,7 +95,7 @@ fn pending_source_availability_wakes_the_real_owner_and_consumes_the_proof_job()
     h.certificate(true); // Runtime must admit SummaryObservation, not SummaryProof.
     assert_eq!(h.cooperation.proof.as_ref().unwrap().scope, proof_scope);
     assert!(
-        matches!(h.summary(),analysis_kernel::Availability::Value(summary) if summary.closed && summary.generation == 7)
+        matches!(h.summary(),analysis_kernel::Availability::Value(summary) if summary.generation == 7)
     );
     assert!(h.runtime.next(false, &mut h.budget).unwrap().is_none());
     assert_eq!(h.runtime.view().closure(), analysis_kernel::Closure::Closed);
@@ -205,11 +209,11 @@ fn root_stop_inside_proof_renewal_keeps_the_previous_closed_certificate_unavaila
                     Harness::ID,
                     crate::analysis::cooperation::Summary::new(
                         7,
-                        true,
                         std::collections::BTreeMap::new(),
                         8,
                     ),
                 )],
+                true,
                 &mut h.runtime,
                 &mut producer,
                 &mut h.budget,
@@ -244,4 +248,190 @@ fn root_stop_inside_proof_renewal_keeps_the_previous_closed_certificate_unavaila
             "the actual required Summary remains unavailable under the unrefreshed family coverage"
         );
     }
+}
+
+#[test]
+fn complete_empty_bound_is_distinct_from_pending_and_keeps_source_validity() {
+    let mut h = Harness::new();
+    h.publish().unwrap();
+    h.certificate(false);
+    assert!(
+        matches!(h.snapshot(), analysis_kernel::Availability::Value(summary) if summary.outputs.is_empty())
+    );
+    assert!(matches!(
+        h.summary(),
+        analysis_kernel::Availability::Pending
+    ));
+    h.certificate(true);
+    let before = match h.summary() {
+        analysis_kernel::Availability::Value(summary) => summary,
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        before.outputs.is_empty(),
+        "Value is a genuinely complete empty bound"
+    );
+    h.grow();
+    assert!(
+        matches!(h.snapshot(), analysis_kernel::Availability::Value(summary) if summary.generation == before.generation)
+    );
+    assert!(
+        matches!(h.summary(), analysis_kernel::Availability::Pending),
+        "matching native generation cannot launder invalid source premises"
+    );
+    h.publish().unwrap();
+    h.certificate(true);
+    assert!(
+        matches!(h.summary(), analysis_kernel::Availability::Value(summary) if summary.revision == before.revision && summary.outputs.is_empty())
+    );
+}
+
+#[test]
+fn mismatched_live_certificate_cannot_certify_a_new_snapshot() {
+    let mut h = Harness::new();
+    h.publish().unwrap();
+    h.certificate(true);
+    assert!(
+        matches!(h.summary(), analysis_kernel::Availability::Value(summary) if summary.generation == 7)
+    );
+    for closed in [false, true] {
+        let mut producer = h.producer();
+        let source = &h.source;
+        // Model the publication boundary independently: a native snapshot is
+        // newer than the last certificate, whose source scope is still live.
+        // This deliberately exercises matching as well as kernel validity.
+        h.cooperation
+            .publish_summaries(
+                vec![(
+                    Harness::ID,
+                    crate::analysis::cooperation::Summary::new(
+                        8,
+                        std::collections::BTreeMap::new(),
+                        8,
+                    ),
+                )],
+                closed,
+                &mut h.runtime,
+                &mut producer,
+                &mut h.budget,
+                |run| {
+                    run.observe_slot(source)?;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        h.runtime.finish(producer, &mut h.budget).unwrap();
+        assert!(
+            matches!(h.snapshot(), analysis_kernel::Availability::Value(summary) if summary.generation == 8)
+        );
+        if closed {
+            assert!(
+                matches!(h.summary(), analysis_kernel::Availability::Value(summary) if summary.generation == 8)
+            );
+        } else {
+            assert!(matches!(
+                h.summary_answer(),
+                Err(
+                    crate::analysis::cooperation::SummaryReadError::GenerationMismatch {
+                        snapshot: 8,
+                        certificate: 7
+                    }
+                )
+            ));
+        }
+    }
+}
+
+#[test]
+fn native_may_growth_wakes_required_snapshot_reader_without_staling_its_scope() {
+    let mut h = Harness::new();
+    h.publish().unwrap();
+    h.certificate(true);
+    let mut meter = MachineMeter(&mut h.budget);
+    let scope = h
+        .runtime
+        .kernel()
+        .scope(
+            ScopeKey {
+                context: 990,
+                generation: 1,
+                policy: 0,
+            },
+            &mut meter,
+        )
+        .unwrap();
+    let point = crate::analysis::cooperation::Point {
+        namespace: 0,
+        kind: PointKind::World,
+        index: 99,
+    };
+    let reader = h
+        .runtime
+        .kernel()
+        .register(
+            scope,
+            Task(TaskKind::Extension(Subject { point, scope })),
+            &mut meter,
+        )
+        .unwrap();
+    h.runtime.kernel().seal_scope(scope, &mut meter).unwrap();
+    let world = h.runtime.world;
+    h.runtime
+        .kernel()
+        .generation_entry(world, scope, &mut meter)
+        .unwrap();
+    let mut run = h.runtime.kernel().begin(reader, &mut meter).unwrap();
+    let value = run
+        .query(
+            &mut h.cooperation.shared.as_mut().unwrap().summaries,
+            Scoped::new(world, Harness::ID),
+        )
+        .unwrap();
+    assert!(
+        matches!(value.state, analysis_kernel::Availability::Value(summary) if summary.generation == 7)
+    );
+    run.finish(LocalClosure::Stable).unwrap();
+    let mut producer = h.producer();
+    h.cooperation
+        .publish_summaries(
+            vec![(
+                Harness::ID,
+                crate::analysis::cooperation::Summary::new(8, std::collections::BTreeMap::new(), 8),
+            )],
+            false,
+            &mut h.runtime,
+            &mut producer,
+            &mut h.budget,
+            |run| {
+                run.observe_slot(&h.source)?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    h.runtime.finish(producer, &mut h.budget).unwrap();
+    assert!(
+        !h.runtime
+            .view()
+            .scope_stale(scope, &mut MachineMeter(&mut h.budget))
+            .unwrap()
+    );
+    assert!(
+        h.runtime
+            .view()
+            .worklist()
+            .pending()
+            .any(|job| job == reader)
+    );
+    let mut meter = MachineMeter(&mut h.budget);
+    let mut run = h.runtime.kernel().begin(reader, &mut meter).unwrap();
+    let value = run
+        .query(
+            &mut h.cooperation.shared.as_mut().unwrap().summaries,
+            Scoped::new(world, Harness::ID),
+        )
+        .unwrap();
+    assert!(
+        matches!(value.state, analysis_kernel::Availability::Value(summary) if summary.generation == 8)
+    );
+    run.finish(LocalClosure::Stable).unwrap();
 }

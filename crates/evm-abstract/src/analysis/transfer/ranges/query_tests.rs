@@ -170,7 +170,7 @@ fn paid_answers_survive_literal_fallback_and_guard_reuses_operation_result_proof
     let built = guard::build_after_queries(
         &offset,
         &size,
-        queries,
+        &mut queries,
         &mut context(&config, &mut budget, algebra.borrowed()),
     )
     .unwrap();
@@ -341,4 +341,98 @@ fn boolean_membership_preserves_opaque_exclusions_without_singleton_discovery() 
         (budget.used(), RECEIPT.get().quotes, RECEIPT.get().queries),
         (128, 0, 0)
     );
+}
+
+#[test]
+fn actual_range_answers_fund_retained_metadata_and_obey_both_cancellation_owners() {
+    let _receipt = RECEIPT.scope();
+    RECEIPT.update(|r| {
+        r.watched = Some(U256::from(32));
+        r.fee = 100_003;
+    });
+    let config = ExecutionConfig::default();
+    let algebra = ValueAlgebra::new(Policy);
+    let offset = EvmValue::<Word>::constant(U256::ZERO).with_expression(ExprId::fresh().unwrap());
+    let size = EvmValue::<Word>::constant(U256::from(32)).with_expression(ExprId::fresh().unwrap());
+    let world = EvmWorld::new(Fork::Osaka, "actual range certificate ownership");
+    let entry = EvmEntry::concrete(
+        Address::ZERO,
+        Address::ZERO,
+        EvmValue::constant(U256::ZERO),
+        EvmByteArray::empty(),
+    );
+    let payload = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
+    let mut result = transfer::empty_execution(payload);
+    let mut admission_budget = WorkBudget::new(config.max_work);
+    let queries = super::memory_with_queries(
+        &mut result,
+        &offset,
+        &size,
+        &mut context(&config, &mut admission_budget, algebra.borrowed()),
+        0,
+    )
+    .unwrap();
+    assert_eq!(queries.offset, SingletonProof::Answer(Some(U256::ZERO)));
+    assert_eq!(queries.size, SingletonProof::Answer(Some(U256::from(32))));
+    assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (1, 1));
+    let work = [&offset, &size]
+        .iter()
+        .map(|value| value.clone_work() + value.expression().unwrap().work_size() + 2)
+        .sum::<usize>();
+    for (maximum, cancellation) in [(work - 1, 0), (work, 0), (work, 1), (work, 2)] {
+        let owner = analysis_control::Cancellation::new();
+        let active = analysis_control::Cancellation::new();
+        let mut budget = analysis_control::with_cancellation(&owner, || WorkBudget::new(maximum));
+        if cancellation == 1 {
+            owner.cancel();
+        }
+        if cancellation == 2 {
+            active.cancel();
+        }
+        let prepared = analysis_control::with_cancellation(&active, || {
+            queries.prepare(&offset, &size, &mut budget)
+        });
+        if cancellation != 0 {
+            assert_eq!(
+                prepared.unwrap_err(),
+                FrontierReason::Relations(QueryReason::Cancelled)
+            );
+            assert_eq!(budget.used(), 0);
+        } else if maximum < work {
+            assert_eq!(prepared.unwrap_err(), FrontierReason::Work);
+            assert_eq!(budget.used(), 0);
+        } else {
+            let (prepared_offset, prepared_size) = prepared.unwrap();
+            assert_eq!(budget.used(), work);
+            for (prepared, original, word) in [
+                (&prepared_offset, &offset, U256::ZERO),
+                (&prepared_size, &size, U256::from(32)),
+            ] {
+                assert_eq!(prepared.numeric(), original.numeric());
+                assert_eq!(
+                    prepared.expression().and_then(ExprId::as_constant),
+                    Some(word)
+                );
+            }
+        }
+        assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (1, 1));
+    }
+    // Paid negative answers and unqueried operands retain their exact metadata.
+    let unknown = EvmValue::from_numeric(Word {
+        lower: U256::ZERO,
+        upper: U256::from(32),
+        excluded: Some(U256::from(7)),
+        ..Word::top()
+    })
+    .with_expression(ExprId::fresh().unwrap());
+    let queries = RangeQueries {
+        offset: SingletonProof::NotQueried,
+        size: SingletonProof::Answer(None),
+    };
+    let mut budget = WorkBudget::new(offset.clone_work() + unknown.clone_work());
+    let (unchanged_offset, unchanged_size) =
+        queries.prepare(&offset, &unknown, &mut budget).unwrap();
+    assert_eq!(unchanged_offset, offset);
+    assert_eq!(unchanged_size, unknown);
+    assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (1, 1));
 }

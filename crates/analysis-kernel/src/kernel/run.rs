@@ -246,8 +246,9 @@ impl<J, M: Meter> Run<'_, J, M> {
     }
     /// Publish through the explicitly chosen ascending or registered local policy.
     ///
-    /// Policy preparation is paid first. Then value, semantic version, first-key
-    /// directory change and reader wakes are reserved and installed together.
+    /// Policy preparation, including guarantee classification, is paid first.
+    /// Then value, semantic version, first-key directory change and reader wakes
+    /// are reserved and installed together.
     /// Replacement also prepays the retained old value's `Capability::drop_work`.
     /// Caller/policy preparation quotes own incoming/prepared temporaries, including
     /// their destruction on refusal or equivalence; installation quotes live data.
@@ -262,16 +263,18 @@ impl<J, M: Meter> Run<'_, J, M> {
         let id = self.kernel.intern(channel, &key, self.meter)?;
         let table = &channel.scopes[&key.scope];
         let cell = table.cells.get(&key.key).expect("interned typed cell");
-        let (next, numerical) = if let Availability::Value(old) = &cell.state {
+        let (next, numerical, preserves_guarantees) = if let Availability::Value(old) = &cell.state
+        {
             reserve(self.meter, channel.policy.work(old, &incoming))?;
             let next = channel
                 .policy
                 .combine(old, &incoming)
                 .map_err(PublishError::Policy)?;
             let changed = !channel.policy.equivalent(old, &next);
-            (next, changed)
+            let preserves = !changed || channel.policy.preserves_guarantees(old, &next);
+            (next, changed, preserves)
         } else {
-            (incoming, true)
+            (incoming, true, P::DESCENDING)
         };
         let coverage = self.kernel.prepare_coverage(self.job, id, self.meter)?;
         if !numerical && coverage.is_none() {
@@ -288,9 +291,10 @@ impl<J, M: Meter> Run<'_, J, M> {
         };
         // New families enlarge declared semantic coverage once. A known family's
         // new generation only restores availability, never a growth wave.
+        // Value classification cannot exempt new families or first-key topology.
         let semantic = if new_family {
             &ids[..]
-        } else if P::DESCENDING {
+        } else if preserves_guarantees {
             if first { &ids[1..] } else { &[] }
         } else if numerical {
             changes

@@ -4,7 +4,9 @@ use super::{Composition, Cooperation};
 use crate::{
     analysis::{
         MachineError,
-        cooperation::{CooperationError, InputTasks, PointKind, ProcedureId, Summary},
+        cooperation::{
+            CooperationError, InputTasks, PointKind, ProcedureId, Summary, SummaryClosure,
+        },
         worklist::{
             MachineMeter,
             runtime::{Runtime, Task, TaskKind},
@@ -158,6 +160,7 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
     pub(in crate::analysis) fn publish_summaries(
         &mut self,
         summaries: Vec<(ProcedureId, Summary<N>)>,
+        closed: bool,
         runtime: &mut Runtime<<X as InputTasks>::Task>,
         producer: &mut RunningJob,
         budget: &mut WorkBudget,
@@ -165,6 +168,34 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             &mut Run<'_, Task<<X as InputTasks>::Task>, MachineMeter<'_>>,
         ) -> Result<(), KernelError<MachineError>>,
     ) -> Result<(), CooperationError<E>> {
+        // Snapshot publication belongs to the permanent native owner, never
+        // the selected completion proof. First Value can unblock ordinary MAY
+        // readers even while native/body completion is still Pending.
+        let owner = self.consumer_job(runtime, producer, budget)?;
+        if !matches!(runtime.view().task(owner)?.0, TaskKind::SummaryObservation) {
+            return Err(KernelError::InvalidJob.into());
+        }
+        let mut generations = Vec::new();
+        {
+            let mut meter = MachineMeter(budget);
+            meter
+                .reserve(summaries.len().saturating_mul(8).saturating_add(1))
+                .map_err(KernelError::Stopped)?;
+            generations.reserve(summaries.len());
+            let universe = runtime.world;
+            let mut run = runtime.kernel().resume(producer, &mut meter)?;
+            let shared = self.shared.as_mut().ok_or(KernelError::InvalidHandle)?;
+            for (id, summary) in summaries {
+                generations.push((id, summary.generation));
+                run.publish(
+                    &mut shared.summaries,
+                    Scoped::new(universe, id),
+                    Arc::new(summary),
+                )
+                .map_err(super::observations::publication_error)?;
+            }
+            *producer = run.suspend();
+        }
         if self.structure.is_none() {
             let relative = runtime.relative;
             let slot = runtime.kernel().slot(relative, &mut MachineMeter(budget))?;
@@ -175,7 +206,7 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
         meter
             .reserve(
                 self.bindings.len().saturating_mul(8).saturating_add(
-                    summaries
+                    generations
                         .len()
                         .saturating_mul(((usize::BITS as usize) + 1) * 16),
                 ),
@@ -189,7 +220,7 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
         }
         observe_native(&mut run)?;
         let shared = self.shared.as_mut().ok_or(KernelError::InvalidHandle)?;
-        let mut ready = true;
+        let mut ready = closed;
         // One pass for the table's actual current execution/contribution
         // scopes. Input adoption carries their cumulative foreign premises,
         // including guarantees used for complete-empty conclusions.
@@ -207,37 +238,24 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             let input = run.query(&mut shared.inputs, Scoped::new(scope, ()))?;
             ready &= matches!(input.state, Availability::Value(_));
         }
-        for (id, mut summary) in summaries {
-            summary.closed &= ready;
-            let native = summary.generation;
-            let previous = self.summary_publications.get(&id).copied();
-            let equivalent =
-                previous.is_some_and(|(old, closed, _)| old == native && closed == summary.closed);
-            let revision = if equivalent {
-                previous.ok_or(KernelError::InvalidHandle)?.2
-            } else {
-                previous
-                    .map_or(Some(1), |(_, _, revision)| revision.checked_add(1))
-                    .ok_or(KernelError::VersionExhausted)?
-            };
-            summary.revision = revision;
-            // Republish even an equal bound from a replacement proof scope.
-            // Kernel renews family coverage without inventing numerical growth.
-            let closed = summary.closed;
-            run.publish(
-                &mut shared.summaries,
-                Scoped::new(universe, id),
-                Arc::new(summary),
-            )
-            .map_err(super::observations::publication_error)?;
-            self.summary_publications
-                .insert(id, (native, closed, revision));
-            let (kernel, meter) = run.parts();
-            meter.checkpoint().map_err(KernelError::Stopped)?;
-            if kernel.scope_stale(scope, meter)? {
-                // Publication can retire its own proof through real feedback.
-                // The stable selector already dirtied the persistent producer.
-                return Ok(());
+        if ready {
+            for (id, generation) in generations {
+                // Only an actual closed proof can restore this family coverage.
+                // Same native generation reuses the exact marker without a
+                // synthetic observation revision or another payload snapshot.
+                let published = run.publish(
+                    &mut shared.closures,
+                    Scoped::new(universe, id),
+                    SummaryClosure { generation },
+                );
+                let (kernel, meter) = run.parts();
+                meter.checkpoint().map_err(KernelError::Stopped)?;
+                if kernel.scope_stale(scope, meter)? {
+                    // Publication can retire its own proof through real feedback.
+                    // The selector already dirtied the persistent native owner.
+                    return Ok(());
+                }
+                published.map_err(super::observations::publication_error)?;
             }
         }
         run.finish(LocalClosure::Stable)?;

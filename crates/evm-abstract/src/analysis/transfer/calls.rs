@@ -544,11 +544,20 @@ fn call_prepared<D: EvmNumericAlgebra>(
             payload,
         ));
     }
-    if !touch_memory(result, &args[input], &args[input + 1], context, pc)
-        || !touch_memory(result, &args[output], &args[output + 1], context, pc)
-    {
+    if !touch_memory(result, &args[input], &args[input + 1], context, pc) {
         return Ok(());
     }
+    let Some(output_queries) =
+        super::ranges::memory_with_queries(result, &args[output], &args[output + 1], context, pc)
+    else {
+        return Ok(());
+    };
+    // Prepare the continuation's owned operands once. The first entered child
+    // takes these same copies; additional target branches own their own copies.
+    let prepared_output =
+        output_queries.prepare(&args[output], &args[output + 1], context.budget)?;
+    super::create::expand_prepared(result, &prepared_output.0, &prepared_output.1, context)?;
+    let mut prepared_output = Some(prepared_output);
     let next = result.payload.active().key.basic_block_index + 1;
     // The decoder splits after every CALL. An end-of-code continuation is a
     // synthetic empty block, making each return pop exactly one frame.
@@ -715,6 +724,11 @@ fn call_prepared<D: EvmNumericAlgebra>(
                 credit_truth.nonzero,
             );
         }
+        let (output_offset, output_size) = match prepared_output.take() {
+            Some(values) => values,
+            None => output_queries.prepare(&args[output], &args[output + 1], context.budget)?,
+        };
+        query::checkpoint(context.budget)?;
         payload.call_stack.push_child(EvmChildFrame {
             state: EvmFrameState {
                 key: FrameKey {
@@ -743,8 +757,8 @@ fn call_prepared<D: EvmNumericAlgebra>(
             },
             continuation: EvmContinuation {
                 return_block: Some(next),
-                output_offset: args[output].clone(),
-                output_size: args[output + 1].clone(),
+                output_offset,
+                output_size,
                 creation: None,
             },
         });

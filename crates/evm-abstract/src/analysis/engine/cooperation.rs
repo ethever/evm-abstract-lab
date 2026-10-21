@@ -119,7 +119,7 @@ struct Stamp {
     anchor: Version,
     phase: u8,
     secondary: Option<Version>,
-    parent: Option<analysis_kernel::Scope>,
+    parent: Option<Subject>,
 }
 struct Binding<N: WordElement> {
     stamp: Stamp,
@@ -145,7 +145,6 @@ pub(in crate::analysis) struct Cooperation<
     global: Option<X::Shared>,
     // Publication metadata only; the native result has one visible channel
     // snapshot, and older snapshots are released on publication.
-    summary_publications: BTreeMap<public::ProcedureId, (usize, bool, usize)>,
     bindings: BTreeMap<Point, Binding<N>>,
     readonly: BTreeMap<public::ProcedureId, readonly::Binding<N>>,
     proof: Option<proof::Proof>,
@@ -169,7 +168,6 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             stores: BTreeMap::new(),
             shared: None,
             global: None,
-            summary_publications: BTreeMap::new(),
             bindings: BTreeMap::new(),
             readonly: BTreeMap::new(),
             proof: None,
@@ -250,6 +248,9 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
         budget: &mut WorkBudget,
         draining: Option<JobId>,
     ) -> Result<(), CooperationError<E>> {
+        if let TaskKind::Seed(subject) = &task.0 {
+            return self.evaluate_seed(runtime, *subject, token, budget, draining);
+        }
         let TaskKind::Extension(task) = &task.0 else {
             return Err(CooperationError::Protocol(KernelError::InvalidJob));
         };
@@ -281,6 +282,17 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             return Ok(());
         }
         run.finish(result.map_err(CooperationError::Extension)?)?;
+        self.wake_ready(runtime, scope, meter.0, draining)
+    }
+
+    fn wake_ready(
+        &mut self,
+        runtime: &mut Runtime<<X as InputTasks>::Task>,
+        scope: analysis_kernel::Scope,
+        budget: &mut WorkBudget,
+        draining: Option<JobId>,
+    ) -> Result<(), CooperationError<E>> {
+        let mut meter = MachineMeter(budget);
         let status = runtime.view().closure_in_metered(scope, &mut meter)?;
         if clients_ready(status) {
             runtime.notify_observation(meter.0)?;
@@ -379,7 +391,7 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             anchor,
             phase,
             secondary,
-            parent: parent.map(|parent| parent.scope),
+            parent,
         };
         let stale = if let Some(binding) = self.bindings.get(&point) {
             runtime
@@ -670,6 +682,7 @@ mod lifecycle;
 mod observations;
 mod proof;
 mod readonly;
+mod seed;
 
 #[cfg(test)]
 mod tests;

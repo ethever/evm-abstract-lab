@@ -3,12 +3,12 @@ use super::*;
 use evm_abstract::analysis::cooperation::{
     CalleeRoute, Callees, ContinuationRoute, Continuations, PointKind, ProcedureEntries,
     ProcedureEntryRoute, ProcedureId, ProcedureRoute, Procedures, SubscriptionRoute, Subscriptions,
-    Summaries, SummaryRoute,
+    Summaries, SummaryClosureRoute, SummaryClosures, SummaryRoute,
 };
 use std::collections::BTreeMap;
 
 #[derive(Default)]
-struct ProcedureReader {
+struct ProcedureReader<const REQUIRED: bool = false> {
     revisions: BTreeMap<ProcedureId, BTreeSet<usize>>,
     closed: BTreeSet<ProcedureId>,
     continuations: BTreeSet<evm_abstract::analysis::cooperation::ContinuationId>,
@@ -16,7 +16,7 @@ struct ProcedureReader {
     payloads: usize,
     navigation: usize,
 }
-impl<Cx> Analyzer<Cx> for ProcedureReader
+impl<Cx, const REQUIRED: bool> Analyzer<Cx> for ProcedureReader<REQUIRED>
 where
     Cx: Read<Inputs<ExcludingWord>, InputRoute, Error = Infrastructure>
         + Read<Procedures, ProcedureRoute, Error = Infrastructure>
@@ -26,6 +26,8 @@ where
         + ReadGeneration<Error = Infrastructure>
         + Read<Subscriptions, SubscriptionRoute, Error = Infrastructure>
         + Discover<Summaries<ExcludingWord>, SummaryRoute, Error = Infrastructure>
+        + Read<Summaries<ExcludingWord>, SummaryRoute, Error = Infrastructure>
+        + Discover<SummaryClosures, SummaryClosureRoute, Error = Infrastructure>
         + Read<Continuations<ExcludingWord>, ContinuationRoute, Error = Infrastructure>
         + Charges<Error = Infrastructure>,
 {
@@ -78,17 +80,33 @@ where
             <Cx as Read<Procedures, ProcedureRoute>>::query(cx, Scoped::new(input.universe(), ()))?;
         if let Some(ids) = ids.value() {
             for id in ids {
-                let summary = <Cx as Discover<Summaries<ExcludingWord>, SummaryRoute>>::discover(
-                    cx,
-                    Scoped::new(input.universe(), *id),
-                )?;
+                // Both modes accept open MAY outputs and publish no refinement.
+                // Required readers must settle without weakening their reads.
+                let summary = if REQUIRED {
+                    <Cx as Read<Summaries<ExcludingWord>, SummaryRoute>>::query(
+                        cx,
+                        Scoped::new(input.universe(), *id),
+                    )?
+                } else {
+                    <Cx as Discover<Summaries<ExcludingWord>, SummaryRoute>>::discover(
+                        cx,
+                        Scoped::new(input.universe(), *id),
+                    )?
+                };
                 if let Some(summary) = summary.value() {
                     cx.charge(summary.work_size())?;
                     self.revisions
                         .entry(*id)
                         .or_default()
                         .insert(summary.revision);
-                    if summary.closed {
+                    let proof = <Cx as Discover<SummaryClosures, SummaryClosureRoute>>::discover(
+                        cx,
+                        Scoped::new(input.universe(), *id),
+                    )?;
+                    if proof
+                        .value()
+                        .is_some_and(|proof| proof.generation == summary.generation)
+                    {
                         self.closed.insert(*id);
                     }
                     for output in summary.outputs.values() {
@@ -126,61 +144,77 @@ where
 #[test]
 fn native_summary_and_continuation_keys_are_discovered_tracked_and_repeated_completion_settles() {
     for use_summaries in [false, true] {
-        let fixture = super::super::bridge::fixture::guarded(true);
-        let calls = Calls::default();
-        let algebra = evm_abstract::domain::ValueAlgebra::new(Policy::new(&calls));
-        let mut extension = Extension::new(ProcedureReader::default());
-        let result = analyze_world_cooperating(
-            fixtures::world(&fixture.code),
-            fixtures::entry(),
-            ExecutionConfig {
-                max_work: 5_000_000_000,
-                root_terminal_coverage: false,
-                use_summaries,
-                ..ExecutionConfig::default()
-            },
-            &algebra,
-            &EnginePolicies::default(),
-            &mut extension,
-        )
-        .unwrap();
-        assert_eq!(
-            result.status(),
-            Status::Converged,
-            "{:?}",
-            result.frontiers()
-        );
-        let reader = &extension.analyzer;
-        assert!(!reader.revisions.is_empty());
-        assert!(
-            reader.navigation > 0,
-            "start at an actual World origin and resolve its relative entry Input using only typed public navigation"
-        );
-        assert!(!reader.continuations.is_empty());
-        assert!(reader.payloads > 0);
-        assert!(!reader.closed.is_empty());
-        assert!(
-            reader.revisions.values().any(|versions| versions.len() > 1),
-            "output and completion growth must wake real clients"
-        );
-        assert!(
-            reader
-                .body_generations
-                .values()
-                .any(|generations| generations.len() > 1)
-        );
-        assert!(
-            reader
-                .body_generations
-                .values()
-                .all(|generations| generations.len() < 100),
-            "unchanged completion must not manufacture unbounded universe growth"
-        );
-        assert!(
-            result
-                .outcomes()
-                .iter()
-                .any(|outcome| outcome.kind == evm_abstract::analysis::OutcomeKind::Return)
-        );
+        check_procedure_reader::<false>(use_summaries);
     }
+}
+
+#[test]
+fn required_open_summary_reader_settles_without_summaries() {
+    check_procedure_reader::<true>(false);
+}
+
+#[test]
+fn required_open_summary_reader_settles_with_summaries() {
+    check_procedure_reader::<true>(true);
+}
+
+fn check_procedure_reader<const REQUIRED: bool>(use_summaries: bool) {
+    let fixture = super::super::bridge::fixture::guarded(true);
+    let calls = Calls::default();
+    let algebra = evm_abstract::domain::ValueAlgebra::new(Policy::new(&calls));
+    let mut extension = Extension::new(ProcedureReader::<REQUIRED>::default());
+    let result = analyze_world_cooperating(
+        fixtures::world(&fixture.code),
+        fixtures::entry(),
+        ExecutionConfig {
+            max_work: 5_000_000_000,
+            root_terminal_coverage: false,
+            use_summaries,
+            ..ExecutionConfig::default()
+        },
+        &algebra,
+        &EnginePolicies::default(),
+        &mut extension,
+    )
+    .unwrap();
+    assert_eq!(
+        result.status(),
+        Status::Converged,
+        "frontiers={}, first={:?}, work={}",
+        result.frontiers().len(),
+        result.frontiers().first().map(|frontier| &frontier.reason),
+        result.work()
+    );
+    let reader = &extension.analyzer;
+    assert!(!reader.revisions.is_empty());
+    assert!(
+        reader.navigation > 0,
+        "start at an actual World origin and resolve its relative entry Input using only typed public navigation"
+    );
+    assert!(!reader.continuations.is_empty());
+    assert!(reader.payloads > 0);
+    assert!(!reader.closed.is_empty());
+    assert!(
+        reader.revisions.values().any(|versions| versions.len() > 1),
+        "output and completion growth must wake real clients"
+    );
+    assert!(
+        reader
+            .body_generations
+            .values()
+            .any(|generations| generations.len() > 1)
+    );
+    assert!(
+        reader
+            .body_generations
+            .values()
+            .all(|generations| generations.len() < 100),
+        "unchanged completion must not manufacture unbounded universe growth"
+    );
+    assert!(
+        result
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == evm_abstract::analysis::OutcomeKind::Return)
+    );
 }

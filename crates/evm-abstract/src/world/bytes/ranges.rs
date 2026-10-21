@@ -312,7 +312,9 @@ pub(super) fn minimum<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         let (blo, bhi) = Queries::Independent.bounds(right);
         EvmValue::<N>::unsigned_range(alo.min(blo), ahi.min(bhi)).unwrap_or_else(EvmValue::<N>::top)
     };
-    Ok(numeric::attach(numeric, expression))
+    // Retain both the computed N and its folded literal certificate so nested
+    // independent COPY can use the exact extent without rediscovering N.
+    Ok(numeric.with_expression(expression))
 }
 
 #[cfg(test)]

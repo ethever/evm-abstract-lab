@@ -272,9 +272,9 @@ impl<N: WordElement> EvmValue<N> {
         self.provenance.set_origin(origin);
     }
     pub(crate) fn with_symbol(mut self, symbol: Symbol, scope: Option<u64>) -> Self {
-        if self.singleton().is_none()
-            && let Some(scope) = scope
-        {
+        // An explicit immutable-input binding is valid even when N is exact.
+        // Numeric discovery is neither needed nor funded by this metadata step.
+        if let Some(scope) = scope {
             self.identity = self.identity.with_input(InputIdentity::new(scope, symbol));
             if self.expression.is_none() {
                 self.expression = Some(ExprId::input(scope, symbol));
