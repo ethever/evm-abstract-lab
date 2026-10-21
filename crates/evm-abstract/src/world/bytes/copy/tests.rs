@@ -580,7 +580,11 @@ fn empty_actual_return_data_keeps_expansion_and_atomic_typed_refusals() {
     let mut target = TestBytes::memory();
     let old_byte = TestValue::top()
         .with_expression(ExprId::fresh().unwrap())
-        .with_numeric(constant(0xaa).numeric().clone());
+        .with_numeric(
+            constant::<crate::domain::NumericValue>(0xaa)
+                .numeric()
+                .clone(),
+        );
     target
         .write_byte(&zero(), &old_byte, domain.borrowed())
         .unwrap();
@@ -744,7 +748,7 @@ fn maybe_zero_and_nonzero_return_data_keep_complete_copy_and_fee() {
             .saturating_add(8)
             .saturating_mul(4);
         let branches = super::alternatives(&target.length)
-            .saturating_mul(super::alternatives(&zero()))
+            .saturating_mul(super::alternatives(&zero::<crate::domain::NumericValue>()))
             .saturating_mul(super::alternatives(&requested))
             .saturating_mul(super::alternatives(&source.length));
         let complete = super::work(

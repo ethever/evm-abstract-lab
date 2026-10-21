@@ -310,11 +310,11 @@ fn mixed_informative_malformed_and_wrong_length_inputs_fall_back() {
         for wider in [U256::from(256), U256::MAX] {
             let mut bytes = vec![TestValue::constant(U256::ZERO); 32];
             bytes[17] = TestValue::constant(wider);
-            assert!(pack(&bytes, domain).is_none());
+            assert!(pack(&bytes, domain.borrowed()).is_none());
         }
     }
     for domain in policies(true) {
-        assert!(pack(&vec![TestValue::unknown_byte(); 32], domain).is_none());
+        assert!(pack(&vec![TestValue::unknown_byte(); 32], domain.borrowed()).is_none());
     }
 
     // The product can use an exact interval without finite candidates.
