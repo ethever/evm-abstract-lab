@@ -251,6 +251,7 @@ fn precise_first_mstore_quotes_real_indices_and_reserves_each_phase_once() {
             &entry,
             budget,
         )
+        .map(|quote| quote.work)
     };
     let mut refused = WorkBudget::new(prepare - 1);
     assert!(quote(&mut refused).is_err());
@@ -309,6 +310,7 @@ fn assert_cancelled_write<const PRECISE: bool>() {
         &entry,
         &mut budget,
     )
+    .map(|quote| quote.work)
     .unwrap();
     let total = budget.used() + work;
     let mut memory = ByteArray::memory();
@@ -377,6 +379,7 @@ fn uniform_certificate_uses_the_injected_full_fee_or_honestly_refuses() {
                 &entry,
                 budget,
             )
+            .map(|quote| quote.work)
         };
         let mut budget = WorkBudget::new(config.max_work);
         let quoted = quote(&mut budget);
@@ -460,6 +463,7 @@ fn assert_transfer_write<const PRECISE: bool>() {
         &entry,
         &mut quote_budget,
     )
+    .map(|quote| quote.work)
     .unwrap();
     let mut expected = payload.clone();
     expected.active_mut().stack.clear();

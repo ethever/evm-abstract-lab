@@ -695,12 +695,24 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     }
     /// Numeric address truncation does not assert account presence.
     pub fn address_projection(&self, value: &EvmValue<D::Element>) -> EvmValue<D::Element> {
-        let mut out = self.apply(
-            opcode::AND,
-            &[value.clone(), EvmValue::constant(U256::MAX >> 96usize)],
-        );
+        self.address_projection_with_singleton(&[
+            value.clone(),
+            EvmValue::constant(U256::MAX >> 96usize),
+        ])
+        .0
+    }
+
+    /// Apply already prepared `[address, low-160-bit mask]` operands. Executable
+    /// callers own their copies/literal factory before reserving the complete
+    /// AND operation; no second mask or operand copy is constructed here.
+    pub(crate) fn address_projection_with_singleton(
+        &self,
+        operands: &[EvmValue<D::Element>; 2],
+    ) -> (EvmValue<D::Element>, SingletonProof) {
+        let (reduced, proof) = self.apply_detailed_with_singleton(opcode::AND, operands);
+        let mut out = reduced.value;
         out.provenance = out.provenance.with_code_address_role();
-        out
+        (out, proof)
     }
     /// Precharged byte observation. Only binary BYTE/AND enter the optional
     /// numeric hook; other operations/arities retain ordinary apply metadata.
