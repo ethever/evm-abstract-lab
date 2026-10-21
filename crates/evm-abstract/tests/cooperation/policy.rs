@@ -21,6 +21,7 @@ pub struct Policy<'a> {
     pub calls: &'a Calls,
     pub exclusion_queries: bool,
     pub retain_exclusions: bool,
+    pub coarsen_one: bool,
 }
 impl<'a> Policy<'a> {
     pub fn new(calls: &'a Calls) -> Self {
@@ -29,6 +30,7 @@ impl<'a> Policy<'a> {
             calls,
             exclusion_queries: true,
             retain_exclusions: true,
+            coarsen_one: false,
         }
     }
     fn transfer(&self, op: u8, args: &[ExcludingWord]) -> ExcludingWord {
@@ -171,6 +173,19 @@ impl EvmNumericAlgebra for Policy<'_> {
     }
     fn apply_numeric(&self, op: u8, args: &[ExcludingWord]) -> NumericReduction<ExcludingWord> {
         self.calls.arithmetic.fetch_add(1, Ordering::Relaxed);
+        // Sound precision loss for the source-receipt regression: OR([0,1],1)
+        // is one, but this configured carrier intentionally retains [1,2].
+        if self.coarsen_one
+            && op == opcode::OR
+            && args.len() == 2
+            && (0..2).any(|i| {
+                args[i].singleton() == Some(U256::ONE)
+                    && args[1 - i].lower == U256::ZERO
+                    && args[1 - i].upper == U256::ONE
+            })
+        {
+            return NumericReduction::stable(ExcludingWord::range(U256::ONE, U256::from(2)));
+        }
         NumericReduction::stable(self.transfer(op, args))
     }
     fn operation_work<'a>(&self, args: impl Iterator<Item = &'a ExcludingWord>) -> usize

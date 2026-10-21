@@ -54,17 +54,20 @@ impl<J> Kernel<J> {
             .fold(0usize, |n, f| {
                 n.saturating_add(f.readers.len())
                     .saturating_add(f.providers.len())
+                    .saturating_add(f.demands.len())
                     .saturating_add(f.assumptions.len())
                     .saturating_add(f.coverage.len().saturating_mul(2))
             })
             .saturating_add(self.jobs.iter().fold(0usize, |n, j| {
                 n.saturating_add(j.reads.len())
+                    .saturating_add(j.required.len())
                     .saturating_add(j.provides.len())
             }))
             .saturating_add(self.scopes.iter().fold(0usize, |n, s| {
                 n.saturating_add(s.jobs.len())
                     .saturating_add(s.facts.len())
                     .saturating_add(s.assumptions.len())
+                    .saturating_add(s.open_obligations.len())
             }))
             .saturating_add(self.scope_ids.len())
             .saturating_add(self.obligations.len())
@@ -93,6 +96,7 @@ impl<J> Kernel<J> {
                         scope: j.scope,
                         task: j.task.as_ref().map(Arc::clone),
                         reads: j.reads.clone(),
+                        required: j.required.clone(),
                         provides: j.provides.clone(),
                         state: j.state,
                         evaluation: j.evaluation,
@@ -154,17 +158,20 @@ impl<J> Kernel<J> {
             .fold(0usize, |n, f| {
                 n.saturating_add(f.readers.len())
                     .saturating_add(f.providers.len())
+                    .saturating_add(f.demands.len())
                     .saturating_add(f.assumptions.len())
                     .saturating_add(f.coverage.len().saturating_mul(2))
             })
             .saturating_add(self.jobs.iter().fold(0usize, |n, j| {
                 n.saturating_add(j.reads.len())
+                    .saturating_add(j.required.len())
                     .saturating_add(j.provides.len())
             }))
             .saturating_add(self.scopes.iter().fold(0usize, |n, s| {
                 n.saturating_add(s.jobs.len())
                     .saturating_add(s.facts.len())
                     .saturating_add(s.assumptions.len())
+                    .saturating_add(s.open_obligations.len())
             }))
             .saturating_add(self.scope_ids.len())
             .saturating_add(self.obligations.len())

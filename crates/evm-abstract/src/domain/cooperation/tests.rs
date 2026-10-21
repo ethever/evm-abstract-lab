@@ -228,7 +228,16 @@ fn tracked_protocol_work_is_funded_and_live_dependency_storage_is_bounded() {
                     AbstractValue::constant(U256::from(7)),
                 ];
                 let quote = domain.operation_work(&values);
-                domain.apply(op, &values);
+                let result = domain.apply_detailed(op, &values);
+                assert!(
+                    !matches!(
+                        result.status,
+                        ReductionStatus::WorkLimit
+                            | ReductionStatus::Cancelled
+                            | ReductionStatus::KernelFailure
+                    ),
+                    "a sufficiently paid schedule must reach closure or its actual precision cap"
+                );
                 let (used, dependencies, steps) = super::PROTOCOL_WORK.get();
                 assert!(
                     used <= quote,

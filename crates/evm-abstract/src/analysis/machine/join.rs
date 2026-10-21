@@ -226,18 +226,44 @@ pub(super) fn join_value<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 }
 
 impl<N: WordElement> EvmMachinePayload<N> {
-    /// Comparison-only normalization removes redundant singleton terms and
-    /// ephemeral copy labels. It never rewrites a source, byte/slot root, path
-    /// guard or historical read. The executable payload keeps its expressions.
+    /// Conservative whole-machine traversal and retained-copy quote for public
+    /// semantic policies. Logical memory length is not an allocation charge.
+    pub fn policy_work_size(&self) -> usize {
+        self.work_size()
+    }
+
+    /// Copy a complete input under the run's shared work and cancellation token.
+    pub fn copy_for_policy<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        cx: &mut crate::analysis::engine::policy::PolicyContext<'_, D>,
+    ) -> Result<Self, MachineError> {
+        cx.reserve(self.policy_work_size().saturating_mul(2))?;
+        let copied = self.clone();
+        cx.reserve(0)?;
+        Ok(copied)
+    }
+
+    /// Cover this input while forgetting optional histories of every suspended
+    /// and active frame. The returned payload supplies the coarser actual key.
+    pub fn forget_jump_history<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        cx: &mut crate::analysis::engine::policy::PolicyContext<'_, D>,
+    ) -> Result<Self, MachineError> {
+        let mut prepared = self.copy_for_policy(cx)?;
+        for frame in prepared.call_stack.iter_mut() {
+            frame.key.jump_history.clear();
+        }
+        cx.reserve(0)?;
+        Ok(prepared)
+    }
+
+    /// Comparison-only normalization removes ephemeral copy labels. Retained
+    /// expressions remain evidence even around numeric Top; this traversal has
+    /// no independent numeric-query budget to prove any term redundant.
     pub(crate) fn content_form(&self) -> Result<Self, MachineError> {
         checkpoint()?;
         let mut content = self.clone();
-        let mut normalize = |value: &mut EvmValue<N>| {
-            value.forget_identity();
-            if value.singleton().is_some() {
-                value.forget_expression();
-            }
-        };
+        let mut normalize = |value: &mut EvmValue<N>| value.forget_identity();
         content.update_values(&mut normalize)?;
         checkpoint()?;
         Ok(content)
@@ -312,12 +338,9 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
         self.loop_bound.is_some()
     }
 
-    pub(crate) fn can_widen_loop(&self) -> bool {
-        self.has_loop_bound() || self.represented.len() >= 2
-    }
-
-    /// Shared policy for propagation and staged replay. Exact acyclic retention
-    /// gets the first attempt; only a typed precision refusal can promote it.
+    /// Shared policy for propagation and staged replay. Exact retention gets
+    /// the first attempt unless the separate scheduler requests acceleration;
+    /// a typed precision refusal may promote a Join without numeric widening.
     /// Failed attempts keep metadata and both operands intact, but never refund
     /// work. The persistent bounded representation owns the paid materialization
     /// fallback, independently of this admission and publication policy.
@@ -333,15 +356,19 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
         selectors: &BTreeSet<ExprId>,
-        cyclic: bool,
+        accelerate: bool,
     ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
-        if self.has_loop_bound() || cyclic && self.can_widen_loop() {
-            return self.join_loop(entry, incoming, environment, domain, budget);
-        }
-        match self.join_cyclic(entry, incoming, domain, budget, selectors, cyclic) {
-            Err(error) if !cyclic && error.permits_bounded_promotion() => {
-                checkpoint()?;
+        if self.has_loop_bound() || accelerate {
+            return if accelerate {
                 self.join_loop(entry, incoming, environment, domain, budget)
+            } else {
+                self.join_loop_scheduled(entry, incoming, environment, domain, budget, false)
+            };
+        }
+        match self.join_cyclic(entry, incoming, domain, budget, selectors, accelerate) {
+            Err(error) if error.permits_bounded_promotion() => {
+                checkpoint()?;
+                self.join_loop_scheduled(entry, incoming, environment, domain, budget, accelerate)
             }
             result => result,
         }
@@ -357,15 +384,42 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
     ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
+        self.join_loop_scheduled(entry, incoming, environment, domain, budget, true)
+    }
+
+    /// Bound promotion is a covering representation change; only the explicit
+    /// schedule may widen scalar fields, including updates after promotion.
+    pub(crate) fn join_loop_scheduled<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        entry: &EvmMachinePayload<N>,
+        incoming: &EvmMachinePayload<N>,
+        environment: &crate::world::EvmEntry<N>,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
+        widen: bool,
+    ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
         let updated = if let Some(bound) = &self.loop_bound {
-            bound.update(incoming, environment, domain, budget)?
-        } else {
+            if widen {
+                bound.update(incoming, environment, domain, budget)?
+            } else {
+                bound.update_scheduled(incoming, environment, domain, budget, false)?
+            }
+        } else if widen {
             Some(crate::analysis::state::EvmLoopBound::new(
                 entry,
                 incoming,
                 environment,
                 domain,
                 budget,
+            )?)
+        } else {
+            Some(crate::analysis::state::EvmLoopBound::new_scheduled(
+                entry,
+                incoming,
+                environment,
+                domain,
+                budget,
+                false,
             )?)
         };
         let Some((bound, payload)) = updated else {
@@ -430,11 +484,17 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
                 return Ok(None);
             }
         }
-        if !self.cycle_widened
-            && self.represented.len() >= 2
-            && let Some(widened) = widening::stack(entry, incoming, domain)?
-        {
-            return Ok((widened.content_form()? != entry.content_form()?).then_some(widened));
+        if cyclic && !self.cycle_widened && self.represented.len() >= 2 {
+            let cost = entry
+                .work_size()
+                .saturating_add(incoming.work_size())
+                .saturating_mul(8);
+            if cost == usize::MAX || !budget.charge(cost) {
+                return Err(MachineError::work_failure());
+            }
+            if let Some(widened) = widening::stack(entry, incoming, domain)? {
+                return Ok((widened.content_form()? != entry.content_form()?).then_some(widened));
+            }
         }
         let unconstrained = entry.relations.is_empty() && incoming.relations.is_empty();
         if self.cycle_widened && !cyclic && !unconstrained {

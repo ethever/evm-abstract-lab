@@ -13,6 +13,7 @@ pub(super) type Solver<'a> = EvmSolver<
     Domain,
     crate::analysis::engine::RecentDistinctJumps,
     crate::analysis::engine::FirstResumeStatus,
+    crate::analysis::engine::SemanticPolicies,
     crate::analysis::engine::cooperation::Empty,
     std::convert::Infallible,
 >;
@@ -83,9 +84,11 @@ impl Table {
             runtime: &mut self.runtime,
             cooperation: &mut self.cooperation,
             active: None,
-            caller: &mut self.caller,
+            caller: Some(&mut self.caller),
             namespace: if config.use_summaries { 0 } else { 1 },
             producer: None,
+            deferred: false,
+            consumed: None,
         }
     }
 

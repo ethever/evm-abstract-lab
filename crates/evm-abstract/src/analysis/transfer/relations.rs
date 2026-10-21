@@ -238,10 +238,31 @@ fn finish_refine<D: EvmNumericAlgebra>(
 pub(super) use crate::analysis::state::identify;
 
 /// Each successor owns its assumptions; the predecessor remains unchanged.
+#[cfg(test)]
 pub(super) fn branch<D: EvmNumericAlgebra>(
     result: &mut EvmExecution<D::Element>,
     condition: &EvmValue<D::Element>,
     nonzero: bool,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) -> Option<EvmMachinePayload<D::Element>> {
+    branch_with_singleton(
+        result,
+        condition,
+        nonzero,
+        crate::domain::SingletonProof::NotQueried,
+        context,
+        pc,
+    )
+}
+
+/// Dispatch classified this same immutable condition already. A saved answer
+/// avoids querying again when adding assumptions to its two successor copies.
+pub(super) fn branch_with_singleton<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    condition: &EvmValue<D::Element>,
+    nonzero: bool,
+    mut proof: crate::domain::SingletonProof,
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> Option<EvmMachinePayload<D::Element>> {
@@ -267,7 +288,15 @@ pub(super) fn branch<D: EvmNumericAlgebra>(
     };
     // The numerical layer has already selected the only feasible edge. Its
     // constant condition supplies no additional relational information.
-    let singleton = match query::singleton(condition.numeric(), context.budget) {
+    let answer =
+        if proof == crate::domain::SingletonProof::NotQueried && condition.constants().is_some() {
+            // A complete cover permits conservative guard retention without a new
+            // discovery. It does not assert that the full carrier is nonsingleton.
+            Ok(None)
+        } else {
+            query::resolve(condition.numeric(), &mut proof, context.budget)
+        };
+    let singleton = match answer {
         Ok(singleton) => singleton,
         Err(reason) => {
             boundary(result, pc, reason);

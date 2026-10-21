@@ -1,6 +1,6 @@
 //! Preparation and replacement own different work at the publication boundary.
 
-use super::{EvmEntryAlternatives, EvmMachinePayload};
+use super::EvmMachinePayload;
 use crate::domain::{WordElement, symbolic::ExprId};
 use std::{collections::BTreeSet, mem::size_of};
 
@@ -10,7 +10,26 @@ pub(super) struct JoinWork {
 }
 
 impl JoinWork {
+    #[cfg(test)]
     pub fn quote<N: WordElement>(
+        entry: usize,
+        incoming: usize,
+        joined: usize,
+        prepared_alternatives: usize,
+        old_alternatives: usize,
+        selectors: usize,
+    ) -> Self {
+        Self::quote_for::<N, super::WholeStateMetadata<N>>(
+            entry,
+            incoming,
+            joined,
+            prepared_alternatives,
+            old_alternatives,
+            selectors,
+        )
+    }
+
+    pub fn quote_for<N: WordElement, M>(
         entry: usize,
         incoming: usize,
         joined: usize,
@@ -23,7 +42,7 @@ impl JoinWork {
         // transports here; final destination moves belong to installation.
         // Arbitrary N may own large inline fields as well as deep allocations.
         let bytes = size_of::<Option<EvmMachinePayload<N>>>()
-            .saturating_add(size_of::<EvmEntryAlternatives<N>>())
+            .saturating_add(size_of::<M>())
             .saturating_add(size_of::<BTreeSet<ExprId>>());
         let transport = if bytes == usize::MAX {
             usize::MAX

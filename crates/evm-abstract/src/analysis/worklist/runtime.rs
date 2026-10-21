@@ -27,6 +27,7 @@ pub(in crate::analysis) enum TaskKind<T = std::convert::Infallible> {
     Resume(usize),
     Seed(crate::analysis::cooperation::Subject),
     Extension(T),
+    SummaryObservation,
 }
 
 type Scheduled<T> = Option<(std::sync::Arc<Task<T>>, RunningJob)>;
@@ -59,6 +60,7 @@ pub(in crate::analysis) struct Runtime<T = std::convert::Infallible> {
     pub relative: Scope,
     world_jobs: BTreeMap<usize, JobId>,
     admission: Option<JobId>,
+    observation: Option<JobId>,
 }
 
 impl<T> Runtime<T> {
@@ -99,6 +101,7 @@ impl<T> Runtime<T> {
             relative,
             world_jobs: BTreeMap::new(),
             admission: None,
+            observation: None,
         })
     }
 
@@ -132,6 +135,29 @@ impl<T> Runtime<T> {
         Ok(job)
     }
 
+    /// Schedule the persistent native-summary producer on this kernel. Its
+    /// owner is outside the relative scope, so it can report relative completion
+    /// without including its own evaluation in that completion condition.
+    pub fn schedule_observation(&mut self, budget: &mut WorkBudget) -> Result<(), MachineError> {
+        if let Some(job) = self.observation {
+            self.kernel()
+                .retry(job, &mut MachineMeter(budget))
+                .map_err(kernel_failure)
+        } else {
+            let scope = self.world;
+            let job = self
+                .kernel()
+                .register(
+                    scope,
+                    Task(TaskKind::SummaryObservation),
+                    &mut MachineMeter(budget),
+                )
+                .map_err(kernel_failure)?;
+            self.observation = Some(job);
+            Ok(())
+        }
+    }
+
     pub fn register_relative(
         &mut self,
         task: TaskKind<T>,
@@ -155,6 +181,7 @@ impl<T> Runtime<T> {
             .next_deepest(&mut meter, |task| match &task.0 {
                 TaskKind::World { depth, .. } if !relative_only => *depth,
                 TaskKind::World { .. } => 0,
+                TaskKind::SummaryObservation => 1,
                 TaskKind::Body(_)
                 | TaskKind::Resume(_)
                 | TaskKind::Extension(_)
@@ -275,8 +302,12 @@ impl<T> Runtime<T> {
             .chain(self.graph.view().worklist().pending().filter_map(task))
     }
 
-    pub fn relative_closed(&self) -> bool {
-        self.graph.view().closure_in::<MachineError>(self.relative) == Ok(Closure::Closed)
+    pub fn relative_closed(&self, budget: &mut WorkBudget) -> Result<bool, MachineError> {
+        self.graph
+            .view()
+            .closure_in_metered(self.relative, &mut MachineMeter(budget))
+            .map(|closure| closure == Closure::Closed)
+            .map_err(kernel_failure)
     }
 
     pub fn closed(&self) -> bool {
@@ -327,6 +358,7 @@ impl<T> Runtime<T> {
             relative: self.relative,
             world_jobs: self.world_jobs.clone(),
             admission: self.admission,
+            observation: self.observation,
         })
     }
 
@@ -344,11 +376,6 @@ impl<T> Runtime<T> {
                 .collect(),
             self.graph.view().worklist().records(),
         )
-    }
-
-    #[cfg(test)]
-    pub fn queue_work_size(&self) -> usize {
-        self.graph.view().worklist().work_size()
     }
 
     #[cfg(test)]
@@ -405,11 +432,13 @@ impl<T> Runtime<T> {
         };
         let jobs = &mut self.world_jobs;
         let admitted = &mut self.admission;
+        let observation = &mut self.observation;
         self.graph
             .kernel()
             .commit_with(fork, &mut MachineMeter(budget), 1, || {
                 *jobs = staged.world_jobs;
                 *admitted = staged.admission;
+                *observation = staged.observation;
                 install();
             })
             .map_err(kernel_failure)

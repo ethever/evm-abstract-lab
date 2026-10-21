@@ -6,6 +6,38 @@ use crate::domain::ValueAlgebra;
 use crate::domain::{AbstractValue, Domain, NumericValue, symbolic::ExprId};
 use alloy_primitives::U256;
 
+#[test]
+fn optional_key_evidence_uses_retained_literals_and_nodes_without_discovery() {
+    use crate::analysis::state::query::tests::carrier::{Probe, Word};
+    use std::rc::Rc;
+
+    for fee in [61, usize::MAX] {
+        let probe = Rc::new(Probe::new(fee));
+        let numeric = EvmValue::from_numeric(Word::constant(U256::from(7)).watched(&probe));
+        let seven = ExprId::constant(U256::from(7));
+        let nine = ExprId::constant(U256::from(9));
+        assert_eq!(key_work(&numeric), None);
+        assert!(key_expression(&numeric).is_none());
+        assert!(!same_key(&seven, &numeric));
+
+        // Two independently retained literals suffice even if the carrier's
+        // numeric view is Top; retaining this source is also valid evidence.
+        let literal = EvmValue::from_numeric(Word::top().watched(&probe))
+            .with_expression(ExprId::constant(U256::from(7)));
+        assert_eq!(key_work(&literal), Some(1));
+        assert_eq!(key_expression(&literal), Some(seven.clone()));
+        assert!(same_key(&seven, &literal));
+        assert!(!same_key(&nine, &literal));
+
+        let fresh = ExprId::fresh().unwrap();
+        let same_node = numeric.clone().with_expression(fresh.clone());
+        assert!(same_key(&fresh, &same_node));
+        assert!(!same_key(&ExprId::fresh().unwrap(), &same_node));
+        assert!(!same_key(&seven, &same_node));
+        assert_eq!(probe.counts(), (0, 0, 0));
+    }
+}
+
 fn written_input() -> (
     crate::world::World,
     crate::world::Entry,

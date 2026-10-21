@@ -50,6 +50,25 @@ pub(super) fn resolve<N: WordElement>(
     }
 }
 
+/// A standalone membership test owns the carrier's complete structural bound,
+/// which explicitly includes one membership test. It buys no singleton query.
+pub(super) fn contains<N: WordElement>(
+    value: &N,
+    word: U256,
+    budget: &mut WorkBudget,
+) -> Result<bool, FrontierReason> {
+    checkpoint(budget)?;
+    let work = value.work_size();
+    checkpoint(budget)?;
+    if work == usize::MAX || !budget.charge(work) {
+        return Err(FrontierReason::Work);
+    }
+    checkpoint(budget)?;
+    let contains = value.contains(word);
+    checkpoint(budget)?;
+    Ok(contains)
+}
+
 pub(super) fn checkpoint(budget: &WorkBudget) -> Result<(), FrontierReason> {
     if analysis_control::current_cancellation().is_cancelled()
         || budget.cancellation().is_cancelled()

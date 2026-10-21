@@ -92,7 +92,9 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
     }
 
     fn expression(&mut self, expression: &ExprId, value: &mut EvmValue<D::Element>) {
-        if self.stopped() || value.singleton().is_some() || self.relations.is_empty() {
+        // A retained literal is already a proof about this source. Numeric
+        // singleton discovery is a different, separately priced operation.
+        if self.stopped() || expression.as_constant().is_some() || self.relations.is_empty() {
             return;
         }
         let summary = matches!(&self.policy, Policy::Summary);
@@ -101,7 +103,9 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
             && let Some((_, refined)) = cached.iter().find(|(old, _)| old == value.numeric())
         {
             if let Some(refined) = refined {
-                *value = value.clone().with_numeric(refined.clone());
+                *value = value
+                    .clone()
+                    .with_numeric_after_singleton(refined.clone(), None);
             }
             return;
         }
@@ -167,7 +171,11 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
             }
         };
         if let Some(refined) = &refined {
-            *value = value.clone().with_numeric(refined.clone());
+            // The refinement operation owns any discovery. Applying its bound,
+            // including a cached one, must not run an opaque metadata query.
+            *value = value
+                .clone()
+                .with_numeric_after_singleton(refined.clone(), None);
         }
         if let Some(old) = old {
             let cache = self.cache.entry(expression.clone()).or_default();

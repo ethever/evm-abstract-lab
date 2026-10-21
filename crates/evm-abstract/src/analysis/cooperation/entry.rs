@@ -1,7 +1,7 @@
 use super::{CooperationError, EvmContext, Extension, ExtraStores, InputTasks};
 use crate::{
     analysis::{
-        ContextPolicy, EnginePolicies, EvmWorldAnalysis, ExecutionConfig, PartitionPolicy,
+        ContextPolicy, EnginePolicies, EvmWorldAnalysis, ExecutionConfig, PartitionPolicy, StatePolicy,
         control::Control, engine, progress::Observer,
     },
     domain::{EvmNumericAlgebra, ValueAlgebra},
@@ -21,22 +21,28 @@ use analysis_kernel::Analyzer;
 /// Providers may establish invariants absent from the EVM carrier, provided
 /// they hold for every concrete execution under the same scoped assumptions.
 /// Registration is a trusted semantic contract, not automatic proof of user code.
-pub fn analyze_world_cooperating<D, C, P, A, S, F, E>(
+pub fn analyze_world_cooperating<D, C, P, H, A, S, F, G, E>(
     world: EvmWorld<D::Element>,
     entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     algebra: &ValueAlgebra<D>,
-    policies: &EnginePolicies<C, P>,
-    extension: &mut Extension<A, S, F>,
+    policies: &EnginePolicies<C, P, H>,
+    extension: &mut Extension<A, S, F, G>,
 ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>>
 where
     D: EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
+    H: StatePolicy<D, P::Class>,
     S: InputTasks,
     F: ExtraStores,
-    for<'r, 'k, 'm> A:
-        Analyzer<EvmContext<'r, 'k, 'm, D::Element, S::Task, F::Stores>, Task = S::Task, Error = E>,
+    G: ExtraStores,
+    G::Stores: analysis_kernel::ReclaimScope,
+    for<'r, 'k, 'm> A: Analyzer<
+            EvmContext<'r, 'k, 'm, D::Element, S::Task, F::Stores, G::Stores>,
+            Task = S::Task,
+            Error = E,
+        >,
 {
     analyze_world_cooperating_with_observer(
         world,
@@ -51,23 +57,29 @@ where
 
 /// Joint composition under the existing bounded execution observer contract.
 /// The observation handle does not carry semantic analyzer feedback.
-pub fn analyze_world_cooperating_with_observer<D, C, P, A, S, F, E>(
+pub fn analyze_world_cooperating_with_observer<D, C, P, H, A, S, F, G, E>(
     world: EvmWorld<D::Element>,
     entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     algebra: &ValueAlgebra<D>,
-    policies: &EnginePolicies<C, P>,
-    extension: &mut Extension<A, S, F>,
+    policies: &EnginePolicies<C, P, H>,
+    extension: &mut Extension<A, S, F, G>,
     observer: &Observer,
 ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>>
 where
     D: EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
+    H: StatePolicy<D, P::Class>,
     S: InputTasks,
     F: ExtraStores,
-    for<'r, 'k, 'm> A:
-        Analyzer<EvmContext<'r, 'k, 'm, D::Element, S::Task, F::Stores>, Task = S::Task, Error = E>,
+    G: ExtraStores,
+    G::Stores: analysis_kernel::ReclaimScope,
+    for<'r, 'k, 'm> A: Analyzer<
+            EvmContext<'r, 'k, 'm, D::Element, S::Task, F::Stores, G::Stores>,
+            Task = S::Task,
+            Error = E,
+        >,
 {
     engine::run_world_cooperating(
         world,
@@ -82,23 +94,29 @@ where
 
 /// Joint composition with explicit application cancellation. Pre/post checks
 /// preserve the default controlled API's lifetime and no-partial-report contract.
-pub fn analyze_world_cooperating_with_control<D, C, P, A, S, F, E>(
+pub fn analyze_world_cooperating_with_control<D, C, P, H, A, S, F, G, E>(
     world: EvmWorld<D::Element>,
     entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     algebra: &ValueAlgebra<D>,
-    policies: &EnginePolicies<C, P>,
-    extension: &mut Extension<A, S, F>,
+    policies: &EnginePolicies<C, P, H>,
+    extension: &mut Extension<A, S, F, G>,
     control: &Control,
 ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>>
 where
     D: EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
+    H: StatePolicy<D, P::Class>,
     S: InputTasks,
     F: ExtraStores,
-    for<'r, 'k, 'm> A:
-        Analyzer<EvmContext<'r, 'k, 'm, D::Element, S::Task, F::Stores>, Task = S::Task, Error = E>,
+    G: ExtraStores,
+    G::Stores: analysis_kernel::ReclaimScope,
+    for<'r, 'k, 'm> A: Analyzer<
+            EvmContext<'r, 'k, 'm, D::Element, S::Task, F::Stores, G::Stores>,
+            Task = S::Task,
+            Error = E,
+        >,
 {
     control
         .checkpoint()

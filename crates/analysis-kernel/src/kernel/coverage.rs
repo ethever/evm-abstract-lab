@@ -7,7 +7,7 @@
 //! a numerical-growth invalidation wave. New families invalidate old adopters
 //! once, since they could not previously have adopted that producer's premises.
 
-use super::{Fact, FactId, JobId, Kernel, Meter, reserve, tree_work};
+use super::{Fact, FactId, JobId, Kernel, Meter, ReadMode, Selection, reserve, tree_work};
 use crate::{KernelError, Scope};
 
 pub(super) struct CoverageUpdate {
@@ -22,13 +22,19 @@ impl<J> Kernel<J> {
     pub(super) fn producer_ready(&self, entry: FactId, published: Scope) -> bool {
         self.facts.get(entry.index).is_some_and(|fact| {
             fact.id == entry
-                && fact.selected == Some(published)
-                && self.scopes.get(published.index).is_some_and(|generation| {
-                    generation.scope == published
-                        && generation.active
-                        && !generation.stale
-                        && generation.entry == Some(entry)
-                })
+                && match fact.selected {
+                    Some(Selection::Absent { .. }) => true,
+                    Some(Selection::Active(current)) => {
+                        current == published
+                            && self.scopes.get(current.index).is_some_and(|generation| {
+                                generation.scope == current
+                                    && generation.active
+                                    && !generation.stale
+                                    && generation.entry == Some(entry)
+                            })
+                    }
+                    None => false,
+                }
         })
     }
 
@@ -37,6 +43,20 @@ impl<J> Kernel<J> {
         fact.coverage
             .iter()
             .all(|(entry, published)| self.producer_ready(*entry, *published))
+    }
+
+    pub(super) fn fact_ready(&self, fact: &Fact) -> bool {
+        fact.ready
+            && fact.scope.is_none_or(|scope| {
+                self.scopes[scope.index].active && !self.scopes[scope.index].stale
+            })
+            && (match fact.selected {
+                Some(Selection::Active(scope)) => {
+                    self.scopes[scope.index].active && !self.scopes[scope.index].stale
+                }
+                _ => true,
+            })
+            && self.coverage_ready(fact)
     }
 
     pub(super) fn prepare_coverage<M: Meter>(
@@ -84,6 +104,7 @@ impl<J> Kernel<J> {
         &mut self,
         job: JobId,
         fact: FactId,
+        mode: ReadMode,
         meter: &mut M,
     ) -> Result<bool, KernelError<M::Stop>> {
         let coverage = &self.facts[fact.index].coverage;
@@ -97,7 +118,7 @@ impl<J> Kernel<J> {
             .collect();
         let mut ready = true;
         for (entry, published) in coverage {
-            self.observe(job, entry, meter)?;
+            self.observe_mode(job, entry, mode, meter)?;
             ready &= self.producer_ready(entry, published);
         }
         Ok(ready)

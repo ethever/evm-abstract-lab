@@ -1,6 +1,58 @@
 use super::super::*;
 
 #[test]
+fn projection_requires_numeric_certificates_separate_from_prepared_literals() {
+    let previous = ByteArray::memory();
+    let source = ByteArray::exact(&[0x11]);
+    let complete = ByteArray::memory();
+    let values = [zero(), zero(), constant(1)].map(|value| {
+        let term = ExprId::constant(*value.constants().unwrap().first().unwrap());
+        value.with_expression(term)
+    });
+    for missing in 0..3 {
+        let mut operands = values.clone();
+        operands[missing] =
+            AbstractValue::top().with_expression(operands[missing].expression().unwrap().clone());
+        let projected = super::project(
+            &previous,
+            &source,
+            &operands[0],
+            &operands[1],
+            &operands[2],
+            &complete,
+        )
+        .unwrap();
+        let byte = &projected[&0];
+        assert_eq!(byte.singleton(), None);
+        assert!(byte.contains(U256::ZERO));
+        assert!(byte.contains(U256::from(0xff)));
+    }
+    let range_values = [0, 0, 1].map(|n| {
+        let word = U256::from(n);
+        AbstractValue::unsigned_range(word, word)
+            .unwrap()
+            .with_expression(ExprId::constant(word))
+    });
+    let bit_values = [0, 0, 1].map(|n| {
+        let word = U256::from(n);
+        let numeric =
+            crate::domain::NumericValue::from_observation(&crate::domain::WordObservation::bits(
+                crate::domain::known_bits::KnownBits::exact(word),
+            ));
+        AbstractValue::from_numeric(numeric).with_expression(ExprId::constant(word))
+    });
+    assert!(range_values[0].constants().is_none());
+    assert!(bit_values[0].constants().is_none());
+    for values in [values, range_values, bit_values] {
+        let projected = super::project(
+            &previous, &source, &values[0], &values[1], &values[2], &complete,
+        )
+        .unwrap();
+        assert_eq!(projected[&0].singleton(), Some(U256::from(0x11)));
+    }
+}
+
+#[test]
 fn copy_quotes_pay_source_once_and_additive_occurrences_and_keep_history_fees() {
     let domain = Domain::default();
     let policy = limits(crate::domain::ValueAlgebra::new(&domain)).into();

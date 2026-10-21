@@ -47,6 +47,10 @@ impl RefinePolicy for Conjoin {
 pub struct Stores;
 impl ExtraStores for Stores {
     type Stores = Cons<Channel<ZeroGuards, Descending<Conjoin>>, Nil>;
+    fn retirement_work(&self, stores: &Self::Stores) -> usize {
+        // This provider stores only stack indices (at most 1024 per key).
+        stores.head.len().saturating_mul(2048).saturating_add(1)
+    }
     fn create<J, M: Meter>(
         &self,
         kernel: &mut Kernel<J>,

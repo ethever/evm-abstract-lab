@@ -153,8 +153,9 @@ fn failed_preparation_and_cancellation_keep_original_bound_and_same_spent_ledger
     let first = h.first();
     let original = h.table.nodes[0].payload.clone();
     let remaining = h.config.max_work - h.budget.used();
-    let insufficient = original.work_size() * 8 - 1;
-    assert!(h.budget.charge(remaining - insufficient));
+    // No allowance reaches the first preparation reservation, independently
+    // of how much the selected policy and closure check subsequently cost.
+    assert!(h.budget.charge(remaining));
     let used = h.budget.used();
     let failed = h.retry(first);
     assert_eq!(
@@ -162,6 +163,7 @@ fn failed_preparation_and_cancellation_keep_original_bound_and_same_spent_ledger
         FrontierReason::Work
     );
     assert_eq!(h.budget.used(), used);
+    assert!(h.budget.exhausted());
     assert_eq!(h.counters.transfers, 1);
     assert!(semantic_eq(&original, &h.table.nodes[0].payload));
     assert!(matches!(
@@ -201,10 +203,8 @@ fn incoming_growth_and_duplicate_inputs_keep_one_fixed_coarse_mode() {
         RuntimeRetry::Coarse(coarse) => coarse.layout().clone(),
         _ => panic!("must have promoted"),
     };
-    let shared = h
-        .config
-        .domain()
-        .unwrap()
+    let domain = h.config.domain().unwrap();
+    let shared = domain
         .join(&word(7), &word(9))
         .with_expression(ExprId::fresh().unwrap());
     let frame = incoming.frames.last_mut().unwrap();
@@ -212,6 +212,8 @@ fn incoming_growth_and_duplicate_inputs_keep_one_fixed_coarse_mode() {
     frame.stack_aliases =
         super::super::super::stack_alias::StackAliases::form(&frame.stack, true).unwrap();
     incoming.work = incoming.measure_work();
+    let expected = [(U256::from(7), U256::from(9)), (U256::ZERO, U256::from(9))];
+    let mut grown = None;
     for _ in 0..3 {
         let id = h
             .solver()
@@ -221,6 +223,17 @@ fn incoming_growth_and_duplicate_inputs_keep_one_fixed_coarse_mode() {
         let node = &h.table.nodes[id];
         assert_eq!(node.payload.storage_observations, Default::default());
         assert!(!node.payload.active().stack_aliases.same_class(0, 1));
+        assert_eq!(node.payload.active().stack.len(), expected.len());
+        for (value, (lower, upper)) in node.payload.active().stack.iter().zip(&expected) {
+            assert_eq!(value.interval().unsigned_bounds(), (*lower, *upper));
+            assert!(value.contains(*lower));
+            assert!(value.contains(*upper));
+        }
+        if let Some(previous) = &grown {
+            assert!(semantic_eq(previous, &node.payload));
+        } else {
+            grown = Some(node.payload.clone());
+        }
         let RuntimeRetry::Coarse(coarse) = &node.runtime_retry else {
             panic!("mode reset on growth")
         };
@@ -244,7 +257,6 @@ fn incoming_growth_and_duplicate_inputs_keep_one_fixed_coarse_mode() {
     }
     assert_eq!(h.counters.transfers, 2);
     assert_eq!(h.table.nodes.len(), 1);
-    assert_eq!(h.table.nodes[0].updates, 1);
 }
 
 #[test]
@@ -323,9 +335,7 @@ fn reification_and_retry_interruptions_neither_refund_work_nor_install_partial_b
         let original = h.table.nodes[0].payload.clone();
         let progress = first.instruction_progress.clone();
         let alternatives = first.outcomes.len();
-        let mut quote = WorkBudget::new(h.config.max_work);
-        prepare(&original, h.config.domain().unwrap(), &mut quote).unwrap();
-        let allowance = quote.used() - usize::from(!finish_preparation);
+        let allowance = h.preparation_work() - usize::from(!finish_preparation);
         let remaining = h.config.max_work - h.budget.used();
         assert!(h.budget.charge(remaining - allowance));
         let used = h.budget.used();

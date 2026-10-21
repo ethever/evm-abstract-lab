@@ -10,7 +10,9 @@ pub trait InputTasks {
     type Task;
     /// Whether this assembly has any external obligations.
     const ENABLED: bool;
-    /// Conservative construction/iteration charge, reserved before tasks().
+    /// Conservative construction/iteration and eventual task-disposal charge,
+    /// reserved before tasks(). Include native payload destruction, not just
+    /// the kernel handle; the kernel cannot infer arbitrary Task Drop work.
     /// Quoting borrows the plan and must not clone task payloads.
     fn registration_work(&self) -> usize;
     /// Seed tasks for the new universe; do not carry old generation narrowing.
@@ -71,13 +73,15 @@ impl<L: InputTasks, R: InputTasks> InputTasks for PairedTasks<L, R> {
 
 /// Statically assembled independent components and their input task routes.
 /// Neither the analyzer nor its frozen task plan needs Clone or Copy.
-pub struct Extension<A, P = PerInput, F = NoStores> {
+pub struct Extension<A, P = PerInput, F = NoStores, G = NoStores> {
     /// An Analyzer, Registered reduction, or kernel Pair of independent rules.
     pub analyzer: A,
     /// Static task routes for each new input universe.
     pub tasks: P,
     /// Per-generation factory for independently defined typed capability stores.
     pub stores: F,
+    /// Once-per-run factory for independently defined global capability stores.
+    pub shared: G,
 }
 
 impl<A> Extension<A> {
@@ -87,6 +91,7 @@ impl<A> Extension<A> {
             analyzer,
             tasks: PerInput,
             stores: NoStores,
+            shared: NoStores,
         }
     }
 }
@@ -98,23 +103,37 @@ impl<A, P> Extension<A, P> {
             analyzer,
             tasks,
             stores: NoStores,
+            shared: NoStores,
         }
     }
 }
 
-impl<A, P, F> Extension<A, P, F> {
+impl<A, P, F, G> Extension<A, P, F, G> {
     /// Add client-defined typed channels on the same kernel and root ledger.
     /// Their contents are recreated for each immutable input generation.
-    pub fn with_stores<G>(self, stores: G) -> Extension<A, P, G> {
+    pub fn with_stores<H>(self, stores: H) -> Extension<A, P, H, G> {
         Extension {
             analyzer: self.analyzer,
             tasks: self.tasks,
             stores,
+            shared: self.shared,
+        }
+    }
+
+    /// Add shared client channels for cross-point ascending facts. Publish under
+    /// Input::universe(), use tracked queries, and retain only sound bounds.
+    /// Generation-local guarantees belong in with_stores() or Refinements.
+    pub fn with_shared_stores<H>(self, shared: H) -> Extension<A, P, F, H> {
+        Extension {
+            analyzer: self.analyzer,
+            tasks: self.tasks,
+            stores: self.stores,
+            shared,
         }
     }
 }
 
-impl<A, P: InputTasks, F> InputTasks for Extension<A, P, F> {
+impl<A, P: InputTasks, F, G> InputTasks for Extension<A, P, F, G> {
     type Task = P::Task;
     const ENABLED: bool = P::ENABLED;
 
@@ -127,7 +146,7 @@ impl<A, P: InputTasks, F> InputTasks for Extension<A, P, F> {
     }
 }
 
-impl<Cx, A: Analyzer<Cx>, P, F> Analyzer<Cx> for Extension<A, P, F> {
+impl<Cx, A: Analyzer<Cx>, P, F, G> Analyzer<Cx> for Extension<A, P, F, G> {
     type Task = A::Task;
     type Error = A::Error;
 
@@ -142,6 +161,10 @@ impl<Cx, A: Analyzer<Cx>, P, F> Analyzer<Cx> for Extension<A, P, F> {
 pub trait ExtraStores {
     /// Static Cons/channel provider list, selected by explicit kernel routes.
     type Stores;
+    /// Allocation-free upper bound for disposing this generation's client data.
+    /// Include all channel values and arbitrary native client Drop work. A zero
+    /// quote explicitly asserts that disposal was prepaid during construction.
+    fn retirement_work(&self, stores: &Self::Stores) -> usize;
     /// Construct fresh stores; all channel allocations use this same meter.
     fn create<J, M: Meter>(
         &self,
@@ -156,6 +179,9 @@ pub struct NoStores;
 
 impl ExtraStores for NoStores {
     type Stores = Nil;
+    fn retirement_work(&self, _: &Nil) -> usize {
+        0
+    }
     fn create<J, M: Meter>(
         &self,
         _: &mut Kernel<J>,
@@ -165,14 +191,43 @@ impl ExtraStores for NoStores {
     }
 }
 
-impl<A, P, F: ExtraStores> ExtraStores for Extension<A, P, F> {
+impl<A, P, F: ExtraStores, G> ExtraStores for Extension<A, P, F, G> {
     type Stores = F::Stores;
+    fn retirement_work(&self, stores: &Self::Stores) -> usize {
+        self.stores.retirement_work(stores)
+    }
     fn create<J, M: Meter>(
         &self,
         kernel: &mut Kernel<J>,
         meter: &mut M,
     ) -> Result<Self::Stores, KernelError<M::Stop>> {
         self.stores.create(kernel, meter)
+    }
+}
+
+/// Once-per-run typed stores shared by independently authored global analyzers.
+/// This factory uses the original kernel and ledger; it does not own a solver.
+pub trait SharedStores {
+    /// Static channels selected with SharedRoute<P>.
+    type Shared: analysis_kernel::ReclaimScope;
+    /// Allocate the shared provider list once for the whole joint run.
+    fn create_shared<J, M: Meter>(
+        &self,
+        kernel: &mut Kernel<J>,
+        meter: &mut M,
+    ) -> Result<Self::Shared, KernelError<M::Stop>>;
+}
+impl<A, P, F, G: ExtraStores> SharedStores for Extension<A, P, F, G>
+where
+    G::Stores: analysis_kernel::ReclaimScope,
+{
+    type Shared = G::Stores;
+    fn create_shared<J, M: Meter>(
+        &self,
+        kernel: &mut Kernel<J>,
+        meter: &mut M,
+    ) -> Result<Self::Shared, KernelError<M::Stop>> {
+        self.shared.create(kernel, meter)
     }
 }
 

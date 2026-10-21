@@ -68,23 +68,22 @@ fn in_scope<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 }
 
 fn key_work<N: WordElement>(key: &EvmValue<N>) -> Option<usize> {
-    let work = key
-        .expression()
-        .map_or_else(|| key.singleton().map(|_| 1), |e| Some(e.nodes()))?;
+    // This optional extractor uses retained source evidence only. A numerical
+    // singleton proof has an independent tariff and is not needed here.
+    let work = key.expression()?.nodes();
     (work <= MAX_KEY_WORK).then_some(work)
 }
 
 fn key_expression<N: WordElement>(key: &EvmValue<N>) -> Option<ExprId> {
     key_work(key)?;
-    key.expression()
-        .cloned()
-        .or_else(|| key.singleton().map(ExprId::constant))
+    key.expression().cloned()
 }
 
 fn same_key<N: WordElement>(expression: &ExprId, key: &EvmValue<N>) -> bool {
-    key.expression()
-        .is_some_and(|e| e.immutable_node_key() == expression.immutable_node_key())
-        || matches!((key.singleton(), expression.as_constant()), (Some(a), Some(b)) if a == b)
+    key.expression().is_some_and(|retained| {
+        retained.immutable_node_key() == expression.immutable_node_key()
+            || matches!((retained.as_constant(), expression.as_constant()), (Some(a), Some(b)) if a == b)
+    })
 }
 
 fn latest_literal<N: WordElement>(

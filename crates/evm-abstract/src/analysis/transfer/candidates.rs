@@ -51,6 +51,7 @@ pub(super) fn count<N: WordElement>(value: &EvmValue<N>) -> usize {
 
 /// A pure, caller-funded cover. Production quotations use `prepare` and reuse
 /// its answer rather than executing the fallback before reserving query work.
+#[cfg(test)]
 pub(super) fn complete<N: WordElement>(value: &EvmValue<N>) -> Option<Candidates<'_>> {
     if let Some(finite) = value.constants() {
         return Some(Candidates {
@@ -65,12 +66,35 @@ pub(super) fn prepare<'a, N: WordElement>(
     value: &'a EvmValue<N>,
     budget: &mut WorkBudget,
 ) -> Result<(Option<Candidates<'a>>, SingletonProof), FrontierReason> {
+    prepare_with_proof(value, SingletonProof::NotQueried, budget)
+}
+
+/// A complete operation may already have discovered its actual result. Reuse
+/// that proof only for this unchanged numeric element, including a negative
+/// answer. Cached finite covers and trusted literal terms need no discovery.
+pub(super) fn prepare_with_proof<'a, N: WordElement>(
+    value: &'a EvmValue<N>,
+    mut proof: SingletonProof,
+    budget: &mut WorkBudget,
+) -> Result<(Option<Candidates<'a>>, SingletonProof), FrontierReason> {
     super::query::checkpoint(budget)?;
+    if let SingletonProof::Answer(Some(word)) = proof {
+        return Ok((Some(Candidates::single(word)), proof));
+    }
+    if let Some(word) = value
+        .expression()
+        .and_then(crate::domain::symbolic::ExprId::as_constant)
+    {
+        return Ok((
+            Some(Candidates::single(word)),
+            SingletonProof::Answer(Some(word)),
+        ));
+    }
     if let Some(finite) = value.constants() {
         let proof = if finite.len() == 1 {
             SingletonProof::Answer(finite.first().copied())
         } else {
-            SingletonProof::NotQueried
+            proof
         };
         return Ok((
             Some(Candidates {
@@ -80,7 +104,7 @@ pub(super) fn prepare<'a, N: WordElement>(
             proof,
         ));
     }
-    let answer = super::query::singleton(value.numeric(), budget)?;
+    let answer = super::query::resolve(value.numeric(), &mut proof, budget)?;
     Ok((
         answer.map(Candidates::single),
         SingletonProof::Answer(answer),

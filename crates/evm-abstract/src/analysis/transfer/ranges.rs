@@ -122,6 +122,28 @@ pub(super) fn memory_after_size<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
+    memory_after_queries(
+        result,
+        offset,
+        size,
+        SingletonProof::NotQueried,
+        proof,
+        context,
+        pc,
+    )
+}
+
+/// CREATE has already prepared the unchanged offset and selected size cover.
+/// Their proofs survive guard metadata attachment and feed range admission.
+pub(super) fn memory_after_queries<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    offset_proof: SingletonProof,
+    size_proof: SingletonProof,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) -> bool {
     if !logical::failure(result, context, pc) {
         return false;
     }
@@ -130,8 +152,8 @@ pub(super) fn memory_after_size<D: EvmNumericAlgebra>(
         offset,
         size,
         RangeQueries {
-            size: proof,
-            ..RangeQueries::default()
+            offset: offset_proof,
+            size: size_proof,
         },
         context,
         pc,

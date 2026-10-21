@@ -19,6 +19,7 @@ impl<J> Kernel<J> {
     fn collect_assumers<M: Meter>(
         &self,
         id: FactId,
+        local_feedback: Option<Scope>,
         stale: &mut BTreeSet<Scope>,
         pending: &mut BTreeSet<Scope>,
         meter: &mut M,
@@ -28,18 +29,19 @@ impl<J> Kernel<J> {
         // bounds lookup/insert/pop cost without scanning those scope records.
         let edge_work = tree_work(self.scopes.len())
             .saturating_mul(4)
-            .saturating_add(8);
+            .saturating_add(9); // includes the local directory-feedback filter
         reserve(
             meter,
             assumptions
                 .len()
                 .saturating_mul(edge_work)
-                .saturating_add(1),
+                .saturating_add(4), // semantic seed / feedback classification
         )?;
         for scope in assumptions {
             meter.checkpoint().map_err(KernelError::Stopped)?;
             let generation = &self.scopes[scope.index];
-            if generation.active
+            if Some(*scope) != local_feedback
+                && generation.active
                 && !generation.stale
                 && generation.entry.is_some()
                 && stale.insert(*scope)
@@ -54,6 +56,7 @@ impl<J> Kernel<J> {
         &self,
         ids: &[FactId],
         semantic: &[FactId],
+        local_topology: Option<(FactId, Scope)>,
         meter: &mut M,
         extra: usize,
     ) -> Result<Changes, KernelError<M::Stop>> {
@@ -61,11 +64,18 @@ impl<J> Kernel<J> {
         let mut pending = BTreeSet::new();
         for id in semantic {
             self.check_fact(*id)?;
-            self.collect_assumers(*id, &mut stale, &mut pending, meter)?;
+            // Only this publication's own directory feedback is exempt. Foreign
+            // membership/family additions, value premises and transitive source
+            // invalidation retain their ordinary semantic force.
+            let local_feedback = local_topology
+                .filter(|(directory, _)| directory == id)
+                .map(|(_, scope)| scope);
+            self.collect_assumers(*id, local_feedback, &mut stale, &mut pending, meter)?;
         }
         while let Some(scope) = pending.pop_first() {
             self.collect_assumers(
                 self.scopes[scope.index].head,
+                None,
                 &mut stale,
                 &mut pending,
                 meter,
