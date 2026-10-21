@@ -42,7 +42,8 @@ fn compatible<N: WordElement>(
             error @ (RangeError::Expression(ExprError::Cancelled)
             | RangeError::State(StateError::Cancelled)),
         ) => Err(error),
-        // Preserve byte_at's existing compatibility marker for checked failures.
+        // Failed checked reads retain a conservative unknown byte marked with
+        // symbolic_limit; cancellation propagates as the typed error above.
         Err(_) => Ok(EvmValue::<N>::unknown_byte().with_symbolic_limit()),
         Ok(value) => Ok(value),
     }

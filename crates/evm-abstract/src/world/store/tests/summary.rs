@@ -393,6 +393,38 @@ fn canonical_join_contains_finite_iterations_and_stabilizes_despite_fresh_source
 }
 
 #[test]
+fn numerical_projection_uses_the_root_instead_of_a_stale_slot_cache() {
+    let (world, owner, _) = fixture();
+    let domain = TestAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new_checked(&world, domain.borrowed()).unwrap();
+    store
+        .write_checked(owner, &word(4), &word(9), domain.borrowed())
+        .unwrap();
+    store
+        .persistent
+        .slots
+        .insert((owner, U256::from(4)), word(99));
+    let original = store.clone();
+    let replay = store
+        .summary_projection(domain.borrowed())
+        .unwrap()
+        .instantiate(domain.borrowed())
+        .unwrap();
+    assert_eq!(
+        replay
+            .read_checked(owner, &word(4), domain.borrowed())
+            .unwrap()
+            .singleton(),
+        Some(U256::from(9))
+    );
+    assert_eq!(store, original);
+    assert_eq!(
+        store.persistent.slots[&(owner, U256::from(4))].singleton(),
+        Some(U256::from(99))
+    );
+}
+
+#[test]
 fn projection_uses_roots_and_operands_instead_of_cache_and_covers_unknown_aliases() {
     let (world, a, _) = fixture();
     let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());

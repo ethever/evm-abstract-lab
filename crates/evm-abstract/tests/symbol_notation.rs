@@ -67,9 +67,12 @@ fn projected_and_native_state_names_remain_distinct_without_renaming_values() {
         &ir,
         &native::product_with(analysis.execution().domain_spec()),
     );
-    assert!(cfg.contains("σᵖ₀ | B₀ @ 0x0000"), "{cfg}");
-    assert!(listing.contains("σᵖ₀ | context="), "{listing}");
-    assert!(listing.contains("%0 = PUSH1 0x1"), "{listing}");
+    assert!(cfg.contains("σᵖ₀ | native=σ₀ | B₀ @ 0x0000"), "{cfg}");
+    assert!(listing.contains("σᵖ₀ → σ₀"), "{listing}");
+    assert!(
+        listing.contains("0000: PUSH1") && listing.contains("results=[%0]"),
+        "{listing}"
+    );
     assert!(!listing.contains("%₀"));
     let dot = render::dot(
         &analysis,

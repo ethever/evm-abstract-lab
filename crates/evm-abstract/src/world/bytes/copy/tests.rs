@@ -162,7 +162,11 @@ fn uncertified_cells_keep_coordinates_for_authoritative_scoped_summary_reads() {
     let branch = |byte| {
         let value = TestValue::top()
             .with_expression(ExprId::fresh().unwrap())
-            .with_numeric(constant(byte).numeric().clone());
+            .with_numeric(
+                constant::<crate::domain::NumericValue>(byte)
+                    .numeric()
+                    .clone(),
+            );
         let mut array = TestBytes::memory();
         array
             .write_byte(&constant(700), &value, domain.borrowed())
@@ -563,7 +567,10 @@ fn empty_actual_return_data_keeps_expansion_and_atomic_typed_refusals() {
         .unwrap();
     // Constrain this captured slice's own length, retaining its root/history.
     let length_term = source.len().expression().unwrap().clone();
-    source.length = source.length.clone().with_numeric(zero().numeric().clone());
+    source.length = source
+        .length
+        .clone()
+        .with_numeric(zero::<crate::domain::NumericValue>().numeric().clone());
     source
         .remember(length_term, &zero(), domain.borrowed())
         .unwrap();
@@ -573,7 +580,11 @@ fn empty_actual_return_data_keeps_expansion_and_atomic_typed_refusals() {
     let mut target = TestBytes::memory();
     let old_byte = TestValue::top()
         .with_expression(ExprId::fresh().unwrap())
-        .with_numeric(constant(0xaa).numeric().clone());
+        .with_numeric(
+            constant::<crate::domain::NumericValue>(0xaa)
+                .numeric()
+                .clone(),
+        );
     target
         .write_byte(&zero(), &old_byte, domain.borrowed())
         .unwrap();
@@ -733,11 +744,11 @@ fn maybe_zero_and_nonzero_return_data_keep_complete_copy_and_fee() {
         let ranges = super::scalar_work(&requested)
             .saturating_add(super::scalar_work(&source.length))
             .saturating_add(super::scalar_work(&target.length))
-            .saturating_add(super::scalar_work(&zero()))
+            .saturating_add(super::scalar_work(&zero::<crate::domain::NumericValue>()))
             .saturating_add(8)
             .saturating_mul(4);
         let branches = super::alternatives(&target.length)
-            .saturating_mul(super::alternatives(&zero()))
+            .saturating_mul(super::alternatives(&zero::<crate::domain::NumericValue>()))
             .saturating_mul(super::alternatives(&requested))
             .saturating_mul(super::alternatives(&source.length));
         let complete = super::work(
@@ -798,7 +809,7 @@ fn empty_import_quote_avoids_policy_comparisons_only_for_empty_targets() {
             .insert(ExprId::constant(U256::from(n)), constant(n));
     }
     let empty = TestBytes::memory();
-    let quote = |target: &TestBytes, source: &TestBytes, domain| {
+    let quote = |target: &TestBytes, source: &TestBytes, domain: TestAlgebra| {
         [
             target.copy_work(source, &zero(), &zero(), &constant(1), domain.borrowed()),
             target.copy_return_data_work(source, &zero(), &constant(1), domain.borrowed()),

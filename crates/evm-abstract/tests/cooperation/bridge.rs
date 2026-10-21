@@ -212,11 +212,16 @@ fn external_work_refusal_retains_incomplete_pending_effects_and_differs_from_can
                 .contains(U256::from(42))
         );
     }
-    // v5 ad-hoc cooperating entry has no AnalysisSession snapshot/revision.
-    // terminal::prepare refuses MissingIdentity before preparing coverage even
-    // when enabled. Keep that absence explicit; never invent AllInputStates
-    // evidence from the partial graph. Session coverage has separate regressions.
-    assert!(result.root_terminal_coverage().is_none());
+    let coverage = result
+        .root_terminal_coverage()
+        .expect("cooperating native input keeps original snapshot authority");
+    assert_eq!(coverage.input().snapshot(), result.snapshot());
+    assert_eq!(coverage.input().revision(), result.revision());
+    assert!(coverage.input().input_scope().is_some());
+    assert_eq!(
+        coverage.scope(),
+        evm_abstract::analysis::RootTerminalScope::AllInputStates
+    );
     assert!(
         external
             .analyzer

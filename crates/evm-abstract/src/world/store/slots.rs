@@ -56,6 +56,23 @@ fn key_disjoint<N: WordElement>(a: &EvmValue<N>, b: &EvmValue<N>) -> bool {
             _ => false,
         }
 }
+
+// Continuations borrow the admitted root graph and move results rather than
+// copying numeric carriers. At most one continuation per root depth is live.
+enum ReadContinuation<'s, 'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> {
+    Stored(&'s ExprId),
+    Selected(Context<'a, N, D>),
+    Else {
+        condition: &'s ExprId,
+        state: &'s SlotStateId,
+        parent: Context<'a, N, D>,
+    },
+    Join {
+        parent: Context<'a, N, D>,
+        then_context: Context<'a, N, D>,
+    },
+}
+
 pub(super) fn read_numeric_in<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     root: &SlotStateId,
     key: &ExprId,
@@ -63,96 +80,141 @@ pub(super) fn read_numeric_in<N: WordElement, D: EvmNumericAlgebra<Element = N>>
     domain: AlgebraRef<'_, D>,
 ) -> EvmValue<N> {
     let domain = numeric::numeric_domain(domain);
-    match root.kind() {
-        SlotStateKind::Zero => numeric::scalar_in(&ExprId::constant(U256::ZERO), context, domain),
-        SlotStateKind::Input { bindings, .. } => {
-            let key = numeric::scalar_in(key, context, domain);
-            if let Some(keys) = crate::world::candidates(&key) {
-                let mut out = None;
-                for k in keys.iter() {
-                    let value = bindings.iter().find(|b| b.index == *k).map_or_else(
-                        EvmValue::<N>::top,
-                        |b| {
-                            let value = numeric::scalar_in(&b.value, context, domain);
-                            let retained = context.has_binding_value(&b.value);
-                            if retained && !context.pay_binding(value.numeric(), &b.numeric) {
-                                return EvmValue::<N>::top();
-                            }
-                            numeric::bound(value, retained, &b.numeric)
-                        },
-                    );
-                    out = Some(out.map_or_else(|| value.clone(), |old| domain.join(&old, &value)));
-                }
-                out.unwrap_or_else(EvmValue::<N>::top)
-            } else {
-                EvmValue::<N>::top()
+    let mut cursor = root;
+    let mut context = context.clone();
+    let mut pending = Vec::new();
+    let mut values = Vec::new();
+    'read: loop {
+        let mut out = match cursor.kind() {
+            SlotStateKind::Zero => {
+                numeric::scalar_in(&ExprId::constant(U256::ZERO), &context, domain)
             }
-        }
-        SlotStateKind::Store {
-            previous,
-            key: written,
-            value,
-        } => {
-            if key == written {
-                return numeric::scalar_in(value, context, domain);
-            }
-            let requested = numeric::scalar_in(key, context, domain);
-            let stored = numeric::scalar_in(written, context, domain);
-            if let (Some(requested), Some(stored)) = (requested.singleton(), stored.singleton()) {
-                return if requested == stored {
-                    numeric::scalar_in(value, context, domain)
+            SlotStateKind::Input { bindings, .. } => {
+                let key = numeric::scalar_in(key, &context, domain);
+                if let Some(keys) = crate::world::candidates(&key) {
+                    let mut out = None;
+                    for k in keys.iter() {
+                        let value = bindings.iter().find(|b| b.index == *k).map_or_else(
+                            EvmValue::<N>::top,
+                            |b| {
+                                let value = numeric::scalar_in(&b.value, &context, domain);
+                                let retained = context.has_binding_value(&b.value);
+                                if retained && !context.pay_binding(value.numeric(), &b.numeric) {
+                                    return EvmValue::<N>::top();
+                                }
+                                numeric::bound(value, retained, &b.numeric)
+                            },
+                        );
+                        out = Some(
+                            out.map_or_else(|| value.clone(), |old| domain.join(&old, &value)),
+                        );
+                    }
+                    out.unwrap_or_else(EvmValue::<N>::top)
                 } else {
-                    read_numeric_in(previous, key, context, domain)
-                };
+                    EvmValue::<N>::top()
+                }
             }
-            if key_disjoint(&requested, &stored) {
-                read_numeric_in(previous, key, context, domain)
-            } else {
-                domain.join(
-                    &read_numeric_in(previous, key, context, domain),
-                    &numeric::scalar_in(value, context, domain),
-                )
+            SlotStateKind::Store {
+                previous,
+                key: written,
+                value,
+            } => {
+                if key == written {
+                    numeric::scalar_in(value, &context, domain)
+                } else {
+                    let requested = numeric::scalar_in(key, &context, domain);
+                    let stored = numeric::scalar_in(written, &context, domain);
+                    if let (Some(requested), Some(stored)) =
+                        (requested.singleton(), stored.singleton())
+                    {
+                        if requested == stored {
+                            numeric::scalar_in(value, &context, domain)
+                        } else {
+                            cursor = previous;
+                            continue 'read;
+                        }
+                    } else {
+                        if !key_disjoint(&requested, &stored) {
+                            // Evaluate the previous read before the stored value,
+                            // using this same scope and its original payers.
+                            pending.push(ReadContinuation::Stored(value));
+                        }
+                        cursor = previous;
+                        continue 'read;
+                    }
+                }
+            }
+            SlotStateKind::Ite {
+                condition,
+                then_state,
+                else_state,
+            } => {
+                let c = numeric::scalar_in(condition, &context, domain);
+                if !c.may_be_zero() {
+                    let branch = context.branch_when_scoped(condition, true);
+                    pending.push(ReadContinuation::Selected(std::mem::replace(
+                        &mut context,
+                        branch,
+                    )));
+                    cursor = then_state;
+                } else if !c.may_be_nonzero() {
+                    let branch = context.branch_when_scoped(condition, false);
+                    pending.push(ReadContinuation::Selected(std::mem::replace(
+                        &mut context,
+                        branch,
+                    )));
+                    cursor = else_state;
+                } else {
+                    let branch = context.branch_when_scoped(condition, true);
+                    pending.push(ReadContinuation::Else {
+                        condition,
+                        state: else_state,
+                        parent: std::mem::replace(&mut context, branch),
+                    });
+                    cursor = then_state;
+                }
+                continue 'read;
+            }
+        };
+        while let Some(continuation) = pending.pop() {
+            match continuation {
+                ReadContinuation::Stored(value) => {
+                    out = domain.join(&out, &numeric::scalar_in(value, &context, domain));
+                }
+                ReadContinuation::Selected(parent) => context = parent,
+                ReadContinuation::Else {
+                    condition,
+                    state,
+                    parent,
+                } => {
+                    // Construct the else context only after completing then.
+                    // Keep both branch contexts alive through the ordered join.
+                    let branch = parent.branch_when_scoped(condition, false);
+                    pending.push(ReadContinuation::Join {
+                        parent,
+                        then_context: std::mem::replace(&mut context, branch),
+                    });
+                    values.push(out);
+                    cursor = state;
+                    continue 'read;
+                }
+                ReadContinuation::Join {
+                    parent,
+                    then_context,
+                } => {
+                    let then_value = values.pop().expect("completed then read");
+                    out = domain.join(&then_value, &out);
+                    context = parent;
+                    drop(then_context);
+                }
             }
         }
-        SlotStateKind::Ite {
-            condition,
-            then_state,
-            else_state,
-        } => {
-            let c = numeric::scalar_in(condition, context, domain);
-            if !c.may_be_zero() {
-                read_numeric_in(
-                    then_state,
-                    key,
-                    &context.branch_when_scoped(condition, true),
-                    domain,
-                )
-            } else if !c.may_be_nonzero() {
-                read_numeric_in(
-                    else_state,
-                    key,
-                    &context.branch_when_scoped(condition, false),
-                    domain,
-                )
-            } else {
-                domain.join(
-                    &read_numeric_in(
-                        then_state,
-                        key,
-                        &context.branch_when_scoped(condition, true),
-                        domain,
-                    ),
-                    &read_numeric_in(
-                        else_state,
-                        key,
-                        &context.branch_when_scoped(condition, false),
-                        domain,
-                    ),
-                )
-            }
-        }
+        return out;
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 pub(super) fn expressions(root: &SlotStateId) -> Vec<ExprId> {
     let mut out = Vec::new();

@@ -158,7 +158,12 @@ fn constant_runs_use_small_roots_and_keep_variable_length_padding() {
     let length = TestValue::unsigned_range(U256::from(32), U256::from(64)).unwrap();
     let length_expression = expr(&length).unwrap();
     let cells = (0..64)
-        .map(|index| (index, constant(usize::from(index == 31) * 9)))
+        .map(|index| {
+            (
+                index,
+                constant::<crate::domain::NumericValue>(usize::from(index == 31) * 9),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     let mut input = TestBytes::unknown();
     input.length = length.with_expression(length_expression.clone());

@@ -126,11 +126,12 @@ pub struct ValueFact<N: WordElement> {
     pub validity: FactValidity,
     /// Evidence producing this property.
     pub source: FactSource,
-    /// Numeric guarantees, absent when no projection was collected.
+    /// Retained actual native observation. Independent derived word proofs
+    /// deliberately omit a redundant numeric carrier.
     pub numeric: Option<N>,
     /// Possible source categories; they do not establish equal values.
     pub provenance: Option<Provenance>,
-    /// Exact singleton proved by the actual native carrier, including custom predicates.
+    /// Exact native singleton or independently derived EVM word proof.
     pub constant: Option<U256>,
 }
 
@@ -333,7 +334,8 @@ pub fn build_normalized_world<N: WordElement>(
     analysis: &EvmWorldAnalysis<N>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<NormalizedSsa<N>, SsaError> {
-    super::build_world(analysis)?;
+    super::pay(budget, 0)?;
+    super::world::build(analysis, Some(&mut *budget))?;
     let raw = super::build_partial_world(analysis, budget)?;
     let ir = build::normalize(&raw, analysis, true, budget)?;
     verify::against_raw(&ir, &raw, analysis, budget)?;
@@ -346,6 +348,7 @@ pub fn build_normalized_partial_world<N: WordElement>(
     analysis: &EvmWorldAnalysis<N>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<NormalizedSsa<N>, SsaError> {
+    super::pay(budget, 0)?;
     if analysis.status() == Status::Converged {
         return build_normalized_world(analysis, budget);
     }

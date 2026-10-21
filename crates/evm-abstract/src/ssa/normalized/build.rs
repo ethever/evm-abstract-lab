@@ -21,12 +21,14 @@ pub(super) fn normalize<N: WordElement>(
     complete: bool,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<NormalizedSsa<N>, SsaError> {
-    crate::ssa::checkpoint()?;
-    let (names, mut mappings) = allocate(raw)?;
+    crate::ssa::pay(budget, 0)?;
+    crate::ssa::work::normalize(raw, analysis, budget)?;
+    let (names, mut mappings) = allocate(raw, budget)?;
     let mut blocks = Vec::with_capacity(raw.blocks().len());
     for block in raw.blocks() {
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         let mut block = block.try_map_instructions(|_, step| {
+            crate::ssa::pay(budget, 0)?;
             let mut origin = step.instruction.clone();
             remap(origin.values_mut(), &names);
             let operation = NormalizedOperation::Opcode {
@@ -53,7 +55,14 @@ pub(super) fn normalize<N: WordElement>(
     for transition in &mut transitions {
         remap(transition.values_mut(), &names);
     }
-    let mut facts = observed_facts(&blocks, &transitions, analysis, complete, budget)?;
+    let mut facts = observed_facts(
+        &blocks,
+        &transitions,
+        analysis,
+        complete,
+        raw.value_count().saturating_mul(2),
+        budget,
+    )?;
     let mut known = vec![None; mappings.len()];
     for fact in &facts {
         if fact.scope == FactScope::Definition && fact.validity == FactValidity::Current {
@@ -62,14 +71,14 @@ pub(super) fn normalize<N: WordElement>(
     }
 
     for block in &mut blocks {
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         for phi in &block.phis {
             mappings[phi.result].dependencies =
                 phi.inputs.iter().map(|(_, value)| *value).collect();
         }
         for instruction in &mut block.instructions {
-            crate::ssa::checkpoint()?;
-            let result = simplify::instruction(instruction, &known, &mappings);
+            crate::ssa::pay(budget, 0)?;
+            let result = simplify::instruction(instruction, &known, &mappings, budget)?;
             instruction.operation = result.operation;
             for value in &instruction.origin.results {
                 let mapping = &mut mappings[*value];
@@ -83,7 +92,8 @@ pub(super) fn normalize<N: WordElement>(
                         scope: FactScope::Definition,
                         validity: FactValidity::Current,
                         source,
-                        numeric: Some(N::constant(constant)),
+                        // The independent U256 proof does not need an opaque N factory.
+                        numeric: None,
                         // A numeric proof must not upgrade an observed source's scope.
                         provenance: (source == FactSource::Literal).then(Provenance::constant),
                         constant: Some(constant),
@@ -113,11 +123,12 @@ pub(super) fn normalize<N: WordElement>(
 
 fn allocate<N: WordElement>(
     raw: &PartialWorldSsa<N>,
+    budget: &mut crate::resource::WorkBudget,
 ) -> Result<(Vec<ValueId>, Vec<ValueMapping>), SsaError> {
     let mut names = vec![usize::MAX; raw.value_count()];
     let mut mappings = Vec::with_capacity(raw.value_count());
     for block in raw.blocks() {
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         for (value, origin) in block.definitions(|step| &step.instruction) {
             register(&mut names, &mut mappings, value, origin)?;
         }
@@ -175,11 +186,14 @@ fn observed_facts<N: WordElement>(
     transitions: &[crate::ssa::Transition],
     analysis: &EvmWorldAnalysis<N>,
     complete: bool,
+    fact_capacity: usize,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<Vec<ValueFact<N>>, SsaError> {
-    let mut facts = Vec::new();
+    // Structural admission funded this bound; derived facts append into the
+    // same allocation, without repeatedly moving opaque native payloads.
+    let mut facts = Vec::with_capacity(fact_capacity);
     for block in blocks {
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         let state = &analysis.states()[block.state];
         let validity = validity(block.coverage);
         let scope = scope(block.state, complete, block.coverage);
@@ -224,7 +238,7 @@ fn observed_facts<N: WordElement>(
         }
     }
     for transition in transitions {
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         if let Some(result) = transition.result {
             let target = analysis.edges()[transition.edge].to;
             let destination = &analysis.states()[target];
@@ -252,6 +266,7 @@ fn observation<N: WordElement>(
     provenance: Option<&Provenance>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<ValueFact<N>, SsaError> {
+    crate::ssa::pay(budget, 0)?;
     let numeric_work = numeric.map_or(0, |numeric| {
         numeric
             .clone_work()

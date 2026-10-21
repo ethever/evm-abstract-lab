@@ -1,7 +1,7 @@
 //! 在真实世界执行中核对冻结策略、资源停止、摘要 guard 与循环闭包。
 use evm_abstract::analysis::AnalysisInput;
 use evm_abstract::analysis::control::Control;
-use evm_abstract::domain::{FiniteConstantSet, WordElement};
+use evm_abstract::domain::FiniteConstantSet;
 
 #[path = "support/native.rs"]
 mod native;
@@ -174,12 +174,12 @@ fn json_distinguishes_a_top_component_from_the_whole_product() {
     );
     assert!(json["domain_spec"].get("profile").is_none());
     assert_eq!(json["domain_spec"]["word_bits"], 256);
-    // Billing policy 6 does not change the domain policy's serialized schema.
+    // Numeric policy metadata is the actual frozen native specification.
     assert_eq!(
         json["domain_spec"]["schema_version"],
         graph.domain_spec().schema_version()
     );
-    assert_eq!(json["domain_spec"]["cost_version"], 6);
+    assert_eq!(json["domain_spec"]["cost_version"], 7);
     assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
 }
 
@@ -338,7 +338,7 @@ fn summaries_guard_the_entire_frozen_domain_policy() {
             json["domain_spec"]["schema_version"],
             graph.domain_spec().schema_version()
         );
-        assert_eq!(json["domain_spec"]["cost_version"], 6);
+        assert_eq!(json["domain_spec"]["cost_version"], 7);
         assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
         assert_eq!(
             json["domain_spec"]["provenance_policy"],
@@ -800,7 +800,11 @@ fn projecting_a_larger_finite_input_obeys_the_frozen_constants_capacity() {
     let wide = domain(64, 4, 256);
     let input = (1_u64..=9).fold(word(0), |a, v| wide.join(&a, &word(v)));
     assert_eq!(input.constants().unwrap().len(), 10);
-    let finite_input = EvmValue::from_numeric(input.finite_constants().clone());
+    let finite_values = native::finite_with(native::spec(64, 4, 256));
+    let finite_input = (1_u64..=9).fold(
+        EvmValue::<FiniteConstantSet>::constant(U256::ZERO),
+        |old, next| finite_values.join(&old, &EvmValue::constant(U256::from(next))),
+    );
     let constants = native::finite_with(native::spec(8, 4, 256)).project(&finite_input);
     assert_eq!(constants.numeric(), &FiniteConstantSet::top());
     assert_eq!(constants.provenance(), input.provenance());

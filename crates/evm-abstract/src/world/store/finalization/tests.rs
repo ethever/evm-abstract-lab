@@ -243,14 +243,12 @@ fn may_delete_retention_refusal_is_typed_and_never_installs_the_numeric_fallback
     };
 
     let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
-        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-            .spec()
-            .with_relations(RelationLimits {
-                // An unobserved slot root includes its source token (two nodes).
-                // Its MAY-delete ITE adds a selector and the zero-state alternative.
-                max_nodes: 2,
-                ..RelationLimits::default()
-            }),
+        crate::domain::DomainSpec::default().with_relations(RelationLimits {
+            // An unobserved slot root includes its source token (two nodes).
+            // Its MAY-delete ITE adds a selector and the zero-state alternative.
+            max_nodes: 2,
+            ..RelationLimits::default()
+        }),
     ));
     let limits = domain.spec().relations().expressions();
     let mut world = TestWorld::new(Fork::Osaka, "finalization retention refusal");
@@ -379,13 +377,11 @@ fn may_delete_field_fee_is_independent_of_unrelated_cell_payloads() {
     use crate::domain::relational::RelationLimits;
 
     let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
-        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-            .spec()
-            .with_relations(RelationLimits {
-                max_nodes: 4_096,
-                max_depth: 256,
-                ..RelationLimits::default()
-            }),
+        crate::domain::DomainSpec::default().with_relations(RelationLimits {
+            max_nodes: 4_096,
+            max_depth: 256,
+            ..RelationLimits::default()
+        }),
     ));
     let limits = domain.spec().relations().expressions();
     let mut fields = Vec::new();
@@ -429,13 +425,11 @@ fn may_delete_batch_fee_avoids_owner_count_times_unrelated_fields() {
     use crate::domain::relational::RelationLimits;
 
     let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
-        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-            .spec()
-            .with_relations(RelationLimits {
-                max_nodes: 4_096,
-                max_depth: 256,
-                ..RelationLimits::default()
-            }),
+        crate::domain::DomainSpec::default().with_relations(RelationLimits {
+            max_nodes: 4_096,
+            max_depth: 256,
+            ..RelationLimits::default()
+        }),
     ));
     let limits = domain.spec().relations().expressions();
     let mut fees = Vec::new();
@@ -788,12 +782,10 @@ fn no_delete_checks_oversized_unrelated_roots_before_transient_cleanup() {
     };
 
     let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
-        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-            .spec()
-            .with_relations(RelationLimits {
-                max_nodes: 6,
-                ..RelationLimits::default()
-            }),
+        crate::domain::DomainSpec::default().with_relations(RelationLimits {
+            max_nodes: 6,
+            ..RelationLimits::default()
+        }),
     ));
     let mut oversized = SlotStateId::zero();
     for key in [1, 2] {

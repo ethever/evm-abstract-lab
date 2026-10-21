@@ -1,5 +1,5 @@
 //! 封装常量组件后，核对组合值、事实输入及原有输出合同。
-use evm_abstract::domain::{FiniteConstantSet, WordElement};
+use evm_abstract::domain::FiniteConstantSet;
 
 #[path = "support/native.rs"]
 mod native;
@@ -73,8 +73,14 @@ fn projecting_over_capacity_forgets_only_the_constant_component() {
     for excluded in [0_u64, 1, 3, 4, 6, 7, 9, 16] {
         assert!(!projected.contains(U256::from(excluded)));
     }
-    let finite_input =
-        EvmValue::from_numeric(input.finite_constants().clone()).with_origin(Origin::Storage);
+    let finite_values = native::finite_with(native::spec(3, 4, 256));
+    let finite_input = [5_u64, 8]
+        .into_iter()
+        .fold(
+            EvmValue::<FiniteConstantSet>::constant(U256::from(2)),
+            |old, next| finite_values.join(&old, &EvmValue::constant(U256::from(next))),
+        )
+        .with_origin(Origin::Storage);
     let constants_only = native::finite_with(native::spec(1, 4, 256)).project(&finite_input);
     assert_eq!(constants_only.numeric(), &FiniteConstantSet::top());
     assert_eq!(constants_only.provenance(), input.provenance());

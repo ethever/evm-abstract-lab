@@ -30,7 +30,6 @@ mod summary;
 #[cfg(test)]
 mod tests;
 mod traversal;
-mod widening;
 use thiserror::Error;
 
 #[cfg(test)]

@@ -100,9 +100,9 @@ fn single_analysis_json_retains_symbolic_defaults_and_explicit_environment_assum
         assert_eq!(value.numeric(), unknown.numeric());
         assert_eq!(value.provenance(), unknown.provenance());
         assert_eq!(serialized["numeric"], serde_json::json!({}));
-        assert_eq!(
-            serialized["provenance"],
-            serde_json::to_value(unknown.provenance()).unwrap()
+        assert!(
+            serialized.get("provenance").is_none(),
+            "Top provenance uses the documented sparse default"
         );
         assert!(serialized.get("Constants").is_none());
         assert!(value.expression().is_some());
@@ -920,7 +920,6 @@ fn symbolic_targets_and_unbounded_lazy_copy_sizes_keep_their_success_domains() {
             )
             .unwrap(),
             ExecutionConfig {
-                analysis: Config::default(),
                 max_work,
                 root_terminal_coverage: false,
                 ..ExecutionConfig::default()

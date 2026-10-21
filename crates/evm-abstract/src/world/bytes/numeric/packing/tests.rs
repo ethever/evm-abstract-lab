@@ -261,9 +261,8 @@ fn plain_unknowns_match_full_original_and_keep_caller_word_dependency() {
 
 #[test]
 fn mixed_informative_malformed_and_wrong_length_inputs_fall_back() {
-    let domain = super::super::numeric_domain(
-        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
-    );
+    let algebra = TestAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = super::super::numeric_domain(algebra.borrowed());
     let finite = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
         .from_facts(&[UnaryPredicate::MemberOf(
             FiniteSet::new(BTreeSet::from([U256::ZERO, U256::from(255)])).unwrap(),
@@ -287,10 +286,7 @@ fn mixed_informative_malformed_and_wrong_length_inputs_fall_back() {
     ] {
         let mut bytes = vec![TestValue::unknown_byte(); 32];
         bytes[17] = special;
-        assert_eq!(
-            pack(&bytes, domain.borrowed()).unwrap(),
-            original(&bytes, domain)
-        );
+        assert_eq!(pack(&bytes, domain).unwrap(), original(&bytes, domain));
     }
     for special in [
         TestValue::constant(U256::from(256)),
@@ -304,17 +300,11 @@ fn mixed_informative_malformed_and_wrong_length_inputs_fall_back() {
     ] {
         let mut bytes = vec![TestValue::unknown_byte(); 32];
         bytes[17] = special;
-        assert!(pack(&bytes, domain.borrowed()).is_none());
+        assert!(pack(&bytes, domain).is_none());
     }
     for length in [0, 1, 31, 33, 64] {
-        assert!(pack(&vec![TestValue::unknown_byte(); length], domain.borrowed()).is_none());
-        assert!(
-            pack(
-                &vec![TestValue::constant(U256::ZERO); length],
-                domain.borrowed()
-            )
-            .is_none()
-        );
+        assert!(pack(&vec![TestValue::unknown_byte(); length], domain).is_none());
+        assert!(pack(&vec![TestValue::constant(U256::ZERO); length], domain).is_none());
     }
     for domain in policies(false) {
         for wider in [U256::from(256), U256::MAX] {
@@ -327,24 +317,26 @@ fn mixed_informative_malformed_and_wrong_length_inputs_fall_back() {
         assert!(pack(&vec![TestValue::unknown_byte(); 32], domain.borrowed()).is_none());
     }
 
-    // ConstantsOnly must not promote a singleton absent from finite candidates.
+    // The product can use an exact interval without finite candidates.
     let interval_singleton = TestValue::unsigned_range(U256::from(7), U256::from(7)).unwrap();
     let bytes = vec![interval_singleton; 32];
     assert!(bytes[0].constants().is_none());
+    assert_eq!(pack(&bytes, domain).unwrap(), original(&bytes, domain));
+    // The standalone finite carrier has no product packing certificate. Its
+    // unknown-byte payload is Top at this capacity; the full transfer oracle
+    // must stay conservative when the optional packing hook declines.
+    let constants_algebra = crate::domain::ValueAlgebra::new(
+        crate::domain::FiniteSetAlgebra::from_spec(crate::domain::DomainSpec::new(
+            NonZeroUsize::new(8).unwrap(),
+            std::num::NonZeroUsize::new(8).unwrap(),
+            std::num::NonZeroUsize::new(256).unwrap(),
+        )),
+    );
+    let constants = super::super::numeric_domain(constants_algebra.borrowed());
+    let finite_bytes = vec![EvmValue::<crate::domain::FiniteConstantSet>::unknown_byte(); 32];
+    assert!(pack(&finite_bytes, constants).is_none());
     assert_eq!(
-        pack(&bytes, domain.borrowed()).unwrap(),
-        original(&bytes, domain)
+        original(&finite_bytes, constants).numeric(),
+        &crate::domain::FiniteConstantSet::top()
     );
-    let constants = super::super::numeric_domain(
-        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
-            crate::domain::DomainSpec::new(
-                NonZeroUsize::new(8).unwrap(),
-                std::num::NonZeroUsize::new(8).unwrap(),
-                std::num::NonZeroUsize::new(256).unwrap(),
-            ),
-        ))
-        .borrowed(),
-    );
-    assert!(pack(&bytes, constants.borrowed()).is_none());
-    assert_eq!(original(&bytes, constants).numeric(), &NumericValue::top());
 }
