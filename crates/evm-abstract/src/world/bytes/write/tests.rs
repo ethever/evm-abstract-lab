@@ -1,4 +1,5 @@
 use super::{NUMERIC_READS, eligible};
+use crate::domain::{AlgebraRef, EvmNumericAlgebra, ValueAlgebra};
 use alloy_primitives::U256;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -51,20 +52,24 @@ fn source(numeric: NumericValue, scope: u64) -> TestValue {
 
 // The original algorithm: unchanged staging followed by the original refresh.
 // No reimplementation of BYTE, metadata, expressions or range rules is an oracle.
-fn original(
+fn original<D: EvmNumericAlgebra<Element = NumericValue>>(
     array: &mut TestBytes,
     offset: &TestValue,
     value: &TestValue,
     width: usize,
-    domain: TestAlgebra,
+    domain: AlgebraRef<'_, D>,
 ) -> Result<(), RangeError> {
-    let mut out = array.staged_write(offset, value, width, domain.borrowed())?;
-    out.refresh(domain.borrowed());
+    let mut out = array.staged_write(offset, value, width, domain)?;
+    out.refresh(domain);
     *array = out;
     Ok(())
 }
 
-fn assert_complete(actual: &TestBytes, expected: &TestBytes, domain: TestAlgebra) {
+fn assert_complete<D: EvmNumericAlgebra<Element = NumericValue>>(
+    actual: &TestBytes,
+    expected: &TestBytes,
+    domain: AlgebraRef<'_, D>,
+) {
     assert_eq!(actual, expected);
     assert_eq!(actual.view(), expected.view());
     assert_eq!(actual.state_root(), expected.state_root());
@@ -74,14 +79,14 @@ fn assert_complete(actual: &TestBytes, expected: &TestBytes, domain: TestAlgebra
     );
     for index in 0..=32 {
         assert_eq!(
-            actual.read_byte_checked(&constant(index), domain.borrowed()),
-            expected.read_byte_checked(&constant(index), domain.borrowed()),
+            actual.read_byte_checked(&constant(index), domain),
+            expected.read_byte_checked(&constant(index), domain),
             "byte {index}"
         );
     }
     assert_eq!(
-        actual.read_word_checked(&constant(0), domain.borrowed()),
-        expected.read_word_checked(&constant(0), domain.borrowed())
+        actual.read_word_checked(&constant(0), domain),
+        expected.read_word_checked(&constant(0), domain)
     );
 }
 
@@ -127,9 +132,9 @@ fn a1_matches_entire_original_arrays_and_reads_under_the_same_policy() {
                 .unwrap();
             assert_eq!(NUMERIC_READS.get(), 1);
             NUMERIC_READS.set(0);
-            original(&mut expected, &constant(0), &value, 32, domain).unwrap();
+            original(&mut expected, &constant(0), &value, 32, domain.borrowed()).unwrap();
             assert_eq!(NUMERIC_READS.get(), 32);
-            assert_complete(&actual, &expected, domain);
+            assert_complete(&actual, &expected, domain.borrowed());
             let ByteStateKind::WriteWord {
                 previous,
                 offset,
@@ -192,20 +197,27 @@ fn quote_and_execution_admit_the_same_shape_before_and_after_touch() {
             .is_some()
     );
     let mut expected = memory.clone();
-    original(&mut expected, &constant(0), &value, 32, domain).unwrap();
+    original(&mut expected, &constant(0), &value, 32, domain.borrowed()).unwrap();
     memory
         .write_word(&constant(0), &value, domain.borrowed())
         .unwrap();
-    assert_complete(&memory, &expected, domain);
+    assert_complete(&memory, &expected, domain.borrowed());
 
     let saved = memory.clone();
     let expected_saved = expected.clone();
     memory
         .write_byte(&constant(64), &constant(42), domain.borrowed())
         .unwrap();
-    original(&mut expected, &constant(64), &constant(42), 1, domain).unwrap();
-    assert_complete(&memory, &expected, domain);
-    assert_complete(&saved, &expected_saved, domain);
+    original(
+        &mut expected,
+        &constant(64),
+        &constant(42),
+        1,
+        domain.borrowed(),
+    )
+    .unwrap();
+    assert_complete(&memory, &expected, domain.borrowed());
+    assert_complete(&saved, &expected_saved, domain.borrowed());
     assert!(
         matches!(memory.root.kind(), ByteStateKind::WriteByte { previous, .. }
         if previous == saved.state_root())
@@ -266,11 +278,11 @@ fn nonliteral_msize_and_allocation_history_keep_quote_touch_and_write_in_agreeme
                 .is_some()
         );
         let mut expected = actual.clone();
-        original(&mut expected, &constant(0), &value, 32, domain).unwrap();
+        original(&mut expected, &constant(0), &value, 32, domain.borrowed()).unwrap();
         actual
             .write_word(&constant(0), &value, domain.borrowed())
             .unwrap();
-        assert_complete(&actual, &expected, domain);
+        assert_complete(&actual, &expected, domain.borrowed());
         // The standalone writer also pays/executes the original expansion.
         // Share the intended MSIZE source before independent staging creates
         // observed-slot identities. MSIZE does not participate in eligibility.
@@ -281,11 +293,11 @@ fn nonliteral_msize_and_allocation_history_keep_quote_touch_and_write_in_agreeme
                 .is_some()
         );
         let mut direct = before.clone();
-        original(&mut before, &constant(0), &value, 32, domain).unwrap();
+        original(&mut before, &constant(0), &value, 32, domain.borrowed()).unwrap();
         direct
             .write_word(&constant(0), &value, domain.borrowed())
             .unwrap();
-        assert_complete(&direct, &before, domain);
+        assert_complete(&direct, &before, domain.borrowed());
     }
     let mut history = TestBytes::memory();
     history
@@ -304,11 +316,11 @@ fn nonliteral_msize_and_allocation_history_keep_quote_touch_and_write_in_agreeme
             .is_some()
     );
     let mut expected = history.clone();
-    original(&mut expected, &constant(0), &value, 32, domain).unwrap();
+    original(&mut expected, &constant(0), &value, 32, domain.borrowed()).unwrap();
     history
         .write_word(&constant(0), &value, domain.borrowed())
         .unwrap();
-    assert_complete(&history, &expected, domain);
+    assert_complete(&history, &expected, domain.borrowed());
     assert_eq!(history.allocations.len(), 3);
 
     let saturated = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
@@ -324,12 +336,12 @@ fn nonliteral_msize_and_allocation_history_keep_quote_touch_and_write_in_agreeme
     );
 }
 
-fn fallback(
+fn fallback<D: EvmNumericAlgebra<Element = NumericValue>>(
     array: TestBytes,
     offset: TestValue,
     value: TestValue,
     width: usize,
-    domain: TestAlgebra,
+    domain: ValueAlgebra<D>,
 ) {
     assert!(!eligible(&array, &offset, &value, width, domain.borrowed()));
     if width == 32 {
@@ -342,9 +354,9 @@ fn fallback(
     let mut expected = array;
     assert_eq!(
         actual.write(&offset, &value, width, domain.borrowed()),
-        original(&mut expected, &offset, &value, width, domain)
+        original(&mut expected, &offset, &value, width, domain.borrowed())
     );
-    assert_complete(&actual, &expected, domain);
+    assert_complete(&actual, &expected, domain.borrowed());
 }
 
 #[test]
@@ -406,7 +418,7 @@ fn nonuniform_sources_and_nonfresh_or_guarded_shapes_keep_the_original_path() {
         .unwrap();
     assert_eq!(NUMERIC_READS.get(), 32);
     NUMERIC_READS.set(0);
-    original(&mut expected, &offset, &unbound, 32, domain).unwrap();
+    original(&mut expected, &offset, &unbound, 32, domain.borrowed()).unwrap();
     assert_eq!(NUMERIC_READS.get(), 32);
     for array in [&mut actual, &mut expected] {
         let leaves = array.fresh_leaves();
@@ -452,7 +464,7 @@ fn nonuniform_sources_and_nonfresh_or_guarded_shapes_keep_the_original_path() {
             .unwrap();
         assert_eq!(restored, saved);
     }
-    assert_complete(&actual, &expected, domain);
+    assert_complete(&actual, &expected, domain.borrowed());
     assert_eq!(before, TestBytes::memory());
 
     for offset in [
@@ -489,19 +501,31 @@ fn nonuniform_sources_and_nonfresh_or_guarded_shapes_keep_the_original_path() {
         fallback(array, constant(0), value.clone(), 32, domain);
     }
     fallback(TestBytes::memory(), constant(0), value.clone(), 1, domain);
-    fallback(
-        TestBytes::memory(),
-        constant(0),
-        value,
+    use crate::domain::cooperation::{KeepBounds, KeepMasks};
+    // The same fresh source is admitted by the exact built-in bundle, while
+    // replacement rules have no certificate for its one-byte evaluation law.
+    assert!(eligible(
+        &TestBytes::memory(),
+        &constant(0),
+        &value,
         32,
-        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
-            crate::domain::DomainSpec::new(
-                NonZeroUsize::new(8).unwrap(),
-                std::num::NonZeroUsize::new(8).unwrap(),
-                std::num::NonZeroUsize::new(256).unwrap(),
-            ),
-        )),
+        domain.borrowed()
+    ));
+    let declining = ValueAlgebra::new(crate::domain::ProductAlgebra::new(
+        DomainSpec::new(
+            NonZeroUsize::new(8).unwrap(),
+            NonZeroUsize::new(8).unwrap(),
+            NonZeroUsize::new(256).unwrap(),
+        ),
+        KeepMasks,
+        KeepBounds,
+    ));
+    assert!(
+        !declining
+            .numeric_algebra()
+            .uniform_word_bytes(value.numeric())
     );
+    fallback(TestBytes::memory(), constant(0), value, 32, declining);
 }
 
 #[test]
@@ -519,11 +543,11 @@ fn the_same_root_with_different_source_facts_gets_independent_numeric_results() 
         value.set_origin(origin);
         let mut actual = TestBytes::memory();
         let mut expected = actual.clone();
-        original(&mut expected, &constant(0), &value, 32, domain).unwrap();
+        original(&mut expected, &constant(0), &value, 32, domain.borrowed()).unwrap();
         actual
             .write_word(&constant(0), &value, domain.borrowed())
             .unwrap();
-        assert_complete(&actual, &expected, domain);
+        assert_complete(&actual, &expected, domain.borrowed());
         snapshots.push(actual);
     }
     assert_eq!(snapshots[0].root, snapshots[1].root);
@@ -573,7 +597,7 @@ fn staged_limits_flags_and_cancel_keep_full_wrappers_atomic_and_prepaid_work() {
         ));
         assert_eq!(
             result,
-            original(&mut expected, &constant(0), &value, 32, domain)
+            original(&mut expected, &constant(0), &value, 32, domain.borrowed())
         );
         assert_eq!(actual, touched);
         assert_eq!(expected, touched);
@@ -583,7 +607,7 @@ fn staged_limits_flags_and_cancel_keep_full_wrappers_atomic_and_prepaid_work() {
     let limited = value.clone().with_symbolic_limit();
     assert_eq!(
         actual.write_word(&constant(0), &limited, normal.borrowed()),
-        original(&mut expected, &constant(0), &limited, 32, normal)
+        original(&mut expected, &constant(0), &limited, 32, normal.borrowed())
     );
     assert_eq!(actual, touched);
     assert_eq!(expected, touched);
@@ -598,7 +622,13 @@ fn staged_limits_flags_and_cancel_keep_full_wrappers_atomic_and_prepaid_work() {
     ));
     assert_eq!(
         actual.write_word(&constant(0), &value, read_limit.borrowed()),
-        original(&mut expected, &constant(0), &value, 32, read_limit)
+        original(
+            &mut expected,
+            &constant(0),
+            &value,
+            32,
+            read_limit.borrowed()
+        )
     );
     assert_eq!(actual, expected);
     assert!(actual.bytes.values().all(TestValue::symbolic_limit_reached));
@@ -617,7 +647,7 @@ fn staged_limits_flags_and_cancel_keep_full_wrappers_atomic_and_prepaid_work() {
         assert_eq!(result, Err(RangeError::Expression(ExprError::Cancelled)));
         assert_eq!(
             result,
-            original(&mut expected, &constant(0), &value, 32, normal)
+            original(&mut expected, &constant(0), &value, 32, normal.borrowed())
         );
         assert_eq!(actual, touched);
         assert_eq!(expected, touched);

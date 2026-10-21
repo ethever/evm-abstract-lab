@@ -3,6 +3,7 @@
 use super::{
     Facts, Reader, WORD_CACHE_ENTRIES, WORD_CACHE_WORK, constant, numeric_domain, scalar, zero,
 };
+use crate::domain::{EvmNumericAlgebra, EvmValue, ValueAlgebra};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::collections::BTreeMap;
@@ -148,14 +149,22 @@ fn expression() -> ExprId {
     ExprId::fresh().unwrap()
 }
 
-fn join(out: Option<TestValue>, value: TestValue, domain: TestAlgebra) -> TestValue {
+fn join<D: EvmNumericAlgebra>(
+    out: Option<EvmValue<D::Element>>,
+    value: EvmValue<D::Element>,
+    domain: ValueAlgebra<D>,
+) -> EvmValue<D::Element> {
     out.map_or_else(|| value.clone(), |old| domain.join(&old, &value))
 }
 
 // Keep the original ordered BYTE/join evaluation as a full-value oracle. The
 // source lookup is deliberately repeated, including its constant-key handling.
-fn original_union(expression: &ExprId, facts: &Facts, domain: TestAlgebra) -> TestValue {
-    let domain = crate::world::test_support::numeric_product(domain);
+fn original_union<D: EvmNumericAlgebra>(
+    expression: &ExprId,
+    facts: &Facts<D::Element>,
+    domain: ValueAlgebra<D>,
+) -> EvmValue<D::Element> {
+    let domain = numeric_domain(domain.borrowed());
     (0..32)
         .fold(None, |out, index| {
             Some(join(
@@ -163,8 +172,8 @@ fn original_union(expression: &ExprId, facts: &Facts, domain: TestAlgebra) -> Te
                 domain.apply(
                     opcode::BYTE,
                     &[
-                        constant(index),
-                        scalar(expression, facts, domain.borrowed()),
+                        EvmValue::<D::Element>::constant(U256::from(index)),
+                        scalar(expression, facts, domain),
                     ],
                 ),
                 domain,
@@ -244,22 +253,43 @@ fn later_facts_and_another_domain_get_independent_evaluations() {
         value.clone(),
         TestValue::unsigned_range(U256::from(0x100), U256::from(0x1ff)).unwrap(),
     );
-    let constants = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
-        crate::domain::DomainSpec::new(
-            std::num::NonZeroUsize::new(8).unwrap(),
-            std::num::NonZeroUsize::new(8).unwrap(),
-            std::num::NonZeroUsize::new(256).unwrap(),
-        ),
-    ));
-    let product =
-        Reader::new(&facts, domain.borrowed()).read(&state, &ExprId::constant(U256::ZERO));
-    let finite =
-        Reader::new(&facts, constants.borrowed()).read(&state, &ExprId::constant(U256::ZERO));
-    assert_ne!(product.numeric(), finite.numeric());
+    use crate::domain::{
+        FiniteSetAlgebra, WordElement,
+        facts::{UnaryPredicate, WordBounds},
+    };
+    // Import the same source range into the actual finite carrier. Without a
+    // finite disjunction it soundly declines that nonsingleton interval fact.
+    let constants = ValueAlgebra::new(FiniteSetAlgebra::from_spec(domain.spec()));
+    let finite_facts = Facts::from([(
+        value.clone(),
+        constants
+            .from_facts(&[UnaryPredicate::UnsignedBounds(
+                WordBounds::new(U256::from(0x100), U256::from(0x1ff)).unwrap(),
+            )])
+            .unwrap(),
+    )]);
+    let mut product_reader = Reader::new(&facts, domain.borrowed());
+    let mut finite_reader = Reader::new(&finite_facts, constants.borrowed());
+    let index = ExprId::constant(U256::ZERO);
+    let product = product_reader.read(&state, &index);
+    let finite = finite_reader.read(&state, &index);
+    assert_ne!(
+        product.numeric().observation(),
+        finite.numeric().observation()
+    );
     assert_eq!(
         finite,
-        constants.join(&zero(), &original_union(&value, &facts, constants))
+        constants.join(
+            &EvmValue::constant(U256::ZERO),
+            &original_union(&value, &finite_facts, constants),
+        )
     );
+    // Both caches are populated for the same expression/root. Alternating
+    // domains must not replace either owner's complete cached value.
+    assert_eq!(product_reader.cache_stats().0, 1);
+    assert_eq!(finite_reader.cache_stats().0, 1);
+    assert_eq!(product_reader.read(&state, &index), product);
+    assert_eq!(finite_reader.read(&state, &index), finite);
 }
 
 #[test]

@@ -129,20 +129,25 @@ fn cancellation_during_singleton_keeps_payment_but_discards_the_answer() {
 
 #[test]
 fn refinement_prepays_opaque_singletons_and_leaves_refused_values_intact() {
-    let _receipt = RECEIPT.scope();
     let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let algebra = ValueAlgebra::new(Policy);
     let expression = ExprId::fresh().unwrap();
     let mut relations = crate::domain::relational::RelationState::default();
-    relations.add_equal(
-        &expression,
-        &ExprId::constant(U256::from(7)),
-        &config_numeric.relations,
-        algebra.borrowed(),
+    assert_eq!(
+        relations.add_equal(
+            &expression,
+            &ExprId::constant(U256::from(7)),
+            &config_numeric.relations,
+            algebra.borrowed(),
+        ),
+        crate::domain::relational::CheckResult::MayBeFeasible,
     );
     let before = EvmValue::constant(U256::from(7)).with_expression(expression);
     let mut value = before.clone();
+    // Equality admission checks the injected carrier in pure, caller-funded
+    // fixture setup. The receipt measures the transfer operation's own payer.
+    let _receipt = RECEIPT.scope();
     let mut budget = WorkBudget::new(61);
     assert_eq!(
         relations::refine(
@@ -203,6 +208,8 @@ fn refinement_prepays_opaque_singletons_and_leaves_refused_values_intact() {
     assert_eq!(value, before);
 }
 
+// Build and check the caller-funded fixture before starting operation receipts
+// or enabling refusal/cancellation hooks on the injected carrier.
 fn scalar_fixture() -> (
     ExecutionConfig,
     EvmValue<Word>,
@@ -221,11 +228,14 @@ fn scalar_fixture() -> (
     .with_expression(expression.clone())
     .with_symbolic_limit();
     let mut relations = crate::domain::relational::RelationState::default();
-    relations.add_equal(
-        &expression,
-        &ExprId::constant(U256::from(7)),
-        &config_numeric.relations,
-        algebra.borrowed(),
+    assert_eq!(
+        relations.add_equal(
+            &expression,
+            &ExprId::constant(U256::from(7)),
+            &config_numeric.relations,
+            algebra.borrowed(),
+        ),
+        crate::domain::relational::CheckResult::MayBeFeasible,
     );
     (config, before, relations)
 }
@@ -241,8 +251,6 @@ fn cooperative_refinement_skips_discovery_and_checks_stop_before_interpreting_ho
     };
     use analysis_control::{Cancellation, with_cancellation};
 
-    let _receipt = RECEIPT.scope();
-    RECEIPT.update(|receipt| receipt.fee = usize::MAX);
     let (_, before, _) = scalar_fixture();
     let algebra = ValueAlgebra::new(Policy);
     let mut input = crate::analysis::transfer::initial(
@@ -258,6 +266,8 @@ fn cooperative_refinement_skips_discovery_and_checks_stop_before_interpreting_ho
         .borrowed()
         .refinement_work(&before, observation.work_size())
         + before.clone_work();
+    let _receipt = RECEIPT.scope();
+    RECEIPT.update(|receipt| receipt.fee = usize::MAX);
     let mut budget = WorkBudget::new(1_000_000);
     let LocalInput::Reachable { payload, limited } =
         apply_refinements(input.clone(), &facts, algebra.borrowed(), &mut budget).unwrap()
@@ -326,11 +336,11 @@ fn cooperative_refinement_skips_discovery_and_checks_stop_before_interpreting_ho
 
 #[test]
 fn refined_result_has_one_paid_query_and_preserves_owned_constraints() {
-    let _receipt = RECEIPT.scope();
     let (config, before, relations) = scalar_fixture();
     let algebra = ValueAlgebra::new(Policy);
     let mut budget = WorkBudget::new(1_000_000);
     let mut value = before.clone();
+    let _receipt = RECEIPT.scope();
     assert_eq!(
         relations::refine(
             &mut value,
@@ -386,9 +396,9 @@ fn refined_result_has_one_paid_query_and_preserves_owned_constraints() {
 
 #[test]
 fn refinement_checks_cancellation_after_import_reduction_and_result_query() {
-    let _receipt = RECEIPT.scope();
     let (config, before, relations) = scalar_fixture();
     let algebra = ValueAlgebra::new(Policy);
+    let _receipt = RECEIPT.scope();
     for stage in 0..3 {
         RECEIPT.update(|receipt| {
             receipt.cancel_on_constrain = stage == 0;
