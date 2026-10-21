@@ -58,7 +58,7 @@
 
 ## 可选单元：保存状态的容器与停止分析的边界
 
-需要修改实现时，读[11 的后端说明](../11-state-backends.md#从同一份-store-切换底层实现)。Store 使用 [`SharedCheckpoint<Store>`](../../crates/snapshot-state/src/shared_checkpoint.rs) 保存旧版本：`capture` 克隆一次 Store，检查点的 `clone` 只共享不可变旧版本；`restore` 在唯一持有时移动 Store，在仍被共享时先克隆，隔离恢复后的写入。原有 [`Checkpoint<T>`](../../crates/snapshot-state/src/checkpoint.rs) 保持独占状态，仍支持非 Clone 状态的 `from_state` 和移动恢复。
+需要修改实现时，读[11 的后端说明](../11-state-backends.md#从同一份-store-切换底层实现)。Store 使用 [`SharedCheckpoint<EvmStore<N>>`](../../crates/snapshot-state/src/shared_checkpoint.rs) 保存旧版本：`capture` 克隆一次 Store，检查点的 `clone` 只共享不可变旧版本；`restore` 在唯一持有时移动 Store，在仍被共享时先克隆，隔离恢复后的写入。原有 [`Checkpoint<T>`](../../crates/snapshot-state/src/checkpoint.rs) 保持独占状态，仍支持非 Clone 状态的 `from_state` 与移动恢复。
 
 [`OrderedMap`](../../crates/snapshot-state/src/ordered_map.rs) 选择 std 或 imbl 容器；后端的复制与共享差异仍体现在 `capture`、共享恢复所需的 Store 克隆及后续修改，保存与恢复的语义相同。
 

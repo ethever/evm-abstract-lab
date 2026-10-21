@@ -99,6 +99,8 @@ metadata = {
     "slots": sizes,
     "iterations": iterations,
     "repeats": repeats,
+    "storage_validation_scope": "all listed slots and one unlisted default read; complete numeric payloads",
+    "restoration_validation_scope": "full Store equality within each benchmark process",
     "binaries": {
         backend: {
             "cli_sha256": hashlib.sha256(cli[backend].read_bytes()).hexdigest(),
@@ -175,7 +177,7 @@ for label, arguments, expected in cases:
                    "sha256": hashlib.sha256(canonical["std"].encode()).hexdigest()})
 
 (output / "parity.json").write_text(json.dumps(parity, indent=2) + "\n")
-print(json.dumps({"semantic_parity": True, "cli_cases": len(parity), "output": str(output)}),
+print(json.dumps({"cli_reports_match": True, "cli_cases": len(parity), "output": str(output)}),
       flush=True)
 
 samples = []
@@ -186,20 +188,56 @@ for size in sizes:
         order = ("std", "imbl") if repeat % 2 == 0 else ("imbl", "std")
         for backend in order:
             result = subprocess.run([str(bench[backend]), str(size), str(iterations)],
-                                    capture_output=True, text=True, check=True)
+                                    capture_output=True, text=True, check=False)
+            capture = f"store-{size}-{repeat}-{backend}"
+            (output / f"{capture}.stdout.jsonl").write_text(result.stdout)
+            (output / f"{capture}.stderr").write_text(result.stderr)
+            if result.returncode != 0:
+                metadata["failure"] = {"stage": "store", "backend": backend,
+                                       "slots": size, "repeat": repeat,
+                                       "exit_code": result.returncode}
+                (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+                sys.exit(f"{backend}/{size}: Store example exited {result.returncode}; "
+                         f"see {output / f'{capture}.stderr'}")
             batch = [json.loads(line) for line in result.stdout.splitlines()]
             expected_workloads = {"checkpoint_drop", "sparse_write_restore",
                                   "unknown_alias_write_restore", "join_drop"}
             if len(batch) != 4 or {item["workload"] for item in batch} != expected_workloads:
                 sys.exit(f"{backend}/{size}: unexpected benchmark workloads")
             for sample in batch:
+                if set(sample) != {
+                    "backend", "workload", "slots", "iterations", "writes_per_iteration",
+                    "relation_limits", "elapsed_ns", "final_slot_count", "final_work_size",
+                    "storage_observation_scope", "storage_observation_count", "unlisted_slot",
+                    "baseline_storage_observation_checksum", "effect_storage_observation_checksum",
+                    "restored_storage_observation_checksum", "restore_verified",
+                }:
+                    sys.exit(f"{backend}/{size}: unsupported storage observation sample")
                 if sample["backend"] != backend or sample["slots"] != size or sample["iterations"] != iterations:
                     sys.exit(f"{backend}/{size}: benchmark configuration differs")
+                writes = min(size, 8)
+                if sample["relation_limits"] != {
+                    "enabled": True, "max_constraints": 128,
+                    "max_nodes": max(1024, 6 * size + 3 * writes + 6),
+                    "max_depth": max(64, size + writes + 3),
+                }:
+                    sys.exit(f"{backend}/{size}: bounded Store construction policy differs")
+                if (sample["storage_observation_scope"] != "all-listed-slots-plus-unlisted-default-read"
+                        or sample["storage_observation_count"] != size + 1
+                        or int(sample["unlisted_slot"], 16) != size
+                        or sample["restore_verified"] is not True
+                        or sample["final_slot_count"] != size
+                        or sample["baseline_storage_observation_checksum"] != sample["restored_storage_observation_checksum"]):
+                    sys.exit(f"{backend}/{size}: incomplete storage observation or restoration evidence")
+                unchanged = (sample["baseline_storage_observation_checksum"] ==
+                             sample["effect_storage_observation_checksum"])
+                if unchanged != (sample["workload"] == "checkpoint_drop"):
+                    sys.exit(f"{backend}/{size}/{sample['workload']}: expected storage effect is missing")
                 key = (size, sample["workload"])
                 signature = {name: value for name, value in sample.items()
                              if name not in ("backend", "elapsed_ns")}
                 if key in signatures and signatures[key] != signature:
-                    sys.exit(f"{backend}/{size}/{sample['workload']}: semantic checksum differs")
+                    sys.exit(f"{backend}/{size}/{sample['workload']}: tested storage observations differ")
                 signatures[key] = signature
                 sample["repeat"] = repeat
                 samples.append(sample)
@@ -220,6 +258,8 @@ for size, workload in sorted(signatures):
     print(json.dumps(row), flush=True)
 (output / "medians.json").write_text(json.dumps(report, indent=2) + "\n")
 metadata["completed"] = True
-metadata["semantic_parity"] = True
+metadata["cli_reports_match"] = True
+metadata["storage_observations_match"] = True
+metadata["restore_verified"] = True
 (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
 PY
