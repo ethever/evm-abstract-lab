@@ -1,7 +1,6 @@
 //! Executable carrier substitution through transfer, checkpoints and completion.
 
 use super::*;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
@@ -111,10 +110,11 @@ impl EvmNumericAlgebra for BitsAlgebra {
         let args = args.iter().map(|value| value.0).collect::<Vec<_>>();
         NumericReduction::stable(Bits(KnownBits::transfer(op, &args), Vec::new()))
     }
-    fn operation_work<'a>(&self, op: u8, _args: impl Iterator<Item = &'a Bits>) -> usize
+    fn operation_work<'a>(&self, _op: u8, _args: impl Iterator<Item = &'a Bits>) -> usize
     where
         Bits: 'a,
     {
+        // One conservative envelope covers every fixed-width KnownBits opcode.
         64 * 1024
     }
     fn literal_quote_work(&self, _literal: U256) -> usize {

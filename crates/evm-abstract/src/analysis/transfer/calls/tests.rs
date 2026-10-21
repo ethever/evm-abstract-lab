@@ -1,12 +1,9 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::*;
 use crate::analysis::MachinePayload;
 use crate::analysis::testing::Entry;
 use crate::analysis::testing::World;
 #[cfg(test)]
 use crate::analysis::testing::{Account, TestValue};
-use crate::domain;
 use crate::domain::ProductAlgebra;
 use crate::domain::ValueAlgebra;
 use crate::{
@@ -48,7 +45,7 @@ fn entered_call(
     let mut entry = Entry::new(owner);
     entry.environment.value = value;
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let input = initial(&world, &entry, domain).unwrap();
@@ -142,7 +139,7 @@ fn call_family_touches_only_entered_transfer_recipients_inside_their_checkpoint(
         world.insert(target, Account::empty()).unwrap();
         let mut entry = Entry::new(owner);
         entry.environment.value = word(0);
-        let mut config = ExecutionConfig::default();
+        let config = ExecutionConfig::default();
         let mut config_numeric = crate::analysis::testing::NumericLimits::default();
         config_numeric.relations.enabled = false;
         let domain =
@@ -192,7 +189,7 @@ fn call_family_touches_only_entered_transfer_recipients_inside_their_checkpoint(
 fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query() {
     let (world, entry) = crate::analysis::machine::fixtures::fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let payload = initial(&world, &entry, domain).unwrap();

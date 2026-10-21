@@ -2,12 +2,10 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, Entry, TestValue, World};
-use crate::domain::EvmNumericAlgebra as _;
 
 use crate::analysis::MachinePayload;
 use crate::analysis::testing::ByteArray;
 use crate::analysis::transfer::Execution;
-use crate::domain;
 use crate::domain::ValueAlgebra;
 
 use super::*;
@@ -494,7 +492,7 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
     let config = config();
     let config_numeric = numeric_limits();
     let payload = native_payload(6, config_numeric.spec());
-    let mut limited = config.clone();
+    let limited = config.clone();
     let mut limited_numeric = config_numeric.clone();
     limited_numeric.relations.max_nodes = payload.active().calldata.state_root().nodes();
     let domain =

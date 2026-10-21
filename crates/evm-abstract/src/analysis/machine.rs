@@ -23,18 +23,16 @@ mod range;
 mod stack;
 mod symbolic;
 
+#[cfg(test)]
+pub(in crate::analysis) use evidence::InstructionValue;
 pub use evidence::{EvmExecutionEvidence, EvmInstructionValue, InstructionProgress};
 #[cfg(test)]
-pub(in crate::analysis) use evidence::{ExecutionEvidence, InstructionValue};
-#[cfg(test)]
-pub(in crate::analysis) use frame::{ChildFrame, FrameState, RootFrame};
+pub(in crate::analysis) use frame::{ChildFrame, RootFrame};
 pub use frame::{EvmChildFrame, EvmFrame, EvmFrameState, EvmRootFrame};
 pub(in crate::analysis) use frame::{FrameByteKind, FrameMapOrder};
 pub(crate) use join::EvmEntryAlternatives;
 pub use join::{JoinBoundary, MachineError};
 pub use range::{ByteRangeBoundary, EvmRangeRequest, EvmRangeWitness, RangeKind};
-#[cfg(test)]
-pub(in crate::analysis) use range::{RangeRequest, RangeWitness};
 #[cfg(test)]
 pub(in crate::analysis) use stack::CallStack;
 pub use stack::EvmCallStack;
@@ -585,16 +583,7 @@ pub(in crate::analysis) type Continuation = EvmContinuation<crate::domain::Numer
 #[cfg(test)]
 pub(in crate::analysis) type MachinePayload = EvmMachinePayload<crate::domain::NumericValue>;
 #[cfg(test)]
-pub(in crate::analysis) type MachineState = EvmMachineState<crate::domain::NumericValue>;
-#[cfg(test)]
-pub(in crate::analysis) type MachineFrontier = EvmMachineFrontier<crate::domain::NumericValue>;
-#[cfg(test)]
 pub(in crate::analysis) type MachineOutcome = EvmMachineOutcome<crate::domain::NumericValue>;
-#[cfg(test)]
-pub(in crate::analysis) type ProcedureSummaryOutput =
-    EvmProcedureSummaryOutput<crate::domain::NumericValue>;
-#[cfg(test)]
-pub(in crate::analysis) type ProcedureSummary = EvmProcedureSummary<crate::domain::NumericValue>;
 #[cfg(test)]
 pub(in crate::analysis) type ProcedureSummaryRecord =
     EvmProcedureSummaryRecord<crate::domain::NumericValue>;

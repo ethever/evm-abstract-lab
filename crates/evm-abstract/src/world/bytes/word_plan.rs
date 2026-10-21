@@ -18,10 +18,7 @@ use crate::{
 use alloy_primitives::U256;
 use std::collections::BTreeMap;
 #[cfg(test)]
-use {
-    crate::domain::ValueAlgebra, crate::world::test_support::TestAlgebra,
-    crate::world::test_support::TestValue,
-};
+use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 // This quantum bounds only the decision to use an optional cache. It is never
 // an expression policy or a boundary of the complete word-read algorithm.

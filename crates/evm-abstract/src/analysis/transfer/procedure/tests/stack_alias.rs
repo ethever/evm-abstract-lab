@@ -1,6 +1,5 @@
-use crate::domain::ProductAlgebra;
 use super::super::{TestValue, stack_alias::StackAliases};
-use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::{
     analysis::{
         ExecutionConfig,
@@ -18,7 +17,7 @@ fn fresh() -> TestValue {
 fn wider_alias_input_reexecutes_instead_of_replaying_a_narrow_result() {
     use super::super::{Counters, OutcomeKind, StorageReadPolicy, Table, WorkBudget};
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let (world, entry) = fixture(&[(0x101, "185f5260205ff3")]);
@@ -75,7 +74,7 @@ fn wider_alias_input_reexecutes_instead_of_replaying_a_narrow_result() {
 fn formation_is_prepaid_and_cancellation_does_not_install_a_partial_entry() {
     use super::super::{Counters, StorageReadPolicy, Table, WorkBudget};
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let (world, entry) = fixture(&[(0x101, "00")]);

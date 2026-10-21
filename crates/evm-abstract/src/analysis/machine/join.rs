@@ -341,10 +341,6 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
     /// Failed attempts keep metadata and both operands intact, but never refund
     /// work. The persistent bounded representation owns the paid materialization
     /// fallback, independently of this admission and publication policy.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "whole-entry policy shares the execution environment, selectors and ledger"
-    )]
     pub(crate) fn join_entry<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         entry: &EvmMachinePayload<N>,

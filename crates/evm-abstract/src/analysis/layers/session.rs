@@ -85,6 +85,9 @@ pub struct SessionAnalysis<N: WordElement> {
     demand_driven: bool,
 }
 
+type SessionRunResult<N, E> = Result<Arc<SessionAnalysis<N>>, SessionError<E>>;
+type SessionExecutionResult<N, E> = Result<EvmWorldAnalysis<N>, SessionError<E>>;
+
 impl<N: WordElement> SessionAnalysis<N> {
     /// Snapshot whose initial-state set was analyzed.
     pub fn snapshot(&self) -> &SnapshotId {
@@ -348,24 +351,21 @@ where
     pub fn run(
         &mut self,
         control: &Control,
-    ) -> Result<Arc<SessionAnalysis<D::Element>>, SessionError<<X as Composition<D::Element>>::Error>>
-    {
+    ) -> SessionRunResult<D::Element, <X as Composition<D::Element>>::Error> {
         self.run_policy(control, StorageReadPolicy::Abstract)
     }
     /// Request concrete missing initial code/slots without performing I/O.
     pub fn run_with_demands(
         &mut self,
         control: &Control,
-    ) -> Result<Arc<SessionAnalysis<D::Element>>, SessionError<<X as Composition<D::Element>>::Error>>
-    {
+    ) -> SessionRunResult<D::Element, <X as Composition<D::Element>>::Error> {
         self.run_policy(control, StorageReadPolicy::Discover)
     }
     fn run_policy(
         &mut self,
         control: &Control,
         policy: StorageReadPolicy,
-    ) -> Result<Arc<SessionAnalysis<D::Element>>, SessionError<<X as Composition<D::Element>>::Error>>
-    {
+    ) -> SessionRunResult<D::Element, <X as Composition<D::Element>>::Error> {
         control.scope(|| {
             control.checkpoint()?;
             // Bind the persistent ledger to its first real operation's control.
@@ -399,8 +399,7 @@ where
     fn run_metered(
         &mut self,
         policy: StorageReadPolicy,
-    ) -> Result<EvmWorldAnalysis<D::Element>, SessionError<<X as Composition<D::Element>>::Error>>
-    {
+    ) -> SessionExecutionResult<D::Element, <X as Composition<D::Element>>::Error> {
         let entry_code = self.entry_code();
         let budget = self
             .budget
@@ -449,8 +448,7 @@ where
         &mut self,
         control: &Control,
         policy: StorageReadPolicy,
-    ) -> Result<EvmWorldAnalysis<D::Element>, SessionError<<X as Composition<D::Element>>::Error>>
-    {
+    ) -> SessionExecutionResult<D::Element, <X as Composition<D::Element>>::Error> {
         control.scope(|| {
             control.checkpoint()?;
             self.budget

@@ -1,5 +1,3 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::super::{Counters, StorageReadPolicy, Table, WorkBudget};
 use crate::analysis::state::storage_observations::{StorageObservations, form_work};
 #[cfg(test)]
@@ -35,7 +33,7 @@ fn written_input() -> (
 #[test]
 fn low_work_and_cancel_do_not_install_a_partial_summary() {
     let (world, entry, input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let config = ExecutionConfig::default();
     let fee = form_work(&input, domain);
     println!(

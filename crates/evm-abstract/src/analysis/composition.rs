@@ -12,6 +12,8 @@ use crate::{
     resource::WorkBudget,
 };
 
+type ExecutionResult<N, E> = Result<EvmWorldAnalysis<N>, CooperationError<E>>;
+
 /// Frozen numeric and control policies plus a borrowed mutable analyzer assembly.
 /// None of the policies or analyzers needs Clone, Copy or a static lifetime.
 pub struct AnalysisEngine<'a, D: EvmNumericAlgebra, C, P, S, X> {
@@ -47,8 +49,7 @@ where
         input: AnalysisInput<D::Element>,
         config: ExecutionConfig,
         control: &Control,
-    ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<<X as Composition<D::Element>>::Error>>
-    {
+    ) -> ExecutionResult<D::Element, <X as Composition<D::Element>>::Error> {
         control.scope(|| {
             control
                 .checkpoint()
@@ -77,8 +78,7 @@ where
         counters: &mut engine::Counters,
         storage_reads: super::transfer::StorageReadPolicy,
         reuse: Option<&mut engine::EvmExecutionReuse<D::Element>>,
-    ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<<X as Composition<D::Element>>::Error>>
-    {
+    ) -> ExecutionResult<D::Element, <X as Composition<D::Element>>::Error> {
         engine::run_reusing(
             input.world,
             input.entry,

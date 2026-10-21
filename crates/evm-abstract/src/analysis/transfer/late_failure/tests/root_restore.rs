@@ -1,7 +1,6 @@
 //! Relative root rollback is owned by the common termination boundary.
 
 use super::super::*;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
@@ -48,7 +47,7 @@ fn fixture(
         value(0),
         EvmByteArray::empty(),
     );
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.enabled = false;
     let policy = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(config_numeric.spec())));

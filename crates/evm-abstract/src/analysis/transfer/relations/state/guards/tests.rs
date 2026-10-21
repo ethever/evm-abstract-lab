@@ -2,9 +2,7 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, ByteArray, Entry, Snapshot, TestValue, World};
-use crate::domain::EvmNumericAlgebra as _;
 
-use crate::domain::ValueAlgebra;
 use crate::{
     Fork,
     analysis::testing::AbstractLog,
@@ -24,7 +22,7 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let domain = domain.borrowed();
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let address = Address::repeat_byte(0x11);
     let mut world = World::offline(Fork::Osaka, "local guards", "known initial storage");
     world.insert(address, Account::empty()).unwrap();
@@ -110,7 +108,7 @@ fn absent_guard_proof_retains_wrapper_and_work_refusal_stops_before_rewrite() {
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let domain = domain.borrowed();
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let address = Address::repeat_byte(0x22);
     let mut world = World::offline(Fork::Osaka, "local guards", "unknown condition");
     world.insert(address, Account::empty()).unwrap();
@@ -379,7 +377,7 @@ impl Fixture {
 #[test]
 fn direct_guard_refinement_covers_fourteen_live_and_rollback_observations() {
     let config = guard_config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let domain = domain.borrowed();
     for case in [DirectCase::Zero, DirectCase::Nonzero, DirectCase::Undecided] {

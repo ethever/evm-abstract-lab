@@ -254,27 +254,25 @@ fn certificate_does_not_change_constants_only_or_relations_on() {
         .with_symbol(Symbol::CalldataWord(U256::ZERO), Some(811_202))
         .with_symbolic_limit();
     let facts = Facts::from([(key.clone(), input)]);
-    for enabled in [true] {
-        let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
-            DomainSpec::new(
-                NonZeroUsize::new(8).unwrap(),
-                NonZeroUsize::new(16).unwrap(),
-                NonZeroUsize::new(4096).unwrap(),
-            )
-            .with_relations(RelationLimits {
-                enabled,
-                ..Default::default()
-            }),
-        ));
-        let mut reader = Reader::with_context(
-            Context::new(&facts, None, domain.borrowed()),
-            domain.borrowed(),
-        );
-        reader.domain = domain.borrowed();
-        let scalar = scalar_in(&key, &reader.context, domain.borrowed());
-        assert!(!full_image::candidate(scalar.numeric(), domain.borrowed()));
-        let expected = original_in_context(&key, &reader.context, domain);
-        counted_union(&mut reader, &key, &expected, (32, 31));
-        counted_union(&mut reader, &key, &expected, (0, 0));
-    }
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        DomainSpec::new(
+            NonZeroUsize::new(8).unwrap(),
+            NonZeroUsize::new(16).unwrap(),
+            NonZeroUsize::new(4096).unwrap(),
+        )
+        .with_relations(RelationLimits {
+            enabled: true,
+            ..Default::default()
+        }),
+    ));
+    let mut reader = Reader::with_context(
+        Context::new(&facts, None, domain.borrowed()),
+        domain.borrowed(),
+    );
+    reader.domain = domain.borrowed();
+    let scalar = scalar_in(&key, &reader.context, domain.borrowed());
+    assert!(!full_image::candidate(scalar.numeric(), domain.borrowed()));
+    let expected = original_in_context(&key, &reader.context, domain);
+    counted_union(&mut reader, &key, &expected, (32, 31));
+    counted_union(&mut reader, &key, &expected, (0, 0));
 }

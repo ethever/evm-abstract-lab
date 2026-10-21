@@ -131,7 +131,7 @@ fn fingerprints_bind_original_open_constraints_across_projection_limits() {
                 .store
                 .read(entry.address, &word(0), product.borrowed());
         assert!(stored.contains(U256::from(1)));
-        assert_eq!(stored.contains(U256::ZERO), false);
+        assert!(!stored.contains(U256::ZERO));
     }
 }
 

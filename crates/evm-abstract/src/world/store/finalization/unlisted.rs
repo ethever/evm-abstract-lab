@@ -1,14 +1,14 @@
 //! Joint source-cell witnesses for ordinary detailed transaction finalization.
 
 use alloy_primitives::{Address, U256};
+use std::collections::BTreeMap;
 use {
     crate::Fork, crate::domain::symbolic::ExprId, crate::domain::symbolic::ExprKind,
     crate::domain::symbolic::SlotStateId, crate::domain::symbolic::SlotStateKind,
     crate::domain::symbolic::SourceId, crate::resource::WorkBudget,
-    crate::world::test_support::TestAccount, crate::world::test_support::TestAlgebra,
-    crate::world::test_support::TestValue, crate::world::test_support::TestWorld,
+    crate::world::test_support::TestAccount, crate::world::test_support::TestValue,
+    crate::world::test_support::TestWorld,
 };
-use {crate::world::test_support::TestEntry, std::collections::BTreeMap};
 use {crate::world::test_support::TestSnapshot, crate::world::test_support::TestStore};
 
 fn address(number: u64) -> Address {

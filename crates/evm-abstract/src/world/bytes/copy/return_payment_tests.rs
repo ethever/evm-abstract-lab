@@ -8,7 +8,7 @@ use {
     crate::domain::provenance::Origin, crate::domain::relational::RelationLimits,
     crate::domain::symbolic::ByteStateId, crate::domain::symbolic::ExprId,
     crate::domain::symbolic::ExprLimits, crate::resource::WorkBudget,
-    crate::test_instrumentation::Counter, crate::world::test_support::TestAlgebra,
+    crate::test_instrumentation::Counter,
 };
 
 #[derive(Clone, Copy, Default, Debug)]

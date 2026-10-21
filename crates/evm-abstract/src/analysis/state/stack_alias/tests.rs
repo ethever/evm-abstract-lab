@@ -1,6 +1,4 @@
 use super::*;
-use crate::domain::EvmNumericAlgebra as _;
-use crate::domain::ValueAlgebra;
 use crate::{
     analysis::machine::fixtures::fixture,
     domain::{ProductAlgebra, symbolic::ExprId},

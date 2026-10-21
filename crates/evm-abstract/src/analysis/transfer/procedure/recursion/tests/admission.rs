@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::ByteArray;
-use crate::domain::EvmNumericAlgebra as _;
 
 use super::super::is_recursive_entry;
 use crate::analysis::{

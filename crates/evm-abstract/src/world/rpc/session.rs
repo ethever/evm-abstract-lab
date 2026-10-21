@@ -87,12 +87,7 @@ impl<N: WordElement> Session<N> {
         entry: crate::world::EvmEntry<N>,
         config: crate::analysis::ExecutionConfig,
         control: &Control,
-    ) -> Result<
-        crate::analysis::layers::AnalysisSession<'a, D, C, P, S, X>,
-        crate::analysis::layers::SessionError<
-            <X as crate::analysis::cooperation::Composition<N>>::Error,
-        >,
-    >
+    ) -> super::layers::AcquisitionSessionResult<'a, D, C, P, S, X>
     where
         D: crate::domain::EvmNumericAlgebra<Element = N>,
         C: crate::analysis::ContextPolicy,

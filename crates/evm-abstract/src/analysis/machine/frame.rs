@@ -318,9 +318,12 @@ impl<N: WordElement> EvmRootFrame<N> {
 /// A child cannot be constructed without its return contract:
 ///
 /// ```compile_fail
-/// use evm_abstract::analysis::{ChildFrame, FrameState};
-/// fn missing_continuation(state: FrameState) -> ChildFrame {
-///     ChildFrame { state }
+/// use evm_abstract::{
+///     analysis::{EvmChildFrame, EvmFrameState},
+///     domain::WordElement,
+/// };
+/// fn missing_continuation<N: WordElement>(state: EvmFrameState<N>) -> EvmChildFrame<N> {
+///     EvmChildFrame { state }
 /// }
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -341,8 +344,6 @@ impl<N: WordElement> EvmChildFrame<N> {
 }
 
 // Local regression fixtures use explicit built-in carriers.
-#[cfg(test)]
-pub(in crate::analysis) type FrameState = EvmFrameState<crate::domain::NumericValue>;
 #[cfg(test)]
 pub(in crate::analysis) type RootFrame = EvmRootFrame<crate::domain::NumericValue>;
 #[cfg(test)]

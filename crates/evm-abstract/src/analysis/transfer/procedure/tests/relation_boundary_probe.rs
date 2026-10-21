@@ -1,5 +1,4 @@
 use super::*;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ProductAlgebra;
 use crate::domain::symbolic::ExprId;
 use revm_bytecode::opcode;
@@ -44,7 +43,7 @@ fn relation_boundary_probe() {
     // Direct Table admission is a controlled internal payload probe. These
     // programs do not contain recursive calls.
     let config = crate::analysis::ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     for (case, code) in [
@@ -161,7 +160,7 @@ fn relation_boundary_probe_same_numeric_different_alias_inputs() {
     let (world, mut entry) = fixture(&[(0x101, code)]);
     entry.environment.calldata = ByteArray::unknown();
     let config = crate::analysis::ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let initial =
@@ -290,7 +289,7 @@ fn storage_observation_known_delegatecall_write_replaces_current_snapshot() {
     ] {
         let (world, entry) = fixture(&[(0x101, parent), (0x201, child)]);
         let config = crate::analysis::ExecutionConfig::default();
-        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let config_numeric = crate::analysis::testing::NumericLimits::default();
         let domain =
             crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
         let domain = domain.borrowed();
@@ -366,7 +365,7 @@ fn storage_duplicate_default_work_probe() {
     // Both programs must close under the default budget with the exact read.
     // The second keeps 16 DUP aliases through all 20 unconditional JUMPs.
     let config = crate::analysis::ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     assert_eq!(config.max_work, 20_000_000);
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();

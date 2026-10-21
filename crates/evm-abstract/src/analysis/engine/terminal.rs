@@ -494,4 +494,4 @@ fn prepare_with_bytes<D: EvmNumericAlgebra>(
 type ReadyRoot = EvmReadyRoot<crate::domain::NumericValue>;
 
 #[cfg(test)]
-use crate::{analysis::MachinePayload, domain::ProductAlgebra};
+use crate::analysis::MachinePayload;

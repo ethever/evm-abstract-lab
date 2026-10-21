@@ -1,9 +1,6 @@
 //! Basic-block execution on a transaction-wide machine. Calls suspend a frame;
 //! returns resume it with the same transaction store and an explicit result.
 
-#[cfg(test)]
-use crate::analysis::testing::{Account, Entry, World};
-
 use crate::domain::{EvmNumericAlgebra, WordElement};
 
 use super::engine::policy::ContextPolicy;
@@ -1690,7 +1687,6 @@ mod tests {
     use crate::analysis::testing::Entry;
     use crate::analysis::testing::World;
     use crate::analysis::transfer::ExecutionFrontier;
-    use crate::domain::ValueAlgebra;
 
     use super::*;
     use crate::{Fork, analysis::testing::Account};

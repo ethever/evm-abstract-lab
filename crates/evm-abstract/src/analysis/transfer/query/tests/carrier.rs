@@ -1,7 +1,6 @@
 //! Opaque numeric facts and query instruments shared by transfer witnesses.
 //! No default numeric product is used to answer private exclusions.
 
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     U256,
     domain::{
@@ -275,9 +274,10 @@ impl EvmNumericAlgebra for Policy {
         });
         NumericReduction::stable(Word::top())
     }
-    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
+    fn operation_work<'a>(&self, _op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
         // This test policy's whole-operation envelope covers its own internals;
         // it supplies no credit for the transfer's separate result queries.
+        // Every opcode follows the same native Top/cancellation path above.
         args.fold(1024usize, |work, word| {
             work.saturating_add(word.work_size() * 8)
         })

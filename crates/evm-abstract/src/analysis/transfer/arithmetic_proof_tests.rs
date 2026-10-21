@@ -2,7 +2,6 @@
 
 use super::query::tests::{LITERALS, Policy, RECEIPT, Word};
 use super::*;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
@@ -179,7 +178,7 @@ fn assert_result(result: &EvmExecution<Word>) {
 #[test]
 fn actual_arithmetic_reuses_one_paid_answer_and_requires_the_full_native_fee() {
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let policy = Arithmetic {
         spec: ProductAlgebra::from_spec(config_numeric.spec()).spec(),
         cancel_result: None,
@@ -217,7 +216,7 @@ fn actual_arithmetic_reuses_one_paid_answer_and_requires_the_full_native_fee() {
 #[test]
 fn cancellation_during_the_paid_result_query_cannot_publish_a_literal() {
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     for captured in [false, true] {
         let owner = analysis_control::Cancellation::new();
         let active = analysis_control::Cancellation::new();
@@ -261,7 +260,7 @@ fn cancellation_during_the_paid_result_query_cannot_publish_a_literal() {
 
 #[test]
 fn relations_disabled_execution_never_discovers_or_retains_the_unqueried_result() {
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.enabled = false;
     let policy = Arithmetic {
@@ -292,7 +291,7 @@ fn a_nonexact_result_keeps_its_actual_parametric_input_expression() {
     use crate::domain::{identity::Symbol, symbolic::ExprKind};
 
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let policy = Arithmetic {
         spec: ProductAlgebra::from_spec(config_numeric.spec()).spec(),
         cancel_result: None,

@@ -752,11 +752,7 @@ fn capture<N: WordElement, Tag: PolicyKey, T>(
 
 // Local regression fixtures use explicit built-in carriers.
 #[cfg(test)]
-pub(in crate::analysis) type SummaryInput = EvmSummaryInput<crate::domain::NumericValue>;
-#[cfg(test)]
 pub(in crate::analysis) type SummaryOutput = EvmSummaryOutput<crate::domain::NumericValue>;
-#[cfg(test)]
-pub(in crate::analysis) type SummaryRecord = EvmSummaryRecord<crate::domain::NumericValue>;
 #[cfg(test)]
 pub(in crate::analysis) type Node = EvmNode<crate::domain::NumericValue>;
 #[cfg(test)]

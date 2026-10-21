@@ -8,11 +8,9 @@ pub(super) type TestEntry = super::EvmEntry<crate::domain::NumericValue>;
 pub(super) type TestBytes = super::EvmByteArray<crate::domain::NumericValue>;
 pub(super) type TestBytesSummary = super::EvmByteArraySummary<crate::domain::NumericValue>;
 pub(super) type TestStore = super::EvmStore<crate::domain::NumericValue>;
-pub(super) type TestStoreSummary = super::EvmStoreSummary<crate::domain::NumericValue>;
 pub(super) type TestSnapshot = super::EvmSnapshot<crate::domain::NumericValue>;
 pub(super) type TestLog = super::EvmLog<crate::domain::NumericValue>;
 pub(super) type TestEnvironment = super::EvmEnvironmentValues<crate::domain::NumericValue>;
-pub(super) type TestBlobHashes = super::EvmBlobHashes<crate::domain::NumericValue>;
 
 /// A product fixture with expression construction disabled at its source.
 pub(super) fn numeric_product(algebra: TestAlgebra) -> TestAlgebra {

@@ -90,7 +90,7 @@ impl<N: WordElement> EvmExecutionEvidence<N> {
         self.current
     }
 
-    /// Exactly one phase per visited offset in `MachineState::executed_pcs`.
+    /// Exactly one phase per visited offset in `EvmMachineState::executed_pcs`.
     pub fn instructions(&self) -> &[InstructionProgress] {
         &self.instructions
     }
@@ -114,5 +114,3 @@ mod tests;
 // Local regression fixtures use explicit built-in carriers.
 #[cfg(test)]
 pub(in crate::analysis) type InstructionValue = EvmInstructionValue<crate::domain::NumericValue>;
-#[cfg(test)]
-pub(in crate::analysis) type ExecutionEvidence = EvmExecutionEvidence<crate::domain::NumericValue>;

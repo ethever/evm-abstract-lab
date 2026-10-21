@@ -1,6 +1,5 @@
 #[cfg(test)]
 use crate::analysis::testing::{ByteArray, Snapshot, TestValue, TestValueQuery};
-use crate::domain::ValueAlgebra;
 mod bounded_promotion;
 mod byte_roots;
 
@@ -25,7 +24,7 @@ fn actual_machine_join_keeps_zero_and_nonzero_branches_after_one_sided_world_pro
     use crate::analysis::{EdgeKind, MachineEdgeKind, transfer};
     use std::convert::Infallible;
 
-    let mut config = fixtures::config();
+    let config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.enabled = false;
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
@@ -499,7 +498,7 @@ fn repeated_two_storage_slots_reach_a_whole_machine_fixed_point() {
 
 #[test]
 fn growing_loop_bound_contains_the_concrete_counter_and_memory_pair() {
-    let mut config = fixtures::config();
+    let config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.max_constraints = 2;
     config_numeric.relations.enabled = false;
@@ -794,7 +793,7 @@ fn growing_loop_bound_contains_the_concrete_counter_and_memory_pair() {
 
 #[test]
 fn acyclic_join_preserves_the_uncovered_incoming_state_at_its_policy_boundary() {
-    let mut config = fixtures::config();
+    let config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.max_constraints = 2;
     config_numeric.relations.enabled = false;

@@ -5,6 +5,8 @@ use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 #[cfg(test)]
 use crate::world::test_support::TestStore;
+#[cfg(test)]
+use crate::world::test_support::TestValue;
 use crate::{
     domain::EvmValue,
     resource::WorkBudget,
@@ -12,8 +14,6 @@ use crate::{
 };
 use alloy_primitives::Address;
 use std::collections::BTreeSet;
-#[cfg(test)]
-use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 /// Copy/drop of owned scalar metadata; expression/source handles stay shared.
 fn value_clone_units<N: WordElement>(value: &EvmValue<N>) -> usize {

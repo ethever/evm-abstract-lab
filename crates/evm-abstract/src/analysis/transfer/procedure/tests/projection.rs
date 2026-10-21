@@ -1,4 +1,3 @@
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ProductAlgebra;
 
 #[cfg(test)]
@@ -27,7 +26,7 @@ fn callee_subscription_projects_the_actual_target_guard_before_erasing_relations
     };
     let (world, entry) = fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let mut input = payload(domain);

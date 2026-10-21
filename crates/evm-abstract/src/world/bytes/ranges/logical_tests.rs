@@ -1,9 +1,6 @@
 use crate::world::test_support::TestBytes;
 use alloy_primitives::U256;
-use {
-    crate::domain::symbolic::ExprId, crate::world::test_support::TestAlgebra,
-    crate::world::test_support::TestValue,
-};
+use {crate::domain::symbolic::ExprId, crate::world::test_support::TestValue};
 
 fn value(value: U256) -> TestValue {
     TestValue::constant(value)
