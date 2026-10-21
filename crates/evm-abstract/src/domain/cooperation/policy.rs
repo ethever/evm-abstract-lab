@@ -3,7 +3,7 @@ use super::{
     BoundsToMask, ComposedWork, Domain, DomainSpec, MaskToBounds, NumericReduction, NumericValue,
     ProductContext, ProductWork, Reduction, RuleError, Scope,
 };
-use crate::domain::EvmNumericAlgebra;
+use crate::domain::{EvmNumericAlgebra, EvmValue};
 
 /// Default EVM product with independently replaceable mask/range reductions.
 ///
@@ -94,8 +94,19 @@ where
         super::close_with_work(self.domain, v.clone(), self.masks, self.bounds, work)
     }
     fn apply_numeric(&self, op: u8, args: &[NumericValue]) -> NumericReduction<NumericValue> {
+        self.apply_numeric_borrowed(op, args.iter())
+    }
+    fn apply_numeric_borrowed<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a NumericValue>,
+    ) -> NumericReduction<NumericValue> {
         self.domain
             .numeric_apply_with(op, args, |v| self.reduce_numeric(&v))
+    }
+    fn operand_work<'a>(&self, args: impl Iterator<Item = &'a EvmValue<NumericValue>>) -> usize {
+        // This assembly's original quote separates metadata in both profiles.
+        super::super::algebra::operand_metadata_work(args)
     }
     fn operation_work<'a>(&self, args: impl Iterator<Item = &'a NumericValue>) -> usize {
         self.domain
@@ -132,9 +143,15 @@ where
         )
     }
     fn observe_byte_numeric(&self, op: u8, args: &[NumericValue]) -> NumericValue {
-        crate::domain::byte_projection::observe_with(self.domain, op, args, || {
-            self.apply_numeric(op, args).value
-        })
+        self.observe_byte_numeric_borrowed(op, args.iter())
+    }
+    fn observe_byte_numeric_borrowed<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a NumericValue>,
+    ) -> NumericValue {
+        self.domain
+            .numeric_observe_byte_with(op, args, |v| self.reduce_numeric(&v))
     }
     fn byte_image_candidate(&self, v: &NumericValue) -> bool {
         EvmNumericAlgebra::byte_image_candidate(&self.domain, v)

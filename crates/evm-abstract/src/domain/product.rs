@@ -1,7 +1,7 @@
 //! Private default numeric primitives. These never call the metadata facade.
 
 use super::{
-    Domain, EvmValue, FiniteConstantSet, NumericReduction, NumericValue, Profile, WordElement,
+    Domain, EvmValue, FiniteConstantSet, NumericReduction, NumericValue, Profile,
     known_bits::KnownBits, query,
 };
 use alloy_primitives::U256;
@@ -127,15 +127,7 @@ impl Domain {
         out
     }
 
-    pub(super) fn numeric_finite_apply(self, op: u8, args: &[NumericValue]) -> NumericValue {
-        self.numeric_finite_apply_borrowed(op, args.iter())
-    }
-
-    fn numeric_finite_apply_borrowed<'a>(
-        self,
-        op: u8,
-        args: impl Iterator<Item = &'a NumericValue>,
-    ) -> NumericValue {
+    pub(super) fn numeric_finite_apply(self, op: u8, args: &[&NumericValue]) -> NumericValue {
         let collect = |values| {
             finite(
                 FiniteConstantSet::collect_bounded(values, self.spec().constant_capacity())
@@ -143,6 +135,8 @@ impl Domain {
             )
         };
         let Some(sets) = args
+            .iter()
+            .copied()
             .map(NumericValue::constants)
             .collect::<Option<Vec<_>>>()
         else {
@@ -176,46 +170,17 @@ impl Domain {
         }))
     }
 
-    pub(super) fn numeric_apply(
-        self,
-        op: u8,
-        args: &[NumericValue],
-    ) -> NumericReduction<NumericValue> {
-        self.numeric_apply_with(op, args, |value| super::reduce::numeric(self, value))
-    }
-
-    pub(super) fn numeric_borrowed_copy_work<'a>(
-        self,
-        args: impl Iterator<Item = &'a NumericValue>,
-    ) -> usize {
-        // The legacy constants-only tuple envelope already covers scalar reads
-        // and result metadata. Borrowing adds no operand materialization there.
-        if self.spec().profile() == Profile::ConstantsOnly {
-            return 0;
-        }
-        let (tuples, finite, copies) =
-            args.fold((1usize, true, 0usize), |(tuples, finite, copies), value| {
-                (
-                    tuples.saturating_mul(value.constants().map_or(1, BTreeSet::len)),
-                    finite && value.constants().is_some(),
-                    copies.saturating_add(value.clone_work()),
-                )
-            });
-        if finite && tuples <= self.capacity() {
-            0
-        } else {
-            copies
-        }
-    }
-
-    pub(super) fn numeric_apply_borrowed<'a>(
+    pub(super) fn numeric_apply_with<'a>(
         self,
         op: u8,
         mut args: impl ExactSizeIterator<Item = &'a NumericValue>,
+        reduce: impl FnOnce(NumericValue) -> NumericReduction<NumericValue>,
     ) -> NumericReduction<NumericValue> {
         let Some(expected) = super::concrete::arity(op).filter(|count| *count == args.len()) else {
             return NumericReduction::stable(NumericValue::top());
         };
+        // EVM pure operations have at most three read-only operands. Both
+        // owned and borrowed entrypoints retain the original numeric values.
         let first = args.next().expect("validated nonempty scalar operands");
         let operands = [
             first,
@@ -223,55 +188,26 @@ impl Domain {
             args.next().unwrap_or(first),
         ];
         let operands = &operands[..expected];
-        if self.numeric_borrowed_copy_work(operands.iter().copied()) == 0 {
-            if self.spec().profile() == Profile::Product
-                && let Some(exact) = super::transfer::exact(op, operands.iter().copied())
-            {
-                return NumericReduction::stable(exact);
-            }
-            return NumericReduction::stable(
-                self.numeric_finite_apply_borrowed(op, operands.iter().copied()),
-            );
+        if self.spec().profile() == Profile::ConstantsOnly {
+            return NumericReduction::stable(self.numeric_finite_apply(op, operands));
         }
-        // This remaining path and custom implementations retain their complete
-        // prepaid materialization cost; no default-product rule is bypassed.
-        self.numeric_apply(
-            op,
-            &super::algebra::clone_numeric_operands(operands.iter().copied()),
-        )
+        super::transfer::apply(self, op, operands, reduce)
     }
 
-    pub(super) fn numeric_observe_byte_borrowed<'a>(
+    pub(super) fn numeric_observe_byte_with<'a>(
         self,
         op: u8,
         mut args: impl ExactSizeIterator<Item = &'a NumericValue>,
+        reduce: impl FnOnce(NumericValue) -> NumericReduction<NumericValue>,
     ) -> NumericValue {
         if !matches!(op, opcode::BYTE | opcode::AND) || args.len() != 2 {
-            return self.numeric_apply_borrowed(op, args).value;
+            return self.numeric_apply_with(op, args, reduce).value;
         }
         let operands = [args.next().unwrap(), args.next().unwrap()];
-        if self.numeric_borrowed_copy_work(operands.into_iter()) == 0 {
-            return self.numeric_apply_borrowed(op, operands.into_iter()).value;
-        }
-        super::byte_projection::observe(
-            self,
-            op,
-            &super::algebra::clone_numeric_operands(operands.into_iter()),
-        )
-    }
-    pub(super) fn numeric_apply_with(
-        self,
-        op: u8,
-        args: &[NumericValue],
-        reduce: impl FnOnce(NumericValue) -> NumericReduction<NumericValue>,
-    ) -> NumericReduction<NumericValue> {
-        if super::concrete::arity(op) != Some(args.len()) {
-            return NumericReduction::stable(NumericValue::top());
-        }
-        if self.spec().profile() == Profile::ConstantsOnly {
-            return NumericReduction::stable(self.numeric_finite_apply(op, args));
-        }
-        super::transfer::apply(self, op, args, reduce)
+        super::byte_projection::observe_with(self, op, &operands, || {
+            self.numeric_apply_with(op, operands.into_iter(), reduce)
+                .value
+        })
     }
 
     pub(super) fn numeric_projection_work(self, value: &NumericValue) -> usize {

@@ -75,7 +75,7 @@ fn transfer_fact_admission_matches_the_fact_table_and_preserves_refusal_statuses
                 ReductionStatus::Cancelled,
                 ReductionStatus::KernelFailure,
             ] {
-                let result = domain.numeric_apply_with(op, &args, |value| NumericReduction {
+                let result = domain.numeric_apply_with(op, args.iter(), |value| NumericReduction {
                     value,
                     status,
                     rounds: 7,
@@ -252,6 +252,7 @@ fn filtered_finite_covers_stabilize_without_capacity_truncation() {
 #[test]
 fn arithmetic_reservation_is_atomic_and_covers_the_actual_cooperative_schedule() {
     let _counter = cooperation::PROTOCOL_WORK.scope();
+    let _copies = crate::domain::algebra::OPERAND_COPIES.scope();
     for capacity in [1, 8, 512] {
         for rounds in [1, 2, 4, 8] {
             let domain = ValueAlgebra::new(domain(capacity, rounds));
@@ -273,6 +274,7 @@ fn arithmetic_reservation_is_atomic_and_covers_the_actual_cooperative_schedule()
                     assert_eq!(denied.used(), 0);
                     assert!(denied.exhausted());
                     assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+                    assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 0);
                     let mut paid = WorkBudget::new(quote);
                     let actual = domain.apply_budgeted(op, &args, &mut paid).unwrap();
                     assert!(
@@ -286,6 +288,7 @@ fn arithmetic_reservation_is_atomic_and_covers_the_actual_cooperative_schedule()
                     );
                     assert_eq!(paid.used(), quote);
                     assert!(!paid.exhausted());
+                    assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 0);
                     let (used, dependencies, steps) = cooperation::PROTOCOL_WORK.get();
                     assert!(used <= quote);
                     assert!(
@@ -448,7 +451,7 @@ fn quotes_saturate_and_cancellation_precedes_all_cooperative_work() {
 }
 
 #[test]
-fn borrowed_default_finite_operations_remove_actual_materialization_and_restore_legacy_fees() {
+fn borrowed_default_operations_remove_actual_materialization_and_only_its_fees() {
     let _copies = crate::domain::algebra::OPERAND_COPIES.scope();
     for profile in [Profile::ConstantsOnly, Profile::Product] {
         let policy = Domain::from_spec(DomainSpec::new(
@@ -463,6 +466,12 @@ fn borrowed_default_finite_operations_remove_actual_materialization_and_restore_
             AbstractValue::constant(U256::ONE),
             AbstractValue::constant(U256::from(2)),
         ];
+        let assembly = ProductAlgebra::new(policy.spec(), BoundsToMask, MaskToBounds);
+        assert_eq!(
+            assembly.operand_work(args.iter()),
+            2,
+            "both profiles retain assembly metadata"
+        );
         let quote = domain.operation_work(&args);
         if profile == Profile::ConstantsOnly {
             assert_eq!(quote, 1);
@@ -501,14 +510,27 @@ fn borrowed_default_finite_operations_remove_actual_materialization_and_restore_
         AbstractValue::from_numeric(cycle()),
         AbstractValue::constant(U256::from(7)),
     ];
-    let mut paid = WorkBudget::new(policy.operation_work(&args));
-    policy
+    let quote = policy.operation_work(&args);
+    let metadata = args
+        .iter()
+        .map(|v| v.work_size() - v.numeric().work_size())
+        .sum::<usize>();
+    assert_eq!(
+        quote,
+        policy.numeric_operation_work(args.iter().map(AbstractValue::numeric)) + 3 * 256 + metadata
+    );
+    let mut paid = WorkBudget::new(quote);
+    let result = policy
         .apply_budgeted(opcode::ADD, &args, &mut paid)
         .unwrap();
+    assert_eq!(paid.used(), quote);
+    for word in [3, 5, 7] {
+        assert!(result.value.contains(U256::from(word + 7)));
+    }
     assert_eq!(
         crate::domain::algebra::OPERAND_COPIES.get(),
-        2,
-        "remaining default materialization is still executed and prepaid"
+        0,
+        "nonfinite transfer also borrows its original operands"
     );
 }
 
@@ -680,7 +702,23 @@ fn borrowed_numeric_entry_preserves_owned_transfer_results_and_limits() {
                     assert_eq!(borrowed.status, owned.status);
                     assert_eq!(borrowed.rounds, owned.rounds);
                     assert_eq!(borrowed.strengthened, owned.strengthened);
+                    if matches!(op, opcode::BYTE | opcode::AND) {
+                        assert_eq!(
+                            policy.observe_byte_numeric(op, &args),
+                            policy.observe_byte_numeric_borrowed(op, args.iter()),
+                        );
+                    }
                 }
+            }
+            for (op, count) in [(opcode::NOT, 0), (opcode::ADDMOD, 4)] {
+                let args = vec![NumericValue::top(); count];
+                assert!(policy.apply_numeric(op, &args).value.is_top());
+                assert!(
+                    policy
+                        .apply_numeric_borrowed(op, args.iter())
+                        .value
+                        .is_top()
+                );
             }
         }
     }

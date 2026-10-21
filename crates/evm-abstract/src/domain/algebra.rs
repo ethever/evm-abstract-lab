@@ -798,6 +798,18 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     }
 }
 
+pub(super) fn operand_metadata_work<'a>(
+    args: impl Iterator<Item = &'a EvmValue<NumericValue>>,
+) -> usize {
+    args.fold(0usize, |work, value| {
+        work.saturating_add(
+            value
+                .work_size()
+                .saturating_sub(value.numeric().work_size()),
+        )
+    })
+}
+
 // The default implementation alone owns NumericValue. Custom implementations
 // are invoked directly above; no conversion to the default carrier occurs.
 impl EvmNumericAlgebra for Domain {
@@ -821,26 +833,23 @@ impl EvmNumericAlgebra for Domain {
         super::reduce::numeric(*self, value.clone())
     }
     fn apply_numeric(&self, op: u8, args: &[NumericValue]) -> NumericReduction<NumericValue> {
-        self.numeric_apply(op, args)
+        self.apply_numeric_borrowed(op, args.iter())
     }
     fn apply_numeric_borrowed<'a>(
         &self,
         op: u8,
         args: impl ExactSizeIterator<Item = &'a NumericValue>,
     ) -> NumericReduction<NumericValue> {
-        self.numeric_apply_borrowed(op, args)
+        self.numeric_apply_with(op, args, |value| super::reduce::numeric(*self, value))
     }
     fn operand_work<'a>(&self, args: impl Iterator<Item = &'a EvmValue<NumericValue>>) -> usize {
-        let mut metadata = 0usize;
-        let copies = self.numeric_borrowed_copy_work(args.map(|value| {
-            metadata = metadata.saturating_add(
-                value
-                    .work_size()
-                    .saturating_sub(value.numeric().work_size()),
-            );
-            value.numeric()
-        }));
-        copies.saturating_add(metadata)
+        // The legacy ConstantsOnly tuple envelope already owns facade metadata.
+        // Product retains its separate metadata fee, without operand copies.
+        if self.spec().profile() == super::Profile::ConstantsOnly {
+            0
+        } else {
+            operand_metadata_work(args)
+        }
     }
     fn operation_work<'a>(&self, args: impl Iterator<Item = &'a NumericValue>) -> usize {
         self.numeric_operation_work(args)
@@ -987,14 +996,14 @@ impl EvmNumericAlgebra for Domain {
         Some(self.numeric_import_work(value, facts, finite_values, expression_work))
     }
     fn observe_byte_numeric(&self, op: u8, args: &[NumericValue]) -> NumericValue {
-        super::byte_projection::observe(*self, op, args)
+        self.observe_byte_numeric_borrowed(op, args.iter())
     }
     fn observe_byte_numeric_borrowed<'a>(
         &self,
         op: u8,
         args: impl ExactSizeIterator<Item = &'a NumericValue>,
     ) -> NumericValue {
-        self.numeric_observe_byte_borrowed(op, args)
+        self.numeric_observe_byte_with(op, args, |value| super::reduce::numeric(*self, value))
     }
     fn byte_image_candidate(&self, value: &NumericValue) -> bool {
         self.spec().profile() == super::Profile::Product
