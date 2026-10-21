@@ -170,12 +170,13 @@ impl<J, M: Meter> Run<'_, J, M> {
             self.kernel.prepare_changes(
                 &[entry.slot.id, head],
                 &[head],
+                None,
                 self.meter,
                 work.saturating_add(3),
             )?
         } else {
             self.kernel
-                .prepare_changes(&[entry.slot.id], &[entry.slot.id], self.meter, 3)?
+                .prepare_changes(&[entry.slot.id], &[entry.slot.id], None, self.meter, 3)?
         };
         self.kernel.facts[entry.slot.id.index].selected = Some(Selection::Active(next));
         self.kernel.scopes[next.index].entry = Some(entry.slot.id);
@@ -210,6 +211,7 @@ impl<J, M: Meter> Run<'_, J, M> {
         let changes = self.kernel.prepare_changes(
             &[entry.slot.id, head],
             &[head],
+            None,
             self.meter,
             work.saturating_add(3),
         )?;

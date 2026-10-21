@@ -4,6 +4,7 @@ mod atomicity;
 mod feedback;
 mod protocol;
 mod sidecars;
+mod topology;
 mod withdrawal;
 
 use super::*;

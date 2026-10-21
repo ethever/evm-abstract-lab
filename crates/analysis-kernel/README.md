@@ -55,9 +55,13 @@ evaluation order; another fixture aggregates two independent provider routes.
   propagation. Pending/Absent observations and `current_generation` are wake
   dependencies, not adopted semantic assumptions. Changing a selector routes
   readers to its new scope without treating the scope number as semantic growth.
-  Directory enumeration is a topology assumption: adding a resolved key can
-  invalidate its adopters even when all per-key payloads are unchanged. Each
-  channel keeps a separate directory for each scope.
+  Directory enumeration retains a topology premise even for an empty directory
+  in the reader's own scope. Foreign first-key/new-key publication or a new
+  producer family invalidates it even with unchanged per-key payloads. Genuine
+  same-scope directory feedback only wakes that generation; external adopters
+  still invalidate. Each channel keeps a separate directory for each scope.
+  `keys` enumerates resolved membership; the adapter must establish its declared
+  producer/key universe before using that set as a complete semantic bound.
 - A stale selection keeps closure Open independently of its queue. Its owner must
   seed a fresh input and call `replace_generation`, even if a cached raw-input
   stamp did not change. `current_generation`, typed `query` and `read_slot` expose
@@ -142,9 +146,13 @@ withdrawal is Unchanged, and `generation_stale` is false for resolved absence.
 A Run withdrawing its own selected scope completes that Run; subsequent
 publication from its retired job is rejected.
 
-A withdrawn producer contributes a valid empty input. An existing aggregate may
-remain as a conservative upper bound, preserving other producers' values. A
-consumer obtaining that value automatically adopts the stable entry's empty
+A withdrawn producer contributes a valid empty input. A retained **ascending MAY
+aggregate** may remain a conservative upper bound, preserving other producers'
+values. Producer validity and withdrawal do not reset arbitrary typed payloads.
+A descending guarantee is valid only within its fixed immutable input universe;
+neither operation preserves that guarantee across a changed universe or provides
+general retraction. Seed a fresh compatible generation when its premises change.
+A consumer obtaining a covered aggregate automatically adopts the stable entry's empty
 premise. Absent -> Active adds possible contribution and invalidates those
 adopters before old guarantees can be reused. The old source coverage becomes
 Pending until the new scope republishes a covering answer/absence. Ordinary
