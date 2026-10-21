@@ -48,10 +48,12 @@ pub struct Ascending<P>(pub P);
 #[derive(Clone, Copy, Debug)]
 pub struct Descending<P>(pub P);
 
-/// Common implementation surface of explicitly directed channel policies.
+/// Publication preparation, write discipline and semantic invalidation policy.
 ///
 /// Prefer [`Ascending`] and [`Descending`]. Custom implementations must preserve
-/// the indicated order and include all combine/equality work in `work`.
+/// their advertised semantic guarantees and include all preparation work in
+/// [`Self::work`]. Mixed observations can implement this trait directly without
+/// changing the pure [`JoinPolicy`] or [`RefinePolicy`] laws.
 pub trait PublicationPolicy {
     /// Semantic carrier stored by the channel.
     type Value;
@@ -59,7 +61,11 @@ pub trait PublicationPolicy {
     type Error;
     /// Whether a registered generation-local reduction is required.
     const DESCENDING: bool;
-    /// Upper bound for constructing and comparing a combined value.
+    /// Allocation-free upper bound for constructing, comparing and classifying
+    /// the combined value, including [`Self::preserves_guarantees`] on that result.
+    /// Include temporary destruction on refusal/equivalence; do not deeply clone
+    /// or enumerate operands before payment. Custom classification is trusted to
+    /// fit this quote; the constant default adds no reservation or fixed charge.
     fn work(&self, old: &Self::Value, incoming: &Self::Value) -> usize;
     /// Prepare a complete value without mutating either input.
     fn combine(
@@ -69,6 +75,24 @@ pub trait PublicationPolicy {
     ) -> Result<Self::Value, Self::Error>;
     /// Semantic equality for publication versions.
     fn equivalent(&self, left: &Self::Value, right: &Self::Value) -> bool;
+    /// Whether replacing `old` with the prepared `next` preserves every semantic
+    /// guarantee legitimately adopted from `old` under the same input/source
+    /// universe. This is a trusted semantic promise, not a lattice comparison.
+    ///
+    /// Called only for nonequivalent existing Values, after paying [`Self::work`].
+    /// True suppresses only this value update's semantic-premise invalidation:
+    /// installation, version advancement, reader wakes and Change remain normal.
+    /// New producer families, source invalidation and topology changes retain
+    /// their independent force. Equivalent and first publications keep their
+    /// existing coverage/readiness semantics without calling this method.
+    ///
+    /// This grants no write permission: [`Self::DESCENDING`] still requires a
+    /// registered generation-local reduction. The default preserves the existing
+    /// ascending invalidation and descending wake-only behavior.
+    fn preserves_guarantees(&self, old: &Self::Value, next: &Self::Value) -> bool {
+        let _ = (old, next);
+        Self::DESCENDING
+    }
 }
 impl<P: JoinPolicy> PublicationPolicy for Ascending<P> {
     type Value = P::Value;

@@ -7,6 +7,7 @@ mod convergence;
 mod discovery;
 mod lifecycle;
 mod provenance;
+mod publication;
 mod readiness;
 mod self_callback;
 

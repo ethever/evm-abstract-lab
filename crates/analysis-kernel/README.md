@@ -20,6 +20,16 @@ evaluation order; another fixture aggregates two independent provider routes.
   universe**. Only explicitly `Registered` reduction/initialization rules can make
   descending writes, including the first write. They can write only their own
   generation. Registration accepts a semantic law; Rust cannot prove it.
+- Mixed observations can implement `algebra::PublicationPolicy` directly.
+  `preserves_guarantees(old, next)` classifies a nonequivalent prepared replacement
+  of an existing Value, under the same input/source universe. Returning true
+  promises that legitimately adopted old guarantees remain valid; the new value
+  and version still install and wake readers with `Change::Changed`. It grants no
+  write permission and cannot suppress source invalidation, new producer families
+  or topology changes. Equivalent values retain ordinary coverage renewal.
+  Include classification work in the existing prepaid `work(old, incoming)` quote,
+  including temporary construction/destruction. The constant default retains
+  ascending/descending behavior and adds no reservation or fixed tariff.
 - Widened/replaced upstream inputs require a fresh, independently seeded scope.
   Meeting old narrowed facts into that new input is invalid. A stable
   `GenerationEntry` lets consumers discover its replacement; keep an explicit
