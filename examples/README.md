@@ -79,10 +79,9 @@ nix run . -- cfg --file examples/independent-inputs.hex --context-depth 0
 
 ```bash
 nix run . -- explain --hex 5f351e00 --no-relations --numeric-model finite-set --max-constants 257
-nix run . -- explain --hex 5f351e00 --no-relations --numeric-model finite-set --max-constants 1000 --max-work 20000000
 ```
 
-CLZ 的完整结果为 `0..=256`，共 257 个候选。第一条命令为 `Converged`，完整保留它们；CLI 默认容量 512 同样能容纳全部候选；显式降至 8 时返回 Top，默认 product 仍可用其他组件保留范围和固定位约束。第二条接受容量 1000，并显式使用 2000 万共享工作预算。应分别检查配置、完成状态与候选：完成时仍是这 257 个候选；若工作被拒绝，保留 `Incomplete` / `Work`、完整 SSA 不可用及退出码 2。`--max-constants` 接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；参数不直接预分配容量，容量足够还须检查执行是否完成。
+CLZ 的完整结果为 `0..=256`，共 257 个候选。这条命令为 `Converged`，完整保留它们；CLI 默认容量 512 同样能容纳全部候选；显式降至 8 时返回 Top，默认 product 仍可用其他组件保留范围和固定位约束。`--max-constants` 接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；参数不直接预分配容量，容量足够还须检查执行是否完成。
 
 ## Storage：先读懂一个账户的单元，再增加调用层级
 

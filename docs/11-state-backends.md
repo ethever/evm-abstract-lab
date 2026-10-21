@@ -49,10 +49,10 @@ feature 在一次构建中统一选择后端；同一个进程里的 Store 使�
 
 1. 对所有[单账户 `.hex` 例子](../examples/README.md#单账户先把栈和图读懂)比较 disasm、CFG 和 SSA 的完整 JSON。
 2. 对所有 [world 例子](../examples/README.md#多账户观察调用怎样影响返回值与状态)比较分析与 SSA 的完整 JSON，以及关闭摘要后的[复用例子](../examples/worlds/summary-reuse.json)。
-3. 要求 [`missing-code.json`](../examples/worlds/missing-code.json) 保持退出码 2、`Incomplete` 和 `MissingCode` 前沿；其他例子要求退出码 0。
-4. 运行实际 Store 操作的多次测量，核对观察值与最终状态的 checksum，全部一致后输出中位数与比值。
+3. 对 [`missing-code.json`](../examples/worlds/missing-code.json) 额外检查非空、闭合的未知过程关系；另用表达式限制用例检查退出码 2 与保留的部分 SSA。
+4. 运行实际 Store 操作的多次测量，比较受测存储观察的 checksum，并要求每个进程内部完整 Store 恢复相等，全部通过后输出中位数与比值。
 
-JSON 比较只忽略空白，保留对象字段顺序和数组顺序。输入错误、退出码差异、完整输出差异或测量 checksum 差异都会停止脚本，不产生性能结论。这些固定例子是回归证据；完整测试与本地门禁仍见[检查流程](local-ci.md)。
+CLI JSON 比较会对整份报告中的原生图 `identity_scope` 作一致的 producer 命名替换，保留其他身份、对象字段顺序和数组顺序。输入错误、退出码差异、完整输出差异或测量 checksum 差异都会停止脚本，不产生性能结论；Store 存储观察的比较范围见[测量边界](#测量边界)。这些固定例子是回归证据；完整测试与本地门禁仍见[检查流程](local-ci.md)。
 
 ```bash
 # 默认：64 / 4096 个显式 slot，每项 100 次操作，5 次独立进程重复。
@@ -71,6 +71,8 @@ STATE_BACKEND_REPEATS=3 \
 
 [`state-backends` example](../crates/evm-abstract/examples/state-backends.rs) 构造一个拥有完整初始 storage 的账户，使用真实 `EvmStore<N>` 与显式构造的 `ValueAlgebra<ProductAlgebra>`。输入、写入值、join 的另一个 Store，以及每项开始前的状态复制都在计时外准备。
 
+样例使用 `new_checked`、`write_checked` 和 `read_checked`，任何表示失败都会停止测量。它按实际负载显式建立有限的 `RelationLimits`：令 S 为初始槽数，W 为 `min(S,8)`，则 `max_nodes=max(1024,6S+3W+6)`，`max_depth=max(64,S+W+3)`，保持关系推理开启和默认约束容量 128。零根占一个节点；每个常量键/值写入最多增加三个节点、一层深度；baseline 与最多 W 次写入的状态合并再增加 ITE 和 selector，检查读取还需临时的读节点与键。每轮恢复原检查点，因此次数不累加图深度。输出的 `relation_limits` 记录实际配置。
+
 | 工作负载 | 一次计时操作包含什么 |
 | --- | --- |
 | `checkpoint_drop` | 建立整个 Store 检查点并释放它 |
@@ -78,8 +80,21 @@ STATE_BACKEND_REPEATS=3 \
 | `unknown_alias_write_restore` | 检查点、未知 slot 的有序根更新与显式 slot/default 数值弱更新、读取一个观察值、恢复与释放 |
 | `join_drop` | 合并两个 Store、读取一个观察值、释放合并结果 |
 
-计时内使用 `std::hint::black_box` 保留操作和观察结果。计时外检查每项结束后 Store 与原输入相等；另行计算一次写入后或合并后完整 Store 的 checksum，覆盖所有 slot 的效果。完整 Store 序列化、checksum 与输出都在计时外。每次重复交替 std / imbl 的进程启动顺序；它能减少固定顺序带来的偏差，但不消除操作系统调度、频率和缓存变化。
+计时内使用 `std::hint::black_box` 保留真实操作和读取结果。每项结束后先检查完整 Store 与同进程原输入相等，再在计时外核对恢复后的存储观察。初始化、完整观察采集、序列化和 checksum 均不计入操作耗时。
 
-输出保留每个工作负载的后端、slot 数、操作次数、纳秒耗时、观察值 checksum 和最终状态 checksum。每次运行目录里的 `metadata.json` 记录 Git 提交、工作区状态、已跟踪修改和未跟踪源码的 hash、工具链、主机、测量参数与两个后端二进制的 hash；全部比较完成后才写入 `completed:true`。脚本将 CLI 结果写入 `parity.json`，原始测量写入 `samples.jsonl`，聚合写入 `medians.json`。`std_over_imbl > 1` 表示该项 std 中位数耗时更长；它只适用于这次机器、输入和工作负载。
+存储观察读取全部显式槽 `0..S-1`，再读取确定未列出的槽 S，覆盖默认区域。每格必须保留完整有限候选，并允许全部预期候选；缺少有限视图或约束排除预期值都会报错。checksum 保存这些读取的实际数值载体，包括 product 的全部非默认组件；来源、表达式和进程身份不属于这份明确的数值投影，不对原始 Store JSON 作身份改写。
+
+| 验证对象 | 显式槽的预期完整候选 | 未列出的槽 S |
+| --- | --- | --- |
+| baseline / 恢复后 | 槽 i 为 `{i+1}` | `{0}` |
+| sparse write | 前 W 槽为 `{1000000}`，其余保持原值 | `{0}` |
+| unknown alias write | 每格为 `{i+1,1000000}` | `{0,1000000}` |
+| baseline 与 sparse write 的 join | 前 W 槽为 `{i+1,1000000}`，其余保持原值 | `{0}` |
+
+三个有状态效果都必须与 baseline 的受测观察不同。样例输出 `baseline_storage_observation_checksum`、`effect_storage_observation_checksum`、`restored_storage_observation_checksum`、观察数量和未列槽坐标；`restore_verified` 只在同进程完整 Store 相等检查通过后输出。脚本比较这些观察及有限配置，接受的新样例格式不包含旧的原始整 Store hash 字段。
+
+这些检查覆盖受测存储观察与恢复；它们不证明完整世界、来源关联、所有账户或所有路径语义等价，完整语义仍由回归 suite 检验。样例选择内置 `ProductAlgebra`；泛型采集 helper 保留实际数值载体，不能把某个自定义载体的有限视图当作它的全部语义。
+
+每次重复交替 std / imbl 的启动顺序。运行目录里的 `metadata.json` 记录源码、工具链、主机、参数与两个后端二进制的 hash；全部校验完成后才写入 `completed:true`、`storage_observations_match:true` 和 `restore_verified:true`。CLI 报告比较写入 `parity.json`，操作样本写入 `samples.jsonl`，中位数写入 `medians.json`。`std_over_imbl > 1` 只表示这次输入、配置和机器上 std 中位数耗时更长。此前未检查初始化错误而得到的空操作计时不能用作性能证据。
 
 未知 slot 更新与 `join` 要处理大量抽象值；检查点建立只观察保留旧版本的成本。把这几项分开，才能看出某个后端对当前分析器的收益和代价。这个小测量不包含完整分析工作表的内存峰值，也不能据此断言某个后端始终更快。
