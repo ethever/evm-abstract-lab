@@ -1,12 +1,16 @@
+use crate::native;
 use alloy_primitives::{Address, U256, hex};
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
     analysis::{
-        ExecutionConfig, MachineOutcome, OutcomeKind, ProcedureSummaryKind, Status, WorldAnalysis,
-        analyze_world,
+        EvmMachineOutcome, EvmWorldAnalysis, ExecutionConfig, OutcomeKind, ProcedureSummaryKind,
+        Status,
     },
-    domain::{AbstractValue, Domain},
-    world::{Account, ByteArray, Entry, Store, World},
+    domain::EvmValue,
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmStore, EvmWorld},
 };
 use revm_bytecode::opcode;
 use std::{collections::BTreeMap, time::Instant};
@@ -20,8 +24,8 @@ pub(super) fn address(value: u64) -> Address {
     Address::from_word(U256::from(value).into())
 }
 
-pub(super) fn word(value: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+pub(super) fn word(value: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(value))
 }
 
 #[derive(Clone)]
@@ -128,12 +132,18 @@ impl Assembly {
     }
 }
 
-pub(super) fn new_world() -> World {
-    World::new(Fork::Osaka, "issue123:known-recursion:offline-bytecode")
+pub(super) fn new_world() -> EvmWorld<NumericValue> {
+    EvmWorld::<NumericValue>::new(Fork::Osaka, "issue123:known-recursion:offline-bytecode")
 }
 
-pub(super) fn insert(world: &mut World, owner: u64, fixture: &Fixture, slots: &[(u64, u64)]) {
-    let mut account = Account::from_hex(&hex::encode(&fixture.bytes), world.fork()).unwrap();
+pub(super) fn insert(
+    world: &mut EvmWorld<NumericValue>,
+    owner: u64,
+    fixture: &Fixture,
+    slots: &[(u64, u64)],
+) {
+    let mut account =
+        EvmAccount::<NumericValue>::from_hex(&hex::encode(&fixture.bytes), world.fork()).unwrap();
     account.balance = word(BALANCE);
     for (slot, value) in slots {
         account.storage.insert(U256::from(*slot), word(*value));
@@ -141,25 +151,38 @@ pub(super) fn insert(world: &mut World, owner: u64, fixture: &Fixture, slots: &[
     world.insert(address(owner), account).unwrap();
 }
 
-pub(super) fn input(n: u64) -> ByteArray {
-    ByteArray::exact(&U256::from(n).to_be_bytes::<32>())
+pub(super) fn input(n: u64) -> EvmByteArray<NumericValue> {
+    EvmByteArray::<NumericValue>::exact(&U256::from(n).to_be_bytes::<32>())
 }
 
-pub(super) fn unknown_input() -> ByteArray {
-    ByteArray::unknown()
+pub(super) fn unknown_input() -> EvmByteArray<NumericValue> {
+    EvmByteArray::<NumericValue>::unknown()
 }
 
-pub(super) fn entry(calldata: ByteArray) -> Entry {
-    Entry::concrete(address(A), address(USER), word(0), calldata)
+pub(super) fn entry(calldata: EvmByteArray<NumericValue>) -> EvmEntry<NumericValue> {
+    EvmEntry::<NumericValue>::concrete(address(A), address(USER), word(0), calldata)
 }
 
-pub(super) fn run(world: World, entry: Entry) -> WorldAnalysis {
+pub(super) fn run(
+    world: EvmWorld<NumericValue>,
+    entry: EvmEntry<NumericValue>,
+) -> EvmWorldAnalysis<NumericValue> {
     run_config(world, entry, ExecutionConfig::default())
 }
 
-pub(super) fn run_config(world: World, entry: Entry, config: ExecutionConfig) -> WorldAnalysis {
+pub(super) fn run_config(
+    world: EvmWorld<NumericValue>,
+    entry: EvmEntry<NumericValue>,
+    config: ExecutionConfig,
+) -> EvmWorldAnalysis<NumericValue> {
     let started = Instant::now();
-    let analysis = analyze_world(world, entry, config).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     eprintln!(
         "known-recursion evidence: test={} status={:?} states={} transfers={} work={} outcomes={} procedures={} elapsed_us={} frontiers={:?}",
         std::thread::current().name().unwrap_or("probe"),
@@ -204,7 +227,7 @@ pub(super) fn run_config(world: World, entry: Entry, config: ExecutionConfig) ->
     analysis
 }
 
-pub(super) fn complete(analysis: &WorldAnalysis) {
+pub(super) fn complete(analysis: &EvmWorldAnalysis<NumericValue>) {
     assert_eq!(analysis.status(), Status::Converged);
     assert!(analysis.frontiers().is_empty());
     assert!(
@@ -213,7 +236,7 @@ pub(super) fn complete(analysis: &WorldAnalysis) {
     );
 }
 
-pub(super) fn complete_recursion(analysis: &WorldAnalysis) {
+pub(super) fn complete_recursion(analysis: &EvmWorldAnalysis<NumericValue>) {
     complete(analysis);
     let records = analysis.procedure_summaries();
     assert!(
@@ -253,7 +276,9 @@ pub(super) fn complete_recursion(analysis: &WorldAnalysis) {
     }
 }
 
-pub(super) fn returns(analysis: &WorldAnalysis) -> Vec<&MachineOutcome> {
+pub(super) fn returns(
+    analysis: &EvmWorldAnalysis<NumericValue>,
+) -> Vec<&EvmMachineOutcome<NumericValue>> {
     let values: Vec<_> = analysis
         .outcomes()
         .iter()
@@ -265,9 +290,12 @@ pub(super) fn returns(analysis: &WorldAnalysis) -> Vec<&MachineOutcome> {
 
 /// Gas failure may precede entry or occur at an executed memory operation.
 /// These fixtures must restore the whole root checkpoint in either case.
-pub(super) fn terminals(analysis: &WorldAnalysis, kind: OutcomeKind) -> Vec<&MachineOutcome> {
+pub(super) fn terminals(
+    analysis: &EvmWorldAnalysis<NumericValue>,
+    kind: OutcomeKind,
+) -> Vec<&EvmMachineOutcome<NumericValue>> {
     assert!(matches!(kind, OutcomeKind::Return | OutcomeKind::Revert));
-    let initial = Store::new(analysis.world());
+    let initial = EvmStore::<NumericValue>::new(analysis.world(), native::product().borrowed());
     let checkpoint = analysis.states()[0]
         .entry
         .call_stack
@@ -280,7 +308,7 @@ pub(super) fn terminals(analysis: &WorldAnalysis, kind: OutcomeKind) -> Vec<&Mac
     // retained RIPEMD touch; that exception cannot excuse other Store changes.
     let mut finalized = checkpoint.clone();
     finalized
-        .finalize_transaction(Domain::from_spec(analysis.domain_spec()))
+        .finalize_transaction(native::product_with(analysis.domain_spec()).borrowed())
         .unwrap();
     assert_eq!(finalized, initial);
     // The engine seeds this outcome before appending executed completions.
@@ -313,11 +341,15 @@ pub(super) fn terminals(analysis: &WorldAnalysis, kind: OutcomeKind) -> Vec<&Mac
     values
 }
 
-pub(super) fn read(store: &Store, owner: u64, slot: u64) -> AbstractValue {
-    store.read(address(owner), &word(slot), Domain::default())
+pub(super) fn read(
+    store: &EvmStore<NumericValue>,
+    owner: u64,
+    slot: u64,
+) -> EvmValue<NumericValue> {
+    store.read(address(owner), &word(slot), native::product().borrowed())
 }
 
-pub(super) fn only(value: &AbstractValue, values: &[u64]) {
+pub(super) fn only(value: &EvmValue<NumericValue>, values: &[u64]) {
     let (lo, hi) = value.interval().unsigned_bounds();
     let covered = if let Some(constants) = value.constants() {
         !constants.is_empty()
@@ -340,6 +372,11 @@ pub(super) fn only(value: &AbstractValue, values: &[u64]) {
     );
 }
 
-pub(super) fn output_word(outcome: &MachineOutcome, offset: u64) -> AbstractValue {
-    outcome.data.read_word(&word(offset), Domain::default())
+pub(super) fn output_word(
+    outcome: &EvmMachineOutcome<NumericValue>,
+    offset: u64,
+) -> EvmValue<NumericValue> {
+    outcome
+        .data
+        .read_word(&word(offset), native::product().borrowed())
 }

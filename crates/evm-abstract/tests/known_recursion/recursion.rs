@@ -1,9 +1,10 @@
 use super::{fixtures, oracle, support::*};
 use alloy_primitives::U256;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
     analysis::{ExecutionConfig, OutcomeKind},
-    world::ByteArray,
+    world::EvmByteArray,
 };
 use revm_bytecode::opcode;
 
@@ -95,14 +96,14 @@ fn mutual_unknown_counter_closes_without_expanding_the_full_call_stack() {
 fn recursion_without_a_basic_success_branch_has_nonempty_revert_outputs() {
     let mut world = new_world();
     insert(&mut world, A, &fixtures::no_base_success(), &[(0, 5)]);
-    let analysis = run(world.clone(), entry(ByteArray::empty()));
+    let analysis = run(world.clone(), entry(EvmByteArray::<NumericValue>::empty()));
     complete_recursion(&analysis);
     for outcome in terminals(&analysis, OutcomeKind::Revert) {
         only(outcome.data.len(), &[32]);
         only(&output_word(outcome, 0), &[99]);
         only(&read(&outcome.store, A, 0), &[5]);
     }
-    let observed = oracle::execute(&world, &entry(ByteArray::empty()));
+    let observed = oracle::execute(&world, &entry(EvmByteArray::<NumericValue>::empty()));
     assert_eq!(observed.kind, OutcomeKind::Revert);
     assert_eq!(observed.output_word(0), U256::from(99));
     observed.covers(&analysis);
@@ -112,9 +113,12 @@ fn recursion_without_a_basic_success_branch_has_nonempty_revert_outputs() {
 fn real_evm_depth_failure_is_covered_without_an_analysis_depth_frontier() {
     // Cancun has the same physical CALL depth boundary and no Osaka transaction
     // gas cap. Sufficient forwarded gas makes revm reach CallTooDeep, not OOG.
-    let mut world = evm_abstract::world::World::new(Fork::Cancun, "issue123:physical-call-depth");
+    let mut world = evm_abstract::world::EvmWorld::<NumericValue>::new(
+        Fork::Cancun,
+        "issue123:physical-call-depth",
+    );
     insert(&mut world, A, &fixtures::no_base_success(), &[(0, 5)]);
-    let entry = entry(ByteArray::empty());
+    let entry = entry(EvmByteArray::<NumericValue>::empty());
     let observed = oracle::execute_gas(&world, &entry, 1_000_000_000_000);
     assert_eq!(observed.kind, OutcomeKind::Revert);
     assert_eq!(observed.output_word(0), U256::from(99));

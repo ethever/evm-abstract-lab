@@ -16,8 +16,9 @@ fn with_solver(test: impl FnOnce(&mut Solver<'_>)) {
         max_work: 1_000_000_000,
         ..ExecutionConfig::default()
     };
-    config.analysis.max_constants = 512;
-    config.analysis.relations.enabled = false;
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.max_constants = 512;
+    config_numeric.relations.enabled = false;
     let mut table = Table::default();
     let mut counters = Counters::default();
     let mut budget = WorkBudget::new(config.max_work);

@@ -1,37 +1,41 @@
 use super::*;
-use crate::{
-    Fork,
-    bytecode::Program,
-    domain::{
-        relational::RelationLimits,
-        symbolic::{ExprError, ExprId, SlotStateId, SourceId, StateError},
-    },
-    world::{AbstractLog, Account, ByteArray, Code, Existence, LogKey, LogSourceKind, World},
-};
 use alloy_primitives::{B256, U256};
+use {
+    crate::Fork, crate::bytecode::Program, crate::domain::relational::RelationLimits,
+    crate::domain::symbolic::ExprError, crate::domain::symbolic::ExprId,
+    crate::domain::symbolic::SlotStateId, crate::domain::symbolic::SourceId,
+    crate::domain::symbolic::StateError, crate::world::Code, crate::world::Existence,
+    crate::world::LogKey, crate::world::LogSourceKind, crate::world::test_support::TestAccount,
+    crate::world::test_support::TestBytes, crate::world::test_support::TestLog,
+    crate::world::test_support::TestWorld,
+};
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> TestValue {
+    TestValue::constant(U256::from(number))
 }
 
-fn input() -> Store {
-    let mut world = World::new(Fork::Osaka, "checked unlisted preparation");
-    let mut account = Account::from_hex("00", world.fork()).unwrap();
+fn input() -> TestStore {
+    let mut world = TestWorld::new(Fork::Osaka, "checked unlisted preparation");
+    let mut account = TestAccount::from_hex("00", world.fork()).unwrap();
     account.storage_unknown = true;
     account.storage.insert(U256::from(8), word(5));
     world.insert(address(0x101), account).unwrap();
-    let mut store = Store::new_checked(&world, Domain::default()).unwrap();
+    let mut store = TestStore::new_checked(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    )
+    .unwrap();
     store.may_touch_all();
     store
 }
 
 #[test]
 fn every_explicit_map_and_both_log_address_roles_protect_the_original_owner() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let mut store = input();
     store.balances.insert(address(0x201), word(3));
     store.codes.insert(address(0x202), Code::Empty);
@@ -72,9 +76,9 @@ fn every_explicit_map_and_both_log_address_roles_protect_the_original_owner() {
             source_kind: LogSourceKind::Runtime,
             pc: 7,
         },
-        AbstractLog {
+        TestLog {
             topics: vec![word(19)],
-            data: ByteArray::empty(),
+            data: TestBytes::empty(),
         },
     );
     let protected = store.addresses();
@@ -85,7 +89,7 @@ fn every_explicit_map_and_both_log_address_roles_protect_the_original_owner() {
         .collect();
     let before = store.clone();
     store
-        .prepare_unlisted_finalization_checked(domain, &mut WorkBudget::new(20_000_000))
+        .prepare_unlisted_finalization_checked(domain.borrowed(), &mut WorkBudget::new(20_000_000))
         .unwrap();
     for (owner, root) in roots {
         assert_eq!(store.slot_root(owner, false).unwrap(), root, "{owner}");
@@ -107,7 +111,7 @@ fn every_explicit_map_and_both_log_address_roles_protect_the_original_owner() {
 
 #[test]
 fn checked_fresh_refusal_and_late_protected_root_refusal_are_atomic() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = domain.spec().relations().expressions();
     let mut store = input();
     let protected = store.addresses();
@@ -150,7 +154,7 @@ fn typed_expression_and_state_refusals_leave_the_live_finalization_input_unchang
     let before = store.clone();
     assert_eq!(
         store.finalize_transaction_checked(
-            Domain::default(),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
             None,
             &mut WorkBudget::new(20_000_000),
         ),
@@ -158,25 +162,35 @@ fn typed_expression_and_state_refusals_leave_the_live_finalization_input_unchang
     );
     assert_eq!(store, before);
     assert_eq!(
-        store.finalize_transaction(Domain::default()),
+        store.finalize_transaction(
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        ),
         Err(expression_error)
     );
     assert_eq!(store, before);
 
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_nodes: 1,
-        ..RelationLimits::default()
-    }));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_nodes: 1,
+                ..RelationLimits::default()
+            }),
+    ));
     let mut store = input();
     let before = store.clone();
     assert!(matches!(
-        store.finalize_transaction_checked(domain, None, &mut WorkBudget::new(20_000_000)),
+        store.finalize_transaction_checked(
+            domain.borrowed(),
+            None,
+            &mut WorkBudget::new(20_000_000)
+        ),
         Err(FinalizationError::Store(StoreError::State(
             StateError::Limit { .. }
         )))
     ));
     assert_eq!(store, before);
-    assert!(store.finalize_transaction(domain).is_err());
+    assert!(store.finalize_transaction(domain.borrowed()).is_err());
     assert_eq!(store, before);
 }
 
@@ -187,7 +201,10 @@ fn cancellation_refuses_helper_and_both_finalizers_without_replacing_roots() {
         let mut store = input();
         let before = store.clone();
         let protected = store.addresses();
-        let limits = Domain::default().spec().relations().expressions();
+        let limits = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .relations()
+            .expressions();
         cancellation.cancel();
         assert_eq!(
             store
@@ -200,7 +217,8 @@ fn cancellation_refuses_helper_and_both_finalizers_without_replacing_roots() {
         assert_eq!(store, before);
         assert_eq!(
             store.finalize_transaction_checked(
-                Domain::default(),
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed(),
                 None,
                 &mut WorkBudget::new(20_000_000),
             ),
@@ -208,7 +226,10 @@ fn cancellation_refuses_helper_and_both_finalizers_without_replacing_roots() {
         );
         assert_eq!(store, before);
         assert_eq!(
-            store.finalize_transaction(Domain::default()),
+            store.finalize_transaction(
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed()
+            ),
             Err(StoreError::State(StateError::Cancelled))
         );
         assert_eq!(store, before);
@@ -217,7 +238,7 @@ fn cancellation_refuses_helper_and_both_finalizers_without_replacing_roots() {
 
 #[test]
 fn refusal_before_discovery_or_preparation_preserves_the_original_source() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let before = input();
     let discovery = PreparationWork::discovery(before.finalization_entries());
     let action = PreparationWork::measure(&before.persistent, &before.addresses()).total();
@@ -225,7 +246,7 @@ fn refusal_before_discovery_or_preparation_preserves_the_original_source() {
         let mut store = before.clone();
         let mut budget = WorkBudget::new(maximum);
         assert_eq!(
-            store.prepare_unlisted_finalization_checked(domain, &mut budget),
+            store.prepare_unlisted_finalization_checked(domain.borrowed(), &mut budget),
             Err(FinalizationError::Work),
             "maximum={maximum}"
         );
@@ -239,7 +260,7 @@ fn refusal_before_discovery_or_preparation_preserves_the_original_source() {
     let mut store = before.clone();
     let mut budget = WorkBudget::new(discovery + action);
     store
-        .prepare_unlisted_finalization_checked(domain, &mut budget)
+        .prepare_unlisted_finalization_checked(domain.borrowed(), &mut budget)
         .unwrap();
     assert_eq!(budget.used(), discovery + action);
     assert_ne!(store.global_storage_state(), before.global_storage_state());
@@ -247,11 +268,15 @@ fn refusal_before_discovery_or_preparation_preserves_the_original_source() {
     let mut completed = before.clone();
     let mut full = WorkBudget::new(20_000_000);
     completed
-        .finalize_transaction_checked(domain, None, &mut full)
+        .finalize_transaction_checked(domain.borrowed(), None, &mut full)
         .unwrap();
     let mut refused = before.clone();
     assert_eq!(
-        refused.finalize_transaction_checked(domain, None, &mut WorkBudget::new(full.used() - 1)),
+        refused.finalize_transaction_checked(
+            domain.borrowed(),
+            None,
+            &mut WorkBudget::new(full.used() - 1)
+        ),
         Err(FinalizationError::Work)
     );
     assert_eq!(refused, before);
@@ -259,7 +284,7 @@ fn refusal_before_discovery_or_preparation_preserves_the_original_source() {
 
 #[test]
 fn every_missing_owner_prepays_scoping_the_entire_conditional_base() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = domain.spec().relations().expressions();
     let mut store = input();
     store.persistent.roots.clear();
@@ -280,7 +305,9 @@ fn every_missing_owner_prepays_scoping_the_entire_conditional_base() {
         .into_iter()
         .map(|owner| (owner, store.slot_root(owner, false).unwrap()))
         .collect();
-    store.prepare_unlisted_finalization(domain).unwrap();
+    store
+        .prepare_unlisted_finalization(domain.borrowed())
+        .unwrap();
     for (owner, root) in roots {
         assert_eq!(store.slot_root(owner, false).unwrap(), root);
     }

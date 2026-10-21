@@ -1,6 +1,8 @@
+use crate::domain::ProductAlgebra;
 //! Two separately paid phases share the kernel's unchanged atomic publication.
 
 use super::{Engine, engine, fixtures};
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{
         MachineError,
@@ -109,8 +111,12 @@ fn admission_pays_preparation_and_actual_replacement_separately_and_atomically()
         analysis_control::with_cancellation(&cancellation, || {
             let mut config = fixtures::config();
             config.root_terminal_coverage = false;
-            let result = fixtures::run("600100", config);
-            let algebra = ValueAlgebra::new(result.config.domain().unwrap());
+            let result = fixtures::run(
+                "600100",
+                config,
+                crate::analysis::testing::NumericLimits::machine().spec(),
+            );
+            let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
             let policies = Default::default();
             let mut budget = WorkBudget::new(MAXIMUM);
             let mut counters = super::Counters::default();
@@ -260,8 +266,12 @@ fn admission_pays_preparation_and_actual_replacement_separately_and_atomically()
 fn covered_admission_is_free_and_changed_admission_advances_exactly_once() {
     let mut config = fixtures::config();
     config.root_terminal_coverage = false;
-    let result = fixtures::run("00", config);
-    let algebra = ValueAlgebra::new(result.config.domain().unwrap());
+    let result = fixtures::run(
+        "00",
+        config,
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    );
+    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
     let policies = Default::default();
     let mut budget = WorkBudget::new(MAXIMUM);
     let mut counters = super::Counters::default();

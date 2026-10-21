@@ -1,6 +1,7 @@
 use super::{fixtures, oracle, support::*};
 use alloy_primitives::{U256, hex};
-use evm_abstract::{analysis::ExecutionConfig, world::Entry};
+use evm_abstract::domain::NumericValue;
+use evm_abstract::{analysis::ExecutionConfig, world::EvmEntry};
 use revm_bytecode::opcode;
 
 #[test]
@@ -100,7 +101,12 @@ fn delegate_recursion_inherits_nonzero_value_and_the_original_caller() {
         &[(0, 9)],
     );
     for count in [2, 6] {
-        let input = Entry::concrete(address(OUTER), address(USER), word(0), input(count));
+        let input = EvmEntry::<NumericValue>::concrete(
+            address(OUTER),
+            address(USER),
+            word(0),
+            input(count),
+        );
         let observed = oracle::execute(&world, &input);
         assert_eq!(observed.output_word(0), U256::from(A));
         assert_eq!(observed.output_word(32), U256::from(OUTER));

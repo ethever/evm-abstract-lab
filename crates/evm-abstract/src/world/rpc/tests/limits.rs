@@ -54,7 +54,7 @@ fn increased_budgets_accept_large_responses_and_discover_accounts_and_slots() {
         input.max_response_bytes = 8 * 1024 * 1024;
         input.max_accounts = 4097;
         input.max_requests = 32;
-        let mut session = Session::load(&input).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
         let address = Address::repeat_byte(0x55);
         assert!(session.fetch_account(address).unwrap());
         let slots = BTreeSet::from([U256::from(2)]);
@@ -75,7 +75,7 @@ fn initial_slot_acquisition_can_exceed_the_former_1024_slot_ceiling() {
         let mut input = server.input();
         input.accounts[0].slots = (0_u64..1025).map(U256::from).collect();
         input.max_requests = 1100;
-        let session = Session::load(&input).unwrap();
+        let session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
         let account = session.world().account(Address::repeat_byte(0x22)).unwrap();
         assert_eq!(account.storage.len(), 1025);
         assert_eq!(session.requests(), server.requests().len());

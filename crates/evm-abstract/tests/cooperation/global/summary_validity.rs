@@ -4,10 +4,12 @@ use super::{
     *,
 };
 use analysis_kernel::{Availability, Change, There};
+use evm_abstract::analysis::control::Control;
 use evm_abstract::analysis::cooperation::{
     PointKind, ProcedureId, ProcedureRoute, Procedures, Summaries, SummaryClosureRoute,
     SummaryClosures, SummaryRoute, closed_summary,
 };
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput, ExecutionConfig};
 use std::{cell::RefCell, collections::BTreeMap};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -427,16 +429,13 @@ fn run(use_summaries: bool, invalidate: bool) {
         Tasks,
     )
     .with_shared_stores(Factory);
-    let result = analyze_world_cooperating(
-        fixtures::world(&code),
-        fixtures::entry(),
+    let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension).run(
+        AnalysisInput::new(fixtures::world(&code), fixtures::entry()).unwrap(),
         ExecutionConfig {
             use_summaries,
             ..fixtures::config(5_000_000_000)
         },
-        &algebra,
-        &EnginePolicies::default(),
-        &mut extension,
+        &Control::default(),
     );
     let audit = trace.borrow();
     assert!(

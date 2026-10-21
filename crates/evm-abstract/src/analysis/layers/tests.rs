@@ -1,10 +1,14 @@
+use crate::domain::EvmNumericAlgebra as _;
+
 use super::*;
+#[cfg(test)]
+use crate::analysis::testing::{Account, Entry, TestValue, World};
 use crate::{
     Address, Fork, U256,
     analysis::{ExecutionConfig, FrontierReason, OutcomeKind, Status},
     bytecode::Program,
-    domain::{AbstractValue, Domain},
-    world::{Code, Entry, Existence},
+    domain::ProductAlgebra,
+    world::{Code, Existence},
 };
 use alloy_primitives::B256;
 use std::sync::Arc;
@@ -15,8 +19,8 @@ fn address(value: u16) -> Address {
     Address::from(bytes)
 }
 
-fn word(value: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+fn word(value: u64) -> TestValue {
+    TestValue::constant(U256::from(value))
 }
 
 fn catalog(code: &str) -> (Arc<CodeCatalog>, CodeId) {
@@ -25,9 +29,45 @@ fn catalog(code: &str) -> (Arc<CodeCatalog>, CodeId) {
     (Arc::new(catalog), id)
 }
 
-fn session(code: &str) -> AnalysisSession {
+use crate::analysis::{AnalysisEngine, AnalysisInput, EnginePolicies, control::Control, cooperation::NoExtension};
+use std::{convert::Infallible, sync::LazyLock};
+type Session = AnalysisSession<'static, ProductAlgebra, crate::analysis::RecentDistinctJumps,
+    crate::analysis::FirstResumeStatus, crate::analysis::SemanticPolicies, NoExtension>;
+static NUMERIC: LazyLock<crate::domain::ValueAlgebra<ProductAlgebra>> = LazyLock::new(|| crate::domain::ValueAlgebra::new(ProductAlgebra::default()));
+static POLICIES: LazyLock<EnginePolicies> = LazyLock::new(EnginePolicies::default);
+fn engine() -> AnalysisEngine<'static, ProductAlgebra, crate::analysis::RecentDistinctJumps,
+    crate::analysis::FirstResumeStatus, crate::analysis::SemanticPolicies, NoExtension> {
+    AnalysisEngine::new(&NUMERIC, &POLICIES, Box::leak(Box::new(NoExtension)))
+}
+fn from_world(world: World, entry: Entry, config: ExecutionConfig) -> Result<Session, SessionError<Infallible>> {
+    AnalysisSession::new(engine(), AnalysisInput::new(world, entry)?, config)
+}
+fn start(catalog: Arc<CodeCatalog>, facts: StateFacts, id: CodeId, entry: Entry, config: ExecutionConfig)
+    -> Result<Session, SessionError<Infallible>> {
+    let mut world = match facts.snapshot().identity() {
+        crate::world::SnapshotIdentity::Offline { label } => World::offline(catalog.fork(), label, "explicit catalog/facts fixture"),
+        crate::world::SnapshotIdentity::Chain { chain_id, block_hash } => World::anchored(catalog.fork(), *chain_id, *block_hash, "explicit catalog/facts fixture"),
+    };
+    let mut owner = Account::unknown();
+    owner.code = Code::Runtime(catalog.program(id).ok_or(SessionError::MissingCode(id))?.clone());
+    world.insert(entry.address, owner)?;
+    for (_, fact) in facts.observations() {
+        if let Observation::Code { address, code } = fact {
+            if *address == entry.address { continue; }
+            let mut account = Account::unknown();
+            account.code = match code { CodeObservation::Empty => Code::Empty,
+                CodeObservation::Delegation(target) => Code::Delegation(*target),
+                CodeObservation::Runtime(id) => Code::Runtime(catalog.program(*id).ok_or(SessionError::MissingCode(*id))?.clone()), };
+            world.insert(*address, account)?;
+        }
+    }
+    let input = AnalysisInput { world, entry, facts };
+    AnalysisSession::new(engine(), input, config)
+}
+
+fn session(code: &str) -> Session {
     let (catalog, id) = catalog(code);
-    AnalysisSession::new(
+    start(
         catalog,
         StateFacts::new(SnapshotId::offline("layer tests")),
         id,
@@ -37,13 +77,13 @@ fn session(code: &str) -> AnalysisSession {
     .unwrap()
 }
 
-fn returns(report: &SessionAnalysis) -> Vec<AbstractValue> {
+fn returns(report: &SessionAnalysis<crate::domain::NumericValue>) -> Vec<TestValue> {
     let values: Vec<_> = report
         .analysis()
         .outcomes()
         .iter()
         .filter(|outcome| outcome.kind == OutcomeKind::Return)
-        .map(|outcome| outcome.data.read_word(&word(0), Domain::default()))
+        .map(|outcome| outcome.data.read_word(&word(0), NUMERIC.borrowed()))
         .collect();
     assert!(!values.is_empty(), "{:?}", report.analysis().frontiers());
     values
@@ -84,7 +124,7 @@ fn code_only_has_unknown_account_slot_balance_input_and_external_code() {
         "6102223b5f5260205ff3",
     ] {
         let mut session = session(code);
-        let report = session.analyze().unwrap();
+        let report = session.run(&Control::default()).unwrap();
         assert_eq!(
             report.analysis().status(),
             Status::Converged,
@@ -312,14 +352,14 @@ fn complete_storage_keeps_explicit_values_and_rejects_later_nonzero_default() {
 #[test]
 fn refinement_reuses_pure_computation_on_new_store_and_retains_old_report() {
     let mut session = session("60026003016008565b5f545f5260205ff3");
-    let old = session.analyze().unwrap();
+    let old = session.run(&Control::default()).unwrap();
     assert!(
         returns(&old)
             .iter()
             .all(|value| value.singleton().is_none())
     );
     assert!(old.reuse().entries > 0);
-    assert!(Arc::ptr_eq(&old, &session.analyze().unwrap()));
+    assert!(Arc::ptr_eq(&old, &session.run(&Control::default()).unwrap()));
     let snapshot = session.facts().snapshot().clone();
     let effect = session
         .refine(
@@ -328,13 +368,12 @@ fn refinement_reuses_pure_computation_on_new_store_and_retains_old_report() {
                 address: address(0x101),
                 slot: U256::ZERO,
                 value: U256::from(3),
-            }],
-        )
+            }], &Control::default())
         .unwrap();
     assert!(
         matches!(effect, RefinementEffect::RestartRequired { ref affected_states, .. } if !affected_states.is_empty())
     );
-    let new = session.analyze().unwrap();
+    let new = session.run(&Control::default()).unwrap();
     assert_ne!(old.revision(), new.revision());
     assert!(new.reuse().hits > old.reuse().hits);
     assert!(
@@ -371,7 +410,7 @@ fn refinement_reuses_pure_computation_on_new_store_and_retains_old_report() {
 fn injection_after_runtime_write_and_revert_never_patches_runtime_or_saved_roots() {
     for code in ["60095f555f545f5260205ff3", "60095f555f5ffd"] {
         let mut session = session(code);
-        let old = session.analyze().unwrap();
+        let old = session.run(&Control::default()).unwrap();
         let snapshot = session.facts().snapshot().clone();
         session
             .refine(
@@ -380,10 +419,9 @@ fn injection_after_runtime_write_and_revert_never_patches_runtime_or_saved_roots
                     address: address(0x101),
                     slot: U256::ZERO,
                     value: U256::from(3),
-                }],
-            )
+                }], &Control::default())
             .unwrap();
-        let new = session.analyze().unwrap();
+        let new = session.run(&Control::default()).unwrap();
         for report in [&old, &new] {
             let exit = report
                 .analysis()
@@ -394,7 +432,7 @@ fn injection_after_runtime_write_and_revert_never_patches_runtime_or_saved_roots
                 .unwrap();
             assert_eq!(
                 exit.store
-                    .read(address(0x101), &word(0), Domain::default())
+                    .read(address(0x101), &word(0), ProductAlgebra::default())
                     .singleton(),
                 Some(U256::from(9))
             );
@@ -410,7 +448,7 @@ fn injection_after_runtime_write_and_revert_never_patches_runtime_or_saved_roots
                 .map(|outcome| {
                     outcome
                         .store
-                        .read(address(0x101), &word(0), Domain::default())
+                        .read(address(0x101), &word(0), ProductAlgebra::default())
                 })
                 .collect::<Vec<_>>()
         };
@@ -434,7 +472,7 @@ fn injection_after_runtime_write_and_revert_never_patches_runtime_or_saved_roots
 #[test]
 fn shared_catalog_sessions_do_not_share_facts_reports_or_memos() {
     let (catalog, id) = catalog("60026003016008565b5f545f5260205ff3");
-    let mut left = AnalysisSession::new(
+    let mut left = start(
         Arc::clone(&catalog),
         StateFacts::new(SnapshotId::offline("left")),
         id,
@@ -442,7 +480,7 @@ fn shared_catalog_sessions_do_not_share_facts_reports_or_memos() {
         ExecutionConfig::default(),
     )
     .unwrap();
-    let mut right = AnalysisSession::new(
+    let mut right = start(
         catalog,
         StateFacts::new(SnapshotId::offline("right")),
         id,
@@ -459,10 +497,9 @@ fn shared_catalog_sessions_do_not_share_facts_reports_or_memos() {
                     address: address(0x101),
                     slot: U256::ZERO,
                     value: U256::from(value),
-                }],
-            )
+                }], &Control::default())
             .unwrap();
-        let report = session.analyze().unwrap();
+        let report = session.run(&Control::default()).unwrap();
         assert!(
             returns(&report)
                 .iter()
@@ -526,7 +563,7 @@ fn dependency_index_includes_negative_reads_completeness_calls_and_return_edges(
             .contains(&5)
     );
     let mut session = session("5f545f5260205ff3");
-    let report = session.analyze().unwrap();
+    let report = session.run(&Control::default()).unwrap();
     assert!(report.dependencies().reads().any(|(read, _)| *read
         == FactDependency::Storage {
             address: Some(address(0x101)),
@@ -555,7 +592,7 @@ fn code_binding_and_rejected_refinement_do_not_establish_unrelated_state() {
                     address: address(0x101),
                     code: CodeObservation::Runtime(other),
                 }]
-            )
+            , &Control::default())
             .is_err()
     );
     assert_eq!(session.facts().revision(), before);
@@ -566,10 +603,9 @@ fn code_binding_and_rejected_refinement_do_not_establish_unrelated_state() {
             [Observation::Existence {
                 address: external,
                 exists: false,
-            }],
-        )
+            }], &Control::default())
         .unwrap();
-    let report = session.analyze().unwrap();
+    let report = session.run(&Control::default()).unwrap();
     let account = report.analysis().world().account(external).unwrap();
     assert_eq!(account.existence, Existence::Absent);
     assert_eq!(account.code, Code::Empty);
@@ -586,7 +622,7 @@ fn code_binding_and_rejected_refinement_do_not_establish_unrelated_state() {
 
 #[test]
 fn ordinary_routes_share_layered_execution_and_preserve_abstract_world_bounds() {
-    use crate::world::{Account, World};
+
     let program = Program::from_hex_with_fork("475f5260205ff3", Fork::Osaka).unwrap();
     let single = crate::analysis::analyze(program.clone(), Default::default()).unwrap();
     assert!(
@@ -597,34 +633,35 @@ fn ordinary_routes_share_layered_execution_and_preserve_abstract_world_bounds() 
             .filter(|o| o.kind == OutcomeKind::Return)
             .all(|o| o
                 .data
-                .read_word(&word(0), Domain::default())
+                .read_word(&word(0), ProductAlgebra::default())
                 .singleton()
                 .is_none())
     );
     let mut world = World::offline(Fork::Osaka, "bounded base", "test");
     let mut account = Account::unknown();
     account.code = Code::Runtime(program);
-    account.balance = AbstractValue::unsigned_range(U256::from(3), U256::from(9)).unwrap();
+    account.balance = TestValue::unsigned_range(U256::from(3), U256::from(9)).unwrap();
     account.storage.insert(
         U256::ZERO,
-        AbstractValue::unsigned_range(U256::from(5), U256::from(8)).unwrap(),
+        TestValue::unsigned_range(U256::from(5), U256::from(8)).unwrap(),
     );
     account.storage_unknown = false;
     world.insert(address(0x101), account.clone()).unwrap();
-    let public = crate::analysis::analyze_world(
+    let public = crate::analysis::testing::execute(
         world.clone(),
         Entry::new(address(0x101)),
         ExecutionConfig::default(),
+        crate::domain::DomainSpec::default(),
     )
     .unwrap();
     assert_eq!(public.world().account(address(0x101)), Some(&account));
-    let mut session = AnalysisSession::from_world(
+    let mut session = from_world(
         world,
         Entry::new(address(0x101)),
         ExecutionConfig::default(),
     )
     .unwrap();
-    let before = session.analyze().unwrap();
+    let before = session.run(&Control::default()).unwrap();
     assert_eq!(
         before.analysis().world().account(address(0x101)),
         Some(&account)
@@ -678,7 +715,7 @@ fn ordinary_routes_share_layered_execution_and_preserve_abstract_world_bounds() 
             value: U256::from(1),
         },
     ] {
-        assert!(session.refine(&snapshot, [observation]).is_err());
+        assert!(session.refine(&snapshot, [observation], &Control::default()).is_err());
         assert_eq!(session.facts().revision(), revision);
     }
     session
@@ -694,10 +731,9 @@ fn ordinary_routes_share_layered_execution_and_preserve_abstract_world_bounds() 
                     slot: U256::ZERO,
                     value: U256::from(6),
                 },
-            ],
-        )
+            ], &Control::default())
         .unwrap();
-    let refined = session.analyze().unwrap();
+    let refined = session.run(&Control::default()).unwrap();
     assert!(
         returns(&refined)
             .iter()
@@ -713,13 +749,13 @@ fn ordinary_routes_share_layered_execution_and_preserve_abstract_world_bounds() 
 #[test]
 fn world_refinement_preserves_value_layers_and_rejects_both_bound_violations_atomically() {
     use crate::{
+
         domain::{NumericValue, identity::Symbol, provenance::Origin},
-        world::{Account, World},
     };
     let owner = address(0x101);
     let neighbor = address(0x202);
     let bounded = |lower, upper, symbol, origin| {
-        let mut value = AbstractValue::unsigned_range(U256::from(lower), U256::from(upper))
+        let mut value = TestValue::unsigned_range(U256::from(lower), U256::from(upper))
             .unwrap()
             .with_symbol(symbol, Some(1029));
         value.set_origin(origin);
@@ -742,7 +778,7 @@ fn world_refinement_preserves_value_layers_and_rejects_both_bound_violations_ato
     world.insert(owner, account.clone()).unwrap();
     world.insert(neighbor, Account::unknown()).unwrap();
     let mut session =
-        AnalysisSession::from_world(world.clone(), Entry::new(owner), ExecutionConfig::default())
+        from_world(world.clone(), Entry::new(owner), ExecutionConfig::default())
             .unwrap();
     assert_eq!(session.facts().balance(owner), Observed::Unobserved);
     assert_eq!(session.facts().nonce(owner), Observed::Unobserved);
@@ -750,7 +786,7 @@ fn world_refinement_preserves_value_layers_and_rejects_both_bound_violations_ato
         session.facts().storage(owner, U256::ZERO),
         Observed::Unobserved
     );
-    let before = session.analyze().unwrap();
+    let before = session.run(&Control::default()).unwrap();
     assert_eq!(before.analysis().world().accounts(), world.accounts());
     let snapshot = session.facts().snapshot().clone();
     let revision = session.facts().revision();
@@ -784,11 +820,11 @@ fn world_refinement_preserves_value_layers_and_rejects_both_bound_violations_ato
     ] {
         let key = observation.key();
         assert!(matches!(
-            session.refine(&snapshot, [observation]),
+            session.refine(&snapshot, [observation], &Control::default()),
             Err(SessionError::Facts(FactError::Conflict { key: rejected })) if rejected == key
         ));
         assert_eq!(session.facts().revision(), revision);
-        assert!(Arc::ptr_eq(&before, &session.analyze().unwrap()));
+        assert!(Arc::ptr_eq(&before, &session.run(&Control::default()).unwrap()));
     }
     let observations = [
         Observation::Balance {
@@ -811,11 +847,11 @@ fn world_refinement_preserves_value_layers_and_rejects_both_bound_violations_ato
         slot: U256::ZERO,
         value: U256::from(9),
     };
-    assert!(session.refine(&snapshot, invalid_batch).is_err());
+    assert!(session.refine(&snapshot, invalid_batch, &Control::default()).is_err());
     assert_eq!(session.facts().revision(), revision);
-    assert!(Arc::ptr_eq(&before, &session.analyze().unwrap()));
-    session.refine(&snapshot, observations).unwrap();
-    let after = session.analyze().unwrap();
+    assert!(Arc::ptr_eq(&before, &session.run(&Control::default()).unwrap()));
+    session.refine(&snapshot, observations, &Control::default()).unwrap();
+    let after = session.run(&Control::default()).unwrap();
     let projected = after.analysis().world();
     let mut expected = account.clone();
     expected.balance = expected
@@ -850,23 +886,23 @@ fn world_refinement_preserves_value_layers_and_rejects_both_bound_violations_ato
 fn completed_report_cache_observes_current_and_captured_cancellation() {
     use crate::analysis::{control::Control, progress::Observer};
     let mut current = session("00");
-    let report = current.analyze().unwrap();
+    let report = current.run(&Control::default()).unwrap();
     let control = Control::new(Observer::default());
     control.cancellation().cancel();
-    assert!(control.scope(|| current.analyze()).is_err());
-    assert!(current.analyze_with_control(&control).is_err());
+    assert!(current.run(&control).is_err());
+    assert!(current.run(&control).is_err());
     assert_eq!(report.analysis().status(), Status::Converged);
     let captured = Control::new(Observer::default());
-    let mut session = captured.scope(|| session("00"));
-    session.analyze().unwrap();
+    let mut session = session("00");
+    session.run(&captured).unwrap();
     captured.cancellation().cancel();
-    assert!(session.analyze().is_err());
+    assert!(session.run(&Control::default()).is_err());
 }
 
 #[test]
 fn offline_demands_inject_initial_values_after_runtime_write_and_preserve_rollback() {
     let mut session = session("60095f55600154505f5ffd");
-    let pending = session.analyze_with_demands().unwrap();
+    let pending = session.run_with_demands(&Control::default()).unwrap();
     assert!(pending.demand_driven());
     assert_eq!(pending.analysis().status(), Status::Incomplete);
     assert_eq!(
@@ -886,10 +922,9 @@ fn offline_demands_inject_initial_values_after_runtime_write_and_preserve_rollba
                 address: address(0x101),
                 slot: U256::from(1),
                 value: U256::from(3),
-            }],
-        )
+            }], &Control::default())
         .unwrap();
-    let refined = session.analyze_with_demands().unwrap();
+    let refined = session.run_with_demands(&Control::default()).unwrap();
     assert!(refined.demands().is_empty());
     assert_eq!(
         refined.analysis().status(),
@@ -908,14 +943,14 @@ fn offline_demands_inject_initial_values_after_runtime_write_and_preserve_rollba
         assert!(
             outcome
                 .store
-                .read(address(0x101), &word(0), Domain::default())
+                .read(address(0x101), &word(0), ProductAlgebra::default())
                 .singleton()
                 .is_none()
         );
         assert_eq!(
             outcome
                 .store
-                .read(address(0x101), &word(1), Domain::default())
+                .read(address(0x101), &word(1), ProductAlgebra::default())
                 .singleton(),
             Some(U256::from(3))
         );
@@ -927,7 +962,7 @@ fn offline_demands_inject_initial_values_after_runtime_write_and_preserve_rollba
 #[test]
 fn consecutive_injections_keep_the_executed_revision_and_cumulative_invalidation() {
     let mut session = session("60026003016008565b5f545f5260205ff3");
-    let original = session.analyze().unwrap();
+    let original = session.run(&Control::default()).unwrap();
     let snapshot = session.facts().snapshot().clone();
     let first = session
         .refine(
@@ -935,8 +970,7 @@ fn consecutive_injections_keep_the_executed_revision_and_cumulative_invalidation
             [Observation::Existence {
                 address: address(0x101),
                 exists: true,
-            }],
-        )
+            }], &Control::default())
         .unwrap();
     assert!(
         matches!(first, RefinementEffect::RestartRequired { ref affected_states, .. } if affected_states.contains(&0))
@@ -948,8 +982,7 @@ fn consecutive_injections_keep_the_executed_revision_and_cumulative_invalidation
                 address: address(0x202),
                 slot: U256::ZERO,
                 value: U256::ZERO,
-            }],
-        )
+            }], &Control::default())
         .unwrap();
     let RefinementEffect::RestartRequired {
         executed_revision,
@@ -992,7 +1025,7 @@ fn catalog_code_binding_keeps_delegatecall_storage_owner_independent() {
         )
         .unwrap()
         .into_facts();
-    let mut session = AnalysisSession::new(
+    let mut session = start(
         Arc::new(catalog),
         facts,
         caller,
@@ -1000,7 +1033,7 @@ fn catalog_code_binding_keeps_delegatecall_storage_owner_independent() {
         ExecutionConfig::default(),
     )
     .unwrap();
-    let report = session.analyze().unwrap();
+    let report = session.run(&Control::default()).unwrap();
     assert_eq!(
         report.analysis().status(),
         Status::Converged,
@@ -1045,8 +1078,8 @@ fn exact_initial_fact_does_not_bypass_static_write_failure() {
     let mut entry = Entry::new(address(0x101));
     entry.environment.is_static = true;
     let mut session =
-        AnalysisSession::new(catalog, facts, id, entry, ExecutionConfig::default()).unwrap();
-    let report = session.analyze().unwrap();
+        start(catalog, facts, id, entry, ExecutionConfig::default()).unwrap();
+    let report = session.run(&Control::default()).unwrap();
     assert_eq!(report.analysis().status(), Status::Converged);
     assert!(
         report
@@ -1059,7 +1092,7 @@ fn exact_initial_fact_does_not_bypass_static_write_failure() {
         assert_eq!(
             outcome
                 .store
-                .read(address(0x101), &word(0), Domain::default())
+                .read(address(0x101), &word(0), ProductAlgebra::default())
                 .singleton(),
             Some(U256::from(3))
         );

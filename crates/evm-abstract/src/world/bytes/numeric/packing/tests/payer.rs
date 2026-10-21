@@ -78,15 +78,22 @@ impl<D: EvmNumericAlgebra> EvmNumericAlgebra for Paid<D> {
     fn reduce_numeric(&self, value: &Self::Element) -> NumericReduction<Self::Element> {
         self.domain.reduce_numeric(value)
     }
-    fn apply_numeric(&self, op: u8, args: &[Self::Element]) -> NumericReduction<Self::Element> {
-        self.actions.borrow_mut().push(op);
-        self.domain.apply_numeric(op, args)
-    }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Self::Element>,
+    ) -> NumericReduction<Self::Element>
     where
         Self::Element: 'a,
     {
-        self.domain.operation_work(args)
+        self.actions.borrow_mut().push(op);
+        self.domain.apply_numeric(op, args)
+    }
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    where
+        Self::Element: 'a,
+    {
+        self.domain.operation_work(op, args)
     }
     fn projection_work(&self, value: &Self::Element) -> usize {
         self.domain.projection_work(value)
@@ -114,8 +121,10 @@ impl<D: EvmNumericAlgebra> EvmNumericAlgebra for Paid<D> {
     }
 }
 
-fn default_domain() -> Domain {
-    crate::world::bytes::numeric::numeric_domain(Domain::default())
+fn default_domain() -> TestAlgebra {
+    crate::world::test_support::numeric_product(crate::domain::ValueAlgebra::new(
+        crate::domain::ProductAlgebra::default(),
+    ))
 }
 
 fn context<D: EvmNumericAlgebra, T>(
@@ -170,11 +179,15 @@ fn numeric_receipts<D: EvmNumericAlgebra>(
 
 #[test]
 fn exact_pack_fee_and_receipt_minus_one_precede_the_hook_on_both_ledgers() {
-    let bytes = vec![AbstractValue::constant(U256::from(7)); 32];
+    let bytes = vec![TestValue::constant(U256::from(7)); 32];
     let expected = original(&bytes, default_domain());
     let query_fee = expected.singleton_work();
     for path in PATHS {
-        let policy = Paid::new(default_domain(), Some(FEE), Hook::Delegate);
+        let policy = Paid::new(
+            *default_domain().numeric_algebra(),
+            Some(FEE),
+            Hook::Delegate,
+        );
         let (_, full, exhausted) = context(path, usize::MAX, &policy, |context| {
             assert_eq!(
                 super::super::pack(&bytes, context.algebra(), context),
@@ -192,7 +205,11 @@ fn exact_pack_fee_and_receipt_minus_one_precede_the_hook_on_both_ledgers() {
             (full - 1, 1, vec![FEE], false),
             (full, 1, vec![FEE, query_fee], true),
         ] {
-            let policy = Paid::new(default_domain(), Some(FEE), Hook::Delegate);
+            let policy = Paid::new(
+                *default_domain().numeric_algebra(),
+                Some(FEE),
+                Hook::Delegate,
+            );
             let (_, used, exhausted) = context(path, available, &policy, |context| {
                 let clone = context.clone();
                 let before = context.demand_usage();
@@ -228,12 +245,12 @@ fn exact_pack_fee_and_receipt_minus_one_precede_the_hook_on_both_ledgers() {
 fn no_quote_declines_and_paid_failed_predicate_keeps_its_fee_before_balanced_fallback() {
     let state = ByteStateId::exact(Arc::from([7u8; 32]));
     let offset = ExprId::constant(U256::ZERO);
-    let bytes = vec![AbstractValue::constant(U256::from(7)); 32];
+    let bytes = vec![TestValue::constant(U256::from(7)); 32];
     let expected = original(&bytes, default_domain());
     for path in PATHS {
         let mut totals = Vec::new();
         for fee in [None, Some(FEE)] {
-            let policy = Paid::new(default_domain(), fee, Hook::Decline);
+            let policy = Paid::new(*default_domain().numeric_algebra(), fee, Hook::Decline);
             let (_, used, exhausted) = context(path, usize::MAX, &policy, |context| {
                 let mut reader = Reader::with_context(context.clone(), context.algebra());
                 assert_eq!(reader.word(&state, &offset), expected);
@@ -271,7 +288,11 @@ fn max_and_aggregate_overflow_quotes_refuse_without_hooks_fallback_or_publicatio
         // The second quote is finite, but exceeds even the prepaid ledger's
         // remainder after PRIOR by one. A saturating quote would duplicate MAX.
         for fee in [usize::MAX, usize::MAX - PRIOR + 1] {
-            let policy = Paid::new(default_domain(), Some(fee), Hook::Delegate);
+            let policy = Paid::new(
+                *default_domain().numeric_algebra(),
+                Some(fee),
+                Hook::Delegate,
+            );
             let (_, used, exhausted) = context(path, usize::MAX, &policy, |context| {
                 let domain = context.algebra();
                 assert_eq!(
@@ -295,7 +316,7 @@ fn max_and_aggregate_overflow_quotes_refuse_without_hooks_fallback_or_publicatio
                 let caches = reader.cache_stats();
                 assert_eq!(
                     reader.word(&state, &ExprId::constant(U256::ZERO)),
-                    AbstractValue::top()
+                    TestValue::top()
                 );
                 assert_eq!(reader.cache_stats(), caches);
                 assert_eq!(context.demand_usage(), before);
@@ -317,7 +338,7 @@ fn quote_and_hook_cancellation_leave_both_context_clones_stopped_without_publica
             (Hook::CancelPacking, Some(FEE)),
             (Hook::CancelDecline, Some(FEE)),
         ] {
-            let policy = Paid::new(default_domain(), fee, hook);
+            let policy = Paid::new(*default_domain().numeric_algebra(), fee, hook);
             let (_, _, exhausted) = context(path, usize::MAX, &policy, |context| {
                 let token = analysis_control::Cancellation::new();
                 let clone = context.clone();
@@ -376,11 +397,15 @@ fn quote_and_hook_cancellation_leave_both_context_clones_stopped_without_publica
 #[test]
 fn already_cancelled_pack_never_quotes_or_executes_on_either_ledger() {
     for path in PATHS {
-        let policy = Paid::new(default_domain(), Some(FEE), Hook::Delegate);
+        let policy = Paid::new(
+            *default_domain().numeric_algebra(),
+            Some(FEE),
+            Hook::Delegate,
+        );
         context(path, usize::MAX, &policy, |context| {
             let token = analysis_control::Cancellation::new();
             token.cancel();
-            let bytes = vec![AbstractValue::constant(U256::from(7)); 32];
+            let bytes = vec![TestValue::constant(U256::from(7)); 32];
             analysis_control::with_cancellation(&token, || {
                 assert!(super::super::pack(&bytes, context.algebra(), context).is_none());
             });
@@ -394,10 +419,14 @@ fn already_cancelled_pack_never_quotes_or_executes_on_either_ledger() {
 
 #[test]
 fn max_quote_cannot_authorize_a_hook_even_on_an_empty_prepaid_ledger() {
-    let policy = Paid::new(default_domain(), Some(usize::MAX), Hook::Delegate);
+    let policy = Paid::new(
+        *default_domain().numeric_algebra(),
+        Some(usize::MAX),
+        Hook::Delegate,
+    );
     let domain = ValueAlgebra::new(&policy);
     let facts = Facts::new();
-    let bytes = vec![AbstractValue::constant(U256::from(7)); 32];
+    let bytes = vec![TestValue::constant(U256::from(7)); 32];
     let mut budget = WorkBudget::new(usize::MAX);
     {
         let payer = BindingBudget::new(&mut budget);
@@ -413,12 +442,16 @@ fn max_quote_cannot_authorize_a_hook_even_on_an_empty_prepaid_ledger() {
 
 #[test]
 fn prepared_payment_cancellation_retains_receipt_and_never_enters_pack_or_fallback() {
-    let policy = Paid::new(default_domain(), Some(FEE), Hook::Delegate);
+    let policy = Paid::new(
+        *default_domain().numeric_algebra(),
+        Some(FEE),
+        Hook::Delegate,
+    );
     context(Path::Prepared, usize::MAX, &policy, |context| {
         let token = analysis_control::Cancellation::new();
         context.cancel_after_numeric_payments(1, token.clone());
         analysis_control::with_cancellation(&token, || {
-            let bytes = vec![AbstractValue::constant(U256::from(7)); 32];
+            let bytes = vec![TestValue::constant(U256::from(7)); 32];
             assert!(super::super::pack(&bytes, context.algebra(), context).is_none());
         });
         assert_eq!(context.check(), Err(ExprError::Cancelled));

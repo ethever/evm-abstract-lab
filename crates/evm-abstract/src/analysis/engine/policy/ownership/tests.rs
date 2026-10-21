@@ -1,19 +1,20 @@
 //! Default identity routing moves complete inputs; refusals retain them.
 
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{
         engine::policy::{MachinePartition, PolicyContext, PolicySite, StructuralPartition},
         machine::{MachineError, fixtures},
         transfer,
     },
-    domain::{Domain, ValueAlgebra},
+    domain::{ProductAlgebra, ValueAlgebra},
     resource::WorkBudget,
 };
 
 #[test]
 fn default_owned_preparation_moves_payload_and_preserves_it_on_refusal() {
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
-    let algebra = ValueAlgebra::new(Domain::default());
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let mut input = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
     input.active_mut().stack = vec![fixtures::word(17)];
     let pointer = input.active().stack.as_ptr();

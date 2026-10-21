@@ -1,6 +1,8 @@
 use super::{fixtures, support::*};
+use crate::native;
 use alloy_primitives::U256;
-use evm_abstract::{analysis::FrameCode, world::ByteArray};
+use evm_abstract::domain::NumericValue;
+use evm_abstract::{analysis::FrameCode, world::EvmByteArray};
 use revm_bytecode::opcode;
 
 #[test]
@@ -8,7 +10,7 @@ fn unknown_callee_can_succeed_and_continue_parent_without_direct_storage_havoc()
     let code = fixtures::preserved_parent(opcode::CALL, false);
     let mut world = new_world();
     insert(&mut world, A, &code, &[]);
-    let analysis = run(world, entry(ByteArray::empty()));
+    let analysis = run(world, entry(EvmByteArray::<NumericValue>::empty()));
     complete_unknown(&analysis);
     let returns = returns(&analysis);
     assert!(
@@ -110,7 +112,7 @@ fn unknown_can_call_nonparent_c_and_new_reads_do_not_refresh_old_stack_value() {
     insert(&mut world, C, &c, &[(0, 5), (1, 1)]);
     let analysis = run_config(
         world,
-        entry(ByteArray::empty()),
+        entry(EvmByteArray::<NumericValue>::empty()),
         evm_abstract::analysis::ExecutionConfig {
             root_terminal_coverage: false,
             ..callback_closure_config()
@@ -129,8 +131,9 @@ fn unknown_can_call_nonparent_c_and_new_reads_do_not_refresh_old_stack_value() {
         only(&output_word(outcome, 32), &[5, 9]);
         only(&read(&outcome.store, C, 1), &[1]);
     }
-    let ir = evm_abstract::ssa::build_partial_world(&analysis).unwrap();
-    ir.verify(&analysis).unwrap();
+    let ir =
+        evm_abstract::ssa::build_partial_world(&analysis, &mut native::postprocessing()).unwrap();
+    ir.verify(&analysis, &mut native::postprocessing()).unwrap();
 }
 
 #[test]
@@ -140,7 +143,11 @@ fn actual_c_entry_guard_prevents_unknown_interaction_from_writing_nine() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[(0, 5), (1, 0)]);
-    let analysis = run_config(world, entry(ByteArray::empty()), callback_closure_config());
+    let analysis = run_config(
+        world,
+        entry(EvmByteArray::<NumericValue>::empty()),
+        callback_closure_config(),
+    );
     complete_unknown(&analysis);
     for outcome in returns(&analysis) {
         only(&output_word(outcome, 0), &[5]);
@@ -161,6 +168,6 @@ fn guarded_cell_callbacks_keep_default_ledger_root_coverage() {
             &fixtures::external_cell(),
             &[(0, 5), (1, enabled)],
         );
-        default_callback_coverage(world, entry(ByteArray::empty()));
+        default_callback_coverage(world, entry(EvmByteArray::<NumericValue>::empty()));
     }
 }

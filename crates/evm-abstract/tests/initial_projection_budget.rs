@@ -1,24 +1,29 @@
 //! 初始化的完整候选投影必须先经过同一工作预算。
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{Config, ExecutionConfig, FrontierReason, Status, analyze_world},
+    analysis::{ExecutionConfig, FrontierReason, Status},
     domain::{
-        AbstractValue, Domain, DomainSpec, Profile,
+        DomainSpec, EvmValue,
         facts::{UnaryPredicate, WordBounds},
     },
     render,
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use std::num::NonZeroUsize;
 
-fn open_range(unknown_bits: usize) -> AbstractValue {
+fn open_range(unknown_bits: usize) -> EvmValue<NumericValue> {
     open_interval(U256::ZERO, (U256::from(1) << unknown_bits) - U256::from(1))
 }
 
-fn open_interval(lower: U256, upper: U256) -> AbstractValue {
-    let domain = Domain::from_spec(DomainSpec::new(
-        Profile::Product,
+fn open_interval(lower: U256, upper: U256) -> EvmValue<NumericValue> {
+    let domain = native::product_with(DomainSpec::new(
         NonZeroUsize::new(1).unwrap(),
         NonZeroUsize::new(4).unwrap(),
         NonZeroUsize::new(256).unwrap(),
@@ -32,39 +37,37 @@ fn open_interval(lower: U256, upper: U256) -> AbstractValue {
     value
 }
 
-fn fixture() -> (World, Entry) {
+fn fixture() -> (EvmWorld<NumericValue>, EvmEntry<NumericValue>) {
     let address = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "initial projection budget");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "initial projection budget");
     world
-        .insert(address, Account::from_hex("00", world.fork()).unwrap())
+        .insert(
+            address,
+            EvmAccount::<NumericValue>::from_hex("00", world.fork()).unwrap(),
+        )
         .unwrap();
-    let entry = Entry {
+    let entry = EvmEntry {
         address,
-        environment: evm_abstract::world::EvmEnvironment {
+        environment: evm_abstract::world::EvmEnvironmentValues {
             to: (address).into(),
             caller: (Address::ZERO).into(),
-            value: AbstractValue::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
+            value: EvmValue::<NumericValue>::constant(U256::ZERO),
+            calldata: EvmByteArray::<NumericValue>::empty(),
             is_static: false,
-            ..evm_abstract::world::EvmEnvironment::default()
+            ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
         },
     };
     (world, entry)
 }
 
-fn constants_config(capacity: usize, max_work: usize) -> ExecutionConfig {
+fn execution_policy(max_work: usize) -> ExecutionConfig {
     ExecutionConfig {
-        analysis: Config {
-            domain_profile: Profile::ConstantsOnly,
-            max_constants: capacity,
-            ..Config::default()
-        },
         max_work,
         ..ExecutionConfig::default()
     }
 }
 
-fn assert_initial_work_frontier(graph: &evm_abstract::analysis::WorldAnalysis) {
+fn assert_initial_work_frontier(graph: &evm_abstract::analysis::EvmWorldAnalysis<NumericValue>) {
     assert_eq!(graph.status(), Status::Incomplete);
     assert!(graph.states().is_empty());
     assert!(graph.outcomes().is_empty());
@@ -85,12 +88,17 @@ fn initial_projection_precharge_covers_open_entry_and_storage_values() {
             let mut account = world.account(entry.address).unwrap().clone();
             account
                 .storage
-                .insert(U256::ZERO, AbstractValue::constant(U256::ZERO));
-            world = World::new(Fork::Osaka, "storage projection baseline");
+                .insert(U256::ZERO, EvmValue::<NumericValue>::constant(U256::ZERO));
+            world = EvmWorld::<NumericValue>::new(Fork::Osaka, "storage projection baseline");
             world.insert(entry.address, account).unwrap();
         }
-        let baseline =
-            analyze_world(world.clone(), entry.clone(), constants_config(512, 100_000)).unwrap();
+        let baseline = native::run(
+            &native::product_with(native::spec(512, 4, 256)),
+            AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+            execution_policy(100_000),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(
             baseline.status(),
             Status::Converged,
@@ -101,12 +109,18 @@ fn initial_projection_precharge_covers_open_entry_and_storage_values() {
         if storage {
             let mut account = world.account(entry.address).unwrap().clone();
             account.storage.insert(U256::ZERO, value);
-            world = World::new(Fork::Osaka, "open storage projection budget");
+            world = EvmWorld::<NumericValue>::new(Fork::Osaka, "open storage projection budget");
             world.insert(entry.address, account).unwrap();
         } else {
             entry.environment.value = value;
         }
-        let graph = analyze_world(world, entry, constants_config(512, 100_000)).unwrap();
+        let graph = native::run(
+            &native::product_with(native::spec(512, 4, 256)),
+            AnalysisInput::new(world, entry).unwrap(),
+            execution_policy(100_000),
+            &Control::default(),
+        )
+        .unwrap();
         assert_initial_work_frontier(&graph);
     }
 }
@@ -114,24 +128,40 @@ fn initial_projection_precharge_covers_open_entry_and_storage_values() {
 #[test]
 fn initial_projection_precharge_covers_unknown_calldata_bytes() {
     let (world, mut entry) = fixture();
-    let baseline =
-        analyze_world(world.clone(), entry.clone(), constants_config(256, 100_000)).unwrap();
+    let baseline = native::run(
+        &native::product_with(native::spec(256, 4, 256)),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        execution_policy(100_000),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(
         baseline.status(),
         Status::Converged,
         "{:?}",
         baseline.frontiers()
     );
-    entry.environment.calldata = ByteArray::unknown();
-    let graph = analyze_world(world, entry, constants_config(256, 100_000)).unwrap();
+    entry.environment.calldata = EvmByteArray::<NumericValue>::unknown();
+    let graph = native::run(
+        &native::product_with(native::spec(256, 4, 256)),
+        AnalysisInput::new(world, entry).unwrap(),
+        execution_policy(100_000),
+        &Control::default(),
+    )
+    .unwrap();
     assert_initial_work_frontier(&graph);
 }
 
 #[test]
 fn initial_projection_precharge_covers_interval_enumeration() {
     let (world, mut entry) = fixture();
-    let baseline =
-        analyze_world(world.clone(), entry.clone(), constants_config(512, 100_000)).unwrap();
+    let baseline = native::run(
+        &native::product_with(native::spec(512, 4, 256)),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        execution_policy(100_000),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(
         baseline.status(),
         Status::Converged,
@@ -143,10 +173,21 @@ fn initial_projection_precharge_covers_interval_enumeration() {
     entry.environment.value = open_interval(lower, upper);
     let bits = entry.environment.value.known_bits();
     assert!((!(bits.zero() | bits.one())).count_ones() >= usize::BITS as usize);
-    let graph =
-        analyze_world(world.clone(), entry.clone(), constants_config(512, 100_000)).unwrap();
+    let graph = native::run(
+        &native::product_with(native::spec(512, 4, 256)),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        execution_policy(100_000),
+        &Control::default(),
+    )
+    .unwrap();
     assert_initial_work_frontier(&graph);
-    let graph = analyze_world(world, entry, constants_config(512, 1_000_000)).unwrap();
+    let graph = native::run(
+        &native::product_with(native::spec(512, 4, 256)),
+        AnalysisInput::new(world, entry).unwrap(),
+        execution_policy(1_000_000),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
     let candidates = graph.states()[0]
         .entry
@@ -168,18 +209,28 @@ fn maximum_capacity_open_projection_stops_even_with_maximum_work() {
             if storage {
                 let mut account = world.account(entry.address).unwrap().clone();
                 account.storage.insert(U256::ZERO, value);
-                world = World::new(Fork::Osaka, "maximum storage projection budget");
+                world =
+                    EvmWorld::<NumericValue>::new(Fork::Osaka, "maximum storage projection budget");
                 world.insert(entry.address, account).unwrap();
             } else {
                 entry.environment.value = value;
             }
-            let graph =
-                analyze_world(world, entry, constants_config(usize::MAX, max_work)).unwrap();
+            let graph = native::run(
+                &native::product_with(native::spec(usize::MAX, 4, 256)),
+                AnalysisInput::new(world, entry).unwrap(),
+                execution_policy(max_work),
+                &Control::default(),
+            )
+            .unwrap();
             assert_initial_work_frontier(&graph);
             assert!(
-                render::world::explain(&graph)
-                    .unwrap()
-                    .contains("SSA unavailable")
+                render::world::explain(
+                    &graph,
+                    &native::product_with(graph.domain_spec()),
+                    &mut native::postprocessing()
+                )
+                .unwrap()
+                .contains("SSA unavailable")
             );
         }
     }
@@ -187,14 +238,20 @@ fn maximum_capacity_open_projection_stops_even_with_maximum_work() {
 
 #[test]
 fn maximum_capacity_top_and_small_finite_projection_remain_complete() {
-    let finite = Domain::new(NonZeroUsize::new(3).unwrap()).join(
-        &AbstractValue::constant(U256::ZERO),
-        &AbstractValue::constant(U256::from(2)),
+    let finite = native::product_with(native::spec(3, 4, 256)).join(
+        &EvmValue::<NumericValue>::constant(U256::ZERO),
+        &EvmValue::<NumericValue>::constant(U256::from(2)),
     );
-    for value in [AbstractValue::top(), finite] {
+    for value in [EvmValue::<NumericValue>::top(), finite] {
         let (world, mut entry) = fixture();
         entry.environment.value = value;
-        let graph = analyze_world(world, entry, constants_config(usize::MAX, 100_000)).unwrap();
+        let graph = native::run(
+            &native::product_with(native::spec(usize::MAX, 4, 256)),
+            AnalysisInput::new(world, entry).unwrap(),
+            execution_policy(100_000),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         assert!(!graph.states().is_empty());
     }
@@ -205,7 +262,13 @@ fn open_projection_keeps_every_candidate_when_work_fits() {
     for capacity in [512, usize::MAX] {
         let (world, mut entry) = fixture();
         entry.environment.value = open_range(9);
-        let graph = analyze_world(world, entry, constants_config(capacity, 1_000_000)).unwrap();
+        let graph = native::run(
+            &native::product_with(native::spec(capacity, 4, 256)),
+            AnalysisInput::new(world, entry).unwrap(),
+            execution_policy(1_000_000),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         let candidates = graph.states()[0]
             .entry

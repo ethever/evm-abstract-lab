@@ -1,19 +1,25 @@
 //! Retained hash guards preserve branches; optional scalar loss stays diagnostic.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+
+#[path = "support/native.rs"]
+mod native;
 
 use alloy_primitives::Address;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
     analysis::{
-        self, DiagnosticKind, EdgeKind, ExecutionConfig, FrontierReason, InstructionProgress,
+        DiagnosticKind, EdgeKind, ExecutionConfig, FrontierReason, InstructionProgress,
         MachineEdgeKind, OutcomeKind, Status,
     },
     domain::{
-        AbstractValue,
+        EvmValue,
         relational::{Constraint, QueryReason},
         symbolic::ExprKind,
     },
     ssa::{self, SsaError},
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use revm_bytecode::opcode;
 
@@ -22,19 +28,30 @@ mod work_boundary;
 
 #[test]
 fn copied_unknown_hash_branch_covers_both_retained_alternatives() {
+    let mut numeric_limits = native::product().spec().relations();
+
     let address = Address::repeat_byte(0x11);
-    let mut world = World::offline(Fork::Osaka, "guard-limit", "unknown calldata");
+    let mut world =
+        EvmWorld::<NumericValue>::offline(Fork::Osaka, "guard-limit", "unknown calldata");
     // Copy 64 unknown calldata bytes, hash them and branch on the hash.
     // Both edges terminate normally; no concrete caller/content is supplied.
-    let account = Account::from_hex("60405f5f3760405f20600d57005b00", Fork::Osaka).unwrap();
+    let account =
+        EvmAccount::<NumericValue>::from_hex("60405f5f3760405f20600d57005b00", Fork::Osaka)
+            .unwrap();
     world.insert(address, account).unwrap();
-    let mut config = ExecutionConfig {
+    let config = ExecutionConfig {
         max_work: 1_000_000_000,
         max_memory_bytes: 64,
         ..ExecutionConfig::default()
     };
-    config.analysis.relations.max_nodes = 64;
-    let result = analysis::analyze_world(world, Entry::new(address), config).unwrap();
+    numeric_limits.max_nodes = 64;
+    let result = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world, EvmEntry::<NumericValue>::new(address)).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(result.status(), Status::Converged);
     assert!(result.frontiers().is_empty());
     assert_eq!(
@@ -81,18 +98,20 @@ fn copied_unknown_hash_branch_covers_both_retained_alternatives() {
 
 #[test]
 fn optional_expression_refusal_preserves_completion_and_a_typed_work_frontier() {
+    let mut numeric_limits = native::product().spec().relations();
+
     let address = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "optional-expression-limit");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "optional-expression-limit");
     world
         .insert(
             address,
-            Account::from_hex("3460010100", Fork::Osaka).unwrap(),
+            EvmAccount::<NumericValue>::from_hex("3460010100", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    let mut entry = Entry::new(address);
+    let mut entry = EvmEntry::<NumericValue>::new(address);
     entry.environment.caller = Address::repeat_byte(0x90).into();
-    entry.environment.value = AbstractValue::top();
-    entry.environment.calldata = ByteArray::empty();
+    entry.environment.value = EvmValue::<NumericValue>::top();
+    entry.environment.calldata = EvmByteArray::<NumericValue>::empty();
     let mut config = ExecutionConfig {
         // Keep optional preparation out of the semantic STOP boundary.
         root_terminal_coverage: false,
@@ -100,9 +119,15 @@ fn optional_expression_refusal_preserves_completion_and_a_typed_work_frontier() 
         ..ExecutionConfig::default()
     };
     config.analysis.context_depth = 0;
-    config.analysis.relations.max_nodes = 2;
+    numeric_limits.max_nodes = 2;
     // The input roots fit; CALLVALUE + 1 exceeds only optional scalar retention.
-    let complete = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let complete = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(complete.status(), Status::Converged);
     assert!(complete.frontiers().is_empty());
     assert!(
@@ -121,15 +146,26 @@ fn optional_expression_refusal_preserves_completion_and_a_typed_work_frontier() 
     // have returned. This search observes the semantic phase, not its tariff.
     let minimum = work_boundary::first_work_reaching(config.max_work, |allowance| {
         config.max_work = allowance;
-        let candidate =
-            analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+        let candidate = native::run(
+            &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+            AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+            config.clone(),
+            &Control::default(),
+        )
+        .unwrap();
         candidate
             .outcomes()
             .iter()
             .any(|outcome| outcome.kind == OutcomeKind::Return)
     });
     config.max_work = minimum;
-    let returned = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let returned = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+        &Control::default(),
+    )
+    .unwrap();
     assert!(
         returned
             .outcomes()
@@ -140,7 +176,13 @@ fn optional_expression_refusal_preserves_completion_and_a_typed_work_frontier() 
     // optional precision diagnostic and the original partial-SSA assertions.
     config.max_work = minimum.checked_sub(1).unwrap();
     let work_limit = config.max_work;
-    let refused = analysis::analyze_world(world, entry, config).unwrap();
+    let refused = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(refused.status(), Status::Incomplete);
     assert!(refused.work() <= work_limit);
     let [frontier] = refused.frontiers() else {
@@ -176,7 +218,7 @@ fn optional_expression_refusal_preserves_completion_and_a_typed_work_frontier() 
         assert_eq!(values.len(), 3);
         assert_eq!(values[2].instruction_index(), 2);
         assert!(values[2].numeric().is_top());
-        let ir = ssa::build_partial_world(result).unwrap();
+        let ir = ssa::build_partial_world(result, &mut native::postprocessing()).unwrap();
         let block = &ir.blocks()[0];
         let addition = block
             .instructions
@@ -196,6 +238,6 @@ fn optional_expression_refusal_preserves_completion_and_a_typed_work_frontier() 
         assert!(stop.effect_result.is_some());
         assert_eq!(block.exit_effect, stop.effect_result.unwrap());
         assert_eq!(ir.frontiers().len(), result.frontiers().len());
-        ir.verify(result).unwrap();
+        ir.verify(result, &mut native::postprocessing()).unwrap();
     }
 }

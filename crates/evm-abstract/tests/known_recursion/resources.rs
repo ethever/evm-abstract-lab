@@ -1,7 +1,8 @@
 use super::{fixtures, oracle, support::*};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     analysis::{ExecutionConfig, FrontierReason, Status},
-    world::ByteArray,
+    world::EvmByteArray,
 };
 
 #[test]
@@ -12,7 +13,7 @@ fn nonrecursive_known_calls_preserve_exact_precision_with_cache_on_and_off() {
     for use_summaries in [true, false] {
         let analysis = run_config(
             world.clone(),
-            entry(ByteArray::empty()),
+            entry(EvmByteArray::<NumericValue>::empty()),
             ExecutionConfig {
                 use_summaries,
                 ..ExecutionConfig::default()
@@ -23,7 +24,7 @@ fn nonrecursive_known_calls_preserve_exact_precision_with_cache_on_and_off() {
         for outcome in returns(&analysis) {
             only(&output_word(outcome, 0), &[9]);
         }
-        oracle::execute(&world, &entry(ByteArray::empty())).covers(&analysis);
+        oracle::execute(&world, &entry(EvmByteArray::<NumericValue>::empty())).covers(&analysis);
     }
 }
 
@@ -34,7 +35,7 @@ fn analysis_depth_before_the_first_child_is_a_real_typed_frontier() {
     insert(&mut world, B, &fixtures::leaf(), &[(0, 9)]);
     let analysis = run_config(
         world,
-        entry(ByteArray::empty()),
+        entry(EvmByteArray::<NumericValue>::empty()),
         ExecutionConfig {
             max_call_depth: 1,
             ..ExecutionConfig::default()
@@ -65,7 +66,7 @@ fn configured_analysis_depth_limits_a_nonrepeating_known_chain() {
     insert(&mut world, A + 9, &fixtures::leaf(), &[(0, 42)]);
     let analysis = run_config(
         world,
-        entry(ByteArray::empty()),
+        entry(EvmByteArray::<NumericValue>::empty()),
         ExecutionConfig {
             max_call_depth: 8,
             ..ExecutionConfig::default()

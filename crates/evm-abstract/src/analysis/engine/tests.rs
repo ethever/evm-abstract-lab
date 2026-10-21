@@ -1,6 +1,10 @@
 //! Cancellation and real exhaustion retain every queued input with its cause.
 
-use super::{Cache, Counters, Engine, SummaryAttempt, run_world};
+#[cfg(test)]
+use crate::domain::ProductAlgebra;
+
+use super::{Cache, Counters, Engine, SummaryAttempt};
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{FrontierReason, Status, WorldAnalysis, machine::fixtures, summary::Certificate},
     domain::relational::QueryReason,
@@ -19,11 +23,11 @@ mod replay_evidence;
 fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {
     let caller = "5f355f5260005f5f5f5f6102006207a120f15060205f5f5f5f6102006207a120f11560295760205ff35b5f5ffd";
     let (empty, mut entry) = fixtures::fixture(&[]);
-    entry.environment.calldata = crate::world::ByteArray::unknown();
-    let mut world = crate::world::World::new(empty.fork(), "call result partition regression");
-    let domain = crate::domain::Domain::default();
+    entry.environment.calldata = crate::analysis::testing::ByteArray::unknown();
+    let mut world = crate::analysis::testing::World::new(empty.fork(), "call result partition regression");
+    let domain = crate::domain::ProductAlgebra::default();
     for (address, code) in [(0x101, caller), (0x200, "5f545f5260205ff3")] {
-        let mut account = crate::world::Account::from_hex(code, world.fork()).unwrap();
+        let mut account = crate::analysis::testing::Account::from_hex(code, world.fork()).unwrap();
         account.balance = fixtures::word(1_000_000);
         account.storage.insert(
             alloy_primitives::U256::ZERO,
@@ -32,13 +36,14 @@ fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {
         world.insert(fixtures::address(address), account).unwrap();
     }
     for use_summaries in [true, false] {
-        let analysis = crate::analysis::analyze_world(
+        let analysis = crate::analysis::testing::execute(
             world.clone(),
             entry.clone(),
             crate::analysis::ExecutionConfig {
                 use_summaries,
                 ..Default::default()
             },
+            crate::domain::DomainSpec::default(),
         )
         .unwrap();
         assert_eq!(
@@ -82,7 +87,13 @@ fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {
 fn interrupted_fixture() -> (WorldAnalysis, usize) {
     let (world, entry) =
         fixtures::fixture(&[(0x101, "60205f5f5f6102006207a120fa5000"), (0x200, "00")]);
-    let mut result = run_world(world, entry, fixtures::config()).unwrap();
+    let mut result = crate::analysis::testing::execute(
+        world,
+        entry,
+        fixtures::config(),
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    )
+    .unwrap();
     assert_eq!(result.status(), Status::Converged);
     let child = result
         .states
@@ -99,7 +110,7 @@ fn engine<'a>(
     child: usize,
     budget: &'a mut WorkBudget,
     counters: &'a mut Counters,
-    domain: &'a crate::domain::ValueAlgebra<crate::domain::Domain>,
+    domain: &'a crate::domain::ValueAlgebra<crate::domain::ProductAlgebra>,
     policies: &'a super::EnginePolicies,
 ) -> Engine<'a> {
     let mut setup = WorkBudget::new(usize::MAX);
@@ -200,7 +211,8 @@ fn cancelled_summary_and_replay_preserve_the_cause_for_every_queued_input() {
         analysis_control::with_cancellation(&token, || {
             let mut budget = WorkBudget::new(100_000_000);
             let mut counters = Counters::default();
-            let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+            let numeric_policy =
+                crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
             let precision_policies: super::EnginePolicies = Default::default();
 
@@ -257,7 +269,8 @@ fn actual_summary_registration_exhaustion_remains_summary_work() {
     let input = cache.input(&result, child, &mut measure).unwrap().unwrap();
     let mut budget = WorkBudget::new(measure.used() + input.work_size() - 1);
     let mut counters = Counters::default();
-    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+    let numeric_policy =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
     let precision_policies: super::EnginePolicies = Default::default();
 
@@ -285,7 +298,13 @@ fn initial_lift_distinguishes_cancellation_from_real_work_exhaustion() {
     let token = analysis_control::Cancellation::new();
     token.cancel();
     let cancelled = analysis_control::with_cancellation(&token, || {
-        run_world(world.clone(), entry.clone(), fixtures::config()).unwrap()
+        crate::analysis::testing::execute(
+            world.clone(),
+            entry.clone(),
+            fixtures::config(),
+            crate::analysis::testing::NumericLimits::machine().spec(),
+        )
+        .unwrap()
     });
     assert_eq!(cancelled.status(), Status::Incomplete);
     assert_eq!(
@@ -294,7 +313,13 @@ fn initial_lift_distinguishes_cancellation_from_real_work_exhaustion() {
     );
     let mut config = fixtures::config();
     config.max_work = 1;
-    let exhausted = run_world(world, entry, config).unwrap();
+    let exhausted = crate::analysis::testing::execute(
+        world,
+        entry,
+        config,
+        crate::domain::DomainSpec::default(),
+    )
+    .unwrap();
     assert_eq!(exhausted.status(), Status::Incomplete);
     assert_eq!(exhausted.frontiers[0].reason, FrontierReason::Work);
 }
@@ -305,7 +330,8 @@ fn pending_frames_prefer_deeper_calls_and_keep_fifo_within_a_depth() {
     let shallow: Vec<_> = (0..result.states.len()).filter(|id| *id != child).collect();
     let mut budget = WorkBudget::new(100_000_000);
     let mut counters = Counters::default();
-    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+    let numeric_policy =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
     let precision_policies: super::EnginePolicies = Default::default();
 
@@ -334,7 +360,8 @@ fn interrupted_queue_scan_retains_every_input_and_its_exact_cause() {
         analysis_control::with_cancellation(&token, || {
             let mut budget = WorkBudget::new(if cancelled { 100_000_000 } else { 0 });
             let mut counters = Counters::default();
-            let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+            let numeric_policy =
+                crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
             let precision_policies: super::EnginePolicies = Default::default();
 
@@ -450,7 +477,7 @@ impl Engine<'_> {
 #[test]
 fn popped_input_work_refusal_keeps_its_own_frontier() {
     let (result, child) = interrupted_fixture();
-    let policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+    let policy = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
     let policies: super::EnginePolicies = Default::default();
     let mut budget = WorkBudget::new(100_000_000);
     let mut counters = Counters::default();
@@ -479,7 +506,7 @@ fn popped_input_work_refusal_keeps_its_own_frontier() {
 #[test]
 fn covered_successors_preserve_admission_history_and_execution_receipts() {
     let (result, child) = interrupted_fixture();
-    let policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+    let policy = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
     let policies: super::EnginePolicies = Default::default();
     let mut budget = WorkBudget::new(100_000_000);
     let mut counters = Counters::default();

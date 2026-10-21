@@ -1,5 +1,9 @@
 //! A more precise BYTE policy must keep its per-index facts and paid work.
 
+#[cfg(test)]
+use crate::analysis::testing::ByteArray;
+use crate::domain::EvmNumericAlgebra as _;
+
 use super::{OperationQuote, operation_work_budgeted, quotation_work};
 use crate::{
     Fork,
@@ -9,11 +13,11 @@ use crate::{
     },
     bytecode::Program,
     domain::{
-        Domain, DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue,
+        DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue, ProductAlgebra,
         SingletonProof, ValueAlgebra, symbolic::ExprId,
     },
     resource::WorkBudget,
-    world::{ByteArray, EvmAccount, EvmEntry, EvmWorld},
+    world::{EvmAccount, EvmEntry, EvmWorld},
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -30,7 +34,7 @@ fn writer_work(quote: OperationQuote<'_>) -> usize {
 
 #[derive(Debug, Default)]
 struct BytePolicy<const PRECISE: bool> {
-    default: Domain,
+    default: ProductAlgebra,
     applies: Cell<usize>,
     quoted_indices: Cell<u32>,
     cancel_on_byte: bool,
@@ -57,7 +61,12 @@ impl<const PRECISE: bool> EvmNumericAlgebra for BytePolicy<PRECISE> {
     fn reduce_numeric(&self, value: &NumericValue) -> NumericReduction<NumericValue> {
         self.default.reduce_numeric(value)
     }
-    fn apply_numeric(&self, op: u8, args: &[NumericValue]) -> NumericReduction<NumericValue> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a NumericValue>,
+    ) -> NumericReduction<NumericValue> {
+        let args: Vec<&NumericValue> = args.collect();
         if op == opcode::BYTE && args.len() == 2 {
             self.applies.set(self.applies.get() + 1);
             if self.cancel_on_byte {
@@ -80,12 +89,9 @@ impl<const PRECISE: bool> EvmNumericAlgebra for BytePolicy<PRECISE> {
                 }
             }
         }
-        self.default.apply_numeric(op, args)
+        self.default.apply_numeric(op, args.into_iter())
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a NumericValue>) -> usize {
-        EvmNumericAlgebra::operation_work(&self.default, args).saturating_add(EXTRA_WORK)
-    }
-    fn operation_work_for<'a>(
+    fn operation_work<'a>(
         &self,
         op: u8,
         mut args: impl Iterator<Item = &'a NumericValue>,
@@ -100,7 +106,8 @@ impl<const PRECISE: bool> EvmNumericAlgebra for BytePolicy<PRECISE> {
             self.quoted_indices
                 .set(self.quoted_indices.get() | (1 << index));
         }
-        self.operation_work(first.into_iter().chain(args))
+        EvmNumericAlgebra::operation_work(&self.default, op, first.into_iter().chain(args))
+            .saturating_add(EXTRA_WORK)
     }
     fn literal_quote_work(&self, literal: U256) -> usize {
         self.default.literal_quote_work(literal)
@@ -203,7 +210,7 @@ fn precise_byte_write_preserves_concrete_witnesses_and_native_serialized_facts()
     let value = input();
     let offset = EvmValue::constant(U256::ZERO);
     let mut memory = ByteArray::memory();
-    memory.write_word_with(&offset, &value, 96, domain).unwrap();
+    memory.write_word(&offset, &value, domain).unwrap();
     let json = serde_json::to_value(&memory).unwrap();
     assert_witnesses(&memory);
     assert_eq!(json["bytes"]["30"]["Constants"], serde_json::json!(["0x1"]));
@@ -215,8 +222,8 @@ fn precise_byte_write_preserves_concrete_witnesses_and_native_serialized_facts()
         .unwrap()
         .1;
     assert_eq!(stored.singleton(), Some(U256::ONE));
-    assert_eq!(memory.byte_at_with(30, domain).singleton(), Some(U256::ONE));
-    let default = ValueAlgebra::new(Domain::default());
+    assert_eq!(memory.byte_at(30, domain).singleton(), Some(U256::ONE));
+    let default = ValueAlgebra::new(ProductAlgebra::default());
     let ordinary = default.apply(opcode::BYTE, &[EvmValue::constant(U256::from(30)), value]);
     assert!(ordinary.contains(U256::ONE));
     assert!(
@@ -244,7 +251,7 @@ fn precise_first_mstore_quotes_real_indices_and_reserves_each_phase_once() {
             .payload
             .active()
             .memory
-            .uniform_word_write_work_with(&args[0], &args[1], domain)
+            .uniform_word_write_work(&args[0], &args[1], domain)
             .is_none()
     );
     let quote = |budget: &mut WorkBudget| {
@@ -282,13 +289,13 @@ fn precise_first_mstore_quotes_real_indices_and_reserves_each_phase_once() {
     // reuse at zero remaining work, then run the already-paid scalar path.
     assert!(
         memory
-            .write_word_budgeted_with(&args[0], &args[1], 96, domain, &mut full)
+            .write_word_budgeted(&args[0], &args[1], domain, &mut full)
             .unwrap()
     );
     assert_eq!(full.used(), prepare + work);
     assert!(!full.exhausted());
     assert_eq!(algebra.numeric_algebra().applies.get(), 32);
-    assert_eq!(memory.byte_at_with(30, domain).singleton(), Some(U256::ONE));
+    assert_eq!(memory.byte_at(30, domain).singleton(), Some(U256::ONE));
 }
 
 fn assert_cancelled_write<const PRECISE: bool>() {
@@ -326,7 +333,7 @@ fn assert_cancelled_write<const PRECISE: bool>() {
     analysis_control::with_cancellation(&token, || {
         let mut budget = WorkBudget::new(total);
         assert!(budget.charge(total));
-        let result = memory.write_word_budgeted_with(&offset, &value, 96, domain, &mut budget);
+        let result = memory.write_word_budgeted(&offset, &value, domain, &mut budget);
         assert_eq!(
             result,
             Err(crate::world::RangeError::Expression(
@@ -358,7 +365,7 @@ fn uniform_certificate_uses_the_injected_full_fee_or_honestly_refuses() {
     let config = ExecutionConfig::default();
     let program = Program::from_hex_with_fork("525b00", Fork::Osaka).unwrap();
     let default_fee = ByteArray::memory()
-        .uniform_word_write_work(&args[0], &args[1], Domain::default())
+        .uniform_word_write_work(&args[0], &args[1], ProductAlgebra::default())
         .unwrap();
     for surcharge in [None, Some(usize::MAX), Some(100_000)] {
         let policy = BytePolicy::<false> {
@@ -404,8 +411,7 @@ fn uniform_certificate_uses_the_injected_full_fee_or_honestly_refuses() {
                 "unavailable or saturated fees refuse before effects"
             );
             let mut pure = ByteArray::memory();
-            pure.write_word_with(&args[0], &args[1], 96, domain)
-                .unwrap();
+            pure.write_word(&args[0], &args[1], domain).unwrap();
             assert_eq!(policy.applies.get(), 1, "pure callers fund their own work");
             assert_witnesses(&pure);
             continue;
@@ -423,7 +429,7 @@ fn uniform_certificate_uses_the_injected_full_fee_or_honestly_refuses() {
         let mut memory = execution.payload.active().memory.clone();
         assert!(
             memory
-                .write_word_budgeted_with(&args[0], &args[1], 96, domain, &mut exact)
+                .write_word_budgeted(&args[0], &args[1], domain, &mut exact)
                 .unwrap()
         );
         assert_eq!(
@@ -514,7 +520,7 @@ fn assert_transfer_write<const PRECISE: bool>() {
                 .payload
                 .active()
                 .memory
-                .byte_at_with(30, domain)
+                .byte_at(30, domain)
                 .singleton(),
             Some(U256::ONE)
         );
@@ -538,11 +544,11 @@ fn runtime_identification_preserves_the_literal_offset_write_certificate() {
     let memory = ByteArray::memory();
     let offset = EvmValue::constant(U256::ZERO);
     let word = input();
-    let before = memory.uniform_word_write_work_with(&offset, &word, domain);
+    let before = memory.uniform_word_write_work(&offset, &word, domain);
     assert!(before.is_some(), "the untouched literal qualifies");
     let identified = crate::analysis::state::identify(offset.clone(), true);
     assert_eq!(
-        memory.uniform_word_write_work_with(&identified, &word, domain),
+        memory.uniform_word_write_work(&identified, &word, domain),
         before,
         "identification changed the literal proof to {:?}",
         identified.expression()

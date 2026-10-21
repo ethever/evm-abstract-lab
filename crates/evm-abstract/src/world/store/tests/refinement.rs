@@ -1,16 +1,17 @@
 //! Path projection across account planes, scalars, log bytes and rollback.
 
 use super::super::*;
-use crate::{
-    Fork,
-    domain::relational::{CheckResult, QueryReason, RelationLimits, RelationState, ValueQuery},
-    world::{Account, GuardRefinementError},
-};
 use revm_bytecode::opcode;
 use std::collections::{BTreeMap, BTreeSet};
+use {
+    crate::Fork, crate::domain::relational::CheckResult, crate::domain::relational::EvmValueQuery,
+    crate::domain::relational::QueryReason, crate::domain::relational::RelationLimits,
+    crate::domain::relational::RelationState, crate::world::GuardRefinementError,
+    crate::world::test_support::TestAccount,
+};
 
-fn v(n: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(n))
+fn v(n: u64) -> TestValue {
+    TestValue::constant(U256::from(n))
 }
 fn policy() -> RelationLimits {
     RelationLimits {
@@ -27,38 +28,47 @@ fn truth(relations: &RelationState, e: &ExprId) -> Result<Option<bool>, QueryRea
             ExprError::Limit { .. } => QueryReason::ExpressionLimit,
             error => panic!("ISZERO construction failed: {error:?}"),
         })?;
-    match relations.local_value(&zero, &p) {
-        ValueQuery::Exact(v) if v == U256::ZERO => Ok(Some(true)),
-        ValueQuery::Exact(v) if v == U256::ONE => Ok(Some(false)),
-        ValueQuery::Bounds(bounds) => {
+    match relations.local_value(
+        &zero,
+        &p,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    ) {
+        EvmValueQuery::Exact(v) if v == U256::ZERO => Ok(Some(true)),
+        EvmValueQuery::Exact(v) if v == U256::ONE => Ok(Some(false)),
+        EvmValueQuery::Bounds(bounds) => {
             // ISZERO is intrinsically Boolean, even when e is an arbitrary
             // nonzero EVM word rather than the canonical word one.
             assert!(bounds.contains(U256::ZERO));
             assert!(bounds.contains(U256::ONE));
             Ok(None)
         }
-        ValueQuery::Undetermined(reason) => Err(reason),
-        ValueQuery::ProvenImpossible => panic!("guard query requires a reachable relation state"),
-        ValueQuery::Exact(value) => panic!("ISZERO produced a non-Boolean word: {value}"),
+        EvmValueQuery::Undetermined(reason) => Err(reason),
+        EvmValueQuery::ProvenImpossible => {
+            panic!("guard query requires a reachable relation state")
+        }
+        EvmValueQuery::Exact(value) => panic!("ISZERO produced a non-Boolean word: {value}"),
     }
 }
 
 fn logged_store(
-    world: &World,
+    world: &TestWorld,
     site: &LogKey,
     topic: u64,
-    data: ByteArray,
-    domain: Domain,
-) -> Store {
-    let mut store = Store::new(world);
+    data: TestBytes,
+    domain: TestAlgebra,
+) -> TestStore {
+    let mut store = TestStore::new(
+        world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     store
         .emit_log(
             site.clone(),
-            AbstractLog {
+            TestLog {
                 topics: vec![v(topic)],
                 data,
             },
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     store
@@ -66,10 +76,10 @@ fn logged_store(
 
 #[test]
 fn native_guard_projection_pairs_slots_balances_logs_and_restores_old_snapshot() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let address = Address::repeat_byte(0x21);
-    let mut world = World::new(Fork::Osaka, "refine leaf");
-    world.insert(address, Account::empty()).unwrap();
+    let mut world = TestWorld::new(Fork::Osaka, "refine leaf");
+    world.insert(address, TestAccount::empty()).unwrap();
     let site = LogKey {
         address,
         code_address: address,
@@ -77,36 +87,41 @@ fn native_guard_projection_pairs_slots_balances_logs_and_restores_old_snapshot()
         source_kind: crate::world::LogSourceKind::Runtime,
         pc: 7,
     };
-    let old = logged_store(&world, &site, 3, ByteArray::exact(&[3]), domain);
+    let old = logged_store(&world, &site, 3, TestBytes::exact(&[3]), domain);
     let mut changed = old.clone();
     changed
-        .write_checked(address, &v(7), &v(42), domain)
+        .write_checked(address, &v(7), &v(42), domain.borrowed())
         .unwrap();
     changed
-        .write_transient_checked(address, &v(8), &v(19), domain)
+        .write_transient_checked(address, &v(8), &v(19), domain.borrowed())
         .unwrap();
     changed.write_balance(address, v(10));
     changed.write_nonce(address, v(9));
-    let changed_log = logged_store(&world, &site, 1, ByteArray::exact(&[1]), domain);
+    let changed_log = logged_store(&world, &site, 1, TestBytes::exact(&[1]), domain);
     changed.possible_logs = changed_log.possible_logs;
     let guard = ExprId::fresh().unwrap();
     let joined = changed
-        .join_guarded(&old, domain, guard.clone(), policy().expressions())
+        .join_guarded(
+            &old,
+            domain.borrowed(),
+            guard.clone(),
+            policy().expressions(),
+        )
         .unwrap();
-    let read_before = joined.read(address, &v(7), domain);
+    let read_before = joined.read(address, &v(7), domain.borrowed());
     for (nonzero, persistent, transient, balance, nonce, byte) in
         [(true, 42, 19, 10, 9, 1), (false, 0, 0, 0, 0, 3)]
     {
         let mut relations = RelationState::default();
         assert_eq!(
-            relations.assume(&guard, nonzero, &policy()),
+            relations.assume(&guard, nonzero, &policy(), domain.borrowed()),
             CheckResult::MayBeFeasible
         );
         let mut selected = joined.clone();
         let snapshot = selected.snapshot();
         assert!(
             selected
-                .refine_guards(domain, policy().expressions(), &mut |e| truth(
+                .refine_guards(domain.borrowed(), policy().expressions(), &mut |e| truth(
                     &relations, e
                 ))
                 .unwrap()
@@ -116,11 +131,13 @@ fn native_guard_projection_pairs_slots_balances_logs_and_restores_old_snapshot()
             joined.slot_root(address, false).unwrap()
         );
         assert_eq!(
-            selected.read(address, &v(7), domain).singleton(),
+            selected.read(address, &v(7), domain.borrowed()).singleton(),
             Some(U256::from(persistent))
         );
         assert_eq!(
-            selected.read_transient(address, &v(8), domain).singleton(),
+            selected
+                .read_transient(address, &v(8), domain.borrowed())
+                .singleton(),
             Some(U256::from(transient))
         );
         assert_eq!(
@@ -131,7 +148,7 @@ fn native_guard_projection_pairs_slots_balances_logs_and_restores_old_snapshot()
         let event = &selected.possible_logs()[&site];
         assert_eq!(event.topics[0].singleton(), Some(U256::from(byte)));
         assert_eq!(
-            event.data.byte_at(0, domain).singleton(),
+            event.data.byte_at(0, domain.borrowed()).singleton(),
             Some(U256::from(byte))
         );
         assert!(read_before.singleton().is_none());
@@ -143,34 +160,42 @@ fn native_guard_projection_pairs_slots_balances_logs_and_restores_old_snapshot()
 #[test]
 fn conditional_projection_does_not_create_rpc_observations_and_errors_are_atomic() {
     let address = Address::repeat_byte(0x31);
-    let mut world = World::new(Fork::Osaka, "unknown baseline");
-    world.insert(address, Account::unknown()).unwrap();
-    let domain = Domain::default();
-    let old = Store::new(&world);
+    let mut world = TestWorld::new(Fork::Osaka, "unknown baseline");
+    world.insert(address, TestAccount::unknown()).unwrap();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let old = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut written = old.clone();
     written
-        .write_checked(address, &v(7), &v(9), domain)
+        .write_checked(address, &v(7), &v(9), domain.borrowed())
         .unwrap();
     let guard = ExprId::fresh().unwrap();
     let joined = written
-        .join_guarded(&old, domain, guard.clone(), policy().expressions())
+        .join_guarded(
+            &old,
+            domain.borrowed(),
+            guard.clone(),
+            policy().expressions(),
+        )
         .unwrap();
     let initial_requests = joined.missing_initial_slots(&world, address, &v(7));
     let mut selected = joined.clone();
     let mut relations = RelationState::default();
     assert_eq!(
-        relations.assume(&guard, true, &policy()),
+        relations.assume(&guard, true, &policy(), domain.borrowed()),
         CheckResult::MayBeFeasible
     );
     assert!(
         selected
-            .refine_guards(domain, policy().expressions(), &mut |e| truth(
+            .refine_guards(domain.borrowed(), policy().expressions(), &mut |e| truth(
                 &relations, e
             ))
             .unwrap()
     );
     assert_eq!(
-        selected.read(address, &v(7), domain).singleton(),
+        selected.read(address, &v(7), domain.borrowed()).singleton(),
         Some(U256::from(9))
     );
     assert!(world.account(address).unwrap().storage.is_empty());
@@ -180,7 +205,7 @@ fn conditional_projection_does_not_create_rpc_observations_and_errors_are_atomic
     );
     let saved = selected.clone();
     assert_eq!(
-        selected.refine_guards(domain, policy().expressions(), &mut |_| Err(
+        selected.refine_guards(domain.borrowed(), policy().expressions(), &mut |_| Err(
             QueryReason::Cancelled
         )),
         Err(GuardRefinementError::Proof(QueryReason::Cancelled))
@@ -189,16 +214,16 @@ fn conditional_projection_does_not_create_rpc_observations_and_errors_are_atomic
 }
 
 struct CollectorFixture {
-    world: World,
+    world: TestWorld,
     owners: [Address; 2],
     site: LogKey,
     selector: ExprId,
     expected: BTreeSet<ExprId>,
     base_guard: ExprId,
     data_guards: BTreeSet<ExprId>,
-    base_roots_only: Store,
-    log_roots_only: Store,
-    joined: Store,
+    base_roots_only: TestStore,
+    log_roots_only: TestStore,
+    joined: TestStore,
 }
 
 fn scaled_guard(selector: &ExprId, factor: u64) -> ExprId {
@@ -210,27 +235,34 @@ fn scaled_guard(selector: &ExprId, factor: u64) -> ExprId {
     .unwrap()
 }
 
-fn guarded_change(before: &Store, guard: &ExprId, change: impl FnOnce(&mut Store)) -> Store {
+fn guarded_change(
+    before: &TestStore,
+    guard: &ExprId,
+    change: impl FnOnce(&mut TestStore),
+) -> TestStore {
     let mut after = before.clone();
     change(&mut after);
     after
         .join_guarded(
             before,
-            Domain::default(),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
             guard.clone(),
             policy().expressions(),
         )
         .unwrap()
 }
 
-fn guarded_base(world: &World, guard: &ExprId) -> Store {
-    let initial = Store::new(world);
+fn guarded_base(world: &TestWorld, guard: &ExprId) -> TestStore {
+    let initial = TestStore::new(
+        world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut havoc = initial.clone();
     havoc.havoc_all();
     havoc
         .join_guarded(
             &initial,
-            Domain::default(),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
             guard.clone(),
             policy().expressions(),
         )
@@ -238,7 +270,7 @@ fn guarded_base(world: &World, guard: &ExprId) -> Store {
 }
 
 fn collector_fixture() -> CollectorFixture {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let owners = [Address::repeat_byte(0x41), Address::repeat_byte(0x42)];
     let code_owner = Address::repeat_byte(0x43);
     let site = LogKey {
@@ -248,10 +280,10 @@ fn collector_fixture() -> CollectorFixture {
         source_kind: crate::world::LogSourceKind::Runtime,
         pc: 11,
     };
-    let mut world = World::new(Fork::Osaka, "guard collector owners");
-    world.insert(owners[0], Account::empty()).unwrap();
-    world.insert(owners[1], Account::unknown()).unwrap();
-    world.insert(code_owner, Account::empty()).unwrap();
+    let mut world = TestWorld::new(Fork::Osaka, "guard collector owners");
+    world.insert(owners[0], TestAccount::empty()).unwrap();
+    world.insert(owners[1], TestAccount::unknown()).unwrap();
+    world.insert(code_owner, TestAccount::empty()).unwrap();
 
     let selector = ExprId::fresh().unwrap();
     let base_guard = selector.clone();
@@ -278,17 +310,17 @@ fn collector_fixture() -> CollectorFixture {
     ]);
     assert_eq!(expected.len(), 9);
 
-    let roots_world = World::new(Fork::Osaka, "guard collector roots only");
+    let roots_world = TestWorld::new(Fork::Osaka, "guard collector roots only");
     let base_roots_only = guarded_base(&roots_world, &base_guard);
     let mut joined = guarded_base(&world, &base_guard);
     for (address, persistent, transient, balance, nonce) in
         [(owners[0], 0, 0, 0, 0), (owners[1], 24, 5, 4, 2)]
     {
         joined
-            .write_checked(address, &v(7), &v(persistent), domain)
+            .write_checked(address, &v(7), &v(persistent), domain.borrowed())
             .unwrap();
         joined
-            .write_transient_checked(address, &v(8), &v(transient), domain)
+            .write_transient_checked(address, &v(8), &v(transient), domain.borrowed())
             .unwrap();
         joined.write_balance(address, v(balance));
         joined.write_nonce(address, v(nonce));
@@ -299,12 +331,12 @@ fn collector_fixture() -> CollectorFixture {
     ] {
         joined = guarded_change(&joined, persistent_guard, |store| {
             store
-                .write_checked(address, &v(7), &v(persistent), domain)
+                .write_checked(address, &v(7), &v(persistent), domain.borrowed())
                 .unwrap();
         });
         joined = guarded_change(&joined, transient_guard, |store| {
             store
-                .write_transient_checked(address, &v(8), &v(transient), domain)
+                .write_transient_checked(address, &v(8), &v(transient), domain.borrowed())
                 .unwrap();
         });
     }
@@ -321,33 +353,48 @@ fn collector_fixture() -> CollectorFixture {
         &roots_world,
         &site,
         3,
-        ByteArray::exact(&[1, 11, 21]),
+        TestBytes::exact(&[1, 11, 21]),
         domain,
     );
     let second = logged_store(
         &roots_world,
         &site,
         3,
-        ByteArray::exact(&[2, 12, 22]),
+        TestBytes::exact(&[2, 12, 22]),
         domain,
     );
     let inner = first
-        .join_guarded(&second, domain, data_inner.clone(), policy().expressions())
+        .join_guarded(
+            &second,
+            domain.borrowed(),
+            data_inner.clone(),
+            policy().expressions(),
+        )
         .unwrap();
     let third = logged_store(
         &roots_world,
         &site,
         3,
-        ByteArray::exact(&[3, 13, 23]),
+        TestBytes::exact(&[3, 13, 23]),
         domain,
     );
     let log_roots_only = inner
-        .join_guarded(&third, domain, data_outer.clone(), policy().expressions())
+        .join_guarded(
+            &third,
+            domain.borrowed(),
+            data_outer.clone(),
+            policy().expressions(),
+        )
         .unwrap();
     let nested_data = log_roots_only.possible_logs()[&site].data.clone();
     let changed_topic = logged_store(&roots_world, &site, 1, nested_data, domain);
     let logs = changed_topic
-        .join_guarded(&log_roots_only, domain, topic_guard, policy().expressions())
+        .join_guarded(
+            &log_roots_only,
+            domain.borrowed(),
+            topic_guard,
+            policy().expressions(),
+        )
         .unwrap();
     // As in the native fixture, install log state built by actual emit/join operations.
     joined.possible_logs = logs.possible_logs;
@@ -366,19 +413,19 @@ fn collector_fixture() -> CollectorFixture {
     }
 }
 
-fn fixture_reads(fixture: &CollectorFixture, store: &Store) -> Vec<AbstractValue> {
-    let domain = Domain::default();
+fn fixture_reads(fixture: &CollectorFixture, store: &TestStore) -> Vec<TestValue> {
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let mut reads = Vec::new();
     for address in fixture.owners {
-        reads.push(store.read(address, &v(7), domain));
-        reads.push(store.read_transient(address, &v(8), domain));
+        reads.push(store.read(address, &v(7), domain.borrowed()));
+        reads.push(store.read_transient(address, &v(8), domain.borrowed()));
         reads.push(store.read_balance(address));
         reads.push(store.nonce(address));
     }
     let log = &store.possible_logs()[&fixture.site];
     reads.push(log.topics[0].clone());
     for offset in 0..3 {
-        reads.push(log.data.byte_at(offset, domain));
+        reads.push(log.data.byte_at(offset, domain.borrowed()));
     }
     reads
 }
@@ -438,7 +485,13 @@ fn store_guard_collection_is_read_only_and_complete_on_live_and_restored_roots()
     let later_guard = ExprId::fresh().unwrap();
     current = guarded_change(&current, &later_guard, |store| {
         store
-            .write_checked(fixture.owners[0], &v(99), &v(88), Domain::default())
+            .write_checked(
+                fixture.owners[0],
+                &v(99),
+                &v(88),
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed(),
+            )
             .unwrap();
     });
     let mut expected_current = fixture.expected.clone();
@@ -463,14 +516,14 @@ fn store_guard_collection_is_read_only_and_complete_on_live_and_restored_roots()
 #[test]
 fn store_guard_collection_serial_proofs_match_native_projection_on_frozen_wrapper() {
     let fixture = collector_fixture();
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = policy().expressions();
     let frozen = fixture.joined.clone();
     let collected = frozen.guard_conditions(limits).unwrap();
     assert_eq!(collected, fixture.expected);
     let expected_order: Vec<_> = fixture.expected.iter().cloned().collect();
     let historical_reads = fixture_reads(&fixture, &frozen);
-    let historical_read = frozen.read(fixture.owners[1], &v(99), domain);
+    let historical_read = frozen.read(fixture.owners[1], &v(99), domain.borrowed());
     let initial_requests = frozen.missing_initial_slots(&fixture.world, fixture.owners[1], &v(99));
     assert!(!initial_requests.is_empty());
 
@@ -487,12 +540,12 @@ fn store_guard_collection_serial_proofs_match_native_projection_on_frozen_wrappe
             )
             .unwrap();
             assert_eq!(
-                relations.assume(&equal, true, &policy()),
+                relations.assume(&equal, true, &policy(), domain.borrowed()),
                 CheckResult::MayBeFeasible
             );
             assert!(matches!(
-                relations.local_value(&fixture.selector, &policy()),
-                ValueQuery::Exact(actual) if actual == U256::from(value)
+                relations.local_value(&fixture.selector, &policy(), domain.borrowed()),
+                EvmValueQuery::Exact(actual) if actual == U256::from(value)
             ));
         }
 
@@ -510,7 +563,7 @@ fn store_guard_collection_serial_proofs_match_native_projection_on_frozen_wrappe
         let projected_checkpoint = projected.snapshot();
         let mut lookup_order = Vec::new();
         let projected_feasible = projected
-            .refine_guards(domain, limits, &mut |guard| {
+            .refine_guards(domain.borrowed(), limits, &mut |guard| {
                 lookup_order.push(guard.clone());
                 Ok::<_, QueryReason>(
                     *proved
@@ -523,7 +576,7 @@ fn store_guard_collection_serial_proofs_match_native_projection_on_frozen_wrappe
         let native_checkpoint = native.snapshot();
         let mut native_order = Vec::new();
         let native_feasible = native
-            .refine_guards(domain, limits, &mut |guard| {
+            .refine_guards(domain.borrowed(), limits, &mut |guard| {
                 native_order.push(guard.clone());
                 truth(&relations, guard)
             })
@@ -574,7 +627,7 @@ fn store_guard_collection_serial_proofs_match_native_projection_on_frozen_wrappe
         // Frozen roots and values retain the historical expression/source identities.
         assert_eq!(fixture_reads(&fixture, &frozen), historical_reads);
         assert_eq!(
-            frozen.read(fixture.owners[1], &v(99), domain),
+            frozen.read(fixture.owners[1], &v(99), domain.borrowed()),
             historical_read
         );
         assert!(
@@ -601,7 +654,7 @@ fn store_guard_collection_serial_proofs_match_native_projection_on_frozen_wrappe
 #[test]
 fn store_guard_collection_limits_and_serial_cancellation_preserve_wrappers() {
     let fixture = collector_fixture();
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = policy().expressions();
     let tiny = RelationLimits {
         max_nodes: 1,
@@ -613,7 +666,7 @@ fn store_guard_collection_limits_and_serial_cancellation_preserve_wrappers() {
     let mut current = historical.clone();
     let checkpoint = current.snapshot();
     current
-        .write_checked(fixture.owners[0], &v(99), &v(88), domain)
+        .write_checked(fixture.owners[0], &v(99), &v(88), domain.borrowed())
         .unwrap();
     let current_before = current.clone();
 
@@ -630,7 +683,7 @@ fn store_guard_collection_limits_and_serial_cancellation_preserve_wrappers() {
         let mut proof_calls = 0;
         assert!(
             selected
-                .refine_guards(domain, tiny, &mut |_| {
+                .refine_guards(domain.borrowed(), tiny, &mut |_| {
                     proof_calls += 1;
                     Ok::<_, QueryReason>(None)
                 })
@@ -647,7 +700,7 @@ fn store_guard_collection_limits_and_serial_cancellation_preserve_wrappers() {
         let before = wrapper.clone();
         let mut selected = wrapper.clone();
         let mut proof_order = Vec::new();
-        let error = selected.refine_guards(domain, limits, &mut |guard| {
+        let error = selected.refine_guards(domain.borrowed(), limits, &mut |guard| {
             proof_order.push(guard.clone());
             if guard == &expected_order[1] {
                 Err(QueryReason::Cancelled)

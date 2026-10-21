@@ -1,18 +1,15 @@
 //! A paid key census bounds the unchanged COPY without discovering N.
 
 use super::*;
-use crate::{
-    domain::{
-        Domain, DomainSpec, FiniteConstantSet, NumericReduction, NumericValue, ValueAlgebra,
-        WordObservation,
-        provenance::Origin,
-        relational::RelationLimits,
-        symbolic::{ByteStateId, ExprId, ExprLimits},
-    },
-    resource::WorkBudget,
-    test_instrumentation::Counter,
-};
 use std::fmt;
+use {
+    crate::domain::DomainSpec, crate::domain::FiniteConstantSet, crate::domain::NumericReduction,
+    crate::domain::NumericValue, crate::domain::ValueAlgebra, crate::domain::WordObservation,
+    crate::domain::provenance::Origin, crate::domain::relational::RelationLimits,
+    crate::domain::symbolic::ByteStateId, crate::domain::symbolic::ExprId,
+    crate::domain::symbolic::ExprLimits, crate::resource::WorkBudget,
+    crate::test_instrumentation::Counter, crate::world::test_support::TestAlgebra,
+};
 
 #[derive(Clone, Copy, Default, Debug)]
 struct Receipt {
@@ -134,18 +131,20 @@ impl EvmNumericAlgebra for Policy {
     type Element = Word;
 
     fn spec(&self) -> DomainSpec {
-        Domain::default().spec().with_relations(RelationLimits {
-            max_nodes: 65_536,
-            max_depth: 512,
-            ..Default::default()
-        })
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_nodes: 65_536,
+                max_depth: 512,
+                ..Default::default()
+            })
     }
     fn project_numeric(&self, value: &Word) -> Word {
         value.clone()
     }
     fn join_numeric(&self, left: &Word, right: &Word) -> Word {
         Word(
-            Domain::default().join_numeric(&left.0, &right.0),
+            crate::domain::ProductAlgebra::default().join_numeric(&left.0, &right.0),
             Vec::new(),
         )
     }
@@ -158,21 +157,34 @@ impl EvmNumericAlgebra for Policy {
     fn reduce_numeric(&self, value: &Word) -> NumericReduction<Word> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Word]) -> NumericReduction<Word> {
-        let args: Vec<_> = args.iter().map(|arg| arg.0.clone()).collect();
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
         NumericReduction::stable(Word(
-            Domain::default().apply_numeric(op, &args).value,
+            crate::domain::ProductAlgebra::default()
+                .apply_numeric(op, args.map(|arg| &arg.0))
+                .value,
             Vec::new(),
         ))
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
-        EvmNumericAlgebra::operation_work(&Domain::default(), args.map(|arg| &arg.0))
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
+        EvmNumericAlgebra::operation_work(
+            &crate::domain::ProductAlgebra::default(),
+            op,
+            args.map(|arg| &arg.0),
+        )
     }
     fn projection_work(&self, value: &Word) -> usize {
         value.work_size()
     }
     fn refinement_work(&self, value: &Word, facts: usize) -> usize {
-        EvmNumericAlgebra::refinement_work(&Domain::default(), &value.0, facts)
+        EvmNumericAlgebra::refinement_work(
+            &crate::domain::ProductAlgebra::default(),
+            &value.0,
+            facts,
+        )
     }
 }
 
@@ -196,14 +208,14 @@ impl<N: WordElement> EvmByteArray<N> {
         }
         let mut stage = self.clone();
         stage
-            .expand_independent_with(destination, requested, 0, domain)
+            .expand_independent(destination, requested, domain)
             .expect("valid invoice allocation");
         let copied = super::super::ranges::minimum(requested, source.len(), domain)
             .expect("valid invoice minimum");
         stage
             .return_copy_stage_preparation(
                 &copied,
-                &zero_with().with_expression(ExprId::constant(U256::ZERO)),
+                &zero().with_expression(ExprId::constant(U256::ZERO)),
                 budget,
             )
             .expect("finite invoice copy prices")
@@ -262,7 +274,7 @@ fn short_prefix_visits_no_keys_or_numeric_callbacks_and_full_short_retains_prefi
     );
     let total = pilot.used();
     let prepared = RECEIPT.get().prepared_paid;
-    let conservative = target.copy_return_data_work_with(&source, &at, &size, algebra.borrowed());
+    let conservative = target.copy_return_data_work(&source, &at, &size, algebra.borrowed());
     assert!(total < conservative);
     for maximum in [63, total - 1, total] {
         RECEIPT.set(Receipt::default());
@@ -347,7 +359,7 @@ fn prepared_copy_keeps_complete_arrays_and_errors_for_partial_zero_and_overflow_
         let size = literal(U256::from(size));
         let mut expected = target.clone();
         expected
-            .copy_return_data_with(&at, &source, &size, 0, algebra.borrowed())
+            .copy_return_data(&at, &source, &size, algebra.borrowed())
             .unwrap();
         let mut actual = target.clone();
         let mut budget = WorkBudget::new(usize::MAX);
@@ -360,14 +372,7 @@ fn prepared_copy_keeps_complete_arrays_and_errors_for_partial_zero_and_overflow_
         assert_eq!((RECEIPT.get().queries, RECEIPT.get().query_quotes), (0, 0));
         assert!(
             actual
-                .copy_return_data_budgeted_with(
-                    &at,
-                    &source,
-                    &size,
-                    0,
-                    algebra.borrowed(),
-                    &mut budget
-                )
+                .copy_return_data_budgeted(&at, &source, &size, algebra.borrowed(), &mut budget)
                 .unwrap()
         );
         assert_eq!(actual, expected);
@@ -385,7 +390,7 @@ fn prepared_copy_keeps_complete_arrays_and_errors_for_partial_zero_and_overflow_
     let size = literal(U256::from(3));
     let mut expected = target.clone();
     let error = expected
-        .copy_return_data_with(&at, &source, &size, 0, algebra.borrowed())
+        .copy_return_data(&at, &source, &size, algebra.borrowed())
         .unwrap_err();
     let mut actual = target.clone();
     let mut budget = WorkBudget::new(usize::MAX);
@@ -395,14 +400,7 @@ fn prepared_copy_keeps_complete_arrays_and_errors_for_partial_zero_and_overflow_
             .unwrap()
     );
     assert_eq!(
-        actual.copy_return_data_budgeted_with(
-            &at,
-            &source,
-            &size,
-            0,
-            algebra.borrowed(),
-            &mut budget
-        ),
+        actual.copy_return_data_budgeted(&at, &source, &size, algebra.borrowed(), &mut budget),
         Err(error)
     );
     assert_eq!(actual, target);
@@ -443,7 +441,7 @@ fn census_covers_keys_outside_the_content_root_and_preserves_invalid_key_rejecti
     );
     assert!(
         target
-            .copy_return_data_budgeted_with(&at, &source, &size, 0, algebra.borrowed(), &mut budget)
+            .copy_return_data_budgeted(&at, &source, &size, algebra.borrowed(), &mut budget)
             .is_err()
     );
     assert_eq!(target, frozen);
@@ -465,7 +463,7 @@ fn tiny_keys_with_deep_native_payloads_pay_copy_prices_before_the_same_complete_
     let size = literal(U256::from(3));
     let mut expected = target.clone();
     expected
-        .copy_return_data_with(&at, &source, &size, 0, algebra.borrowed())
+        .copy_return_data(&at, &source, &size, algebra.borrowed())
         .unwrap();
     let mut actual = target.clone();
     let _receipt = RECEIPT.scope();
@@ -507,7 +505,7 @@ fn tiny_keys_with_deep_native_payloads_pay_copy_prices_before_the_same_complete_
     );
     assert!(
         !actual
-            .copy_return_data_budgeted_with(&at, &source, &size, 0, algebra.borrowed(), &mut short)
+            .copy_return_data_budgeted(&at, &source, &size, algebra.borrowed(), &mut short)
             .unwrap()
     );
     assert_eq!(short.used(), stage_prefix);
@@ -523,7 +521,7 @@ fn tiny_keys_with_deep_native_payloads_pay_copy_prices_before_the_same_complete_
     assert_eq!(RECEIPT.get().copied_bytes, 0);
     assert!(
         actual
-            .copy_return_data_budgeted_with(&at, &source, &size, 0, algebra.borrowed(), &mut budget)
+            .copy_return_data_budgeted(&at, &source, &size, algebra.borrowed(), &mut budget)
             .unwrap()
     );
     assert_eq!(actual, expected);
@@ -546,7 +544,7 @@ fn a_zero_request_never_censuses_or_clones_ignored_stale_source_facts() {
     let zero = literal(U256::ZERO);
     let mut actual = target.clone();
     let _receipt = RECEIPT.scope();
-    let conservative = target.copy_return_data_work_with(&source, &at, &zero, algebra.borrowed());
+    let conservative = target.copy_return_data_work(&source, &at, &zero, algebra.borrowed());
     RECEIPT.set(Receipt::default());
     let mut pilot = WorkBudget::new(usize::MAX);
     assert!(
@@ -574,7 +572,7 @@ fn a_zero_request_never_censuses_or_clones_ignored_stale_source_facts() {
         (0, 0, 0, 0)
     );
     actual
-        .copy_return_data_with(&at, &source, &zero, 0, algebra.borrowed())
+        .copy_return_data(&at, &source, &zero, algebra.borrowed())
         .unwrap();
     assert_eq!(actual, target);
 }

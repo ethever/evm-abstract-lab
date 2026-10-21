@@ -1,11 +1,12 @@
 //! Recent sources preserve private callers while repeated loop keys stabilize.
 
+use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ValueAlgebra;
 
 use super::{canonical, work_size};
 use crate::{
     analysis::{machine::fixtures::fixture, transfer},
-    domain::Domain,
+    domain::ProductAlgebra,
 };
 use proptest::{collection::vec, prelude::*, test_runner::TestRunner};
 use std::collections::BTreeSet;
@@ -70,20 +71,18 @@ fn context_work_covers_declared_histories_and_saturates() {
 
 #[test]
 fn known_forms_keep_and_charge_context_while_unknown_forms_erase_it() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     for known in [true, false] {
         let (world, entry) = if known {
             fixture(&[(0x101, "00")])
         } else {
             fixture(&[])
         };
-        let mut payload =
-            transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
-        let baseline =
-            super::super::form(&payload, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
+        let mut payload = transfer::initial(&world, &entry, domain).unwrap();
+        let baseline = super::super::form(&payload, &entry, domain).unwrap();
         payload.active_mut().key.jump_history = vec![1, 2, 3, 2];
-        let formed =
-            super::super::form(&payload, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
+        let formed = super::super::form(&payload, &entry, domain).unwrap();
         if known {
             assert_eq!(formed.active().key.jump_history, [1, 3, 2]);
             assert_eq!(formed.work_size(), baseline.work_size() + 3);
@@ -96,7 +95,7 @@ fn known_forms_keep_and_charge_context_while_unknown_forms_erase_it() {
 
 #[test]
 fn normalized_form_preserves_the_supplied_context_without_default_rewriting() {
-    let algebra = ValueAlgebra::new(Domain::default());
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let (world, entry) = fixture(&[(0x101, "00")]);
     let mut payload = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
     // An immutable custom policy can deliberately keep repeated callsites.

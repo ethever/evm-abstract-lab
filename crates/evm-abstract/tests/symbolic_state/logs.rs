@@ -1,22 +1,26 @@
 use super::support::{
-    Assembly, Fixture, ROOT, address, complete, config, executed_opcode, possible_lengths,
+    Assembly, Fixture, ROOT, address, complete, executed_opcode, numeric_spec, possible_lengths,
     reachable, run, word,
 };
+use crate::native;
 use alloy_primitives::U256;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
-    analysis::{MachineOutcome, MachinePayload, OutcomeKind, WorldAnalysis, control::Control},
+    analysis::{
+        EvmMachineOutcome, EvmMachinePayload, EvmWorldAnalysis, OutcomeKind, control::Control,
+    },
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         identity::Symbol,
         provenance::{Origin, Provenance},
-        relational::{CheckResult, ValueQuery},
+        relational::{CheckResult, EvmValueQuery},
         symbolic::{ByteStateKind, ExprError, ExprKind, GraphLimits, SymbolicGraph},
     },
     render::{
         json::{JsonError, with_control},
         world::evidence,
     },
-    world::AbstractLog,
+    world::EvmLog,
 };
 use revm_bytecode::opcode;
 use serde_json::{Value, json};
@@ -62,9 +66,13 @@ fn log_fixture() -> Fixture {
 }
 
 fn captured_log<'a>(
-    analysis: &'a WorldAnalysis,
+    analysis: &'a EvmWorldAnalysis<NumericValue>,
     fixture: &Fixture,
-) -> (&'a MachineOutcome, &'a AbstractLog, &'a MachinePayload) {
+) -> (
+    &'a EvmMachineOutcome<NumericValue>,
+    &'a EvmLog<NumericValue>,
+    &'a EvmMachinePayload<NumericValue>,
+) {
     complete(analysis);
     // Pre-entry failure preserves the untouched checkpoint. Memory operations
     // can also fail after entry, restoring it before transaction finalization.
@@ -80,7 +88,7 @@ fn captured_log<'a>(
     );
     let mut finalized = checkpoint.clone();
     finalized
-        .finalize_transaction(Domain::from_spec(analysis.domain_spec()))
+        .finalize_transaction(native::product_with(analysis.domain_spec()).borrowed())
         .unwrap();
     assert_eq!(&finalized, checkpoint, "no sticky RIPEMD touch here");
     let entry_failure = analysis.outcomes().first().unwrap();
@@ -161,9 +169,12 @@ fn captured_log<'a>(
     (outcome, log, before)
 }
 
-fn verify_history(analysis: &WorldAnalysis, fixture: &Fixture) -> (AbstractValue, AbstractValue) {
+fn verify_history(
+    analysis: &EvmWorldAnalysis<NumericValue>,
+    fixture: &Fixture,
+) -> (EvmValue<NumericValue>, EvmValue<NumericValue>) {
     let (outcome, log, before) = captured_log(analysis, fixture);
-    let domain = Domain::from_spec(analysis.domain_spec());
+    let domain = native::product_with(analysis.domain_spec());
     let payload = analysis.states()[outcome.state].exit.as_ref().unwrap();
     let memory = &payload.active().memory;
     let calldata = &before.active().calldata;
@@ -173,7 +184,11 @@ fn verify_history(analysis: &WorldAnalysis, fixture: &Fixture) -> (AbstractValue
             payload.relations.can_equal(
                 log.data.len().expression().unwrap(),
                 U256::from(length),
-                &config().analysis.relations
+                &numeric_spec().relations(),
+                native::product_with(
+                    native::spec(8, 4, 256).with_relations(numeric_spec().relations())
+                )
+                .borrowed()
             ),
             CheckResult::ProvenImpossible
         );
@@ -190,17 +205,12 @@ fn verify_history(analysis: &WorldAnalysis, fixture: &Fixture) -> (AbstractValue
     let captured = before
         .active()
         .memory
-        .slice(
-            &word(0),
-            copied_length_fact,
-            config().max_memory_bytes,
-            domain,
-        )
+        .slice(&word(0), copied_length_fact, domain.borrowed())
         .unwrap();
     assert_eq!(log.data, captured);
     assert_eq!(log.data.len(), copied_length_fact);
     let expected_length = domain
-        .reduce(&AbstractValue::unsigned_range(U256::from(32), U256::from(128)).unwrap())
+        .reduce(&EvmValue::<NumericValue>::unsigned_range(U256::from(32), U256::from(128)).unwrap())
         .value;
     assert_eq!(log.data.len().numeric(), expected_length.numeric());
     assert_eq!(
@@ -271,22 +281,38 @@ fn verify_history(analysis: &WorldAnalysis, fixture: &Fixture) -> (AbstractValue
     assert_eq!(offset.as_constant(), Some(U256::ZERO));
     assert_eq!(value.as_constant(), Some(U256::from(9)));
     assert_ne!(memory.state_root(), log.data.state_root());
-    let old = log.data.read_word_checked(&word(0), domain).unwrap();
-    let initial = calldata.read_word_checked(&word(0), domain).unwrap();
+    let old = log
+        .data
+        .read_word_checked(&word(0), domain.borrowed())
+        .unwrap();
+    let initial = calldata
+        .read_word_checked(&word(0), domain.borrowed())
+        .unwrap();
     assert_eq!(old.numeric(), initial.numeric());
     assert_eq!(old.provenance(), initial.provenance());
     assert_eq!(old.expression(), initial.expression());
-    assert_eq!(old, log.data.read_word_checked(&word(0), domain).unwrap());
-    let current = memory.read_word_checked(&word(0), domain).unwrap();
+    assert_eq!(
+        old,
+        log.data
+            .read_word_checked(&word(0), domain.borrowed())
+            .unwrap()
+    );
+    let current = memory
+        .read_word_checked(&word(0), domain.borrowed())
+        .unwrap();
     assert_eq!(current.numeric(), word(9).numeric());
     assert_eq!(current.provenance(), word(9).provenance());
     for (read, expected) in [(&old, 7), (&current, 9)] {
         assert_eq!(
             payload.relations.local_value(
                 &read.symbolic_expression().unwrap(),
-                &config().analysis.relations
+                &numeric_spec().relations(),
+                native::product_with(
+                    native::spec(8, 4, 256).with_relations(numeric_spec().relations())
+                )
+                .borrowed()
             ),
-            ValueQuery::Exact(U256::from(expected))
+            EvmValueQuery::<NumericValue>::Exact(U256::from(expected))
         );
     }
     (old, current)

@@ -1,12 +1,13 @@
 //! Real memory-quotation entry with an index-sensitive independent backend.
 
 use super::{byte_work, operation_work_budgeted, quotation_work};
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork,
     analysis::{ExecutionConfig, machine::fixtures::address, transfer},
     bytecode::Program,
     domain::{
-        Domain, DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue,
+        DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue, ProductAlgebra,
         ValueAlgebra, WordElement, WordObservation, symbolic::ExprId,
     },
     resource::WorkBudget,
@@ -113,7 +114,7 @@ impl Indexed {
 impl EvmNumericAlgebra for Indexed {
     type Element = Word;
     fn spec(&self) -> DomainSpec {
-        Domain::default().spec()
+        ProductAlgebra::default().spec()
     }
     fn project_numeric(&self, value: &Word) -> Word {
         value.clone()
@@ -130,7 +131,12 @@ impl EvmNumericAlgebra for Indexed {
     fn reduce_numeric(&self, value: &Word) -> NumericReduction<Word> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Word]) -> NumericReduction<Word> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
+        let args: Vec<&Word> = args.collect();
         if op == opcode::BYTE && args.len() == 2 {
             let index = args[0]
                 .singleton()
@@ -151,7 +157,7 @@ impl EvmNumericAlgebra for Indexed {
                 },
             });
         }
-        let numeric = Domain::default().apply_numeric(
+        let numeric = ProductAlgebra::default().apply_numeric(
             op,
             &args
                 .iter()
@@ -168,12 +174,7 @@ impl EvmNumericAlgebra for Indexed {
             strengthened: numeric.strengthened,
         }
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
-        args.fold(200_000usize, |work, value| {
-            work.saturating_add(value.work_size())
-        })
-    }
-    fn operation_work_for<'a>(&self, op: u8, mut args: impl Iterator<Item = &'a Word>) -> usize {
+    fn operation_work<'a>(&self, op: u8, mut args: impl Iterator<Item = &'a Word>) -> usize {
         if op == opcode::BYTE {
             if let Some(index) = args
                 .next()
@@ -186,7 +187,9 @@ impl EvmNumericAlgebra for Indexed {
             }
             return 200_000;
         }
-        self.operation_work(args)
+        args.fold(200_000usize, |work, value| {
+            work.saturating_add(value.work_size())
+        })
     }
     fn literal_quote_work(&self, _literal: U256) -> usize {
         self.literal_bytes.map_or(usize::MAX, |bytes| {
@@ -305,9 +308,7 @@ fn mstore_prices_every_real_index_and_refuses_before_quote_construction_or_deep_
     let _applies = APPLIES.scope();
     let _applied_indices = APPLIED_INDICES.scope();
     let mut memory = execution.payload.active().memory.clone();
-    memory
-        .write_word_with(&args[0], &args[1], config.max_memory_bytes, domain)
-        .unwrap();
+    memory.write_word(&args[0], &args[1], domain).unwrap();
     assert_eq!(APPLIES.get(), 64, "both real writer loops are covered");
     assert_eq!(APPLIED_INDICES.get(), u32::MAX);
 

@@ -1,3 +1,7 @@
+
+#[cfg(test)]
+use crate::domain::NumericValue;
+use crate::domain::ProductAlgebra;
 //! Production relative slots use injected state, keys and refusal semantics.
 
 use super::*;
@@ -8,29 +12,31 @@ use crate::analysis::engine::{
     SemanticPolicies, StatePolicy, StructuralPartition,
     cooperation::{Cooperation, Empty},
 };
+use crate::analysis::testing::Entry;
 use crate::analysis::worklist::runtime::Runtime;
+use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ValueAlgebra;
-use crate::world::Entry;
 use std::convert::Infallible;
 
-struct Harness<S: StatePolicy<Domain, Option<bool>>> {
+struct Harness<S: StatePolicy<ProductAlgebra, Option<bool>>> {
     world: World,
     entry: Entry,
     config: crate::analysis::ExecutionConfig,
     table: EvmTable<NumericValue, S::Key>,
     runtime: Runtime,
     caller: analysis_kernel::RunningJob,
-    domain: ValueAlgebra<Domain>,
+    domain: ValueAlgebra<ProductAlgebra>,
     policies: EnginePolicies<RecentDistinctJumps, FirstResumeStatus, S>,
     cooperation: Cooperation<NumericValue, Empty, Infallible>,
     budget: WorkBudget,
     counters: Counters,
 }
 
-impl<S: StatePolicy<Domain, Option<bool>>> Harness<S> {
+impl<S: StatePolicy<ProductAlgebra, Option<bool>>> Harness<S> {
     fn new(code: &str, state: S) -> Self {
         let (world, entry) = fixture(&[(0x101, code)]);
         let config = crate::analysis::machine::fixtures::config();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
         let mut budget = WorkBudget::new(config.max_work);
         let mut runtime = Runtime::new(&mut budget).unwrap();
         runtime.register_world(0, 1, &mut budget).unwrap();
@@ -38,7 +44,7 @@ impl<S: StatePolicy<Domain, Option<bool>>> Harness<S> {
         Self {
             world,
             entry,
-            domain: ValueAlgebra::new(config.domain().unwrap()),
+            domain: ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec())),
             budget,
             config,
             table: EvmTable::default(),
@@ -52,7 +58,7 @@ impl<S: StatePolicy<Domain, Option<bool>>> Harness<S> {
 
     fn input(&self, value: u64) -> MachinePayload {
         let mut input =
-            super::super::testing::initial(&self.world, &self.entry, self.config.domain().unwrap())
+            super::super::testing::initial(&self.world, &self.entry, self.domain.borrowed())
                 .unwrap();
         input.active_mut().stack = vec![word(value)];
         input.normalize();
@@ -61,8 +67,8 @@ impl<S: StatePolicy<Domain, Option<bool>>> Harness<S> {
 
     fn solver(
         &mut self,
-    ) -> EvmSolver<'_, Domain, RecentDistinctJumps, FirstResumeStatus, S, Empty, Infallible> {
-        self.domain = ValueAlgebra::new(self.config.domain().unwrap());
+    ) -> EvmSolver<'_, ProductAlgebra, RecentDistinctJumps, FirstResumeStatus, S, Empty, Infallible>
+    {
         EvmSolver {
             table: &mut self.table,
             world: &self.world,
@@ -89,7 +95,7 @@ impl<S: StatePolicy<Domain, Option<bool>>> Harness<S> {
 /// The boolean vocabulary is finite; executable shape stays structural.
 struct SitePartition;
 
-impl MachinePartition<Domain, Option<bool>> for SitePartition {
+impl MachinePartition<ProductAlgebra, Option<bool>> for SitePartition {
     type Key = (crate::analysis::MachineKey, Option<bool>, bool);
 
     fn prepare(
@@ -97,7 +103,7 @@ impl MachinePartition<Domain, Option<bool>> for SitePartition {
         input: &MachinePayload,
         site: PolicySite,
         class: Option<bool>,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<Partitioned<Self::Key, NumericValue>, MachineError> {
         let Partitioned {
             key: (key, class),
@@ -114,7 +120,7 @@ impl MachinePartition<Domain, Option<bool>> for SitePartition {
         input: &RelativeState<NumericValue>,
         site: PolicySite,
         class: Option<bool>,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<PartitionedRelative<Self::Key, NumericValue>, MachineError> {
         let split = matches!(site, PolicySite::Body | PolicySite::Subscriber)
             && input.frames[0].stack.first().and_then(EvmValue::singleton) == Some(U256::from(7));
@@ -138,7 +144,7 @@ fn procedure_entry_retains_growth_when_body_preparation_selects_another_key() {
         ProjectedSummaries,
     );
     let mut h = Harness::new("00", state);
-    h.config.analysis.relations.enabled = false;
+    h.config_numeric.relations.enabled = false;
     let [first, second, third] = [7, 9, 11].map(|value| h.input(value));
     let mut solver = h.solver();
     let procedure = solver.procedure(first).unwrap();
@@ -171,7 +177,7 @@ fn procedure_entry_anchor_wakes_its_reader_when_the_body_key_changes() {
         ProjectedSummaries,
     );
     let mut h = Harness::new("00", state);
-    h.config.analysis.relations.enabled = false;
+    h.config_numeric.relations.enabled = false;
     let first = h.input(7);
     let next = h.input(9);
     {
@@ -230,7 +236,7 @@ fn procedure_entry_anchor_wakes_its_reader_when_the_body_key_changes() {
 
 struct RefuseBody;
 
-impl MachinePartition<Domain, Option<bool>> for RefuseBody {
+impl MachinePartition<ProductAlgebra, Option<bool>> for RefuseBody {
     type Key = (crate::analysis::MachineKey, Option<bool>);
 
     fn prepare(
@@ -238,7 +244,7 @@ impl MachinePartition<Domain, Option<bool>> for RefuseBody {
         input: &MachinePayload,
         site: PolicySite,
         class: Option<bool>,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<Partitioned<Self::Key, NumericValue>, MachineError> {
         StructuralPartition.prepare(input, site, class, cx)
     }
@@ -248,7 +254,7 @@ impl MachinePartition<Domain, Option<bool>> for RefuseBody {
         input: &RelativeState<NumericValue>,
         site: PolicySite,
         class: Option<bool>,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<PartitionedRelative<Self::Key, NumericValue>, MachineError> {
         if site == PolicySite::Body {
             Err(MachineError::States)
@@ -350,14 +356,14 @@ fn subscriber_policy_key_separates_templates_with_the_same_caller_and_callee() {
 /// A caller's work refusal must also govern the runtime retention retry.
 struct RejectRuntimeCoarsening;
 
-impl ProcedureSummaryPolicy<Domain> for RejectRuntimeCoarsening {
+impl ProcedureSummaryPolicy<ProductAlgebra> for RejectRuntimeCoarsening {
     fn admit_relative(
         &self,
         current: &RelativeState<NumericValue>,
         incoming: &RelativeState<NumericValue>,
         site: PolicySite,
         acceleration: Acceleration,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<RelativeState<NumericValue>, MachineError> {
         if site == PolicySite::RuntimeRetry {
             cx.reserve(usize::MAX)?;
@@ -370,7 +376,7 @@ impl ProcedureSummaryPolicy<Domain> for RejectRuntimeCoarsening {
         current: Option<&ProcedureOutput<NumericValue>>,
         incoming: &ProcedureOutput<NumericValue>,
         acceleration: Acceleration,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<ProcedureOutput<NumericValue>, MachineError> {
         ProjectedSummaries.admit_output(current, incoming, acceleration, cx)
     }
@@ -385,22 +391,22 @@ fn runtime_retry_refuses_injected_policy_instead_of_executing_legacy_bound() {
         RejectRuntimeCoarsening,
     );
     let mut h = Harness::new("525b00", state);
-    let domain = h.config.domain().unwrap();
+    let domain = h.domain.borrowed();
     let mut input = h.input(7);
     input
         .active_mut()
         .memory
-        .write_byte(&word(0), &domain.join(&word(1), &word(2)), 4096, domain)
+        .write_byte(&word(0), &domain.join(&word(1), &word(2)), domain)
         .unwrap();
     input.active_mut().stack.push(word(0));
     input.normalize();
     let summary = super::super::testing::form(&input, &h.entry, domain).unwrap();
     let live = super::super::testing::instantiate(&summary, domain).unwrap();
-    h.config.analysis.relations.max_nodes = live.active().memory.state_root().nodes() + 2;
+    h.config_numeric.relations.max_nodes = live.active().memory.state_root().nodes() + 2;
     let mut solver = h.solver();
     solver.procedure(input).unwrap();
     let original = solver.table.nodes[0].payload.clone();
-    let live = instantiate_with(&original, solver.domain).unwrap();
+    let live = instantiate(&original, solver.domain).unwrap();
     let first = execute_inner_with(
         solver.world,
         solver.entry,

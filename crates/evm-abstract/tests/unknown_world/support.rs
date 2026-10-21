@@ -1,11 +1,13 @@
+use crate::native;
 use alloy_primitives::{Address, U256, hex, keccak256};
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
-    analysis::{
-        ExecutionConfig, MachineOutcome, OutcomeKind, Status, WorldAnalysis, analyze_world,
-    },
-    domain::{AbstractValue, Domain},
-    world::{Account, ByteArray, Entry, Store, World},
+    analysis::{EvmMachineOutcome, EvmWorldAnalysis, ExecutionConfig, OutcomeKind, Status},
+    domain::EvmValue,
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmStore, EvmWorld},
 };
 use revm_bytecode::opcode;
 
@@ -23,8 +25,8 @@ pub(super) fn address(value: u64) -> Address {
     Address::from_word(U256::from(value).into())
 }
 
-pub(super) fn word(value: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+pub(super) fn word(value: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(value))
 }
 
 /// Only PUSH operands and JUMPDEST labels are resolved here. EVM execution
@@ -149,12 +151,18 @@ impl Assembly {
     }
 }
 
-pub(super) fn new_world() -> World {
-    World::new(Fork::Osaka, "issue124:unknown-world:offline-bytecode")
+pub(super) fn new_world() -> EvmWorld<NumericValue> {
+    EvmWorld::<NumericValue>::new(Fork::Osaka, "issue124:unknown-world:offline-bytecode")
 }
 
-pub(super) fn insert(world: &mut World, owner: u64, code: &Fixture, storage: &[(u64, u64)]) {
-    let mut account = Account::from_hex(&hex::encode(&code.bytes), world.fork()).unwrap();
+pub(super) fn insert(
+    world: &mut EvmWorld<NumericValue>,
+    owner: u64,
+    code: &Fixture,
+    storage: &[(u64, u64)],
+) {
+    let mut account =
+        EvmAccount::<NumericValue>::from_hex(&hex::encode(&code.bytes), world.fork()).unwrap();
     account.balance = word(1_000_000);
     for (slot, value) in storage {
         account.storage.insert(U256::from(*slot), word(*value));
@@ -162,12 +170,12 @@ pub(super) fn insert(world: &mut World, owner: u64, code: &Fixture, storage: &[(
     world.insert(address(owner), account).unwrap();
 }
 
-pub(super) fn entry(calldata: ByteArray) -> Entry {
-    Entry::concrete(address(A), address(USER), word(0), calldata)
+pub(super) fn entry(calldata: EvmByteArray<NumericValue>) -> EvmEntry<NumericValue> {
+    EvmEntry::<NumericValue>::concrete(address(A), address(USER), word(0), calldata)
 }
 
-pub(super) fn calldata(selector: u64) -> ByteArray {
-    ByteArray::exact(&U256::from(selector).to_be_bytes::<32>())
+pub(super) fn calldata(selector: u64) -> EvmByteArray<NumericValue> {
+    EvmByteArray::<NumericValue>::exact(&U256::from(selector).to_be_bytes::<32>())
 }
 
 /// Selected nested/cell/rollback functional fixtures need 20.15M..24.89M
@@ -181,7 +189,10 @@ pub(super) fn callback_closure_config() -> ExecutionConfig {
 
 /// Check the original root relation on the real default ledger, independently
 /// of funding a functional closure. A cheaper complete execution is also valid.
-pub(super) fn default_callback_coverage(world: World, entry: Entry) {
+pub(super) fn default_callback_coverage(
+    world: EvmWorld<NumericValue>,
+    entry: EvmEntry<NumericValue>,
+) {
     let config = ExecutionConfig::default();
     assert_eq!(config.max_work, 20_000_000);
     assert!(config.root_terminal_coverage);
@@ -195,13 +206,26 @@ pub(super) fn default_callback_coverage(world: World, entry: Entry) {
     terminal_coverage::assert_original_work_coverage(&analysis, &config);
 }
 
-pub(super) fn run(world: World, entry: Entry) -> WorldAnalysis {
+pub(super) fn run(
+    world: EvmWorld<NumericValue>,
+    entry: EvmEntry<NumericValue>,
+) -> EvmWorldAnalysis<NumericValue> {
     run_config(world, entry, ExecutionConfig::default())
 }
 
-pub(super) fn run_config(world: World, entry: Entry, config: ExecutionConfig) -> WorldAnalysis {
+pub(super) fn run_config(
+    world: EvmWorld<NumericValue>,
+    entry: EvmEntry<NumericValue>,
+    config: ExecutionConfig,
+) -> EvmWorldAnalysis<NumericValue> {
     let started = Instant::now();
-    let analysis = analyze_world(world, entry, config).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     eprintln!(
         "issue124 evidence: status={:?} states={} transfers={} work={} outcomes={} summaries={} summary_hits={} elapsed_us={} frontiers={:?}",
         analysis.status(),
@@ -221,7 +245,7 @@ pub(super) fn run_config(world: World, entry: Entry, config: ExecutionConfig) ->
     analysis
 }
 
-pub(super) fn complete(analysis: &WorldAnalysis) {
+pub(super) fn complete(analysis: &EvmWorldAnalysis<NumericValue>) {
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -239,7 +263,7 @@ pub(super) fn complete(analysis: &WorldAnalysis) {
     );
 }
 
-pub(super) fn complete_unknown(analysis: &WorldAnalysis) {
+pub(super) fn complete_unknown(analysis: &EvmWorldAnalysis<NumericValue>) {
     complete(analysis);
     assert!(
         !analysis.procedure_summaries().is_empty(),
@@ -254,7 +278,9 @@ pub(super) fn complete_unknown(analysis: &WorldAnalysis) {
     }
 }
 
-pub(super) fn returns(analysis: &WorldAnalysis) -> Vec<&MachineOutcome> {
+pub(super) fn returns(
+    analysis: &EvmWorldAnalysis<NumericValue>,
+) -> Vec<&EvmMachineOutcome<NumericValue>> {
     let values: Vec<_> = analysis
         .outcomes()
         .iter()
@@ -268,15 +294,24 @@ pub(super) fn returns(analysis: &WorldAnalysis) -> Vec<&MachineOutcome> {
     values
 }
 
-pub(super) fn read(store: &Store, owner: u64, slot: u64) -> AbstractValue {
-    store.read(address(owner), &word(slot), Domain::default())
+pub(super) fn read(
+    store: &EvmStore<NumericValue>,
+    owner: u64,
+    slot: u64,
+) -> EvmValue<NumericValue> {
+    store.read(address(owner), &word(slot), native::product().borrowed())
 }
 
-pub(super) fn output_word(outcome: &MachineOutcome, offset: u64) -> AbstractValue {
-    outcome.data.read_word(&word(offset), Domain::default())
+pub(super) fn output_word(
+    outcome: &EvmMachineOutcome<NumericValue>,
+    offset: u64,
+) -> EvmValue<NumericValue> {
+    outcome
+        .data
+        .read_word(&word(offset), native::product().borrowed())
 }
 
-pub(super) fn only(value: &AbstractValue, allowed: &[u64]) {
+pub(super) fn only(value: &EvmValue<NumericValue>, allowed: &[u64]) {
     // An interval plus congruence may denote the same small set as the finite
     // component. Assert the denotation rather than one product-domain layout.
     let covered = if let Some(values) = value.constants() {
@@ -303,7 +338,7 @@ pub(super) fn only(value: &AbstractValue, allowed: &[u64]) {
     );
 }
 
-pub(super) fn reachable(analysis: &WorldAnalysis, owner: u64, pc: usize) -> bool {
+pub(super) fn reachable(analysis: &EvmWorldAnalysis<NumericValue>, owner: u64, pc: usize) -> bool {
     if analysis.states().iter().any(|state| {
         state.active().code_address == address(owner) && state.executed_pcs.contains(&pc)
     }) {
@@ -330,7 +365,7 @@ pub(super) fn reachable(analysis: &WorldAnalysis, owner: u64, pc: usize) -> bool
 }
 
 pub(super) fn frontier_causes(
-    analysis: &WorldAnalysis,
+    analysis: &EvmWorldAnalysis<NumericValue>,
 ) -> Vec<(&evm_abstract::analysis::FrontierReason, Option<usize>)> {
     analysis
         .frontiers()

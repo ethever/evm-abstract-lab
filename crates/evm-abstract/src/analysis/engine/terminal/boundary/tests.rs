@@ -1,6 +1,7 @@
 //! Admission needs actual guards or raw finite retention, with failure vetoes.
 
 use super::Boundary;
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{
         FrontierReason, JoinBoundary, Limit, MachineError, RootTerminalRetention,
@@ -8,14 +9,14 @@ use crate::{
         machine::fixtures,
         transfer::{Execution, ExecutionFrontier, RetentionCause},
     },
-    domain::{Domain, relational::QueryReason, symbolic::ExprError},
+    domain::{ProductAlgebra, relational::QueryReason, symbolic::ExprError},
     resource::WorkBudget,
     world::rpc::{Failure, RpcContext, RpcFailureKind},
 };
 
 fn retention(cause: Option<RetentionCause>) -> Execution {
     Execution {
-        payload: fixtures::payload(Domain::default()),
+        payload: fixtures::payload(ProductAlgebra::default()),
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
         instruction_values: Vec::new(),

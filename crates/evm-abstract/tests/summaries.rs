@@ -1,4 +1,10 @@
 //! Whole-callee relation reuse, exact guards, graph preservation and shared budgets.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 #[path = "summaries/oracle.rs"]
 mod oracle;
 
@@ -6,15 +12,15 @@ use alloy_primitives::U256;
 use evm_abstract::{
     Fork,
     analysis::{
-        Config, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status,
-        WorldAnalysis, analyze_world,
+        Config, EvmWorldAnalysis, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind,
+        Status,
     },
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         relational::{CheckResult, RelationState},
     },
     ssa,
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use oracle::address;
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,31 +50,32 @@ fn call(op: u8, target: u16, value: u8, output: u8) -> String {
     format!("60{output:02x}5f5f5f{value}61{target:04x}6207a120{op:02x}")
 }
 
-fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
-    let mut world = World::new(Fork::Osaka, "test:summary:fixed-snapshot");
+fn fixture(accounts: &[(u64, &str)]) -> (EvmWorld<NumericValue>, EvmEntry<NumericValue>) {
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "test:summary:fixed-snapshot");
     for (number, code) in accounts {
-        let mut account = Account::from_hex(code, world.fork()).unwrap();
-        account.balance = AbstractValue::constant(U256::from(1_000_000));
-        account
-            .storage
-            .insert(U256::ZERO, AbstractValue::constant(U256::from(7)));
+        let mut account = EvmAccount::<NumericValue>::from_hex(code, world.fork()).unwrap();
+        account.balance = EvmValue::<NumericValue>::constant(U256::from(1_000_000));
+        account.storage.insert(
+            U256::ZERO,
+            EvmValue::<NumericValue>::constant(U256::from(7)),
+        );
         world.insert(address(*number), account).unwrap();
     }
-    let entry = Entry {
+    let entry = EvmEntry {
         address: address(0x101),
-        environment: evm_abstract::world::EvmEnvironment {
+        environment: evm_abstract::world::EvmEnvironmentValues {
             to: (address(0x101)).into(),
             caller: (address(0x1000)).into(),
-            value: AbstractValue::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
+            value: EvmValue::<NumericValue>::constant(U256::ZERO),
+            calldata: EvmByteArray::<NumericValue>::empty(),
             is_static: false,
-            ..evm_abstract::world::EvmEnvironment::default()
+            ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
         },
     };
     (world, entry)
 }
 
-fn relations(analysis: &WorldAnalysis) -> BTreeSet<String> {
+fn relations(analysis: &EvmWorldAnalysis<NumericValue>) -> BTreeSet<String> {
     analysis
         .outcomes()
         .iter()
@@ -180,16 +187,28 @@ fn same_observable_relations(
     )
 }
 
-fn checked_analyses(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
+fn checked_analyses(
+    accounts: &[(u64, &str)],
+) -> (
+    EvmWorldAnalysis<NumericValue>,
+    EvmWorldAnalysis<NumericValue>,
+) {
     let (world, entry) = fixture(accounts);
-    let enabled = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
-    let disabled = analyze_world(
-        world.clone(),
-        entry.clone(),
+    let enabled = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
+    let disabled = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
         ExecutionConfig {
             use_summaries: false,
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap();
     for analysis in [&enabled, &disabled] {
@@ -213,17 +232,27 @@ fn checked_analyses(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) 
     (enabled, disabled)
 }
 
-fn compare(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
+fn compare(
+    accounts: &[(u64, &str)],
+) -> (
+    EvmWorldAnalysis<NumericValue>,
+    EvmWorldAnalysis<NumericValue>,
+) {
     let (enabled, disabled) = checked_analyses(accounts);
     assert_eq!(relations(&enabled), relations(&disabled));
     (enabled, disabled)
 }
 
-fn compare_full_store(accounts: &[(u64, &str)]) -> (WorldAnalysis, WorldAnalysis) {
+fn compare_full_store(
+    accounts: &[(u64, &str)],
+) -> (
+    EvmWorldAnalysis<NumericValue>,
+    EvmWorldAnalysis<NumericValue>,
+) {
     let (enabled, disabled) = checked_analyses(accounts);
     // The fixture clones one World and concrete Entry. Its saved input sources
     // stay fixed; only later private runtime leaves may be renamed.
-    let captured = |analysis: &WorldAnalysis| -> BTreeSet<u64> {
+    let captured = |analysis: &EvmWorldAnalysis<NumericValue>| -> BTreeSet<u64> {
         analysis.states()[0]
             .entry
             .active()
@@ -271,7 +300,7 @@ fn observable_relation_bijection_preserves_conditional_aliases_and_inputs() {
         };
         let scope = |number| {
             serde_json::json!({
-                "facts": [{"value": AbstractValue::constant(U256::from(number))}],
+                "facts": [{"value": EvmValue::<NumericValue>::constant(U256::from(number))}],
                 "conditional": []
             })
         };
@@ -285,7 +314,7 @@ fn observable_relation_bijection_preserves_conditional_aliases_and_inputs() {
         let mut else_facts = scope(9_u64);
         else_facts["conditional"] = serde_json::json!([repeated.clone()]);
         serde_json::json!(["Return", {
-            "length": AbstractValue::constant(U256::from(length)),
+            "length": EvmValue::<NumericValue>::constant(U256::from(length)),
             "conditional": [{
                 "condition": condition(first), "then_facts": then_facts, "else_facts": else_facts
             }, repeated]
@@ -368,7 +397,7 @@ fn observable_relation_bijection_preserves_conditional_aliases_and_inputs() {
     }
     let mut numeric = right.clone();
     numeric[0][1]["length"] =
-        serde_json::to_value(AbstractValue::constant(U256::from(33))).unwrap();
+        serde_json::to_value(EvmValue::<NumericValue>::constant(U256::from(33))).unwrap();
     assert!(!matches(&numeric));
     let mut polarity = right.clone();
     let branch = &mut polarity[0][1]["conditional"][0];
@@ -452,8 +481,10 @@ fn complete_read_only_relation_reuses_across_call_sites_and_output_ranges() {
     );
     // Replayed receipts must use the new caller's native state IDs, not the
     // original certificate's numbering, and must retain instruction phases.
-    let partial = ssa::build_partial_world(&enabled).unwrap();
-    partial.verify(&enabled).unwrap();
+    let partial = ssa::build_partial_world(&enabled, &mut native::postprocessing()).unwrap();
+    partial
+        .verify(&enabled, &mut native::postprocessing())
+        .unwrap();
     assert!(partial.deferred_edges().is_empty());
     assert_eq!(partial.transitions().len(), enabled.edges().len());
     for state in enabled.states() {
@@ -523,14 +554,14 @@ fn nested_revert_certificate_preserves_graph_and_rollback_effects() {
     let (enabled, disabled) = compare(&[(0x101, &caller), (0x200, &callee), (0x201, "60095f5500")]);
     for analysis in [&enabled, &disabled] {
         let initial = &analysis.states()[0].entry.store;
-        let domain = Domain::from_spec(analysis.domain_spec());
+        let domain = native::product_with(analysis.domain_spec());
         // This additional inspection query has its own bounded encoding work.
         // The analysis above still runs its unchanged default execution policy.
         let inspection = evm_abstract::domain::relational::RelationLimits {
             max_nodes: 8192,
             ..domain.spec().relations()
         };
-        let zero = AbstractValue::constant(U256::ZERO);
+        let zero = EvmValue::<NumericValue>::constant(U256::ZERO);
         for outcome in analysis.outcomes() {
             // These compare the actual immutable roots, including source IDs
             // and initial binding graphs. Rollback cannot replace input arrays
@@ -547,14 +578,25 @@ fn nested_revert_certificate_preserves_graph_and_rollback_effects() {
                 }
             }
             if outcome.kind == OutcomeKind::Return {
-                let word = outcome.data.read_word_checked(&zero, domain).unwrap();
+                let word = outcome
+                    .data
+                    .read_word_checked(&zero, domain.borrowed())
+                    .unwrap();
                 let expression = word.symbolic_expression().unwrap();
                 for candidate in word
                     .constants()
                     .expect("literal revert result or pre-entry failure")
                 {
                     assert_eq!(
-                        RelationState::default().can_equal(&expression, *candidate, &inspection),
+                        RelationState::default().can_equal(
+                            &expression,
+                            *candidate,
+                            &inspection,
+                            native::product_with(
+                                native::spec(8, 4, 256).with_relations(inspection.to_owned())
+                            )
+                            .borrowed()
+                        ),
                         CheckResult::MayBeFeasible
                     );
                 }
@@ -562,7 +604,11 @@ fn nested_revert_certificate_preserves_graph_and_rollback_effects() {
                     RelationState::default().can_equal(
                         &expression,
                         U256::from(0xffff),
-                        &inspection
+                        &inspection,
+                        native::product_with(
+                            native::spec(8, 4, 256).with_relations(inspection.to_owned())
+                        )
+                        .borrowed()
                     ),
                     CheckResult::ProvenImpossible
                 );
@@ -608,13 +654,14 @@ fn incomplete_child_chain_never_publishes_a_complete_relation() {
         (0x300, &third),
         (0x400, "00"),
     ]);
-    let analysis = analyze_world(
-        world,
-        entry,
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
         ExecutionConfig {
             max_call_depth: 3,
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(analysis.status(), Status::Incomplete);
@@ -631,9 +678,9 @@ fn incomplete_child_chain_never_publishes_a_complete_relation() {
 // Reconstruct the full guard from an actual call entry, including its rollback
 // checkpoint. Both publications and reuse sites must bind to this callee.
 fn read_only_summary_input_at(
-    analysis: &WorldAnalysis,
+    analysis: &EvmWorldAnalysis<NumericValue>,
     state_id: usize,
-) -> evm_abstract::analysis::SummaryInput {
+) -> evm_abstract::analysis::EvmSummaryInput<NumericValue> {
     let source = &analysis.states()[state_id];
     assert_eq!(source.id, state_id);
     assert!(source.execution_evidence().unwrap().is_current());
@@ -661,7 +708,7 @@ fn read_only_summary_input_at(
     };
     assert_eq!(frame.state.program.as_ref(), Some(program));
     let config = analysis.config();
-    evm_abstract::analysis::SummaryInput {
+    evm_abstract::analysis::EvmSummaryInput {
         fork: analysis.world().fork(),
         snapshot: analysis.world().identity().clone(),
         world_fingerprint: analysis.world().fingerprint().unwrap(),
@@ -678,7 +725,6 @@ fn read_only_summary_input_at(
             .saturating_sub(payload.call_stack.depth()),
         max_call_depth: config.max_call_depth,
         context_depth: config.analysis.context_depth,
-        max_constants: config.analysis.max_constants,
         domain_spec: analysis.domain_spec(),
         max_memory_bytes: config.max_memory_bytes,
     }
@@ -693,7 +739,13 @@ fn rollback_touch_preconditions_keep_the_original_two_call_sequence_as_misses() 
         call(0xf1, 0x200, 0, 32)
     );
     let (world, entry) = fixture(&[(0x101, &caller), (0x200, "6003565b5f545f5260205ff3")]);
-    let analysis = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(analysis.status(), Status::Converged);
     assert!(analysis.frontiers().is_empty());
     assert_eq!(analysis.summary_stats().hits, 0);
@@ -823,7 +875,13 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
         root_terminal_coverage: false,
         ..ExecutionConfig::default()
     };
-    let complete = analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let complete = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(complete.status(), Status::Converged);
     assert!(complete.frontiers().is_empty());
     assert_eq!(complete.summary_stats().misses, 2);
@@ -875,13 +933,14 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
     let (mut lo, mut hi) = (1, limit);
     while lo < hi {
         let budget = lo + (hi - lo) / 2;
-        let analysis = analyze_world(
-            world.clone(),
-            entry.clone(),
+        let analysis = native::run(
+            &native::product(),
+            AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
             ExecutionConfig {
                 max_work: budget,
                 ..config.clone()
             },
+            &Control::default(),
         )
         .unwrap();
         if analysis.summary_stats().hits > 0 && analysis.summary_stats().imported_states > 0 {
@@ -890,13 +949,14 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
             lo = budget + 1;
         }
     }
-    let analysis = analyze_world(
-        world,
-        entry,
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
         ExecutionConfig {
             max_work: lo - 1,
             ..config
         },
+        &Control::default(),
     )
     .unwrap();
     let budget = lo - 1;
@@ -921,8 +981,10 @@ fn interrupted_summary_import_retains_an_explicit_shared_budget_frontier() {
     assert_eq!(analysis.status(), Status::Incomplete);
     assert!(analysis.work() <= budget);
     assert!(ssa::build_world(&analysis).is_err());
-    let partial = ssa::build_partial_world(&analysis).unwrap();
-    partial.verify(&analysis).unwrap();
+    let partial = ssa::build_partial_world(&analysis, &mut native::postprocessing()).unwrap();
+    partial
+        .verify(&analysis, &mut native::postprocessing())
+        .unwrap();
     assert_eq!(partial.status(), Status::Incomplete);
     assert!(
         partial
@@ -957,15 +1019,24 @@ fn creation_changes_nonce_and_code_overlay_preconditions_before_later_calls() {
     let hex = revm::primitives::hex::encode(caller);
     let (mut world, entry) = fixture(&[(0x101, &hex), (0x200, "5f545f5260205ff3")]);
     let created = address(0x101).create(0);
-    world.insert(created, Account::absent()).unwrap();
-    let enabled = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
-    let disabled = analyze_world(
-        world.clone(),
-        entry.clone(),
+    world
+        .insert(created, EvmAccount::<NumericValue>::absent())
+        .unwrap();
+    let enabled = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
+    let disabled = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
         ExecutionConfig {
             use_summaries: false,
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap();
     for analysis in [&enabled, &disabled] {
@@ -1036,7 +1107,7 @@ fn selfdestruct_balance_effects_invalidate_later_exact_inputs() {
         inputs
             .iter()
             .any(|input| input.store.read_balance(address(0x201))
-                == AbstractValue::constant(U256::from(1_000_000)))
+                == EvmValue::<NumericValue>::constant(U256::from(1_000_000)))
     );
     assert!(inputs.iter().any(|input| {
         input
@@ -1050,9 +1121,9 @@ fn selfdestruct_balance_effects_invalidate_later_exact_inputs() {
 fn source_joins_do_not_widen_an_already_published_exact_relation() {
     let caller = format!("5b{}5060095f555f56", call(0xf4, 0x200, 0, 0));
     let (world, entry) = fixture(&[(0x101, &caller), (0x200, "5f545f5260205ff3")]);
-    let analysis = analyze_world(
-        world,
-        entry,
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
         ExecutionConfig {
             // 本测试需要循环后的调用汇合到同一源节点，再核对已发表证书保持不变。
             analysis: Config {
@@ -1061,6 +1132,7 @@ fn source_joins_do_not_widen_an_already_published_exact_relation() {
             },
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(
@@ -1073,45 +1145,36 @@ fn source_joins_do_not_widen_an_already_published_exact_relation() {
         .unwrap()
         .verify(&analysis)
         .unwrap();
-    let slot = AbstractValue::constant(U256::ZERO);
+    let slot = EvmValue::<NumericValue>::constant(U256::ZERO);
     let original = analysis
         .summaries()
         .iter()
         .find(|record| {
-            record.input.store.read(
-                address(0x101),
-                &slot,
-                evm_abstract::domain::Domain::default(),
-            ) == AbstractValue::constant(U256::from(7))
+            record
+                .input
+                .store
+                .read(address(0x101), &slot, native::product().borrowed())
+                == EvmValue::<NumericValue>::constant(U256::from(7))
         })
         .expect("initial exact relation was never published");
     assert!(
         analysis.states()[original.source_state]
             .entry
             .store
-            .read(
-                address(0x101),
-                &slot,
-                evm_abstract::domain::Domain::default()
-            )
+            .read(address(0x101), &slot, native::product().borrowed())
             .contains(U256::from(9))
     );
     assert!(original.outputs.iter().all(|output| {
-        output.store.read(
-            address(0x101),
-            &slot,
-            evm_abstract::domain::Domain::default(),
-        ) == AbstractValue::constant(U256::from(7))
+        output
+            .store
+            .read(address(0x101), &slot, native::product().borrowed())
+            == EvmValue::<NumericValue>::constant(U256::from(7))
     }));
     assert!(analysis.summaries().iter().any(|record| {
         record
             .input
             .store
-            .read(
-                address(0x101),
-                &slot,
-                evm_abstract::domain::Domain::default(),
-            )
+            .read(address(0x101), &slot, native::product().borrowed())
             .contains(U256::from(9))
     }));
 }

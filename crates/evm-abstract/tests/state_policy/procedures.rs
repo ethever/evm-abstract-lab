@@ -6,7 +6,9 @@ use super::{
         recursive_returning, recursive_rollback, run, word, world,
     },
 };
+use crate::native;
 use alloy_primitives::U256;
+use evm_abstract::domain::ProductAlgebra;
 use evm_abstract::{
     analysis::{
         Acceleration, CorrelatedJoin, EnginePolicies, ExecutionConfig, FeedbackAcceleration,
@@ -14,9 +16,9 @@ use evm_abstract::{
         ProcedureSummaryKind, ProcedureSummaryPolicy, ProjectedSummaries, RecentDistinctJumps,
         RelativeState, SemanticPolicies, StructuralPartition,
     },
-    domain::{Domain, NumericValue, ValueAlgebra},
+    domain::NumericValue,
     resource::WorkBudget,
-    world::{Account, ByteArray, Existence, World},
+    world::{EvmAccount, EvmByteArray, EvmWorld, Existence},
 };
 use revm_bytecode::opcode;
 
@@ -32,7 +34,7 @@ pub(super) fn recursive_config() -> ExecutionConfig {
 fn both_complete_strategies_cover_recursive_body_output_and_feedback_growth() {
     let fixture = recursive_counter(true);
     let world = world(&fixture);
-    let entry = entry(ByteArray::unknown());
+    let entry = entry(EvmByteArray::<NumericValue>::unknown());
     let witnesses = oracle::witnesses(&world, &[0, 1, 2, 6, 17], |n, witness| {
         assert_eq!(witness.kind, OutcomeKind::Return);
         assert_eq!(witness.output_word(0), U256::from(n));
@@ -78,7 +80,9 @@ fn both_complete_strategies_cover_recursive_body_output_and_feedback_growth() {
                 .collect();
             assert!(
                 procedures.iter().any(|p| {
-                    let counter = p.input.read(address(ROOT), &word(0), Domain::default());
+                    let counter =
+                        p.input
+                            .read(address(ROOT), &word(0), native::product().borrowed());
                     counter.contains(U256::from(6))
                         && counter.contains(U256::from(17))
                         && !p.covered_blocks.is_empty()
@@ -89,10 +93,10 @@ fn both_complete_strategies_cover_recursive_body_output_and_feedback_growth() {
                 procedures.iter().flat_map(|p| &p.outputs).any(|o| {
                     o.kind == OutcomeKind::Return
                         && o.data
-                            .read_word(&word(0), Domain::default())
+                            .read_word(&word(0), native::product().borrowed())
                             .contains(U256::from(17))
                         && o.store
-                            .read(address(ROOT), &word(0), Domain::default())
+                            .read(address(ROOT), &word(0), native::product().borrowed())
                             .contains(U256::from(17))
                 }),
                 "output growth must reach retained recursive callers"
@@ -108,7 +112,7 @@ fn both_complete_strategies_cover_recursive_body_output_and_feedback_growth() {
 fn recursive_revert_restores_parent_persistent_and_transient_memory_witnesses() {
     let fixture = recursive_rollback();
     let world = world(&fixture);
-    let entry = entry(ByteArray::unknown());
+    let entry = entry(EvmByteArray::<NumericValue>::unknown());
     // The initial caller and recursive body have distinct CALL sites. The
     // repeated structural edge is established at depth four in this fixture.
     let config = ExecutionConfig {
@@ -148,23 +152,23 @@ fn recursive_revert_restores_parent_persistent_and_transient_memory_witnesses() 
         assert_eq!(
             outcome
                 .store
-                .read(address(ROOT), &word(0), Domain::default())
+                .read(address(ROOT), &word(0), native::product().borrowed())
                 .singleton(),
             Some(U256::from(5))
         );
         assert_eq!(
             outcome
                 .data
-                .read_word(&word(32), Domain::default())
+                .read_word(&word(32), native::product().borrowed())
                 .singleton(),
             Some(U256::from(7))
         );
     }
 }
 
-fn unknown_world(fixture: &Fixture) -> World {
+fn unknown_world(fixture: &Fixture) -> EvmWorld<NumericValue> {
     let mut world = world(fixture);
-    let mut unknown = Account::unknown();
+    let mut unknown = EvmAccount::<NumericValue>::unknown();
     unknown.existence = Existence::Present;
     unknown.balance = word(BALANCE);
     unknown.nonce = word(0);
@@ -172,8 +176,11 @@ fn unknown_world(fixture: &Fixture) -> World {
     world
 }
 
-fn concrete_unknown(world: &World, implementation: &Fixture) -> World {
-    let mut concrete = World::new(world.fork(), "concrete unknown-code witness");
+fn concrete_unknown(
+    world: &EvmWorld<NumericValue>,
+    implementation: &Fixture,
+) -> EvmWorld<NumericValue> {
+    let mut concrete = EvmWorld::<NumericValue>::new(world.fork(), "concrete unknown-code witness");
     for (owner, account) in world.accounts() {
         if *owner != address(UNKNOWN) {
             concrete.insert(*owner, account.clone()).unwrap();
@@ -188,7 +195,7 @@ fn both_strategies_cover_unknown_callbacks_and_each_rollback_scope() {
     for outer_revert in [false, true] {
         let fixture = callback_parent(outer_revert);
         let world = unknown_world(&fixture);
-        let entry = entry(ByteArray::empty());
+        let entry = entry(EvmByteArray::<NumericValue>::empty());
         let graphs = [
             default_run(&world, &entry, recursive_config()),
             alternate_run(&world, &entry, recursive_config()),
@@ -258,14 +265,14 @@ struct BorrowedOutputs<'a> {
     coarse: &'a bool,
 }
 
-impl ProcedureSummaryPolicy<Domain> for BorrowedOutputs<'_> {
+impl ProcedureSummaryPolicy<ProductAlgebra> for BorrowedOutputs<'_> {
     fn admit_relative(
         &self,
         current: &RelativeState<NumericValue>,
         incoming: &RelativeState<NumericValue>,
         site: PolicySite,
         acceleration: Acceleration,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<RelativeState<NumericValue>, MachineError> {
         ProjectedSummaries.admit_relative(current, incoming, site, acceleration, cx)
     }
@@ -275,7 +282,7 @@ impl ProcedureSummaryPolicy<Domain> for BorrowedOutputs<'_> {
         current: Option<&ProcedureOutput<NumericValue>>,
         incoming: &ProcedureOutput<NumericValue>,
         acceleration: Acceleration,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<ProcedureOutput<NumericValue>, MachineError> {
         let output = ProjectedSummaries.admit_output(current, incoming, acceleration, cx)?;
         if *self.coarse {
@@ -290,7 +297,7 @@ impl ProcedureSummaryPolicy<Domain> for BorrowedOutputs<'_> {
 fn borrowed_summary_policy_changes_published_return_bytes_and_still_covers_revm() {
     let fixture = recursive_returning();
     let world = world(&fixture);
-    let entry = entry(ByteArray::unknown());
+    let entry = entry(EvmByteArray::<NumericValue>::unknown());
     let precise = default_run(&world, &entry, recursive_config());
     let coarse = true;
     let policies = EnginePolicies::new(RecentDistinctJumps, FirstResumeStatus).with_state(
@@ -320,9 +327,12 @@ fn borrowed_summary_policy_changes_published_return_bytes_and_still_covers_revm(
         .filter(|o| o.kind == OutcomeKind::Return)
         .collect();
     assert!(!precise_outputs.is_empty());
-    assert!(precise_outputs.iter().all(
-        |o| o.data.read_word(&word(0), Domain::default()).singleton() == Some(U256::from(42))
-    ));
+    assert!(precise_outputs.iter().all(|o| {
+        o.data
+            .read_word(&word(0), native::product().borrowed())
+            .singleton()
+            == Some(U256::from(42))
+    }));
     assert!(
         changed
             .procedure_summaries()
@@ -331,7 +341,7 @@ fn borrowed_summary_policy_changes_published_return_bytes_and_still_covers_revm(
             .flat_map(|p| &p.outputs)
             .any(|o| o.kind == OutcomeKind::Return
                 && o.data
-                    .read_word(&word(0), Domain::default())
+                    .read_word(&word(0), native::product().borrowed())
                     .contains(U256::from(43))),
         "the selected output policy must change retained content, including first output"
     );
@@ -341,7 +351,7 @@ fn borrowed_summary_policy_changes_published_return_bytes_and_still_covers_revm(
             .iter()
             .any(|o| o.kind == OutcomeKind::Return
                 && o.data
-                    .read_word(&word(0), Domain::default())
+                    .read_word(&word(0), native::product().borrowed())
                     .contains(U256::from(43))),
         "coarser outputs must propagate to actual outer callers"
     );
@@ -352,7 +362,7 @@ fn public_relative_coarsening_removes_a_real_stack_alias() {
     let mut a = Assembly::default();
     a.input().op(opcode::DUP1).op(opcode::STOP);
     let world = world(&a.finish());
-    let entry = entry(ByteArray::unknown());
+    let entry = entry(EvmByteArray::<NumericValue>::unknown());
     let graph = default_run(&world, &entry, config());
     complete(&graph);
     let source = graph
@@ -361,7 +371,7 @@ fn public_relative_coarsening_removes_a_real_stack_alias() {
         .find_map(|state| state.exit.as_ref())
         .unwrap();
     assert_eq!(source.active().stack.len(), 2);
-    let algebra = ValueAlgebra::new(Domain::default());
+    let algebra = native::product();
     let mut budget = WorkBudget::new(20_000_000);
     let mut cx = PolicyContext::new(algebra.borrowed(), &entry, &mut budget);
     let projected = RelativeState::project(source, &mut cx).unwrap();
@@ -369,8 +379,8 @@ fn public_relative_coarsening_removes_a_real_stack_alias() {
     assert!(!projected.semantic_eq(&coarse, &mut cx).unwrap());
     let precise_instance = projected.instantiate(&mut cx).unwrap();
     let coarse_instance = coarse.instantiate(&mut cx).unwrap();
-    let compare = |state: &evm_abstract::analysis::MachinePayload| {
-        Domain::default().apply(opcode::XOR, &state.active().stack)
+    let compare = |state: &evm_abstract::analysis::EvmMachinePayload<NumericValue>| {
+        native::product().apply(opcode::XOR, &state.active().stack)
     };
     assert_eq!(compare(&precise_instance).singleton(), Some(U256::ZERO));
     assert!(compare(&coarse_instance).contains(U256::ONE));

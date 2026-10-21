@@ -1,19 +1,17 @@
 //! Cancellation drops both the pending operation and its connection reactor.
 
 use super::{Reply, Server, healthy};
-use crate::{
-    Address, U256,
-    analysis::{self, ExecutionConfig, control::Control, progress::Observer},
-    world::{
-        Entry, EvmEnvironment,
-        rpc::{RpcError, Session},
-    },
-};
 use std::{
     collections::BTreeSet,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
+};
+use {
+    crate::Address, crate::U256, crate::analysis, crate::analysis::ExecutionConfig,
+    crate::analysis::control::Control, crate::analysis::progress::Observer,
+    crate::world::rpc::RpcError, crate::world::rpc::Session, crate::world::test_support::TestEntry,
+    crate::world::test_support::TestEnvironment,
 };
 
 #[test]
@@ -36,7 +34,9 @@ fn cancelling_pending_headers_or_body_closes_socket_and_installs_no_batch_facts(
             let control = Control::new(Observer::default());
             let mut input = server.input();
             input.timeout = Duration::from_secs(15);
-            let mut session = Session::load_with_control(&input, &control).unwrap();
+            let mut session =
+                Session::<crate::domain::NumericValue>::load_with_control(&input, &control)
+                    .unwrap();
             let address = Address::repeat_byte(0x22);
             let before = session.world().account(address).unwrap().clone();
             let cancellation = control.cancellation().clone();
@@ -77,19 +77,31 @@ fn cancelled_analysis_never_starts_rpc_or_returns_an_incomplete_success() {
         let control = Control::new(Observer::default());
         control.cancellation().cancel();
         let address = Address::repeat_byte(0x22);
-        let entry = Entry {
+        let entry = TestEntry {
             address,
-            environment: EvmEnvironment {
+            environment: TestEnvironment {
                 to: address.into(),
-                ..EvmEnvironment::default()
+                ..TestEnvironment::default()
             },
         };
-        let error = analysis::analyze_rpc_with_control(
-            &server.input(),
-            entry,
-            ExecutionConfig::default(),
-            &control,
-        )
+        let error = {
+            let algebra =
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+            let policies = crate::analysis::EnginePolicies::new(
+                crate::analysis::ContextInsensitive,
+                crate::analysis::MergeResumeStatus,
+            );
+            let mut extension = crate::analysis::cooperation::NoExtension;
+            let control = (&control).clone();
+            let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+            crate::analysis::analyze_rpc(
+                engine,
+                &server.input(),
+                entry,
+                ExecutionConfig::default(),
+                &control,
+            )
+        }
         .unwrap_err();
         assert!(matches!(error, analysis::RpcAnalysisError::Cancelled(_)));
         assert!(server.requests().is_empty());
@@ -122,19 +134,31 @@ fn cancellation_during_storage_discovery_returns_cancelled_instead_of_a_frontier
             cancellation.cancel();
         });
         let address = Address::repeat_byte(0x22);
-        let entry = Entry {
+        let entry = TestEntry {
             address,
-            environment: EvmEnvironment {
+            environment: TestEnvironment {
                 to: address.into(),
-                ..EvmEnvironment::default()
+                ..TestEnvironment::default()
             },
         };
-        let error = analysis::analyze_rpc_with_control(
-            &server.input(),
-            entry,
-            ExecutionConfig::default(),
-            &control,
-        )
+        let error = {
+            let algebra =
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+            let policies = crate::analysis::EnginePolicies::new(
+                crate::analysis::ContextInsensitive,
+                crate::analysis::MergeResumeStatus,
+            );
+            let mut extension = crate::analysis::cooperation::NoExtension;
+            let control = (&control).clone();
+            let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+            crate::analysis::analyze_rpc(
+                engine,
+                &server.input(),
+                entry,
+                ExecutionConfig::default(),
+                &control,
+            )
+        }
         .unwrap_err();
         assert!(matches!(error, analysis::RpcAnalysisError::Cancelled(_)));
         assert!(disconnected.recv_timeout(Duration::from_secs(3)).unwrap());

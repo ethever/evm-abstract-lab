@@ -1,21 +1,24 @@
 //! Executable-state partitioning depends on effective facts, not sparse caches.
 
 use super::super::*;
-use crate::{Fork, world::Account};
+use {crate::Fork, crate::world::test_support::TestAccount};
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn initial() -> Store {
-    let mut world = World::new(Fork::Osaka, "code identity canonical defaults");
+fn initial() -> TestStore {
+    let mut world = TestWorld::new(Fork::Osaka, "code identity canonical defaults");
     world
         .insert(
             address(0x101),
-            Account::from_hex("00", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("00", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    Store::new(&world)
+    TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    )
 }
 
 #[test]
@@ -36,8 +39,14 @@ fn explicit_defaults_and_touch_only_joins_preserve_code_identity() {
     equivalent.may_touch_all();
     assert_eq!(equivalent.code_identity(), expected);
     for joined in [
-        original.join(&equivalent, Domain::default()),
-        equivalent.join(&original, Domain::default()),
+        original.join(
+            &equivalent,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        ),
+        equivalent.join(
+            &original,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        ),
     ] {
         assert_eq!(joined.code_identity(), expected);
     }
@@ -78,7 +87,7 @@ fn real_code_presence_and_owner_lifecycle_differences_still_partition() {
     let before = original.code_identity();
     for code in [
         Code::Empty,
-        Account::from_hex("00", Fork::Osaka).unwrap().code,
+        TestAccount::from_hex("00", Fork::Osaka).unwrap().code,
         Code::Delegation(address(0x300)),
     ] {
         let mut changed = original.clone();

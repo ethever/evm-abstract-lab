@@ -161,10 +161,12 @@ struct Successful {
 impl EvmNumericAlgebra for Successful {
     type Element = Queried;
     fn spec(&self) -> DomainSpec {
-        Domain::default().spec().with_relations(RelationLimits {
-            enabled: self.relations,
-            ..Default::default()
-        })
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                enabled: self.relations,
+                ..Default::default()
+            })
     }
     fn project_numeric(&self, value: &Queried) -> Queried {
         value.clone()
@@ -181,8 +183,13 @@ impl EvmNumericAlgebra for Successful {
     fn reduce_numeric(&self, value: &Queried) -> NumericReduction<Queried> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Queried]) -> NumericReduction<Queried> {
-        let [left, right] = args else {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Queried>,
+    ) -> NumericReduction<Queried> {
+        let args: Vec<_> = args.collect();
+        let [left, right] = args.as_slice() else {
             return NumericReduction::stable(Queried::top());
         };
         if left.members.is_empty()
@@ -214,7 +221,7 @@ impl EvmNumericAlgebra for Successful {
             probe: None,
         })
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Queried>) -> usize {
+    fn operation_work<'a>(&self, _op: u8, args: impl Iterator<Item = &'a Queried>) -> usize {
         args.fold(1usize, |pairs, value| {
             pairs.saturating_mul(value.members.len().saturating_add(1))
         })

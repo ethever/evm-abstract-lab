@@ -1,19 +1,21 @@
 use super::support::{
     Assembly, ROOT, address, complete, config, conservative_guarded_returns_include,
-    construct_world, entry, executed_opcode, no_bad_branch, possible_lengths, reachable,
-    return_words, run, run_world, word,
+    construct_world, entry, executed_opcode, no_bad_branch, numeric_spec, possible_lengths,
+    reachable, return_words, run, run_world, word,
 };
+use crate::native;
 use alloy_primitives::U256;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
     analysis::OutcomeKind,
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         provenance::{Origin, Provenance},
-        relational::{CheckResult, ValueQuery},
+        relational::{CheckResult, EvmValueQuery},
         symbolic::{ByteStateKind, ExprKind, SlotStateKind},
     },
-    world::ByteArray,
+    world::EvmByteArray,
 };
 use revm_bytecode::opcode;
 
@@ -57,14 +59,14 @@ fn symbolic_unaligned_word_partial_overwrite_preserves_old_read() {
         assert_eq!(
             outcome
                 .data
-                .read_word(&word(0), Domain::default())
+                .read_word(&word(0), native::product().borrowed())
                 .singleton(),
             Some(original)
         );
         assert_eq!(
             outcome
                 .data
-                .read_word(&word(32), Domain::default())
+                .read_word(&word(32), native::product().borrowed())
                 .singleton(),
             Some(U256::from_be_bytes(overwritten))
         );
@@ -116,7 +118,7 @@ fn symbolic_word_byte_overlay_keeps_history_and_concrete_guard_witnesses() {
     ] {
         let mut calldata = U256::from(offset).to_be_bytes::<32>().to_vec();
         calldata.extend(original.to_be_bytes::<32>());
-        let input = entry(ByteArray::exact(&calldata));
+        let input = entry(EvmByteArray::<NumericValue>::exact(&calldata));
         let exact = run_world(world.clone(), input.clone(), config());
         no_bad_branch(&exact, &fixture, ROOT);
         assert!(!reachable(&exact, ROOT, fixture.labels["bad_history"]));
@@ -197,7 +199,7 @@ fn copied_unknown_content_hashes_to_the_same_storage_slot() {
                 outcome.kind == OutcomeKind::Return
                     && outcome
                         .data
-                        .read_word(&word(0), Domain::default())
+                        .read_word(&word(0), native::product().borrowed())
                         .singleton()
                         == Some(U256::from(expected))
             }),
@@ -253,7 +255,7 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
         fixture.code, fixture.labels
     );
     let analysis = run(&fixture.code);
-    let domain = Domain::from_spec(analysis.domain_spec());
+    let domain = native::product_with(analysis.domain_spec());
     no_bad_branch(&analysis, &fixture, ROOT);
     return_words(&analysis, &[0, 7]);
     for (label, op) in [
@@ -270,7 +272,11 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
     assert!(reachable(&analysis, ROOT, fixture.labels["outside"]));
     assert!(analysis.outcomes().iter().any(|outcome| {
         outcome.kind == OutcomeKind::Return
-            && outcome.data.read_word(&word(0), domain).singleton() == Some(U256::ZERO)
+            && outcome
+                .data
+                .read_word(&word(0), domain.borrowed())
+                .singleton()
+                == Some(U256::ZERO)
     }));
     let good: Vec<_> = analysis
         .outcomes()
@@ -279,7 +285,7 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
             outcome.kind == OutcomeKind::Return
                 && outcome
                     .data
-                    .read_word(&word(0), Domain::default())
+                    .read_word(&word(0), native::product().borrowed())
                     .singleton()
                     == Some(U256::from(7))
         })
@@ -357,7 +363,7 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
         .1;
     assert_eq!(captured_length, original_operand);
     let expected_length = domain
-        .reduce(&AbstractValue::unsigned_range(U256::ZERO, U256::from(512)).unwrap())
+        .reduce(&EvmValue::<NumericValue>::unsigned_range(U256::ZERO, U256::from(512)).unwrap())
         .value;
     assert_eq!(captured_length.numeric(), expected_length.numeric());
     assert_eq!(
@@ -366,9 +372,15 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
     );
     possible_lengths(&payload.relations, captured_length, &[0, 32, 33, 64, 512]);
     assert_eq!(
-        payload
-            .relations
-            .can_equal(length, U256::from(513), &config().analysis.relations),
+        payload.relations.can_equal(
+            length,
+            U256::from(513),
+            &numeric_spec().relations(),
+            native::product_with(
+                native::spec(8, 4, 256).with_relations(numeric_spec().relations())
+            )
+            .borrowed()
+        ),
         CheckResult::ProvenImpossible
     );
     assert_eq!(captured_length.expression(), input.len().expression());
@@ -416,10 +428,10 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
         .unwrap()
         .1;
     assert_eq!(stored_key, first_key);
-    let key_value = AbstractValue::top().with_expression(key.clone());
+    let key_value = EvmValue::<NumericValue>::top().with_expression(key.clone());
     let read = good[0]
         .store
-        .read_checked(address(ROOT), &key_value, domain)
+        .read_checked(address(ROOT), &key_value, domain.borrowed())
         .unwrap();
     assert_eq!(read.numeric(), word(7).numeric());
     assert_eq!(read.provenance(), word(7).provenance());
@@ -427,15 +439,19 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
         read,
         good[0]
             .store
-            .read_checked(address(ROOT), &key_value, domain)
+            .read_checked(address(ROOT), &key_value, domain.borrowed())
             .unwrap()
     );
     assert_eq!(
         payload.relations.local_value(
             &read.symbolic_expression().unwrap(),
-            &config().analysis.relations
+            &numeric_spec().relations(),
+            native::product_with(
+                native::spec(8, 4, 256).with_relations(numeric_spec().relations())
+            )
+            .borrowed()
         ),
-        ValueQuery::Exact(U256::from(7))
+        EvmValueQuery::<NumericValue>::Exact(U256::from(7))
     );
     // Capture the actual second KECCAK before RETURN's later memory write.
     // Check the alias independently under its pre-SLOAD relations, before the
@@ -455,15 +471,10 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
     let second_view = hashed_payload
         .active()
         .memory
-        .slice(
-            &word(0x400),
-            captured_length,
-            config().max_memory_bytes,
-            domain,
-        )
+        .slice(&word(0x400), captured_length, domain.borrowed())
         .unwrap();
     let second_key = second_view
-        .keccak(domain, config().max_memory_bytes)
+        .keccak(domain.borrowed(), config().max_memory_bytes)
         .unwrap();
     assert_eq!(second_key.numeric(), actual_second_key.numeric());
     // The native content API has no opcode source annotation. The real EVM
@@ -477,13 +488,17 @@ fn symbolic_length_copy_hash_storage_and_disjoint_mcopy_keep_the_source() {
     assert_eq!(second_key.expression(), actual_second_key.expression());
     let second_read = good[0]
         .store
-        .read_checked(address(ROOT), &second_key, domain)
+        .read_checked(address(ROOT), &second_key, domain.borrowed())
         .unwrap();
     assert_eq!(
         hashed_payload.relations.local_value(
             &second_read.symbolic_expression().unwrap(),
-            &config().analysis.relations
+            &numeric_spec().relations(),
+            native::product_with(
+                native::spec(8, 4, 256).with_relations(numeric_spec().relations())
+            )
+            .borrowed()
         ),
-        ValueQuery::Exact(U256::from(7))
+        EvmValueQuery::<NumericValue>::Exact(U256::from(7))
     );
 }

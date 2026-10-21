@@ -2,8 +2,10 @@ use super::support::{
     Assembly, Fixture, ROOT, address, complete, config, construct_world, entry, no_bad_branch,
     reachable, return_words, run, run_world,
 };
+use crate::native;
 use alloy_primitives::U256;
-use evm_abstract::{Fork, analysis::OutcomeKind, world::ByteArray};
+use evm_abstract::domain::NumericValue;
+use evm_abstract::{Fork, analysis::OutcomeKind, world::EvmByteArray};
 use revm_bytecode::opcode;
 
 /// Bounds come from EVM branches, never from choosing one concrete length.
@@ -107,7 +109,7 @@ fn bounded_large_logical_copy_does_not_expand_one_byte_at_a_time() {
     policy.max_memory_bytes = 1 << 20;
     let analysis = run_world(
         construct_world(Fork::Osaka, &[(ROOT, &fixture.code)]),
-        entry(ByteArray::unknown()),
+        entry(EvmByteArray::<NumericValue>::unknown()),
         policy,
     );
     complete(&analysis);
@@ -141,7 +143,7 @@ fn copy_over_materialization_cap_retains_the_complete_logical_success_domain() {
     policy.max_memory_bytes = 128;
     let analysis = run_world(
         construct_world(Fork::Osaka, &[(ROOT, &fixture.code)]),
-        entry(ByteArray::unknown()),
+        entry(EvmByteArray::<NumericValue>::unknown()),
         policy,
     );
     complete(&analysis);
@@ -277,13 +279,17 @@ fn delegate_echo_fixture(revert: bool) -> (Fixture, Fixture) {
 
 fn delegate_echo(revert: bool) {
     use super::support::word;
-    use evm_abstract::{analysis::FrameCode, domain::Domain, world::Store};
+    use evm_abstract::{analysis::FrameCode, world::EvmStore};
 
     let (root, child) = delegate_echo_fixture(revert);
     let world = construct_world(Fork::Osaka, &[(ROOT, &root.code), (0x200, &child.code)]);
-    let analysis = run_world(world.clone(), entry(ByteArray::unknown()), config());
+    let analysis = run_world(
+        world.clone(),
+        entry(EvmByteArray::<NumericValue>::unknown()),
+        config(),
+    );
     complete(&analysis);
-    let domain = Domain::from_spec(analysis.domain_spec());
+    let domain = native::product_with(analysis.domain_spec());
     let initial = &analysis.states()[0].entry;
     assert_eq!(initial.call_stack.depth(), 1);
     let checkpoint = initial.active().saved_store.clone();
@@ -302,22 +308,31 @@ fn delegate_echo(revert: bool) {
     let mut failure_store = initial.store.clone();
     failure_store.restore(checkpoint.clone());
     assert_eq!(failure_store, captured);
-    failure_store.finalize_transaction(domain).unwrap();
+    failure_store
+        .finalize_transaction(domain.borrowed())
+        .unwrap();
     assert!(!failure_store.symbolic_limit_reached());
     // No pending deletion, uncertain touch or transient effect survives restore.
     // Cleanup therefore preserves every field and captured input identity, so
     // the pre-entry seed and entered failures have the same full Store oracle.
     assert_eq!(failure_store, captured);
-    let empty = ByteArray::empty();
-    let failure_matches =
-        |data: &ByteArray, store: &Store| data == &empty && store == &failure_store;
+    let empty = EvmByteArray::<NumericValue>::empty();
+    let failure_matches = |data: &EvmByteArray<NumericValue>, store: &EvmStore<NumericValue>| {
+        data == &empty && store == &failure_store
+    };
     assert!(failure_matches(&empty, &captured));
-    assert!(!failure_matches(&ByteArray::exact(&[0]), &failure_store));
-    assert!(!failure_matches(&ByteArray::memory(), &failure_store));
+    assert!(!failure_matches(
+        &EvmByteArray::<NumericValue>::exact(&[0]),
+        &failure_store
+    ));
+    assert!(!failure_matches(
+        &EvmByteArray::<NumericValue>::memory(),
+        &failure_store
+    ));
     assert!(!failure_matches(&empty, &initial.store));
     let mut wrong_store = captured.clone();
     wrong_store
-        .write_transient_checked(address(ROOT), &word(0), &word(1), domain)
+        .write_transient_checked(address(ROOT), &word(0), &word(1), domain.borrowed())
         .unwrap();
     assert!(!failure_matches(&empty, &wrong_store));
 
@@ -428,8 +443,11 @@ fn delegate_echo(revert: bool) {
         }
         // Match this concrete execution against one unknown-input outcome, so
         // separate byte/length/store witnesses cannot mask a lost correlation.
-        let observed =
-            super::oracle::compare(&world, &entry(ByteArray::exact(&calldata)), &analysis);
+        let observed = super::oracle::compare(
+            &world,
+            &entry(EvmByteArray::<NumericValue>::exact(&calldata)),
+            &analysis,
+        );
         assert_eq!(
             observed.kind,
             if revert {
@@ -456,7 +474,7 @@ fn concrete_delegate_echo_witnesses_validate_the_symbolic_fixture_bytecode() {
                 for (offset, byte) in input.iter_mut().enumerate().skip(32) {
                     *byte = (offset % 251) as u8;
                 }
-                let entry = entry(ByteArray::exact(&input));
+                let entry = entry(EvmByteArray::<NumericValue>::exact(&input));
                 let analysis = run_world(world.clone(), entry.clone(), config());
                 complete(&analysis);
                 no_bad_branch(&analysis, &root, ROOT);
@@ -521,7 +539,7 @@ fn child_input_uses_the_selected_memory_window_instead_of_parent_calldata() {
     let root = root.finish();
     let analysis = run_world(
         construct_world(Fork::Osaka, &[(ROOT, &root.code), (0x200, &child.code)]),
-        entry(ByteArray::unknown()),
+        entry(EvmByteArray::<NumericValue>::unknown()),
         config(),
     );
     assert!(
@@ -545,7 +563,7 @@ fn concrete_zero_length_copy_does_not_expand_memory() {
         .op(opcode::MSIZE)
         .return_top();
     let world = construct_world(Fork::Osaka, &[(ROOT, &code.finish().code)]);
-    let entry = entry(ByteArray::empty());
+    let entry = entry(EvmByteArray::<NumericValue>::empty());
     let analysis = run_world(world.clone(), entry.clone(), config());
     return_words(&analysis, &[0]);
     let concrete = super::oracle::compare(&world, &entry, &analysis);

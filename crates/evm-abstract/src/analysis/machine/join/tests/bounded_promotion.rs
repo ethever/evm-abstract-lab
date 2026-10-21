@@ -1,5 +1,9 @@
 //! Whole-entry admission, canonical joint witnesses and failed publication.
 
+#[cfg(test)]
+use crate::analysis::testing::Store;
+use crate::domain::EvmNumericAlgebra as _;
+
 use crate::domain::ValueAlgebra;
 
 use super::*;
@@ -10,7 +14,7 @@ use crate::{
         relational::{Constraint, QueryReason, RelationLimits, RelationPathKind, RelationState},
         symbolic::{ExprError, StateError},
     },
-    world::{RangeError, Store, StoreError},
+    world::{RangeError, StoreError},
 };
 use revm_bytecode::opcode;
 use std::{collections::BTreeMap, sync::Arc};
@@ -94,14 +98,18 @@ fn promotion_admits_only_typed_complete_precision_refusals() {
     }
 }
 
-fn word_payload(base: &MachinePayload, word: u64, domain: Domain) -> MachinePayload {
+fn word_payload(
+    base: &MachinePayload,
+    word: u64,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+) -> MachinePayload {
     let mut payload = base.clone();
     payload.active_mut().stack = vec![fixtures::word(word)];
     payload.active_mut().memory = ByteArray::memory();
     payload
         .active_mut()
         .memory
-        .write_word(&fixtures::word(0), &fixtures::word(word), 4096, domain)
+        .write_word(&fixtures::word(0), &fixtures::word(word), domain)
         .unwrap();
     payload.normalize();
     payload
@@ -111,7 +119,11 @@ fn word_payload(base: &MachinePayload, word: u64, domain: Domain) -> MachinePayl
 /// accepting two marginal bounds or evaluating arbitrary symbolic expressions.
 /// The same assignment must satisfy the numeric stack and the complete memory,
 /// with no surviving path, guard, input alias or external use of its sources.
-pub(super) fn assert_joint_word_witness(payload: &MachinePayload, word: u64, domain: Domain) {
+pub(super) fn assert_joint_word_witness(
+    payload: &MachinePayload,
+    word: u64,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+) {
     let (assigned, _) = select_canonical_arm(payload, domain);
     let _ = canonical_word_assignment(&assigned, word, domain);
     let memory = &assigned.active().memory;
@@ -134,7 +146,7 @@ pub(super) fn assert_joint_word_witness(payload: &MachinePayload, word: u64, dom
 
 fn select_canonical_arm(
     payload: &MachinePayload,
-    domain: Domain,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
 ) -> (MachinePayload, BTreeMap<ExprId, ExprId>) {
     // A later acyclic successor can retain an exact old/canonical disjunction.
     // Choose its incoming canonical arm using the production whole-payload
@@ -166,17 +178,14 @@ fn select_canonical_arm(
 fn canonical_word_assignment(
     payload: &MachinePayload,
     word: u64,
-    domain: Domain,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
 ) -> BTreeMap<ExprId, ExprId> {
     let word = U256::from(word);
     assert!(payload.relations.is_empty());
     assert_eq!(payload.call_stack.depth(), 1);
     assert_eq!(payload.active().stack.len(), 1);
     let scalar = &payload.active().stack[0];
-    assert_eq!(
-        scalar,
-        &AbstractValue::from_numeric(scalar.numeric().clone())
-    );
+    assert_eq!(scalar, &TestValue::from_numeric(scalar.numeric().clone()));
     assert!(scalar.contains(word));
     let memory = &payload.active().memory;
     assert_eq!(memory.len().singleton(), Some(U256::from(32)));
@@ -241,12 +250,7 @@ fn canonical_word_assignment(
     let concrete = if memory.is_memory() {
         let mut concrete = ByteArray::memory();
         concrete
-            .write_word(
-                &fixtures::word(0),
-                &AbstractValue::constant(word),
-                4096,
-                domain,
-            )
+            .write_word(&fixtures::word(0), &TestValue::constant(word), domain)
             .unwrap();
         concrete
     } else {
@@ -263,7 +267,7 @@ fn canonical_word_assignment(
 
 fn exact_local_value(expression: &ExprId, limits: &RelationLimits) -> U256 {
     match RelationState::default().local_value(expression, limits) {
-        ValueQuery::Exact(value) => value,
+        TestValueQuery::Exact(value) => value,
         result => panic!(
             "grounded local query must be exact: {result:?}; expression={}",
             serde_json::to_string(expression).unwrap()
@@ -272,7 +276,7 @@ fn exact_local_value(expression: &ExprId, limits: &RelationLimits) -> U256 {
 }
 
 fn assert_assigned_cache(
-    value: &AbstractValue,
+    value: &TestValue,
     expected: U256,
     assignment: &BTreeMap<ExprId, ExprId>,
     limits: &RelationLimits,
@@ -300,7 +304,7 @@ pub(super) fn assert_poststep_word_witness(
     word: u64,
     call_value: u64,
     expected_store: &Store,
-    domain: Domain,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
 ) {
     // Only the read-only proof uses enabled local queries. The execution's
     // disabled relations, two-alternative policy and all budgets stay frozen.
@@ -424,13 +428,13 @@ pub(super) fn assert_poststep_word_witness(
         assert_assigned_cache(value, expected, &assignment, &limits);
     }
     let value = &assigned.active().call_value;
-    assert_eq!(value, &AbstractValue::from_numeric(value.numeric().clone()));
+    assert_eq!(value, &TestValue::from_numeric(value.numeric().clone()));
     assert!(value.contains(U256::from(call_value)));
     assigned
         .rename_fresh(&assignment, limits.expressions())
         .unwrap();
     // Numeric-only scalar cells have no aliases to the independent byte source.
-    assigned.active_mut().stack[0] = AbstractValue::constant(word_value);
+    assigned.active_mut().stack[0] = TestValue::constant(word_value);
     assigned.active_mut().call_value = fixtures::word(call_value);
     // The complete selected Store is the witness for this SAME word/call-value
     // assignment; byte cells and retained historical guards cannot narrow it.
@@ -450,7 +454,10 @@ pub(super) fn assert_poststep_word_witness(
 
 #[test]
 fn joint_selector_witness_rejects_a_tuple_with_only_valid_marginals() {
-    let domain = fixtures::config().domain().unwrap();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    ));
+    let domain = domain.borrowed();
     let limits = fixtures::config().analysis.relations;
     let base = fixtures::payload(domain);
     let owner = fixtures::address(0x101);
@@ -461,9 +468,7 @@ fn joint_selector_witness_rejects_a_tuple_with_only_valid_marginals() {
             .write_checked(owner, &fixtures::word(0), &fixtures::word(word), domain)
             .unwrap();
     }
-    let joined = first
-        .join(&second, ValueAlgebra::new(domain).borrowed())
-        .unwrap();
+    let joined = first.join(&second, domain).unwrap();
     let ByteStateKind::Ite { condition, .. } = joined.active().memory.state_root().kind() else {
         panic!("the complete join must share one selector");
     };
@@ -514,31 +519,20 @@ fn joint_selector_witness_rejects_a_tuple_with_only_valid_marginals() {
 #[test]
 fn exact_retention_precedes_alternatives_promotion_of_both_complete_operands() {
     let mut config = fixtures::config();
-    config.analysis.relations.enabled = false;
-    config.analysis.relations.max_constraints = 2;
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.enabled = false;
+    config_numeric.relations.max_constraints = 2;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let (world, environment) = fixtures::fixture(&[(0x101, "00")]);
-    let base = crate::analysis::transfer::initial(
-        &world,
-        &environment,
-        ValueAlgebra::new(domain).borrowed(),
-    )
-    .unwrap();
+    let base = crate::analysis::transfer::initial(&world, &environment, domain).unwrap();
     let [first, second, third] = [1, 2, 3].map(|n| word_payload(&base, n, domain));
     let originals = [first.clone(), second.clone(), third.clone()];
     let mut alternatives = EntryAlternatives::new(&first);
     let mut budget = WorkBudget::new(100_000_000);
     let selectors = BTreeSet::new();
     let exact = alternatives
-        .join_entry(
-            &first,
-            &second,
-            &environment,
-            ValueAlgebra::new(domain).borrowed(),
-            &mut budget,
-            &selectors,
-            false,
-        )
+        .join_entry(&first, &second, &environment, domain, &mut budget, false)
         .unwrap()
         .unwrap();
     assert!(!alternatives.has_loop_bound());
@@ -550,34 +544,17 @@ fn exact_retention_precedes_alternatives_promotion_of_both_complete_operands() {
     alternatives.retain(second.clone());
     assert!(
         alternatives
-            .join_entry(
-                &exact,
-                &second,
-                &environment,
-                ValueAlgebra::new(domain).borrowed(),
-                &mut budget,
-                &selectors,
-                false,
-            )
+            .join_entry(&exact, &second, &environment, domain, &mut budget, false)
             .unwrap()
             .is_none()
     );
     assert!(!alternatives.has_loop_bound());
     let promoted = alternatives
-        .join_entry(
-            &exact,
-            &third,
-            &environment,
-            ValueAlgebra::new(domain).borrowed(),
-            &mut budget,
-            &selectors,
-            false,
-        )
+        .join_entry(&exact, &third, &environment, domain, &mut budget, false)
         .unwrap()
         .unwrap();
     assert!(alternatives.has_loop_bound());
     assert!(alternatives.represented.is_empty());
-    assert!(!alternatives.cycle_widened);
     for word in [1, 2, 3] {
         assert_joint_word_witness(&promoted, word, domain);
     }
@@ -586,15 +563,7 @@ fn exact_retention_precedes_alternatives_promotion_of_both_complete_operands() {
     for input in [&first, &second, &third, &promoted] {
         assert!(
             alternatives
-                .join_entry(
-                    &promoted,
-                    input,
-                    &environment,
-                    ValueAlgebra::new(domain).borrowed(),
-                    &mut budget,
-                    &selectors,
-                    false,
-                )
+                .join_entry(&promoted, input, &environment, domain, &mut budget, false)
                 .unwrap()
                 .is_none()
         );
@@ -608,7 +577,6 @@ fn assert_unpublished(alternatives: &EntryAlternatives, before: &EntryAlternativ
     for (after, before) in alternatives.represented.iter().zip(&before.represented) {
         assert!(Arc::ptr_eq(after, before));
     }
-    assert_eq!(alternatives.cycle_widened, before.cycle_widened);
     assert_eq!(alternatives.has_loop_bound(), before.has_loop_bound());
     assert_eq!(alternatives.work_size(), before.work_size());
 }
@@ -616,15 +584,12 @@ fn assert_unpublished(alternatives: &EntryAlternatives, before: &EntryAlternativ
 #[test]
 fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
     let mut config = fixtures::config();
-    config.analysis.relations.max_constraints = 1;
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.max_constraints = 1;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let (world, environment) = fixtures::fixture(&[(0x101, "00")]);
-    let base = crate::analysis::transfer::initial(
-        &world,
-        &environment,
-        ValueAlgebra::new(domain).borrowed(),
-    )
-    .unwrap();
+    let base = crate::analysis::transfer::initial(&world, &environment, domain).unwrap();
     let old = word_payload(&base, 1, domain);
     let incoming = word_payload(&base, 2, domain);
     let inputs = (old.clone(), incoming.clone());
@@ -632,14 +597,9 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
     let selectors = BTreeSet::new();
     let mut exact_work = WorkBudget::new(100_000_000);
     assert_eq!(
-        alternatives.clone().join_cyclic(
-            &old,
-            &incoming,
-            ValueAlgebra::new(domain).borrowed(),
-            &mut exact_work,
-            &selectors,
-            false,
-        ),
+        alternatives
+            .clone()
+            .join_correlated(&old, &incoming, domain, &mut exact_work),
         Err(MachineError::Alternatives { limit: 1 })
     );
     let mut complete_work = WorkBudget::new(100_000_000);
@@ -649,9 +609,8 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
             &old,
             &incoming,
             &environment,
-            ValueAlgebra::new(domain).borrowed(),
+            domain,
             &mut complete_work,
-            &selectors,
             false,
         )
         .unwrap()
@@ -661,15 +620,7 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
         let mut attempted = alternatives.clone();
         let mut budget = WorkBudget::new(maximum);
         assert_eq!(
-            attempted.join_entry(
-                &old,
-                &incoming,
-                &environment,
-                ValueAlgebra::new(domain).borrowed(),
-                &mut budget,
-                &selectors,
-                false,
-            ),
+            attempted.join_entry(&old, &incoming, &environment, domain, &mut budget, false),
             Err(MachineError::Work)
         );
         assert!(budget.exhausted());
@@ -685,22 +636,14 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
         let mut budget = WorkBudget::new(100_000_000);
         token.cancel();
         assert_eq!(
-            attempted.join_entry(
-                &old,
-                &incoming,
-                &environment,
-                ValueAlgebra::new(domain).borrowed(),
-                &mut budget,
-                &selectors,
-                false,
-            ),
+            attempted.join_entry(&old, &incoming, &environment, domain, &mut budget, false),
             Err(MachineError::Relations(QueryReason::Cancelled))
         );
         assert_unpublished(&attempted, &alternatives);
     });
     // A real bounded materialization refusal is still explicit after its one
     // paid coarse retry; no old entry or alternative proof is installed in part.
-    config.analysis.relations.max_depth = 1;
+    config_numeric.relations.max_depth = 1;
     let mut attempted = alternatives.clone();
     let mut budget = WorkBudget::new(100_000_000);
     let error = attempted
@@ -708,9 +651,8 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
             &old,
             &incoming,
             &environment,
-            ValueAlgebra::new(config.domain().unwrap()).borrowed(),
+            ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec())).borrowed(),
             &mut budget,
-            &selectors,
             false,
         )
         .unwrap_err();
@@ -723,8 +665,10 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
 #[test]
 fn incompatible_and_unknown_frames_cannot_publish_a_bound() {
     let mut config = fixtures::config();
-    config.analysis.relations.max_constraints = 1;
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.max_constraints = 1;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let (_, environment) = fixtures::fixture(&[]);
     let base = fixtures::payload(domain);
     for unknown in [false, true] {
@@ -744,15 +688,7 @@ fn incompatible_and_unknown_frames_cannot_publish_a_bound() {
         let before = alternatives.clone();
         let mut budget = WorkBudget::new(100_000_000);
         assert_eq!(
-            alternatives.join_entry(
-                &old,
-                &incoming,
-                &environment,
-                ValueAlgebra::new(domain).borrowed(),
-                &mut budget,
-                &BTreeSet::new(),
-                false,
-            ),
+            alternatives.join_entry(&old, &incoming, &environment, domain, &mut budget, false),
             Err(MachineError::Shape)
         );
         assert_unpublished(&alternatives, &before);
@@ -764,24 +700,18 @@ fn incompatible_and_unknown_frames_cannot_publish_a_bound() {
 #[test]
 fn an_existing_promoted_entry_keeps_its_old_proof_when_an_update_is_interrupted() {
     let mut config = fixtures::config();
-    config.analysis.relations.enabled = false;
-    config.analysis.relations.max_constraints = 1;
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.enabled = false;
+    config_numeric.relations.max_constraints = 1;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let (_, environment) = fixtures::fixture(&[]);
     let base = fixtures::payload(domain);
     let [old, incoming, later] = [1, 2, 200].map(|n| word_payload(&base, n, domain));
     let mut alternatives = EntryAlternatives::new(&old);
     let mut budget = WorkBudget::new(100_000_000);
     let promoted = alternatives
-        .join_entry(
-            &old,
-            &incoming,
-            &environment,
-            ValueAlgebra::new(domain).borrowed(),
-            &mut budget,
-            &BTreeSet::new(),
-            false,
-        )
+        .join_entry(&old, &incoming, &environment, domain, &mut budget, false)
         .unwrap()
         .unwrap();
     let before = alternatives.clone();
@@ -803,10 +733,9 @@ fn an_existing_promoted_entry_keeps_its_old_proof_when_an_update_is_interrupted(
                     &promoted,
                     &later,
                     &environment,
-                    ValueAlgebra::new(domain).borrowed(),
+                    domain,
                     &mut budget,
-                    &BTreeSet::new(),
-                    false,
+                    false
                 ),
                 Err(expected)
             );
@@ -819,15 +748,7 @@ fn an_existing_promoted_entry_keeps_its_old_proof_when_an_update_is_interrupted(
     for input in [&old, &incoming] {
         assert!(
             alternatives
-                .join_entry(
-                    &promoted,
-                    input,
-                    &environment,
-                    ValueAlgebra::new(domain).borrowed(),
-                    &mut budget,
-                    &BTreeSet::new(),
-                    false,
-                )
+                .join_entry(&promoted, input, &environment, domain, &mut budget, false)
                 .unwrap()
                 .is_none()
         );
@@ -838,14 +759,12 @@ fn an_existing_promoted_entry_keeps_its_old_proof_when_an_update_is_interrupted(
 
 #[test]
 fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
-    let construction = fixtures::config().domain().unwrap();
+    let construction = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    ));
+    let construction = construction.borrowed();
     let (world, environment) = fixtures::fixture(&[(0x101, "00")]);
-    let base = crate::analysis::transfer::initial(
-        &world,
-        &environment,
-        ValueAlgebra::new(construction).borrowed(),
-    )
-    .unwrap();
+    let base = crate::analysis::transfer::initial(&world, &environment, construction).unwrap();
     for scalar_expression in [false, true] {
         let mut old = word_payload(&base, 1, construction);
         let mut incoming = word_payload(&base, 2, construction);
@@ -857,25 +776,21 @@ fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
                     construction.spec().relations().expressions(),
                 )
                 .unwrap();
-                payload.active_mut().stack[0] = AbstractValue::top().with_expression(expression);
+                payload.active_mut().stack[0] = TestValue::top().with_expression(expression);
             }
         }
         let inputs = (old.clone(), incoming.clone());
         let mut config = fixtures::config();
-        config.analysis.relations.max_depth = old.active().memory.state_root().depth();
-        let domain = config.domain().unwrap();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+        config_numeric.relations.max_depth = old.active().memory.state_root().depth();
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
         let mut alternatives = EntryAlternatives::new(&old);
         let mut budget = WorkBudget::new(100_000_000);
         let error = alternatives
             .clone()
-            .join_cyclic(
-                &old,
-                &incoming,
-                ValueAlgebra::new(domain).borrowed(),
-                &mut budget,
-                &BTreeSet::new(),
-                false,
-            )
+            .join_correlated(&old, &incoming, domain, &mut budget)
             .unwrap_err();
         if scalar_expression {
             assert!(
@@ -897,15 +812,7 @@ fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
         assert!(error.permits_bounded_promotion());
         assert_eq!((&old, &incoming), (&inputs.0, &inputs.1));
         let promoted = alternatives
-            .join_entry(
-                &old,
-                &incoming,
-                &environment,
-                ValueAlgebra::new(domain).borrowed(),
-                &mut budget,
-                &BTreeSet::new(),
-                false,
-            )
+            .join_entry(&old, &incoming, &environment, domain, &mut budget, false)
             .unwrap()
             .unwrap();
         assert!(alternatives.has_loop_bound());
@@ -924,7 +831,7 @@ fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
             );
         }
         assert!(
-            promoted.active().memory.state_root().depth() <= config.analysis.relations.max_depth
+            promoted.active().memory.state_root().depth() <= config_numeric.relations.max_depth
         );
         assert!(promoted.fresh_leaves().is_disjoint(&old.fresh_leaves()));
         assert!(
@@ -938,7 +845,10 @@ fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
 
 #[test]
 fn complete_path_constraint_refusal_can_forget_the_whole_path() {
-    let construction = fixtures::config().domain().unwrap();
+    let construction = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    ));
+    let construction = construction.borrowed();
     let (_, environment) = fixtures::fixture(&[]);
     let base = fixtures::payload(construction);
     let mut old = word_payload(&base, 1, construction);
@@ -956,31 +866,20 @@ fn complete_path_constraint_refusal_can_forget_the_whole_path() {
         }
     }
     let mut config = fixtures::config();
-    config.analysis.relations.max_constraints = 2;
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.max_constraints = 2;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let mut alternatives = EntryAlternatives::new(&old);
     let mut budget = WorkBudget::new(100_000_000);
     assert_eq!(
-        alternatives.clone().join_cyclic(
-            &old,
-            &incoming,
-            ValueAlgebra::new(domain).borrowed(),
-            &mut budget,
-            &BTreeSet::new(),
-            false,
-        ),
+        alternatives
+            .clone()
+            .join_correlated(&old, &incoming, domain, &mut budget),
         Err(MachineError::Relations(QueryReason::ConstraintLimit))
     );
     let promoted = alternatives
-        .join_entry(
-            &old,
-            &incoming,
-            &environment,
-            ValueAlgebra::new(domain).borrowed(),
-            &mut budget,
-            &BTreeSet::new(),
-            false,
-        )
+        .join_entry(&old, &incoming, &environment, domain, &mut budget, false)
         .unwrap()
         .unwrap();
     assert!(alternatives.has_loop_bound());
@@ -1010,8 +909,10 @@ fn complete_path_constraint_refusal_can_forget_the_whole_path() {
 #[test]
 fn same_byte_roots_still_require_the_complete_old_metadata_proof() {
     let mut config = fixtures::config();
-    config.analysis.relations.max_constraints = 1;
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.max_constraints = 1;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let (_, environment) = fixtures::fixture(&[]);
     let old = fixtures::payload(domain);
     let mut incoming = old.clone();
@@ -1021,15 +922,7 @@ fn same_byte_roots_still_require_the_complete_old_metadata_proof() {
     let mut budget = WorkBudget::new(100_000_000);
     assert!(super::super::coverage::same_byte_roots(&old, &incoming, &mut budget).unwrap());
     let promoted = alternatives
-        .join_entry(
-            &old,
-            &incoming,
-            &environment,
-            ValueAlgebra::new(domain).borrowed(),
-            &mut budget,
-            &BTreeSet::new(),
-            false,
-        )
+        .join_entry(&old, &incoming, &environment, domain, &mut budget, false)
         .unwrap()
         .expect("same roots do not cover different balances");
     assert!(alternatives.has_loop_bound());
@@ -1065,8 +958,10 @@ fn same_byte_roots_still_require_the_complete_old_metadata_proof() {
 #[test]
 fn promotion_keeps_current_every_saved_frame_and_continuation_independent() {
     let mut config = fixtures::config();
-    config.analysis.relations.max_constraints = 1;
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.max_constraints = 1;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let (_, environment) = fixtures::fixture(&[]);
     let owner = environment.address;
     let base = fixtures::payload(domain);
@@ -1109,9 +1004,8 @@ fn promotion_keeps_current_every_saved_frame_and_continuation_independent() {
             &inputs[0],
             &inputs[1],
             &environment,
-            ValueAlgebra::new(domain).borrowed(),
+            domain,
             &mut budget,
-            &BTreeSet::new(),
             false,
         )
         .unwrap()
@@ -1180,7 +1074,7 @@ fn promotion_keeps_current_every_saved_frame_and_continuation_independent() {
             (&continuation.output_offset, &original.output_offset),
             (&continuation.output_size, &original.output_size),
         ] {
-            assert_eq!(value, &AbstractValue::from_numeric(value.numeric().clone()));
+            assert_eq!(value, &TestValue::from_numeric(value.numeric().clone()));
             assert!(value.contains(original.singleton().unwrap()));
         }
     }

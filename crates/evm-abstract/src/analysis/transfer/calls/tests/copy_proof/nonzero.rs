@@ -116,7 +116,7 @@ fn check_completion(requested: Value, exact: bool) {
     drop(_quotes);
     let memory = memory.unwrap();
     let first = memory
-        .read_byte_checked_with(&value(0), algebra.borrowed())
+        .read_byte_checked(&value(0), algebra.borrowed())
         .unwrap();
     assert!(first.contains(U256::from(0x11)));
     if exact {
@@ -125,7 +125,7 @@ fn check_completion(requested: Value, exact: bool) {
         assert!(first.contains(U256::from(0xaa)));
     }
     let suffix = memory
-        .read_byte_checked_with(&value(1), algebra.borrowed())
+        .read_byte_checked(&value(1), algebra.borrowed())
         .unwrap();
     assert!(suffix.contains(U256::from(0xbb)));
     if exact {
@@ -150,24 +150,22 @@ fn real_finish_pays_the_census_and_complete_copy_before_publication() {
     payload
         .active_mut()
         .memory
-        .write_word_with(
+        .write_word(
             &value(0),
             &value(7)
                 .with_origin(Origin::Storage)
                 .with_expression(ExprId::fresh().unwrap()),
-            0,
             algebra.borrowed(),
         )
         .unwrap();
     payload.call_stack.push_child(nested);
     let mut source = Bytes::memory();
     source
-        .write_word_with(
+        .write_word(
             &value(0),
             &value(9)
                 .with_origin(Origin::Calldata)
                 .with_expression(ExprId::fresh().unwrap()),
-            0,
             algebra.borrowed(),
         )
         .unwrap();
@@ -176,7 +174,7 @@ fn real_finish_pays_the_census_and_complete_copy_before_publication() {
     let first_prefix = payload.relations.constraints().len() + 1;
     let mut expected = parent.clone();
     expected
-        .copy_return_data_with(&offset, &source, &requested, 0, algebra.borrowed())
+        .copy_return_data(&offset, &source, &requested, algebra.borrowed())
         .unwrap();
     let _queries = QUERIES.scope();
     let _quotes = QUERY_QUOTES.scope();
@@ -242,12 +240,11 @@ fn no_finite_source_length_and_input_need_no_minimum_discovery() {
     parent
         .active_mut()
         .memory
-        .copy_from_with(
+        .copy_from(
             &word(0),
             &EvmByteArray::exact(&[0xaa, 0xbb]),
             &word(0),
             &word(2),
-            0,
             algebra.borrowed(),
         )
         .unwrap();
@@ -328,10 +325,10 @@ fn no_finite_source_length_and_input_need_no_minimum_discovery() {
             ));
             drop(_receipt);
             let first = memory
-                .read_byte_checked_with(&word(0), algebra.borrowed())
+                .read_byte_checked(&word(0), algebra.borrowed())
                 .unwrap();
             let suffix = memory
-                .read_byte_checked_with(&word(1), algebra.borrowed())
+                .read_byte_checked(&word(1), algebra.borrowed())
                 .unwrap();
             // With no standard numeric views, presentation may stay unknown.
             // The complete captured copy still admits both concrete bytes.

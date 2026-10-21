@@ -1,13 +1,14 @@
 use super::*;
+use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ValueAlgebra;
 use crate::{
     analysis::machine::fixtures::fixture,
-    domain::{Domain, symbolic::ExprId},
+    domain::{ProductAlgebra, symbolic::ExprId},
 };
 use alloy_primitives::U256;
 
-fn fresh() -> AbstractValue {
-    AbstractValue::top().with_expression(ExprId::fresh().unwrap())
+fn fresh() -> TestValue {
+    TestValue::top().with_expression(ExprId::fresh().unwrap())
 }
 
 #[test]
@@ -24,8 +25,8 @@ fn form_uses_node_identity_and_uniform_bounds_only() {
     let b = ExprId::constant(U256::from(7));
     assert_eq!(a, b);
     let separate = [
-        AbstractValue::top().with_expression(a),
-        AbstractValue::top().with_expression(b),
+        TestValue::top().with_expression(a),
+        TestValue::top().with_expression(b),
     ];
     assert_eq!(StackAliases::form(&separate, true).unwrap().0, [0, 1]);
 
@@ -37,7 +38,7 @@ fn form_uses_node_identity_and_uniform_bounds_only() {
     assert_eq!(aliases.0, [0, 1]);
     let scalar = mixed
         .iter()
-        .map(|v| AbstractValue::from_numeric(v.numeric().clone()))
+        .map(|v| TestValue::from_numeric(v.numeric().clone()))
         .collect::<Vec<_>>();
     let restored = aliases.instantiate(&scalar, true).unwrap();
     for (old, new) in mixed.iter().zip(&restored) {
@@ -66,25 +67,24 @@ fn intersection_preserves_common_pairs_even_when_leaders_differ() {
 #[test]
 fn payload_join_and_widen_drop_only_unshared_guarantees() {
     use super::super::{form, instantiate, join, semantic_eq};
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut input =
-        crate::analysis::transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed())
-            .unwrap();
+    let mut input = crate::analysis::transfer::initial(&world, &entry, domain).unwrap();
     let x = fresh();
     let y = fresh();
     input.active_mut().stack = vec![x.clone(), x, y.clone(), y];
-    let left = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
+    let left = form(&input, &entry, domain).unwrap();
     let a = fresh();
     let b = fresh();
     input.active_mut().stack = vec![a, b.clone(), b.clone(), b];
-    let right = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
+    let right = form(&input, &entry, domain).unwrap();
     assert!(!semantic_eq(&left, &right));
     for widen in [false, true] {
-        let joined = join(&left, &right, ValueAlgebra::new(domain).borrowed(), widen).unwrap();
+        let joined = join(&left, &right, domain, widen).unwrap();
         assert_eq!(joined.active().stack_aliases.0, [0, 1, 2, 2]);
-        let first = instantiate(&joined, ValueAlgebra::new(domain).borrowed()).unwrap();
-        let second = instantiate(&joined, ValueAlgebra::new(domain).borrowed()).unwrap();
+        let first = instantiate(&joined, domain).unwrap();
+        let second = instantiate(&joined, domain).unwrap();
         let a = &first.active().stack;
         let b = &second.active().stack;
         assert_eq!(a[2].expression(), a[3].expression());

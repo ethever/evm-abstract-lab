@@ -1,16 +1,21 @@
 //! 跳转历史深度决定精度；实际执行仍由共享资源预算限制。
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisInput, EvmAnalysis};
+
+#[path = "support/native.rs"]
+mod native;
 
 use alloy_primitives::Address;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork, U256,
     analysis::{
-        self, Config, EdgeKind, ExecutionConfig, FrontierReason, Limit, Status, WorldAnalysis,
-        analyze_world,
+        self, Config, EdgeKind, EvmWorldAnalysis, ExecutionConfig, FrontierReason, Limit, Status,
     },
     bytecode::Program,
-    domain::AbstractValue,
+    domain::EvmValue,
     ssa,
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use revm_bytecode::opcode;
 use std::collections::BTreeSet;
@@ -93,11 +98,11 @@ fn jump_chain(source_count: u8, backedge: Option<u8>) -> Program {
 }
 
 fn state_after_sources<'a>(
-    graph: &'a analysis::Analysis,
+    graph: &'a analysis::EvmAnalysis<NumericValue>,
     pc: usize,
     sources: &[usize],
     depth: usize,
-) -> &'a analysis::State {
+) -> &'a analysis::EvmState<NumericValue> {
     let context = latest_distinct(sources, depth);
     graph
         .states()
@@ -109,7 +114,7 @@ fn state_after_sources<'a>(
         .unwrap()
 }
 
-fn assert_distinct_contexts(graph: &analysis::Analysis, depth: usize) {
+fn assert_distinct_contexts(graph: &analysis::EvmAnalysis<NumericValue>, depth: usize) {
     for state in graph.states() {
         assert!(state.key.context.len() <= depth);
         assert_eq!(
@@ -131,7 +136,11 @@ fn assert_distinct_contexts(graph: &analysis::Analysis, depth: usize) {
     }
 }
 
-fn assert_jump_trace(graph: &analysis::Analysis, pcs: &[usize], depth: usize) -> Vec<usize> {
+fn assert_jump_trace(
+    graph: &analysis::EvmAnalysis<NumericValue>,
+    pcs: &[usize],
+    depth: usize,
+) -> Vec<usize> {
     let mut sources = Vec::new();
     let mut states = Vec::new();
     for pc in pcs {
@@ -143,7 +152,10 @@ fn assert_jump_trace(graph: &analysis::Analysis, pcs: &[usize], depth: usize) ->
         );
         if let Some(previous) = states.last() {
             assert!(graph.edges().iter().any(|edge| {
-                edge.from == *previous && edge.to == state.id && edge.kind == EdgeKind::Jump
+                edge.from == *previous
+                    && edge.to == state.id
+                    && edge.kind
+                        == evm_abstract::analysis::MachineEdgeKind::Intraprocedural(EdgeKind::Jump)
             }));
         }
         states.push(state.id);
@@ -152,39 +164,57 @@ fn assert_jump_trace(graph: &analysis::Analysis, pcs: &[usize], depth: usize) ->
     states
 }
 
-fn native(code: &str, config: ExecutionConfig) -> WorldAnalysis {
+fn native(code: &str, config: ExecutionConfig) -> EvmWorldAnalysis<NumericValue> {
     let address = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "test:context-depth:fixed-world");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "test:context-depth:fixed-world");
     world
-        .insert(address, Account::from_hex(code, world.fork()).unwrap())
-        .unwrap();
-    analyze_world(
-        world,
-        Entry {
+        .insert(
             address,
-            environment: evm_abstract::world::EvmEnvironment {
-                to: (address).into(),
-                caller: (Address::ZERO).into(),
-                value: AbstractValue::constant(U256::ZERO),
-                calldata: ByteArray::empty(),
-                is_static: false,
-                ..evm_abstract::world::EvmEnvironment::default()
+            EvmAccount::<NumericValue>::from_hex(code, world.fork()).unwrap(),
+        )
+        .unwrap();
+    native::run(
+        &native::product(),
+        AnalysisInput::new(
+            world,
+            EvmEntry {
+                address,
+                environment: evm_abstract::world::EvmEnvironmentValues {
+                    to: (address).into(),
+                    caller: (Address::ZERO).into(),
+                    value: EvmValue::<NumericValue>::constant(U256::ZERO),
+                    calldata: EvmByteArray::<NumericValue>::empty(),
+                    is_static: false,
+                    ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
+                },
             },
-        },
+        )
+        .unwrap(),
         config,
+        &Control::default(),
     )
     .unwrap()
 }
 
 #[test]
 fn depth_ten_retains_distinct_sources_and_closes_a_self_loop() {
-    let graph = analysis::analyze(
-        Program::from_hex(SELF_LOOP).unwrap(),
-        Config {
-            context_depth: 10,
-            ..Config::default()
+    let graph = native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex(SELF_LOOP).unwrap(),
+            Default::default(),
+        )
+        .unwrap(),
+        ExecutionConfig {
+            analysis: Config {
+                context_depth: 10,
+                ..Config::default()
+            },
+            ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap();
     assert_eq!(graph.status(), Status::Converged);
     assert!(graph.frontiers().is_empty());
@@ -202,7 +232,7 @@ fn depth_ten_retains_distinct_sources_and_closes_a_self_loop() {
         .unwrap();
     assert!(graph.edges().iter().any(|edge| edge.from == saturated.id
         && edge.to == saturated.id
-        && edge.kind == EdgeKind::Jump));
+        && edge.kind == evm_abstract::analysis::MachineEdgeKind::Intraprocedural(EdgeKind::Jump)));
     assert_distinct_contexts(&graph, 10);
     assert_jump_trace(&graph, &[0, 0, 0], 10);
     ssa::build(&graph).unwrap().verify(&graph).unwrap();
@@ -227,13 +257,19 @@ fn depth_ten_retains_distinct_sources_and_closes_a_self_loop() {
             } else {
                 path.push(program.blocks()[12].start_pc);
             }
-            let graph = analysis::analyze(
-                program,
-                Config {
-                    context_depth: depth,
-                    ..Config::default()
+            let graph = native::run(
+                &native::product(),
+                AnalysisInput::<NumericValue>::from_program(program, Default::default()).unwrap(),
+                ExecutionConfig {
+                    analysis: Config {
+                        context_depth: depth,
+                        ..Config::default()
+                    },
+                    ..ExecutionConfig::default()
                 },
+                &Control::default(),
             )
+            .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
             .unwrap();
             assert_eq!(graph.config().context_depth, depth);
             assert_eq!(graph.status(), Status::Converged);
@@ -275,15 +311,22 @@ fn large_requested_depth_obeys_state_and_transfer_limits() {
         .map(|block| block.start_pc)
         .collect();
     for (max_states, max_transfers, limit) in [(8, 64, Limit::States), (64, 8, Limit::Transfers)] {
-        let graph = analysis::analyze(
-            program.clone(),
-            Config {
-                context_depth: usize::MAX,
-                max_states,
-                max_transfers,
-                ..Config::default()
+        let graph = native::run(
+            &native::product(),
+            AnalysisInput::<NumericValue>::from_program(program.clone(), Default::default())
+                .unwrap(),
+            ExecutionConfig {
+                analysis: Config {
+                    context_depth: usize::MAX,
+                    max_states,
+                    max_transfers,
+                    ..Config::default()
+                },
+                ..ExecutionConfig::default()
             },
+            &Control::default(),
         )
+        .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
         .unwrap();
         assert_eq!(graph.config().context_depth, usize::MAX);
         assert_eq!(graph.status(), Status::Incomplete);
@@ -336,7 +379,10 @@ fn large_requested_depth_obeys_state_and_transfer_limits() {
                 assert!(pending.executed_pcs.is_empty());
                 assert!(graph.edges().iter().any(|edge| edge.from == source.id
                     && edge.to == pending.id
-                    && edge.kind == EdgeKind::Jump));
+                    && edge.kind
+                        == evm_abstract::analysis::MachineEdgeKind::Intraprocedural(
+                            EdgeKind::Jump
+                        )));
                 let pending = &native.states()[graph.execution_state_id(pending.id).unwrap()];
                 assert!(pending.exit.is_none());
                 &pending.entry
@@ -396,11 +442,11 @@ fn large_requested_depth_also_obeys_the_shared_work_limit() {
     let mut one_transfer_config = config.clone();
     one_transfer_config.max_work = ExecutionConfig::default().max_work;
     one_transfer_config.analysis.max_transfers = 1;
-    let one_transfer = analysis::analyze_world_with_observer(
-        admission.world().clone(),
-        admission.entry().clone(),
+    let one_transfer = native::run(
+        &native::product(),
+        AnalysisInput::new(admission.world().clone(), admission.entry().clone()).unwrap(),
         one_transfer_config,
-        &observer,
+        &Control::new(observer.clone()),
     )
     .unwrap();
     assert_eq!(one_transfer.transfers(), 1);
@@ -423,10 +469,11 @@ fn large_requested_depth_also_obeys_the_shared_work_limit() {
     assert!(one_transfer_work > entry_work);
     let mut funded_config = config.clone();
     funded_config.max_work = one_transfer_work;
-    let graph = analyze_world(
-        admission.world().clone(),
-        admission.entry().clone(),
+    let graph = native::run(
+        &native::product(),
+        AnalysisInput::new(admission.world().clone(), admission.entry().clone()).unwrap(),
         funded_config.clone(),
+        &Control::default(),
     )
     .unwrap();
     assert!(graph.transfers() > 0);
@@ -489,7 +536,13 @@ fn large_requested_depth_also_obeys_the_shared_work_limit() {
         &graph.states()[0].entry.store
     );
     assert_eq!(coverage.input().call_value().singleton(), Some(U256::ZERO));
-    assert_eq!(coverage.input().calldata().exact_bytes(), Some(Vec::new()));
+    assert_eq!(
+        coverage
+            .input()
+            .calldata()
+            .exact_bytes(native::product().borrowed()),
+        Some(Vec::new())
+    );
     eprintln!(
         "5k admission work={}, entry/input checkpoint={entry_work}, one-transfer receipt={one_transfer_work}, funded work={}, transfers={}",
         admission.work(),
@@ -497,13 +550,20 @@ fn large_requested_depth_also_obeys_the_shared_work_limit() {
         graph.transfers()
     );
 
-    let chain = analysis::analyze(
-        jump_chain(12, None),
-        Config {
-            context_depth: usize::MAX,
-            ..Config::default()
+    let chain = native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(jump_chain(12, None), Default::default())
+            .unwrap(),
+        ExecutionConfig {
+            analysis: Config {
+                context_depth: usize::MAX,
+                ..Config::default()
+            },
+            ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap();
     assert_eq!(chain.config().context_depth, usize::MAX);
     assert_eq!(chain.status(), Status::Converged);
@@ -559,13 +619,20 @@ fn finite_internal_calls_accept_depth_ten_and_maximum_usize() {
     );
     assert_eq!(program.jumpdest_blocks().get(&14), Some(&3));
     for depth in [10, usize::MAX] {
-        let graph = analysis::analyze(
-            program.clone(),
-            Config {
-                context_depth: depth,
-                ..Config::default()
+        let graph = native::run(
+            &native::product(),
+            AnalysisInput::<NumericValue>::from_program(program.clone(), Default::default())
+                .unwrap(),
+            ExecutionConfig {
+                analysis: Config {
+                    context_depth: depth,
+                    ..Config::default()
+                },
+                ..ExecutionConfig::default()
             },
+            &Control::default(),
         )
+        .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
         .unwrap();
         assert_eq!(graph.config().context_depth, depth);
         assert_eq!(graph.status(), Status::Converged);
@@ -582,7 +649,7 @@ fn finite_internal_calls_accept_depth_ten_and_maximum_usize() {
                 state
                     .entry_stack
                     .iter()
-                    .map(AbstractValue::singleton)
+                    .map(EvmValue::<NumericValue>::singleton)
                     .collect::<Vec<_>>(),
                 values
                     .iter()

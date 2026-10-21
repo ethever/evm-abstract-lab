@@ -1,5 +1,6 @@
 //! Typed producer evidence routes relative resumes without numeric discovery.
 
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork, U256,
     analysis::{
@@ -15,7 +16,7 @@ use crate::{
         },
     },
     domain::{
-        Domain, DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue,
+        DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue, ProductAlgebra,
         ValueAlgebra, WordElement,
     },
     resource::WorkBudget,
@@ -53,9 +54,14 @@ impl EvmNumericAlgebra for StatusAlgebra {
     fn reduce_numeric(&self, value: &Word) -> NumericReduction<Word> {
         Algebra.reduce_numeric(value)
     }
-    fn apply_numeric(&self, op: u8, args: &[Word]) -> NumericReduction<Word> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
+        let args: Vec<&Word> = args.collect();
         let args = args.iter().map(numeric).collect::<Vec<_>>();
-        let result = Domain::default().apply_numeric(op, &args);
+        let result = ProductAlgebra::default().apply_numeric(op, args.iter());
         NumericReduction {
             value: Word::from_observation(&result.value.observation()),
             status: result.status,
@@ -63,9 +69,13 @@ impl EvmNumericAlgebra for StatusAlgebra {
             strengthened: result.strengthened,
         }
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
         let args = args.map(numeric).collect::<Vec<_>>();
-        <Domain as EvmNumericAlgebra>::operation_work(&Domain::default(), args.iter())
+        <ProductAlgebra as EvmNumericAlgebra>::operation_work(
+            &ProductAlgebra::default(),
+            op,
+            args.iter(),
+        )
     }
     fn literal_quote_work(&self, literal: U256) -> usize {
         Algebra.literal_quote_work(literal)
@@ -74,7 +84,11 @@ impl EvmNumericAlgebra for StatusAlgebra {
         Algebra.projection_work(value)
     }
     fn refinement_work(&self, value: &Word, facts: usize) -> usize {
-        <Domain as EvmNumericAlgebra>::refinement_work(&Domain::default(), &numeric(value), facts)
+        <ProductAlgebra as EvmNumericAlgebra>::refinement_work(
+            &ProductAlgebra::default(),
+            &numeric(value),
+            facts,
+        )
     }
 }
 

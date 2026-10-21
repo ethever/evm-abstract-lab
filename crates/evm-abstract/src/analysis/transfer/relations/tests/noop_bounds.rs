@@ -1,19 +1,20 @@
 //! Bounds that add no facts preserve the complete value without reduction work.
 
+#[cfg(test)]
+use crate::analysis::testing::{TestValue, TestValueQuery};
+use crate::domain::EvmNumericAlgebra as _;
+
 use crate::domain::{EvmNumericAlgebra, ValueAlgebra, WordElement};
 
 use super::context;
 use crate::{
     analysis::{ExecutionConfig, FrontierReason, transfer::WorkBudget},
-    domain::{
-        AbstractValue, Domain, NumericValue, identity::Symbol, provenance::Origin,
-        relational::ValueQuery,
-    },
+    domain::{NumericValue, ProductAlgebra, identity::Symbol, provenance::Origin},
 };
 use alloy_primitives::U256;
 
-fn marked_value(numeric: NumericValue) -> AbstractValue {
-    let mut value = AbstractValue::top()
+fn marked_value(numeric: NumericValue) -> TestValue {
+    let mut value = TestValue::top()
         .with_symbol(Symbol::CallValue, Some(7))
         .with_identity(11, 13)
         .with_numeric(numeric)
@@ -25,12 +26,13 @@ fn marked_value(numeric: NumericValue) -> AbstractValue {
 #[test]
 fn top_and_equal_bounds_preserve_every_value_layer_with_only_comparison_work() {
     let config = ExecutionConfig::default();
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let finite = domain.join(
-        &AbstractValue::constant(U256::ONE),
-        &AbstractValue::constant(U256::from(3)),
+        &TestValue::constant(U256::ONE),
+        &TestValue::constant(U256::from(3)),
     );
-    let runtime_alias = AbstractValue::top().with_identity(11, 13);
+    let runtime_alias = TestValue::top().with_identity(11, 13);
     for numeric in [
         finite.numeric().clone(),
         NumericValue::unsigned_range(U256::ONE, U256::from(9)).unwrap(),
@@ -45,13 +47,17 @@ fn top_and_equal_bounds_preserve_every_value_layer_with_only_comparison_work() {
             assert_eq!(
                 super::super::finish_refine(
                     &mut value,
-                    &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
-                    ValueQuery::Bounds(Box::new(bounds)),
+                    &mut context(
+                        &config,
+                        &mut budget,
+                        ValueAlgebra::new(&ProductAlgebra::default())
+                    ),
+                    TestValueQuery::Bounds(Box::new(bounds)),
                 ),
                 Ok(true)
             );
             assert_eq!(value, before);
-            // AbstractValue equality deliberately excludes temporary identities.
+            // TestValue equality deliberately excludes temporary identities.
             assert!(value.same_identity(&runtime_alias));
             assert!(value.symbolic_limit_reached());
             assert_eq!(budget.used(), comparison);
@@ -63,12 +69,13 @@ fn top_and_equal_bounds_preserve_every_value_layer_with_only_comparison_work() {
 #[test]
 fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomically() {
     let config = ExecutionConfig::default();
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let before = marked_value(NumericValue::unsigned_range(U256::ONE, U256::from(9)).unwrap());
     for (lower, upper, feasible) in [(3, 5, true), (10, 12, false)] {
         let bounds = NumericValue::unsigned_range(U256::from(lower), U256::from(upper)).unwrap();
         let comparison = before.numeric().work_size() + bounds.work_size();
-        let algebra = ValueAlgebra::new(domain);
+        let algebra = domain;
         let finite = before
             .numeric()
             .constants()
@@ -87,8 +94,8 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
         // Clearing an inherited symbolic limit is an independent query on the
         // actual refined result; import/closure does not prepay that decision.
         let singleton_work = if feasible {
-            let expected = domain
-                .reduce(&AbstractValue::unsigned_range(U256::from(3), U256::from(5)).unwrap());
+            let expected =
+                domain.reduce(&TestValue::unsigned_range(U256::from(3), U256::from(5)).unwrap());
             domain.project(&expected.value).singleton_work()
         } else {
             0
@@ -100,14 +107,18 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
         assert_eq!(
             super::super::finish_refine(
                 &mut value,
-                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
-                ValueQuery::Bounds(Box::new(bounds.clone())),
+                &mut context(
+                    &config,
+                    &mut budget,
+                    ValueAlgebra::new(&ProductAlgebra::default())
+                ),
+                TestValueQuery::Bounds(Box::new(bounds.clone())),
             ),
             Ok(feasible)
         );
         if feasible {
-            let expected = domain
-                .reduce(&AbstractValue::unsigned_range(U256::from(3), U256::from(5)).unwrap());
+            let expected =
+                domain.reduce(&TestValue::unsigned_range(U256::from(3), U256::from(5)).unwrap());
             assert_eq!(value.numeric(), domain.project(&expected.value).numeric());
             assert_eq!(
                 value.interval().unsigned_bounds(),
@@ -119,7 +130,7 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
             assert_eq!(value.provenance(), before.provenance());
             assert_eq!(value.identity(), before.identity());
             assert!(value.symbolic_limit_reached());
-            assert!(value.same_identity(&AbstractValue::top().with_identity(11, 13)));
+            assert!(value.same_identity(&TestValue::top().with_identity(11, 13)));
         } else {
             assert_eq!(value, before);
         }
@@ -131,8 +142,12 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
         assert_eq!(
             super::super::finish_refine(
                 &mut value,
-                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
-                ValueQuery::Bounds(Box::new(bounds.clone())),
+                &mut context(
+                    &config,
+                    &mut budget,
+                    ValueAlgebra::new(&ProductAlgebra::default())
+                ),
+                TestValueQuery::Bounds(Box::new(bounds.clone())),
             ),
             Err(FrontierReason::Work)
         );
@@ -147,8 +162,12 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
             assert_eq!(
                 super::super::finish_refine(
                     &mut value,
-                    &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
-                    ValueQuery::Bounds(Box::new(bounds)),
+                    &mut context(
+                        &config,
+                        &mut budget,
+                        ValueAlgebra::new(&ProductAlgebra::default())
+                    ),
+                    TestValueQuery::Bounds(Box::new(bounds)),
                 ),
                 Err(FrontierReason::Work)
             );
@@ -172,8 +191,12 @@ fn comparison_refusal_preserves_original_value_and_prior_paid_work() {
     assert_eq!(
         super::super::finish_refine(
             &mut value,
-            &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
-            ValueQuery::Bounds(Box::new(bounds)),
+            &mut context(
+                &config,
+                &mut budget,
+                ValueAlgebra::new(&ProductAlgebra::default())
+            ),
+            TestValueQuery::Bounds(Box::new(bounds)),
         ),
         Err(FrontierReason::Work)
     );
@@ -190,8 +213,12 @@ fn comparison_refusal_preserves_original_value_and_prior_paid_work() {
         assert_eq!(
             super::super::finish_refine(
                 &mut value,
-                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
-                ValueQuery::Bounds(Box::new(NumericValue::top())),
+                &mut context(
+                    &config,
+                    &mut budget,
+                    ValueAlgebra::new(&ProductAlgebra::default())
+                ),
+                TestValueQuery::Bounds(Box::new(NumericValue::top())),
             ),
             Err(FrontierReason::Work)
         );

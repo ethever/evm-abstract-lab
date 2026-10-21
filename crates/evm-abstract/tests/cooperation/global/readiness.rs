@@ -1,10 +1,11 @@
 //! Mandatory producer readiness must resume a native transfer even at Top.
 use super::*;
 use analysis_kernel::{Availability, Change, Closure, Version};
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 use evm_abstract::analysis::{
     FrontierReason, OutcomeKind,
     control::Control,
-    cooperation::{CooperationError, PointKind, analyze_world_cooperating_with_control},
+    cooperation::{CooperationError, PointKind},
     progress::Observer,
 };
 use std::cell::RefCell;
@@ -307,14 +308,14 @@ where
     }
 }
 
-type Analysis = Result<
+type ReadinessResult = Result<
     evm_abstract::analysis::EvmWorldAnalysis<ExcludingWord>,
     CooperationError<Either<Failure, Failure>>,
 >;
 fn run(
     mode: Mode,
     algebra: &evm_abstract::domain::ValueAlgebra<Policy<'_>>,
-) -> (Analysis, Vec<Event>, Fixture) {
+) -> (ReadinessResult, Vec<Event>, Fixture) {
     let fixture = fixture();
     let trace = Trace::default();
     let control = Control::new(Observer::default());
@@ -336,13 +337,9 @@ fn run(
         Order(true),
     )
     .with_shared_stores(Factory);
-    let result = analyze_world_cooperating_with_control(
-        fixtures::world(&fixture.code),
-        fixtures::entry(),
+    let result = AnalysisEngine::new(algebra, &EnginePolicies::default(), &mut extension).run(
+        AnalysisInput::new(fixtures::world(&fixture.code), fixtures::entry()).unwrap(),
         fixtures::config(100_000_000),
-        algebra,
-        &EnginePolicies::default(),
-        &mut extension,
         &control,
     );
     let events = trace.borrow().clone();
@@ -412,7 +409,7 @@ fn required_pending_defers_native_a_then_equivalent_top_retries_it() {
         .filter_map(|outcome| {
             outcome
                 .data
-                .read_word_with(&fixtures::word(0), algebra.borrowed())
+                .read_word(&fixtures::word(0), algebra.borrowed())
                 .singleton()
         })
         .collect();

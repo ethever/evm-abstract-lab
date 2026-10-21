@@ -1,10 +1,11 @@
 //! Private predicates have independent retention and declared-copy envelopes.
 
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork, U256,
     analysis::ExecutionConfig,
     domain::{
-        Domain, DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue,
+        DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue, ProductAlgebra,
         ValueAlgebra, WordElement, WordObservation,
     },
     world::{EvmAccount, EvmEntry, EvmWorld},
@@ -167,7 +168,7 @@ impl WordElement for Word {
 }
 
 #[derive(Debug)]
-pub(crate) struct Policy(pub Domain);
+pub(crate) struct Policy(pub ProductAlgebra);
 impl EvmNumericAlgebra for Policy {
     type Element = Word;
     fn spec(&self) -> DomainSpec {
@@ -191,17 +192,22 @@ impl EvmNumericAlgebra for Policy {
     fn reduce_numeric(&self, value: &Word) -> NumericReduction<Word> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, opcode: u8, args: &[Word]) -> NumericReduction<Word> {
+    fn apply_numeric<'a>(
+        &self,
+        opcode: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
+        let args: Vec<&Word> = args.collect();
         let args = args
             .iter()
             .map(|arg| arg.native.clone())
             .collect::<Vec<_>>();
         NumericReduction::stable(Word {
-            native: self.0.apply_numeric(opcode, &args).value,
+            native: self.0.apply_numeric(opcode, args.iter()).value,
             ..Word::top()
         })
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
         args.fold(1024usize, |work, value| {
             work.saturating_add(value.work_size().saturating_mul(8))
         })
@@ -235,7 +241,7 @@ pub(crate) fn fixture(
         use_summaries: false,
         ..ExecutionConfig::default()
     };
-    let policy = ValueAlgebra::new(Policy(config.domain().unwrap()));
+    let policy = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(DomainSpec::default())));
     (world, EvmEntry::new(address), config, policy)
 }
 

@@ -1,10 +1,12 @@
 //! Concrete execution uses the pinned upstream interpreter, without our transfers.
 use super::support::address;
+use crate::native;
 use alloy_primitives::{Address, U256};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
-    analysis::{OutcomeKind, WorldAnalysis},
-    domain::{AbstractValue, Domain},
-    world::{Entry, Existence, World},
+    analysis::{EvmWorldAnalysis, OutcomeKind},
+    domain::EvmValue,
+    world::{EvmEntry, EvmWorld, Existence},
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
@@ -58,7 +60,11 @@ pub(super) struct Concrete {
     pub(super) steps: Vec<Step>,
 }
 
-pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) -> Concrete {
+pub(super) fn compare(
+    world: &EvmWorld<NumericValue>,
+    entry: &EvmEntry<NumericValue>,
+    analysis: &EvmWorldAnalysis<NumericValue>,
+) -> Concrete {
     assert!(
         !entry.environment.is_static,
         "revm static cases need a STATICCALL wrapper"
@@ -108,7 +114,14 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
                 .caller(caller)
                 .kind(TxKind::Call(entry.address))
                 .gas_limit(10_000_000)
-                .data(entry.environment.calldata.exact_bytes().unwrap().into())
+                .data(
+                    entry
+                        .environment
+                        .calldata
+                        .exact_bytes(native::product().borrowed())
+                        .unwrap()
+                        .into(),
+                )
                 .value(entry.environment.value.singleton().unwrap())
                 .build()
                 .unwrap(),
@@ -132,7 +145,7 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
                 && output.iter().enumerate().all(|(offset, byte)| {
                     outcome
                         .data
-                        .byte_at(offset, Domain::default())
+                        .byte_at(offset, native::product().borrowed())
                         .contains(U256::from(*byte))
                 })
                 && result
@@ -155,8 +168,8 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
                                     .store
                                     .read(
                                         *owner,
-                                        &AbstractValue::constant(*slot),
-                                        Domain::default(),
+                                        &EvmValue::<NumericValue>::constant(*slot),
+                                        native::product().borrowed(),
                                     )
                                     .contains(value.present_value())
                             })

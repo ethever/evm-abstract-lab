@@ -1,7 +1,11 @@
+use crate::domain::EvmNumericAlgebra as _;
+
 use super::{
     Builder, GuardRetention, QUOTE_WORK, RangeKind, build, literal_memory_singleton_work, logical,
     output_release_work, release_work, value_copy_work,
 };
+#[cfg(test)]
+use crate::analysis::testing::{TestValue, Reduction};
 use crate::domain::ValueAlgebra;
 use crate::{
     U256,
@@ -11,7 +15,7 @@ use crate::{
         transfer::{RetentionCause, boundary, empty_execution, initial},
     },
     domain::{
-        AbstractValue, Domain, Profile, Reduction,
+        ProductAlgebra, EvmValue, EvmNumericAlgebra, WordElement, FiniteConstantSet, FiniteSetAlgebra, EvmReduction,
         identity::Symbol,
         provenance::Origin,
         relational::QueryReason,
@@ -23,12 +27,12 @@ use revm_bytecode::opcode;
 
 use crate::analysis::transfer::testing::procedure_context as context;
 
-fn inputs() -> (AbstractValue, AbstractValue) {
-    let mut offset = AbstractValue::top()
+fn inputs() -> (TestValue, TestValue) {
+    let mut offset = TestValue::top()
         .with_symbol(Symbol::CallValue, Some(71))
         .with_identity(81, 1);
     offset.set_origin(Origin::CallValue);
-    let mut size = AbstractValue::top()
+    let mut size = TestValue::top()
         .with_symbol(Symbol::CalldataLength, Some(71))
         .with_identity(81, 2);
     size.set_origin(Origin::Calldata);
@@ -37,18 +41,16 @@ fn inputs() -> (AbstractValue, AbstractValue) {
 
 // Independent expansion of the original unbudgeted helper. Keep the complete
 // reductions so a dropped expression cannot hide a numeric/metadata difference.
-fn reference(
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    domain: Domain,
-) -> Vec<(u8, Vec<AbstractValue>, Reduction)> {
+fn reference<D: EvmNumericAlgebra>(
+    offset: &EvmValue<D::Element>, size: &EvmValue<D::Element>, domain: crate::domain::AlgebraRef<'_, D>,
+) -> Vec<(u8, Vec<EvmValue<D::Element>>, EvmReduction<D::Element>)> {
     let mut steps = Vec::new();
-    let mut apply = |op, args: &[AbstractValue]| {
+    let mut apply = |op, args: &[EvmValue<D::Element>]| {
         let reduced = domain.apply_detailed(op, args);
         steps.push((op, args.to_vec(), reduced.clone()));
         reduced.value
     };
-    let limit = AbstractValue::constant(logical::MAX_END);
+    let limit = EvmValue::constant(logical::MAX_END);
     let empty = apply(opcode::ISZERO, std::slice::from_ref(size));
     let greater = apply(opcode::GT, &[offset.clone(), limit.clone()]);
     let offset_fits = apply(opcode::ISZERO, &[greater]);
@@ -60,7 +62,7 @@ fn reference(
     steps
 }
 
-fn assert_same_value(actual: &AbstractValue, expected: &AbstractValue) {
+fn assert_same_value<N: WordElement>(actual: &EvmValue<N>, expected: &EvmValue<N>) {
     assert_eq!(actual, expected);
     assert_eq!(actual.expression(), expected.expression());
     assert_eq!(actual.identity(), expected.identity());
@@ -74,90 +76,54 @@ fn assert_same_value(actual: &AbstractValue, expected: &AbstractValue) {
     }
 }
 
-#[test]
-fn all_eight_paid_operations_preserve_the_original_values_in_both_profiles() {
-    for profile in [Profile::Product, Profile::ConstantsOnly] {
-        for enabled in [false, true] {
-            let mut config = ExecutionConfig::default();
-            config.analysis.domain_profile = profile;
-            config.analysis.relations.enabled = enabled;
-            let domain = config.domain().unwrap();
-            let (offset, size) = inputs();
-            let finite = domain
-                .join(&word(0), &AbstractValue::constant(U256::MAX))
-                .with_expression(ExprId::input(71, Symbol::Timestamp));
-            for (offset, size) in [
-                (offset, size),
-                (finite.clone(), finite),
-                (word(0), AbstractValue::constant(logical::MAX_END)),
-            ] {
-                let steps = reference(&offset, &size, domain);
-                assert_eq!(
-                    steps.iter().map(|step| step.0).collect::<Vec<_>>(),
-                    [
-                        opcode::ISZERO,
-                        opcode::GT,
-                        opcode::ISZERO,
-                        opcode::SUB,
-                        opcode::GT,
-                        opcode::ISZERO,
-                        opcode::AND,
-                        opcode::OR,
-                    ],
-                );
-                let mut budget = WorkBudget::new(usize::MAX);
-                let mut builder = Builder {
-                    domain: ValueAlgebra::new(&domain),
-                    budget: &mut budget,
-                    retention: GuardRetention::new(&offset, &size),
-                };
-                for (step, (op, args, expected)) in steps.iter().enumerate() {
-                    let actual = if matches!(step, 1 | 3 | 4) {
-                        builder.copied(*op, [&args[0], &args[1]])
-                    } else {
-                        builder.apply(*op, args)
-                    }
-                    .unwrap();
-                    assert_same_value(&actual, &expected.value);
-                    assert!(
-                        release_work(actual.work_size())
-                            <= output_release_work(ValueAlgebra::new(&domain), *op, args)
-                    );
-                }
-                let mut budget = WorkBudget::new(usize::MAX);
-                let built = build(
-                    &offset,
-                    &size,
-                    &mut context(
-                        &config,
-                        &mut budget,
-                        ValueAlgebra::new(&config.domain().unwrap()),
-                    ),
-                )
-                .unwrap();
-                assert_same_value(&built.request.offset, &offset);
-                assert_same_value(&built.request.size, &size);
-                assert_eq!(
-                    built.request.limit,
-                    AbstractValue::constant(logical::MAX_END)
-                );
-                assert_same_value(&built.condition, &steps[7].2.value);
-                assert_same_value(
-                    &built.condition,
-                    &super::super::memory_condition(&offset, &size, ValueAlgebra::new(&domain)),
-                );
-                assert!(!budget.exhausted());
-            }
+fn verify_paid_operations<D: EvmNumericAlgebra>(numeric: D) {
+    let algebra = ValueAlgebra::new(numeric);
+    let domain = algebra.borrowed();
+    let config = ExecutionConfig::default();
+    let offset = EvmValue::<D::Element>::top().with_symbol(Symbol::CallValue, Some(71)).with_identity(81, 1);
+    let size = EvmValue::<D::Element>::top().with_symbol(Symbol::CalldataLength, Some(71)).with_identity(81, 2);
+    let finite = domain.join(&EvmValue::constant(U256::ZERO), &EvmValue::constant(U256::MAX))
+        .with_expression(ExprId::input(71, Symbol::Timestamp));
+    for (offset, size) in [(offset, size), (finite.clone(), finite),
+        (EvmValue::constant(U256::ZERO), EvmValue::constant(logical::MAX_END))] {
+        let steps = reference(&offset, &size, domain);
+        assert_eq!(steps.iter().map(|step| step.0).collect::<Vec<_>>(),
+            [opcode::ISZERO, opcode::GT, opcode::ISZERO, opcode::SUB, opcode::GT, opcode::ISZERO, opcode::AND, opcode::OR]);
+        let mut budget = WorkBudget::new(usize::MAX);
+        let mut builder = Builder { domain, budget: &mut budget, retention: GuardRetention::new(&offset, &size) };
+        for (step, (op, args, expected)) in steps.iter().enumerate() {
+            let actual = if matches!(step, 1 | 3 | 4) { builder.copied(*op, [&args[0], &args[1]]) }
+                else { builder.apply(*op, args) }.unwrap();
+            assert_same_value(&actual, &expected.value);
+            assert!(release_work(actual.work_size()) <= output_release_work(domain, *op, args));
         }
+        let mut budget = WorkBudget::new(usize::MAX);
+        let built = build(&offset, &size, &mut context(&config, &mut budget, domain)).unwrap();
+        assert_same_value(&built.request.offset, &offset);
+        assert_same_value(&built.request.size, &size);
+        assert_eq!(built.request.limit, EvmValue::constant(logical::MAX_END));
+        assert_same_value(&built.condition, &steps[7].2.value);
+        assert_same_value(&built.condition, &super::super::memory_condition(&offset, &size, domain));
+        assert!(!budget.exhausted());
+    }
+}
+#[test]
+fn paid_guard_operations_keep_semantics_for_product_and_finite_carriers() {
+    for enabled in [false, true] {
+        let spec = crate::domain::DomainSpec::default().with_relations(crate::domain::relational::RelationLimits {
+            enabled, ..Default::default()
+        });
+        verify_paid_operations(ProductAlgebra::from_spec(spec));
+        verify_paid_operations(FiniteSetAlgebra::from_spec(spec));
     }
 }
 
 // Quote only cached metadata of the already computed reference steps. Each
-// pair is the paid prefix and the next actual Domain operation's exact price.
+// pair is the paid prefix and the next actual ProductAlgebra operation's exact price.
 fn operation_refusals(
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    domain: Domain,
+    offset: &TestValue,
+    size: &TestValue,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
 ) -> Vec<(usize, usize)> {
     let mut prefix = QUOTE_WORK;
     for value in [offset, size] {
@@ -166,7 +132,7 @@ fn operation_refusals(
             prefix += literal_memory_singleton_work(value);
         }
     }
-    prefix += ValueAlgebra::new(&domain).literal_quote_work(logical::MAX_END) * 2;
+    prefix += domain.literal_quote_work(logical::MAX_END) * 2;
     reference(offset, size, domain)
         .iter()
         .enumerate()
@@ -174,8 +140,8 @@ fn operation_refusals(
             if matches!(step, 1 | 3 | 4) {
                 prefix += QUOTE_WORK + args.iter().map(value_copy_work).sum::<usize>();
             }
-            prefix += QUOTE_WORK + output_release_work(ValueAlgebra::new(&domain), *op, args);
-            let cost = ValueAlgebra::new(&domain).operation_work_for(*op, args);
+            prefix += QUOTE_WORK + output_release_work(domain, *op, args);
+            let cost = domain.operation_work(*op, args);
             let refusal = (prefix, cost);
             prefix += cost;
             refusal
@@ -184,17 +150,18 @@ fn operation_refusals(
 }
 
 #[test]
-fn caller_copy_fees_cover_constants_only_and_saturate_before_actions() {
+fn caller_copy_fees_cover_native_finite_carrier_and_saturate_before_actions() {
     let mut config = ExecutionConfig::default();
-    config.analysis.domain_profile = Profile::ConstantsOnly;
-    config.analysis.relations.enabled = false;
-    let domain = config.domain().unwrap();
-    let (left, right) = (word(1), word(2));
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.enabled = false;
+    let domain = crate::domain::ValueAlgebra::new(FiniteSetAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
+    let (left, right) = (EvmValue::<FiniteConstantSet>::constant(U256::ONE), EvmValue::constant(U256::from(2)));
     let mut budget =
         WorkBudget::new(QUOTE_WORK + value_copy_work(&left) + value_copy_work(&right) - 1);
-    assert_eq!(domain.operation_work(&[left.clone(), right.clone()]), 1);
+    assert!(domain.operation_work(opcode::GT, &[left.clone(), right.clone()]) > 0);
     let mut builder = Builder {
-        domain: ValueAlgebra::new(&domain),
+        domain: domain,
         budget: &mut budget,
         retention: GuardRetention::new(&left, &right),
     };
@@ -204,7 +171,7 @@ fn caller_copy_fees_cover_constants_only_and_saturate_before_actions() {
     assert_eq!(release_work(usize::MAX), usize::MAX);
 
     // A small shared DAG has an enormous cached expanded-node count. The
-    // lifetime fee must refuse before cloning or calling Domain. Numeric
+    // lifetime fee must refuse before cloning or calling ProductAlgebra. Numeric
     // clone_work is separate, so the finite release bound need not saturate.
     let limits = ExprLimits {
         max_nodes: usize::MAX,
@@ -215,9 +182,10 @@ fn caller_copy_fees_cover_constants_only_and_saturate_before_actions() {
         expression =
             ExprId::operation(opcode::ADD, &[expression.clone(), expression], limits).unwrap();
     }
-    let offset = AbstractValue::top().with_expression(expression);
+    let offset = TestValue::top().with_expression(expression);
     let mut budget = WorkBudget::new(1_000_000);
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     assert!(
         build(
             &offset,
@@ -225,7 +193,7 @@ fn caller_copy_fees_cover_constants_only_and_saturate_before_actions() {
             &mut context(
                 &config,
                 &mut budget,
-                ValueAlgebra::new(&config.domain().unwrap())
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
             )
         )
         .is_err()
@@ -238,11 +206,13 @@ fn caller_copy_fees_cover_constants_only_and_saturate_before_actions() {
 fn each_of_eight_operation_refusals_keeps_paid_prefix_payload_and_prior_failure() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let mut config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     // Step 7 loses its expression; refusing step 8 must still report plain Work.
-    config.analysis.relations.max_nodes = 10;
-    let domain = config.domain().unwrap();
+    config_numeric.relations.max_nodes = 10;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let (offset, size) = inputs();
-    let payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+    let payload = initial(&world, &entry, domain).unwrap();
     let mut covered = empty_execution(payload.clone());
     let mut full = WorkBudget::new(usize::MAX);
     assert!(super::super::logical::failure(
@@ -250,7 +220,7 @@ fn each_of_eight_operation_refusals_keeps_paid_prefix_payload_and_prior_failure(
         &mut context(
             &config,
             &mut full,
-            ValueAlgebra::new(&config.domain().unwrap())
+            ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
         ),
         19
     ));
@@ -271,7 +241,7 @@ fn each_of_eight_operation_refusals_keeps_paid_prefix_payload_and_prior_failure(
                 &mut context(
                     &config,
                     &mut budget,
-                    ValueAlgebra::new(&config.domain().unwrap())
+                    ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                 ),
                 19,
             ),
@@ -305,8 +275,10 @@ fn each_of_eight_operation_refusals_keeps_paid_prefix_payload_and_prior_failure(
 fn finite_raw_guard_error_attaches_only_to_the_actual_missing_expression_frontier() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let mut config = ExecutionConfig::default();
-    config.analysis.relations.max_nodes = 10;
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.max_nodes = 10;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let (offset, size) = inputs();
     let steps = reference(&offset, &size, domain);
     assert!(
@@ -319,7 +291,7 @@ fn finite_raw_guard_error_attaches_only_to_the_actual_missing_expression_frontie
         Some(ExprError::Limit { nodes: 11, .. })
     ));
     assert!(steps[7].2.symbolic_error.is_none());
-    let mut result = empty_execution(initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap());
+    let mut result = empty_execution(initial(&world, &entry, domain).unwrap());
     let before = result.payload.clone();
     boundary(&mut result, 3, FrontierReason::Work);
     let mut budget = WorkBudget::new(config.max_work);
@@ -330,7 +302,7 @@ fn finite_raw_guard_error_attaches_only_to_the_actual_missing_expression_frontie
         &mut context(
             &config,
             &mut budget,
-            ValueAlgebra::new(&config.domain().unwrap())
+            ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
         ),
         19,
     ));
@@ -358,10 +330,11 @@ fn finite_raw_guard_error_attaches_only_to_the_actual_missing_expression_frontie
 fn raw_finite_error_does_not_turn_a_proven_constant_guard_into_a_failure() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let mut config = ExecutionConfig::default();
-    config.analysis.relations.max_nodes = 1;
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.max_nodes = 1;
     let leaf = ExprId::input(71, Symbol::CallValue);
     let expression = ExprId::operation(opcode::NOT, &[leaf], Default::default()).unwrap();
-    let offset = AbstractValue::top().with_expression(expression);
+    let offset = TestValue::top().with_expression(expression);
     let size = word(0);
     let mut budget = WorkBudget::new(config.max_work);
     let built = build(
@@ -370,7 +343,7 @@ fn raw_finite_error_does_not_turn_a_proven_constant_guard_into_a_failure() {
         &mut context(
             &config,
             &mut budget,
-            ValueAlgebra::new(&config.domain().unwrap()),
+            ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
         ),
     )
     .unwrap();
@@ -378,8 +351,14 @@ fn raw_finite_error_does_not_turn_a_proven_constant_guard_into_a_failure() {
     assert_eq!(built.condition.singleton(), Some(U256::ONE));
     // allow_memory bypasses literal admission because the offset root exceeds
     // the cap, then keeps the original proven-constant success path.
-    let mut result =
-        empty_execution(initial(&world, &entry, ValueAlgebra::new(&Domain::default())).unwrap());
+    let mut result = empty_execution(
+        initial(
+            &world,
+            &entry,
+            ValueAlgebra::new(&ProductAlgebra::default()),
+        )
+        .unwrap(),
+    );
     assert!(super::super::allow_memory(
         &mut result,
         &offset,
@@ -387,7 +366,7 @@ fn raw_finite_error_does_not_turn_a_proven_constant_guard_into_a_failure() {
         &mut context(
             &config,
             &mut budget,
-            ValueAlgebra::new(&config.domain().unwrap())
+            ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
         ),
         19,
     ));
@@ -400,17 +379,23 @@ fn raw_finite_error_does_not_turn_a_proven_constant_guard_into_a_failure() {
 fn literal_and_cancelled_paths_keep_their_original_boundaries_without_guard_fallback() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
-    let payload = initial(&world, &entry, ValueAlgebra::new(&config.domain().unwrap())).unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let payload = initial(
+        &world,
+        &entry,
+        ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
+    )
+    .unwrap();
     let mut result = empty_execution(payload.clone());
     let mut budget = WorkBudget::new(736);
     assert!(super::super::allow_memory(
         &mut result,
-        &AbstractValue::top(),
+        &TestValue::top(),
         &word(0),
         &mut context(
             &config,
             &mut budget,
-            ValueAlgebra::new(&config.domain().unwrap())
+            ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
         ),
         19,
     ));
@@ -428,7 +413,7 @@ fn literal_and_cancelled_paths_keep_their_original_boundaries_without_guard_fall
             &mut context(
                 &config,
                 &mut budget,
-                ValueAlgebra::new(&config.domain().unwrap())
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
             ),
             19
         ));
@@ -442,7 +427,7 @@ fn literal_and_cancelled_paths_keep_their_original_boundaries_without_guard_fall
             &mut context(
                 &config,
                 &mut budget,
-                ValueAlgebra::new(&config.domain().unwrap())
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
             ),
             19,
         ));
@@ -475,7 +460,7 @@ fn identification_outcomes_preserve_value_layers_and_the_same_payment() {
                 |expression| original.clone().with_expression(expression.clone()),
             );
             let mut budget = WorkBudget::new(usize::MAX);
-            let numeric = Domain::default();
+            let numeric = ProductAlgebra::default();
             let mut builder = Builder {
                 domain: ValueAlgebra::new(&numeric),
                 budget: &mut budget,
@@ -509,11 +494,11 @@ fn identification_outcomes_preserve_value_layers_and_the_same_payment() {
 #[test]
 fn identification_short_circuits_without_calling_the_allocator() {
     for (original, enabled) in [
-        (AbstractValue::top(), false),
+        (TestValue::top(), false),
         (inputs().0.with_symbolic_limit(), true),
         (word(7), true),
         (
-            AbstractValue::unsigned_range(U256::from(7), U256::from(7)).unwrap(),
+            TestValue::unsigned_range(U256::from(7), U256::from(7)).unwrap(),
             true,
         ),
         (
@@ -522,9 +507,10 @@ fn identification_short_circuits_without_calling_the_allocator() {
         ),
     ] {
         let mut budget = WorkBudget::new(usize::MAX);
-        let domain = Domain::default();
+        let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+        let domain = domain.borrowed();
         let mut builder = Builder {
-            domain: ValueAlgebra::new(&domain),
+            domain: domain,
             budget: &mut budget,
             retention: GuardRetention::new(&original, &original),
         };
@@ -542,12 +528,15 @@ fn identification_short_circuits_without_calling_the_allocator() {
 fn either_unmarked_operand_identity_failure_vetoes_finite_guard_evidence() {
     for missing in [0, 1] {
         let mut config = ExecutionConfig::default();
-        config.analysis.relations.max_nodes = 1;
-        let domain = config.domain().unwrap();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        config_numeric.relations.max_nodes = 1;
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
         let (offset, size) = if missing == 0 {
-            (AbstractValue::top(), inputs().1)
+            (TestValue::top(), inputs().1)
         } else {
-            (inputs().0, AbstractValue::top())
+            (inputs().0, TestValue::top())
         };
         let steps = reference(&offset, &size, domain);
         assert_eq!(
@@ -574,7 +563,7 @@ fn either_unmarked_operand_identity_failure_vetoes_finite_guard_evidence() {
             &mut context(
                 &config,
                 &mut budget,
-                ValueAlgebra::new(&config.domain().unwrap()),
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
             ),
             || {
                 allocations += 1;
@@ -619,7 +608,12 @@ fn either_unmarked_operand_identity_failure_vetoes_finite_guard_evidence() {
 
         let (world, entry) = fixture(&[(0x101, "00")]);
         let mut result = empty_execution(
-            initial(&world, &entry, ValueAlgebra::new(&Domain::default())).unwrap(),
+            initial(
+                &world,
+                &entry,
+                ValueAlgebra::new(&ProductAlgebra::default()),
+            )
+            .unwrap(),
         );
         let before = result.payload.clone();
         assert!(
@@ -632,7 +626,7 @@ fn either_unmarked_operand_identity_failure_vetoes_finite_guard_evidence() {
                 &mut context(
                     &config,
                     &mut budget,
-                    ValueAlgebra::new(&config.domain().unwrap())
+                    ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                 ),
                 19,
             )

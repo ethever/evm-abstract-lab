@@ -1,6 +1,9 @@
 //! Real unknown-environment callbacks exercise the relative Runtime solver.
 //! Internal retry flags and Runtime receipts remain the solver's private tests.
 
+#[path = "support/native.rs"]
+mod native;
+
 #[path = "runtime_coarse_retry/fixture.rs"]
 mod fixture;
 #[path = "runtime_coarse_retry/oracle.rs"]
@@ -23,7 +26,7 @@ use witness::Assignment;
 fn runtime_return_retries_the_whole_callback_entry() {
     let config = policy();
     let domain = domain(&config);
-    fixture::entry_constructor_refusal(domain);
+    fixture::entry_constructor_refusal(&domain);
     let code = fixture::recoverable();
     let analysis = run(&code, config);
     assert!(
@@ -38,13 +41,16 @@ fn runtime_return_retries_the_whole_callback_entry() {
     let procedure = callback(&analysis, &code);
     let output = only_output(procedure, OutcomeKind::Return);
     assert_eq!(
-        output.store.read(address(B), &word(0), domain).singleton(),
+        output
+            .store
+            .read(address(B), &word(0), domain.borrowed())
+            .singleton(),
         Some(U256::from(42))
     );
     assert_eq!(
         output
             .store
-            .read_transient(address(B), &word(0), domain)
+            .read_transient(address(B), &word(0), domain.borrowed())
             .singleton(),
         Some(U256::from(99))
     );
@@ -53,7 +59,7 @@ fn runtime_return_retries_the_whole_callback_entry() {
         &output.data,
         &word(42).singleton().unwrap().to_be_bytes::<32>(),
     );
-    assignment.store(&output.store, 42, 99, domain);
+    assignment.store(&output.store, 42, 99, &domain);
     // Effects propagated to the unknown environment revisit this callback.
     // Counts bound closure without identifying the solver's private retry flag.
     assert!(procedure.input_updates > 0);
@@ -72,7 +78,7 @@ fn runtime_return_retries_the_whole_callback_entry() {
         observed.assert_callback(&code, OutcomeKind::Return, 42);
         let mut joint = Assignment::default();
         joint.exact_bytes(&output.data, &observed.callback_data);
-        joint.store(&output.store, observed.slot, observed.transient, domain);
+        joint.store(&output.store, observed.slot, observed.transient, &domain);
     }
 }
 
@@ -80,7 +86,7 @@ fn runtime_return_retries_the_whole_callback_entry() {
 fn runtime_revert_retries_with_rollback_and_exact_data() {
     let config = policy();
     let domain = domain(&config);
-    fixture::entry_constructor_refusal(domain);
+    fixture::entry_constructor_refusal(&domain);
     let code = fixture::reverting();
     let analysis = run(&code, config);
     assert!(
@@ -107,7 +113,7 @@ fn runtime_revert_retries_with_rollback_and_exact_data() {
     );
     // Coarse saved roots may include more than the old singleton. One complete
     // valuation must still admit (7, 0); an output containing only (42, 99) fails.
-    assignment.store(&output.store, 7, 0, domain);
+    assignment.store(&output.store, 7, 0, &domain);
     bounded_current_evidence(&analysis);
     let graph = ssa::build_world(&analysis).unwrap();
     graph.verify(&analysis).unwrap();
@@ -124,7 +130,7 @@ fn runtime_revert_retries_with_rollback_and_exact_data() {
         assert_ne!((observed.slot, observed.transient), (42, 99));
         let mut joint = Assignment::default();
         joint.exact_bytes(&output.data, &observed.callback_data);
-        joint.store(&output.store, observed.slot, observed.transient, domain);
+        joint.store(&output.store, observed.slot, observed.transient, &domain);
     }
 }
 
@@ -132,7 +138,7 @@ fn runtime_revert_retries_with_rollback_and_exact_data() {
 fn runtime_body_growth_stays_incomplete_and_preserves_legal_revert() {
     let config = policy();
     let domain = domain(&config);
-    fixture::body_constructor_refusal(domain);
+    fixture::body_constructor_refusal(&domain);
     let code = fixture::body_limited();
     let analysis = run(&code, config);
     assert_eq!(analysis.status(), Status::Incomplete);
@@ -157,7 +163,7 @@ fn runtime_body_growth_stays_incomplete_and_preserves_legal_revert() {
         &output.data,
         &word(99).singleton().unwrap().to_be_bytes::<32>(),
     );
-    joint.store(&output.store, 7, 0, domain);
+    joint.store(&output.store, 7, 0, &domain);
     let refused: Vec<_> = analysis
         .frontiers()
         .iter()
@@ -189,13 +195,15 @@ fn runtime_body_growth_stays_incomplete_and_preserves_legal_revert() {
             "snapshot assignment requires the complete F to be True"
         );
         let mut snapshots = Assignment::default();
-        snapshots.store(&payload.store, 99, 42, domain);
-        snapshots.store(payload.active().saved_store.state(), 7, 0, domain);
+        snapshots.store(&payload.store, 99, 42, &domain);
+        snapshots.store(payload.active().saved_store.state(), 7, 0, &domain);
     }
     bounded_current_evidence(&analysis);
     assert!(ssa::build_world(&analysis).is_err());
-    let partial = ssa::build_partial_world(&analysis).unwrap();
-    partial.verify(&analysis).unwrap();
+    let partial = ssa::build_partial_world(&analysis, &mut native::postprocessing()).unwrap();
+    partial
+        .verify(&analysis, &mut native::postprocessing())
+        .unwrap();
     assert_eq!(partial.status(), Status::Incomplete);
     assert_eq!(partial.frontiers().len(), analysis.frontiers().len());
     for (retained, original) in partial.frontiers().iter().zip(analysis.frontiers()) {

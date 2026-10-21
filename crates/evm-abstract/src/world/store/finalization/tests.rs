@@ -1,30 +1,29 @@
 use super::*;
 
 mod clone_invoice;
-use crate::{
-    Fork,
-    domain::AbstractValue,
-    world::{Account, Existence, World},
-};
 use alloy_primitives::U256;
 use std::num::NonZeroUsize;
+use {
+    crate::Fork, crate::world::Existence, crate::world::test_support::TestAccount,
+    crate::world::test_support::TestValue, crate::world::test_support::TestWorld,
+};
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> TestValue {
+    TestValue::constant(U256::from(number))
 }
 
 fn no_delete_owners(plan: &Plan) -> &[OwnerCleanupFootprint] {
     match &plan.fee {
-        PlanFee::NoDelete { owners } => owners,
-        PlanFee::Legacy { .. } => panic!("expected a no-definite-deletion plan"),
+        CleanupWork::OwnerLocal { owners } => owners,
+        CleanupWork::Reset { .. } => panic!("expected a no-definite-deletion plan"),
     }
 }
 
-fn measure(store: &Store) -> Footprint {
+fn measure(store: &TestStore) -> Footprint {
     Footprint::measure(store, &mut WorkBudget::new(usize::MAX)).unwrap()
 }
 
@@ -33,22 +32,32 @@ fn nonempty_code_has_no_deletion_join_fee_or_candidate_capacity_product() {
     let mut fees = Vec::new();
     for bytes in [1, 3_124, 25_650] {
         for capacity in [1, 1_024] {
-            let domain = Domain::new(NonZeroUsize::new(capacity).unwrap());
-            let mut world = World::new(Fork::Osaka, "finalization code size");
-            let mut account = Account::from_hex(&"00".repeat(bytes), world.fork()).unwrap();
-            account.balance = AbstractValue::top();
-            account.nonce = AbstractValue::top();
+            let domain = crate::domain::ValueAlgebra::new(
+                crate::domain::ProductAlgebra::from_spec(crate::domain::DomainSpec::new(
+                    NonZeroUsize::new(capacity).unwrap(),
+                    std::num::NonZeroUsize::new(8).unwrap(),
+                    std::num::NonZeroUsize::new(256).unwrap(),
+                )),
+            );
+            let mut world = TestWorld::new(Fork::Osaka, "finalization code size");
+            let mut account = TestAccount::from_hex(&"00".repeat(bytes), world.fork()).unwrap();
+            account.balance = TestValue::top();
+            account.nonce = TestValue::top();
             world.insert(address(0x101), account).unwrap();
             world
                 .insert(
                     address(0x102),
-                    Account {
+                    TestAccount {
                         code: Code::Delegation(address(0x101)),
-                        ..Account::unknown()
+                        ..TestAccount::unknown()
                     },
                 )
                 .unwrap();
-            let mut store = Store::new(&world);
+            let mut store = TestStore::new(
+                &world,
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed(),
+            );
             store.touch_account(address(0x101));
             store.may_touch_account(address(0x102));
             let before = store.clone();
@@ -57,7 +66,7 @@ fn nonempty_code_has_no_deletion_join_fee_or_candidate_capacity_product() {
             assert!(plan.actions.iter().all(|(_, a)| *a == Deletion::Retain));
             let mut budget = WorkBudget::new(20_000_000);
             store
-                .finalize_transaction_checked(domain, None, &mut budget)
+                .finalize_transaction_checked(domain.borrowed(), None, &mut budget)
                 .unwrap();
             fees.push(budget.used());
             assert_eq!(store.code(address(0x101)), before.code(address(0x101)));
@@ -71,13 +80,13 @@ fn nonempty_code_has_no_deletion_join_fee_or_candidate_capacity_product() {
 
 #[test]
 fn plan_keeps_empty_touch_uncertainty_and_pending_nonempty_deletion() {
-    let domain = Domain::default();
-    let mut world = World::new(Fork::Osaka, "finite finalization lifecycle");
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut world = TestWorld::new(Fork::Osaka, "finite finalization lifecycle");
     for number in 0x100..=0x107 {
         let mut account = if number >= 0x106 {
-            Account::from_hex("00", world.fork()).unwrap()
+            TestAccount::from_hex("00", world.fork()).unwrap()
         } else {
-            Account::empty()
+            TestAccount::empty()
         };
         if number == 0x102 {
             account.balance = domain.join(&word(0), &word(7));
@@ -87,7 +96,10 @@ fn plan_keeps_empty_touch_uncertainty_and_pending_nonempty_deletion() {
         }
         world.insert(address(number), account).unwrap();
     }
-    let mut store = Store::new(&world);
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     for number in [0x101, 0x102, 0x103, 0x105, 0x106, 0x107] {
         store.touch_account(address(number));
     }
@@ -112,7 +124,7 @@ fn plan_keeps_empty_touch_uncertainty_and_pending_nonempty_deletion() {
     );
     let mut budget = WorkBudget::new(20_000_000);
     store
-        .finalize_transaction_checked(domain, None, &mut budget)
+        .finalize_transaction_checked(domain.borrowed(), None, &mut budget)
         .unwrap();
     assert_eq!(store.existence(address(0x100)), Existence::Present);
     for number in [0x101, 0x105, 0x106] {
@@ -133,14 +145,17 @@ fn plan_keeps_empty_touch_uncertainty_and_pending_nonempty_deletion() {
 
 #[test]
 fn sticky_touch_is_planned_after_restore_and_late_refusal_keeps_live_state() {
-    let domain = Domain::default();
-    let mut world = World::new(Fork::Osaka, "finalization rollback");
-    world.insert(address(3), Account::empty()).unwrap();
-    let mut before = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut world = TestWorld::new(Fork::Osaka, "finalization rollback");
+    world.insert(address(3), TestAccount::empty()).unwrap();
+    let mut before = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let saved = before.snapshot();
     before.touch_account(address(3));
     before.write_balance(address(3), word(9));
-    before.write(address(3), &word(1), &word(7), domain);
+    before.write(address(3), &word(1), &word(7), domain.borrowed());
     assert_eq!(Deletion::at(&before, address(3)), Deletion::Retain);
     assert_eq!(Deletion::at(saved.state(), address(3)), Deletion::Retain);
     let mut restored = before.clone();
@@ -150,7 +165,7 @@ fn sticky_touch_is_planned_after_restore_and_late_refusal_keeps_live_state() {
     let mut complete = before.clone();
     let mut full = WorkBudget::new(20_000_000);
     complete
-        .finalize_transaction_checked(domain, Some(&saved), &mut full)
+        .finalize_transaction_checked(domain.borrowed(), Some(&saved), &mut full)
         .unwrap();
     assert_eq!(complete.existence(address(3)), Existence::Absent);
     assert_eq!(
@@ -162,7 +177,7 @@ fn sticky_touch_is_planned_after_restore_and_late_refusal_keeps_live_state() {
         let mut refused = before.clone();
         assert_eq!(
             refused.finalize_transaction_checked(
-                domain,
+                domain.borrowed(),
                 Some(&saved),
                 &mut WorkBudget::new(maximum),
             ),
@@ -176,7 +191,7 @@ fn sticky_touch_is_planned_after_restore_and_late_refusal_keeps_live_state() {
         cancellation.cancel();
         let mut refused = before.clone();
         assert_eq!(
-            refused.finalize_transaction_checked(domain, Some(&saved), &mut budget),
+            refused.finalize_transaction_checked(domain.borrowed(), Some(&saved), &mut budget),
             Err(FinalizationError::Cancelled)
         );
         assert_eq!(refused, before);
@@ -185,27 +200,33 @@ fn sticky_touch_is_planned_after_restore_and_late_refusal_keeps_live_state() {
 
 #[test]
 fn may_delete_growth_includes_implicit_owners_and_preserves_unrelated_fields() {
-    let domain = Domain::default();
-    let mut world = World::new(Fork::Osaka, "finalization implicit owners");
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut world = TestWorld::new(Fork::Osaka, "finalization implicit owners");
     world
         .insert(
             address(0x101),
-            Account::from_hex("00", world.fork()).unwrap(),
+            TestAccount::from_hex("00", world.fork()).unwrap(),
         )
         .unwrap();
-    let mut store = Store::new(&world);
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     for number in [0x200, 0x300] {
         // Touch-only addresses have no explicit code/balance/nonce/root entry.
         store.may_touch_account(address(number));
     }
-    store.write(address(0x101), &word(1), &word(9), domain);
+    store.write(address(0x101), &word(1), &word(9), domain.borrowed());
     let before = store.clone();
     let mut budget = WorkBudget::new(20_000_000);
     store
-        .finalize_transaction_checked(domain, None, &mut budget)
+        .finalize_transaction_checked(domain.borrowed(), None, &mut budget)
         .unwrap();
     assert_eq!(store.code(address(0x101)), before.code(address(0x101)));
-    assert_eq!(store.read(address(0x101), &word(1), domain), word(9));
+    assert_eq!(
+        store.read(address(0x101), &word(1), domain.borrowed()),
+        word(9)
+    );
     for number in [0x200, 0x300] {
         assert_eq!(store.existence(address(number)), Existence::Unknown);
         assert!(store.read_balance(address(number)).numeric().is_top());
@@ -221,27 +242,34 @@ fn may_delete_retention_refusal_is_typed_and_never_installs_the_numeric_fallback
         symbolic::{ExprError, StateError},
     };
 
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        // An unobserved slot root includes its source token (two nodes).
-        // Its MAY-delete ITE adds a selector and the zero-state alternative.
-        max_nodes: 2,
-        ..RelationLimits::default()
-    }));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                // An unobserved slot root includes its source token (two nodes).
+                // Its MAY-delete ITE adds a selector and the zero-state alternative.
+                max_nodes: 2,
+                ..RelationLimits::default()
+            }),
+    ));
     let limits = domain.spec().relations().expressions();
-    let mut world = World::new(Fork::Osaka, "finalization retention refusal");
+    let mut world = TestWorld::new(Fork::Osaka, "finalization retention refusal");
     world
         .insert(
             address(0x200),
-            Account {
+            TestAccount {
                 code: Code::Empty,
                 nonce: word(0),
                 balance: domain.join(&word(0), &word(1)),
                 existence: Existence::Present,
-                ..Account::unknown()
+                ..TestAccount::unknown()
             },
         )
         .unwrap();
-    let mut store = Store::new(&world);
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     store.touch_account(address(0x200));
     store.check_existing(limits).unwrap();
     assert_eq!(Deletion::at(&store, address(0x200)), Deletion::Join);
@@ -249,14 +277,12 @@ fn may_delete_retention_refusal_is_typed_and_never_installs_the_numeric_fallback
     // The private plan still retains its numerical fallback and failure marker;
     // the public Result API must refuse it without installing that fallback.
     let mut fallback = store.clone();
-    assert!(fallback.finalize_transaction(domain).is_err());
+    assert!(fallback.finalize_transaction(domain.borrowed()).is_err());
     assert_eq!(fallback, store);
     Plan::new(&fallback)
-        .apply(
-            &mut fallback,
-            crate::domain::ValueAlgebra::new(&domain),
-            &mut || Ok::<(), StoreError>(()),
-        )
+        .apply(&mut fallback, domain.borrowed(), &mut || {
+            Ok::<(), StoreError>(())
+        })
         .unwrap();
     assert!(matches!(
         fallback.check_existing(limits),
@@ -267,7 +293,7 @@ fn may_delete_retention_refusal_is_typed_and_never_installs_the_numeric_fallback
     let before = store.clone();
     let mut budget = WorkBudget::new(20_000_000);
     let error = store
-        .finalize_transaction_checked(domain, None, &mut budget)
+        .finalize_transaction_checked(domain.borrowed(), None, &mut budget)
         .unwrap_err();
     assert!(matches!(
         error.into_store_error(),
@@ -282,19 +308,22 @@ fn may_delete_retention_refusal_is_typed_and_never_installs_the_numeric_fallback
 
 #[test]
 fn restored_ripemd_may_touch_changes_only_addr3_and_not_saved_or_other_owners() {
-    let domain = Domain::default();
-    let mut world = World::new(Fork::Osaka, "restored RIPEMD MAY touch");
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut world = TestWorld::new(Fork::Osaka, "restored RIPEMD MAY touch");
     for number in [0x101, 0x201] {
-        let mut account = Account::from_hex("00", world.fork()).unwrap();
+        let mut account = TestAccount::from_hex("00", world.fork()).unwrap();
         account.storage.insert(U256::ONE, word(number));
         world.insert(address(number), account).unwrap();
     }
-    let mut current = Store::new(&world);
+    let mut current = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let saved = current.snapshot();
     let saved_state = saved.state().clone();
     current.may_touch_account(address(3));
     current
-        .write_checked(address(0x101), &word(1), &word(99), domain)
+        .write_checked(address(0x101), &word(1), &word(99), domain.borrowed())
         .unwrap();
     let frozen = current.clone();
     let mut restored = current.clone();
@@ -315,7 +344,7 @@ fn restored_ripemd_may_touch_changes_only_addr3_and_not_saved_or_other_owners() 
     );
     let mut budget = WorkBudget::new(20_000_000);
     current
-        .finalize_transaction_checked(domain, Some(&saved), &mut budget)
+        .finalize_transaction_checked(domain.borrowed(), Some(&saved), &mut budget)
         .unwrap();
     for number in [0x101, 0x201] {
         let owner = address(number);
@@ -324,8 +353,10 @@ fn restored_ripemd_may_touch_changes_only_addr3_and_not_saved_or_other_owners() 
             saved.state().slot_root(owner, false)
         );
         assert_eq!(
-            current.read_checked(owner, &word(1), domain),
-            saved.state().read_checked(owner, &word(1), domain)
+            current.read_checked(owner, &word(1), domain.borrowed()),
+            saved
+                .state()
+                .read_checked(owner, &word(1), domain.borrowed())
         );
         assert_eq!(
             current.read_balance(owner),
@@ -337,28 +368,35 @@ fn restored_ripemd_may_touch_changes_only_addr3_and_not_saved_or_other_owners() 
     assert_eq!(current.touched_in_transaction(address(3)), Some(false));
     assert_eq!(current.existence(address(3)), Existence::Unknown);
     assert_eq!(saved.state(), &saved_state);
-    assert_eq!(frozen.read(address(0x101), &word(1), domain), word(99));
+    assert_eq!(
+        frozen.read(address(0x101), &word(1), domain.borrowed()),
+        word(99)
+    );
 }
 
 #[test]
 fn may_delete_field_fee_is_independent_of_unrelated_cell_payloads() {
     use crate::domain::relational::RelationLimits;
 
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_nodes: 4_096,
-        max_depth: 256,
-        ..RelationLimits::default()
-    }));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_nodes: 4_096,
+                max_depth: 256,
+                ..RelationLimits::default()
+            }),
+    ));
     let limits = domain.spec().relations().expressions();
     let mut fields = Vec::new();
     for cells in [2, 64] {
-        let mut world = World::new(Fork::Osaka, "local deletion field discovery");
-        let mut account = Account::from_hex("00", world.fork()).unwrap();
+        let mut world = TestWorld::new(Fork::Osaka, "local deletion field discovery");
+        let mut account = TestAccount::from_hex("00", world.fork()).unwrap();
         for key in 0..cells {
             account.storage.insert(U256::from(key), word(key + 7));
         }
         world.insert(address(0x101), account).unwrap();
-        let mut store = Store::new_checked(&world, domain).unwrap();
+        let mut store = TestStore::new_checked(&world, domain.borrowed()).unwrap();
         store.may_touch_account(address(3));
         store.check_existing(limits).unwrap();
         let plan = Plan::new(&store);
@@ -373,7 +411,7 @@ fn may_delete_field_fee_is_independent_of_unrelated_cell_payloads() {
         fields.push(owner);
         let mut extended = store.clone();
         extended
-            .write_checked(address(3), &word(1), &word(9), domain)
+            .write_checked(address(3), &word(1), &word(9), domain.borrowed())
             .unwrap();
         extended.check_existing(limits).unwrap();
         assert!(
@@ -390,16 +428,20 @@ fn may_delete_field_fee_is_independent_of_unrelated_cell_payloads() {
 fn may_delete_batch_fee_avoids_owner_count_times_unrelated_fields() {
     use crate::domain::relational::RelationLimits;
 
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_nodes: 4_096,
-        max_depth: 256,
-        ..RelationLimits::default()
-    }));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_nodes: 4_096,
+                max_depth: 256,
+                ..RelationLimits::default()
+            }),
+    ));
     let limits = domain.spec().relations().expressions();
     let mut fees = Vec::new();
     for owners in [8u64, 32] {
-        let mut world = World::new(Fork::Osaka, "MAY deletion work scaling");
-        let mut unrelated = Account::from_hex("00", world.fork()).unwrap();
+        let mut world = TestWorld::new(Fork::Osaka, "MAY deletion work scaling");
+        let mut unrelated = TestAccount::from_hex("00", world.fork()).unwrap();
         unrelated.storage_unknown = true;
         for key in 0..owners * 4 {
             unrelated.storage.insert(U256::from(key), word(key + 1));
@@ -407,10 +449,10 @@ fn may_delete_batch_fee_avoids_owner_count_times_unrelated_fields() {
         world.insert(address(0x900), unrelated).unwrap();
         for number in 0..owners {
             world
-                .insert(address(0x1000 + number), Account::unknown())
+                .insert(address(0x1000 + number), TestAccount::unknown())
                 .unwrap();
         }
-        let mut store = Store::new_checked(&world, domain).unwrap();
+        let mut store = TestStore::new_checked(&world, domain.borrowed()).unwrap();
         for number in 0..owners {
             store.may_touch_account(address(0x1000 + number));
         }
@@ -418,7 +460,7 @@ fn may_delete_batch_fee_avoids_owner_count_times_unrelated_fields() {
         let before = store.slot_root(address(0x900), false);
         let mut budget = WorkBudget::new(usize::MAX);
         store
-            .finalize_transaction_checked(domain, None, &mut budget)
+            .finalize_transaction_checked(domain.borrowed(), None, &mut budget)
             .unwrap();
         store.check_existing(limits).unwrap();
         assert_eq!(store.slot_root(address(0x900), false), before);
@@ -434,8 +476,11 @@ fn may_delete_batch_fee_avoids_owner_count_times_unrelated_fields() {
 fn may_delete_does_not_erase_a_transient_retention_failure_during_cleanup() {
     use crate::domain::symbolic::ExprError;
 
-    let domain = Domain::default();
-    let mut store = Store::new(&World::new(Fork::Osaka, "transient refusal before cleanup"));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new(
+        &TestWorld::new(Fork::Osaka, "transient refusal before cleanup"),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     store.may_touch_account(address(3));
     let error = StoreError::Expression(ExprError::Limit {
         nodes: usize::MAX,
@@ -445,19 +490,20 @@ fn may_delete_does_not_erase_a_transient_retention_failure_during_cleanup() {
     let before = store.clone();
     let mut budget = WorkBudget::new(20_000_000);
     assert_eq!(
-        store.finalize_transaction_checked(domain, None, &mut budget),
+        store.finalize_transaction_checked(domain.borrowed(), None, &mut budget),
         Err(FinalizationError::Store(error.clone()))
     );
     assert_eq!(store, before);
     let mut fallback = before;
-    assert_eq!(fallback.finalize_transaction(domain), Err(error.clone()));
+    assert_eq!(
+        fallback.finalize_transaction(domain.borrowed()),
+        Err(error.clone())
+    );
     assert_eq!(fallback, store);
     Plan::new(&fallback)
-        .apply(
-            &mut fallback,
-            crate::domain::ValueAlgebra::new(&domain),
-            &mut || Ok::<(), StoreError>(()),
-        )
+        .apply(&mut fallback, domain.borrowed(), &mut || {
+            Ok::<(), StoreError>(())
+        })
         .unwrap();
     assert_eq!(
         fallback.check_existing(domain.spec().relations().expressions()),
@@ -467,7 +513,10 @@ fn may_delete_does_not_erase_a_transient_retention_failure_during_cleanup() {
 
 #[test]
 fn no_delete_receipt_separates_retains_from_may_work() {
-    let mut store = Store::new(&World::new(Fork::Osaka, "no-delete receipt classes"));
+    let mut store = TestStore::new(
+        &TestWorld::new(Fork::Osaka, "no-delete receipt classes"),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     // An explicit untouched owner still contributes an action, but performs no
     // MAY validation, map mutation or local preparation.
     store.touched.insert(address(3), Some(false));
@@ -496,13 +545,16 @@ fn no_delete_receipt_separates_retains_from_may_work() {
 
 #[test]
 fn old_map_cow_is_paid_once_per_batch_and_selected_slots_only() {
-    let mut world = World::new(Fork::Osaka, "MAY COW receipt ownership");
-    let mut account = Account::unknown();
+    let mut world = TestWorld::new(Fork::Osaka, "MAY COW receipt ownership");
+    let mut account = TestAccount::unknown();
     for key in 0..64 {
         account.storage.insert(U256::from(key), word(key + 7));
     }
     world.insert(address(0x900), account).unwrap();
-    let base = Store::new(&world);
+    let base = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut receipts = Vec::new();
     for count in [1, 8, 32] {
         let mut store = base.clone();
@@ -553,7 +605,10 @@ fn unrelated_root_weight_belongs_to_validation_and_not_map_height_or_handle_cow(
                 )
                 .unwrap();
         }
-        let mut store = Store::new(&World::new(Fork::Osaka, "root weight versus map entries"));
+        let mut store = TestStore::new(
+            &TestWorld::new(Fork::Osaka, "root weight versus map entries"),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        );
         store.persistent.roots.insert(address(0x900), root.clone());
         store.may_touch_account(address(3));
         let footprint = measure(&store);
@@ -572,9 +627,15 @@ fn unrelated_root_weight_belongs_to_validation_and_not_map_height_or_handle_cow(
 fn implicit_may_owners_each_pay_for_and_preserve_recursive_base_scoping() {
     use crate::domain::symbolic::{ExprId, ExprLimits, SlotStateId, SlotStateKind, SourceId};
 
-    let domain = Domain::default();
-    let plain = Store::new(&World::new(Fork::Osaka, "plain implicit owner"));
-    let mut store = Store::new(&World::new(Fork::Osaka, "recursive implicit owner base"));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let plain = TestStore::new(
+        &TestWorld::new(Fork::Osaka, "plain implicit owner"),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
+    let mut store = TestStore::new(
+        &TestWorld::new(Fork::Osaka, "recursive implicit owner base"),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let base = SlotStateId::input(SourceId::fresh().unwrap())
         .join_guarded(
             &SlotStateId::input(SourceId::fresh().unwrap()),
@@ -600,7 +661,7 @@ fn implicit_may_owners_each_pay_for_and_preserve_recursive_base_scoping() {
         );
     }
     store
-        .finalize_transaction_checked(domain, None, &mut WorkBudget::new(usize::MAX))
+        .finalize_transaction_checked(domain.borrowed(), None, &mut WorkBudget::new(usize::MAX))
         .unwrap();
     assert_eq!(store.persistent.base, base);
     for number in [3, 4] {
@@ -626,36 +687,66 @@ fn implicit_may_owners_each_pay_for_and_preserve_recursive_base_scoping() {
 }
 
 #[test]
-fn definite_and_mixed_deletion_keep_the_prechange_prices() {
-    for (with_may, expected_fields, expected_fee) in [(false, 62, 39_960), (true, 63, 144_720)] {
-        let mut store = Store::new(&World::new(Fork::Osaka, "legacy deletion price"));
-        store.pending_destruction.insert(address(1), Some(true));
+fn definite_and_mixed_deletion_charge_sufficient_work_and_refuse_atomically() {
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut charges = Vec::new();
+    for with_may in [false, true] {
+        let mut before = TestStore::new(
+            &TestWorld::new(Fork::Osaka, "reset work accounting"),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        );
+        before.pending_destruction.insert(address(1), Some(true));
         if with_may {
-            store.may_touch_account(address(2));
+            before.may_touch_account(address(2));
         }
-        let footprint = measure(&store);
-        assert_eq!(footprint.fields, expected_fields);
-        assert_eq!(footprint.reset_growth, 159);
-        let plan = Plan::new(&store);
-        let PlanFee::Legacy { join_fields } = &plan.fee else {
-            panic!("any definite Delete must retain legacy pricing");
-        };
-        assert_eq!(*join_fields, if with_may { 187 } else { 0 });
-        // Pinned to the original source: pure Delete has grown=221, H=9,
-        // passes=20; mixed has grown=409, H=10, passes=28 and J=187.
-        assert_eq!(plan.work(footprint), expected_fee);
+        let footprint = measure(&before);
+        let plan = Plan::new(&before);
+        assert!(matches!(plan.fee, CleanupWork::Reset { .. }));
+        assert!(plan.work(footprint) >= tree_work(footprint.fields));
+
+        let mut completed = before.clone();
+        let mut paid = WorkBudget::new(usize::MAX);
+        completed
+            .finalize_transaction_checked(domain.borrowed(), None, &mut paid)
+            .unwrap();
+        let charged = paid.used();
+        assert!(charged >= plan.work(footprint));
+        assert_eq!(completed.existence(address(1)), Existence::Absent);
+        if with_may {
+            assert_eq!(completed.existence(address(2)), Existence::Unknown);
+        }
+        for limit in [0, 1, charged - 1] {
+            let mut refused = before.clone();
+            let checkpoint = refused.snapshot();
+            assert_eq!(
+                refused.finalize_transaction_checked(
+                    domain.borrowed(),
+                    None,
+                    &mut WorkBudget::new(limit)
+                ),
+                Err(FinalizationError::Work),
+            );
+            assert_eq!(&refused, checkpoint.state());
+        }
+        charges.push(charged);
     }
+    // Mixed cleanup pays the additional guarded owner join. This is a work
+    // relation derived from the two plans, rather than a historical fee value.
+    assert!(charges[1] > charges[0]);
 }
 
 #[test]
 fn no_delete_late_work_refusal_is_atomic_across_both_planes() {
-    let domain = Domain::default();
-    let mut before = Store::new(&World::new(Fork::Osaka, "no-delete atomic work refusal"));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut before = TestStore::new(
+        &TestWorld::new(Fork::Osaka, "no-delete atomic work refusal"),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     before
-        .write_checked(address(0x900), &word(1), &word(7), domain)
+        .write_checked(address(0x900), &word(1), &word(7), domain.borrowed())
         .unwrap();
     before
-        .write_transient_checked(address(0x900), &word(2), &word(9), domain)
+        .write_transient_checked(address(0x900), &word(2), &word(9), domain.borrowed())
         .unwrap();
     before.may_touch_account(address(3));
     assert_eq!(no_delete_owners(&Plan::new(&before)).len(), 1);
@@ -663,18 +754,25 @@ fn no_delete_late_work_refusal_is_atomic_across_both_planes() {
     let mut complete = before.clone();
     let mut full = WorkBudget::new(usize::MAX);
     complete
-        .finalize_transaction_checked(domain, None, &mut full)
+        .finalize_transaction_checked(domain.borrowed(), None, &mut full)
         .unwrap();
     assert_eq!(complete.existence(address(3)), Existence::Unknown);
-    assert_eq!(complete.read(address(0x900), &word(1), domain), word(7));
     assert_eq!(
-        complete.read_transient(address(0x900), &word(2), domain),
+        complete.read(address(0x900), &word(1), domain.borrowed()),
+        word(7)
+    );
+    assert_eq!(
+        complete.read_transient(address(0x900), &word(2), domain.borrowed()),
         word(0)
     );
     for maximum in [0, 1, full.used() - 1] {
         let mut refused = before.clone();
         assert_eq!(
-            refused.finalize_transaction_checked(domain, None, &mut WorkBudget::new(maximum)),
+            refused.finalize_transaction_checked(
+                domain.borrowed(),
+                None,
+                &mut WorkBudget::new(maximum)
+            ),
             Err(FinalizationError::Work)
         );
         assert_eq!(refused, before, "maximum={maximum}");
@@ -689,10 +787,14 @@ fn no_delete_checks_oversized_unrelated_roots_before_transient_cleanup() {
         symbolic::{ExprId, ExprLimits, SlotStateId, StateError},
     };
 
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_nodes: 6,
-        ..RelationLimits::default()
-    }));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_nodes: 6,
+                ..RelationLimits::default()
+            }),
+    ));
     let mut oversized = SlotStateId::zero();
     for key in [1, 2] {
         oversized = oversized
@@ -705,7 +807,10 @@ fn no_delete_checks_oversized_unrelated_roots_before_transient_cleanup() {
     }
     assert!(oversized.nodes() > domain.spec().relations().max_nodes);
     for transient in [false, true] {
-        let mut store = Store::new(&World::new(Fork::Osaka, "invalid old root before MAY"));
+        let mut store = TestStore::new(
+            &TestWorld::new(Fork::Osaka, "invalid old root before MAY"),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        );
         store.may_touch_account(address(3));
         let plane = if transient {
             &mut store.transient
@@ -723,7 +828,7 @@ fn no_delete_checks_oversized_unrelated_roots_before_transient_cleanup() {
         let before = store.clone();
         let mut budget = WorkBudget::new(usize::MAX);
         assert_eq!(
-            store.finalize_transaction_checked(domain, None, &mut budget),
+            store.finalize_transaction_checked(domain.borrowed(), None, &mut budget),
             Err(FinalizationError::Store(expected))
         );
         assert_eq!(store, before, "transient={transient}");

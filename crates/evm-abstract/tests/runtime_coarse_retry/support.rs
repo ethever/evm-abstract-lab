@@ -1,15 +1,19 @@
+use crate::native;
 use alloy_primitives::{Address, U256, hex};
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::domain::{NumericValue, ProductAlgebra};
 use evm_abstract::{
     Fork,
     analysis::{
-        ExecutionConfig, FrameCode, OutcomeKind, ProcedureSummary, ProcedureSummaryKind,
-        ProcedureSummaryOutput, WorldAnalysis, analyze_world,
+        EvmProcedureSummary, EvmProcedureSummaryOutput, EvmWorldAnalysis, ExecutionConfig,
+        FrameCode, OutcomeKind, ProcedureSummaryKind,
     },
-    domain::{AbstractValue, Domain, DomainSpec},
-    world::{Account, ByteArray, Code, Entry, Existence, World},
+    domain::{EvmValue, ValueAlgebra},
+    world::{Code, EvmAccount, EvmByteArray, EvmEntry, EvmWorld, Existence},
 };
 use revm_bytecode::opcode;
-use std::{collections::BTreeMap, num::NonZeroUsize};
+use std::collections::BTreeMap;
 
 pub(super) const U: u64 = 0x201;
 pub(super) const B: u64 = 0x301;
@@ -21,29 +25,21 @@ pub(super) fn address(value: u64) -> Address {
     Address::from_word(U256::from(value).into())
 }
 
-pub(super) fn word(value: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+pub(super) fn word(value: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(value))
 }
 
 pub(super) fn policy() -> ExecutionConfig {
-    let mut config = ExecutionConfig::default();
-    config.analysis.relations.max_nodes = NODE_CAP;
-    assert_eq!(config.analysis.relations.max_depth, 64);
+    let config = ExecutionConfig::default();
+    assert_eq!(domain(&config).spec().relations().max_depth, 64);
     assert_eq!(config.max_work, 20_000_000);
     config
 }
 
-pub(super) fn domain(config: &ExecutionConfig) -> Domain {
-    let config = &config.analysis;
-    Domain::from_spec(
-        DomainSpec::new(
-            config.domain_profile,
-            NonZeroUsize::new(config.max_constants).unwrap(),
-            NonZeroUsize::new(config.reduction_rounds).unwrap(),
-            NonZeroUsize::new(config.max_facts).unwrap(),
-        )
-        .with_relations(config.relations),
-    )
+pub(super) fn domain(_config: &ExecutionConfig) -> ValueAlgebra<ProductAlgebra> {
+    let mut limits = native::product().spec().relations();
+    limits.max_nodes = NODE_CAP;
+    native::product_with(native::spec(8, 4, 256).with_relations(limits.to_owned()))
 }
 
 #[derive(Clone)]
@@ -113,39 +109,56 @@ impl Assembly {
     }
 }
 
-pub(super) fn world(code: &Fixture, unknown: Option<&Fixture>) -> World {
-    let mut world = World::new(Fork::Osaka, "runtime-coarse-retry:offline-callback");
-    let mut account = Account::from_hex(&hex::encode(&code.bytes), world.fork()).unwrap();
+pub(super) fn world(code: &Fixture, unknown: Option<&Fixture>) -> EvmWorld<NumericValue> {
+    let mut world =
+        EvmWorld::<NumericValue>::new(Fork::Osaka, "runtime-coarse-retry:offline-callback");
+    let mut account =
+        EvmAccount::<NumericValue>::from_hex(&hex::encode(&code.bytes), world.fork()).unwrap();
     account.balance = word(BALANCE);
     account.storage.insert(U256::from(0), word(7));
     account.storage.insert(U256::from(1), word(5));
     world.insert(address(B), account).unwrap();
     let unknown = if let Some(code) = unknown {
-        let mut account = Account::from_hex(&hex::encode(&code.bytes), world.fork()).unwrap();
+        let mut account =
+            EvmAccount::<NumericValue>::from_hex(&hex::encode(&code.bytes), world.fork()).unwrap();
         account.balance = word(BALANCE);
         account
     } else {
-        Account {
+        EvmAccount {
             balance: word(BALANCE),
             nonce: word(0),
             existence: Existence::Present,
             storage_unknown: false,
-            ..Account::unknown()
+            ..EvmAccount::<NumericValue>::unknown()
         }
     };
     world.insert(address(U), unknown).unwrap();
     world
 }
 
-pub(super) fn entry() -> Entry {
-    Entry::concrete(address(U), address(USER), word(0), ByteArray::empty())
+pub(super) fn entry() -> EvmEntry<NumericValue> {
+    EvmEntry::<NumericValue>::concrete(
+        address(U),
+        address(USER),
+        word(0),
+        EvmByteArray::<NumericValue>::empty(),
+    )
 }
 
-pub(super) fn run(code: &Fixture, config: ExecutionConfig) -> WorldAnalysis {
-    analyze_world(world(code, None), entry(), config).unwrap()
+pub(super) fn run(code: &Fixture, config: ExecutionConfig) -> EvmWorldAnalysis<NumericValue> {
+    native::run(
+        &domain(&config),
+        AnalysisInput::new(world(code, None), entry()).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap()
 }
 
-pub(super) fn callback<'a>(analysis: &'a WorldAnalysis, code: &Fixture) -> &'a ProcedureSummary {
+pub(super) fn callback<'a>(
+    analysis: &'a EvmWorldAnalysis<NumericValue>,
+    code: &Fixture,
+) -> &'a EvmProcedureSummary<NumericValue> {
     let [record] = analysis.procedure_summaries() else {
         panic!("one unknown root relation required");
     };
@@ -184,9 +197,9 @@ pub(super) fn callback<'a>(analysis: &'a WorldAnalysis, code: &Fixture) -> &'a P
 }
 
 pub(super) fn only_output(
-    procedure: &ProcedureSummary,
+    procedure: &EvmProcedureSummary<NumericValue>,
     kind: OutcomeKind,
-) -> &ProcedureSummaryOutput {
+) -> &EvmProcedureSummaryOutput<NumericValue> {
     let outputs: Vec<_> = procedure
         .outputs
         .iter()
@@ -196,7 +209,7 @@ pub(super) fn only_output(
     outputs[0]
 }
 
-pub(super) fn bounded_current_evidence(analysis: &WorldAnalysis) {
+pub(super) fn bounded_current_evidence(analysis: &EvmWorldAnalysis<NumericValue>) {
     assert!(analysis.work() <= analysis.config().max_work);
     assert!(analysis.transfers() <= analysis.config().analysis.max_transfers);
     assert!(analysis.states().len() <= analysis.config().analysis.max_states);

@@ -1,25 +1,23 @@
 use super::write_bytes;
-use crate::{
-    domain::{AbstractValue, Domain},
-    world::ByteArray,
-};
+use crate::ssa::test_support::{TestBytes, TestValue, product};
+
 use alloy_primitives::U256;
 
-fn render(array: &ByteArray) -> String {
+fn render(array: &TestBytes) -> String {
     let mut output = String::new();
-    write_bytes(&mut output, "  ", "return data", array);
+    write_bytes(&mut output, "  ", "return data", array, &product());
     output
 }
 
-fn constant(value: usize) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+fn constant(value: usize) -> TestValue {
+    TestValue::constant(U256::from(value))
 }
 
 #[test]
 fn unknown_length_and_default_do_not_erase_known_stored_bytes() {
-    let mut array = ByteArray::unknown();
+    let mut array = TestBytes::unknown();
     array
-        .write_byte(&constant(7), &constant(0xa5), 8, Domain::default())
+        .write_byte(&constant(7), &constant(0xa5), product().borrowed())
         .unwrap();
 
     let output = render(&array);
@@ -41,15 +39,10 @@ fn unknown_length_and_default_do_not_erase_known_stored_bytes() {
 
 #[test]
 fn a_large_sparse_offset_does_not_expand_the_display_range() {
-    let mut array = ByteArray::empty();
+    let mut array = TestBytes::empty();
     let offset = usize::MAX - 1;
     array
-        .write_byte(
-            &constant(offset),
-            &constant(0x5a),
-            usize::MAX,
-            Domain::default(),
-        )
+        .write_byte(&constant(offset), &constant(0x5a), product().borrowed())
         .unwrap();
 
     let output = render(&array);
@@ -68,9 +61,9 @@ fn a_large_sparse_offset_does_not_expand_the_display_range() {
 
 #[test]
 fn a_dense_return_word_keeps_all_thirty_two_bytes_in_order() {
-    let mut array = ByteArray::memory();
+    let mut array = TestBytes::memory();
     array
-        .write_word(&constant(0), &constant(1), 32, Domain::default())
+        .write_word(&constant(0), &constant(1), product().borrowed())
         .unwrap();
 
     let output = render(&array);
@@ -85,7 +78,7 @@ fn a_dense_return_word_keeps_all_thirty_two_bytes_in_order() {
 fn exact_data_shows_default_zero_bytes_alongside_the_sparse_facts() {
     let mut word = [0_u8; 32];
     word[31] = 1;
-    let output = render(&ByteArray::exact(&word));
+    let output = render(&TestBytes::exact(&word));
 
     assert!(
         output.contains(&format!("exact hex: 0x{}01", "00".repeat(31))),
@@ -97,7 +90,7 @@ fn exact_data_shows_default_zero_bytes_alongside_the_sparse_facts() {
 
 #[test]
 fn empty_data_retains_its_exact_length_and_default() {
-    let output = render(&ByteArray::empty());
+    let output = render(&TestBytes::empty());
     assert!(output.contains("length={0x0} (0 bytes)"), "{output}");
     assert!(output.contains("kind=data | default={0x0}"), "{output}");
     assert!(output.contains("exact hex: 0x\n"), "{output}");
@@ -106,10 +99,12 @@ fn empty_data_retains_its_exact_length_and_default() {
 
 #[test]
 fn a_set_of_possible_byte_values_does_not_become_one_hex_byte() {
-    let domain = Domain::default();
+    let domain = product();
     let value = domain.join(&constant(1), &constant(2));
-    let mut array = ByteArray::empty();
-    array.write_byte(&constant(0), &value, 1, domain).unwrap();
+    let mut array = TestBytes::empty();
+    array
+        .write_byte(&constant(0), &value, domain.borrowed())
+        .unwrap();
 
     let output = render(&array);
     assert!(output.contains("{0x1, 0x2}"), "{output}");
@@ -118,12 +113,12 @@ fn a_set_of_possible_byte_values_does_not_become_one_hex_byte() {
 
 #[test]
 fn gaps_do_not_join_separate_stored_bytes_into_a_hex_run() {
-    let mut array = ByteArray::unknown();
+    let mut array = TestBytes::unknown();
     array
-        .write_byte(&constant(0), &constant(1), 3, Domain::default())
+        .write_byte(&constant(0), &constant(1), product().borrowed())
         .unwrap();
     array
-        .write_byte(&constant(2), &constant(2), 3, Domain::default())
+        .write_byte(&constant(2), &constant(2), product().borrowed())
         .unwrap();
 
     let output = render(&array);
@@ -136,7 +131,7 @@ fn gaps_do_not_join_separate_stored_bytes_into_a_hex_run() {
 
 #[test]
 fn long_contiguous_facts_are_chunked_without_dropping_the_tail() {
-    let array = ByteArray::exact(&[0xab; 65]);
+    let array = TestBytes::exact(&[0xab; 65]);
     let output = render(&array);
     assert!(output.contains("0x0000..=0x001f"), "{output}");
     assert!(output.contains("0x0020..=0x003f"), "{output}");
@@ -150,8 +145,8 @@ fn long_contiguous_facts_are_chunked_without_dropping_the_tail() {
 
 #[test]
 fn all_possible_lengths_are_visible_in_hex_and_decimal() {
-    let domain = Domain::default();
-    let array = ByteArray::exact(&[0x12]).join(&ByteArray::exact(&[0x12, 0x34]), domain);
+    let domain = product();
+    let array = TestBytes::exact(&[0x12]).join(&TestBytes::exact(&[0x12, 0x34]), domain.borrowed());
     let output = render(&array);
     assert!(
         output.contains("length={0x1, 0x2} (possible byte counts: 1, 2)"),
@@ -163,7 +158,7 @@ fn all_possible_lengths_are_visible_in_hex_and_decimal() {
 #[test]
 fn a_full_256_byte_sequence_wraps_without_losing_any_exact_bytes() {
     let bytes: Vec<_> = (0_u8..=u8::MAX).collect();
-    let output = render(&ByteArray::exact(&bytes));
+    let output = render(&TestBytes::exact(&bytes));
     let lines: Vec<_> = output
         .lines()
         .skip_while(|line| !line.contains("exact hex: 0x"))

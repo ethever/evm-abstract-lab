@@ -1,10 +1,8 @@
 use super::{render, write_table};
-use crate::{
-    Fork,
-    analysis::{ExecutionConfig, analyze_world},
-    domain::AbstractValue,
-    world::{Account, ByteArray, Entry, World},
+use crate::ssa::test_support::{
+    TestAccount, TestBytes, TestEntry, TestValue, TestWorld, product, run_world,
 };
+use crate::{Fork, analysis::ExecutionConfig};
 use alloy_primitives::{Address, U256};
 
 #[test]
@@ -153,21 +151,21 @@ fn incomplete_or_overlong_patterns_keep_ordinary_wrapping() {
 #[test]
 fn a_store_with_unobserved_logs_keeps_the_unknown_flag_visible() {
     let address = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "unknown logs");
-    world.insert(address, Account::empty()).unwrap();
-    let mut analysis = analyze_world(
+    let mut world = TestWorld::new(Fork::Osaka, "unknown logs");
+    world.insert(address, TestAccount::empty()).unwrap();
+    let mut analysis = run_world(
         world,
-        Entry::concrete(
+        TestEntry::concrete(
             address,
             Address::ZERO,
-            AbstractValue::constant(U256::ZERO),
-            ByteArray::empty(),
+            TestValue::constant(U256::ZERO),
+            TestBytes::empty(),
         ),
         ExecutionConfig::default(),
     )
     .unwrap();
     analysis.outcomes[0].store.havoc_all();
-    let output = render(&analysis);
+    let output = render(&analysis, &product());
     assert!(output.contains("logs_unknown=true"));
     assert_eq!(output.matches("logs_unknown=true").count(), 1);
 }

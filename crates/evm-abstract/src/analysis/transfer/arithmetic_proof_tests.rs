@@ -1,7 +1,9 @@
+use crate::domain::ProductAlgebra;
 //! Paid arithmetic answers must reach the real stack without rediscovery.
 
 use super::query::tests::{LITERALS, Policy, RECEIPT, Word};
 use super::*;
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork,
     domain::{
@@ -40,7 +42,12 @@ impl EvmNumericAlgebra for Arithmetic {
     fn reduce_numeric(&self, value: &Word) -> NumericReduction<Word> {
         Policy.reduce_numeric(value)
     }
-    fn apply_numeric(&self, op: u8, args: &[Word]) -> NumericReduction<Word> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
+        let args: Vec<&Word> = args.collect();
         assert_eq!(op, opcode::ADD);
         NumericReduction::stable(Word {
             lower: args[0].lower.checked_add(args[1].lower).unwrap(),
@@ -53,8 +60,8 @@ impl EvmNumericAlgebra for Arithmetic {
             ..Word::top()
         })
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
-        Policy.operation_work(args)
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
+        Policy.operation_work(op, args)
     }
     fn literal_quote_work(&self, word: U256) -> usize {
         Policy.literal_quote_work(word)
@@ -172,8 +179,9 @@ fn assert_result(result: &EvmExecution<Word>) {
 #[test]
 fn actual_arithmetic_reuses_one_paid_answer_and_requires_the_full_native_fee() {
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let policy = Arithmetic {
-        spec: config.domain().unwrap().spec(),
+        spec: ProductAlgebra::from_spec(config_numeric.spec()).spec(),
         cancel_result: None,
     };
     let fixture = fixture(&policy);
@@ -209,11 +217,12 @@ fn actual_arithmetic_reuses_one_paid_answer_and_requires_the_full_native_fee() {
 #[test]
 fn cancellation_during_the_paid_result_query_cannot_publish_a_literal() {
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     for captured in [false, true] {
         let owner = analysis_control::Cancellation::new();
         let active = analysis_control::Cancellation::new();
         let policy = Arithmetic {
-            spec: config.domain().unwrap().spec(),
+            spec: ProductAlgebra::from_spec(config_numeric.spec()).spec(),
             cancel_result: captured.then(|| owner.clone()),
         };
         let fixture = fixture(&policy);
@@ -252,9 +261,10 @@ fn cancellation_during_the_paid_result_query_cannot_publish_a_literal() {
 #[test]
 fn relations_disabled_execution_never_discovers_or_retains_the_unqueried_result() {
     let mut config = ExecutionConfig::default();
-    config.analysis.relations.enabled = false;
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.enabled = false;
     let policy = Arithmetic {
-        spec: config.domain().unwrap().spec(),
+        spec: ProductAlgebra::from_spec(config_numeric.spec()).spec(),
         cancel_result: None,
     };
     let fixture = fixture(&policy);
@@ -281,8 +291,9 @@ fn a_nonexact_result_keeps_its_actual_parametric_input_expression() {
     use crate::domain::{identity::Symbol, symbolic::ExprKind};
 
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let policy = Arithmetic {
-        spec: config.domain().unwrap().spec(),
+        spec: ProductAlgebra::from_spec(config_numeric.spec()).spec(),
         cancel_result: None,
     };
     let mut fixture = fixture(&policy);

@@ -14,7 +14,7 @@ use crate::{
             runtime::{Runtime, Task, TaskKind},
         },
     },
-    domain::{Domain, NumericValue},
+    domain::{NumericValue, ProductAlgebra},
     resource::WorkBudget,
 };
 use analysis_kernel::{
@@ -24,6 +24,7 @@ use analysis_kernel::{
 };
 use std::{cell::Cell, convert::Infallible, rc::Rc};
 
+use crate::domain::EvmNumericAlgebra as _;
 struct NoClient;
 impl<Cx> Analyzer<Cx> for NoClient {
     type Task = Subject;
@@ -191,7 +192,7 @@ impl Harness {
         let extension = Extension::with_tasks(NoClient, Tasks(Rc::clone(&tasks)))
             .with_stores(Local(Rc::clone(&locals)))
             .with_shared_stores(Global(Rc::clone(&refuse)));
-        let mut payload = fixtures::payload(Domain::default());
+        let mut payload = fixtures::payload(ProductAlgebra::default());
         payload.active_mut().stack.push(fixtures::word(1));
         Self {
             cooperation: Cooperation::new(extension),

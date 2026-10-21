@@ -1,6 +1,8 @@
 use super::{fixtures, oracle, support::*};
+use crate::native;
 use alloy_primitives::U256;
-use evm_abstract::world::{Account, ByteArray};
+use evm_abstract::domain::NumericValue;
+use evm_abstract::world::{EvmAccount, EvmByteArray};
 use revm_bytecode::opcode;
 
 #[test]
@@ -17,7 +19,7 @@ fn check_direct_storage(op: u8) {
     let a = fixtures::preserved_parent(op, false);
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
-    let analysis = run(world, entry(ByteArray::empty()));
+    let analysis = run(world, entry(EvmByteArray::<NumericValue>::empty()));
     complete_unknown(&analysis);
     let outcomes = returns(&analysis);
     for sample in [0, 9, 42, 256, 65535] {
@@ -54,7 +56,7 @@ fn unknown_staticcall_preserves_known_storage_even_across_callbacks() {
     let a = readonly_parent(opcode::STATICCALL);
     let mut world = new_world();
     insert(&mut world, A, &a, &[(0, 42)]);
-    let analysis = run(world, entry(ByteArray::empty()));
+    let analysis = run(world, entry(EvmByteArray::<NumericValue>::empty()));
     complete_unknown(&analysis);
     assert!(
         returns(&analysis)
@@ -73,7 +75,7 @@ fn static_restriction_is_inherited_by_unknown_delegatecall_and_callcode() {
         let a = readonly_parent(op);
         let mut world = new_world();
         insert(&mut world, A, &a, &[(0, 42)]);
-        let mut input = entry(ByteArray::empty());
+        let mut input = entry(EvmByteArray::<NumericValue>::empty());
         input.environment.is_static = true;
         let analysis = run(world, input);
         complete_unknown(&analysis);
@@ -109,12 +111,15 @@ fn check_static_read_identity(op: u8) {
     a.label("callback").op(opcode::STOP);
     let code = a.finish();
     let mut world = new_world();
-    let mut account =
-        Account::from_hex(&alloy_primitives::hex::encode(&code.bytes), world.fork()).unwrap();
+    let mut account = EvmAccount::<NumericValue>::from_hex(
+        &alloy_primitives::hex::encode(&code.bytes),
+        world.fork(),
+    )
+    .unwrap();
     account.balance = word(1_000_000);
     account.storage_unknown = true;
     world.insert(address(A), account).unwrap();
-    let mut input = entry(ByteArray::empty());
+    let mut input = entry(EvmByteArray::<NumericValue>::empty());
     input.environment.is_static = op != opcode::STATICCALL;
     let analysis = run(world, input);
     complete_unknown(&analysis);
@@ -163,7 +168,7 @@ fn unknown_delegatecall_entering_known_c_keeps_c_address_in_normal_call() {
     let mut world = new_world();
     insert(&mut world, A, &a.finish(), &[]);
     insert(&mut world, C, &c.finish(), &[]);
-    let input = entry(ByteArray::empty());
+    let input = entry(EvmByteArray::<NumericValue>::empty());
     let concrete = oracle::concrete_unknown(&world, U, &u.finish());
     let observed = oracle::execute(&concrete, &input);
     assert_eq!(observed.output_word(0), U256::from(C));
@@ -196,7 +201,7 @@ fn unknown_delegatecall_entering_known_c_keeps_c_address_in_normal_call() {
             only(
                 &output
                     .data
-                    .read_word(&word(0), evm_abstract::domain::Domain::default()),
+                    .read_word(&word(0), native::product().borrowed()),
                 &[C],
             );
         }
@@ -241,7 +246,7 @@ fn actual_unknown_code_contexts_match_call_delegatecall_callcode_and_staticcall_
         let mut world = new_world();
         insert(&mut world, A, &a.finish(), &[]);
         let concrete = oracle::concrete_unknown(&world, U, &u.finish());
-        let input = entry(ByteArray::empty());
+        let input = entry(EvmByteArray::<NumericValue>::empty());
         let observed = oracle::execute(&concrete, &input);
         let owner = if matches!(op, opcode::DELEGATECALL | opcode::CALLCODE) {
             A

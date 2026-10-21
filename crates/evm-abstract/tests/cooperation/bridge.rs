@@ -1,4 +1,5 @@
 //! Public EVM -> external analyzer -> EVM -> analyzer production feedback.
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 #[path = "bridge/extra.rs"]
 mod extra;
 #[path = "bridge/fixture.rs"]
@@ -12,10 +13,7 @@ use analysis_kernel::{Change, Registered};
 use evm_abstract::analysis::{
     EnginePolicies, ExecutionConfig, FrontierReason, OutcomeKind, Status,
     control::Control,
-    cooperation::{
-        CooperationError, Extension, Point, PointKind, analyze_world_cooperating,
-        analyze_world_cooperating_with_control,
-    },
+    cooperation::{CooperationError, Extension, Point, PointKind},
     progress::Observer,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,15 +31,13 @@ fn an_external_registered_rule_changes_real_cfg_and_receives_later_evm_inputs() 
         enabled: true,
         ..rule::Rule::default()
     }));
-    let result = analyze_world_cooperating(
-        fixtures::world(&fixture.code),
-        fixtures::entry(),
-        config(),
-        &algebra,
-        &EnginePolicies::default(),
-        &mut external,
-    )
-    .unwrap();
+    let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut external)
+        .run(
+            AnalysisInput::new(fixtures::world(&fixture.code), fixtures::entry()).unwrap(),
+            config(),
+            &Control::default(),
+        )
+        .unwrap();
     fixtures::complete(&result);
     assert!(
         !result
@@ -73,21 +69,19 @@ fn an_external_registered_rule_changes_real_cfg_and_receives_later_evm_inputs() 
         outcome.kind == OutcomeKind::Return
             && outcome
                 .data
-                .read_word_with(&fixtures::word(0), algebra.borrowed())
+                .read_word(&fixtures::word(0), algebra.borrowed())
                 .singleton()
                 == Some(U256::ONE)
     }));
 
     let mut removed = Extension::new(Registered::new(rule::Rule::default()));
-    let control = analyze_world_cooperating(
-        fixtures::world(&fixture.code),
-        fixtures::entry(),
-        config(),
-        &algebra,
-        &EnginePolicies::default(),
-        &mut removed,
-    )
-    .unwrap();
+    let control = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut removed)
+        .run(
+            AnalysisInput::new(fixtures::world(&fixture.code), fixtures::entry()).unwrap(),
+            config(),
+            &Control::default(),
+        )
+        .unwrap();
     fixtures::complete(&control);
     assert!(
         control
@@ -107,15 +101,13 @@ fn recursive_summary_growth_reseeds_external_subjects_and_preserves_the_joint_fi
         enabled: true,
         ..rule::Rule::default()
     }));
-    let result = analyze_world_cooperating(
-        fixtures::world(&fixture.code),
-        fixtures::entry(),
-        config(),
-        &algebra,
-        &EnginePolicies::default(),
-        &mut external,
-    )
-    .unwrap();
+    let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut external)
+        .run(
+            AnalysisInput::new(fixtures::world(&fixture.code), fixtures::entry()).unwrap(),
+            config(),
+            &Control::default(),
+        )
+        .unwrap();
     fixtures::complete(&result);
     assert!(!result.procedure_summaries().is_empty());
     assert!(
@@ -173,18 +165,16 @@ fn external_work_refusal_retains_incomplete_pending_effects_and_differs_from_can
         exhaust_after_feedback: true,
         ..rule::Rule::default()
     }));
-    let result = analyze_world_cooperating(
-        fixtures::world(&fixture.code),
-        fixtures::entry(),
-        ExecutionConfig {
-            root_terminal_coverage: true,
-            ..config()
-        },
-        &algebra,
-        &EnginePolicies::default(),
-        &mut external,
-    )
-    .expect("ordinary shared Work retains the partial native report");
+    let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut external)
+        .run(
+            AnalysisInput::new(fixtures::world(&fixture.code), fixtures::entry()).unwrap(),
+            ExecutionConfig {
+                root_terminal_coverage: true,
+                ..config()
+            },
+            &Control::default(),
+        )
+        .expect("ordinary shared Work retains the partial native report");
     assert_eq!(result.status(), Status::Incomplete);
     assert!(result.work() <= config().max_work);
     assert!(!result.frontiers().is_empty());
@@ -214,7 +204,7 @@ fn external_work_refusal_retains_incomplete_pending_effects_and_differs_from_can
         assert!(
             !failure
                 .store
-                .read_with(
+                .read(
                     fixtures::address(fixtures::OWNER),
                     &fixtures::word(0),
                     algebra.borrowed()
@@ -241,14 +231,10 @@ fn external_work_refusal_retains_incomplete_pending_effects_and_differs_from_can
     control.cancellation().cancel();
     let mut cancelled = Extension::new(Registered::new(rule::Rule::default()));
     assert!(matches!(
-        analyze_world_cooperating_with_control(
-            fixtures::world(&fixture.code),
-            fixtures::entry(),
+        AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut cancelled).run(
+            AnalysisInput::new(fixtures::world(&fixture.code), fixtures::entry()).unwrap(),
             config(),
-            &algebra,
-            &EnginePolicies::default(),
-            &mut cancelled,
-            &control,
+            &control
         ),
         Err(CooperationError::Cancelled)
     ));

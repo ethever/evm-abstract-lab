@@ -1,36 +1,38 @@
+use crate::ssa::test_support::{
+    TestAccount, TestBytes, TestEntry, TestEnvironment, TestValue, TestWorld, TestWorldAnalysis,
+    run_world,
+};
 use crate::{
     Address, Fork, U256,
     analysis::{self, ExecutionConfig},
-    domain::AbstractValue,
     ssa::{self, SsaError, SsaInvariantKind as Kind},
-    world::{Account, ByteArray, Entry, World},
 };
 
-fn example() -> analysis::WorldAnalysis {
-    let mut world = World::new(Fork::Osaka, "SSA call fixture");
+fn example() -> TestWorldAnalysis {
+    let mut world = TestWorld::new(Fork::Osaka, "SSA call fixture");
     let root = Address::repeat_byte(0x11);
     let child = Address::repeat_byte(0x22);
     let code = format!("60205f5f5f5f73{child:x}61fffff15060205ff3");
     world
-        .insert(root, Account::from_hex(&code, Fork::Osaka).unwrap())
+        .insert(root, TestAccount::from_hex(&code, Fork::Osaka).unwrap())
         .unwrap();
     world
         .insert(
             child,
-            Account::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    analysis::analyze_world(
+    run_world(
         world,
-        Entry {
+        TestEntry {
             address: root,
-            environment: crate::world::EvmEnvironment {
+            environment: TestEnvironment {
                 to: (root).into(),
                 caller: (Address::repeat_byte(0x33)).into(),
-                value: AbstractValue::constant(U256::ZERO),
-                calldata: ByteArray::empty(),
+                value: TestValue::constant(U256::ZERO),
+                calldata: TestBytes::empty(),
                 is_static: false,
-                ..crate::world::EvmEnvironment::default()
+                ..TestEnvironment::default()
             },
         },
         ExecutionConfig::default(),
@@ -93,19 +95,19 @@ fn verifier_rejects_wrong_caller_arguments_results_and_effects() {
 
 #[test]
 fn native_ssa_refuses_an_unresolved_world() {
-    let mut world = World::new(Fork::Osaka, "unknown entry without enough work");
-    world.insert(Address::ZERO, Account::unknown()).unwrap();
-    let analysis = analysis::analyze_world(
+    let mut world = TestWorld::new(Fork::Osaka, "unknown entry without enough work");
+    world.insert(Address::ZERO, TestAccount::unknown()).unwrap();
+    let analysis = run_world(
         world,
-        Entry {
+        TestEntry {
             address: Address::ZERO,
-            environment: crate::world::EvmEnvironment {
+            environment: TestEnvironment {
                 to: (Address::ZERO).into(),
                 caller: (Address::ZERO).into(),
-                value: AbstractValue::constant(U256::ZERO),
-                calldata: ByteArray::empty(),
+                value: TestValue::constant(U256::ZERO),
+                calldata: TestBytes::empty(),
                 is_static: false,
-                ..crate::world::EvmEnvironment::default()
+                ..TestEnvironment::default()
             },
         },
         ExecutionConfig {

@@ -2,6 +2,9 @@
 //! Concrete revm witnesses and retained value guarantees are the assertions;
 //! state/update counts are only supplementary diagnostics.
 
+#[path = "support/native.rs"]
+mod native;
+
 #[path = "state_policy/interruption.rs"]
 mod interruption;
 #[path = "state_policy/join.rs"]

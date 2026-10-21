@@ -1,8 +1,8 @@
-use super::{BitIndex, Profile, ReductionStatus, U256, UnaryPredicate, WordBounds, domain};
+use super::{BitIndex, ReductionStatus, U256, UnaryPredicate, WordBounds, domain};
 
 #[test]
 fn freshly_published_bounds_reach_scalar_within_the_first_allowance() {
-    let one_round = domain(Profile::Product, 1, 1, 256);
+    let one_round = domain(1, 1, 256);
     // This was the old multi-round fixture. Bounds now publishes 32..33 before
     // scalar runs; its existing modulo-12 candidate cover is already {33}.
     let value = one_round

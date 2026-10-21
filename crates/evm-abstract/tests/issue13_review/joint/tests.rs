@@ -1,4 +1,5 @@
 use super::*;
+use crate::native;
 use evm_abstract::domain::{
     identity::Symbol,
     relational::RelationLimits,
@@ -147,12 +148,22 @@ fn rejects_nonempty_bottom_and_nontrue_path_f() {
     let terms = fixture(&guard);
     let limits = RelationLimits::default();
     let mut nonempty = RelationState::default();
-    nonempty.assume(&guard, true, &limits);
+    nonempty.assume(
+        &guard,
+        true,
+        &limits,
+        native::product_with(native::spec(8, 4, 256).with_relations(limits.to_owned())).borrowed(),
+    );
     assert!(!nonempty.is_empty());
     assert!(nonempty.constraints().len() > 0);
 
     let mut bottom = RelationState::default();
-    bottom.assume(&word(0), true, &limits);
+    bottom.assume(
+        &word(0),
+        true,
+        &limits,
+        native::product_with(native::spec(8, 4, 256).with_relations(limits.to_owned())).borrowed(),
+    );
     assert!(bottom.is_bottom());
 
     let path = nonempty

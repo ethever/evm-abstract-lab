@@ -1,14 +1,21 @@
 //! EVM-level relational regressions: feasible paths survive and contradictions do not.
 //!
 //! These tests inspect CFG reachability, concrete controls and local guarantees.
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisInput, EvmAnalysis};
+use evm_abstract::domain::{EvmNumericAlgebra, ValueAlgebra, WordElement};
+
+#[path = "support/native.rs"]
+mod native;
 
 use alloy_primitives::{Address, U256, hex};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
-    analysis::{self, Config, ExecutionConfig, FrontierReason, Limit, Status, WorldAnalysis},
+    analysis::{self, Config, EvmWorldAnalysis, ExecutionConfig, FrontierReason, Limit, Status},
     bytecode::Program,
-    domain::{AbstractValue, Profile},
-    world::{Account, AddressInput, Entry, EvmEnvironment, World},
+    domain::EvmValue,
+    world::{AddressInput, EvmAccount, EvmEntry, EvmEnvironmentValues, EvmWorld},
 };
 use revm_bytecode::opcode;
 use serde_json::Value as Json;
@@ -93,27 +100,40 @@ impl Assembly {
     }
 }
 
-fn analyze(code: &str, profile: Profile, environment: EvmEnvironment) -> analysis::Analysis {
-    analysis::analyze_with_environment(
+fn relations_case<D: EvmNumericAlgebra>(
+    values: &ValueAlgebra<D>,
+    code: &str,
+    environment: EvmEnvironmentValues<D::Element>,
+) -> EvmAnalysis<D::Element> {
+    let input = AnalysisInput::from_program(
         Program::from_hex_with_fork(code, Fork::Osaka).unwrap(),
-        Config {
-            domain_profile: profile,
-            context_depth: 0,
-            ..Config::default()
-        },
         environment,
     )
-    .unwrap()
+    .unwrap();
+    let graph = native::run(
+        values,
+        input,
+        ExecutionConfig {
+            analysis: Config {
+                context_depth: 0,
+                ..Config::default()
+            },
+            ..ExecutionConfig::default()
+        },
+        &Control::default(),
+    )
+    .unwrap();
+    EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap()
 }
 
-fn reachable(analysis: &analysis::Analysis, pc: usize) -> bool {
+fn reachable<N: WordElement>(analysis: &analysis::EvmAnalysis<N>, pc: usize) -> bool {
     analysis
         .states()
         .iter()
         .any(|state| analysis.program().blocks()[state.key.basic_block_index].start_pc == pc)
 }
 
-fn world_reachable(analysis: &WorldAnalysis, address: Address, pc: usize) -> bool {
+fn world_reachable(analysis: &EvmWorldAnalysis<NumericValue>, address: Address, pc: usize) -> bool {
     analysis.states().iter().any(|state| {
         state.active().code_address == address
             && state
@@ -123,7 +143,7 @@ fn world_reachable(analysis: &WorldAnalysis, address: Address, pc: usize) -> boo
     })
 }
 
-fn complete(analysis: &analysis::Analysis) {
+fn complete<N: WordElement>(analysis: &analysis::EvmAnalysis<N>) {
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -138,37 +158,60 @@ fn address(word: u16) -> Address {
     Address::from_word(U256::from(word).into())
 }
 
-fn world(root: &str, callee: &str) -> (World, Entry) {
-    let mut world = World::new(Fork::Osaka, "relational integration fixture");
+fn world(root: &str, callee: &str) -> (EvmWorld<NumericValue>, EvmEntry<NumericValue>) {
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "relational integration fixture");
     for (number, code) in [(0x101, root), (0x200, callee)] {
-        let mut account = Account::from_hex(code, Fork::Osaka).unwrap();
-        account.balance = AbstractValue::constant(U256::from(1_000_000));
+        let mut account = EvmAccount::<NumericValue>::from_hex(code, Fork::Osaka).unwrap();
+        account.balance = EvmValue::<NumericValue>::constant(U256::from(1_000_000));
         world.insert(address(number), account).unwrap();
     }
-    (world, Entry::new(address(0x101)))
+    (world, EvmEntry::<NumericValue>::new(address(0x101)))
 }
 
 #[test]
 fn repeated_callvalue_guards_cannot_make_one_input_equal_one_and_two() {
+    check_repeated_callvalue_guards_cannot_make_one_input_equal_one_and_two(&native::product());
+    check_repeated_callvalue_guards_cannot_make_one_input_equal_one_and_two(&native::finite_with(
+        native::spec(8, 4, 256),
+    ));
+}
+
+fn check_repeated_callvalue_guards_cannot_make_one_input_equal_one_and_two<D: EvmNumericAlgebra>(
+    values: &ValueAlgebra<D>,
+) {
+    let model = std::any::type_name::<D::Element>();
+
     // First true edge establishes x=1; the later x=2 true edge is impossible.
     let code = "3480600114600957005b80600214601257005b00";
-    for profile in [Profile::Product, Profile::ConstantsOnly] {
-        let result = analyze(code, profile, EvmEnvironment::default());
-        complete(&result);
-        assert!(reachable(&result, 9), "x=1 must remain feasible");
-        assert!(
-            reachable(&result, 17),
-            "x=1 must take the second false edge"
-        );
-        assert!(
-            !reachable(&result, 18),
-            "x=1 and x=2 cannot share one execution: {profile:?}"
-        );
-    }
+
+    let result = relations_case(values, code, EvmEnvironmentValues::<D::Element>::default());
+    complete(&result);
+    assert!(reachable(&result, 9), "x=1 must remain feasible");
+    assert!(
+        reachable(&result, 17),
+        "x=1 must take the second false edge"
+    );
+    assert!(
+        !reachable(&result, 18),
+        "x=1 and x=2 cannot share one execution: {model}"
+    );
 }
 
 #[test]
 fn derived_addition_guard_refines_its_input_instead_of_an_independent_top() {
+    check_derived_addition_guard_refines_its_input_instead_of_an_independent_top(&native::product());
+    check_derived_addition_guard_refines_its_input_instead_of_an_independent_top(
+        &native::finite_with(native::spec(8, 4, 256)),
+    );
+}
+
+fn check_derived_addition_guard_refines_its_input_instead_of_an_independent_top<
+    D: EvmNumericAlgebra,
+>(
+    values: &ValueAlgebra<D>,
+) {
+    let model = std::any::type_name::<D::Element>();
+
     let mut code = Assembly::default();
     code.op(opcode::CALLVALUE)
         .op(opcode::DUP1)
@@ -185,20 +228,36 @@ fn derived_addition_guard_refines_its_input_instead_of_an_independent_top() {
         .label("good")
         .op(opcode::STOP);
     let fixture = code.finish();
-    for profile in [Profile::Product, Profile::ConstantsOnly] {
-        let result = analyze(&fixture.code, profile, EvmEnvironment::default());
-        complete(&result);
-        assert!(reachable(&result, fixture.labels["derived"]));
-        assert!(reachable(&result, fixture.labels["good"]));
-        assert!(
-            !reachable(&result, fixture.labels["bad"]),
-            "x+1=2 implies x=1: {profile:?}"
-        );
-    }
+
+    let result = relations_case(
+        values,
+        &fixture.code,
+        EvmEnvironmentValues::<D::Element>::default(),
+    );
+    complete(&result);
+    assert!(reachable(&result, fixture.labels["derived"]));
+    assert!(reachable(&result, fixture.labels["good"]));
+    assert!(
+        !reachable(&result, fixture.labels["bad"]),
+        "x+1=2 implies x=1: {model}"
+    );
 }
 
 #[test]
 fn symbolic_addition_uses_evm_word_wraparound_and_preserves_the_wrapped_path() {
+    check_symbolic_addition_uses_evm_word_wraparound_and_preserves_the_wrapped_path(
+        &native::product(),
+    );
+    check_symbolic_addition_uses_evm_word_wraparound_and_preserves_the_wrapped_path(
+        &native::finite_with(native::spec(8, 4, 256)),
+    );
+}
+
+fn check_symbolic_addition_uses_evm_word_wraparound_and_preserves_the_wrapped_path<
+    D: EvmNumericAlgebra,
+>(
+    values: &ValueAlgebra<D>,
+) {
     let mut code = Assembly::default();
     code.op(opcode::CALLVALUE)
         .op(opcode::DUP1)
@@ -215,23 +274,35 @@ fn symbolic_addition_uses_evm_word_wraparound_and_preserves_the_wrapped_path() {
         .label("bad")
         .op(opcode::STOP);
     let fixture = code.finish();
-    for profile in [Profile::Product, Profile::ConstantsOnly] {
-        let result = analyze(&fixture.code, profile, EvmEnvironment::default());
-        complete(&result);
-        assert!(
-            reachable(&result, fixture.labels["wrapped"]),
-            "x=U256::MAX is valid"
-        );
-        assert!(reachable(&result, fixture.labels["good"]));
-        assert!(
-            !reachable(&result, fixture.labels["bad"]),
-            "x+1=0 cannot also have x=0"
-        );
-    }
+
+    let result = relations_case(
+        values,
+        &fixture.code,
+        EvmEnvironmentValues::<D::Element>::default(),
+    );
+    complete(&result);
+    assert!(
+        reachable(&result, fixture.labels["wrapped"]),
+        "x=U256::MAX is valid"
+    );
+    assert!(reachable(&result, fixture.labels["good"]));
+    assert!(
+        !reachable(&result, fixture.labels["bad"]),
+        "x+1=0 cannot also have x=0"
+    );
 }
 
 #[test]
 fn false_edges_exclude_the_same_equality_on_later_blocks() {
+    check_false_edges_exclude_the_same_equality_on_later_blocks(&native::product());
+    check_false_edges_exclude_the_same_equality_on_later_blocks(&native::finite_with(
+        native::spec(8, 4, 256),
+    ));
+}
+
+fn check_false_edges_exclude_the_same_equality_on_later_blocks<D: EvmNumericAlgebra>(
+    values: &ValueAlgebra<D>,
+) {
     let mut code = Assembly::default();
     code.op(opcode::CALLVALUE)
         .guard_eq(1, "one")
@@ -243,20 +314,38 @@ fn false_edges_exclude_the_same_equality_on_later_blocks() {
         .label("bad")
         .op(opcode::STOP);
     let fixture = code.finish();
-    for profile in [Profile::Product, Profile::ConstantsOnly] {
-        let result = analyze(&fixture.code, profile, EvmEnvironment::default());
-        complete(&result);
-        assert!(reachable(&result, fixture.labels["one"]));
-        assert!(reachable(&result, fixture.labels["not_one"]));
-        assert!(
-            !reachable(&result, fixture.labels["bad"]),
-            "false guard means x!=1"
-        );
-    }
+
+    let result = relations_case(
+        values,
+        &fixture.code,
+        EvmEnvironmentValues::<D::Element>::default(),
+    );
+    complete(&result);
+    assert!(reachable(&result, fixture.labels["one"]));
+    assert!(reachable(&result, fixture.labels["not_one"]));
+    assert!(
+        !reachable(&result, fixture.labels["bad"]),
+        "false guard means x!=1"
+    );
 }
 
 #[test]
 fn joined_unknown_paths_include_both_values_and_selected_paths_exclude_a_third() {
+    check_joined_unknown_paths_include_both_values_and_selected_paths_exclude_a_third(
+        &native::product(),
+    );
+    check_joined_unknown_paths_include_both_values_and_selected_paths_exclude_a_third(
+        &native::finite_with(native::spec(8, 4, 256)),
+    );
+}
+
+fn check_joined_unknown_paths_include_both_values_and_selected_paths_exclude_a_third<
+    D: EvmNumericAlgebra,
+>(
+    values: &ValueAlgebra<D>,
+) {
+    let model = std::any::type_name::<D::Element>();
+
     let mut code = Assembly::default();
     code.op(opcode::CALLVALUE)
         .op(opcode::PUSH0)
@@ -281,47 +370,50 @@ fn joined_unknown_paths_include_both_values_and_selected_paths_exclude_a_third()
         .label("two")
         .op(opcode::STOP);
     let fixture = code.finish();
-    for profile in [Profile::Product, Profile::ConstantsOnly] {
-        let result = analyze(&fixture.code, profile, EvmEnvironment::default());
-        complete(&result);
-        assert_eq!(
-            result
-                .states()
-                .iter()
-                .filter(
-                    |state| result.program().blocks()[state.key.basic_block_index].start_pc
-                        == fixture.labels["merge"]
-                )
-                .count(),
-            1,
-            "context_depth=0 joins the same machine key"
+
+    let result = relations_case(
+        values,
+        &fixture.code,
+        EvmEnvironmentValues::<D::Element>::default(),
+    );
+    complete(&result);
+    assert_eq!(
+        result
+            .states()
+            .iter()
+            .filter(
+                |state| result.program().blocks()[state.key.basic_block_index].start_pc
+                    == fixture.labels["merge"]
+            )
+            .count(),
+        1,
+        "context_depth=0 joins the same machine key"
+    );
+    for branch in ["left_ok", "right_ok", "one", "two"] {
+        assert!(
+            reachable(&result, fixture.labels[branch]),
+            "lost feasible {branch}: {model}"
         );
-        for branch in ["left_ok", "right_ok", "one", "two"] {
-            assert!(
-                reachable(&result, fixture.labels[branch]),
-                "lost feasible {branch}: {profile:?}"
-            );
-        }
-        // The unknown join selector keeps x=1 OR x=2 in the path DAG. Local
-        // projection imports common facts only, so it need not exclude x=3.
-        // Reachability is an overapproximation, never a satisfying valuation.
-        for (selector, selected, excluded) in [(0, "two", "one"), (1, "one", "two")] {
-            let selected_result = analyze(
-                &fixture.code,
-                profile,
-                EvmEnvironment {
-                    calldata: evm_abstract::world::ByteArray::exact(&[selector]),
-                    ..EvmEnvironment::default()
-                },
-            );
-            complete(&selected_result);
-            assert!(reachable(&selected_result, fixture.labels[selected]));
-            assert!(!reachable(&selected_result, fixture.labels[excluded]));
-            assert!(
-                !reachable(&selected_result, fixture.labels["bad"]),
-                "a known selector must retain its guarded value: {profile:?}"
-            );
-        }
+    }
+    // The unknown join selector keeps x=1 OR x=2 in the path DAG. Local
+    // projection imports common facts only, so it need not exclude x=3.
+    // Reachability is an overapproximation, never a satisfying valuation.
+    for (selector, selected, excluded) in [(0, "two", "one"), (1, "one", "two")] {
+        let selected_result = relations_case(
+            values,
+            &fixture.code,
+            EvmEnvironmentValues {
+                calldata: evm_abstract::world::EvmByteArray::<D::Element>::exact(&[selector]),
+                ..EvmEnvironmentValues::<D::Element>::default()
+            },
+        );
+        complete(&selected_result);
+        assert!(reachable(&selected_result, fixture.labels[selected]));
+        assert!(!reachable(&selected_result, fixture.labels[excluded]));
+        assert!(
+            !reachable(&selected_result, fixture.labels["bad"]),
+            "a known selector must retain its guarded value: {model}"
+        );
     }
 }
 
@@ -350,8 +442,8 @@ fn bounded_loop() -> Fixture {
 #[test]
 fn loop_fixed_point_forgets_cross_field_equality_without_rebinding_immutable_inputs() {
     let fixture = bounded_loop();
-    let environment = EvmEnvironment::default();
-    let no_loop = analyze("34341400", Profile::Product, environment.clone());
+    let environment = EvmEnvironmentValues::<NumericValue>::default();
+    let no_loop = relations_case(&native::product(), "34341400", environment.clone());
     complete(&no_loop);
     assert!(no_loop.frontiers().is_empty());
     assert!(no_loop.execution().frontiers().is_empty());
@@ -369,10 +461,10 @@ fn loop_fixed_point_forgets_cross_field_equality_without_rebinding_immutable_inp
     for value in [None, Some(U256::ZERO), Some(U256::ONE), Some(U256::MAX)] {
         let mut input = environment.clone();
         if let Some(value) = value {
-            input.value = AbstractValue::constant(value);
+            input.value = EvmValue::<NumericValue>::constant(value);
         }
         // All cases use the original loop, default policy and actual widening.
-        let result = analyze(&fixture.code, Profile::Product, input);
+        let result = relations_case(&native::product(), &fixture.code, input);
         complete(&result);
         assert!(result.frontiers().is_empty());
         assert!(result.execution().frontiers().is_empty());
@@ -419,15 +511,24 @@ fn loop_fixed_point_forgets_cross_field_equality_without_rebinding_immutable_inp
 #[test]
 fn a_loop_cut_short_by_the_shared_transfer_budget_remains_typed_incomplete() {
     let fixture = bounded_loop();
-    let result = analysis::analyze_with_environment(
-        Program::from_hex(&fixture.code).unwrap(),
-        Config {
-            context_depth: 0,
-            max_transfers: 1,
-            ..Config::default()
+    let result = native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex(&fixture.code).unwrap(),
+            EvmEnvironmentValues::<NumericValue>::default(),
+        )
+        .unwrap(),
+        ExecutionConfig {
+            analysis: Config {
+                context_depth: 0,
+                max_transfers: 1,
+                ..Config::default()
+            },
+            ..ExecutionConfig::default()
         },
-        EvmEnvironment::default(),
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap();
     assert_eq!(result.status(), Status::Incomplete);
     assert!(
@@ -473,7 +574,13 @@ fn delegatecall_shares_default_origin_constraints_but_not_an_independent_origin(
         if independent {
             entry.environment.origin = Some(AddressInput::unknown_origin());
         }
-        let result = analysis::analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+        let result = native::run(
+            &native::product(),
+            AnalysisInput::new(world, entry).unwrap(),
+            ExecutionConfig::default(),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(
             result.status(),
             Status::Converged,
@@ -517,7 +624,13 @@ fn a_child_callvalue_is_not_the_parent_callvalue_variable() {
         .op(opcode::STOP);
     let child = child.finish();
     let (world, entry) = world(&root.code, &child.code);
-    let result = analysis::analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    let result = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -568,7 +681,7 @@ fn alpha_json(value: &mut Json, leaves: &mut BTreeMap<(String, u64), u64>) {
     }
 }
 
-fn outcome_relations(result: &WorldAnalysis) -> BTreeSet<String> {
+fn outcome_relations(result: &EvmWorldAnalysis<NumericValue>) -> BTreeSet<String> {
     // One mapping covers every graph and outcome, preserving shared leaves.
     let mut leaves = BTreeMap::new();
     result
@@ -602,17 +715,17 @@ fn summary_reuse_preserves_parent_constraints_and_numeric_outcome_parity() {
         canonical(serde_json::to_value([&a, &a, &b]).unwrap()),
         canonical(serde_json::to_value([&c, &d, &d]).unwrap())
     );
-    let bounded = AbstractValue::unsigned_range(U256::from(1), U256::from(3))
+    let bounded = EvmValue::<NumericValue>::unsigned_range(U256::from(1), U256::from(3))
         .unwrap()
         .with_expression(a.clone());
-    let expanded = AbstractValue::unsigned_range(U256::from(1), U256::from(4))
+    let expanded = EvmValue::<NumericValue>::unsigned_range(U256::from(1), U256::from(4))
         .unwrap()
         .with_expression(c.clone());
     assert_ne!(
         canonical(serde_json::to_value(&bounded).unwrap()),
         canonical(serde_json::to_value(&expanded).unwrap())
     );
-    let sourced = AbstractValue::constant(U256::from(1)).with_expression(a.clone());
+    let sourced = EvmValue::<NumericValue>::constant(U256::from(1)).with_expression(a.clone());
     assert_ne!(
         canonical(serde_json::to_value(&sourced).unwrap()),
         canonical(
@@ -670,9 +783,9 @@ fn summary_reuse_preserves_parent_constraints_and_numeric_outcome_parity() {
     let mut outcomes = Vec::new();
     let mut fixed_inputs = Vec::new();
     for enabled in [true, false] {
-        let result = analysis::analyze_world(
-            world.clone(),
-            entry.clone(),
+        let result = native::run(
+            &native::product(),
+            AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
             ExecutionConfig {
                 use_summaries: enabled,
                 analysis: Config {
@@ -681,6 +794,7 @@ fn summary_reuse_preserves_parent_constraints_and_numeric_outcome_parity() {
                 },
                 ..ExecutionConfig::default()
             },
+            &Control::default(),
         )
         .unwrap();
         assert_eq!(
@@ -756,7 +870,13 @@ fn summary_replay_renames_fresh_gas_words_in_callee_memory() {
     // GAS is a mutable runtime observation, not an immutable environment input.
     // Inspect the callee before return joins can erase the word's expression.
     let (world, entry) = world(&root.code, "5a5f5260205ff3");
-    let result = analysis::analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    let result = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -773,14 +893,17 @@ fn summary_replay_renames_fresh_gas_words_in_callee_memory() {
         .iter()
         .find(|record| !record.reused_at.is_empty())
         .expect("a certified call was actually replayed");
-    let domain = evm_abstract::domain::Domain::from_spec(result.domain_spec());
+    let domain = native::product_with(result.domain_spec());
     let original = result.states()[record.source_state]
         .exit
         .as_ref()
         .unwrap()
         .active()
         .memory
-        .read_word(&AbstractValue::constant(U256::ZERO), domain);
+        .read_word(
+            &EvmValue::<NumericValue>::constant(U256::ZERO),
+            domain.borrowed(),
+        );
     let original_leaves = original
         .expression()
         .expect("unknown GAS word remains symbolic")
@@ -789,13 +912,10 @@ fn summary_replay_renames_fresh_gas_words_in_callee_memory() {
     for &replayed in &record.reused_at {
         let state = &result.states()[replayed];
         assert_eq!(state.active().code_address, address(0x200));
-        let imported = state
-            .exit
-            .as_ref()
-            .unwrap()
-            .active()
-            .memory
-            .read_word(&AbstractValue::constant(U256::ZERO), domain);
+        let imported = state.exit.as_ref().unwrap().active().memory.read_word(
+            &EvmValue::<NumericValue>::constant(U256::ZERO),
+            domain.borrowed(),
+        );
         assert_eq!(
             original.numeric(),
             imported.numeric(),
@@ -850,7 +970,11 @@ fn overwritten_read(memory: bool) -> Fixture {
 #[test]
 fn storage_write_does_not_rebind_the_symbol_of_a_historical_sload() {
     let fixture = overwritten_read(false);
-    let result = analyze(&fixture.code, Profile::Product, EvmEnvironment::default());
+    let result = relations_case(
+        &native::product(),
+        &fixture.code,
+        EvmEnvironmentValues::<NumericValue>::default(),
+    );
     complete(&result);
     assert!(reachable(&result, fixture.labels["write"]));
     assert!(
@@ -866,7 +990,11 @@ fn storage_write_does_not_rebind_the_symbol_of_a_historical_sload() {
 #[test]
 fn memory_write_does_not_rebind_the_symbol_of_a_historical_mload() {
     let fixture = overwritten_read(true);
-    let result = analyze(&fixture.code, Profile::Product, EvmEnvironment::default());
+    let result = relations_case(
+        &native::product(),
+        &fixture.code,
+        EvmEnvironmentValues::<NumericValue>::default(),
+    );
     complete(&result);
     assert!(reachable(&result, fixture.labels["write"]));
     assert!(reachable(&result, fixture.labels["good"]));
@@ -899,7 +1027,11 @@ fn an_unknown_storage_write_may_alias_a_previously_read_slot() {
         .label("unchanged")
         .op(opcode::STOP);
     let fixture = code.finish();
-    let result = analyze(&fixture.code, Profile::Product, EvmEnvironment::default());
+    let result = relations_case(
+        &native::product(),
+        &fixture.code,
+        EvmEnvironmentValues::<NumericValue>::default(),
+    );
     complete(&result);
     assert!(
         reachable(&result, fixture.labels["changed"]),
@@ -915,13 +1047,14 @@ fn an_unknown_storage_write_may_alias_a_previously_read_slot() {
 fn exhausted_shared_work_never_manufactures_a_complete_empty_graph() {
     let code = "3480600114600957005b80600214601257005b00";
     let (world, entry) = world(code, "00");
-    let result = analysis::analyze_world(
-        world,
-        entry,
+    let result = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
         ExecutionConfig {
             max_work: 1,
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(result.status(), Status::Incomplete);
@@ -951,20 +1084,28 @@ fn one_symbolic_guard() -> Fixture {
 fn limited(
     fixture: &Fixture,
     limits: evm_abstract::domain::relational::RelationLimits,
-) -> analysis::Analysis {
-    analysis::analyze_with_environment(
-        Program::from_hex(&fixture.code).unwrap(),
-        Config {
-            context_depth: 0,
-            relations: limits,
-            ..Config::default()
+) -> analysis::EvmAnalysis<NumericValue> {
+    native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(limits.to_owned())),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex(&fixture.code).unwrap(),
+            EvmEnvironmentValues::<NumericValue>::default(),
+        )
+        .unwrap(),
+        ExecutionConfig {
+            analysis: Config {
+                context_depth: 0,
+                ..Config::default()
+            },
+            ..ExecutionConfig::default()
         },
-        EvmEnvironment::default(),
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap()
 }
 
-fn retained_unknown_branches(result: &analysis::Analysis, fixture: &Fixture) {
+fn retained_unknown_branches(result: &analysis::EvmAnalysis<NumericValue>, fixture: &Fixture) {
     assert_eq!(
         result.status(),
         Status::Incomplete,
@@ -983,7 +1124,7 @@ fn retained_unknown_branches(result: &analysis::Analysis, fixture: &Fixture) {
 #[test]
 fn local_work_exhaustion_retains_guards_and_recovers_exact_with_the_default_policy() {
     use evm_abstract::domain::{
-        relational::{CheckResult, QueryReason, RelationLimits, RelationState, ValueQuery},
+        relational::{CheckResult, EvmValueQuery, QueryReason, RelationLimits, RelationState},
         symbolic::ExprId,
     };
     let policy = RelationLimits::default();
@@ -1002,7 +1143,12 @@ fn local_work_exhaustion_retains_guards_and_recovers_exact_with_the_default_poli
     .unwrap();
     let mut relations = RelationState::default();
     assert_eq!(
-        relations.assume(&guard, true, &policy),
+        relations.assume(
+            &guard,
+            true,
+            &policy,
+            native::product_with(native::spec(8, 4, 256).with_relations(policy)).borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     let before = relations.clone();
@@ -1015,16 +1161,29 @@ fn local_work_exhaustion_retains_guards_and_recovers_exact_with_the_default_poli
     assert!(guard.nodes() <= bounded.max_nodes);
     assert!(guard.depth() <= bounded.max_depth);
     assert_eq!(
-        relations.local_value(&input, &bounded),
-        ValueQuery::Undetermined(QueryReason::ExpressionLimit)
+        relations.local_value(
+            &input,
+            &bounded,
+            native::product_with(native::spec(8, 4, 256).with_relations(bounded)).borrowed()
+        ),
+        EvmValueQuery::<NumericValue>::Undetermined(QueryReason::ExpressionLimit)
     );
     assert_eq!(relations, before, "interruption must preserve the guard");
     assert_eq!(
-        relations.local_value(&input, &policy),
-        ValueQuery::Exact(U256::ONE)
+        relations.local_value(
+            &input,
+            &policy,
+            native::product_with(native::spec(8, 4, 256).with_relations(policy)).borrowed()
+        ),
+        EvmValueQuery::<NumericValue>::Exact(U256::ONE)
     );
     assert_eq!(
-        relations.can_equal(&input, U256::ZERO, &policy),
+        relations.can_equal(
+            &input,
+            U256::ZERO,
+            &policy,
+            native::product_with(native::spec(8, 4, 256).with_relations(policy)).borrowed()
+        ),
         CheckResult::ProvenImpossible
     );
     let fixture = one_symbolic_guard();
@@ -1036,30 +1195,44 @@ fn local_work_exhaustion_retains_guards_and_recovers_exact_with_the_default_poli
 
 #[test]
 fn initial_symbolic_store_uses_the_configured_policy_and_retains_failure() {
-    use evm_abstract::domain::{Domain, relational::QueryReason};
+    let mut numeric_limits = native::product().spec().relations();
+
+    use evm_abstract::domain::relational::QueryReason;
     let owner = address(0x101);
-    let mut world = World::new(Fork::Osaka, "initial state construction limit");
-    let mut account = Account::from_hex("00", Fork::Osaka).unwrap();
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "initial state construction limit");
+    let mut account = EvmAccount::<NumericValue>::from_hex("00", Fork::Osaka).unwrap();
     account.storage = (0..65)
-        .map(|i| (U256::from(i), AbstractValue::constant(U256::from(i + 1))))
+        .map(|i| {
+            (
+                U256::from(i),
+                EvmValue::<NumericValue>::constant(U256::from(i + 1)),
+            )
+        })
         .collect();
     world.insert(owner, account).unwrap();
-    let entry = Entry::new(owner);
-    let limited =
-        analysis::analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    let entry = EvmEntry::<NumericValue>::new(owner);
+    let limited = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(limited.status(), Status::Incomplete);
     assert!(limited.outcomes().is_empty());
     assert!(limited.frontiers().iter().any(|frontier| {
         frontier.reason == FrontierReason::Relations(QueryReason::ExpressionLimit)
     }));
-    let mut config = ExecutionConfig::default();
-    config.analysis.relations.max_depth = 128;
-    let domain = Domain::from_spec(
-        Domain::default()
-            .spec()
-            .with_relations(config.analysis.relations),
-    );
-    let result = analysis::analyze_world(world, entry, config).unwrap();
+    let config = ExecutionConfig::default();
+    numeric_limits.max_depth = 128;
+    let domain = native::product_with(native::product().spec().with_relations(numeric_limits));
+    let result = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -1071,7 +1244,11 @@ fn initial_symbolic_store_uses_the_configured_policy_and_retains_failure() {
         assert_eq!(
             outcome
                 .store
-                .read_checked(owner, &AbstractValue::constant(U256::from(64)), domain)
+                .read_checked(
+                    owner,
+                    &EvmValue::<NumericValue>::constant(U256::from(64)),
+                    domain.borrowed()
+                )
                 .unwrap()
                 .singleton(),
             Some(U256::from(65))
@@ -1081,24 +1258,29 @@ fn initial_symbolic_store_uses_the_configured_policy_and_retains_failure() {
 
 #[test]
 fn cancelled_range_analysis_can_be_retried_without_losing_either_outcome() {
-    use evm_abstract::analysis::{ControlledAnalysisError, control::Control, progress::Observer};
+    use evm_abstract::analysis::{control::Control, progress::Observer};
     let (world, mut entry) = world("5f345f3e00", "00");
-    entry.environment.value = AbstractValue::top();
+    entry.environment.value = EvmValue::<NumericValue>::top();
     // Replace the removed fuel knob with an actual cancellation boundary. Both
     // the retry and concrete controls keep the original execution defaults.
     let control = Control::new(Observer::default());
     control.cancellation().cancel();
     assert!(matches!(
-        analysis::analyze_world_with_control(
-            world.clone(),
-            entry.clone(),
+        native::run(
+            &native::product(),
+            AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
             ExecutionConfig::default(),
             &control
         ),
-        Err(ControlledAnalysisError::Cancelled)
+        Err(evm_abstract::analysis::cooperation::CooperationError::Cancelled)
     ));
-    let result =
-        analysis::analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    let result = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -1114,9 +1296,14 @@ fn cancelled_range_analysis_can_be_retried_without_losing_either_outcome() {
     }
     for (size, returns) in [(0u64, true), (1, false)] {
         let mut concrete = entry.clone();
-        concrete.environment.value = AbstractValue::constant(U256::from(size));
-        let control =
-            analysis::analyze_world(world.clone(), concrete, ExecutionConfig::default()).unwrap();
+        concrete.environment.value = EvmValue::<NumericValue>::constant(U256::from(size));
+        let control = native::run(
+            &native::product(),
+            AnalysisInput::new(world.clone(), concrete).unwrap(),
+            ExecutionConfig::default(),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(control.status(), Status::Converged);
         assert_eq!(
             control
@@ -1137,13 +1324,21 @@ fn cancelled_range_analysis_can_be_retried_without_losing_either_outcome() {
 
 #[test]
 fn optional_state_read_projection_reports_precision_loss_without_unexpanded_paths() {
-    use evm_abstract::domain::relational::{QueryReason, ValueQuery};
+    let mut numeric_limits = native::product().spec().relations();
+
+    use evm_abstract::domain::relational::{EvmValueQuery, QueryReason};
     let (world, entry) = world("5f3500", "00");
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     // This replaces only the obsolete native-fuel fixture. Sixty-four nodes
     // retain the read graph, but cannot pay the real 32-byte local projection.
-    config.analysis.relations.max_nodes = 64;
-    let analysis = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    numeric_limits.max_nodes = 64;
+    let analysis = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -1180,15 +1375,23 @@ fn optional_state_read_projection_reports_precision_loss_without_unexpanded_path
     let expression = loaded
         .expression()
         .expect("interruption retains the input read");
-    assert!(expression.nodes() <= config.analysis.relations.max_nodes);
-    assert!(expression.depth() <= config.analysis.relations.max_depth);
+    assert!(expression.nodes() <= numeric_limits.max_nodes);
+    assert!(expression.depth() <= numeric_limits.max_depth);
     assert_eq!(
-        evm_abstract::domain::relational::RelationState::default()
-            .local_value(expression, &config.analysis.relations),
-        ValueQuery::Undetermined(QueryReason::ExpressionLimit)
+        evm_abstract::domain::relational::RelationState::default().local_value(
+            expression,
+            &numeric_limits,
+            native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)).borrowed()
+        ),
+        EvmValueQuery::<NumericValue>::Undetermined(QueryReason::ExpressionLimit)
     );
-    let ValueQuery::Bounds(bounds) = evm_abstract::domain::relational::RelationState::default()
-        .local_value(expression, &Default::default())
+    let EvmValueQuery::<NumericValue>::Bounds(bounds) =
+        evm_abstract::domain::relational::RelationState::default().local_value(
+            expression,
+            &Default::default(),
+            native::product_with(native::spec(8, 4, 256).with_relations(Default::default()))
+                .borrowed(),
+        )
     else {
         panic!("the default local policy must complete the same read");
     };
@@ -1196,8 +1399,15 @@ fn optional_state_read_projection_reports_precision_loss_without_unexpanded_path
         assert!(bounds.contains(value), "local read bounds excluded {value}");
     }
     let mut concrete = entry;
-    concrete.environment.calldata = evm_abstract::world::ByteArray::exact(&[7; 32]);
-    let exact = analysis::analyze_world(world, concrete, config).unwrap();
+    concrete.environment.calldata =
+        evm_abstract::world::EvmByteArray::<NumericValue>::exact(&[7; 32]);
+    let exact = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world, concrete).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(exact.status(), Status::Converged);
     assert_eq!(
         exact
@@ -1216,11 +1426,10 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
     use evm_abstract::{
         analysis::{FrameCode, OutcomeKind},
         domain::{
-            Domain,
             relational::{QueryReason, RelationLimits},
             symbolic::{ExprId, SlotStateKind},
         },
-        world::{Store, Symbol},
+        world::{EvmStore, Symbol},
     };
     let fixture = one_symbolic_guard();
     for limits in [
@@ -1237,24 +1446,32 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
     ] {
         let config = Config {
             context_depth: 0,
-            relations: limits,
             ..Config::default()
         };
-        let symbolic_environment = EvmEnvironment {
-            calldata: evm_abstract::world::ByteArray::empty(),
-            ..EvmEnvironment::default()
+        let symbolic_environment = EvmEnvironmentValues {
+            calldata: evm_abstract::world::EvmByteArray::<NumericValue>::empty(),
+            ..EvmEnvironmentValues::<NumericValue>::default()
         };
-        let environment = EvmEnvironment {
+        let environment = EvmEnvironmentValues {
             // Keep mandatory recipient cleanup out of the optional scalar
             // control; CALLVALUE stays unknown and the bytecode stays identical.
             to: address(0x101).into(),
             ..symbolic_environment.clone()
         };
-        let result = analysis::analyze_with_environment(
-            Program::from_hex(&fixture.code).unwrap(),
-            config.clone(),
-            environment.clone(),
+        let result = native::run(
+            &native::product_with(native::spec(8, 4, 256).with_relations(limits)),
+            AnalysisInput::<NumericValue>::from_program(
+                Program::from_hex(&fixture.code).unwrap(),
+                environment.clone(),
+            )
+            .unwrap(),
+            ExecutionConfig {
+                analysis: config.clone(),
+                ..ExecutionConfig::default()
+            },
+            &Control::default(),
         )
+        .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
         .unwrap();
         complete(&result);
         assert!(result.frontiers().is_empty());
@@ -1287,9 +1504,9 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
         assert_eq!(source.active().address_value, environment.to);
         assert_eq!(source.active().basic_block_index, 0);
         assert!(source.active().jump_history.is_empty());
-        let input_store = Store::new_checked(
+        let input_store = EvmStore::<NumericValue>::new_checked(
             execution.world(),
-            Domain::from_spec(execution.domain_spec()),
+            native::product_with(execution.domain_spec()).borrowed(),
         )
         .unwrap();
         let input_root = input_store.slot_root(owner, false).unwrap();
@@ -1370,14 +1587,23 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
             }
         }
         for (value, selected, excluded) in [(1, "true", "false"), (0, "false", "true")] {
-            let witness = analysis::analyze_with_environment(
-                Program::from_hex(&fixture.code).unwrap(),
-                config.clone(),
-                EvmEnvironment {
-                    value: AbstractValue::constant(U256::from(value)),
-                    ..environment.clone()
+            let witness = native::run(
+                &native::product_with(native::spec(8, 4, 256).with_relations(limits)),
+                AnalysisInput::<NumericValue>::from_program(
+                    Program::from_hex(&fixture.code).unwrap(),
+                    EvmEnvironmentValues {
+                        value: EvmValue::<NumericValue>::constant(U256::from(value)),
+                        ..environment.clone()
+                    },
+                )
+                .unwrap(),
+                ExecutionConfig {
+                    analysis: config.clone(),
+                    ..ExecutionConfig::default()
                 },
+                &Control::default(),
             )
+            .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
             .unwrap();
             complete(&witness);
             assert!(witness.frontiers().is_empty());
@@ -1391,11 +1617,20 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
 
         // The original symbolic recipient needs a mandatory lifecycle root
         // before the first opcode, independently of optional scalar precision.
-        let boundary = analysis::analyze_with_environment(
-            Program::from_hex(&fixture.code).unwrap(),
-            config.clone(),
-            symbolic_environment.clone(),
+        let boundary = native::run(
+            &native::product_with(native::spec(8, 4, 256).with_relations(limits)),
+            AnalysisInput::<NumericValue>::from_program(
+                Program::from_hex(&fixture.code).unwrap(),
+                symbolic_environment.clone(),
+            )
+            .unwrap(),
+            ExecutionConfig {
+                analysis: config.clone(),
+                ..ExecutionConfig::default()
+            },
+            &Control::default(),
         )
+        .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
         .unwrap();
         assert_eq!(boundary.status(), Status::Incomplete);
         assert_eq!(boundary.environment(), &symbolic_environment);
@@ -1446,9 +1681,9 @@ fn symbolic_node_and_depth_limits_preserve_both_feasible_branches() {
         assert_eq!(boundary.execution_state_id(0), Some(source.id));
         assert_eq!(projected.target, boundary.states()[0].key);
 
-        let input_store = Store::new_checked(
+        let input_store = EvmStore::<NumericValue>::new_checked(
             execution.world(),
-            Domain::from_spec(execution.domain_spec()),
+            native::product_with(execution.domain_spec()).borrowed(),
         )
         .unwrap();
         let mut entered_store = input_store.clone();
@@ -1558,17 +1793,21 @@ fn a_constraint_limit_is_unknown_and_does_not_drop_a_feasible_side() {
 #[test]
 fn uncompared_lazy_hash_keeps_concrete_hashes_without_a_precision_failure() {
     use evm_abstract::{
-        analysis::DiagnosticKind,
-        domain::{Domain, relational::ValueQuery},
-        world::ByteArray,
+        analysis::DiagnosticKind, domain::relational::EvmValueQuery, world::EvmByteArray,
     };
     // A partial overwrite of a 128-byte symbolic copy retains a content term.
     // Its ordinary unknown value is not an unsupported-provider diagnostic.
-    let result = analysis::analyze_with_environment(
-        Program::from_hex("60805f5f3760ff5f5360805f205000").unwrap(),
-        Config::default(),
-        EvmEnvironment::default(),
+    let result = native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex("60805f5f3760ff5f5360805f205000").unwrap(),
+            EvmEnvironmentValues::<NumericValue>::default(),
+        )
+        .unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap();
     complete(&result);
     assert!(result.execution().diagnostics().iter().all(|diagnostic| {
@@ -1582,23 +1821,25 @@ fn uncompared_lazy_hash_keeps_concrete_hashes_without_a_precision_failure() {
         .iter()
         .find_map(|state| state.exit.as_ref())
         .unwrap();
-    let domain = Domain::from_spec(result.execution().domain_spec());
+    let domain = native::product_with(result.execution().domain_spec());
     let materialize_limit = ExecutionConfig::default().max_memory_bytes;
     let input = payload
         .active()
         .memory
         .slice(
-            &AbstractValue::constant(U256::ZERO),
-            &AbstractValue::constant(U256::from(128)),
-            materialize_limit,
-            domain,
+            &EvmValue::<NumericValue>::constant(U256::ZERO),
+            &EvmValue::<NumericValue>::constant(U256::from(128)),
+            domain.borrowed(),
         )
         .unwrap();
-    let hash = input.keccak(domain, materialize_limit).unwrap();
-    let answer = payload
-        .relations
-        .local_value(hash.expression().unwrap(), &domain.spec().relations());
-    let ValueQuery::Bounds(bounds) = answer else {
+    let hash = input.keccak(domain.borrowed(), materialize_limit).unwrap();
+    let answer = payload.relations.local_value(
+        hash.expression().unwrap(),
+        &domain.spec().relations(),
+        native::product_with(native::spec(8, 4, 256).with_relations(domain.spec().relations()))
+            .borrowed(),
+    );
+    let EvmValueQuery::<NumericValue>::Bounds(bounds) = answer else {
         panic!("unknown content should retain completed local bounds: {answer:?}");
     };
     for fill in [0u8, 7] {
@@ -1610,14 +1851,20 @@ fn uncompared_lazy_hash_keeps_concrete_hashes_without_a_precision_failure() {
             bounds.contains(expected),
             "local bounds excluded concrete hash {expected}"
         );
-        let exact = ByteArray::exact(&bytes)
-            .keccak(domain, materialize_limit)
+        let exact = EvmByteArray::<NumericValue>::exact(&bytes)
+            .keccak(domain.borrowed(), materialize_limit)
             .unwrap();
         assert_eq!(exact.singleton(), Some(expected));
         assert_eq!(
-            evm_abstract::domain::relational::RelationState::default()
-                .local_value(exact.expression().unwrap(), &domain.spec().relations()),
-            ValueQuery::Exact(expected)
+            evm_abstract::domain::relational::RelationState::default().local_value(
+                exact.expression().unwrap(),
+                &domain.spec().relations(),
+                native::product_with(
+                    native::spec(8, 4, 256).with_relations(domain.spec().relations())
+                )
+                .borrowed()
+            ),
+            EvmValueQuery::<NumericValue>::Exact(expected)
         );
     }
 }
@@ -1626,18 +1873,26 @@ fn uncompared_lazy_hash_keeps_concrete_hashes_without_a_precision_failure() {
 fn disabling_relations_restores_the_broader_baseline_cfg() {
     use evm_abstract::domain::relational::RelationLimits;
     let code = "3480600114600957005b80600214601257005b00";
-    let result = analysis::analyze_with_environment(
-        Program::from_hex(code).unwrap(),
-        Config {
-            context_depth: 0,
-            relations: RelationLimits {
-                enabled: false,
-                ..RelationLimits::default()
+    let result = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(RelationLimits {
+            enabled: false,
+            ..RelationLimits::default()
+        })),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex(code).unwrap(),
+            EvmEnvironmentValues::<NumericValue>::default(),
+        )
+        .unwrap(),
+        ExecutionConfig {
+            analysis: Config {
+                context_depth: 0,
+                ..Config::default()
             },
-            ..Config::default()
+            ..ExecutionConfig::default()
         },
-        EvmEnvironment::default(),
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap();
     complete(&result);
     assert!(
