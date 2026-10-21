@@ -117,7 +117,6 @@ fn bit_pattern_count(value: &NumericValue, capacity: usize) -> Option<usize> {
 }
 
 struct IntervalCandidates {
-    count: usize,
     pieces: Vec<(U256, U256, U256)>,
 }
 
@@ -141,20 +140,7 @@ fn interval_candidates(value: &NumericValue, capacity: usize) -> Option<Interval
         }
         pieces.push((first, last, step));
     }
-    Some(IntervalCandidates { count, pieces })
-}
-
-/// 候选查询真正可能扫描的数量；只计算上界，不枚举或按容量分配。
-/// 与完整候选查询共用准入条件，不能用容量截断冒充完整覆盖。
-pub(super) fn candidate_visits(value: &NumericValue, capacity: usize) -> usize {
-    if let Some(set) = value.constants() {
-        return if set.len() <= capacity { set.len() } else { 0 };
-    }
-    if value.singleton().is_some() {
-        return 1;
-    }
-    bit_pattern_count(value, capacity)
-        .unwrap_or_else(|| interval_candidates(value, capacity).map_or(0, |plan| plan.count))
+    Some(IntervalCandidates { pieces })
 }
 
 /// 只返回完整候选覆盖。容量不足返回 None，绝不取前 N 项冒充全体。

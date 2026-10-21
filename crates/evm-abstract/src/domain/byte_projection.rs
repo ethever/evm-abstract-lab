@@ -3,32 +3,17 @@
 //! Each component transfer covers its input component, so their intersection
 //! covers every concrete observed byte without exchanging facts. This private
 //! observation boundary omits optional reduction; ordinary execution still uses
-//! Domain::apply, including finite/exact byte observations. Word packing instead
+//! ValueAlgebra::apply, including finite/exact byte observations. Word packing instead
 //! proves equivalence to the default scalar fold under an explicit policy bound.
 
 use super::{
-    Domain, FiniteConstantSet, NumericValue, Profile, congruence::Congruence, interval::Interval,
+    DomainSpec, FiniteConstantSet, NumericValue, congruence::Congruence, interval::Interval,
     known_bits::KnownBits,
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
-#[cfg(test)]
-use super::AbstractValue;
-
-#[cfg(test)]
-impl Domain {
-    /// Compatibility entrypoint; numeric primitives never re-enter this facade.
-    pub(crate) fn observe_byte(&self, op: u8, args: &[AbstractValue]) -> AbstractValue {
-        if projection_scalar(*self, op, args).is_none() {
-            return self.algebra().apply(op, args);
-        }
-        self.algebra().observe_byte(op, args)
-    }
-}
-
 pub(super) fn observe_with(
-    domain: Domain,
     op: u8,
     args: &[&NumericValue],
     fallback: impl FnOnce() -> NumericValue,
@@ -36,7 +21,7 @@ pub(super) fn observe_with(
     let [left, right] = args else {
         return fallback();
     };
-    if projection_side(domain, op, left, right).is_none() {
+    if projection_side(op, left, right).is_none() {
         return fallback();
     }
     let value = NumericValue {
@@ -52,15 +37,7 @@ pub(super) fn observe_with(
     value.singleton().map_or(value, NumericValue::constant)
 }
 
-fn projection_side(
-    domain: Domain,
-    op: u8,
-    left: &NumericValue,
-    right: &NumericValue,
-) -> Option<bool> {
-    if domain.spec().profile() != Profile::Product {
-        return None;
-    }
+fn projection_side(op: u8, left: &NumericValue, right: &NumericValue) -> Option<bool> {
     let literal = |value: &NumericValue| {
         value
             .finite_constants()
@@ -77,17 +54,6 @@ fn projection_side(
         _ => return None,
     };
     scalar.singleton().is_none().then_some(is_left)
-}
-
-// The legacy facade still gates this shortcut on its effective expression policy.
-#[cfg(test)]
-fn projection_scalar(domain: Domain, op: u8, args: &[AbstractValue]) -> Option<&AbstractValue> {
-    if domain.spec().relations().enabled {
-        return None;
-    }
-    let [left, right] = args else { return None };
-    projection_side(domain, op, left.numeric(), right.numeric())
-        .map(|is_left| if is_left { left } else { right })
 }
 
 /// Fixed-width numeric-support proof for a union containing every byte.
@@ -117,16 +83,12 @@ pub(super) fn full_byte_image(value: &NumericValue) -> bool {
 /// need fixed-word arithmetic and BTreeSet insertion/comparison/allocation; a
 /// binary-tree height bound overpays the actual B-tree. Singleton queries add
 /// their existing discovery/validation envelope before execution. Overflow refuses.
-pub(super) fn pack_work(domain: Domain, bytes: &[&NumericValue; 32]) -> usize {
+pub(super) fn pack_work(domain: DomainSpec, bytes: &[&NumericValue; 32]) -> usize {
     let mut fee = 1024usize + 32 * 256;
     let mut free = 0;
     for byte in bytes {
         fee = fee.saturating_add(byte.finite.work_size().saturating_mul(32));
-        let query = if domain.spec().profile() == Profile::ConstantsOnly {
-            byte.finite.cardinality() == Some(1)
-        } else {
-            singleton_query_needed(byte)
-        };
+        let query = singleton_query_needed(byte);
         if query {
             fee = fee.saturating_add(crate::domain::WordElement::singleton_work(*byte));
             // This branch either returns a validated literal or declines; it
@@ -211,15 +173,10 @@ fn byte_cube(value: &NumericValue) -> Option<KnownBits> {
 /// prefix, nonzero flag and complete finite cover iff it fits capacity. Four
 /// rounds and capacity+8 fact atoms cover those publications and confirmation;
 /// smaller cooperation policies conservatively retain the ordinary fold.
-pub(super) fn pack_numeric(domain: Domain, bytes: &[&NumericValue; 32]) -> Option<NumericValue> {
-    if domain.spec().profile() == Profile::ConstantsOnly {
-        let mut packed = [0_u8; 32];
-        for (slot, byte) in packed.iter_mut().zip(bytes) {
-            byte.finite.singleton()?;
-            *slot = u8::try_from(byte.singleton()?).ok()?;
-        }
-        return Some(NumericValue::constant(U256::from_be_bytes(packed)));
-    }
+pub(super) fn pack_numeric(
+    domain: DomainSpec,
+    bytes: &[&NumericValue; 32],
+) -> Option<NumericValue> {
     let (mut zero, mut one) = (U256::ZERO, U256::ZERO);
     for (i, byte) in bytes.iter().enumerate() {
         let bits = if singleton_query_needed(byte) {
@@ -236,12 +193,8 @@ pub(super) fn pack_numeric(domain: Domain, bytes: &[&NumericValue; 32]) -> Optio
         return Some(NumericValue::constant(exact));
     }
     let facts = domain.capacity().checked_add(8)?;
-    domain
-        .spec()
-        .reduction_rounds()
-        .checked_mul(3)?
-        .checked_add(1)?;
-    if domain.spec().reduction_rounds() < 4 || domain.spec().fact_limit() < facts {
+    domain.reduction_rounds().checked_mul(3)?.checked_add(1)?;
+    if domain.reduction_rounds() < 4 || domain.fact_limit() < facts {
         return None;
     }
     let sign = U256::ONE << 255usize;

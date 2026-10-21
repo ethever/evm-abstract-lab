@@ -133,9 +133,6 @@ impl ValueIdentity {
     pub(crate) fn forget_runtime(&mut self) {
         self.runtime = None;
     }
-    pub(crate) fn persistent_empty(&self) -> bool {
-        self.input.is_none()
-    }
 }
 
 #[cfg(test)]

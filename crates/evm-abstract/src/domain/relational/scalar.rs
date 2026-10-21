@@ -6,8 +6,7 @@
 
 use super::{Constraint, QueryReason, RelationLimits, RelationState};
 use crate::domain::{
-    AlgebraRef, Domain, EvmNumericAlgebra, EvmValue, NumericValue, ReductionStatus, ValueAlgebra,
-    WordElement,
+    AlgebraRef, EvmNumericAlgebra, EvmValue, ReductionStatus, WordElement,
     facts::{
         BinaryFact, BinaryPredicate, BitConstraints, Fact, FactError, FactLattice, FiniteSet,
         Symbol, Term, UnaryFact, UnaryPredicate, WordBounds,
@@ -40,9 +39,6 @@ pub enum EvmScalarQuery<N: WordElement> {
     /// No bottom claim; keep the old scalar or any already returned refinement.
     Unknown(QueryReason),
 }
-
-/// Default-domain compatibility scalar query.
-pub type ScalarQuery = EvmScalarQuery<NumericValue>;
 
 fn binary(left: Term, predicate: BinaryPredicate, right: Term) -> Fact {
     Fact::Binary(BinaryFact::new(left, predicate, right))
@@ -242,7 +238,7 @@ impl RelationState {
     /// Project direct EQ/ISZERO/ordered constant guards through the existing
     /// scalar fact language. A useful range can avoid a larger local traversal; nonlocal inverse
     /// constraints remain explicitly incomplete here.
-    pub fn refine_numeric_with<D: EvmNumericAlgebra>(
+    pub fn refine_numeric<D: EvmNumericAlgebra>(
         &self,
         expression: &ExprId,
         numeric: &D::Element,
@@ -257,7 +253,7 @@ impl RelationState {
 
     /// Reserve detached fact import, then the actual imported numeric closure.
     /// Custom policies retain their whole-operation quote unless they opt in.
-    pub fn refine_numeric_budgeted_with<D: EvmNumericAlgebra>(
+    pub fn refine_numeric_budgeted<D: EvmNumericAlgebra>(
         &self,
         expression: &ExprId,
         value: &EvmValue<D::Element>,
@@ -269,7 +265,7 @@ impl RelationState {
         if budget.exhausted() || current.is_cancelled() {
             return Err(crate::domain::WorkExhausted);
         }
-        let staged = self.refinement_import_work_with(expression, value, domain);
+        let staged = self.refinement_import_work(expression, value, domain);
         let work = staged.unwrap_or_else(|| domain.refinement_work(value, self.len()));
         if work == usize::MAX || current.is_cancelled() || !budget.charge(work) {
             return Err(crate::domain::WorkExhausted);
@@ -298,7 +294,7 @@ impl RelationState {
 
     /// Borrowed first-phase quote. Closure is quoted separately after detached
     /// import; None retains the selected custom backend's whole reservation.
-    pub fn refinement_import_work_with<D: EvmNumericAlgebra>(
+    pub fn refinement_import_work<D: EvmNumericAlgebra>(
         &self,
         expression: &ExprId,
         value: &EvmValue<D::Element>,
@@ -481,23 +477,5 @@ impl RelationState {
                 complete,
             },
         }
-    }
-}
-
-impl RelationState {
-    /// Default-domain compatibility entrypoint. Generic execution uses refine_numeric_with.
-    pub fn refine_numeric(
-        &self,
-        expression: &ExprId,
-        numeric: &NumericValue,
-        domain: Domain,
-        limits: &RelationLimits,
-    ) -> ScalarQuery {
-        self.refine_numeric_with(
-            expression,
-            numeric,
-            ValueAlgebra::new(domain).borrowed(),
-            limits,
-        )
     }
 }

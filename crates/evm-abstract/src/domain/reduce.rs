@@ -1,7 +1,7 @@
 //! 临时规约只传播当前 product 蕴含的事实。每轮事务式导出/导入，
 //! FactLattice 对同一语义槽取 meet；重复回馈不会生成新的日志条目。
 use super::{
-    AbstractValue, Domain, EvmValue, NumericReduction, NumericValue, WordElement, WordObservation,
+    DomainSpec, EvmValue, NumericValue, WordElement, WordObservation,
     congruence::Congruence,
     facts::{
         BitConstraints, Fact, FactChange, FactError, FactLattice, FiniteSet, Symbol, UnaryFact,
@@ -52,8 +52,6 @@ pub struct EvmReduction<N: WordElement> {
     /// Additional typed expression-retention failure, independent of numeric exchange status.
     pub symbolic_error: Option<super::symbolic::ExprError>,
 }
-/// Concrete default-domain compatibility reduction.
-pub type Reduction = EvmReduction<super::NumericValue>;
 
 fn insert(
     lattice: &mut FactLattice,
@@ -97,8 +95,8 @@ fn emit_bits(
     )
 }
 pub(super) fn export(
-    domain: Domain,
-    value: &AbstractValue,
+    domain: DomainSpec,
+    value: &EvmValue<NumericValue>,
     lattice: &mut FactLattice,
     changes: &mut usize,
 ) -> Result<(), FactError> {
@@ -159,10 +157,9 @@ pub(super) fn export(
         )?;
     }
     // 完整候选覆盖才能重建常量集合；从不截取候选的前 K 项。
-    if let Some(values) = query::candidates(
-        value.numeric(),
-        domain.capacity().min(domain.spec().fact_limit()),
-    ) {
+    if let Some(values) =
+        query::candidates(value.numeric(), domain.capacity().min(domain.fact_limit()))
+    {
         if values.is_empty() {
             return Err(FactError::Contradiction {
                 subject: Symbol::THIS,
@@ -204,10 +201,6 @@ pub(super) fn import<N: WordElement>(
         out.provenance = out.provenance.with_code_address_role();
     }
     Ok(out)
-}
-
-pub(super) fn numeric(domain: Domain, value: NumericValue) -> NumericReduction<NumericValue> {
-    super::cooperation::close(domain, value)
 }
 
 pub(super) fn error_status(error: &FactError) -> ReductionStatus {
