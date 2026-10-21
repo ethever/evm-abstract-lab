@@ -208,7 +208,7 @@ impl<A, P, F: ExtraStores, G> ExtraStores for Extension<A, P, F, G> {
 /// Once-per-run typed stores shared by independently authored global analyzers.
 /// This factory uses the original kernel and ledger; it does not own a solver.
 pub trait SharedStores {
-    /// Static channels selected with SharedRoute<P>.
+    /// Static channels selected with `SharedRoute<P>`.
     type Shared: analysis_kernel::ReclaimScope;
     /// Allocate the shared provider list once for the whole joint run.
     fn create_shared<J, M: Meter>(
