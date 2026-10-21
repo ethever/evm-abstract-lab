@@ -6,7 +6,7 @@
 //! Pending, absence and routing never acquire semantic value premises. Topology
 //! observations adopt the directory plus producer validity of resolved members.
 
-use super::{FactId, JobId, Kernel, Meter, reserve, tree_work};
+use super::{FactId, JobId, Kernel, Meter, Selection, reserve, tree_work};
 use crate::{KernelError, Scope};
 use std::collections::BTreeSet;
 
@@ -70,8 +70,17 @@ impl<J> Kernel<J> {
             if !self.producer_ready(*entry, *published) {
                 return Err(KernelError::PendingCoverage);
             }
-            if *published != target {
-                premises.insert(self.scopes[published.index].head);
+            match self.facts[entry.index]
+                .selected
+                .expect("covered stable entry")
+            {
+                Selection::Absent { .. } => {
+                    premises.insert(*entry);
+                }
+                Selection::Active(scope) if scope != target => {
+                    premises.insert(self.scopes[scope.index].head);
+                }
+                _ => {}
             }
         }
         let cost = premises.iter().fold(1usize, |cost, id| {

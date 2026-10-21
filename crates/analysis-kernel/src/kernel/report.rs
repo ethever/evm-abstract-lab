@@ -8,7 +8,7 @@ use crate::{KernelError, SolveReport};
 fn traversal_work(counts: [usize; 7]) -> Option<usize> {
     counts
         .into_iter()
-        .zip([4, 8, 6, 4, 5, 6, 8])
+        .zip([4, 8, 12, 4, 5, 6, 8])
         .try_fold(16usize, |work, (count, visits)| {
             work.checked_add(count.checked_mul(visits)?)
         })
