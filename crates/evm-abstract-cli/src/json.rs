@@ -68,7 +68,10 @@ pub(crate) fn cfg<N: WordElement>(
 ) -> Result<String, render::json::JsonError> {
     render::json::pretty(&Report {
         metadata: Metadata::captured(numeric_model, budget),
-        native: analysis,
+        native: CfgEnvelope {
+            analysis,
+            machine_analysis: analysis.execution(),
+        },
     })
 }
 
@@ -82,6 +85,14 @@ pub(crate) fn program<N: WordElement>(
         metadata: Metadata::captured(numeric_model, budget),
         native: ProgramEnvelope { analysis, ir },
     })
+}
+
+#[derive(Serialize)]
+struct CfgEnvelope<'a, N: WordElement> {
+    #[serde(flatten)]
+    analysis: &'a EvmAnalysis<N>,
+    // Native boundary endpoints can lie outside the root-local projection.
+    machine_analysis: &'a EvmWorldAnalysis<N>,
 }
 
 struct WorldEnvelope<'a, N: WordElement> {

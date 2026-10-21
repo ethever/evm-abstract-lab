@@ -56,6 +56,108 @@ fn default_single_ssa_folds_and_copies_without_losing_bytecode_identity() {
 }
 
 #[test]
+fn cfg_retains_native_precompile_boundaries_and_their_states() {
+    const PRECOMPILE: &str = "0x0000000000000000000000000000000000000004";
+    for model in ["product", "finite-set"] {
+        let mut args = vec![
+            "cfg",
+            "--hex",
+            "5f5f5f5f5f60046207a120f15000",
+            "--evm.to",
+            "0x1111111111111111111111111111111111111111",
+            "--evm.caller",
+            "0x0000000000000000000000000000000000001000",
+            "--evm.value",
+            "0",
+            "--evm.calldata",
+            "0x",
+            "--evm.gas",
+            "1000000",
+            "--numeric-model",
+            model,
+            "--no-root-terminal-coverage",
+            "--format",
+            "json",
+        ];
+        let cfg = report(&args, 0);
+        args[0] = "ssa";
+        let ssa = report(&args, 0);
+        let machine = cfg
+            .get("machine_analysis")
+            .expect("CFG must retain the native graph behind its boundary edges");
+        assert!(cfg.get("ssa").is_none());
+        assert!(cfg.get("partial_ssa").is_none());
+        assert_eq!(cfg["edge_endpoint_namespace"], "local");
+        assert_eq!(cfg["boundary_endpoint_namespace"], "native");
+        assert_eq!(
+            super::native::canonical(machine),
+            super::native::canonical(&ssa["machine_analysis"])
+        );
+        let mut projection = super::native::without_application_metadata(&cfg);
+        projection
+            .as_object_mut()
+            .unwrap()
+            .remove("machine_analysis");
+        assert_eq!(
+            super::native::canonical(&projection),
+            super::native::canonical(&ssa["analysis"])
+        );
+        super::native::without_application_metadata(&ssa);
+
+        let native_states = machine["states"].as_array().unwrap();
+        let native_state = |id: &Value| {
+            native_states
+                .iter()
+                .find(|state| state["id"] == *id)
+                .expect("exported native endpoint must resolve to a machine state")
+        };
+        let boundaries = cfg["boundary_edges"].as_array().unwrap();
+        assert!(!boundaries.is_empty());
+        for edge in boundaries {
+            native_state(&edge["from"]);
+            native_state(&edge["to"]);
+            assert!(machine["edges"].as_array().unwrap().contains(edge));
+        }
+        let precompile = native_states
+            .iter()
+            .find(|state| {
+                state["entry"]["call_stack"]["children"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|child| child["state"]["code"]["Precompile"] == PRECOMPILE)
+            })
+            .expect("native graph retains the actual identity-precompile child frame");
+        assert!(precompile["entry"]["store"].is_object());
+        assert!(precompile["exit"]["store"].is_object());
+        assert!(
+            boundaries
+                .iter()
+                .any(|edge| { edge["kind"] == "Call" && edge["to"] == precompile["id"] })
+        );
+        assert!(
+            boundaries
+                .iter()
+                .any(|edge| { edge["kind"] == "Return" && edge["from"] == precompile["id"] })
+        );
+
+        let mapping = cfg["execution_state_ids"].as_array().unwrap();
+        let local_states = cfg["states"].as_array().unwrap();
+        assert_eq!(mapping.len(), local_states.len());
+        for local in local_states {
+            let id = usize::try_from(local["id"].as_u64().unwrap()).unwrap();
+            let native = native_state(&mapping[id]);
+            let frames = native["key"]["frames"].as_array().unwrap();
+            assert_eq!(frames.len(), 1);
+            for field in ["basic_block_index", "stack_height"] {
+                assert_eq!(local["key"][field], frames[0][field]);
+            }
+            assert_eq!(local["executed_pcs"], native["executed_pcs"]);
+        }
+    }
+}
+
+#[test]
 fn partial_normalization_keeps_observations_scoped_and_pending_results_absent() {
     const CODE: &str = "602a60405100";
     let complete = report(
