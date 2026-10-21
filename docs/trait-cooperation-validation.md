@@ -1,6 +1,65 @@
 # Trait cooperation migration acceptance
 
-This guide maps the reusable semantic kernel, independently defined cooperating analyzers and production EVM scalar carriers to committed implementation and regression evidence. The [architecture guide](trait-cooperation.md) explains the public API and its contracts. The gate and replay results below identify their historical source revisions. They do not validate later audit corrections; the final PR must bind its new clean head to fresh gate, artifact and performance evidence.
+This record maps the shared semantic kernel, cooperating analyzers and production EVM carriers to source and regression evidence. The [architecture guide](trait-cooperation.md) explains their public contracts. The current audit delivery below identifies its checked and measured code freeze; older gate and 84-run results remain explicitly historical. The final published head and documentation gate are recorded in [PR138](https://github.com/ethever/evm-abstract-lab/pull/138).
+
+## Audit correction delivery (2026-10-21)
+
+Clean code freeze `0ac917bc5135658a289f8fee8f22bf8e7643fad7` (tree `6093b5140f15e0fe2e5addc28a009bf3d91b7933`) contains fetched main `7533f4ea2257142bd4f89b0f3fbf5fd4b0b90767`. The exact command below completed with actual exit **0** on `x86_64-linux` in **729.520 seconds**; the head/tree and clean status matched before and after, and a fresh post-gate fetch kept the same main baseline:
+
+```bash
+nix flake check --keep-going --print-build-logs --no-update-lock-file
+```
+
+Both backends passed **1529 library tests each**, the unfiltered integration and public interpreter/example checks passed, and all **38 real Chromium cases** passed with their built server/Wasm/assets. The first integrated attempt's exit 1 and its 46-target external collection (469 passed / 4 failed) remain retained; they are not relabeled as a pass. Final documentation commits receive another complete gate. The final published SHA, main, command/exit, 26 cache probes and artifact readback are recorded in [PR138](https://github.com/ethever/evm-abstract-lab/pull/138).
+
+| Audit requirement | Implementation and regression evidence | Acceptance boundary |
+| --- | --- | --- |
+| R1: first MSTORE and injected BYTE | [Paid precise BYTE controls](../crates/evm-abstract/src/analysis/transfer/budget/uniform_tests.rs), [numeric byte reader](../crates/evm-abstract/src/world/bytes/numeric.rs) | An optimization needs the injected policy's uniform-byte certificate and quotation. The 0x100..0x1ff counterexample checks all 256 concrete words, stored/cache/native byte facts, refusal and cancellation. |
+| R2: generation retention | [EVM lifetime controls](../crates/evm-abstract/src/analysis/engine/cooperation/tests/lifetime.rs), [kernel reclamation API](../crates/analysis-kernel/src/reclaim.rs) | Retired input payloads and client stores can be released during the run; stable handle identities and active dependency obligations remain valid. |
+| R3: live scheduling and interruption | [Kernel readiness controls](../crates/analysis-kernel/src/tests/invalidation/readiness.rs), [production worklist](../crates/evm-abstract/src/analysis/worklist.rs) | Scheduling/readiness follows current indexed work, including dirty suspended jobs and cancellation; old history is not a work queue. |
+| R4: custom reduction work | [Typed product cost contract](../crates/evm-abstract/src/domain/cooperation/cost.rs), [work controls](../crates/evm-abstract/src/domain/cooperation/tests/work.rs) | Client rules quote actual bounded evaluation work. A work stop, local round limit, cancellation and kernel error remain distinct. |
+| R5: cross-point EVM cooperation | [Global client tests](../crates/evm-abstract/tests/cooperation/global.rs), [typed summary queries](../crates/evm-abstract/src/analysis/cooperation/query.rs), [Seed lifecycle](../crates/evm-abstract/src/analysis/engine/cooperation/seed.rs) | Late CFG edges and semantic input growth wake or renew the correct scopes. Raw Summaries are incremental MAY observations; complete bounds require a currently valid SummaryClosures certificate with matching native generation. Mismatched ready pairs return a typed error. |
+| R6: injected whole-state policies | [Public semantic policies](../crates/evm-abstract/src/analysis/engine/policy/semantic.rs), [ordinary/recursive policy tests](../crates/evm-abstract/tests/state_policy.rs) | Partition keys, admission, acceleration and summaries use the supplied policy and carrier across ordinary and recursive execution. |
+| R7: query ownership and payment | [Query contract](../crates/evm-abstract/src/domain/query.rs), [CALL carrier tests](../crates/evm-abstract/tests/cooperation/calls.rs), [environment queries](../crates/evm-abstract/src/analysis/transfer/environment.rs) | Known literal/finite proofs are retained; opaque singleton discovery uses the original shared ledger and quoted work before invocation. Refusal and captured/current cancellation prevent publication. |
+| R8: independent review and performance | [Corrected-runtime diagnostic record](trait-cooperation-audit-performance.json) | One fresh alternating A/B pair per case and policy diagnoses regressions; corrected precision and changed accounting are reported separately from time and RSS. |
+| R9: frozen delivery | [Local gate process](local-ci.md), [cache-boundary manifest](../scripts/check_cache_boundaries.json), [browser manifest](../scripts/web_test_cases.json) | Code-freeze full gate is exit 0 with 38 real browser cases. The final published head, fresh documentation gate, 26 cache probes and complete producer/content readback are recorded separately in PR138. |
+| R10: audit tracking | [146](https://github.com/ethever/evm-abstract-lab/issues/146), [139](https://github.com/ethever/evm-abstract-lab/issues/139), [140](https://github.com/ethever/evm-abstract-lab/issues/140), [141](https://github.com/ethever/evm-abstract-lab/issues/141), [142](https://github.com/ethever/evm-abstract-lab/issues/142), [143](https://github.com/ethever/evm-abstract-lab/issues/143), [144](https://github.com/ethever/evm-abstract-lab/issues/144) | Exact remote titles/bodies/state read back, including late environment-query and required-summary/Seed findings. |
+
+The library default remains **20M** work. The detailed alias fixture uses one separately justified **2B** allowance under its original wide symbolic policy, retaining the original **1B** input-bound resource control and joint revm 9/9 assertions. That wide configuration differs from the actual CLI 2B policy. Test funding does not change global defaults or imply that all native-input gaps close.
+
+The guide's raw `Summaries` have no closed flag: MAY observation and the separately guarded `SummaryClosures` certificate have different contracts. Ready generation mismatches are typed errors; genuine Pending and complete-empty output remain distinct. Static error conversion retains the concrete capability payload and display while using default `Error::source` behavior. Required readers retain actual growth/wake checks; optional observers can coalesce intermediate publications. Runtime browser checks distinguish accumulated frontier diagnostics from the latest execution/SSA receipt, preserve real instruction phase/effects/owner/source checks, and keep unlocated Work records unlocated. A refused whole quote may stop before the numeric work maximum is consumed; this does not establish pricing optimality.
+
+### Fresh corrected-runtime diagnostic
+
+The [compact 28-run record](trait-cooperation-audit-performance.json) contains every actual source/ELF/input/policy/guard binding, native/harness/outer exit, time/RSS, raw bytes/hash, status/graph/frontier/outcome/summary/root-coverage readout. A is original PR runtime `20505f19efe8cae5d2472d347a2e65b1ec5a830d` (native 10 / domain 2 / wire 15 / cost 5); B is the checked code freeze above (native 11 / domain 2 / wire 16 / cost 6). B's actual release CLI was bound through a successful cached Nix builder receipt, not a fabricated fresh-build record.
+
+Each of seven fixed offline inputs ran one fresh alternating AB/BA pair under explicit 2B with coverage on and 1T with coverage off, reversing each pair in the second policy: **14 pairs / 28 native processes**. CPU 40, the original 30/60/120-second deadlines, 2/8 GiB RSS, 20 GiB host memory floor, 0.25-second polling and 64 MiB whole-report and per-value guards remained unchanged. All task builds/tests were stopped for the window; sampled process observations found no overlap. Existing node services remained active; no RPC or host-service change occurred. Values below are **individual observations**, not medians or a statistical speedup result. Cost 5 and cost 6 work stay in separate raw fields, without ratios.
+
+| Policy | Case | Native seconds A → B | Peak RSS MiB A → B |
+| --- | --- | ---: | ---: |
+| 2B + coverage | unknown-input | 0.0115 → 0.0094 | 23.0 → 23.0 |
+| 2B + coverage | dynamic-jump | 0.0102 → 0.0130 | 23.0 → 23.0 |
+| 2B + coverage | loop | 0.0247 → 0.0277 | 23.1 → 23.0 |
+| 2B + coverage | unknown-callback | 0.1323 → 0.1491 | 42.9 → 44.2 |
+| 2B + coverage | memory-copy | 0.0113 → 0.0118 | 23.0 → 23.0 |
+| 2B + coverage | weth-fixedstate | 0.3151 → 0.2990 | 73.6 → 75.1 |
+| 2B + coverage | usdc-fixedstate | 0.5547 → 0.5529 | 146.7 → 146.1 |
+| 1T, coverage off | unknown-input | 0.0072 → 0.0092 | 23.0 → 23.0 |
+| 1T, coverage off | dynamic-jump | 0.0090 → 0.0117 | 23.1 → 23.0 |
+| 1T, coverage off | loop | 0.0227 → 0.0280 | 23.0 → 23.0 |
+| 1T, coverage off | unknown-callback | 0.1270 → 0.1495 | 41.8 → 45.8 |
+| 1T, coverage off | memory-copy | 0.0110 → 0.0067 | 23.0 → 23.3 |
+| 1T, coverage off | weth-fixedstate | 3.7650 → 3.9423 | 350.5 → 352.9 |
+| 1T, coverage off | usdc-fixedstate | 95.9461 → 105.0924 | 1355.7 → 1257.6 |
+
+All 28 processes produced final reports: 22 `Converged` / native exit 0 and 6 `Incomplete` / native exit 2, with no external stop/NoReport. All 28 passed separate strict streaming/input/configuration checks. **Six still failed the original 64 MiB whole-report consumer**: both USDC at 2B, both WETH at 1T and both USDC at 1T. Their harness exit 1, original failure phase/error, raw hashes and output are retained; valid supplements do not turn those consumers into passes. The outer observation commands completed with exit 0 only after valid supplemental inspection.
+
+- At 2B, WETH remains Incomplete with 45 states / 44 edges / 52 outcomes and 9 Work frontiers in both roles. USDC is Incomplete with A's 107 states / 42 outcomes versus B's 106 / 40, both with 14 Work frontiers. Both cases attach input-bound AllInputStates Return/Revert/Failure coverage; attachments do not complete detailed CFG/SSA or independently prove gamma inclusion. Smaller detail is not presented as a speedup.
+- At 1T, WETH converges with 137 states / 160 edges / 244 outcomes and one closed procedure-summary group in both roles. B has 488 transfers / 92 diagnostics versus A's 484 / 91; its single 3.942-second observation is slower than A's 3.765.
+- At 1T, USDC stays Incomplete with 231 states / 300 edges / 84 outcomes and one open procedure-summary group in both roles. B records 13423 transfers / 36 diagnostics / 913 Work + 22 SummaryWork frontiers versus A's 13989 / 40 / 919 Work. B's 105.092 seconds exceeds A's 95.946, while its 1257.6 MiB RSS and 525.5 MiB JSON are below A's 1355.7 MiB and 624.5 MiB. Counts and different accounting do not prove equal effects or a precision ordering; no statistical regression or performance-benefit claim is made from one pair.
+- The loop keeps 7 states but B retains 5 Return / 11 Failure records versus A's 4 / 9, with additional Ite word histories; all inspected Return lengths remain 32. Unknown-callback keeps 27 states / 16 outcomes and 3 closed procedure-summary groups. These are visible result differences, not an asserted whole-model equivalence.
+
+The collector visits every record through EOF and validates exposed schema/config/input/root-attachment bindings. Native graph references, source/byte-state equivalence, computed identifiers/Keccak hashes and joint semantic inclusion are not exhaustively checked by this inspection. Concrete regression oracles establish their own cases separately. Native time includes serialization/reaping and excludes stream parsing; native RSS comes from child receipts, not cumulative Python parser memory. No extra matrix, repeat, profile, budget change or cross-version work ratio was run. The older 84-run archive below is unchanged and remains historical.
 
 ## Historical focused results
 
