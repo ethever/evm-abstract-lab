@@ -194,7 +194,11 @@ fn replay_commit_and_partial_import_refusal_release_the_evidence_writer() {
                 assert_eq!(receipt.successors(), before.successors());
             }
             assert_eq!(engine.runtime.queue_snapshot(), worklist);
-            assert_eq!(engine.ids, ids);
+            assert_eq!(
+                engine.ids.iter().collect::<Vec<_>>(),
+                ids.iter().collect::<Vec<_>>()
+            );
+            assert_eq!(engine.ids.work_size(), ids.work_size());
             assert_eq!(engine.result.summary_stats().imported_states, 0);
             assert_eq!(engine.counters.states, original_count + 1);
             let frontier = engine.result.frontiers().last().unwrap();

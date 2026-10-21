@@ -745,10 +745,19 @@ mod literal_memory {
                     .map(|(input, proof)| {
                         receipts.push(quote);
                         receipts.push(copy_work(input).saturating_add(2));
-                        if input.expression().is_none() && proof == SingletonProof::NotQueried {
-                            receipts.push(literal_memory_singleton_work(input));
+                        let singleton = match proof {
+                            SingletonProof::Answer(answer) => answer,
+                            SingletonProof::NotQueried if input.expression().is_none() => {
+                                receipts.push(literal_memory_singleton_work(input));
+                                input.singleton()
+                            }
+                            SingletonProof::NotQueried => None,
+                        };
+                        if singleton.is_some() {
+                            input.clone()
+                        } else {
+                            identify(input.clone(), config.analysis.relations.enabled)
                         }
-                        identify(input.clone(), config.analysis.relations.enabled)
                     });
                 receipts.push(
                     ValueAlgebra::new(&domain)

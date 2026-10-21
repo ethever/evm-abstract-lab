@@ -254,6 +254,10 @@ impl ContextPolicy for OtherContext<'_> {
 struct OtherPartition<'a>(&'a AtomicUsize);
 impl PartitionPolicy for OtherPartition<'_> {
     type Class = ();
+    fn classification_work(&self, _: Arrival) -> usize {
+        1
+    }
+
     fn classify(&self, _: Arrival) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }

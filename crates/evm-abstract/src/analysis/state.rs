@@ -25,7 +25,9 @@ mod carrier_tests;
 pub(super) mod context;
 pub(super) mod loop_bound;
 pub(super) mod payload;
+mod policy;
 pub(super) mod projection;
+pub(super) mod query;
 pub(super) mod stack_alias;
 pub(super) mod storage_observations;
 mod transform;
@@ -34,6 +36,7 @@ pub(super) use loop_bound::EvmLoopBound;
 #[cfg(test)]
 pub(super) use payload::form;
 pub(super) use payload::{form_normalized, instantiate, join, semantic_eq};
+pub use policy::ProcedureOutput;
 pub(super) use transform::StatePart;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,8 +58,10 @@ impl<N: WordElement> std::ops::DerefMut for EvmFrameSummary<N> {
     }
 }
 
+/// Opaque independent numerical template for a complete relative machine state.
+/// Use the metered policy operations to project, join and instantiate it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct EvmPayloadSummary<N: WordElement> {
+pub struct EvmPayloadSummary<N: WordElement> {
     pub(super) frames: Vec<EvmFrameSummary<N>>,
     pub(super) continuations: Vec<EvmContinuation<N>>,
     pub(super) store: EvmStoreSummary<N>,
@@ -68,9 +73,10 @@ pub(super) struct EvmPayloadSummary<N: WordElement> {
 }
 
 /// Establish a runtime value without equating separate executions of a PC.
+/// A fresh expression is valid even for a numerically exact value; discovering
+/// that precision is unnecessary for independent source identity.
 pub(super) fn identify<N: WordElement>(value: EvmValue<N>, enabled: bool) -> EvmValue<N> {
     if enabled
-        && value.singleton().is_none()
         && value.expression().is_none()
         && let Some(expression) = ExprId::fresh()
     {

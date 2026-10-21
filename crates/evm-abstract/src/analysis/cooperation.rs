@@ -96,7 +96,7 @@ pub type EvmContext<'r, 'k, 'm, N, T, Tail = Nil, Global = Nil> =
     PortsContext<'r, 'k, EvmTask<T>, EvmMeter<'m>, N, Tail, Global>;
 
 pub(crate) use global::Shared;
-pub(crate) use refinement::{apply_refinements, initialize, read_refinements};
+pub(crate) use refinement::{apply_refinements, initialize, initialize_readonly, read_refinements};
 
 #[cfg(test)]
 mod tests;

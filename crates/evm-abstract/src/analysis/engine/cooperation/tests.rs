@@ -248,6 +248,7 @@ fn external_ledger_refusal_after_feedback_keeps_the_honest_partial_report() {
 
 #[path = "tests/lifetime.rs"]
 mod lifetime;
+mod readonly;
 
 #[path = "tests/shared.rs"]
 mod shared;

@@ -6,7 +6,7 @@
 
 use super::{
     Composition, ContextPolicy, DiagnosticKind, EvmMachinePayload, EvmSolver, MachineEdgeKind,
-    MachineError, PartitionPolicy,
+    MachineError, PartitionPolicy, StatePolicy,
 };
 use crate::{analysis::worklist::kernel_failure, domain::EvmNumericAlgebra};
 use analysis_kernel::Version;
@@ -21,8 +21,14 @@ pub(super) struct Producer {
     pub(super) parent: Option<crate::analysis::cooperation::Subject>,
 }
 
-impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<D::Element, E>, E>
-    EvmSolver<'_, D, C, P, X, E>
+impl<
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element, E>,
+    E,
+> EvmSolver<'_, D, C, P, S, X, E>
 {
     /// A publication/withdrawal receipt must still refer to the native snapshot
     /// evaluated by this job. This metadata-only check does not clone a payload
@@ -247,8 +253,8 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
     }
 }
 
-impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<D::Element, E>, E>
-    EvmSolver<'_, D, C, P, X, E>
+impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, S: StatePolicy<D, P::Class>, X: Composition<D::Element, E>, E>
+    EvmSolver<'_, D, C, P, S, X, E>
 {
     fn body_point(index: usize) -> crate::analysis::cooperation::Point {
         crate::analysis::cooperation::Point {
@@ -269,7 +275,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             .saturating_add(64);
         self.reserve(work.saturating_mul(2))?;
         let info = crate::analysis::cooperation::ProcedureInfo {
-            entry: Self::body_point(self.table.procedures[id].entry),
+            entry: crate::analysis::cooperation::Point { namespace: 1, kind: crate::analysis::cooperation::PointKind::ProcedureEntry, index: id },
             frame: self.table.procedures[id].frame.clone(),
         };
         self.cooperation
@@ -335,6 +341,19 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             .map_err(|error| self.cooperation.stop(error, self.budget))
     }
 
+    pub(super) fn observe_call_edge(&mut self, from: usize, callee: usize) -> Result<(), MachineError> {
+        self.cooperation.edge(
+            crate::analysis::cooperation::Edge {
+                from: Self::body_point(from),
+                to: crate::analysis::cooperation::Point { namespace: 1, kind: crate::analysis::cooperation::PointKind::ProcedureEntry, index: callee },
+                kind: MachineEdgeKind::Call,
+            },
+            self.runtime,
+            self.active.as_mut().or(self.caller.as_deref_mut()).ok_or(MachineError::Shape)?,
+            self.budget,
+        ).map_err(|error| self.cooperation.stop(error, self.budget))
+    }
+
     fn summary_snapshot(
         &mut self,
         id: usize,
@@ -353,8 +372,8 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 (
                     *kind,
                     crate::analysis::cooperation::SummaryOutput {
-                        data: output.data.clone(),
-                        store: output.store.clone(),
+                        data: output.summary.data.clone(),
+                        store: output.summary.store.clone(),
                         generation: output.generation,
                     },
                 )
@@ -454,6 +473,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 |run| {
                     run.observe_slot(&procedure.output)
                         .map_err(crate::analysis::worklist::kernel_failure)?;
+                    run.reserve(procedure.nodes.len().saturating_add(1)).map_err(kernel_failure)?;
                     for node in procedure.nodes.values() {
                         run.observe_slot(&self.table.nodes[*node].input)
                             .map_err(crate::analysis::worklist::kernel_failure)?;
@@ -473,7 +493,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
     }
 }
 
-impl<N: crate::domain::WordElement, Tag: Clone + Ord> super::EvmTable<N, Tag> {
+impl<N: crate::domain::WordElement, Key: super::PolicyKey> super::EvmTable<N, Key> {
     /// Reenter the persistent relative interpreter with an already admitted job.
     /// There is no synthetic World job, duplicate registration or second queue.
     #[expect(
@@ -483,7 +503,8 @@ impl<N: crate::domain::WordElement, Tag: Clone + Ord> super::EvmTable<N, Tag> {
     pub(in crate::analysis) fn resume_task<
         D: EvmNumericAlgebra<Element = N>,
         C: ContextPolicy,
-        P: PartitionPolicy<Class = Tag>,
+        P: PartitionPolicy,
+        S: StatePolicy<D, P::Class, Key = Key>,
         X: Composition<N, E>,
         E,
     >(
@@ -498,7 +519,7 @@ impl<N: crate::domain::WordElement, Tag: Clone + Ord> super::EvmTable<N, Tag> {
         entry: &crate::world::EvmEntry<N>,
         config: &crate::analysis::ExecutionConfig,
         domain: crate::domain::AlgebraRef<'_, D>,
-        policies: &super::EnginePolicies<C, P>,
+        policies: &super::EnginePolicies<C, P, S>,
         budget: &mut crate::resource::WorkBudget,
         counters: &mut super::Counters,
         storage_reads: super::StorageReadPolicy,

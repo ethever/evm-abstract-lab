@@ -18,6 +18,9 @@ use analysis_kernel::{
 /// Failed preparation is not a proof that the EVM input is unreachable.
 #[derive(Debug, thiserror::Error)]
 pub enum InitializationError<S> {
+    /// The native retained input could not be materialized under the root meter.
+    #[error("cooperation input materialization failed: {0}")]
+    Materialization(S),
     /// The root ledger or scope protocol refused required seed construction.
     #[error("cooperation initialization failed: {0}")]
     Kernel(KernelError<S>),
@@ -73,19 +76,45 @@ pub(crate) fn initialize<N: WordElement, J, M: Meter, Tail, Global>(
     ports: &mut Ports<'_, N, Tail, Global>,
     input: Input<N>,
 ) -> Result<(), InitializationError<M::Stop>> {
+    initialize_input(run, ports, &input)?;
+    let subject = input.subject();
+    let mut cx = Context::new(run, ports);
+    Registered::new(InitializeFeedback)
+        .evaluate(&subject, &mut cx)
+        .map_err(InitializationError::Feedback)?;
+    Ok(())
+}
+
+/// Seed only the immutable observation; this scope is not executable and has
+/// no client task inventory, generation-local stores or Refinements cell.
+pub(crate) fn initialize_readonly<N: WordElement, J, M: Meter>(
+    run: &mut Run<'_, J, M>,
+    shared: &mut Shared<N>,
+    input: &Input<N>,
+) -> Result<(), InitializationError<M::Stop>> {
+    let mut ports = Ports {
+        shared,
+        local: &mut analysis_kernel::Nil,
+        global: &mut analysis_kernel::Nil,
+    };
+    initialize_input(run, &mut ports, input)
+}
+
+fn initialize_input<N: WordElement, J, M: Meter, Tail, Global>(
+    run: &mut Run<'_, J, M>,
+    ports: &mut Ports<'_, N, Tail, Global>,
+    input: &Input<N>,
+) -> Result<(), InitializationError<M::Stop>> {
     let subject = input.subject();
     if run.scope() != subject.scope {
         return Err(InitializationError::WrongScope);
     }
-    run.reserve(Inputs::<N>::value_work(&input))
+    run.reserve(Inputs::<N>::value_work(input))
         .map_err(InitializationError::Kernel)?;
     let mut cx = Context::new(run, ports);
-    Registered::new(InitializeInput { input: &input })
+    Registered::new(InitializeInput { input })
         .evaluate(&subject, &mut cx)
         .map_err(InitializationError::Input)?;
-    Registered::new(InitializeFeedback)
-        .evaluate(&subject, &mut cx)
-        .map_err(InitializationError::Feedback)?;
     Ok(())
 }
 

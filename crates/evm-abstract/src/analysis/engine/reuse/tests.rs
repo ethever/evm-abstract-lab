@@ -33,6 +33,22 @@ fn fixture_with_code(code: &str, value: Option<u64>) -> (World, Entry, Arc<CodeC
     (world, Entry::new(address), Arc::new(catalog))
 }
 
+// Test-only equality uses explicit proofs from the concrete built-in carrier.
+// Production content comparison conservatively retains opaque expressions.
+fn numeric_constant_form(
+    payload: &crate::analysis::MachinePayload,
+) -> crate::analysis::MachinePayload {
+    let mut content = payload.content_form().unwrap();
+    content
+        .update_values(&mut |value| {
+            if value.singleton().is_some() {
+                value.forget_expression();
+            }
+        })
+        .unwrap();
+    content
+}
+
 #[test]
 fn hit_keeps_new_store_and_all_saved_checkpoints() {
     let (old_world, entry, catalog) = fixture(None);
@@ -99,13 +115,19 @@ fn hit_keeps_new_store_and_all_saved_checkpoints() {
     );
     ordinary.payload.normalize();
     let cached = reuse.lookup(&new, &mut ledger).unwrap().unwrap();
-    assert_eq!(cached.payload, ordinary.payload);
+    assert_eq!(
+        numeric_constant_form(&cached.payload),
+        numeric_constant_form(&ordinary.payload)
+    );
     assert_eq!(cached.executed_pcs, ordinary.executed_pcs);
     assert_eq!(cached.successors.len(), ordinary.successors.len());
     for (cached, mut ordinary) in cached.successors.into_iter().zip(ordinary.successors) {
         ordinary.payload.normalize();
         assert_eq!(cached.kind, ordinary.kind);
-        assert_eq!(cached.payload, ordinary.payload);
+        assert_eq!(
+            numeric_constant_form(&cached.payload),
+            numeric_constant_form(&ordinary.payload)
+        );
     }
     let mut nested = new.clone();
     nested.call_stack.push_child(ChildFrame {
