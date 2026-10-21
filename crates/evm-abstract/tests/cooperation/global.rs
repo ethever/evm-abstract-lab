@@ -336,6 +336,8 @@ fn independent_global_components_read_foreign_inputs_and_change_the_real_cfg_in_
 mod cycle;
 #[path = "global/deferred.rs"]
 mod deferred;
+#[path = "global/entries.rs"]
+mod entries;
 #[path = "global/failures.rs"]
 mod failures;
 #[path = "global/procedures.rs"]
@@ -344,5 +346,7 @@ mod procedures;
 mod readiness;
 #[path = "global/source_premise.rs"]
 mod source_premise;
+#[path = "global/summary_validity.rs"]
+mod summary_validity;
 #[path = "global/topology.rs"]
 mod topology;

@@ -182,11 +182,15 @@ fn procedure_entry_anchor_wakes_its_reader_when_the_body_key_changes() {
         let revision = *source.revision;
         solver
             .runtime
-            .with_run(solver.caller.as_deref_mut().unwrap(), solver.budget, |run| {
-                run.read_slot(source.slot, source.revision, 1)
-                    .map_err(crate::analysis::worklist::kernel_failure)?;
-                Ok(())
-            })
+            .with_run(
+                solver.caller.as_deref_mut().unwrap(),
+                solver.budget,
+                |run| {
+                    run.read_slot(source.slot, source.revision, 1)
+                        .map_err(crate::analysis::worklist::kernel_failure)?;
+                    Ok(())
+                },
+            )
             .unwrap();
         assert_eq!(solver.procedure(next).unwrap(), procedure);
         let source = solver.table.entry_source(procedure).unwrap();
@@ -197,10 +201,14 @@ fn procedure_entry_anchor_wakes_its_reader_when_the_body_key_changes() {
         }
         let version = solver
             .runtime
-            .with_run(solver.caller.as_deref_mut().unwrap(), solver.budget, |run| {
-                run.slot_version(&slot)
-                    .map_err(crate::analysis::worklist::kernel_failure)
-            })
+            .with_run(
+                solver.caller.as_deref_mut().unwrap(),
+                solver.budget,
+                |run| {
+                    run.slot_version(&slot)
+                        .map_err(crate::analysis::worklist::kernel_failure)
+                },
+            )
             .unwrap();
         assert!(
             version.get() > 0,

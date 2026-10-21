@@ -295,6 +295,9 @@ impl<
         });
         self.table.procedures_by_key = index;
         let id = created?;
+        self.source_inventory_changed()?;
+        self.observe_procedure(id)?;
+        self.observe_summary(id, false)?;
         // Its entry source is now a permanent native identity. A later Body
         // refusal retains this unexecuted entry and the caller's frontier;
         // recycling the ID would invalidate tracked entry/navigation readers.
@@ -415,6 +418,7 @@ impl<
             });
             self.table.procedures[procedure].nodes = nodes;
             let id = admitted?;
+            self.source_inventory_changed()?;
             if let Some(from) = from {
                 self.table.nodes[from].successors.insert(id);
             }
@@ -486,7 +490,10 @@ impl<
         let node = &mut self.table.nodes[id];
         let procedure = &mut self.table.procedures[procedure];
         self.runtime.with_run(
-            self.active.as_mut().or(self.caller.as_deref_mut()).ok_or(MachineError::Shape)?,
+            self.active
+                .as_mut()
+                .or(self.caller.as_deref_mut())
+                .ok_or(MachineError::Shape)?,
             self.budget,
             |run| {
                 run.publish_prepared_with(&node.input, prepared.change, work, || {
@@ -520,8 +527,12 @@ impl<
             .entry_revision
             .checked_add(usize::from(prepared.change == Change::Changed))
             .ok_or(MachineError::IdentityExhausted)?;
+        let changed = prepared.change == Change::Changed;
         self.runtime.with_run(
-            self.active.as_mut().or(self.caller.as_deref_mut()).ok_or(MachineError::Shape)?,
+            self.active
+                .as_mut()
+                .or(self.caller.as_deref_mut())
+                .ok_or(MachineError::Shape)?,
             self.budget,
             |run| {
                 run.publish_prepared_with(
@@ -538,6 +549,11 @@ impl<
                 .map_err(kernel_failure)
             },
         )?;
+        if changed {
+            // Losing an old entry universe invalidates its completion proof
+            // even when this publication leaves the native output bound equal.
+            self.observe_summary(procedure, false)?;
+        }
         Ok(())
     }
 
@@ -638,7 +654,7 @@ impl<
                     false
                 }
             },
-            TaskKind::World { .. } | TaskKind::Seed(_) => {
+            TaskKind::World { .. } | TaskKind::Seed(_) | TaskKind::SummaryProof => {
                 unreachable!("uninitialized or foreign task")
             }
         };
@@ -1088,48 +1104,51 @@ impl<
         let PartitionedRelative { key, payload } =
             self.partition_relative(payload, PolicySite::Subscriber, None)?;
         let key = (from, callee, key);
-        let subscription = if let Some(subscription) = self.table.subscribers_by_key.get(&key, self.budget)? {
-            self.admit_subscriber(subscription, &payload)?;
-            subscription
-        } else {
-            let feedback = self.node_feedback(from) || self.table.procedures[callee].recursive;
-            let acceleration = self.acceleration(PolicySite::Subscriber, feedback, 0);
-            let prepared = admission::prepare(
-                &self.policies.state,
-                &payload,
-                &payload,
-                PolicySite::Subscriber,
-                acceleration,
-                0,
-                &mut PolicyContext::new(self.domain, self.entry, self.budget),
-            )?;
-            self.reserve(prepared.value.work_size().saturating_add(3))?;
-            let mut index = std::mem::take(&mut self.table.subscribers_by_key);
-            let admitted = index.insert_with(key, self.budget, |budget| {
-                let subscription = self.table.subscribers.len();
-                let scope = self.runtime.relative;
-                let input = self
-                    .runtime
-                    .kernel()
-                    .slot(scope, &mut MachineMeter(budget))
-                    .map_err(kernel_failure)?;
-                self.runtime
-                    .register_relative(TaskKind::Resume(subscription), budget)?;
-                self.table.subscribers.push(EvmSubscriber {
-                    from,
-                    callee,
-                    payload: prepared.value,
-                    input,
-                    updates: prepared.metadata,
-                    feedback,
-                    delivered: BTreeMap::new(),
+        let subscription =
+            if let Some(subscription) = self.table.subscribers_by_key.get(&key, self.budget)? {
+                self.admit_subscriber(subscription, &payload)?;
+                subscription
+            } else {
+                let feedback = self.node_feedback(from) || self.table.procedures[callee].recursive;
+                let acceleration = self.acceleration(PolicySite::Subscriber, feedback, 0);
+                let prepared = admission::prepare(
+                    &self.policies.state,
+                    &payload,
+                    &payload,
+                    PolicySite::Subscriber,
+                    acceleration,
+                    0,
+                    &mut PolicyContext::new(self.domain, self.entry, self.budget),
+                )?;
+                self.reserve(prepared.value.work_size().saturating_add(3))?;
+                let mut index = std::mem::take(&mut self.table.subscribers_by_key);
+                let admitted = index.insert_with(key, self.budget, |budget| {
+                    let subscription = self.table.subscribers.len();
+                    let scope = self.runtime.relative;
+                    let input = self
+                        .runtime
+                        .kernel()
+                        .slot(scope, &mut MachineMeter(budget))
+                        .map_err(kernel_failure)?;
+                    self.runtime
+                        .register_relative(TaskKind::Resume(subscription), budget)?;
+                    self.table.subscribers.push(EvmSubscriber {
+                        from,
+                        callee,
+                        payload: prepared.value,
+                        input,
+                        updates: prepared.metadata,
+                        feedback,
+                        delivered: BTreeMap::new(),
+                    });
+                    self.table.procedures[callee].subscribers.push(subscription);
+                    Ok(subscription)
                 });
-                self.table.procedures[callee].subscribers.push(subscription);
-                Ok(subscription)
-            });
-            self.table.subscribers_by_key = index;
-            admitted?
-        };
+                self.table.subscribers_by_key = index;
+                let id = admitted?;
+                self.source_inventory_changed()?;
+                id
+            };
         self.observe_continuation(subscription)?;
         self.observe_origin(
             crate::analysis::cooperation::Point {
@@ -1168,7 +1187,10 @@ impl<
         }
         let old = &mut self.table.subscribers[id];
         self.runtime.with_run(
-            self.active.as_mut().or(self.caller.as_deref_mut()).ok_or(MachineError::Shape)?,
+            self.active
+                .as_mut()
+                .or(self.caller.as_deref_mut())
+                .ok_or(MachineError::Shape)?,
             self.budget,
             |run| {
                 run.publish_prepared_with(
