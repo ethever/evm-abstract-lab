@@ -145,7 +145,7 @@ fn refusing_carrier_quote_prepays_retained_max_exp_before_facade_folding() {
 }
 
 #[test]
-fn native_capacity_refusal_retains_source_and_does_not_publish_facts() {
+fn native_capacity_refusal_retains_cause_and_does_not_publish_facts() {
     let owner = Address::repeat_byte(0x31);
     let mut world = EvmWorld::new(Fork::Osaka, "native refinement refusal");
     let mut account = EvmAccount::<RefusingWord>::unknown();
@@ -171,7 +171,7 @@ fn native_capacity_refusal_retains_source_and_does_not_publish_facts() {
         )
         .unwrap_err();
     assert!(matches!(rejected, SessionError::Refinement {
-        key: FactKey::Balance(address), source: FactError::Capacity { max_atoms: 1, required: 2 },
+        key: FactKey::Balance(address), cause: FactError::Capacity { max_atoms: 1, required: 2 },
     } if address == owner));
     assert_eq!(session.facts().revision(), revision);
     assert_eq!(session.facts().balance(owner), Observed::Unobserved);

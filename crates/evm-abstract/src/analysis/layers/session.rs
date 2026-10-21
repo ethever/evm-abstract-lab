@@ -147,7 +147,7 @@ impl<N: WordElement> SessionAnalysis<N> {
 pub enum SessionError<E> {
     /// Failure of the actual borrowed engine or analyzer assembly.
     #[error("{0}")]
-    Cooperation(#[from] CooperationError<E>),
+    Cooperation(CooperationError<E>),
     /// Required input projection could not be paid from the cumulative ledger.
     #[error("session preparation work exhausted")]
     Work,
@@ -164,13 +164,12 @@ pub enum SessionError<E> {
     #[error("{0}")]
     Facts(FactError),
     /// A native carrier refused refinement without proving a contradiction.
-    #[error("cannot refine initial fact {key:?}: {source}")]
+    #[error("cannot refine initial fact {key:?}: {cause}")]
     Refinement {
         /// Initial-state location whose native refinement was refused.
         key: FactKey,
         /// Actual domain failure; refusal is not an inconsistent input proof.
-        #[source]
-        source: crate::domain::facts::FactError,
+        cause: crate::domain::facts::FactError,
     },
     /// A fact references bytes that were not supplied to this offline catalog.
     #[error("compiled code {0:?} is missing from the catalog")]
@@ -187,6 +186,12 @@ pub enum SessionError<E> {
     /// An adapter seed may carry header observations, never account state.
     #[error("initial seed must be empty and match the fact snapshot and catalog fork")]
     Seed,
+}
+
+impl<E> From<CooperationError<E>> for SessionError<E> {
+    fn from(error: CooperationError<E>) -> Self {
+        Self::Cooperation(error)
+    }
 }
 
 impl<E> From<Cancelled> for SessionError<E> {
@@ -803,9 +808,9 @@ fn intersect<N: WordElement, E>(
     }
     let constrained = base.numeric().constrain(&observation);
     crate::resource::clone_payment::checkpoint(budget).map_err(session_clone_error)?;
-    let numeric = constrained.map_err(|source| match source {
+    let numeric = constrained.map_err(|cause| match cause {
         crate::domain::facts::FactError::Contradiction { .. } => conflict(key),
-        source => SessionError::Refinement { key, source },
+        cause => SessionError::Refinement { key, cause },
     })?;
     crate::resource::clone_payment::checkpoint(budget).map_err(session_clone_error)?;
     Ok(base.clone().with_numeric(numeric))
