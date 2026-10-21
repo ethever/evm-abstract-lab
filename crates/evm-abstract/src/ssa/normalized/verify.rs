@@ -15,10 +15,10 @@ pub(super) fn verify<N: WordElement>(
     analysis: &EvmWorldAnalysis<N>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<(), SsaError> {
-    crate::ssa::checkpoint()?;
+    crate::ssa::pay(budget, 0)?;
     if ir.complete {
         // Preserve the complete verifier's original bytecode and effect contracts.
-        crate::ssa::build_world(analysis)?;
+        crate::ssa::world::build(analysis, Some(&mut *budget))?;
     }
     let raw = crate::ssa::build_partial_world(analysis, budget)?;
     against_raw(ir, &raw, analysis, budget)
@@ -30,7 +30,8 @@ pub(super) fn against_raw<N: WordElement>(
     analysis: &EvmWorldAnalysis<N>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<(), SsaError> {
-    crate::ssa::checkpoint()?;
+    crate::ssa::pay(budget, 0)?;
+    crate::ssa::work::normalized_verify(ir, budget)?;
     if ir.status != raw.status() || ir.complete != (analysis.status() == Status::Converged) {
         return Err(invariant(Kind::Coverage));
     }
@@ -68,7 +69,7 @@ pub(super) fn against_raw<N: WordElement>(
         return Err(invariant(Kind::Coverage));
     }
     for (block, original) in ir.blocks.iter().zip(&expected.blocks) {
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         if block.state != original.state
             || block.coverage != original.coverage
             || block.open_incoming != original.open_incoming
@@ -124,6 +125,9 @@ pub(super) fn against_raw<N: WordElement>(
         return Err(invariant(Kind::Transitions));
     }
     for fact in ir.facts.iter().chain(&expected.facts) {
+        if let Some(provenance) = &fact.provenance {
+            crate::ssa::pay(budget, provenance.origins().work_size())?;
+        }
         if let Some(numeric) = &fact.numeric {
             crate::ssa::pay(budget, numeric.work_size())?;
         }
@@ -134,6 +138,7 @@ pub(super) fn against_raw<N: WordElement>(
     if ir.mappings != expected.mappings {
         return Err(invariant(Kind::Mappings));
     }
+    crate::ssa::pay(budget, 0)?;
     Ok(())
 }
 

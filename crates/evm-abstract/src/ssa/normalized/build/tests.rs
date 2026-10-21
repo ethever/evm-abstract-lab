@@ -68,7 +68,7 @@ fn unknown_native_copy_or_singleton_quote_refuses_before_either_operation() {
 }
 #[test]
 fn cancellation_refuses_native_postprocessing_before_query_or_copy() {
-    let control = crate::analysis::control::Control::default();
+    let control = crate::analysis::control::Control::new(Default::default());
     control.cancellation().cancel();
     control.scope(|| {
         let mut budget = WorkBudget::new(2_000_000_000);
