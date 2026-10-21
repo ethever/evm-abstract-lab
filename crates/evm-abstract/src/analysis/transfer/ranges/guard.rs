@@ -114,7 +114,7 @@ impl<D: EvmNumericAlgebra> Builder<'_, D> {
         // release, even if a later stage refuses. Successful copy/release
         // prepayments also keep the algebra's unchanged small-slice work sum finite.
         self.pay(output_release_work(self.domain, op, args))?;
-        let work = self.domain.operation_work_for(op, args);
+        let work = self.domain.operation_work(op, args);
         self.pay(work)?;
         let (reduction, singleton) = self.domain.apply_detailed_with_singleton(op, args);
         query::checkpoint(self.budget)?;
@@ -148,13 +148,7 @@ fn output_release_work<D: EvmNumericAlgebra>(
                     .cardinality()
                     .map(|len| tuples.saturating_mul(len))
             })
-            .unwrap_or_else(|| {
-                if domain.spec().profile() == crate::domain::Profile::ConstantsOnly {
-                    1
-                } else {
-                    domain.capacity()
-                }
-            })
+            .unwrap_or_else(|| domain.capacity())
             .min(domain.capacity())
     } else {
         2.min(domain.capacity())
@@ -219,7 +213,7 @@ fn build_with_queries<D: EvmNumericAlgebra>(
         budget: context.budget,
         retention: GuardRetention::new(offset, size),
     };
-    let enabled = context.config.analysis.relations.enabled;
+    let enabled = context.domain.spec().relations().enabled;
     let (offset, offset_identity_failed) =
         builder.identify_after_proof(offset, enabled, &mut queries.offset, &mut fresh)?;
     let (size, size_identity_failed) =
@@ -275,7 +269,7 @@ pub(super) fn sequence<D: EvmNumericAlgebra>(
         retention: GuardRetention::new(offset, size),
     };
     builder.pay(QUOTE_WORK)?;
-    let enabled = context.config.analysis.relations.enabled;
+    let enabled = context.domain.spec().relations().enabled;
     let (offset, _) = builder.identify_after_proof(
         offset,
         enabled,

@@ -1,8 +1,9 @@
-//! Borrowed rendering views keep the legacy SSA APIs and the final normalized
+//! Borrowed rendering views keep structural SSA and the final normalized
 //! artifact on the same frame, effect, transition and instruction layout path.
 
+use crate::domain::WordElement;
 use crate::{
-    analysis::{InstructionProgress, MachineFrontier, Status},
+    analysis::{EvmMachineFrontier, InstructionProgress, Status},
     ssa::{
         DeferredSsaEdge, EffectId, EffectPhi, FramePhi, Instruction, NormalizedBlock,
         NormalizedInstruction, NormalizedSsa, PartialBlockCoverage, PartialInstruction,
@@ -10,14 +11,20 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy)]
-pub(super) enum Artifact<'a> {
+pub(super) enum Artifact<'a, N: WordElement> {
     World(&'a WorldSsa),
-    Partial(&'a PartialWorldSsa),
-    Normalized(&'a NormalizedSsa),
+    Partial(&'a PartialWorldSsa<N>),
+    Normalized(&'a NormalizedSsa<N>),
 }
 
-impl<'a> Artifact<'a> {
+impl<N: WordElement> Copy for Artifact<'_, N> {}
+impl<N: WordElement> Clone for Artifact<'_, N> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, N: WordElement> Artifact<'a, N> {
     pub(super) fn status(self) -> Status {
         match self {
             Self::World(_) => Status::Converged,
@@ -66,7 +73,7 @@ impl<'a> Artifact<'a> {
         }
     }
 
-    pub(super) fn frontiers(self) -> &'a [MachineFrontier] {
+    pub(super) fn frontiers(self) -> &'a [EvmMachineFrontier<N>] {
         match self {
             Self::World(_) => &[],
             Self::Partial(ir) => ir.frontiers(),

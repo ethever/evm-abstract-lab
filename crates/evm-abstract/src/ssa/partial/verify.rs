@@ -3,24 +3,25 @@
 use super::{
     DeferredSsaEdge, PartialBlockCoverage, PartialWorldSsa, coverage, deferred_reason, is_call,
 };
+use crate::domain::WordElement;
 use crate::ssa::{SsaInvariantKind as Kind, error::invariant};
 use crate::{
-    analysis::{FrameKey, InstructionProgress, MachineEdgeKind, Status, WorldAnalysis},
+    analysis::{EvmWorldAnalysis, FrameKey, InstructionProgress, MachineEdgeKind, Status},
     ssa::{EffectInput, SsaError, Transition},
 };
 use revm_bytecode::opcode;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) fn verify(ir: &PartialWorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaError> {
+pub(super) fn verify<N: WordElement>(
+    ir: &PartialWorldSsa<N>,
+    analysis: &EvmWorldAnalysis<N>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<(), SsaError> {
     crate::ssa::checkpoint()?;
     if ir.status != analysis.status() || ir.blocks.len() != analysis.states().len() {
         return Err(invariant(Kind::PartialStatusOrBlockCount));
     }
-    if ir.frontiers.len() != analysis.frontiers().len()
-        || ir.frontiers.iter().zip(analysis.frontiers()).any(|(a, b)| {
-            a.from != b.from || a.pc != b.pc || a.reason != b.reason || a.target != b.target
-        })
-    {
+    if !super::same_frontiers(&ir.frontiers, analysis.frontiers(), budget)? {
         return Err(invariant(Kind::FrontierCoverage));
     }
     let mut known = BTreeMap::new();
@@ -318,9 +319,9 @@ fn same_context(a: &FrameKey, b: &FrameKey) -> bool {
         && a.is_static == b.is_static
 }
 
-fn verify_transition(
-    ir: &PartialWorldSsa,
-    analysis: &WorldAnalysis,
+fn verify_transition<N: WordElement>(
+    ir: &PartialWorldSsa<N>,
+    analysis: &EvmWorldAnalysis<N>,
     transition: &Transition,
     values: &mut BTreeSet<usize>,
     effects: &mut BTreeSet<usize>,

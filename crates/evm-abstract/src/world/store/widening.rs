@@ -52,7 +52,7 @@ impl<N: WordElement> Plane<N> {
         if let Some(value) = memo.get(root) {
             return Ok(value.clone());
         }
-        let domain = numeric::numeric_domain_with(domain);
+        let domain = numeric::numeric_domain(domain);
         let value = match root.kind() {
             SlotStateKind::Zero => numeric::scalar(
                 &crate::domain::symbolic::ExprId::constant(alloy_primitives::U256::ZERO),
@@ -88,7 +88,7 @@ impl<N: WordElement> Plane<N> {
         Ok(value)
     }
 
-    fn widening_form_with<D: EvmNumericAlgebra<Element = N>>(
+    fn widening_form<D: EvmNumericAlgebra<Element = N>>(
         &self,
         scalars: &[Node],
         domain: AlgebraRef<'_, D>,
@@ -102,7 +102,7 @@ impl<N: WordElement> Plane<N> {
         // Discard branch-narrowed cache projections and reread the same roots
         // using only the external facts retained above.
         for (address, key) in self.slots.keys().copied() {
-            let value = out.read_checked_with(address, &EvmValue::<N>::constant(key), domain)?;
+            let value = out.read_checked(address, &EvmValue::<N>::constant(key), domain)?;
             out.slots.insert((address, key), value);
         }
         let mut memo = BTreeMap::new();
@@ -121,7 +121,7 @@ impl<N: WordElement> Plane<N> {
 impl<N: WordElement> EvmStore<N> {
     /// Canonical whole-case metadata, with source facts and rollback roots intact.
     /// This deliberately forgets must-independence rather than adding RPC facts.
-    pub(crate) fn widening_form_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn widening_form<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
         limits: ExprLimits,
@@ -129,12 +129,8 @@ impl<N: WordElement> EvmStore<N> {
         self.check_existing(limits)?;
         let scalars = scalar_nodes(self);
         let mut out = self.clone();
-        out.persistent = self
-            .persistent
-            .widening_form_with(&scalars, domain, limits)?;
-        out.transient = self
-            .transient
-            .widening_form_with(&scalars, domain, limits)?;
+        out.persistent = self.persistent.widening_form(&scalars, domain, limits)?;
+        out.transient = self.transient.widening_form(&scalars, domain, limits)?;
         out.balances.update_values(refresh_constant);
         out.nonces.update_values(refresh_constant);
         refresh_constant(&mut out.balance_default);
@@ -143,21 +139,9 @@ impl<N: WordElement> EvmStore<N> {
             for topic in &mut log.topics {
                 refresh_constant(topic);
             }
-            log.data = log.data.widening_form_with(domain, limits)?;
+            log.data = log.data.widening_form(domain, limits)?;
         }
         out.check_existing(limits)?;
         Ok(out)
-    }
-}
-
-#[cfg(test)]
-impl EvmStore<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn widening_form(
-        &self,
-        domain: crate::domain::Domain,
-        limits: ExprLimits,
-    ) -> Result<Self, StoreError> {
-        self.widening_form_with(crate::domain::ValueAlgebra::new(domain).borrowed(), limits)
     }
 }

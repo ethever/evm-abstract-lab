@@ -2,9 +2,10 @@
 //! admits loop phis while forbidding values from unrelated calling contexts.
 
 use super::{WorldSsa, is_call};
+use crate::domain::WordElement;
 use crate::ssa::{SsaInvariantKind as Kind, error::invariant};
 use crate::{
-    analysis::{FrameKey, MachineEdgeKind, Status, WorldAnalysis},
+    analysis::{EvmWorldAnalysis, FrameKey, MachineEdgeKind, Status},
     ssa::SsaError,
 };
 use revm_bytecode::opcode;
@@ -22,7 +23,10 @@ fn same_context(a: &FrameKey, b: &FrameKey) -> bool {
         && a.mode == b.mode
 }
 
-pub(super) fn verify(ir: &WorldSsa, analysis: &WorldAnalysis) -> Result<(), SsaError> {
+pub(super) fn verify<N: WordElement>(
+    ir: &WorldSsa,
+    analysis: &EvmWorldAnalysis<N>,
+) -> Result<(), SsaError> {
     crate::ssa::checkpoint()?;
     if analysis.status() != Status::Converged {
         return Err(SsaError::IncompleteAnalysis);

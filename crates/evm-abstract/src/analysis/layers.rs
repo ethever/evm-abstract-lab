@@ -12,6 +12,7 @@
 mod catalog;
 mod dependencies;
 mod facts;
+pub(in crate::analysis) mod payment;
 mod session;
 
 pub use catalog::{

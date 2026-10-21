@@ -1,4 +1,4 @@
-//! Immutable initial-account projection for the layered compatibility adapter.
+//! Immutable initial-account projection for fact refinement.
 //!
 //! The caller checks intersection with prior abstract inputs. This container
 //! operation preserves snapshot/header/source identity and validates each account;

@@ -127,7 +127,7 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
         if !relevant {
             return;
         }
-        let answer = match self.relations.refine_numeric_budgeted_with(
+        let answer = match self.relations.refine_numeric_budgeted(
             expression,
             value,
             self.domain,

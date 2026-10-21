@@ -1,6 +1,9 @@
 //! CREATE/CREATE2 lifecycle. Initcode is a fresh frame of the shared machine;
 //! the destination's code remains empty until a successful RETURN installs it.
 
+#[cfg(test)]
+use crate::analysis::testing::World;
+
 use crate::domain::{EvmNumericAlgebra, SingletonProof, WordElement};
 
 use super::budget::{byte_work, maximum};
@@ -118,12 +121,7 @@ pub(super) fn expand_prepared<D: EvmNumericAlgebra>(
         .payload
         .active_mut()
         .memory
-        .expand_independent_with(
-            offset,
-            size,
-            context.config.max_memory_bytes,
-            context.domain,
-        )
+        .expand_independent(offset, size, context.domain)
         .map_err(super::errors::bytes)?;
     query::checkpoint(context.budget)
 }
@@ -205,7 +203,7 @@ fn materialize<D: EvmNumericAlgebra>(
     for index in 0..reads {
         query::checkpoint(context.budget)?;
         let value = data
-            .read_byte_checked_with(&EvmValue::constant(U256::from(index)), context.domain)
+            .read_byte_checked(&EvmValue::constant(U256::from(index)), context.domain)
             .map_err(super::errors::bytes)?;
         query::checkpoint(context.budget)?;
         let (_, mut proof) = candidates::prepare(&value, context.budget)?;
@@ -403,10 +401,9 @@ fn create_prepared<D: EvmNumericAlgebra>(
             )) {
                 return Err(FrontierReason::Work);
             }
-            let initcode = match result.payload.active().memory.slice_with(
+            let initcode = match result.payload.active().memory.slice(
                 &EvmValue::<D::Element>::constant(*offset),
                 &EvmValue::<D::Element>::constant(*size),
-                config.max_memory_bytes,
                 domain,
             ) {
                 Ok(bytes) => {

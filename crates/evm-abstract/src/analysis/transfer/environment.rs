@@ -18,7 +18,7 @@ pub(super) fn block_hash<D: EvmNumericAlgebra>(
     budget: &mut WorkBudget,
 ) -> Result<EvmValue<D::Element>, FrontierReason> {
     let (current, indices) = prepare(&environment.number, index, budget)?;
-    let value = environment.block_hash_with(
+    let value = environment.block_hash(
         current,
         indices.as_ref().map(|indices| indices.iter().copied()),
         domain,
@@ -35,7 +35,7 @@ pub(super) fn blob_hash<D: EvmNumericAlgebra>(
     budget: &mut WorkBudget,
 ) -> Result<EvmValue<D::Element>, FrontierReason> {
     let (length, indices) = prepare(&blobs.length, index, budget)?;
-    let value = blobs.get_with(
+    let value = blobs.get(
         length,
         indices.as_ref().map(|indices| indices.iter().copied()),
         domain,

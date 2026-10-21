@@ -12,7 +12,7 @@ use super::{
 use crate::{
     Fork,
     bytecode::Program,
-    domain::{DomainSpec, EvmValue, NumericValue, WordElement, symbolic::ExprId},
+    domain::{DomainSpec, EvmValue, WordElement, symbolic::ExprId},
     world::{EvmByteArray, EvmEntry, EvmSnapshot, EvmStore},
 };
 use serde::Serialize;
@@ -202,9 +202,13 @@ impl<N: WordElement> EvmRootTerminalCoverage<N> {
     }
 }
 
-/// Root input binding for the default numeric assembly.
-pub type RootTerminalInputBinding = EvmRootTerminalInputBinding<NumericValue>;
-/// Terminal tuple for the default numeric assembly.
-pub type RootTerminalOutcome = EvmRootTerminalOutcome<NumericValue>;
-/// Separate root terminal relation for the default numeric assembly.
-pub type RootTerminalCoverage = EvmRootTerminalCoverage<NumericValue>;
+// Local regression fixtures use explicit built-in carriers.
+#[cfg(test)]
+pub(in crate::analysis) type RootTerminalInputBinding =
+    EvmRootTerminalInputBinding<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type RootTerminalOutcome =
+    EvmRootTerminalOutcome<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type RootTerminalCoverage =
+    EvmRootTerminalCoverage<crate::domain::NumericValue>;

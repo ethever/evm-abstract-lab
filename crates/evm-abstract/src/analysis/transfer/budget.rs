@@ -40,7 +40,7 @@ pub(super) fn quotation_work<D: EvmNumericAlgebra>(
                 .payload
                 .active()
                 .memory
-                .uniform_word_write_work_with(&args[0], &args[1], domain)
+                .uniform_word_write_work(&args[0], &args[1], domain)
                 .is_some() =>
         {
             // The injected algebra owns this cached-only complete quote,
@@ -245,7 +245,7 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
     ) {
         // Slice retains the graph and translates only certified presentation
         // coordinates. Its cheap precharge does not census unrelated arrays.
-        return frame.memory.slice_work_with(&args[0], &args[1], domain);
+        return frame.memory.slice_work(&args[0], &args[1], domain);
     }
     if matches!(
         op,
@@ -254,14 +254,9 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
         // Quote from cached counts before any whole-array/root census. COPY
         // retains its complete graph but no longer refreshes every coordinate.
         return if op == opcode::CODECOPY {
-            frame.memory.copy_code_work_with(
-                program.byte_len(),
-                1,
-                &args[0],
-                &args[1],
-                &args[2],
-                domain,
-            )
+            frame
+                .memory
+                .copy_code_work(program.byte_len(), 1, &args[0], &args[1], &args[2], domain)
         } else {
             let source = match op {
                 opcode::CALLDATACOPY => &frame.calldata,
@@ -270,20 +265,20 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
             };
             frame
                 .memory
-                .copy_work_with(source, &args[0], &args[1], &args[2], domain)
+                .copy_work(source, &args[0], &args[1], &args[2], domain)
         };
     }
     if op == opcode::EXTCODECOPY {
         let (bytes, accounts) = external_code_shape(&result.payload.store, targets);
         return frame
             .memory
-            .copy_code_work_with(bytes, accounts, &args[1], &args[2], &args[3], domain)
+            .copy_code_work(bytes, accounts, &args[1], &args[2], &args[3], domain)
             .saturating_add(external_code_fee(bytes, accounts, domain, true));
     }
     if op == opcode::MSTORE
         && let Some(work) = frame
             .memory
-            .uniform_word_write_work_with(&args[0], &args[1], domain)
+            .uniform_word_write_work(&args[0], &args[1], domain)
     {
         return work;
     }
@@ -314,7 +309,7 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
             .saturating_add(args[0].work_size())
             .saturating_add(
                 domain
-                    .operation_work(&[])
+                    .operation_work(op, &[])
                     .saturating_mul(candidates::count(&args[0])),
             ),
         opcode::ADDRESS
@@ -332,7 +327,7 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
         | opcode::BLOBBASEFEE
         | opcode::GAS => environment
             .work_size()
-            .saturating_add(environment.projection_work_with(domain)),
+            .saturating_add(environment.projection_work(domain)),
         opcode::MLOAD => byte_work(&[&args[0]], 32, array_size, domain),
         opcode::MSTORE => {
             let passes = domain.memory_write_passes(&args[0], &args[1], 32);
@@ -347,14 +342,13 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
             }
             let operations = if domain.byte_quotes_uniform() {
                 let index = EvmValue::<D::Element>::constant(crate::U256::ZERO);
-                32usize.saturating_mul(
-                    domain.operation_work_for_refs(opcode::BYTE, &[&index, &args[1]]),
-                )
+                32usize
+                    .saturating_mul(domain.operation_work_refs(opcode::BYTE, &[&index, &args[1]]))
             } else {
                 (0..32).fold(0usize, |work, index| {
                     let index = EvmValue::<D::Element>::constant(crate::U256::from(index));
                     work.saturating_add(
-                        domain.operation_work_for_refs(opcode::BYTE, &[&index, &args[1]]),
+                        domain.operation_work_refs(opcode::BYTE, &[&index, &args[1]]),
                     )
                 })
             };
@@ -381,9 +375,11 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
             }
             let mask = EvmValue::<D::Element>::constant(crate::U256::from(255));
             byte_work(&[&args[0], &args[1]], 1, array_size, domain).saturating_add(
-                passes.saturating_mul(literal.saturating_add(args[1].clone_work()).saturating_add(
-                    domain.operation_work_for_refs(opcode::AND, &[&args[1], &mask]),
-                )),
+                passes.saturating_mul(
+                    literal.saturating_add(args[1].clone_work()).saturating_add(
+                        domain.operation_work_refs(opcode::AND, &[&args[1], &mask]),
+                    ),
+                ),
             )
         }
         opcode::EXTCODEHASH => {
@@ -401,12 +397,8 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
             .work_size()
             .saturating_mul(domain.capacity())
             .saturating_add(arithmetic_work(args)),
-        opcode::SELFDESTRUCT => result
-            .payload
-            .store
-            .work_size()
-            .saturating_add(domain.operation_work(&[]).saturating_mul(2)),
-        0x01..=0x0b | 0x10..=0x1e => domain.operation_work_for(op, args),
+        opcode::SELFDESTRUCT => result.payload.store.work_size().saturating_add(1),
+        0x01..=0x0b | 0x10..=0x1e => domain.operation_work(op, args),
         _ => 1,
     }
 }

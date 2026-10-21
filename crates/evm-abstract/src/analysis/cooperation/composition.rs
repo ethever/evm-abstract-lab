@@ -6,7 +6,7 @@ use std::{convert::Infallible, iter};
 /// Static EVM assembly bound; semantic work remains on the kernel traits.
 /// Tasks match the analyzer for every context lifetime. Generation-local stores
 /// and once-per-run shared stores retain their separate factories and routes.
-pub trait Composition<N: WordElement, E>:
+pub trait Composition<N: WordElement>:
     InputTasks
     + ExtraStores
     + SharedStores
@@ -21,11 +21,14 @@ pub trait Composition<N: WordElement, E>:
             <Self as SharedStores>::Shared,
         >,
         Task = <Self as InputTasks>::Task,
-        Error = E,
+        Error = <Self as Composition<N>>::Error,
     >
 {
+    /// Concrete error of the assembled analyzer.
+    type Error;
 }
-impl<N: WordElement, E, X> Composition<N, E> for X where
+impl<N: WordElement, E, X> Composition<N> for X
+where
     X: InputTasks
         + ExtraStores
         + SharedStores
@@ -41,8 +44,9 @@ impl<N: WordElement, E, X> Composition<N, E> for X where
             >,
             Task = <X as InputTasks>::Task,
             Error = E,
-        >
+        >,
 {
+    type Error = E;
 }
 
 /// Static registration of opaque component tasks for one immutable EVM input.
@@ -294,5 +298,39 @@ impl InputTasks for NoTasks {
 impl Default for Extension<NoExtension, NoTasks> {
     fn default() -> Self {
         Self::with_tasks(NoExtension, NoTasks)
+    }
+}
+
+impl InputTasks for NoExtension {
+    type Task = Infallible;
+    const ENABLED: bool = false;
+    fn registration_work(&self) -> usize {
+        0
+    }
+    fn tasks(&self, _: Subject) -> impl Iterator<Item = Infallible> {
+        iter::empty()
+    }
+}
+impl ExtraStores for NoExtension {
+    type Stores = Nil;
+    fn retirement_work(&self, _: &Nil) -> usize {
+        0
+    }
+    fn create<J, M: Meter>(
+        &self,
+        _: &mut Kernel<J>,
+        _: &mut M,
+    ) -> Result<Nil, KernelError<M::Stop>> {
+        Ok(Nil)
+    }
+}
+impl SharedStores for NoExtension {
+    type Shared = Nil;
+    fn create_shared<J, M: Meter>(
+        &self,
+        _: &mut Kernel<J>,
+        _: &mut M,
+    ) -> Result<Nil, KernelError<M::Stop>> {
+        Ok(Nil)
     }
 }

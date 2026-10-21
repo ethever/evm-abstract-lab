@@ -175,7 +175,7 @@ fn representable_default<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 }
 
 impl<N: WordElement> Plane<N> {
-    fn summary_projection_with<D: EvmNumericAlgebra<Element = N>>(
+    fn summary_projection<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> Result<SummaryPlane<N>, StoreError> {
@@ -280,13 +280,13 @@ impl<N: WordElement> SummaryPlane<N> {
                     .range((owner, U256::ZERO)..=(owner, U256::MAX))
                     .map(|(_, value)| value)
                     .collect::<Vec<_>>();
-                let zero_with = self.default_at(owner).singleton() == Some(U256::ZERO);
+                let zero = self.default_at(owner).singleton() == Some(U256::ZERO);
                 let observed = values.iter().fold(2usize, |nodes, value| {
                     nodes
                         .saturating_add(if value.singleton().is_some() { 1 } else { 4 })
                         .saturating_add(value.numeric().work_size())
                 });
-                let root = if zero_with {
+                let root = if zero {
                     values.iter().fold(1usize, |nodes, value| {
                         nodes
                             .saturating_add(2)
@@ -302,7 +302,7 @@ impl<N: WordElement> SummaryPlane<N> {
                 values
                     .iter()
                     .fold(work.saturating_add(root), |work, value| {
-                        if !zero_with || value.singleton().is_some() {
+                        if !zero || value.singleton().is_some() {
                             return work;
                         }
                         let numeric = value.numeric().work_size();
@@ -313,7 +313,7 @@ impl<N: WordElement> SummaryPlane<N> {
         )
     }
 
-    fn join_with<D: EvmNumericAlgebra<Element = N>>(
+    fn join<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
@@ -372,7 +372,7 @@ impl<N: WordElement> SummaryPlane<N> {
         out
     }
 
-    fn instantiate_with<D: EvmNumericAlgebra<Element = N>>(
+    fn instantiate<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> Result<Plane<N>, StoreError> {
@@ -394,8 +394,8 @@ impl<N: WordElement> SummaryPlane<N> {
                 let mut root = SlotStateId::zero();
                 for ((_, key), value) in self.slots.range((owner, U256::ZERO)..=(owner, U256::MAX))
                 {
-                    let expression = if let Some(constant_with) = value.singleton() {
-                        ExprId::constant(constant_with)
+                    let expression = if let Some(constant) = value.singleton() {
+                        ExprId::constant(constant)
                     } else {
                         let observed = SlotStateId::observed(
                             source.clone(),
@@ -430,8 +430,8 @@ impl<N: WordElement> SummaryPlane<N> {
                     .map(|((_, key), value)| {
                         Ok(StateBinding {
                             index: *key,
-                            value: if let Some(constant_with) = value.singleton() {
-                                ExprId::constant(constant_with)
+                            value: if let Some(constant) = value.singleton() {
+                                ExprId::constant(constant)
                             } else {
                                 ExprId::slot_read(plain.clone(), ExprId::constant(*key), limits)?
                             },
@@ -459,7 +459,7 @@ impl<N: WordElement> SummaryPlane<N> {
 
 impl<N: WordElement> EvmStore<N> {
     /// Sound whole-payload projection for unknown procedure fixed points.
-    pub fn summary_projection_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn summary_projection<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> Result<EvmStoreSummary<N>, StoreError> {
@@ -480,15 +480,15 @@ impl<N: WordElement> EvmStore<N> {
                             .iter()
                             .map(|topic| scalar(topic, domain))
                             .collect(),
-                        data: log.data.summary_projection_with(domain)?,
+                        data: log.data.summary_projection(domain)?,
                     },
                 ))
             })
             .collect::<Result<_, StoreError>>()?;
         let balance_default = scalar(&self.balance_default, domain);
         Ok(EvmStoreSummary {
-            persistent: self.persistent.summary_projection_with(domain)?,
-            transient: self.transient.summary_projection_with(domain)?,
+            persistent: self.persistent.summary_projection(domain)?,
+            transient: self.transient.summary_projection(domain)?,
             balances: sparse::map((&self.balances, &balance_default), |value| {
                 scalar(value, domain)
             }),
@@ -565,7 +565,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
     }
 
     /// Union all state components; fresh identities cannot create new entries.
-    pub fn join_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn join<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
@@ -597,7 +597,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
                     for (topic, value) in previous.topics.iter_mut().zip(&incoming.topics) {
                         *topic = join_scalar(topic, value, domain, widen);
                     }
-                    previous.data = previous.data.join_with(&incoming.data, domain, widen);
+                    previous.data = previous.data.join(&incoming.data, domain, widen);
                 } else {
                     logs.insert(key.clone(), incoming.clone());
                 }
@@ -637,8 +637,8 @@ impl<N: WordElement> EvmStoreSummary<N> {
             lifecycle::join,
         );
         Self {
-            persistent: self.persistent.join_with(&other.persistent, domain, widen),
-            transient: self.transient.join_with(&other.transient, domain, widen),
+            persistent: self.persistent.join(&other.persistent, domain, widen),
+            transient: self.transient.join(&other.transient, domain, widen),
             balances,
             balance_default,
             codes,
@@ -656,12 +656,12 @@ impl<N: WordElement> EvmStoreSummary<N> {
     }
 
     /// Whole-payload subsumption, including defaults, lifecycle and events.
-    pub fn covers_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn covers<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
     ) -> bool {
-        self.join_with(other, domain, false) == *self
+        self.join(other, domain, false) == *self
     }
 
     /// Apply the only persistent bookkeeping effect of a static invocation.
@@ -679,7 +679,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
 
     /// Independent symbolic state for one procedure execution or result replay.
     /// Instantiating twice never equates either result with historical reads.
-    pub fn instantiate_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn instantiate<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> Result<EvmStore<N>, StoreError> {
@@ -690,8 +690,8 @@ impl<N: WordElement> EvmStoreSummary<N> {
                 .collect::<Result<_, StoreError>>()
         };
         let store = EvmStore {
-            persistent: self.persistent.instantiate_with(domain)?,
-            transient: self.transient.instantiate_with(domain)?,
+            persistent: self.persistent.instantiate(domain)?,
+            transient: self.transient.instantiate(domain)?,
             balances: instantiate_map(&self.balances)?,
             // An unspecified account default denotes independent balances for
             // different addresses, never one shared symbolic balance word.
@@ -717,7 +717,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
                                 .iter()
                                 .map(|topic| instantiate_scalar(topic, domain))
                                 .collect::<Result<_, _>>()?,
-                            data: log.data.instantiate_with(domain)?,
+                            data: log.data.instantiate(domain)?,
                         },
                     ))
                 })
@@ -726,40 +726,5 @@ impl<N: WordElement> EvmStoreSummary<N> {
         };
         store.check_existing(domain.spec().relations().expressions())?;
         Ok(store)
-    }
-}
-
-/// Default numeric-carrier compatibility alias.
-pub type StoreSummary = EvmStoreSummary<crate::domain::NumericValue>;
-
-impl EvmStore<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn summary_projection(
-        &self,
-        domain: crate::domain::Domain,
-    ) -> Result<EvmStoreSummary<crate::domain::NumericValue>, StoreError> {
-        self.summary_projection_with(crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-}
-
-impl EvmStoreSummary<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn join(&self, other: &Self, domain: crate::domain::Domain, widen: bool) -> Self {
-        self.join_with(
-            other,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            widen,
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn covers(&self, other: &Self, domain: crate::domain::Domain) -> bool {
-        self.covers_with(other, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn instantiate(
-        &self,
-        domain: crate::domain::Domain,
-    ) -> Result<EvmStore<crate::domain::NumericValue>, StoreError> {
-        self.instantiate_with(crate::domain::ValueAlgebra::new(domain).borrowed())
     }
 }

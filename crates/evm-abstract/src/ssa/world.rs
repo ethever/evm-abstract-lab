@@ -4,7 +4,8 @@
 //! deliberately coarse effect SSA, not an alias-partitioned MemorySSA.
 
 use super::{Instruction, SsaError, ValueId};
-use crate::analysis::{MachineEdgeKind, Status, WorldAnalysis};
+use crate::analysis::{EvmWorldAnalysis, MachineEdgeKind, Status};
+use crate::domain::WordElement;
 use crate::ssa::{SsaInvariantKind as Kind, error::invariant};
 use revm_bytecode::opcode;
 use serde::Serialize;
@@ -69,7 +70,7 @@ pub struct WorldBlock {
 /// it does not forward the callee's mutated store as a successful commit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Transition {
-    /// Index of the corresponding WorldAnalysis edge.
+    /// Index of the corresponding native analysis edge.
     pub edge: usize,
     /// Frame transition, including commit versus rollback.
     pub kind: MachineEdgeKind,
@@ -99,8 +100,8 @@ impl Transition {
 /// Verified frame-aware stack and machine-effect SSA.
 #[derive(Clone, Debug, Serialize)]
 pub struct WorldSsa {
-    blocks: Vec<WorldBlock>,
-    transitions: Vec<Transition>,
+    pub(super) blocks: Vec<WorldBlock>,
+    pub(super) transitions: Vec<Transition>,
     value_count: usize,
     effect_count: usize,
 }
@@ -124,7 +125,7 @@ impl WorldSsa {
     }
     /// Check bytecode uses, frame identity, edge parameters, checkpoint effects
     /// and exactly-once definitions against the original analysis.
-    pub fn verify(&self, analysis: &WorldAnalysis) -> Result<(), SsaError> {
+    pub fn verify<N: WordElement>(&self, analysis: &EvmWorldAnalysis<N>) -> Result<(), SsaError> {
         verify::verify(self, analysis)
     }
 }
@@ -143,7 +144,7 @@ fn is_call(op: u8) -> bool {
 
 /// Build SSA for the native multi-account graph. Missing facts, unsupported
 /// semantics and resource frontiers all prevent a claim of complete SSA.
-pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
+pub fn build_world<N: WordElement>(analysis: &EvmWorldAnalysis<N>) -> Result<WorldSsa, SsaError> {
     crate::ssa::checkpoint()?;
     if analysis.status() != Status::Converged {
         return Err(SsaError::IncompleteAnalysis);

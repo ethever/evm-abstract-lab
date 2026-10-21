@@ -1,11 +1,12 @@
 //! Stable aliases always resolve to full identities in the report legends.
 
+use crate::domain::WordElement;
 use evm_abstract_notation::Symbol;
 
 use super::super::observations;
 use crate::{
-    analysis::{FrameCode, MachineKey, WorldAnalysis},
-    world::{AddressInput, Store},
+    analysis::{EvmWorldAnalysis, FrameCode, MachineKey},
+    world::{AddressInput, EvmStore},
 };
 use alloy_primitives::{Address, B256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,7 +18,7 @@ pub(super) struct References {
 }
 
 impl References {
-    pub(super) fn new(analysis: &WorldAnalysis) -> Self {
+    pub(super) fn new<N: WordElement>(analysis: &EvmWorldAnalysis<N>) -> Self {
         let mut addresses = BTreeSet::from([analysis.entry().address]);
         let mut concrete_inputs = BTreeSet::new();
         super::super::environment::collect_addresses(
@@ -128,7 +129,11 @@ fn collect_key(
     }
 }
 
-fn collect_store(store: &Store, addresses: &mut BTreeSet<Address>, hashes: &mut BTreeSet<B256>) {
+fn collect_store<N: WordElement>(
+    store: &EvmStore<N>,
+    addresses: &mut BTreeSet<Address>,
+    hashes: &mut BTreeSet<B256>,
+) {
     for account in observations(store) {
         addresses.insert(account.address);
         if let Some(hash) = account.code_hash {

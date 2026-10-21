@@ -1,7 +1,8 @@
 //! 教学视图共享身份索引。短名字总有完整图例，不能把代码地址与状态账户混为一谈。
+use crate::domain::WordElement;
 use evm_abstract_notation::Symbol;
 
-use crate::analysis::{FrameCode, FrameKey, WorldAnalysis};
+use crate::analysis::{EvmWorldAnalysis, FrameCode, FrameKey};
 use crate::world::AddressInput;
 use alloy_primitives::{Address, B256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,7 +16,7 @@ pub(super) struct References {
 }
 
 impl References {
-    pub(super) fn new(analysis: &WorldAnalysis) -> Self {
+    pub(super) fn new<N: WordElement>(analysis: &EvmWorldAnalysis<N>) -> Self {
         let mut addresses = BTreeSet::from([analysis.entry().address]);
         let mut concrete_inputs = BTreeSet::new();
         super::environment::collect_addresses(&analysis.entry().environment, &mut concrete_inputs);

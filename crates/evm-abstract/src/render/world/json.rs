@@ -3,9 +3,8 @@ use super::observation;
 use crate::{
     analysis::{
         EvmMachineOutcome, EvmRootTerminalCoverage, EvmRootTerminalOutcome, EvmWorldAnalysis,
-        WorldAnalysis,
     },
-    domain::{NumericValue, WordElement},
+    domain::WordElement,
     world::{EvmStore, EvmWorld, FingerprintError},
 };
 use alloy_primitives::B256;
@@ -19,17 +18,9 @@ pub struct EvmJsonEvidence<'a, N: WordElement> {
     analysis: &'a EvmWorldAnalysis<N>,
     fingerprint: B256,
 }
-/// Capture the same native JSON fields and evidence without allocating a JSON tree.
-/// The exact snapshot fingerprint is computed before any report output is emitted.
-pub fn evidence(analysis: &WorldAnalysis) -> Result<JsonEvidence<'_>, FingerprintError> {
-    evidence_with(analysis)
-}
-
-/// Native evidence for the default numeric assembly.
-pub type JsonEvidence<'a> = EvmJsonEvidence<'a, NumericValue>;
-
-/// Capture custom-element evidence without converting its execution state.
-pub fn evidence_with<N: WordElement>(
+/// Capture native evidence without converting its selected numeric carrier.
+/// The snapshot fingerprint is computed before any output is emitted.
+pub fn evidence<N: WordElement>(
     analysis: &EvmWorldAnalysis<N>,
 ) -> Result<EvmJsonEvidence<'_, N>, FingerprintError> {
     Ok(EvmJsonEvidence {

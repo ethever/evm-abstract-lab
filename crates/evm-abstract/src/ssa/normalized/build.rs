@@ -1,21 +1,26 @@
 //! Allocate final IDs, project scoped facts, and normalize retained definitions.
 
+#[cfg(test)]
+mod tests;
+
 use super::{
     FactScope, FactSource, FactValidity, NormalizationInvariantKind as Kind, NormalizedBlock,
     NormalizedInstruction, NormalizedOperation, NormalizedSsa, ValueFact, ValueMapping,
     ValueOperand, ValueOrigin, ValueTransformation, invariant, simplify,
 };
+use crate::domain::WordElement;
 use crate::{
-    analysis::WorldAnalysis,
-    domain::{Domain, NumericValue, provenance::Provenance},
+    analysis::EvmWorldAnalysis,
+    domain::provenance::Provenance,
     ssa::{PartialBlockCoverage, PartialWorldSsa, SsaError, ValueId},
 };
 
-pub(super) fn normalize(
-    raw: &PartialWorldSsa,
-    analysis: &WorldAnalysis,
+pub(super) fn normalize<N: WordElement>(
+    raw: &PartialWorldSsa<N>,
+    analysis: &EvmWorldAnalysis<N>,
     complete: bool,
-) -> Result<NormalizedSsa, SsaError> {
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<NormalizedSsa<N>, SsaError> {
     crate::ssa::checkpoint()?;
     let (names, mut mappings) = allocate(raw)?;
     let mut blocks = Vec::with_capacity(raw.blocks().len());
@@ -48,14 +53,14 @@ pub(super) fn normalize(
     for transition in &mut transitions {
         remap(transition.values_mut(), &names);
     }
-    let mut facts = observed_facts(&blocks, &transitions, analysis, complete)?;
+    let mut facts = observed_facts(&blocks, &transitions, analysis, complete, budget)?;
     let mut known = vec![None; mappings.len()];
     for fact in &facts {
         if fact.scope == FactScope::Definition && fact.validity == FactValidity::Current {
             known[fact.value] = fact.constant;
         }
     }
-    let domain = Domain::from_spec(analysis.domain_spec());
+
     for block in &mut blocks {
         crate::ssa::checkpoint()?;
         for phi in &block.phis {
@@ -64,7 +69,7 @@ pub(super) fn normalize(
         }
         for instruction in &mut block.instructions {
             crate::ssa::checkpoint()?;
-            let result = simplify::instruction(instruction, &known, &mappings, domain);
+            let result = simplify::instruction(instruction, &known, &mappings);
             instruction.operation = result.operation;
             for value in &instruction.origin.results {
                 let mapping = &mut mappings[*value];
@@ -78,7 +83,7 @@ pub(super) fn normalize(
                         scope: FactScope::Definition,
                         validity: FactValidity::Current,
                         source,
-                        numeric: Some(NumericValue::constant(constant)),
+                        numeric: Some(N::constant(constant)),
                         // A numeric proof must not upgrade an observed source's scope.
                         provenance: (source == FactSource::Literal).then(Provenance::constant),
                         constant: Some(constant),
@@ -98,7 +103,7 @@ pub(super) fn normalize(
         blocks,
         transitions,
         deferred_edges: raw.deferred_edges().to_vec(),
-        frontiers: raw.frontiers().to_vec(),
+        frontiers: crate::ssa::partial::clone_frontiers(raw.frontiers(), budget)?,
         value_count: mappings.len(),
         effect_count: raw.effect_count(),
         facts,
@@ -106,7 +111,9 @@ pub(super) fn normalize(
     })
 }
 
-fn allocate(raw: &PartialWorldSsa) -> Result<(Vec<ValueId>, Vec<ValueMapping>), SsaError> {
+fn allocate<N: WordElement>(
+    raw: &PartialWorldSsa<N>,
+) -> Result<(Vec<ValueId>, Vec<ValueMapping>), SsaError> {
     let mut names = vec![usize::MAX; raw.value_count()];
     let mut mappings = Vec::with_capacity(raw.value_count());
     for block in raw.blocks() {
@@ -163,12 +170,13 @@ fn remap<'a>(values: impl IntoIterator<Item = &'a mut ValueId>, names: &[ValueId
     }
 }
 
-fn observed_facts(
+fn observed_facts<N: WordElement>(
     blocks: &[NormalizedBlock],
     transitions: &[crate::ssa::Transition],
-    analysis: &WorldAnalysis,
+    analysis: &EvmWorldAnalysis<N>,
     complete: bool,
-) -> Result<Vec<ValueFact>, SsaError> {
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<Vec<ValueFact<N>>, SsaError> {
     let mut facts = Vec::new();
     for block in blocks {
         crate::ssa::checkpoint()?;
@@ -183,9 +191,10 @@ fn observed_facts(
                 scope,
                 validity,
                 FactSource::Entry,
-                Some(value.numeric().clone()),
-                Some(value.provenance().clone()),
-            ));
+                Some(value.numeric()),
+                Some(value.provenance()),
+                budget,
+            )?);
         }
         let captured = state
             .execution_evidence()
@@ -207,9 +216,10 @@ fn observed_facts(
                         FactValidity::Uncollected
                     },
                     FactSource::Instruction,
-                    snapshot.map(|value| value.numeric().clone()),
-                    snapshot.map(|value| value.provenance().clone()),
-                ));
+                    snapshot.map(|value| value.numeric()),
+                    snapshot.map(|value| value.provenance()),
+                    budget,
+                )?);
             }
         }
     }
@@ -224,24 +234,38 @@ fn observed_facts(
                 scope(target, complete, blocks[target].coverage),
                 validity(blocks[target].coverage),
                 FactSource::Transition,
-                value.map(|value| value.numeric().clone()),
-                value.map(|value| value.provenance().clone()),
-            ));
+                value.map(|value| value.numeric()),
+                value.map(|value| value.provenance()),
+                budget,
+            )?);
         }
     }
     Ok(facts)
 }
 
-fn observation(
+fn observation<N: WordElement>(
     value: ValueId,
     scope: FactScope,
     validity: FactValidity,
     source: FactSource,
-    numeric: Option<NumericValue>,
-    provenance: Option<Provenance>,
-) -> ValueFact {
-    let constant = numeric.as_ref().and_then(NumericValue::singleton);
-    ValueFact {
+    numeric: Option<&N>,
+    provenance: Option<&Provenance>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<ValueFact<N>, SsaError> {
+    let numeric_work = numeric.map_or(0, |numeric| {
+        numeric
+            .clone_work()
+            .saturating_add(numeric.singleton_work())
+    });
+    let provenance_work = provenance.map_or(0, |provenance| {
+        provenance.origins().work_size().saturating_mul(4)
+    });
+    crate::ssa::pay(budget, numeric_work.saturating_add(provenance_work))?;
+    let constant = numeric.and_then(WordElement::singleton);
+    let numeric = numeric.cloned();
+    let provenance = provenance.cloned();
+    crate::ssa::pay(budget, 0)?;
+    Ok(ValueFact {
         value,
         scope,
         validity,
@@ -249,7 +273,7 @@ fn observation(
         numeric,
         provenance,
         constant,
-    }
+    })
 }
 
 fn validity(coverage: PartialBlockCoverage) -> FactValidity {

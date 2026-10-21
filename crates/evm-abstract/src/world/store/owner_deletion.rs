@@ -2,16 +2,16 @@
 
 use super::{Code, EvmStore, Existence, Plane, StoreError};
 use crate::domain::AlgebraRef;
-#[cfg(test)]
-use crate::domain::{AbstractValue, Domain};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
     EvmValue,
     symbolic::{ExprId, ExprLimits, SlotStateId, StateError},
 };
 #[cfg(test)]
-use crate::world::Store;
+use crate::world::test_support::TestStore;
 use alloy_primitives::{Address, U256};
+#[cfg(test)]
+use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 /// A cached old value and the separate cost of constructing its union with zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,9 +62,9 @@ pub(super) struct OwnerCleanupFootprint {
 }
 
 impl OwnerCleanupFootprint {
-    /// Exact projection of the old maybe_delete_fields receipt. Delete/mixed
-    /// plans retain its old values and the complete legacy charging formula.
-    pub(super) fn legacy_fields(self) -> usize {
+    /// Retained owner fields visited by validation, reset joins and cleanup.
+    /// Scalar and plane sizes come from cached metadata, without graph walks.
+    pub(super) fn retained_fields(self) -> usize {
         self.planes.into_iter().fold(
             128usize
                 .saturating_add(self.balance.work)
@@ -81,7 +81,7 @@ impl OwnerCleanupFootprint {
 
     pub(super) fn local_work(self) -> usize {
         self.planes.into_iter().fold(
-            self.legacy_fields()
+            self.retained_fields()
                 .saturating_add(self.balance.zero_union)
                 .saturating_add(self.nonce.zero_union),
             |work, plane| {
@@ -153,11 +153,11 @@ impl<N: WordElement> Plane<N> {
         address: Address,
         domain: AlgebraRef<'_, D>,
     ) {
-        let zero_with = EvmValue::<N>::constant(U256::ZERO);
-        let default = domain.join(self.default_at(address), &zero_with);
+        let zero = EvmValue::<N>::constant(U256::ZERO);
+        let default = domain.join(self.default_at(address), &zero);
         self.slots
             .update_range((address, U256::ZERO)..=(address, U256::MAX), |_, value| {
-                *value = domain.join(value, &zero_with);
+                *value = domain.join(value, &zero);
             });
         self.defaults.insert(address, default);
         // Reset's independence is true, so old AND reset is exactly old.
@@ -226,7 +226,7 @@ impl<N: WordElement> EvmStore<N> {
         selector: ExprId,
     ) -> Result<(), StoreError> {
         let limits = domain.spec().relations().expressions();
-        let zero_with = EvmValue::<N>::constant(U256::ZERO);
+        let zero = EvmValue::<N>::constant(U256::ZERO);
         let balance = self.read_balance(address);
         let nonce = self.nonce(address);
         crate::world::bytes::check_value(&balance, limits)?;
@@ -237,8 +237,8 @@ impl<N: WordElement> EvmStore<N> {
         let transient = self
             .transient
             .deleted_root(address, selector.clone(), limits)?;
-        let balance = balance.join_guarded_with(&zero_with, domain, selector.clone(), limits)?;
-        let nonce = nonce.join_guarded_with(&zero_with, domain, selector, limits)?;
+        let balance = balance.join_guarded(&zero, domain, selector.clone(), limits)?;
+        let nonce = nonce.join_guarded(&zero, domain, selector, limits)?;
 
         self.join_deleted_fields(address, domain);
         self.persistent.roots.insert(address, persistent);
@@ -259,9 +259,9 @@ impl<N: WordElement> EvmStore<N> {
         if let Err(error) = result {
             // Preserve the unmetered API's numerical upper fallback and visible
             // failure. Checked finalization rejects it before installing state.
-            let zero_with = EvmValue::<N>::constant(U256::ZERO);
-            let balance = domain.join(&self.read_balance(address), &zero_with);
-            let nonce = domain.join(&self.nonce(address), &zero_with);
+            let zero = EvmValue::<N>::constant(U256::ZERO);
+            let balance = domain.join(&self.read_balance(address), &zero);
+            let nonce = domain.join(&self.nonce(address), &zero);
             self.join_deleted_fields(address, domain);
             self.balances.insert(address, balance);
             self.nonces.insert(address, nonce);

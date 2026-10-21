@@ -8,7 +8,7 @@ use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 
 impl<N: WordElement> SummaryPlane<N> {
-    fn project_to_layout_with<D: EvmNumericAlgebra<Element = N>>(
+    fn project_to_layout<D: EvmNumericAlgebra<Element = N>>(
         &self,
         layout: &Self,
         domain: AlgebraRef<'_, D>,
@@ -89,7 +89,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
 
     /// Project numerical coordinates onto one frozen loop layout. Code and
     /// creation/destruction variants remain in the scheduler's structural key.
-    pub(crate) fn project_to_layout_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn project_to_layout<D: EvmNumericAlgebra<Element = N>>(
         &self,
         layout: &Self,
         domain: AlgebraRef<'_, D>,
@@ -97,10 +97,8 @@ impl<N: WordElement> EvmStoreSummary<N> {
         let mut out = self.clone();
         out.persistent = self
             .persistent
-            .project_to_layout_with(&layout.persistent, domain);
-        out.transient = self
-            .transient
-            .project_to_layout_with(&layout.transient, domain);
+            .project_to_layout(&layout.persistent, domain);
+        out.transient = self.transient.project_to_layout(&layout.transient, domain);
         (out.balances, out.balance_default) = sparse::project(
             (&self.balances, &self.balance_default),
             &layout.balances,
@@ -147,17 +145,9 @@ impl<N: WordElement> EvmStoreSummary<N> {
                     .expect("retained source key");
                 log.data = log
                     .data
-                    .project_to_layout_with(&layout.possible_logs[&key].data, domain);
+                    .project_to_layout(&layout.possible_logs[&key].data, domain);
             }
         }
         out
-    }
-}
-
-#[cfg(test)]
-impl EvmStoreSummary<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn project_to_layout(&self, layout: &Self, domain: crate::domain::Domain) -> Self {
-        self.project_to_layout_with(layout, crate::domain::ValueAlgebra::new(domain).borrowed())
     }
 }

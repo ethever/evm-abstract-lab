@@ -1,8 +1,6 @@
 //! COPY keeps a complete checked root and a separate, bounded presentation.
 
-use super::{
-    COPY_FACT_LIMIT, EvmByteArray, RangeError, limits, ranges::numeric_singleton, zero_with,
-};
+use super::{COPY_FACT_LIMIT, EvmByteArray, RangeError, limits, ranges::numeric_singleton, zero};
 use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
@@ -29,7 +27,7 @@ fn literal<N: WordElement>(array: &EvmByteArray<N>, index: usize) -> Option<EvmV
         } => {
             // Use the captured root length, never the expandable wrapper.
             if U256::from(index) >= length.as_constant()? {
-                return Some(zero_with());
+                return Some(zero());
             }
             let at = bindings
                 .binary_search_by_key(&U256::from(index), |binding| binding.index)
@@ -338,7 +336,7 @@ fn alternatives<N: WordElement>(value: &EvmValue<N>) -> usize {
 impl<N: WordElement> EvmByteArray<N> {
     /// Complete COPY fee, including the caller's captured source clone and the
     /// bounded presentation. No logical range or metadata discovery is scanned.
-    pub(crate) fn copy_work_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn copy_work<D: EvmNumericAlgebra<Element = N>>(
         &self,
         source: &Self,
         destination: &EvmValue<N>,
@@ -359,7 +357,7 @@ impl<N: WordElement> EvmByteArray<N> {
 
     /// Code sources are constructed after admission; lengths bound their exact
     /// maps, and the number of accounts bounds a possible selected source root.
-    pub(crate) fn copy_code_work_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn copy_code_work<D: EvmNumericAlgebra<Element = N>>(
         &self,
         bytes: usize,
         accounts: usize,
@@ -408,7 +406,7 @@ impl<N: WordElement> EvmByteArray<N> {
     /// CALL's requested allocation precedes COPY unless either size is proved
     /// zero. Quote only normalization for a zero request; an empty source still
     /// needs the complete target expansion/retention envelope.
-    pub(crate) fn copy_return_data_work_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn copy_return_data_work<D: EvmNumericAlgebra<Element = N>>(
         &self,
         source: &Self,
         destination: &EvmValue<N>,
@@ -533,7 +531,7 @@ impl<N: WordElement> EvmByteArray<N> {
         let work = if compare {
             self.return_copy_work(source, destination, requested, comparison_nodes, domain)
         } else {
-            self.copy_return_data_work_with(source, destination, requested, domain)
+            self.copy_return_data_work(source, destination, requested, domain)
         }
         .saturating_add(native);
         checkpoint(budget)?;
@@ -672,58 +670,3 @@ mod canonical_tests;
 mod return_payment_tests;
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-impl EvmByteArray<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn copy_work(
-        &self,
-        source: &Self,
-        destination: &EvmValue<crate::domain::NumericValue>,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        size: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> usize {
-        self.copy_work_with(
-            source,
-            destination,
-            offset,
-            size,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn copy_code_work(
-        &self,
-        bytes: usize,
-        accounts: usize,
-        destination: &EvmValue<crate::domain::NumericValue>,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        size: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> usize {
-        self.copy_code_work_with(
-            bytes,
-            accounts,
-            destination,
-            offset,
-            size,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn copy_return_data_work(
-        &self,
-        source: &Self,
-        destination: &EvmValue<crate::domain::NumericValue>,
-        requested: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> usize {
-        self.copy_return_data_work_with(
-            source,
-            destination,
-            requested,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-}

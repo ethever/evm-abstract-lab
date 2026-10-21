@@ -2,14 +2,14 @@
 
 use super::check_value;
 use crate::domain::AlgebraRef;
-#[cfg(test)]
-use crate::domain::{AbstractValue, Domain};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
     EvmValue,
     symbolic::{ExprError, ExprId, ExprLimits},
 };
 use std::collections::BTreeMap;
+#[cfg(test)]
+use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 /// These are unconditional guarantees, so a missing entry on either path means
 /// no guarantee. The immutable roots keep branch effects even when their local
@@ -97,12 +97,12 @@ fn normalize<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     domain: AlgebraRef<'_, D>,
 ) {
     value.forget_identity();
-    if let Some(constant_with) = expression.as_constant() {
+    if let Some(constant) = expression.as_constant() {
         // One constant entry describes possible sources, not an occurrence of
         // a scoped input. Keep its exact numeric proof and remove must-aliases.
         *value = domain
-            .join(value, &EvmValue::<N>::constant(constant_with))
-            .with_numeric(N::constant(constant_with));
+            .join(value, &EvmValue::<N>::constant(constant))
+            .with_numeric(N::constant(constant));
     }
 }
 

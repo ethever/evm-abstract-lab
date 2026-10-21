@@ -1,23 +1,16 @@
-//! 多账户调用图与控制流由同一台抽象机逐步发现。
+//! Native generic EVM execution over validated immutable root requests.
 //!
-//! [`analyze_world`] 是完整入口：工作表保存执行与暂停的调用帧，并且让所有
-//! 子调用共享事务状态和预算。代码地址与状态地址各自参与帧身份。
-//! [`analyze`] 是单账户学习视图，复用同一执行核心后投影为局部 CFG。
-//! [`analyze_rpc`] 显式采集固定区块的初始事实，并按缺失 callee 扩充快照后
-//! 从入口重建分析；各轮共用执行预算，纯离线入口不会隐式访问网络。
-//! 栈高区分是必要的类型边界；有限内部跳转历史是可选的精度选择。
-//! 每次新输入都逐槽 join，只有输入变大才重新入队。边也只增加，不随某次
-//! 更精确的执行删除。读 [`analysis/engine.rs`](https://github.com/ethever/evm-abstract-lab/blob/main/crates/evm-abstract/src/analysis/engine.rs)
-//! 中的循环时，始终检查这两个不变量。
-//!
-//! 配置在 [`Config::validate`] 阶段完成准入检查，转换成不能手工伪造的
-//! [`ValidatedConfig`] 后构造引擎使用的域；世界执行的附加预算在同一准入阶段
-//! 检查。域容量的非零条件在类型中携带。
+//! [`AnalysisEngine`] borrows one numeric algebra, frozen execution policies and
+//! an optional static analyzer assembly. [`AnalysisInput`] retains the original
+//! snapshot/source identity for every carrier. [`EvmAnalysis`] projects an owned
+//! native result into a local CFG without starting another execution.
 
+mod composition;
 mod config;
 pub mod control;
 pub mod cooperation;
 mod engine;
+mod input;
 pub mod layers;
 mod machine;
 pub mod progress;
@@ -30,18 +23,20 @@ mod transfer;
 mod worklist;
 
 #[cfg(test)]
-mod compatibility;
+mod composition_tests;
+#[cfg(test)]
+mod testing;
 
-use crate::{bytecode::Program, domain::AbstractValue};
+use crate::{
+    bytecode::Program,
+    domain::{EvmValue, WordElement},
+};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use std::fmt;
 
 pub use crate::bytecode::InvalidOpcodeReason;
+pub use composition::AnalysisEngine;
 pub use config::{Config, ConfigError, ValidatedConfig};
-pub use cooperation::{
-    analyze_world_cooperating, analyze_world_cooperating_with_control,
-    analyze_world_cooperating_with_observer,
-};
 pub use engine::{
     Acceleration, AccelerationInput, AccelerationPolicy, Arrival, BoundedJoin, CoarseSummaries,
     ContextInsensitive, ContextPolicy, CorrelatedJoin, EagerAcceleration, EnginePolicies,
@@ -52,13 +47,18 @@ pub use engine::{
     RelativePartitionResult, RelativeState, SemanticPolicies, StatePolicy, StructuralPartition,
     WholeStateMetadata, WholeStatePolicy,
 };
+pub use input::AnalysisInput;
 pub use machine::{
-    ByteRangeBoundary, CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence,
-    FrameCode, FrameKey, FrameState, FrontierReason, InstructionProgress, InstructionValue,
-    JoinBoundary, MachineEdge, MachineEdgeKind, MachineError, MachineFrontier, MachineKey,
-    MachineOutcome, MachinePayload, MachineState, OutcomeKind, ProcedureSummary,
-    ProcedureSummaryKind, ProcedureSummaryOutput, ProcedureSummaryRecord, RangeKind, RangeRequest,
-    RangeWitness, RootFrame, WorldAnalysis,
+    ByteRangeBoundary, ExecutionConfig, FrameCode, FrameKey, FrontierReason, InstructionProgress,
+    JoinBoundary, MachineEdge, MachineEdgeKind, MachineError, MachineKey, OutcomeKind,
+    ProcedureSummaryKind, RangeKind,
+};
+#[cfg(test)]
+use machine::{
+    CallStack, ChildFrame, Continuation, ExecutionEvidence, FrameState, InstructionValue,
+    MachineFrontier, MachineOutcome, MachinePayload, MachineState, ProcedureSummary,
+    ProcedureSummaryOutput, ProcedureSummaryRecord, RangeRequest, RangeWitness, RootFrame,
+    WorldAnalysis,
 };
 pub use machine::{
     EvmCallStack, EvmChildFrame, EvmContinuation, EvmExecutionEvidence, EvmFrame, EvmFrameState,
@@ -68,24 +68,24 @@ pub use machine::{
 };
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
-    analyze_rpc_with_control, analyze_rpc_with_observer,
 };
-pub use summary::{
-    EvmSummaryInput, EvmSummaryOutput, EvmSummaryRecord, SummaryInput, SummaryOutput,
-    SummaryRecord, SummaryStats,
-};
+pub use single::ProjectionError;
+pub use summary::{EvmSummaryInput, EvmSummaryOutput, EvmSummaryRecord, SummaryStats};
+#[cfg(test)]
+use summary::{SummaryInput, SummaryOutput, SummaryRecord};
 pub use terminal::{
     EvmRootTerminalCoverage, EvmRootTerminalInputBinding, EvmRootTerminalOutcome,
-    RootTerminalCoverage, RootTerminalInputBinding, RootTerminalOutcome, RootTerminalRetention,
-    RootTerminalScope, RootTerminalTrigger,
+    RootTerminalRetention, RootTerminalScope, RootTerminalTrigger,
 };
+#[cfg(test)]
+use terminal::{RootTerminalCoverage, RootTerminalInputBinding, RootTerminalOutcome};
 pub use transfer::create::CreationBoundary;
 
 /// Serialized EVM analysis format. Version 11 distinguishes reduction work
 /// exhaustion, cancellation and kernel failure from the local round limit.
 /// Version 10 introduced optional root terminal coverage with owned original
 /// input binding and finalized tuples. The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 11;
+pub const SCHEMA_VERSION: u16 = 12;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -100,7 +100,7 @@ pub struct StateKey {
 
 /// 一个可达的抽象基本块实例。
 #[derive(Clone, Debug, Serialize)]
-pub struct State {
+pub struct EvmState<N: WordElement> {
     /// Joint guarantees associated with this state's entry values.
     pub entry_relations: crate::domain::relational::RelationState,
     /// Joint guarantees after the recorded transfer, when it has executed.
@@ -110,9 +110,9 @@ pub struct State {
     /// 状态的结构身份。
     pub key: StateKey,
     /// 底到顶的抽象栈，最后一个元素是栈顶。
-    pub entry_stack: Vec<AbstractValue>,
+    pub entry_stack: Vec<EvmValue<N>>,
     /// 最后一次 transfer 的出栈。
-    pub exit_stack: Vec<AbstractValue>,
+    pub exit_stack: Vec<EvmValue<N>>,
     /// 最后一次 transfer 实际访问的指令 pc；异常之后的指令不出现。
     pub executed_pcs: Vec<usize>,
 }
@@ -138,7 +138,7 @@ pub struct Edge {
     /// 目标状态编号。
     pub to: usize,
     /// 控制流原因。
-    pub kind: EdgeKind,
+    pub kind: MachineEdgeKind,
 }
 
 /// 精度损失或可观测的程序异常；它们本身不表示工作表尚未收敛。
@@ -271,28 +271,29 @@ pub enum Status {
 
 /// 分析结果不可由外部手工构造；SSA 可以信任状态栈高与边的内部不变量。
 #[derive(Clone, Debug)]
-pub struct Analysis {
+pub struct EvmAnalysis<N: WordElement> {
     pub(crate) program: Program,
     pub(crate) config: Config,
     pub(crate) schema_version: u16,
     pub(crate) domain_spec: crate::domain::DomainSpec,
-    pub(crate) states: Vec<State>,
+    pub(crate) states: Vec<EvmState<N>>,
     pub(crate) edges: Vec<Edge>,
+    pub(crate) boundary_edges: Vec<MachineEdge>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) frontiers: Vec<Frontier>,
     pub(crate) status: Status,
     pub(crate) transfers: usize,
-    execution: WorldAnalysis,
+    execution: EvmWorldAnalysis<N>,
     execution_state_ids: Vec<usize>,
 }
 
 // Serialize the native environment by reference. The single-program report must
 // retain its input assumptions without duplicating the owned execution graph or
 // cloning input tables outside the shared work budget.
-impl Serialize for Analysis {
+impl<N: WordElement> Serialize for EvmAnalysis<N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut report = serializer.serialize_map(Some(
-            11 + usize::from(self.root_terminal_coverage().is_some()),
+            12 + usize::from(self.root_terminal_coverage().is_some()),
         ))?;
         report.serialize_entry("program", &self.program)?;
         report.serialize_entry("config", &self.config)?;
@@ -301,6 +302,7 @@ impl Serialize for Analysis {
         report.serialize_entry("environment", self.environment())?;
         report.serialize_entry("states", &self.states)?;
         report.serialize_entry("edges", &self.edges)?;
+        report.serialize_entry("boundary_edges", &self.boundary_edges)?;
         report.serialize_entry("diagnostics", &self.diagnostics)?;
         report.serialize_entry("frontiers", &self.frontiers)?;
         report.serialize_entry("status", &self.status)?;
@@ -312,7 +314,11 @@ impl Serialize for Analysis {
     }
 }
 
-impl Analysis {
+impl<N: WordElement> EvmAnalysis<N> {
+    /// Numeric specification recorded by the native execution.
+    pub fn domain_spec(&self) -> crate::domain::DomainSpec {
+        self.domain_spec
+    }
     /// 原始解码结果。
     pub fn program(&self) -> &Program {
         &self.program
@@ -322,12 +328,17 @@ impl Analysis {
         &self.config
     }
     /// 可达的抽象状态。未创建的字节码块不等于已证明不可能执行，须看 status。
-    pub fn states(&self) -> &[State] {
+    pub fn states(&self) -> &[EvmState<N>] {
         &self.states
     }
     /// 已发现的控制流边。
     pub fn edges(&self) -> &[Edge] {
         &self.edges
+    }
+    /// Native transitions crossing the selected root boundary. These IDs are
+    /// native machine IDs; execution_state_id maps the local endpoints.
+    pub fn boundary_edges(&self) -> &[MachineEdge] {
+        &self.boundary_edges
     }
     /// 精度与程序异常诊断。
     pub fn diagnostics(&self) -> &[Diagnostic] {
@@ -346,16 +357,16 @@ impl Analysis {
         self.transfers
     }
     /// Immutable root, transaction and block inputs used by the native machine.
-    pub fn environment(&self) -> &crate::world::EvmEnvironment {
+    pub fn environment(&self) -> &crate::world::EvmEnvironmentValues<N> {
         &self.execution.entry().environment
     }
     /// Native multi-account result underlying this single-program view.
-    pub fn execution(&self) -> &WorldAnalysis {
+    pub fn execution(&self) -> &EvmWorldAnalysis<N> {
         &self.execution
     }
 
     /// Separate terminal coverage for the original root, preserving partial CFG/SSA.
-    pub fn root_terminal_coverage(&self) -> Option<&RootTerminalCoverage> {
+    pub fn root_terminal_coverage(&self) -> Option<&EvmRootTerminalCoverage<N>> {
         self.execution.root_terminal_coverage()
     }
 
@@ -364,205 +375,4 @@ impl Analysis {
     pub fn execution_state_id(&self, local_state: usize) -> Option<usize> {
         self.execution_state_ids.get(local_state).copied()
     }
-}
-
-/// Analyze a declared offline world from one external entry, sharing one
-/// worklist and transaction state through all nested calls.
-pub fn analyze_world(
-    world: crate::world::World,
-    entry: crate::world::Entry,
-    config: ExecutionConfig,
-) -> Result<WorldAnalysis, ConfigError> {
-    engine::run_world(world, entry, config)
-}
-
-/// Analyze with an explicitly selected numeric algebra and execution policies.
-///
-/// The algebra and its static analyzer/reduction bundle are borrowed for the
-/// whole run. All executable values, including memory, saved rollback state and
-/// recursive summaries, retain `D::Element` in the returned native analysis.
-/// The default observation/session adapter is not part of this entrypoint.
-///
-/// Context and partition policies are the same contracts used by ordinary
-/// propagation and relative procedure execution. They are immutable during the
-/// run and need not implement `Copy` or `Clone`. The public facade is borrowed
-/// once at the engine boundary; recursive execution forwards that same cheap
-/// view over the original numeric policy.
-/// [`EnginePolicies::with_state`] accepts a [`SemanticPolicies`] assembly of
-/// [`MachinePartition`], [`WholeStatePolicy`], [`AccelerationPolicy`] and
-/// [`ProcedureSummaryPolicy`]. The selected keys and returned covering states
-/// drive ordinary execution, recursive bodies, continuations and outputs.
-///
-/// ```
-/// use evm_abstract::{Address, Fork, analysis, domain::{Domain, ValueAlgebra}, world};
-/// let address = Address::repeat_byte(0x11);
-/// let mut world = world::World::new(Fork::Osaka, "explicit composition");
-/// world.insert(address, world::Account::from_hex("00", Fork::Osaka).unwrap()).unwrap();
-/// let algebra = ValueAlgebra::new(Domain::default());
-/// let policies = analysis::EnginePolicies::new(
-///     analysis::ContextInsensitive, analysis::MergeResumeStatus,
-/// );
-/// let result = analysis::analyze_world_with(
-///     world, world::Entry::new(address), analysis::ExecutionConfig::default(),
-///     &algebra, &policies,
-/// ).unwrap();
-/// assert_eq!(result.status(), analysis::Status::Converged);
-/// ```
-pub fn analyze_world_with<D, C, P, S>(
-    world: crate::world::EvmWorld<D::Element>,
-    entry: crate::world::EvmEntry<D::Element>,
-    config: ExecutionConfig,
-    algebra: &crate::domain::ValueAlgebra<D>,
-    policies: &EnginePolicies<C, P, S>,
-) -> Result<EvmWorldAnalysis<D::Element>, ConfigError>
-where
-    D: crate::domain::EvmNumericAlgebra,
-    C: ContextPolicy,
-    P: PartitionPolicy,
-    S: engine::StatePolicy<D, P::Class>,
-{
-    analyze_world_with_components_observer(
-        world,
-        entry,
-        config,
-        algebra,
-        policies,
-        &progress::Observer::default(),
-    )
-}
-
-/// Analyze a custom numeric element while publishing bounded observations.
-/// Creates one borrowed algebra view for the engine to forward by value.
-pub fn analyze_world_with_components_observer<D, C, P, S>(
-    world: crate::world::EvmWorld<D::Element>,
-    entry: crate::world::EvmEntry<D::Element>,
-    config: ExecutionConfig,
-    algebra: &crate::domain::ValueAlgebra<D>,
-    policies: &EnginePolicies<C, P, S>,
-    observer: &progress::Observer,
-) -> Result<EvmWorldAnalysis<D::Element>, ConfigError>
-where
-    D: crate::domain::EvmNumericAlgebra,
-    C: ContextPolicy,
-    P: PartitionPolicy,
-    S: engine::StatePolicy<D, P::Class>,
-{
-    engine::run_world_with(world, entry, config, algebra.borrowed(), policies, observer)
-}
-
-/// Analyze a world while publishing bounded, discrete execution observations.
-pub fn analyze_world_with_observer(
-    world: crate::world::World,
-    entry: crate::world::Entry,
-    config: ExecutionConfig,
-    observer: &progress::Observer,
-) -> Result<WorldAnalysis, ConfigError> {
-    engine::run_world_with_observer(world, entry, config, observer)
-}
-
-/// Failure of an explicitly controlled analysis, distinct from model frontiers.
-#[derive(Debug, thiserror::Error)]
-pub enum ControlledAnalysisError {
-    /// Invalid execution configuration or environment.
-    #[error("{0}")]
-    Config(ConfigError),
-    /// The caller cancelled this analysis; no partial report is returned.
-    #[error("analysis cancelled")]
-    Cancelled,
-}
-
-/// Run a world analysis with an explicit application control scope.
-pub fn analyze_world_with_control(
-    world: crate::world::World,
-    entry: crate::world::Entry,
-    config: ExecutionConfig,
-    control: &control::Control,
-) -> Result<WorldAnalysis, ControlledAnalysisError> {
-    control
-        .checkpoint()
-        .map_err(|_| ControlledAnalysisError::Cancelled)?;
-    let result =
-        control.scope(|| engine::run_world_with_observer(world, entry, config, control.observer()));
-    control
-        .checkpoint()
-        .map_err(|_| ControlledAnalysisError::Cancelled)?;
-    result.map_err(ControlledAnalysisError::Config)
-}
-
-/// Run a custom composition under the application's cancellation scope.
-///
-/// A cancelled run never publishes a partial report. The policies are borrowed
-/// only within the synchronous control scope; no snapshot or policy reference
-/// is retained in an application task after the call returns.
-pub fn analyze_world_with_components_control<D, C, P, S>(
-    world: crate::world::EvmWorld<D::Element>,
-    entry: crate::world::EvmEntry<D::Element>,
-    config: ExecutionConfig,
-    algebra: &crate::domain::ValueAlgebra<D>,
-    policies: &EnginePolicies<C, P, S>,
-    control: &control::Control,
-) -> Result<EvmWorldAnalysis<D::Element>, ControlledAnalysisError>
-where
-    D: crate::domain::EvmNumericAlgebra,
-    C: ContextPolicy,
-    P: PartitionPolicy,
-    S: engine::StatePolicy<D, P::Class>,
-{
-    control
-        .checkpoint()
-        .map_err(|_| ControlledAnalysisError::Cancelled)?;
-    let result = control.scope(|| {
-        analyze_world_with_components_observer(
-            world,
-            entry,
-            config,
-            algebra,
-            policies,
-            control.observer(),
-        )
-    });
-    control
-        .checkpoint()
-        .map_err(|_| ControlledAnalysisError::Cancelled)?;
-    result.map_err(ControlledAnalysisError::Config)
-}
-
-/// Single-bytecode learning adapter. Environment, calldata and initial
-/// persistent state remain unknown; missing external code is an explicit
-/// incomplete frontier in the same native machine used by [`analyze_world`].
-pub fn analyze(program: Program, config: Config) -> Result<Analysis, ConfigError> {
-    analyze_with_environment(program, config, crate::world::EvmEnvironment::default())
-}
-
-/// Analyze bytecode under explicit or symbolic root, transaction and block inputs.
-///
-/// A missing logical destination stays symbolic even though the internal store
-/// uses an isolated concrete namespace. CALL-family rules preserve logical
-/// addresses and caller identity; unknown targets remain incomplete frontiers.
-pub fn analyze_with_environment(
-    program: Program,
-    config: Config,
-    environment: crate::world::EvmEnvironment,
-) -> Result<Analysis, ConfigError> {
-    analyze_with_execution_config(
-        program,
-        ExecutionConfig {
-            analysis: config,
-            ..ExecutionConfig::default()
-        },
-        environment,
-    )
-}
-
-/// Analyze one bytecode program with an explicit transaction-wide execution policy.
-///
-/// Applications can select the same work, memory and call budgets as their world
-/// entrypoints while retaining the single-program CFG/SSA projection. Unlike
-/// [`analyze_with_environment`], this entrypoint uses all supplied execution limits.
-pub fn analyze_with_execution_config(
-    program: Program,
-    config: ExecutionConfig,
-    environment: crate::world::EvmEnvironment,
-) -> Result<Analysis, ConfigError> {
-    single::analyze(program, config, environment)
 }

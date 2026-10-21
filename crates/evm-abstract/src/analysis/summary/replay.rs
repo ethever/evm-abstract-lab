@@ -111,7 +111,7 @@ impl<'a, N: WordElement, Tag: PolicyKey> EvmReplay<'a, N, Tag> {
         domain: AlgebraRef<'_, D>,
     ) -> Result<EvmMachinePayload<N>, MachineError> {
         let mut relative = relative.clone();
-        relative.rename_fresh_with(&self.renaming, self.limits, domain)?;
+        relative.rename_fresh(&self.renaming, self.limits, domain)?;
         let mut call_stack = self.prefix.clone();
         call_stack.push_child(
             relative
@@ -172,11 +172,11 @@ impl<'a, N: WordElement, Tag: PolicyKey> EvmReplay<'a, N, Tag> {
             let mut call = call.clone();
             call.payload = self.payload(&call.payload, domain)?;
             call.data
-                .rename_fresh_with(&self.renaming, self.limits, domain)?;
+                .rename_fresh(&self.renaming, self.limits, domain)?;
             call.output_data
-                .rename_fresh_with(&self.renaming, self.limits, domain)?;
+                .rename_fresh(&self.renaming, self.limits, domain)?;
             call.output_store
-                .rename_fresh_with(&self.renaming, self.limits, domain)?;
+                .rename_fresh(&self.renaming, self.limits, domain)?;
             completed_calls.push(call);
         }
         Ok(EvmNode {
@@ -211,15 +211,15 @@ impl<'a, N: WordElement, Tag: PolicyKey> EvmReplay<'a, N, Tag> {
         terminal.payload = self.payload(&terminal.payload, domain)?;
         terminal
             .raw_data
-            .rename_fresh_with(&self.renaming, self.limits, domain)?;
+            .rename_fresh(&self.renaming, self.limits, domain)?;
         terminal
             .output
             .data
-            .rename_fresh_with(&self.renaming, self.limits, domain)?;
+            .rename_fresh(&self.renaming, self.limits, domain)?;
         terminal
             .output
             .store
-            .rename_fresh_with(&self.renaming, self.limits, domain)?;
+            .rename_fresh(&self.renaming, self.limits, domain)?;
         Ok(terminal)
     }
 

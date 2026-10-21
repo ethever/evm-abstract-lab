@@ -239,15 +239,6 @@ impl FactRefinement {
 }
 
 impl StateFacts {
-    // The compatibility adapter supplies only consequences of an already
-    // validated immutable World. Non-singleton assumptions remain in its base.
-    pub(super) fn from_base(snapshot: SnapshotId, observations: Vec<Observation>) -> Self {
-        let mut facts = Self::new(snapshot);
-        for observation in observations {
-            facts.observations.insert(observation.key(), observation);
-        }
-        facts
-    }
     /// An entirely unobserved initial state at one fixed snapshot.
     pub fn new(snapshot: SnapshotId) -> Self {
         Self {

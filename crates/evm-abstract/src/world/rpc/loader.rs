@@ -3,6 +3,7 @@
 //! can install its observations; no detached per-request worker is created.
 
 use super::framework::Client;
+use super::session::AccountObservation;
 use super::{AccountRequest, RpcBlock, RpcContext, RpcError, RpcInput, context, invalid};
 use super::{HeaderField, HeaderValue, ResponseReason};
 use crate::{
@@ -11,8 +12,8 @@ use crate::{
         control::Control,
         progress::{Event, Phase},
     },
-    domain::AbstractValue,
-    world::{Account, Existence, SnapshotEnvironment, World},
+    domain::{EvmValue, WordElement},
+    world::{EvmAccount, EvmWorld, Existence, SnapshotEnvironment},
 };
 use alloy::{
     primitives::Bytes,
@@ -53,8 +54,8 @@ impl Loader {
         BlockId::hash_canonical(self.block_hash.expect("pinning precedes state requests"))
     }
 
-    pub(super) fn world(&self) -> World {
-        let mut world = World::anchored(
+    pub(super) fn world<N: WordElement>(&self) -> EvmWorld<N> {
+        let mut world = EvmWorld::<N>::anchored(
             self.input.fork,
             self.chain_id.expect("world follows pinning"),
             self.block_hash.expect("world follows pinning"),
@@ -64,7 +65,7 @@ impl Loader {
         world
     }
 
-    pub(super) fn observe_world(&mut self, world: &World) {
+    pub(super) fn observe_world<N: WordElement>(&mut self, world: &EvmWorld<N>) {
         self.acquired_accounts = world.accounts().len();
         self.acquired_slots = world
             .accounts()
@@ -252,16 +253,16 @@ impl Loader {
         Ok(())
     }
 
-    pub(super) fn account(
+    pub(super) fn account<N: WordElement>(
         &mut self,
-        world: &mut World,
+        world: &mut EvmWorld<N>,
         request: &AccountRequest,
-    ) -> Result<(), RpcError> {
+    ) -> Result<AccountObservation, RpcError> {
         let address = request.address;
         let code_context = self.context("eth_getCode", Some(address), None);
         let code: Bytes = self.call(&code_context, (address, self.selector()))?;
         let mut account =
-            Account::from_hex(&hex::encode(code), self.input.fork).map_err(|source| {
+            EvmAccount::<N>::from_hex(&hex::encode(code), self.input.fork).map_err(|source| {
                 RpcError::Code {
                     context: Box::new(code_context.clone()),
                     source,
@@ -270,10 +271,10 @@ impl Loader {
         account.storage_unknown = true;
         let context = self.context("eth_getBalance", Some(address), None);
         let balance: U256 = self.call(&context, (address, self.selector()))?;
-        account.balance = AbstractValue::constant(balance);
+        account.balance = EvmValue::<N>::constant(balance);
         let context = self.context("eth_getTransactionCount", Some(address), None);
         let nonce: U256 = self.call(&context, (address, self.selector()))?;
-        account.nonce = AbstractValue::constant(nonce);
+        account.nonce = EvmValue::<N>::constant(nonce);
         account.existence = if account.code != crate::world::Code::Empty
             || balance != U256::ZERO
             || nonce != U256::ZERO
@@ -282,22 +283,31 @@ impl Loader {
         } else {
             Existence::Unknown
         };
+        let mut storage = std::collections::BTreeMap::new();
         for &key in &request.slots {
             let observed = self.storage(address, key)?;
+            storage.insert(key, observed);
             if observed != U256::ZERO {
                 account.existence = Existence::Present;
             }
             account
                 .storage
-                .insert(key, AbstractValue::constant(observed));
+                .insert(key, EvmValue::<N>::constant(observed));
         }
+        let observation = AccountObservation {
+            code: account.code.clone(),
+            balance,
+            nonce,
+            existence: account.existence,
+            storage,
+        };
         world
             .insert(address, account)
             .map_err(|source| RpcError::World {
                 context: Box::new(code_context),
                 source,
             })?;
-        Ok(())
+        Ok(observation)
     }
 
     pub(super) fn storage(&mut self, address: Address, key: U256) -> Result<U256, RpcError> {
