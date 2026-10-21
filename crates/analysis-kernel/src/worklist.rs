@@ -1,82 +1,175 @@
-//! FIFO obligations with retained stale physical records.
+//! Removable FIFO obligations containing only live pending identities.
 //!
-//! This low-level owner does not know the adapter's state/transfer accounting.
-//! Enqueue callers reserve [`Worklist::enqueue_work`] before allocating records;
-//! [`crate::Kernel`] does so for every dependency wake. Physical records remain
-//! observable for replay-copy charges and atomic priority selection.
+//! Nodes are dense, with FIFO links independent of their storage positions. A
+//! removal unlinks its node and moves the last node into the gap, updating that
+//! node's index and links. No satisfied occurrence survives to be scanned or
+//! reactivated. Enqueue/removal take O(log live) map work; selection takes O(live)
+//! visits plus removal. Spare vector capacity follows peak concurrent live work,
+//! never the number of historical enqueues. Snapshots copy only live nodes.
+//!
+//! The owner reserves [`Worklist::enqueue_work`] before enqueueing. Kernel fanout
+//! reserves a batch bound including geometric vector growth before any wake.
 
-use crate::{KernelError, Meter};
-use std::collections::{BTreeSet, VecDeque};
+use crate::{KernelError, Meter, kernel::reserve};
+use std::collections::{BTreeMap, btree_map::Entry};
 
-/// Pending membership and FIFO occurrences, independently of semantic values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Node<K> {
+    id: K,
+    previous: Option<usize>,
+    next: Option<usize>,
+}
+
+/// One removable FIFO node per live obligation, independent of semantic values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Worklist<K: Copy + Ord> {
-    queue: VecDeque<K>,
-    pending: BTreeSet<K>,
+    nodes: Vec<Node<K>>,
+    positions: BTreeMap<K, usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
 }
 impl<K: Copy + Ord> Default for Worklist<K> {
     fn default() -> Self {
         Self {
-            queue: VecDeque::new(),
-            pending: BTreeSet::new(),
+            nodes: Vec::new(),
+            positions: BTreeMap::new(),
+            head: None,
+            tail: None,
         }
     }
 }
 impl<K: Copy + Ord> Worklist<K> {
-    /// Conservative logical allocation/search work for one enqueue.
-    pub fn enqueue_work(&self) -> usize {
-        self.pending.len().saturating_add(1).ilog2() as usize + 3
+    fn tree_work(len: usize) -> usize {
+        len.saturating_add(1).ilog2() as usize + 2
     }
-    /// Enqueue after the caller reserves `enqueue_work`; duplicate jobs do not allocate.
+
+    /// Conservative lookup, insertion, link and possible vector growth work.
+    pub fn enqueue_work(&self) -> usize {
+        self.enqueue_work_for(1)
+    }
+
+    pub(crate) fn enqueue_work_for(&self, additional: usize) -> usize {
+        let maximum = self.len().saturating_add(additional);
+        let insertions = additional.saturating_mul(Self::tree_work(maximum).saturating_add(6));
+        if additional <= self.nodes.capacity() - self.nodes.len() {
+            return insertions;
+        }
+        // Enqueue explicitly doubles full storage. Over a batch, the sum of
+        // copied lengths is less than twice its maximum live length. Each node
+        // has three fields; this pays all reallocations before any insertion.
+        insertions.saturating_add(maximum.saturating_mul(6))
+    }
+
+    /// Enqueue after the caller reserves `enqueue_work`; duplicates keep position.
     pub fn enqueue(&mut self, id: K) {
-        if self.pending.insert(id) {
-            self.queue.push_back(id);
+        let Entry::Vacant(position) = self.positions.entry(id) else {
+            return;
+        };
+        if self.nodes.len() == self.nodes.capacity() {
+            self.nodes.reserve_exact(self.nodes.len().max(1));
+        }
+        let index = self.nodes.len();
+        position.insert(index);
+        self.nodes.push(Node {
+            id,
+            previous: self.tail,
+            next: None,
+        });
+        if let Some(tail) = self.tail {
+            self.nodes[tail].next = Some(index);
+        } else {
+            self.head = Some(index);
+        }
+        self.tail = Some(index);
+    }
+
+    /// Conservative map removal, moved-node lookup and constant link repairs.
+    pub(crate) fn removal_work(&self) -> usize {
+        Self::tree_work(self.len())
+            .saturating_mul(2)
+            .saturating_add(12)
+    }
+
+    /// Remove an obligation immediately; a later enqueue receives a fresh tail.
+    pub fn satisfy(&mut self, id: K) {
+        let Some(index) = self.positions.remove(&id) else {
+            return;
+        };
+        let node = &self.nodes[index];
+        let (previous, next) = (node.previous, node.next);
+        if let Some(previous) = previous {
+            self.nodes[previous].next = next;
+        } else {
+            self.head = next;
+        }
+        if let Some(next) = next {
+            self.nodes[next].previous = previous;
+        } else {
+            self.tail = previous;
+        }
+        self.nodes.swap_remove(index);
+        if index < self.nodes.len() {
+            let moved = &self.nodes[index];
+            let (previous, next) = (moved.previous, moved.next);
+            *self
+                .positions
+                .get_mut(&moved.id)
+                .expect("live node position") = index;
+            if let Some(previous) = previous {
+                self.nodes[previous].next = Some(index);
+            } else {
+                self.head = Some(index);
+            }
+            if let Some(next) = next {
+                self.nodes[next].previous = Some(index);
+            } else {
+                self.tail = Some(index);
+            }
         }
     }
-    /// Satisfy an obligation while retaining its stale physical occurrence.
-    pub fn satisfy(&mut self, id: K) {
-        self.pending.remove(&id);
-    }
-    /// Whether this identity still has an unsatisfied occurrence.
+    /// Whether this identity has an unsatisfied obligation.
     pub fn contains(&self, id: &K) -> bool {
-        self.pending.contains(id)
+        self.positions.contains_key(id)
     }
     /// Whether any live obligation remains.
     pub fn is_empty(&self) -> bool {
-        self.pending.is_empty()
+        self.nodes.is_empty()
     }
-    /// Live membership count without scanning the physical records.
+    /// Live obligation count without traversal.
     pub fn len(&self) -> usize {
-        self.pending.len()
+        self.nodes.len()
     }
     /// Sorted live identities, useful for parking incomplete frontiers.
     pub fn pending(&self) -> impl Iterator<Item = K> + '_ {
-        self.pending.iter().copied()
+        self.positions.keys().copied()
     }
-    /// Preserve physical FIFO order, excluding satisfied records.
+    /// Live identities in FIFO order, including temporarily in-flight jobs.
     pub fn in_order(&self) -> impl Iterator<Item = K> + '_ {
-        self.queue.iter().copied().filter(|id| self.contains(id))
+        std::iter::successors(self.head, |index| self.nodes[*index].next)
+            .map(|index| self.nodes[index].id)
     }
-    /// Physical queue plus membership size for adapter-owned copy accounting.
+    /// Live nodes and lookup entries for adapter-owned copy/drop accounting.
     pub fn work_size(&self) -> usize {
-        self.queue.len().saturating_add(self.pending.len())
+        self.nodes
+            .len()
+            .saturating_mul(3)
+            .saturating_add(self.positions.len().saturating_mul(2))
     }
-    /// Physical records, including stale occurrences.
+    /// Physical initialized records; always equal to the live obligation count.
     pub fn records(&self) -> usize {
-        self.queue.len()
+        self.nodes.len()
     }
-    /// Pop FIFO after adapter admission; skipped stale records allocate nothing.
+    /// Pop FIFO after adapter admission and removal-work reservation.
     pub fn pop_front(&mut self) -> Option<K> {
-        while let Some(id) = self.queue.pop_front() {
-            if self.pending.remove(&id) {
-                return Some(id);
-            }
-        }
-        None
+        let id = self.nodes.get(self.head?)?.id;
+        self.satisfy(id);
+        Some(id)
     }
     /// Metered FIFO selection excluding temporarily in-flight identities.
-    /// Earlier physical records are retained: an in-flight self-wake must not
-    /// lose its only pending occurrence while another nested job is admitted.
+    ///
+    /// Reserve at most one visit per live node plus map/link removal. Selection
+    /// and all cancellation checks precede mutation, including a final check
+    /// after the eligibility callback. Skipped self-wakes keep their FIFO place.
     pub fn pop_eligible<M: Meter>(
         &mut self,
         meter: &mut M,
@@ -86,29 +179,29 @@ impl<K: Copy + Ord> Worklist<K> {
             return Ok(None);
         }
         let cost = self
-            .queue
             .len()
-            .checked_add(1)
+            .checked_add(self.removal_work())
             .ok_or(KernelError::CostOverflow)?;
-        meter.checkpoint().map_err(KernelError::Stopped)?;
-        meter.reserve(cost).map_err(KernelError::Stopped)?;
+        reserve(meter, cost)?;
         let mut choice = None;
-        for (position, id) in self.queue.iter().enumerate() {
+        for id in self.in_order() {
             meter.checkpoint().map_err(KernelError::Stopped)?;
-            if self.contains(id) && eligible(*id) {
-                choice = Some(position);
+            if eligible(id) {
+                choice = Some(id);
                 break;
             }
         }
-        Ok(choice
-            .and_then(|position| self.queue.remove(position))
-            .inspect(|id| self.satisfy(*id)))
+        meter.checkpoint().map_err(KernelError::Stopped)?;
+        if let Some(id) = choice {
+            self.satisfy(id);
+        }
+        Ok(choice)
     }
     /// Select a positive deepest priority with FIFO ties.
     ///
-    /// Reserve exactly `2 * physical_records + 1`, including stale records.
-    /// Check cancellation over every physical record; any failure leaves the
-    /// queue and pending membership unchanged. All-zero priorities return None.
+    /// Reserve two visits per live node plus map/link removal, independent of
+    /// satisfied history. All-zero priorities return None. Every cancellation
+    /// check, including the one after the final callback, precedes mutation.
     pub fn pop_deepest<M: Meter>(
         &mut self,
         meter: &mut M,
@@ -118,29 +211,30 @@ impl<K: Copy + Ord> Worklist<K> {
             return Ok(None);
         }
         let cost = self
-            .queue
             .len()
             .checked_mul(2)
-            .and_then(|n| n.checked_add(1))
+            .and_then(|work| work.checked_add(self.removal_work()))
             .ok_or(KernelError::CostOverflow)?;
-        meter.reserve(cost).map_err(KernelError::Stopped)?;
+        reserve(meter, cost)?;
         let mut choice = None;
         let mut maximum = 0;
-        for (position, id) in self.queue.iter().enumerate() {
+        for id in self.in_order() {
             meter.checkpoint().map_err(KernelError::Stopped)?;
-            let priority = depth(*id);
-            if self.contains(id) && priority > maximum {
+            let priority = depth(id);
+            if priority > maximum {
                 maximum = priority;
-                choice = Some(position);
+                choice = Some(id);
             }
         }
-        Ok(choice
-            .and_then(|position| self.queue.remove(position))
-            .inspect(|id| self.satisfy(*id)))
+        meter.checkpoint().map_err(KernelError::Stopped)?;
+        if let Some(id) = choice {
+            self.satisfy(id);
+        }
+        Ok(choice)
     }
 }
 impl<K: Copy + Ord> FromIterator<K> for Worklist<K> {
-    /// The owner must account retained records when adopting this low-level queue.
+    /// The owner accounts live records when adopting this low-level queue.
     fn from_iter<T: IntoIterator<Item = K>>(iter: T) -> Self {
         let mut result = Self::default();
         for id in iter {

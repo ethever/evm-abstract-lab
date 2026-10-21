@@ -9,10 +9,17 @@ pub trait Capability {
     type Key: Clone + Ord;
     /// Typed answer, independent of other families' carriers.
     type Value: Clone;
-    /// Conservative key clone/comparison traversal work.
+    /// Allocation-free conservative quote for key clone/comparison and drop.
     fn key_work(key: &Self::Key) -> usize;
-    /// Conservative answer clone/traversal work.
+    /// Allocation-free conservative quote for answer clone/traversal work.
     fn value_work(value: &Self::Value) -> usize;
+    /// Allocation-free conservative quote for destroying a retained answer.
+    /// Include traversal/deallocation of the entire possibly last-owned payload.
+    /// Arc/shared-handle carriers whose clone quote covers only their handle must
+    /// override this method; reclamation may release the last deep payload owner.
+    fn drop_work(value: &Self::Value) -> usize {
+        Self::value_work(value)
+    }
 }
 
 /// Computation pending, explicit absence and semantic values are different states.
@@ -32,7 +39,9 @@ pub enum Availability<V> {
 pub struct Answer<V> {
     /// Availability is not a feasibility or execution-completion assertion.
     pub state: Availability<V>,
-    /// Semantic publication version.
+    /// This fact's publication/coverage-refresh counter. Producer invalidation
+    /// can make Availability Pending without changing this counter. It alone is
+    /// not a validity certificate: consume values through tracked guard checks.
     pub version: Version,
     /// Immutable assumptions supporting this observation.
     pub scope: Scope,
@@ -46,18 +55,25 @@ impl<V> Answer<V> {
         }
     }
 }
-/// Whether semantic information changed, rather than only its representation.
+/// Whether a publication changed semantic information or declared coverage
+/// availability, rather than only representation. Restoring a known producer's
+/// coverage wakes readers without seeding numerical-growth invalidation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
     /// Repeated or equivalent publication; readers are not rescheduled.
     Unchanged,
-    /// A new answer/version was installed and dependent readers were awakened.
+    /// A new answer/coverage version was installed and dependent readers woke.
     Changed,
 }
 
 pub(crate) struct Cell<V> {
     pub(crate) id: FactId,
     pub(crate) state: Availability<V>,
+}
+
+pub(crate) struct ScopeCells<K, V> {
+    pub(crate) directory: FactId,
+    pub(crate) cells: BTreeMap<K, Cell<V>>,
 }
 
 /// One explicitly routed provider/aggregation table with a declared update order.
@@ -68,17 +84,18 @@ pub(crate) struct Cell<V> {
 pub struct Channel<Q: Capability, P: PublicationPolicy<Value = Q::Value>> {
     pub(crate) epoch: crate::Epoch,
     pub(crate) directory: FactId,
-    pub(crate) cells: BTreeMap<Scoped<Q::Key>, Cell<Q::Value>>,
+    pub(crate) scopes: BTreeMap<Scope, ScopeCells<Q::Key, Q::Value>>,
+    pub(crate) len: usize,
     pub(crate) policy: P,
 }
 impl<Q: Capability, P: PublicationPolicy<Value = Q::Value>> Channel<Q, P> {
     /// Number of interned keys, including still-pending negative reads.
     pub fn len(&self) -> usize {
-        self.cells.len()
+        self.len
     }
     /// Whether this route has no interned keys.
     pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
+        self.len == 0
     }
     /// Frozen publication policy; changing policy requires a different scope/route.
     pub fn policy(&self) -> &P {
@@ -92,6 +109,18 @@ pub trait Read<Q: Capability, Route = crate::Here> {
     type Error;
     /// Record the dependency, including missing/negative reads.
     fn query(&mut self, key: Scoped<Q::Key>) -> Result<Answer<Q::Value>, Self::Error>;
+}
+/// Non-mandatory navigation/work discovery at a static provider route.
+///
+/// Retains wake subscriptions and validates all availability/producer guards, but
+/// does not adopt a fixed-generation premise. Unknown is neither infeasible nor
+/// a proof of complete membership; do not derive must guarantees from this view.
+/// A required Read on the same job/fact upgrades its retained dependency.
+pub trait Discover<Q: Capability, Route = crate::Here> {
+    /// Typed scope/meter failure of the client context.
+    type Error;
+    /// Discover currently available work; unanswered discovery alone allows closure.
+    fn discover(&mut self, key: Scoped<Q::Key>) -> Result<Answer<Q::Value>, Self::Error>;
 }
 /// Declared typed publication capability at an explicit static provider route.
 pub trait Accepts<Q: Capability, Route = crate::Here> {
@@ -107,4 +136,16 @@ pub trait Charges {
     type Error;
     /// Reserve a conservative computation bound before executing a rule.
     fn charge(&mut self, work: usize) -> Result<(), Self::Error>;
+}
+
+/// Read a stable generation route without adopting its numeric scope identity as
+/// a semantic assumption. A stale selection is Pending until its owner replaces it.
+pub trait ReadGeneration {
+    /// Typed identity/meter failure of the client context.
+    type Error;
+    /// Track the route even when its selected generation is stale.
+    fn current_generation(
+        &mut self,
+        entry: &crate::GenerationEntry,
+    ) -> Result<Answer<Scope>, Self::Error>;
 }

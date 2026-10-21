@@ -1,8 +1,9 @@
 //! Static independent analyzers, explicit capability routes and joint solving.
 
 use crate::{
-    Accepts, Answer, Capability, Change, Channel, Charges, Kernel, KernelError, LocalClosure,
-    Meter, PublishError, Read, Run, Scoped, SolveError, SolveReport, algebra::PublicationPolicy,
+    Accepts, Answer, Capability, Change, Channel, Charges, Discover, Kernel, KernelError,
+    LocalClosure, Meter, PublishError, Read, ReadGeneration, Run, Scope, Scoped, SolveError,
+    SolveReport, algebra::PublicationPolicy,
 };
 use std::{fmt, marker::PhantomData};
 
@@ -91,6 +92,15 @@ impl<'r, 'k, J, M: Meter, S> Context<'r, 'k, J, M, S> {
         self.run
     }
 }
+impl<J, M: Meter, S> ReadGeneration for Context<'_, '_, J, M, S> {
+    type Error = KernelError<M::Stop>;
+    fn current_generation(
+        &mut self,
+        entry: &crate::GenerationEntry,
+    ) -> Result<Answer<Scope>, Self::Error> {
+        self.run.current_generation(entry)
+    }
+}
 impl<J, M, S, Q, P, Path> Read<Q, Path> for Context<'_, '_, J, M, S>
 where
     M: Meter,
@@ -101,6 +111,18 @@ where
     type Error = KernelError<M::Stop>;
     fn query(&mut self, key: Scoped<Q::Key>) -> Result<Answer<Q::Value>, Self::Error> {
         self.run.query(self.stores.select_mut(), key)
+    }
+}
+impl<J, M, S, Q, P, Path> Discover<Q, Path> for Context<'_, '_, J, M, S>
+where
+    M: Meter,
+    Q: Capability,
+    P: PublicationPolicy<Value = Q::Value>,
+    S: Select<Path, Output = Channel<Q, P>>,
+{
+    type Error = KernelError<M::Stop>;
+    fn discover(&mut self, key: Scoped<Q::Key>) -> Result<Answer<Q::Value>, Self::Error> {
+        self.run.query_discovery(self.stores.select_mut(), key)
     }
 }
 impl<J, M, S, Q, P, Path> Accepts<Q, Path> for Context<'_, '_, J, M, S>
@@ -220,6 +242,11 @@ impl<Cx, A: Analyzer<Cx>, B: Analyzer<Cx>> Analyzer<Cx> for Pair<A, B> {
 /// A local precision limit can be accepted with a sound coarse answer; pending
 /// required jobs, missing providers and explicit semantic obligations remain in
 /// the returned closure. Errors retain the currently admitted/in-flight job.
+/// A callback invalidating its own selected scope returns the recoverable
+/// `SolveError::Kernel(KernelError::StaleGeneration)` completion boundary. Its
+/// stable owner stays scheduled and its stale scope keeps closure Open. Actual
+/// meter/cancel failures and analyzer errors are preserved; the caller can reseed
+/// and replace the generation before continuing this solver.
 /// The final report traversal is reserved on the same meter even with zero steps
 /// or an empty ready queue; cancellation/resource refusal cannot bypass it.
 pub fn solve<J, A, S, M, E>(

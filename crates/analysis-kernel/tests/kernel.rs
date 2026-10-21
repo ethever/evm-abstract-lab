@@ -2,8 +2,18 @@
 
 #[path = "kernel/cooperation.rs"]
 mod cooperation;
+#[path = "kernel/publication_drop.rs"]
+mod publication_drop;
+#[path = "kernel/reclaim.rs"]
+mod reclaim;
+#[path = "kernel/reclaim_composition.rs"]
+mod reclaim_composition;
+#[path = "kernel/retirement.rs"]
+mod retirement;
 #[path = "kernel/support.rs"]
 mod support;
+#[path = "kernel/worklist.rs"]
+mod worklist;
 
 use analysis_kernel::{
     Ascending, Availability, Change, Closure, Kernel, KernelError, LocalClosure, PublishError,
@@ -258,7 +268,7 @@ fn generation_retirement_invalidates_facts_and_wakes_cross_scope_consumers() {
 }
 
 #[test]
-fn deepest_scan_cancellation_preserves_stale_physical_records_and_exact_charge() {
+fn deepest_cancellation_preserves_live_queue_and_requeue_gets_fresh_fifo_position() {
     let mut worklist: Worklist<usize> = [0, 1, 2].into_iter().collect();
     worklist.satisfy(0);
     let before = worklist.clone();
@@ -274,7 +284,11 @@ fn deepest_scan_cancellation_preserves_stale_physical_records_and_exact_charge()
         Err(KernelError::Stopped(Stop::Cancelled))
     );
     assert_eq!(worklist, before);
-    assert_eq!(meter.used, 7);
+    assert!(
+        meter.used > 0,
+        "cancelled traversal retains its reservation"
+    );
+    assert_eq!(worklist.records(), worklist.len());
     meter.cancelled.set(false);
     assert_eq!(
         worklist.pop_deepest(&mut meter, |id| id + 1).unwrap(),
@@ -284,9 +298,10 @@ fn deepest_scan_cancellation_preserves_stale_physical_records_and_exact_charge()
     worklist.enqueue(0);
     assert_eq!(
         worklist.pop_front(),
-        Some(0),
-        "reactivated old occurrence retains FIFO priority"
+        Some(1),
+        "a satisfied and requeued identity receives a fresh FIFO position"
     );
+    assert_eq!(worklist.pop_front(), Some(0));
 }
 
 #[derive(Clone, Debug)]

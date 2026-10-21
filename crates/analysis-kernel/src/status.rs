@@ -19,11 +19,12 @@ pub struct Open {
     pub in_flight: usize,
     /// Evaluations abandoned before successful completion.
     pub interrupted: usize,
-    /// Read answer cells for which no value or explicit absence was published.
+    /// Mandatory facts/routes with unresolved values, selection validity or
+    /// producer coverage. Optional unanswered discovery is excluded.
     pub missing: usize,
     /// Generations whose job/provider admission has not been sealed.
     pub unsealed: usize,
-    /// Adapter-reported uncovered semantic obligations.
+    /// Adapter-reported uncovered behavior and stale selected generations.
     pub obligations: usize,
 }
 
@@ -37,6 +38,7 @@ impl Open {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Closure {
     /// No registered mandatory work or uncovered semantic obligation remains.
+    /// Optional unanswered discoveries may remain; unknown is not infeasible.
     Closed,
     /// Pending work or a semantic boundary prevents claiming closure.
     Open(Open),
