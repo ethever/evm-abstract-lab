@@ -1,5 +1,6 @@
 use super::support::{Budget, Stop, scope};
 use analysis_kernel::{Kernel, KernelError, LocalClosure, Worklist};
+use proptest::test_runner::{Config, FileFailurePersistence};
 use std::{cell::Cell, collections::VecDeque};
 
 #[test]
@@ -104,6 +105,7 @@ fn cancelled_and_denied_selections_leave_fifo_and_priorities_unchanged() {
             };
             assert_eq!(result, Err(KernelError::Stopped(Stop::Cancelled)));
             assert_eq!(queue, before);
+            assert_eq!(queue.records(), queue.len());
             assert!(meter.used > 0);
             cancelled.set(false);
             meter.fail_on = Some(meter.calls + 1);
@@ -118,9 +120,21 @@ fn cancelled_and_denied_selections_leave_fifo_and_priorities_unchanged() {
             assert_eq!(queue.in_order().collect::<Vec<_>>(), [0, 2, 1]);
             assert_eq!(queue.pop_deepest(&mut meter, |_| 0).unwrap(), None);
             assert_eq!(queue, before);
+            let mut priorities = queue.clone();
+            assert_eq!(
+                priorities.pop_deepest(&mut meter, |id| id + 1).unwrap(),
+                Some(2)
+            );
+            assert_eq!(priorities.in_order().collect::<Vec<_>>(), [0, 1]);
             assert_eq!(queue.pop_deepest(&mut meter, |_| 4).unwrap(), Some(0));
+            queue.enqueue(0);
             assert_eq!(queue.pop_front(), Some(2));
             assert_eq!(queue.pop_front(), Some(1));
+            assert_eq!(
+                queue.pop_front(),
+                Some(0),
+                "requeue receives a fresh FIFO position"
+            );
             assert_eq!(queue.pop_front(), None);
         }
     }
@@ -128,16 +142,27 @@ fn cancelled_and_denied_selections_leave_fifo_and_priorities_unchanged() {
 
 #[test]
 fn dense_removals_match_a_fifo_reference_across_mixed_operations() {
+    // Long-history stress stays deterministic. Generated traces explore order
+    // and shrink independently: two six-operation / 31-key spaces per case.
+    const GENERATED_STEPS: usize = 2 * 6 * 31;
+    let boundaries = [(3, 0), (4, 0), (5, 0), (2, 0), (0, 0), (1, 0), (2, 0)];
+    let dense = (0..31).map(|id| (0, id));
+    let mixed = (0..20_000).map(|step| ((step % 6) as u8, (step * 17 + step / 6) % 31));
+    assert_operations_match_reference(boundaries.into_iter().chain(dense).chain(mixed));
+    let config = Config::with_failure_persistence(FileFailurePersistence::WithSource(
+        "proptest-regressions",
+    ));
+    proptest::proptest!(config, |(operations in proptest::collection::vec((0_u8..6, 0_usize..31), 0..=GENERATED_STEPS))| {
+        assert_operations_match_reference(operations);
+    });
+}
+
+fn assert_operations_match_reference(operations: impl IntoIterator<Item = (u8, usize)>) {
     let mut queue = Worklist::default();
     let mut reference = VecDeque::new();
-    let mut random = 17u64;
     let mut meter = Budget::default();
-    for _ in 0..20_000 {
-        random = random
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1);
-        let id = (random >> 32) as usize % 31;
-        match random % 6 {
+    for (operation, id) in operations {
+        match operation {
             0 | 1 => {
                 queue.enqueue(id);
                 if !reference.contains(&id) {
@@ -161,7 +186,7 @@ fn dense_removals_match_a_fifo_reference_across_mixed_operations() {
                     expected
                 );
             }
-            _ => {
+            5 => {
                 let maximum = reference.iter().map(|entry| entry % 4).max().unwrap_or(0);
                 let expected = if maximum == 0 {
                     None
@@ -176,6 +201,7 @@ fn dense_removals_match_a_fifo_reference_across_mixed_operations() {
                     expected
                 );
             }
+            _ => unreachable!("worklist operation outside the generated six-way space"),
         }
         assert_eq!(
             queue.in_order().collect::<Vec<_>>(),

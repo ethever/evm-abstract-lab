@@ -1,6 +1,5 @@
 use super::*;
-use crate::{Availability, Closure, KernelError, Meter};
-use std::cell::Cell;
+use crate::{Availability, Closure, KernelError};
 
 fn agree(scope: Scope, f: &mut Fixture) {
     assert_eq!(
@@ -128,29 +127,6 @@ fn local_quote_is_independent_of_thousands_of_unrelated_retired_records() {
     assert_eq!(quote(0), quote(10_000));
 }
 
-struct CancelAfter<'a> {
-    root: &'a mut Budget,
-    at: usize,
-    cancelled: Cell<bool>,
-}
-impl Meter for CancelAfter<'_> {
-    type Stop = Stop;
-    fn reserve(&mut self, work: usize) -> Result<(), Stop> {
-        self.root.reserve(work)?;
-        if self.root.calls == self.at {
-            self.cancelled.set(true);
-        }
-        Ok(())
-    }
-    fn checkpoint(&self) -> Result<(), Stop> {
-        if self.cancelled.get() {
-            Err(Stop::Cancelled)
-        } else {
-            self.root.checkpoint()
-        }
-    }
-}
-
 #[test]
 fn every_readiness_refusal_and_cancellation_preserves_graph_and_pending_work() {
     let phases = {
@@ -159,32 +135,24 @@ fn every_readiness_refusal_and_cancellation_preserves_graph_and_pending_work() {
         f.kernel.closure_in_metered(f.target, &mut f.meter).unwrap();
         f.meter.calls - before
     };
-    for phase in 1..=phases {
-        let mut f = Fixture::new();
-        let before = f.kernel.closure();
-        let stats = f.kernel.statistics();
-        let queue = f.kernel.worklist().clone();
-        f.meter.fail_on = Some(f.meter.calls + phase);
-        assert_eq!(
-            f.kernel.closure_in_metered(f.target, &mut f.meter),
-            Err(KernelError::Stopped(Stop::Work))
-        );
-        f.meter.fail_on = None;
-        {
-            let at = f.meter.calls + phase;
-            let mut meter = CancelAfter {
-                root: &mut f.meter,
-                at,
-                cancelled: Cell::new(false),
-            };
+    assert!(phases > 0);
+    for stop in [Stop::Work, Stop::Cancelled] {
+        for phase in 1..=phases {
+            let mut f = Fixture::new();
+            let before = f.kernel.closure();
+            let stats = f.kernel.statistics();
+            let queue = f.kernel.worklist().clone();
+            f.meter.stop_after(phase, stop);
             assert_eq!(
-                f.kernel.closure_in_metered(f.target, &mut meter),
-                Err(KernelError::Stopped(Stop::Cancelled))
+                f.kernel.closure_in_metered(f.target, &mut f.meter),
+                Err(KernelError::Stopped(stop)),
+                "{stop:?} at reservation {phase}"
             );
+            f.meter.clear_stop();
+            assert_eq!(f.kernel.closure(), before);
+            assert_eq!(f.kernel.statistics(), stats);
+            assert_eq!(f.kernel.worklist(), &queue);
+            agree(f.target, &mut f);
         }
-        assert_eq!(f.kernel.closure(), before);
-        assert_eq!(f.kernel.statistics(), stats);
-        assert_eq!(f.kernel.worklist(), &queue);
-        agree(f.target, &mut f);
     }
 }

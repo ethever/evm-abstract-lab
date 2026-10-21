@@ -35,7 +35,7 @@ fn declared_producer_invalidation_and_replacement_withhold_x_until_equivalent_re
         assert!(
             matches!(s.f.kernel.closure(), Closure::Open(o) if o.missing == 1 && o.obligations == 0)
         );
-        let report = solve(&mut s.f.kernel, &mut NoOp, &mut Nil, &mut s.f.meter, 0).unwrap();
+        let report = solve(&mut s.f.kernel, &mut Noop, &mut Nil, &mut s.f.meter, 0).unwrap();
         assert!(matches!(report.closure, Closure::Open(o) if o.missing == 1));
         assert_eq!(
             s.renew(),

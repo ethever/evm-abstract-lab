@@ -127,7 +127,7 @@ impl JoinPolicy for SummaryMaximum {
 }
 
 type Stores = Cons<
-    Channel<Routes, Ascending<Maximum>>,
+    Cons<Channel<Routes, Ascending<Maximum>>, Nil>,
     Cons<Channel<Summaries, Ascending<SummaryMaximum>>, Nil>,
 >;
 
@@ -203,7 +203,7 @@ impl Fixture {
         run.finish(LocalClosure::Stable).unwrap();
         Self {
             kernel,
-            stores: Cons::new(routes, Cons::new(summaries, Nil)),
+            stores: Cons::new(Cons::new(routes, Nil), Cons::new(summaries, Nil)),
             meter,
             local,
             world,
@@ -217,7 +217,7 @@ impl Fixture {
     }
 
     fn retained(&self) -> (usize, usize) {
-        (self.stores.head.len(), self.stores.tail.head.len())
+        (self.stores.head.head.len(), self.stores.tail.head.len())
     }
 
     fn dropped(&self) -> (usize, usize, usize) {
@@ -236,7 +236,7 @@ fn heterogeneous_stores_release_retired_payloads_and_preserve_world_markers() {
     assert_eq!(f.dropped(), (0, 0, 0));
     let mut run = f.kernel.begin(f.reader, &mut f.meter).unwrap();
     let before_route = run
-        .query(&mut f.stores.head, Scoped::new(f.world, 1))
+        .query(&mut f.stores.head.head, Scoped::new(f.world, 1))
         .unwrap();
     let before_summary = run
         .query(&mut f.stores.tail.head, Scoped::new(f.world, "entry"))
@@ -255,7 +255,7 @@ fn heterogeneous_stores_release_retired_payloads_and_preserve_world_markers() {
     );
     let mut run = f.kernel.begin(f.reader, &mut f.meter).unwrap();
     let route = run
-        .query(&mut f.stores.head, Scoped::new(f.world, 1))
+        .query(&mut f.stores.head.head, Scoped::new(f.world, 1))
         .unwrap();
     let summary = run
         .query(&mut f.stores.tail.head, Scoped::new(f.world, "entry"))
@@ -273,7 +273,7 @@ fn heterogeneous_stores_release_retired_payloads_and_preserve_world_markers() {
     assert_eq!(route.value().unwrap().bytes[0], 42);
     assert_eq!(summary.value().unwrap().0.bytes[0], 73);
     assert_eq!(
-        run.query(&mut f.stores.head, Scoped::new(f.local, 1))
+        run.query(&mut f.stores.head.head, Scoped::new(f.local, 1))
             .unwrap_err(),
         KernelError::InactiveScope
     );
@@ -360,6 +360,25 @@ fn second_channel_drop_refusal_keeps_partial_progress_and_retry_is_idempotent() 
     );
     assert_eq!(f.retained(), (1, 1));
     assert_eq!(f.dropped(), (2, 1, 0));
+    let mut run = f.kernel.begin(f.reader, &mut f.meter).unwrap();
+    assert_eq!(
+        run.query(&mut f.stores.head.head, Scoped::new(f.world, 1))
+            .unwrap()
+            .value()
+            .unwrap()
+            .bytes[0],
+        42
+    );
+    assert_eq!(
+        run.query(&mut f.stores.tail.head, Scoped::new(f.world, "entry"))
+            .unwrap()
+            .value()
+            .unwrap()
+            .0
+            .bytes[0],
+        73
+    );
+    run.finish(LocalClosure::Stable).unwrap();
     drop(f.stores);
     assert_eq!(f.world_drops.load(Ordering::SeqCst), 2);
 }
@@ -405,12 +424,12 @@ fn composed_counts_refuse_overflow_after_children_succeed_and_retry_returns_zero
     let mut meter = Ledger::default();
     let retired = scope(&mut kernel, &mut meter, 1);
     kernel.retire_scope(retired, &mut meter).unwrap();
-    let mut stores = Cons::new(Count(usize::MAX), Cons::new(Count(1), Nil));
+    let mut stores = Cons::new(Count(usize::MAX), Count(1));
     assert_eq!(
         stores.reclaim_scope(&mut kernel, retired, &mut meter),
         Err(KernelError::CostOverflow)
     );
-    assert_eq!((stores.head.0, stores.tail.head.0), (0, 0));
+    assert_eq!((stores.head.0, stores.tail.0), (0, 0));
     assert_eq!(
         stores.reclaim_scope(&mut kernel, retired, &mut meter),
         Ok(0)

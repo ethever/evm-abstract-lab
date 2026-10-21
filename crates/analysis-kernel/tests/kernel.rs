@@ -6,8 +6,6 @@ mod cooperation;
 mod publication_drop;
 #[path = "kernel/reclaim.rs"]
 mod reclaim;
-#[path = "kernel/reclaim_composition.rs"]
-mod reclaim_composition;
 #[path = "kernel/retirement.rs"]
 mod retirement;
 #[path = "kernel/support.rs"]
@@ -16,8 +14,8 @@ mod support;
 mod worklist;
 
 use analysis_kernel::{
-    Ascending, Availability, Change, Closure, Kernel, KernelError, LocalClosure, PublishError,
-    Scoped, Worklist,
+    Ascending, Availability, Change, Closure, Kernel, KernelError, LocalClosure, Meter,
+    PublishError, Scoped,
 };
 use support::{Budget, Maximum, Numbers, Stop, scope};
 
@@ -44,7 +42,9 @@ fn missing_and_directory_reads_wake_on_late_provider_first_output() {
     );
     run.finish(LocalClosure::Stable).unwrap();
     assert!(!kernel.worklist().contains(&directory));
-    assert!(matches!(kernel.closure(), Closure::Open(open) if open.missing == 1));
+    assert!(
+        matches!(kernel.closure(), Closure::Open(open) if open.missing == 1 && open.pending == 0)
+    );
     let provider = kernel.register(scope, "provider", &mut meter).unwrap();
     kernel
         .provide(&mut channel, Scoped::new(scope, 7), provider, &mut meter)
@@ -58,6 +58,8 @@ fn missing_and_directory_reads_wake_on_late_provider_first_output() {
     run.finish(LocalClosure::Stable).unwrap();
     assert!(kernel.worklist().contains(&reader));
     assert!(kernel.worklist().contains(&directory));
+    let admitted = std::array::from_fn::<_, 2, _>(|_| kernel.next(&mut meter).unwrap().unwrap());
+    assert!(admitted.contains(&reader) && admitted.contains(&directory));
     let mut run = kernel.begin(reader, &mut meter).unwrap();
     assert_eq!(
         run.query(&mut channel, Scoped::new(scope, 7))
@@ -70,39 +72,6 @@ fn missing_and_directory_reads_wake_on_late_provider_first_output() {
     assert_eq!(run.keys(&mut channel, scope).unwrap(), [7]);
     run.finish(LocalClosure::Stable).unwrap();
     assert_eq!(kernel.closure(), Closure::Closed);
-}
-
-#[test]
-fn explicit_absence_can_receive_a_first_value_but_cannot_erase_a_value() {
-    let mut meter = Budget::default();
-    let mut kernel = Kernel::new().unwrap();
-    let scope = scope(&mut kernel, &mut meter, 0);
-    let mut channel = kernel
-        .channel::<Numbers, _, _>(Ascending(Maximum), &mut meter)
-        .unwrap();
-    let reader = kernel.register(scope, (), &mut meter).unwrap();
-    let writer = kernel.register(scope, (), &mut meter).unwrap();
-    let mut run = kernel.begin(writer, &mut meter).unwrap();
-    run.resolve_absent(&mut channel, Scoped::new(scope, 1))
-        .unwrap();
-    run.finish(LocalClosure::Stable).unwrap();
-    let mut run = kernel.begin(reader, &mut meter).unwrap();
-    let absent = run.query(&mut channel, Scoped::new(scope, 1)).unwrap();
-    assert_eq!(absent.state, Availability::Absent);
-    run.finish(LocalClosure::Stable).unwrap();
-    let mut run = kernel.begin(writer, &mut meter).unwrap();
-    run.publish(&mut channel, Scoped::new(scope, 1), 3).unwrap();
-    assert_eq!(
-        run.resolve_absent(&mut channel, Scoped::new(scope, 1)),
-        Err(KernelError::CannotErase)
-    );
-    run.finish(LocalClosure::Stable).unwrap();
-    assert!(kernel.worklist().contains(&reader));
-    let mut run = kernel.begin(reader, &mut meter).unwrap();
-    let value = run.query(&mut channel, Scoped::new(scope, 1)).unwrap();
-    assert!(value.version > absent.version);
-    assert_eq!(value.value(), Some(&3));
-    run.finish(LocalClosure::Stable).unwrap();
 }
 
 #[test]
@@ -123,7 +92,7 @@ fn failed_publication_keeps_value_version_and_wakes_atomic_but_retains_interrupt
     run.finish(LocalClosure::Stable).unwrap();
     let mut run = kernel.begin(writer, &mut meter).unwrap();
     let used_before = run.meter().used;
-    run.meter().fail_on = Some(run.meter().calls + 3); // lookup, policy, install+wakes
+    run.meter().stop_after(3, Stop::Work); // lookup, policy, install+wakes
     assert_eq!(
         run.publish(&mut channel, Scoped::new(scope, 0), 2),
         Err(PublishError::Kernel(KernelError::Stopped(Stop::Work)))
@@ -135,7 +104,7 @@ fn failed_publication_keeps_value_version_and_wakes_atomic_but_retains_interrupt
     );
     assert!(!kernel.worklist().contains(&reader));
     assert!(matches!(kernel.closure(), Closure::Open(open) if open.interrupted == 1));
-    meter.fail_on = None;
+    meter.clear_stop();
     let mut run = kernel.begin(reader, &mut meter).unwrap();
     assert_eq!(
         run.query(&mut channel, Scoped::new(scope, 0)).unwrap(),
@@ -167,7 +136,10 @@ fn self_dirty_jobs_cannot_be_reentered_by_nested_admission() {
             .state,
         Availability::Pending
     );
-    run.publish(&mut channel, Scoped::new(scope, 0), 9).unwrap();
+    assert_eq!(
+        run.publish(&mut channel, Scoped::new(scope, 0), 9).unwrap(),
+        Change::Changed
+    );
     {
         let (kernel, meter) = run.parts();
         assert_eq!(kernel.next(meter).unwrap(), Some(nested));
@@ -182,14 +154,23 @@ fn self_dirty_jobs_cannot_be_reentered_by_nested_admission() {
         );
     }
     run.finish(LocalClosure::Stable).unwrap();
+    assert!(matches!(kernel.closure(), Closure::Open(open) if open.pending == 1));
     assert_eq!(kernel.next(&mut meter).unwrap(), Some(job));
     let mut run = kernel.begin(job, &mut meter).unwrap();
-    run.query(&mut channel, Scoped::new(scope, 0)).unwrap();
+    let before = run.query(&mut channel, Scoped::new(scope, 0)).unwrap();
+    assert_eq!(before.value(), Some(&9));
     assert_eq!(
         run.publish(&mut channel, Scoped::new(scope, 0), 9).unwrap(),
         Change::Unchanged
     );
+    assert_eq!(
+        run.query(&mut channel, Scoped::new(scope, 0))
+            .unwrap()
+            .version,
+        before.version
+    );
     run.finish(LocalClosure::Stable).unwrap();
+    assert_eq!(kernel.next(&mut meter).unwrap(), None);
     assert_eq!(kernel.closure(), Closure::Closed);
 }
 
@@ -257,7 +238,9 @@ fn generation_retirement_invalidates_facts_and_wakes_cross_scope_consumers() {
     );
     run.finish(LocalClosure::Stable).unwrap();
     let mut other = Kernel::new().unwrap();
-    let other_scope = scope(&mut other, &mut meter, 0);
+    let other_scope = scope(&mut other, &mut meter, 1);
+    assert_eq!(other_scope.key(), new.key());
+    assert_ne!(other_scope.epoch(), new.epoch());
     let other_job = other.register(other_scope, (), &mut meter).unwrap();
     let mut run = other.begin(other_job, &mut meter).unwrap();
     assert_eq!(
@@ -265,43 +248,6 @@ fn generation_retirement_invalidates_facts_and_wakes_cross_scope_consumers() {
         Err(KernelError::WrongEpoch)
     );
     run.finish(LocalClosure::Stable).unwrap();
-}
-
-#[test]
-fn deepest_cancellation_preserves_live_queue_and_requeue_gets_fresh_fifo_position() {
-    let mut worklist: Worklist<usize> = [0, 1, 2].into_iter().collect();
-    worklist.satisfy(0);
-    let before = worklist.clone();
-    let mut meter = Budget::default();
-    let cancel = std::rc::Rc::clone(&meter.cancelled);
-    assert_eq!(
-        worklist.pop_deepest(&mut meter, |id| {
-            if id == 1 {
-                cancel.set(true);
-            }
-            1
-        }),
-        Err(KernelError::Stopped(Stop::Cancelled))
-    );
-    assert_eq!(worklist, before);
-    assert!(
-        meter.used > 0,
-        "cancelled traversal retains its reservation"
-    );
-    assert_eq!(worklist.records(), worklist.len());
-    meter.cancelled.set(false);
-    assert_eq!(
-        worklist.pop_deepest(&mut meter, |id| id + 1).unwrap(),
-        Some(2)
-    );
-    assert_eq!(worklist.in_order().collect::<Vec<_>>(), [1]);
-    worklist.enqueue(0);
-    assert_eq!(
-        worklist.pop_front(),
-        Some(1),
-        "a satisfied and requeued identity receives a fresh FIFO position"
-    );
-    assert_eq!(worklist.pop_front(), Some(0));
 }
 
 #[derive(Clone, Debug)]
@@ -514,3 +460,6 @@ fn product_and_lift_keep_bottom_separate_from_uncomputed_answers() {
         Availability::Pending
     );
 }
+
+#[path = "support/meter.rs"]
+mod meter;

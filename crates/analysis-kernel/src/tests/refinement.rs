@@ -1,8 +1,8 @@
 use super::{Budget, Stop, scope};
 use crate::{
-    Accepts, Analyzer, Availability, Capability, Change, Closure, Cons, Context, Descending,
-    Kernel, KernelError, LocalClosure, Nil, PublishError, Reduction, RefinePolicy, Registered,
-    Scope, Scoped,
+    Accepts, Analyzer, Availability, Capability, Closure, Cons, Context, Descending, Kernel,
+    KernelError, LocalClosure, Nil, PublishError, Reduction, RefinePolicy, Registered, Scope,
+    Scoped,
 };
 use std::convert::Infallible;
 
@@ -43,103 +43,6 @@ impl<Cx: Accepts<Members>> Reduction<Cx> for Initialize {
         cx.accept(Scoped::new(task.scope, ()), task.universe)?;
         Ok(LocalClosure::Stable)
     }
-}
-
-#[test]
-fn enlarged_input_is_independently_seeded_in_a_fresh_descending_generation() {
-    let mut meter = Budget::default();
-    let mut kernel = Kernel::new().unwrap();
-    let owner = scope(&mut kernel, &mut meter, 1, 0);
-    let old = scope(&mut kernel, &mut meter, 2, 0);
-    let new = scope(&mut kernel, &mut meter, 2, 1);
-    let mut entry = kernel.generation_entry(owner, old, &mut meter).unwrap();
-    let mut stores = Cons::new(
-        kernel
-            .channel::<Members, _, _>(Descending(Intersection), &mut meter)
-            .unwrap(),
-        Nil,
-    );
-    let coordinator = kernel
-        .register(
-            owner,
-            Task {
-                scope: owner,
-                universe: 0,
-            },
-            &mut meter,
-        )
-        .unwrap();
-    let reader = kernel
-        .register(
-            owner,
-            Task {
-                scope: owner,
-                universe: 0,
-            },
-            &mut meter,
-        )
-        .unwrap();
-    let a = kernel
-        .register(
-            old,
-            Task {
-                scope: old,
-                universe: 0b01,
-            },
-            &mut meter,
-        )
-        .unwrap();
-    let b = kernel
-        .register(
-            new,
-            Task {
-                scope: new,
-                universe: 0b11,
-            },
-            &mut meter,
-        )
-        .unwrap();
-    let mut init = Registered::new(Initialize);
-    for (job, generation, universe) in [(a, old, 0b01), (b, new, 0b11)] {
-        let mut run = kernel.begin(job, &mut meter).unwrap();
-        let task = Task {
-            scope: generation,
-            universe,
-        };
-        init.evaluate(&task, &mut Context::new(&mut run, &mut stores))
-            .unwrap();
-        run.finish(LocalClosure::Stable).unwrap();
-        kernel.seal_scope(generation, &mut meter).unwrap();
-    }
-    let mut run = kernel.begin(reader, &mut meter).unwrap();
-    let generation = *run.current_generation(&entry).unwrap().value().unwrap();
-    assert_eq!(
-        run.query(&mut stores.head, Scoped::new(generation, ()))
-            .unwrap()
-            .value(),
-        Some(&0b01)
-    );
-    run.finish(LocalClosure::Stable).unwrap();
-    let mut run = kernel.begin(coordinator, &mut meter).unwrap();
-    assert_eq!(
-        run.replace_generation(&mut entry, new).unwrap(),
-        Change::Changed
-    );
-    run.finish(LocalClosure::Stable).unwrap();
-    assert!(kernel.worklist().contains(&reader));
-    let mut run = kernel.begin(reader, &mut meter).unwrap();
-    let generation = *run.current_generation(&entry).unwrap().value().unwrap();
-    assert_eq!(generation, new);
-    assert_eq!(
-        run.query(&mut stores.head, Scoped::new(generation, ()))
-            .unwrap()
-            .value(),
-        Some(&0b11),
-        "the old narrowed guarantee is not met into the enlarged input"
-    );
-    run.finish(LocalClosure::Stable).unwrap();
-    kernel.seal_scope(owner, &mut meter).unwrap();
-    assert_eq!(kernel.closure(), Closure::Closed);
 }
 
 #[test]

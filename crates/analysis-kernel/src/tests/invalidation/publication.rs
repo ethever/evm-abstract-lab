@@ -155,41 +155,7 @@ where
         run.finish(LocalClosure::Stable).unwrap();
     }
     fn replace(&mut self, producer: bool) {
-        let old = if producer {
-            self.f.target
-        } else {
-            self.f.downstream
-        };
-        let next = scope(
-            &mut self.f.kernel,
-            &mut self.f.meter,
-            old.key().context,
-            old.key().generation + 1,
-        );
-        let job = self.f.kernel.register(next, (), &mut self.f.meter).unwrap();
-        seed(
-            &mut self.f.kernel,
-            &mut self.f.meter,
-            job,
-            &mut self.f.local,
-            3,
-        );
-        self.f.kernel.seal_scope(next, &mut self.f.meter).unwrap();
-        let (owner, entry) = if producer {
-            (self.f.owner, &mut self.f.entry)
-        } else {
-            (self.f.downstream_owner, &mut self.f.downstream_entry)
-        };
-        let mut run = self.f.kernel.begin(owner, &mut self.f.meter).unwrap();
-        run.replace_generation(entry, next).unwrap();
-        run.finish(LocalClosure::Stable).unwrap();
-        if producer {
-            self.f.target = next;
-            self.f.reader = job;
-        } else {
-            self.f.downstream = next;
-            self.f.downstream_reader = job;
-        }
+        self.f.replace(producer, 3);
     }
 }
 
@@ -271,21 +237,4 @@ fn classification_uses_prepared_value_rather_than_incoming_completion() {
         s.f.stale(1),
         "the prepared result reopens the retained larger bound"
     );
-}
-
-#[test]
-fn default_ascending_growth_still_invalidates_transitive_adopters() {
-    let mut f = Fixture::new();
-    f.adopt();
-    publish(
-        &mut f.kernel,
-        &mut f.meter,
-        f.writer,
-        &mut f.inputs,
-        f.source,
-        0,
-        3,
-    );
-    assert!(f.stale(0) && f.stale(1));
-    assert!(!f.stale(2));
 }

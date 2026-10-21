@@ -54,12 +54,12 @@ fn stale_metadata_refuses_observation_and_scope_checks_preserve_meter_errors() {
         Err(KernelError::Stopped(Stop::Work))
     );
     f.meter.fail_on = None;
-    f.meter.cancelled = true;
+    f.meter.cancelled.set(true);
     assert_eq!(
         f.kernel.scope_stale(f.target, &mut f.meter),
         Err(KernelError::Stopped(Stop::Cancelled))
     );
-    f.meter.cancelled = false;
+    f.meter.cancelled.set(false);
     let next = scope(&mut f.kernel, &mut f.meter, f.target.key().context, 1);
     f.kernel.seal_scope(next, &mut f.meter).unwrap();
     let mut run = f.kernel.begin(f.owner, &mut f.meter).unwrap();
