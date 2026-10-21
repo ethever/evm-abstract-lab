@@ -64,11 +64,11 @@ fn apply<D: EvmNumericAlgebra>(
         }
         let value = EvmValue::<D::Element>::top();
         let truth = match relations
-            .refine_numeric_budgeted_with(
+            .refine_numeric_budgeted(
                 condition,
                 &value,
                 domain,
-                &context.config.analysis.relations,
+                &context.domain.spec().relations(),
                 context.budget,
             )
             .map_err(|_| FrontierReason::Work)?
@@ -98,7 +98,7 @@ fn apply<D: EvmNumericAlgebra>(
     };
     if !payload
         .store
-        .refine_guards_with(domain, limits, &mut proof)
+        .refine_guards(domain, limits, &mut proof)
         .map_err(failure)?
     {
         return Ok(false);
@@ -110,7 +110,7 @@ fn apply<D: EvmNumericAlgebra>(
             &mut frame.returndata,
         ] {
             if !bytes
-                .refine_guards_with(domain, limits, &mut proof)
+                .refine_guards(domain, limits, &mut proof)
                 .map_err(failure)?
             {
                 return Ok(false);
@@ -118,7 +118,7 @@ fn apply<D: EvmNumericAlgebra>(
         }
         let mut saved = frame.saved_store.state().clone();
         if !saved
-            .refine_guards_with(domain, limits, &mut proof)
+            .refine_guards(domain, limits, &mut proof)
             .map_err(failure)?
         {
             return Ok(false);

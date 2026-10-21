@@ -1,12 +1,13 @@
 //! Complete world reports, grouped by identity, graph evidence and outcomes.
 
+use crate::domain::WordElement;
 use evm_abstract_notation::Symbol;
 
 use super::{identity, observations};
 use crate::{
-    analysis::{FrameCode, FrameKey, WorldAnalysis},
-    domain::AbstractValue,
-    world::Store,
+    analysis::{EvmWorldAnalysis, FrameCode, FrameKey},
+    domain::EvmValue,
+    world::EvmStore,
 };
 use std::fmt::{Display, Write};
 
@@ -23,7 +24,10 @@ use table::write_table;
 ///
 /// References reduce repeated long addresses/hashes without truncating them.
 /// Outcomes remain separate: equal returned bytes do not imply equal state effects.
-pub fn render(analysis: &WorldAnalysis) -> String {
+pub fn render<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+) -> String {
     let fingerprint = match analysis.world().fingerprint() {
         Ok(fingerprint) => fingerprint,
         Err(error) => return format!("Snapshot fingerprint unavailable: {error}\n"),
@@ -54,22 +58,19 @@ pub fn render(analysis: &WorldAnalysis) -> String {
         Some(analysis.world().identity()),
         true,
         |input| refs.address_input(input),
+        algebra,
     );
 
-    let spec = analysis
-        .config()
-        .domain()
-        .expect("analysis carries validated configuration")
-        .spec();
+    let spec = analysis.domain_spec();
     writeln!(
         output,
-        "  domain={:?} | domain schema=2 | reduction rounds={} | fact atoms={}",
-        spec.profile(),
+        "  numeric capacity={} | domain schema=3 | reduction rounds={} | fact atoms={}",
+        spec.capacity(),
         spec.reduction_rounds(),
         spec.fact_limit()
     )
     .unwrap();
-    let relations = analysis.config().analysis.relations;
+    let relations = spec.relations();
     writeln!(
         output,
         "  relations={} | local propagation | expression nodes={} | depth={} | constraints={}",
@@ -252,8 +253,8 @@ pub fn render(analysis: &WorldAnalysis) -> String {
             outcome.kind
         )
         .unwrap();
-        write_bytes(&mut output, "    ", "returndata", &outcome.data);
-        write_store(&mut output, &outcome.store, &refs);
+        write_bytes(&mut output, "    ", "returndata", &outcome.data, algebra);
+        write_store(&mut output, &outcome.store, &refs, algebra);
         output.push('\n');
     }
 
@@ -428,7 +429,12 @@ fn frame_cells(frame: &FrameKey, refs: &References) -> Vec<String> {
     ]
 }
 
-fn write_store(output: &mut String, store: &Store, refs: &References) {
+fn write_store<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    output: &mut String,
+    store: &EvmStore<N>,
+    refs: &References,
+    algebra: &crate::domain::ValueAlgebra<D>,
+) {
     output.push_str("    Storage\n");
     write_table(
         output,
@@ -498,7 +504,7 @@ fn write_store(output: &mut String, store: &Store, refs: &References) {
             &["Field", "Value"],
             &[vec!["topics".to_owned(), super::super::stack(&log.topics)]],
         );
-        write_bytes(output, "        ", "data", &log.data);
+        write_bytes(output, "        ", "data", &log.data, algebra);
     }
     writeln!(output, "      logs_unknown={}", store.logs_unknown()).unwrap();
 }
@@ -507,7 +513,10 @@ fn optional<T: Display>(value: Option<T>) -> String {
     value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
 }
 
-fn length(value: &AbstractValue) -> String {
+fn length<N: WordElement>(value: &EvmValue<N>) -> String {
+    if let Some(exact) = value.singleton() {
+        return format!("{value} ({exact} bytes)");
+    }
     match value.constants() {
         Some(values) if values.len() == 1 => {
             format!("{} bytes", values.first().expect("nonempty constants"))

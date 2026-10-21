@@ -12,13 +12,19 @@ use alloy_primitives::U256;
 
 fn with_solver(test: impl FnOnce(&mut Solver<'_>)) {
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut config = ExecutionConfig {
+    let config = ExecutionConfig {
         max_work: 1_000_000_000,
         ..ExecutionConfig::default()
     };
-    config.analysis.max_constants = 512;
-    config.analysis.relations.enabled = false;
-    let mut table = Table::default();
+    let config_numeric = crate::analysis::testing::NumericLimits {
+        max_constants: 512,
+        relations: crate::domain::relational::RelationLimits {
+            enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut table = Table::with_algebra(crate::analysis::testing::product(config_numeric.spec()));
     let mut counters = Counters::default();
     let mut budget = WorkBudget::new(config.max_work);
     test(&mut table.solver(

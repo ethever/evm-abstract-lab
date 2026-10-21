@@ -4,10 +4,10 @@ use std::collections::BTreeSet;
 
 use super::super::*;
 use crate::domain::relational::{
-    CheckResult, QueryReason, RelationLimits, RelationState, ScalarQuery, ValueQuery,
+    CheckResult, EvmScalarQuery, EvmValueQuery, QueryReason, RelationLimits, RelationState,
 };
 
-fn v(n: usize) -> AbstractValue {
+fn v(n: usize) -> TestValue {
     constant(n)
 }
 fn policy() -> RelationLimits {
@@ -29,43 +29,60 @@ fn prove(relations: &RelationState, condition: &ExprId) -> Result<Option<bool>, 
         ExprError::Limit { .. } => QueryReason::ExpressionLimit,
         error => panic!("ISZERO construction failed: {error:?}"),
     })?;
-    match relations.local_value(&zero, &p) {
-        ValueQuery::Exact(v) if v == U256::ZERO => Ok(Some(true)),
-        ValueQuery::Exact(v) if v == U256::ONE => Ok(Some(false)),
-        ValueQuery::Bounds(bounds) => {
+    match relations.local_value(
+        &zero,
+        &p,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    ) {
+        EvmValueQuery::Exact(v) if v == U256::ZERO => Ok(Some(true)),
+        EvmValueQuery::Exact(v) if v == U256::ONE => Ok(Some(false)),
+        EvmValueQuery::Bounds(bounds) => {
             // ISZERO is intrinsically Boolean. Bounds preserve both truth
             // candidates; they do not claim two satisfying selector witnesses.
             assert!(bounds.contains(U256::ZERO));
             assert!(bounds.contains(U256::ONE));
             Ok(None)
         }
-        ValueQuery::Undetermined(reason) => Err(reason),
-        ValueQuery::ProvenImpossible => panic!("guard query requires a reachable relation state"),
-        ValueQuery::Exact(value) => panic!("ISZERO produced a non-Boolean word: {value}"),
+        EvmValueQuery::Undetermined(reason) => Err(reason),
+        EvmValueQuery::ProvenImpossible => {
+            panic!("guard query requires a reachable relation state")
+        }
+        EvmValueQuery::Exact(value) => panic!("ISZERO produced a non-Boolean word: {value}"),
     }
 }
-fn call_output() -> (ByteArray, ExprId, ExprId) {
-    let domain = Domain::default();
-    let mut failed = ByteArray::memory();
-    failed.expand(&v(0x400), &v(192), 2048, domain).unwrap();
+fn call_output() -> (TestBytes, ExprId, ExprId) {
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut failed = TestBytes::memory();
+    failed
+        .expand(&v(0x400), &v(192), domain.borrowed())
+        .unwrap();
     let mut returned = vec![0; 192];
     returned[..32].copy_from_slice(&U256::from(512).to_be_bytes::<32>());
     let mut success = failed.clone();
     success
         .copy_return_data(
             &v(0x400),
-            &ByteArray::exact(&returned),
+            &TestBytes::exact(&returned),
             &v(192),
-            2048,
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     let selector = ExprId::fresh().unwrap();
     let joined = success
-        .join_guarded(&failed, domain, selector.clone(), policy().expressions())
+        .join_guarded(
+            &failed,
+            domain.borrowed(),
+            selector.clone(),
+            policy().expressions(),
+        )
         .unwrap();
     let result = v(1)
-        .join_guarded(&v(0), domain, selector.clone(), policy().expressions())
+        .join_guarded(
+            &v(0),
+            domain.borrowed(),
+            selector.clone(),
+            policy().expressions(),
+        )
         .unwrap();
     let branch = ExprId::operation(
         opcode::ISZERO,
@@ -76,7 +93,7 @@ fn call_output() -> (ByteArray, ExprId, ExprId) {
     (joined, selector, branch)
 }
 
-fn call_output_with_scalar_guards() -> (ByteArray, ExprId, ExprId, ExprId) {
+fn call_output_with_scalar_guards() -> (TestBytes, ExprId, ExprId, ExprId) {
     let (mut joined, byte_guard, _) = call_output();
     joined.refine_operands(&mut |_, value| value.forget_expression());
     let operand_guard = ExprId::fresh().unwrap();
@@ -84,14 +101,14 @@ fn call_output_with_scalar_guards() -> (ByteArray, ExprId, ExprId, ExprId) {
     let operand = v(16)
         .join_guarded(
             &v(32),
-            Domain::default(),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
             nested_operand_guard.clone(),
             policy().expressions(),
         )
         .unwrap()
         .join_guarded(
             &v(64),
-            Domain::default(),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
             operand_guard.clone(),
             policy().expressions(),
         )
@@ -107,11 +124,11 @@ fn call_output_with_scalar_guards() -> (ByteArray, ExprId, ExprId, ExprId) {
 fn guard_collection_finds_byte_root_and_scalar_guards_without_changing_history() {
     let (joined, byte_guard, operand_guard, nested_operand_guard) =
         call_output_with_scalar_guards();
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let original = joined.clone();
     let root = joined.state_root().clone();
     let sources = joined.fresh_leaves();
-    let historical = joined.read_word(&v(0x400), domain);
+    let historical = joined.read_word(&v(0x400), domain.borrowed());
     let historical_expression = historical.expression().unwrap().clone();
     assert!(historical.contains(U256::ZERO));
     assert!(historical.contains(U256::from(512)));
@@ -126,7 +143,7 @@ fn guard_collection_finds_byte_root_and_scalar_guards_without_changing_history()
     assert_eq!(joined, original);
     assert_eq!(joined.state_root(), &root);
     assert_eq!(joined.fresh_leaves(), sources);
-    assert_eq!(joined.read_word(&v(0x400), domain), historical);
+    assert_eq!(joined.read_word(&v(0x400), domain.borrowed()), historical);
     assert_eq!(historical.expression(), Some(&historical_expression));
 
     // Dropping scalar expressions leaves the CALL guard in the immutable root.
@@ -155,7 +172,10 @@ fn guard_collection_finds_byte_root_and_scalar_guards_without_changing_history()
     assert_eq!(root_only, root_only_original);
     assert_eq!(root_only.state_root(), &root);
     assert_eq!(root_only.fresh_leaves(), root_only_sources);
-    assert_eq!(root_only.read_word(&v(0x400), domain), historical);
+    assert_eq!(
+        root_only.read_word(&v(0x400), domain.borrowed()),
+        historical
+    );
     assert_eq!(joined, original);
 }
 
@@ -163,8 +183,8 @@ fn guard_collection_finds_byte_root_and_scalar_guards_without_changing_history()
 fn collected_serial_proofs_match_native_refinement_on_the_same_frozen_call_output() {
     let (frozen, byte_guard, operand_guard, nested_operand_guard) =
         call_output_with_scalar_guards();
-    let domain = Domain::default();
-    let historical = frozen.read_word(&v(0x400), domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let historical = frozen.read_word(&v(0x400), domain.borrowed());
     let expected_conditions = BTreeSet::from([
         byte_guard.clone(),
         operand_guard.clone(),
@@ -186,13 +206,13 @@ fn collected_serial_proofs_match_native_refinement_on_the_same_frozen_call_outpu
                 )
                 .unwrap();
                 assert_eq!(
-                    relations.assume(&equal, true, &policy()),
+                    relations.assume(&equal, true, &policy(), domain.borrowed()),
                     CheckResult::MayBeFeasible
                 );
             }
             assert_eq!(
-                relations.local_value(&byte_guard, &policy()),
-                ValueQuery::Exact(U256::from(value)),
+                relations.local_value(&byte_guard, &policy(), domain.borrowed()),
+                EvmValueQuery::Exact(U256::from(value)),
             );
         }
         let mut prepared = frozen.clone();
@@ -217,18 +237,26 @@ fn collected_serial_proofs_match_native_refinement_on_the_same_frozen_call_outpu
         assert_eq!(prepared, frozen);
         let mut lookup_calls = Vec::new();
         let prepared_result = prepared
-            .refine_guards(domain, policy().expressions(), &mut |condition| {
-                lookup_calls.push(condition.clone());
-                Ok::<_, QueryReason>(*proofs.get(condition).expect("collected guard proof"))
-            })
+            .refine_guards(
+                domain.borrowed(),
+                policy().expressions(),
+                &mut |condition| {
+                    lookup_calls.push(condition.clone());
+                    Ok::<_, QueryReason>(*proofs.get(condition).expect("collected guard proof"))
+                },
+            )
             .unwrap();
         let mut direct = frozen.clone();
         let mut direct_calls = Vec::new();
         let direct_result = direct
-            .refine_guards(domain, policy().expressions(), &mut |condition| {
-                direct_calls.push(condition.clone());
-                prove(&relations, condition)
-            })
+            .refine_guards(
+                domain.borrowed(),
+                policy().expressions(),
+                &mut |condition| {
+                    direct_calls.push(condition.clone());
+                    prove(&relations, condition)
+                },
+            )
             .unwrap();
         assert_eq!(lookup_calls, expected_order);
         assert_eq!(direct_calls, expected_order);
@@ -238,69 +266,85 @@ fn collected_serial_proofs_match_native_refinement_on_the_same_frozen_call_outpu
         assert_eq!(prepared.fresh_leaves(), frozen.fresh_leaves());
         for index in [0, 0x400, 0x41f, 0x420, 0x4bf] {
             assert_eq!(
-                prepared.byte_at(index, domain),
-                direct.byte_at(index, domain)
+                prepared.byte_at(index, domain.borrowed()),
+                direct.byte_at(index, domain.borrowed())
             );
             assert_eq!(
-                prepared.read_word(&v(index), domain),
-                direct.read_word(&v(index), domain)
+                prepared.read_word(&v(index), domain.borrowed()),
+                direct.read_word(&v(index), domain.borrowed())
             );
         }
-        let output = prepared.slice(&v(0x400), &v(192), 2048, domain).unwrap();
-        assert_eq!(output.read_word(&v(0), domain).singleton(), expected_word);
+        let output = prepared
+            .slice(&v(0x400), &v(192), domain.borrowed())
+            .unwrap();
+        assert_eq!(
+            output.read_word(&v(0), domain.borrowed()).singleton(),
+            expected_word
+        );
         if let Some(expected) = expected_word {
             assert_eq!(
-                output.exact_bytes().unwrap()[..32],
+                output
+                    .exact_bytes(
+                        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                            .borrowed()
+                    )
+                    .unwrap()[..32],
                 expected.to_be_bytes::<32>()
             );
         } else {
             assert_eq!(prepared, frozen);
-            assert_eq!(prepared.read_word(&v(0x400), domain), historical);
+            assert_eq!(prepared.read_word(&v(0x400), domain.borrowed()), historical);
         }
-        assert_eq!(frozen.read_word(&v(0x400), domain), historical);
+        assert_eq!(frozen.read_word(&v(0x400), domain.borrowed()), historical);
     }
 
     // A later serial proof error must not publish the earlier wrapper fact.
     let mut failed = frozen.clone();
     let mut error_calls = Vec::new();
     assert_eq!(
-        failed.refine_guards(domain, policy().expressions(), &mut |condition| {
-            error_calls.push(condition.clone());
-            if error_calls.len() == 2 {
-                Err(QueryReason::ExpressionLimit)
-            } else {
-                Ok(Some(true))
+        failed.refine_guards(
+            domain.borrowed(),
+            policy().expressions(),
+            &mut |condition| {
+                error_calls.push(condition.clone());
+                if error_calls.len() == 2 {
+                    Err(QueryReason::ExpressionLimit)
+                } else {
+                    Ok(Some(true))
+                }
             }
-        }),
+        ),
         Err(GuardRefinementError::Proof(QueryReason::ExpressionLimit)),
     );
     assert_eq!(error_calls, expected_order[..2]);
     assert_eq!(failed, frozen);
-    assert_eq!(failed.read_word(&v(0x400), domain), historical);
+    assert_eq!(failed.read_word(&v(0x400), domain.borrowed()), historical);
 }
 
 #[test]
 fn call_result_guard_derives_selector_truth_and_refines_the_full_output() {
     let (joined, selector, branch) = call_output();
-    let domain = Domain::default();
-    let before = joined.read_word(&v(0x400), domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let before = joined.read_word(&v(0x400), domain.borrowed());
     assert!(before.contains(U256::ZERO));
     assert!(before.contains(U256::from(512)));
     for (failure, expected) in [(false, 512), (true, 0)] {
         let mut relations = RelationState::default();
         assert_eq!(
-            relations.assume(&branch, failure, &policy()),
+            relations.assume(&branch, failure, &policy(), domain.borrowed()),
             CheckResult::MayBeFeasible
         );
         // ISZERO(ITE(selector, 1, 0)) determines truth, not the
         // particular nonzero word used as a selector.
         if failure {
             assert_eq!(
-                relations.local_value(&selector, &policy()),
-                ValueQuery::Exact(U256::ZERO)
+                relations.local_value(&selector, &policy(), domain.borrowed()),
+                EvmValueQuery::Exact(U256::ZERO)
             );
         } else {
-            let ValueQuery::Bounds(bounds) = relations.local_value(&selector, &policy()) else {
+            let EvmValueQuery::Bounds(bounds) =
+                relations.local_value(&selector, &policy(), domain.borrowed())
+            else {
                 panic!("the nonzero selector still includes different words");
             };
             assert!(bounds.contains(U256::ONE));
@@ -312,94 +356,104 @@ fn call_result_guard_derives_selector_truth_and_refines_the_full_output() {
         let mut derived = joined.clone();
         assert!(
             derived
-                .refine_guards(domain, policy().expressions(), &mut |e| prove(
+                .refine_guards(domain.borrowed(), policy().expressions(), &mut |e| prove(
                     &relations, e
                 ))
                 .unwrap()
         );
         assert_eq!(derived.state_root(), joined.state_root());
         assert_eq!(derived.fresh_leaves(), joined.fresh_leaves());
-        let output = derived.slice(&v(0x400), &v(192), 2048, domain).unwrap();
+        let output = derived
+            .slice(&v(0x400), &v(192), domain.borrowed())
+            .unwrap();
         assert_eq!(
-            output.read_word(&v(0), domain).singleton(),
+            output.read_word(&v(0), domain.borrowed()).singleton(),
             Some(U256::from(expected))
         );
         assert_eq!(
-            output.exact_bytes().unwrap()[..32],
+            output
+                .exact_bytes(
+                    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                        .borrowed()
+                )
+                .unwrap()[..32],
             U256::from(expected).to_be_bytes::<32>()
         );
 
         // The explicit selector premise independently gives the same full
         // projection; it cannot make the already derived proof stronger.
         assert_eq!(
-            relations.assume(&selector, !failure, &policy()),
+            relations.assume(&selector, !failure, &policy(), domain.borrowed()),
             CheckResult::MayBeFeasible
         );
         let mut explicit = joined.clone();
         assert!(
             explicit
-                .refine_guards(domain, policy().expressions(), &mut |e| prove(
+                .refine_guards(domain.borrowed(), policy().expressions(), &mut |e| prove(
                     &relations, e
                 ))
                 .unwrap()
         );
         assert_eq!(explicit, derived);
         assert!(before.singleton().is_none());
-        assert_eq!(joined.read_word(&v(0x400), domain), before);
+        assert_eq!(joined.read_word(&v(0x400), domain.borrowed()), before);
     }
 }
 
 #[test]
 fn global_refinement_callbacks_do_not_reject_inactive_conditional_sources() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = policy();
     let x = ExprId::fresh().unwrap();
     let guard = ExprId::fresh().unwrap();
-    let bounded = AbstractValue::unsigned_range(U256::ONE, U256::from(9))
+    let bounded = TestValue::unsigned_range(U256::ONE, U256::from(9))
         .unwrap()
         .with_expression(x.clone());
-    let mut yes = ByteArray::memory();
-    yes.write_word(&v(0), &bounded, 128, domain).unwrap();
-    let mut no = ByteArray::memory();
+    let mut yes = TestBytes::memory();
+    yes.write_word(&v(0), &bounded, domain.borrowed()).unwrap();
+    let mut no = TestBytes::memory();
     no.write_word(
         &v(0),
-        &AbstractValue::top().with_expression(x.clone()),
-        128,
-        domain,
+        &TestValue::top().with_expression(x.clone()),
+        domain.borrowed(),
     )
     .unwrap();
     let joined = yes
-        .join_guarded(&no, domain, guard.clone(), limits.expressions())
+        .join_guarded(&no, domain.borrowed(), guard.clone(), limits.expressions())
         .unwrap();
     let snapshot = joined.clone();
     let mut relations = RelationState::default();
     assert_eq!(
-        relations.assume(&guard, false, &limits),
+        relations.assume(&guard, false, &limits, domain.borrowed()),
         CheckResult::MayBeFeasible
     );
     relations.observe(&x, v(20).numeric(), &limits).unwrap();
-    assert_eq!(relations.check(&limits), CheckResult::MayBeFeasible);
+    assert_eq!(
+        relations.check(&limits, domain.borrowed()),
+        CheckResult::MayBeFeasible
+    );
     // This is the real caller's rejection condition. It is correct for a
     // conjunction, but this bound holds only on the inactive true branch.
     assert_eq!(
-        relations.refine_numeric(&x, bounded.numeric(), domain, &limits),
-        ScalarQuery::Infeasible
+        relations.refine_numeric(&x, bounded.numeric(), domain.borrowed(), &limits),
+        EvmScalarQuery::Infeasible
     );
     for keyed in [false, true] {
         let mut current = joined.clone();
         let mut failed = false;
         let mut visited_x = false;
-        let mut refine = |expression: &ExprId, value: &mut AbstractValue| {
+        let mut refine = |expression: &ExprId, value: &mut TestValue| {
             if failed || value.singleton().is_some() || !relations.relevant(expression) {
                 return;
             }
             visited_x |= expression == &x;
-            match relations.refine_numeric(expression, value.numeric(), domain, &limits) {
-                ScalarQuery::Refined { numeric, .. } => {
+            match relations.refine_numeric(expression, value.numeric(), domain.borrowed(), &limits)
+            {
+                EvmScalarQuery::Refined { numeric, .. } => {
                     *value = value.clone().with_numeric(*numeric);
                 }
-                ScalarQuery::Infeasible => failed = true,
-                ScalarQuery::Unchanged => {}
+                EvmScalarQuery::Infeasible => failed = true,
+                EvmScalarQuery::Unchanged => {}
                 other => panic!("unexpected global refinement result: {other:?}"),
             }
         };
@@ -438,7 +492,7 @@ fn global_refinement_callbacks_do_not_reject_inactive_conditional_sources() {
         assert!(retained_bound, "the inactive source bound must survive");
         assert!(
             current
-                .refine_guards(domain, limits.expressions(), &mut |condition| {
+                .refine_guards(domain.borrowed(), limits.expressions(), &mut |condition| {
                     prove(&relations, condition)
                 })
                 .unwrap()
@@ -447,7 +501,7 @@ fn global_refinement_callbacks_do_not_reject_inactive_conditional_sources() {
             current.operands.get(&guard).unwrap().singleton(),
             Some(U256::ZERO)
         );
-        let read = current.read_word_checked(&v(0), domain).unwrap();
+        let read = current.read_word_checked(&v(0), domain.borrowed()).unwrap();
         assert_eq!(read.singleton(), Some(U256::from(20)));
         assert_eq!(read.expression(), Some(&x));
         assert_eq!(current.state_root(), joined.state_root());
@@ -458,31 +512,30 @@ fn global_refinement_callbacks_do_not_reject_inactive_conditional_sources() {
 
 #[test]
 fn retained_operand_keys_refine_short_return_copy_and_preserve_its_suffix() {
-    let domain = Domain::default();
-    let returndata = ByteArray::unknown()
-        .summary_projection(domain)
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let returndata = TestBytes::unknown()
+        .summary_projection(domain.borrowed())
         .unwrap()
-        .instantiate(domain)
+        .instantiate(domain.borrowed())
         .unwrap();
     let length = returndata.len().expression().unwrap().clone();
-    let mut memory = ByteArray::memory();
+    let mut memory = TestBytes::memory();
     let mut prior = vec![0xaa; 32];
     prior.extend([0xbb; 32]);
     memory
         .copy_from(
             &v(32),
-            &ByteArray::exact(&prior),
+            &TestBytes::exact(&prior),
             &v(0),
             &v(64),
-            128,
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     memory
-        .copy_return_data(&v(32), &returndata, &v(16), 128, domain)
+        .copy_return_data(&v(32), &returndata, &v(16), domain.borrowed())
         .unwrap();
     let root = memory.state_root().clone();
-    assert!(memory.byte_at(33, domain).singleton().is_none());
+    assert!(memory.byte_at(33, domain.borrowed()).singleton().is_none());
     // Optional value expressions may be dropped by a numerical projection;
     // retained operand keys still identify exactly the same source terms.
     memory.refine_operands(&mut |_, value| value.forget_expression());
@@ -495,38 +548,40 @@ fn retained_operand_keys_refine_short_return_copy_and_preserve_its_suffix() {
     .unwrap();
     let mut relations = RelationState::default();
     assert_eq!(
-        relations.assume(&equal, true, &policy()),
+        relations.assume(&equal, true, &policy(), domain.borrowed()),
         CheckResult::MayBeFeasible
     );
     memory.refine_operands(&mut |expression, value| match relations.refine_numeric(
         expression,
         value.numeric(),
-        domain,
+        domain.borrowed(),
         &policy(),
     ) {
-        ScalarQuery::Refined { numeric, .. } => {
+        EvmScalarQuery::Refined { numeric, .. } => {
             *value = value.clone().with_numeric(*numeric);
         }
-        ScalarQuery::Unchanged => {}
+        EvmScalarQuery::Unchanged => {}
         result => panic!("reachable operand refinement expected: {result:?}"),
     });
     assert!(
         memory
-            .refine_guards(domain, policy().expressions(), &mut |condition| prove(
-                &relations, condition
-            ))
+            .refine_guards(
+                domain.borrowed(),
+                policy().expressions(),
+                &mut |condition| prove(&relations, condition)
+            )
             .unwrap()
     );
     assert_eq!(memory.state_root(), &root);
     for index in 33..64 {
         assert_eq!(
-            memory.byte_at(index, domain).singleton(),
+            memory.byte_at(index, domain.borrowed()).singleton(),
             Some(U256::from(0xaa))
         );
     }
     for index in 64..96 {
         assert_eq!(
-            memory.byte_at(index, domain).singleton(),
+            memory.byte_at(index, domain.borrowed()).singleton(),
             Some(U256::from(0xbb))
         );
     }
@@ -537,7 +592,7 @@ fn retained_operand_keys_refine_short_return_copy_and_preserve_its_suffix() {
 fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
     let (mut joined, selector, _) = call_output();
     let original = joined.clone();
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     assert_eq!(
         joined.guard_conditions(policy().expressions()).unwrap(),
         BTreeSet::from([selector.clone()]),
@@ -546,7 +601,7 @@ fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
     let mut calls = 0;
     assert!(
         joined
-            .refine_guards(domain, policy().expressions(), &mut |_| {
+            .refine_guards(domain.borrowed(), policy().expressions(), &mut |_| {
                 calls += 1;
                 Ok::<_, QueryReason>(None)
             })
@@ -556,7 +611,7 @@ fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
     assert_eq!(joined, original);
     calls = 0;
     assert_eq!(
-        joined.refine_guards(domain, policy().expressions(), &mut |_| {
+        joined.refine_guards(domain.borrowed(), policy().expressions(), &mut |_| {
             calls += 1;
             Err(QueryReason::ExpressionLimit)
         }),
@@ -573,7 +628,7 @@ fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
     calls = 0;
     assert!(
         joined
-            .refine_guards(domain, tiny, &mut |_| {
+            .refine_guards(domain.borrowed(), tiny, &mut |_| {
                 calls += 1;
                 Ok::<_, QueryReason>(Some(true))
             })
@@ -593,7 +648,7 @@ fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
         assert_eq!(joined, original);
         assert!(
             joined
-                .refine_guards(domain, policy().expressions(), &mut |_| {
+                .refine_guards(domain.borrowed(), policy().expressions(), &mut |_| {
                     calls += 1;
                     Ok::<_, QueryReason>(Some(true))
                 })
@@ -606,18 +661,18 @@ fn unknown_error_cancel_and_tiny_budget_leave_guarded_history_unchanged() {
 
 #[test]
 fn guard_projection_for_large_lazy_copy_visits_metadata_only_and_renames_facts() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let size = 1024 * 1024;
-    let source = ByteArray::unknown();
-    let mut changed = ByteArray::memory();
+    let source = TestBytes::unknown();
+    let mut changed = TestBytes::memory();
     changed
-        .copy_from(&v(0), &source, &v(0), &v(size), size, domain)
+        .copy_from(&v(0), &source, &v(0), &v(size), domain.borrowed())
         .unwrap();
     let guard = ExprId::fresh().unwrap();
     let mut joined = changed
         .join_guarded(
-            &ByteArray::memory(),
-            domain,
+            &TestBytes::memory(),
+            domain.borrowed(),
             guard.clone(),
             policy().expressions(),
         )
@@ -625,12 +680,12 @@ fn guard_projection_for_large_lazy_copy_visits_metadata_only_and_renames_facts()
     let mut calls = 0;
     let mut relations = RelationState::default();
     assert_eq!(
-        relations.assume(&guard, true, &policy()),
+        relations.assume(&guard, true, &policy(), domain.borrowed()),
         CheckResult::MayBeFeasible
     );
     assert!(
         joined
-            .refine_guards(domain, policy().expressions(), &mut |e| {
+            .refine_guards(domain.borrowed(), policy().expressions(), &mut |e| {
                 calls += 1;
                 prove(&relations, e)
             })
@@ -645,6 +700,7 @@ fn guard_projection_for_large_lazy_copy_visits_metadata_only_and_renames_facts()
         .rename_fresh(
             &BTreeMap::from([(guard, replacement.clone())]),
             policy().expressions(),
+            domain.borrowed(),
         )
         .unwrap();
     assert!(

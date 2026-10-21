@@ -1,14 +1,14 @@
 //! Content proofs must survive the native read/identity/store boundary.
 
 use super::*;
-use crate::{
-    Fork,
-    analysis::{ExecutionConfig, OutcomeKind, Status, analyze_world},
-    domain::provenance::Origin,
-    world::{Account, Entry, World, bytes::zero},
-};
 use alloy_primitives::Address;
 use revm_bytecode::opcode;
+use {
+    crate::Fork, crate::analysis::ExecutionConfig, crate::analysis::OutcomeKind,
+    crate::analysis::Status, crate::domain::provenance::Origin, crate::world::bytes::zero,
+    crate::world::test_support::TestAccount, crate::world::test_support::TestEntry,
+    crate::world::test_support::TestWorld,
+};
 
 #[test]
 fn literal_loads_survive_runtime_identification_and_storage_joins() {
@@ -20,24 +20,37 @@ fn literal_loads_survive_runtime_identification_and_storage_joins() {
         // into slot0. A new unbound Fresh per read loses zero after their join.
         let code = format!("34600b575f{load:02x}5f556011565b6020{load:02x}5f555b00");
         let owner = Address::repeat_byte(0x31);
-        let mut world = World::new(Fork::Osaka, "word-proof:runtime-store-join");
+        let mut world = TestWorld::new(Fork::Osaka, "word-proof:runtime-store-join");
         world
-            .insert(owner, Account::from_hex(&code, Fork::Osaka).unwrap())
+            .insert(owner, TestAccount::from_hex(&code, Fork::Osaka).unwrap())
             .unwrap();
-        let input = Entry::concrete(
+        let input = TestEntry::concrete(
             owner,
             Address::repeat_byte(0x32),
-            AbstractValue::top(),
-            ByteArray::empty(),
+            TestValue::top(),
+            TestBytes::empty(),
         );
-        let graph = analyze_world(
-            world,
-            input,
-            ExecutionConfig {
-                root_terminal_coverage: false,
-                ..ExecutionConfig::default()
-            },
-        )
+        let graph = {
+            let algebra =
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+            let policies = crate::analysis::EnginePolicies::new(
+                crate::analysis::ContextInsensitive,
+                crate::analysis::MergeResumeStatus,
+            );
+            let mut extension = crate::analysis::cooperation::NoExtension;
+            let control = crate::analysis::control::Control::default();
+            let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+            let input = crate::analysis::AnalysisInput::new(world, input).unwrap();
+            let mut engine = engine;
+            engine.run(
+                input,
+                ExecutionConfig {
+                    root_terminal_coverage: false,
+                    ..ExecutionConfig::default()
+                },
+                &control,
+            )
+        }
         .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         assert!(graph.states().iter().any(|state| {
@@ -53,9 +66,17 @@ fn literal_loads_survive_runtime_identification_and_storage_joins() {
         for outcome in returns {
             let value = outcome
                 .store
-                .read_checked(owner, &zero(), Domain::default())
+                .read_checked(
+                    owner,
+                    &zero(),
+                    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                        .borrowed(),
+                )
                 .unwrap();
-            assert_eq!(value.numeric(), zero().numeric());
+            assert_eq!(
+                value.numeric(),
+                zero::<crate::domain::NumericValue>().numeric()
+            );
             assert!(
                 value
                     .provenance()
@@ -71,32 +92,31 @@ fn literal_loads_survive_runtime_identification_and_storage_joins() {
 
 #[test]
 fn prepared_and_complete_reads_keep_the_computed_literal_certificate() {
-    let domain = Domain::default();
-    let mut branches = [ByteArray::memory(), ByteArray::memory()];
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut branches = [TestBytes::memory(), TestBytes::memory()];
     for (index, memory) in branches.iter_mut().enumerate() {
         memory
             .write_word(
-                &AbstractValue::constant(U256::from(32)),
-                &AbstractValue::constant(U256::from(index + 1))
+                &TestValue::constant(U256::from(32)),
+                &TestValue::constant(U256::from(index + 1))
                     .with_expression(ExprId::fresh().unwrap()),
-                4096,
-                domain,
+                domain.borrowed(),
             )
             .unwrap();
     }
     let memory = branches[0]
         .join_guarded(
             &branches[1],
-            domain,
+            domain.borrowed(),
             ExprId::fresh().unwrap(),
-            limits(ValueAlgebra::new(&domain)),
+            limits(domain.borrowed()),
         )
         .unwrap();
     let frozen = memory.clone();
     for prepared in [true, false] {
         let mut budget = WorkBudget::new(100_000_000);
         let mut plan = memory
-            .prepare_word_read(&zero(), domain, &mut budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut budget)
             .unwrap()
             .unwrap();
         assert!(plan.preparation.is_some());
@@ -107,7 +127,10 @@ fn prepared_and_complete_reads_keep_the_computed_literal_certificate() {
             plan.preparation = None;
         }
         let value = plan.read_word_budgeted(&mut budget).unwrap().unwrap();
-        assert_eq!(value.numeric(), zero().numeric());
+        assert_eq!(
+            value.numeric(),
+            zero::<crate::domain::NumericValue>().numeric()
+        );
         assert_eq!(
             value.expression().and_then(ExprId::as_constant),
             Some(U256::ZERO)
@@ -119,18 +142,20 @@ fn prepared_and_complete_reads_keep_the_computed_literal_certificate() {
 
 #[test]
 fn exact_nonliteral_word_sources_remain_independent() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let mut expressions = Vec::new();
     for _ in 0..2 {
         let source = ExprId::fresh().unwrap();
-        let input = AbstractValue::constant(U256::from(7))
+        let input = TestValue::constant(U256::from(7))
             .with_origin(Origin::Storage)
             .with_expression(source.clone());
-        let mut memory = ByteArray::memory();
-        memory.write_word(&zero(), &input, 4096, domain).unwrap();
+        let mut memory = TestBytes::memory();
+        memory
+            .write_word(&zero(), &input, domain.borrowed())
+            .unwrap();
         let mut budget = WorkBudget::new(100_000_000);
         let value = memory
-            .prepare_word_read(&zero(), domain, &mut budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut budget)
             .unwrap()
             .unwrap()
             .read_word_budgeted(&mut budget)

@@ -82,7 +82,11 @@ fn semantic_identity_cancel_and_label_only_frontiers_cannot_start_a_retry() {
         RangeError::Expression(ExprError::Unsupported(0xff)),
     ] {
         let mut h = Harness::new("525b00");
-        let input = instantiate(&h.table.nodes[0].payload, h.config.domain().unwrap()).unwrap();
+        let input = instantiate(
+            &h.table.nodes[0].payload,
+            crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+        )
+        .unwrap();
         let mut execution = transfer::empty_execution(input);
         transfer::boundary_bytes(&mut execution, 0, error);
         assert!(execution.retention_failures.is_empty());
@@ -99,7 +103,11 @@ fn semantic_identity_cancel_and_label_only_frontiers_cannot_start_a_retry() {
     // This is also the missing-guard/inherited-marker control: a public label
     // without a raw producer cause supplies no retry permission.
     let mut h = Harness::new("525b00");
-    let input = instantiate(&h.table.nodes[0].payload, h.config.domain().unwrap()).unwrap();
+    let input = instantiate(
+        &h.table.nodes[0].payload,
+        crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+    )
+    .unwrap();
     let mut execution = transfer::empty_execution(input);
     transfer::boundary(
         &mut execution,
@@ -203,7 +211,8 @@ fn incoming_growth_and_duplicate_inputs_keep_one_fixed_coarse_mode() {
         RuntimeRetry::Coarse(coarse) => coarse.layout().clone(),
         _ => panic!("must have promoted"),
     };
-    let domain = h.config.domain().unwrap();
+    let domain = crate::analysis::testing::product(h.config_numeric.spec());
+    let domain = domain.borrowed();
     let shared = domain
         .join(&word(7), &word(9))
         .with_expression(ExprId::fresh().unwrap());
@@ -239,16 +248,20 @@ fn incoming_growth_and_duplicate_inputs_keep_one_fixed_coarse_mode() {
         };
         assert!(semantic_eq(&layout, coarse.layout()));
         let roundtrip = form(
-            &instantiate(&node.payload, h.config.domain().unwrap()).unwrap(),
+            &instantiate(
+                &node.payload,
+                crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+            )
+            .unwrap(),
             &h.entry,
-            h.config.domain().unwrap(),
+            crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
         )
         .unwrap();
         let joined = coarse
             .join(
                 &node.payload,
                 &roundtrip,
-                crate::domain::ValueAlgebra::new(h.config.domain().unwrap()).borrowed(),
+                crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
                 &mut h.budget,
                 false,
             )
@@ -266,7 +279,7 @@ fn an_already_coarse_node_keeps_its_frontier_without_a_second_promotion() {
     assert!(h.retry(first).frontiers.is_empty());
     let canonical = h.table.nodes[0].payload.clone();
     // The plain input root still fits five nodes; its next WriteWord does not.
-    h.config.analysis.relations.max_nodes = 5;
+    h.config_numeric.relations.max_nodes = 5;
     let failed = h.first();
     assert_eq!(failed.retention_failures, [(0, RetentionCause::State)]);
     assert_eq!(h.counters.transfers, 3);
@@ -300,14 +313,18 @@ fn the_last_allowed_transfer_can_publish_a_complete_coarse_execution() {
 #[test]
 fn replacing_a_local_attempt_does_not_clear_earlier_table_evidence() {
     let mut h = Harness::new("525b00");
-    let input = instantiate(&h.table.nodes[0].payload, h.config.domain().unwrap()).unwrap();
+    let input = instantiate(
+        &h.table.nodes[0].payload,
+        crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+    )
+    .unwrap();
     h.solver()
         .frontier(input.clone(), FrontierReason::UnsupportedOpcode(0xfe), 99);
     h.solver()
         .publish(
             0,
             OutcomeKind::Failure,
-            crate::world::ByteArray::empty(),
+            crate::analysis::testing::ByteArray::empty(),
             input.store,
         )
         .unwrap();

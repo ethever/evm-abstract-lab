@@ -7,7 +7,7 @@
 use evm_abstract_notation::Symbol;
 
 use crate::{
-    analysis::{EvmWorldAnalysis, WorldAnalysis},
+    analysis::EvmWorldAnalysis,
     domain::{EvmValue, WordElement},
     world::{EvmStore, Existence, SnapshotIdentity},
 };
@@ -18,7 +18,7 @@ use std::fmt::Write;
 pub(crate) mod environment;
 mod explain;
 mod json;
-pub use json::{EvmJsonEvidence, JsonEvidence, evidence, evidence_with};
+pub use json::{EvmJsonEvidence, evidence};
 mod partial;
 mod ssa;
 mod teaching;
@@ -27,48 +27,77 @@ pub use text::render as text;
 
 /// 从捕获代码、状态栈和可读 SSA 生成默认教学解释。
 /// 每个结果和未完成前沿单独保留；完整效果与捕获记录见 [`explain_verbose`]。
-pub fn explain(analysis: &WorldAnalysis) -> Result<String, crate::ssa::SsaError> {
-    explain::teaching::render(analysis)
+pub fn explain<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<String, crate::ssa::SsaError> {
+    explain::teaching::render(analysis, algebra, budget)
 }
 
 /// Explain recorded execution progress while retaining every unresolved frontier.
 /// Converged analyses retain the ordinary strict SSA output.
-pub fn explain_with_partial_ssa(analysis: &WorldAnalysis) -> Result<String, crate::ssa::SsaError> {
-    explain::teaching::render_partial(analysis)
+pub fn explain_with_partial_ssa<
+    N: WordElement,
+    D: crate::domain::EvmNumericAlgebra<Element = N>,
+>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<String, crate::ssa::SsaError> {
+    explain::teaching::render_partial(analysis, algebra, budget)
 }
 
 /// 展开完整机器报告、捕获记录与逐条指令效果 SSA。
 /// 未完成分析保留报告及前沿，不产生完整 SSA。
-pub fn explain_verbose(analysis: &WorldAnalysis) -> Result<String, crate::ssa::SsaError> {
-    explain::render(analysis)
+pub fn explain_verbose<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<String, crate::ssa::SsaError> {
+    explain::render(analysis, algebra, budget)
 }
 
 /// Expand machine evidence and optionally include its typed partial SSA artifact.
-pub fn explain_verbose_with_partial_ssa(
-    analysis: &WorldAnalysis,
+pub fn explain_verbose_with_partial_ssa<
+    N: WordElement,
+    D: crate::domain::EvmNumericAlgebra<Element = N>,
+>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
 ) -> Result<String, crate::ssa::SsaError> {
-    explain::render_partial(analysis)
+    explain::render_partial(analysis, algebra, budget)
 }
 
 /// 显示与该分析相匹配、已经验证的帧栈和整机效果 SSA。
-pub fn ssa(analysis: &WorldAnalysis, ir: &crate::ssa::WorldSsa) -> String {
+pub fn ssa<N: WordElement>(analysis: &EvmWorldAnalysis<N>, ir: &crate::ssa::WorldSsa) -> String {
     ssa::render(analysis, ir)
 }
 
 /// Render a partial artifact built from this same native machine analysis.
 /// Normal progress and effect bookkeeping are omitted; exceptional coverage,
 /// open incoming edges and original frontiers remain visible.
-pub fn partial_ssa(analysis: &WorldAnalysis, ir: &crate::ssa::PartialWorldSsa) -> String {
+pub fn partial_ssa<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ir: &crate::ssa::PartialWorldSsa<N>,
+) -> String {
     partial::render(analysis, ir)
 }
 
 /// Expand all instruction phases and effect dependencies of a partial artifact.
-pub fn partial_ssa_verbose(analysis: &WorldAnalysis, ir: &crate::ssa::PartialWorldSsa) -> String {
+pub fn partial_ssa_verbose<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ir: &crate::ssa::PartialWorldSsa<N>,
+) -> String {
     partial::render_verbose(analysis, ir)
 }
 
 /// Render the shared final SSA while retaining native state and transition IDs.
-pub fn normalized_ssa(analysis: &WorldAnalysis, ir: &crate::ssa::NormalizedSsa) -> String {
+pub fn normalized_ssa<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ir: &crate::ssa::NormalizedSsa<N>,
+) -> String {
     if ir.complete() {
         ssa::teaching::render_normalized(analysis, ir)
     } else {
@@ -77,7 +106,10 @@ pub fn normalized_ssa(analysis: &WorldAnalysis, ir: &crate::ssa::NormalizedSsa) 
 }
 
 /// Expand frame, phase and effect evidence around the same final computations.
-pub fn normalized_ssa_verbose(analysis: &WorldAnalysis, ir: &crate::ssa::NormalizedSsa) -> String {
+pub fn normalized_ssa_verbose<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ir: &crate::ssa::NormalizedSsa<N>,
+) -> String {
     if ir.complete() {
         ssa::render_normalized(analysis, ir)
     } else {
@@ -86,7 +118,10 @@ pub fn normalized_ssa_verbose(analysis: &WorldAnalysis, ir: &crate::ssa::Normali
 }
 
 /// DOT graph preserving call/return/revert/failure edge labels and frontiers.
-pub fn dot(analysis: &WorldAnalysis) -> String {
+pub fn dot<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+) -> String {
     let fingerprint = match analysis.world().fingerprint() {
         Ok(fingerprint) => fingerprint,
         Err(error) => {
@@ -106,7 +141,7 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
             analysis.status(),
             identity(analysis.world().identity()),
             fingerprint,
-            environment::summary(&analysis.entry().environment, Some(analysis.world().identity())),
+            environment::summary(&analysis.entry().environment, Some(analysis.world().identity()), algebra),
             analysis.summary_stats().hits,
             analysis.summary_stats().misses,
             analysis.summary_stats().published,
@@ -249,19 +284,11 @@ pub fn dot(analysis: &WorldAnalysis) -> String {
     output
 }
 
-/// JSON evidence retains the analysis schema and adds computed snapshot/account facts.
-pub fn json(analysis: &WorldAnalysis) -> Result<serde_json::Value, crate::render::json::JsonError> {
-    let encoded = crate::render::json::compact(&evidence(analysis)?)?;
-    Ok(serde_json::from_str(&encoded)?)
-}
-
-/// Native JSON evidence for the selected numeric element, without projecting
-/// execution into the default domain. Account observations and terminal tuples
-/// retain the same element family as the analysis.
-pub fn json_with<N: WordElement>(
+/// Native JSON evidence for the selected numeric carrier, including snapshot facts.
+pub fn json<N: WordElement>(
     analysis: &EvmWorldAnalysis<N>,
 ) -> Result<serde_json::Value, crate::render::json::JsonError> {
-    let encoded = crate::render::json::compact(&evidence_with(analysis)?)?;
+    let encoded = crate::render::json::compact(&evidence(analysis)?)?;
     Ok(serde_json::from_str(&encoded)?)
 }
 

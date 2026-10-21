@@ -12,7 +12,7 @@ use super::{
 use crate::{
     Fork,
     bytecode::Program,
-    domain::{DomainSpec, EvmValue, NumericValue, WordElement, symbolic::ExprId},
+    domain::{DomainSpec, EvmValue, WordElement, symbolic::ExprId},
     world::{EvmByteArray, EvmEntry, EvmSnapshot, EvmStore},
 };
 use serde::Serialize;
@@ -201,10 +201,3 @@ impl<N: WordElement> EvmRootTerminalCoverage<N> {
         &self.trigger
     }
 }
-
-/// Root input binding for the default numeric assembly.
-pub type RootTerminalInputBinding = EvmRootTerminalInputBinding<NumericValue>;
-/// Terminal tuple for the default numeric assembly.
-pub type RootTerminalOutcome = EvmRootTerminalOutcome<NumericValue>;
-/// Separate root terminal relation for the default numeric assembly.
-pub type RootTerminalCoverage = EvmRootTerminalCoverage<NumericValue>;

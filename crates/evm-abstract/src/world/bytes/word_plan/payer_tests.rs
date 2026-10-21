@@ -4,18 +4,20 @@ use crate::{
     world::bytes::{constant, zero},
 };
 
-fn scoped_word(domain: Domain) -> ByteArray {
+fn scoped_word(domain: TestAlgebra) -> TestBytes {
     let key = ExprId::fresh().unwrap();
-    let mut broad = AbstractValue::unsigned_range(U256::ZERO, U256::from(30))
+    let mut broad = TestValue::unsigned_range(U256::ZERO, U256::from(30))
         .unwrap()
         .with_expression(key.clone());
     broad.set_origin(Origin::Calldata);
-    let mut narrow = AbstractValue::unsigned_range(U256::from(5), U256::from(25))
+    let mut narrow = TestValue::unsigned_range(U256::from(5), U256::from(25))
         .unwrap()
         .with_expression(key.clone());
     narrow.set_origin(Origin::Storage);
-    let mut memory = ByteArray::memory();
-    memory.write_word(&zero(), &broad, 4096, domain).unwrap();
+    let mut memory = TestBytes::memory();
+    memory
+        .write_word(&zero(), &broad, domain.borrowed())
+        .unwrap();
     let left = BTreeMap::from([(key.clone(), narrow)]);
     let right = BTreeMap::from([(key, broad)]);
     let empty = conditional::ConditionalFacts::default();
@@ -24,23 +26,22 @@ fn scoped_word(domain: Domain) -> ByteArray {
         (&right, &empty),
         &memory.operands,
         ExprId::constant(U256::ONE),
-        limits(crate::domain::ValueAlgebra::new(&domain)),
+        limits(domain.borrowed()),
     )
     .unwrap();
     memory
 }
 
-fn context_tree(depth: usize, domain: Domain) -> ByteArray {
+fn context_tree(depth: usize, domain: TestAlgebra) -> TestBytes {
     if depth == 0 {
-        let mut memory = ByteArray::memory();
+        let mut memory = TestBytes::memory();
         memory
             .write_word(
                 &zero(),
                 &constant(7)
                     .with_origin(Origin::Storage)
                     .with_expression(ExprId::fresh().unwrap()),
-                4096,
-                domain,
+                domain.borrowed(),
             )
             .unwrap();
         return memory;
@@ -48,16 +49,16 @@ fn context_tree(depth: usize, domain: Domain) -> ByteArray {
     context_tree(depth - 1, domain)
         .join_guarded(
             &context_tree(depth - 1, domain),
-            domain,
+            domain.borrowed(),
             ExprId::fresh().unwrap(),
-            limits(crate::domain::ValueAlgebra::new(&domain)),
+            limits(domain.borrowed()),
         )
         .unwrap()
 }
 
-fn prepare(memory: &ByteArray, domain: Domain, budget: &mut WorkBudget) -> Plan<'static> {
+fn prepare<'a>(memory: &TestBytes, domain: &'a TestAlgebra, budget: &mut WorkBudget) -> Plan<'a> {
     let plan = memory
-        .prepare_word_read(&zero(), domain, budget)
+        .prepare_word_read(&zero(), domain.borrowed(), budget)
         .unwrap()
         .unwrap();
     assert!(plan.preparation.is_some());
@@ -65,16 +66,16 @@ fn prepare(memory: &ByteArray, domain: Domain, budget: &mut WorkBudget) -> Plan<
     assert_eq!(plan.facts, memory.operands);
     assert_eq!(plan.conditional, memory.conditional);
     assert_eq!(plan.offset, zero());
-    assert_eq!(plan.policy.view().spec(), domain.spec());
+    assert_eq!(plan.policy.spec(), domain.spec());
     assert_eq!(
         plan.fallback_work,
-        memory.word_numeric_work(&zero(), domain)
+        memory.word_numeric_work(&zero(), domain.borrowed())
     );
     plan
 }
 
 struct Trial {
-    value: Option<AbstractValue>,
+    value: Option<TestValue>,
     payments: Vec<(bool, usize)>,
     retained_contexts: usize,
     nodes: usize,
@@ -97,21 +98,21 @@ impl Trial {
     }
 }
 
-fn trial(mut plan: Plan, budget: &mut WorkBudget) -> Trial {
+fn trial(mut plan: Plan<'_>, budget: &mut WorkBudget) -> Trial {
     let offset = expr(&plan.offset).unwrap();
     operands::remember(
         &mut plan.facts,
         offset.clone(),
         &plan.offset,
-        plan.policy.view(),
-        limits(plan.policy.view()),
+        plan.policy,
+        limits(plan.policy),
     )
     .unwrap();
-    plan.conditional.check(limits(plan.policy.view())).unwrap();
+    plan.conditional.check(limits(plan.policy)).unwrap();
     let context = conditional::Context::budgeted(
         &plan.facts,
         &plan.conditional,
-        plan.policy.view(),
+        plan.policy,
         plan.preparation.as_ref().unwrap(),
         budget,
     )
@@ -122,7 +123,7 @@ fn trial(mut plan: Plan, budget: &mut WorkBudget) -> Trial {
         plan.length.as_ref(),
         &offset,
         &context,
-        plan.policy.view(),
+        plan.policy,
     )
     .unwrap();
     context.check().unwrap();
@@ -140,7 +141,7 @@ fn trial(mut plan: Plan, budget: &mut WorkBudget) -> Trial {
 
 // Shared only by the existing inline fixtures: measure a real paid trial,
 // excluding its already paid planning/freeze and excluding complete fallback.
-pub(super) fn trial_work(plan: Plan, budget: &mut WorkBudget) -> usize {
+pub(super) fn trial_work(plan: Plan<'_>, budget: &mut WorkBudget) -> usize {
     let before = budget.used();
     let paid = trial(plan, budget).paid();
     assert_eq!(budget.used(), before + paid);
@@ -149,12 +150,14 @@ pub(super) fn trial_work(plan: Plan, budget: &mut WorkBudget) -> usize {
 
 #[test]
 fn prepared_trial_matches_the_complete_evaluator_and_exact_whole_read_work_boundary() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let memory = scoped_word(domain);
     let frozen = memory.clone();
-    let expected = memory.read_word_checked(&zero(), domain).unwrap();
+    let expected = memory
+        .read_word_checked(&zero(), domain.borrowed())
+        .unwrap();
     let mut probe = WorkBudget::new(usize::MAX);
-    let plan = prepare(&memory, domain, &mut probe);
+    let plan = prepare(&memory, &domain, &mut probe);
     let prepared = probe.used();
     let actual = plan.read_word_budgeted(&mut probe).unwrap().unwrap();
     assert_eq!(actual, expected);
@@ -171,7 +174,7 @@ fn prepared_trial_matches_the_complete_evaluator_and_exact_whole_read_work_bound
     for available in [price - 1, price] {
         let mut budget = WorkBudget::new(101 + available);
         assert!(budget.charge(101));
-        let plan = prepare(&memory, domain, &mut budget);
+        let plan = prepare(&memory, &domain, &mut budget);
         let before = budget.used();
         let result = plan.read_word_budgeted(&mut budget).unwrap();
         if available == price {
@@ -193,10 +196,12 @@ fn prepared_trial_matches_the_complete_evaluator_and_exact_whole_read_work_bound
 
 #[test]
 fn an_unpaid_final_reader_or_returns_work_without_paying_or_starting_legacy_fallback() {
-    let domain = numeric::numeric_domain(Domain::default());
+    let domain = crate::world::test_support::numeric_product(crate::domain::ValueAlgebra::new(
+        crate::domain::ProductAlgebra::default(),
+    ));
     let mut memory = scoped_word(domain);
     let key = ExprId::fresh().unwrap();
-    let value = AbstractValue::unsigned_range(U256::ONE, U256::from(3))
+    let value = TestValue::unsigned_range(U256::ONE, U256::from(3))
         .unwrap()
         .with_origin(Origin::Storage)
         .with_expression(key.clone())
@@ -205,14 +210,16 @@ fn an_unpaid_final_reader_or_returns_work_without_paying_or_starting_legacy_fall
         .write_byte(
             ExprId::constant(U256::ZERO),
             key.clone(),
-            limits(crate::domain::ValueAlgebra::new(&domain)).into(),
+            limits(domain.borrowed()).into(),
         )
         .unwrap();
     memory.operands.insert(key, value);
     let frozen = memory.clone();
-    let expected = memory.read_word_checked(&zero(), domain).unwrap();
+    let expected = memory
+        .read_word_checked(&zero(), domain.borrowed())
+        .unwrap();
     let mut probe = WorkBudget::new(usize::MAX);
-    let plan = prepare(&memory, domain, &mut probe);
+    let plan = prepare(&memory, &domain, &mut probe);
     let prepared = probe.used();
     let fallback = plan.fallback_work;
     let trace = trial(plan, &mut probe);
@@ -229,7 +236,7 @@ fn an_unpaid_final_reader_or_returns_work_without_paying_or_starting_legacy_fall
     for exact in [false, true] {
         let mut budget = WorkBudget::new(83 + prepared + prefix + price - usize::from(!exact));
         assert!(budget.charge(83));
-        let plan = prepare(&memory, domain, &mut budget);
+        let plan = prepare(&memory, &domain, &mut budget);
         assert_eq!(plan.fallback_work, fallback);
         let result = plan.read_word_budgeted(&mut budget).unwrap();
         if exact {
@@ -263,21 +270,21 @@ fn an_unpaid_final_reader_or_returns_work_without_paying_or_starting_legacy_fall
 
 #[test]
 fn a_work_stopped_trial_does_not_attach_a_result_or_mutate_its_frozen_plan_payload() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let memory = scoped_word(domain);
     let mut prepaid = WorkBudget::new(usize::MAX);
-    drop(prepare(&memory, domain, &mut prepaid));
+    drop(prepare(&memory, &domain, &mut prepaid));
     let preparation = prepaid.used();
     let mut receipt_budget = WorkBudget::new(usize::MAX);
     let trace = trial(
-        prepare(&memory, domain, &mut receipt_budget),
+        prepare(&memory, &domain, &mut receipt_budget),
         &mut receipt_budget,
     );
     let setup = trace.payments[0].1;
     assert!(!trace.payments[0].0);
     let mut budget = WorkBudget::new(43 + preparation + setup);
     assert!(budget.charge(43));
-    let plan = prepare(&memory, domain, &mut budget);
+    let plan = prepare(&memory, &domain, &mut budget);
     let source = (
         plan.root.clone(),
         plan.facts.clone(),
@@ -288,7 +295,7 @@ fn a_work_stopped_trial_does_not_attach_a_result_or_mutate_its_frozen_plan_paylo
         let context = conditional::Context::budgeted(
             &plan.facts,
             &plan.conditional,
-            crate::domain::ValueAlgebra::new(&domain),
+            domain.borrowed(),
             plan.preparation.as_ref().unwrap(),
             &mut budget,
         )
@@ -300,7 +307,7 @@ fn a_work_stopped_trial_does_not_attach_a_result_or_mutate_its_frozen_plan_paylo
                 None,
                 &expr(&plan.offset).unwrap(),
                 &context,
-                crate::domain::ValueAlgebra::new(&domain)
+                domain.borrowed()
             )
             .unwrap(),
             None
@@ -314,7 +321,7 @@ fn a_work_stopped_trial_does_not_attach_a_result_or_mutate_its_frozen_plan_paylo
                 None,
                 &expr(&plan.offset).unwrap(),
                 &context,
-                crate::domain::ValueAlgebra::new(&domain)
+                domain.borrowed()
             )
             .unwrap(),
             None
@@ -330,12 +337,14 @@ fn a_work_stopped_trial_does_not_attach_a_result_or_mutate_its_frozen_plan_paylo
 
 #[test]
 fn scratch_refusal_prepays_the_complete_original_fallback_on_the_same_budget() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let memory = scoped_word(domain);
     let frozen = memory.clone();
-    let expected = memory.read_word_checked(&zero(), domain).unwrap();
+    let expected = memory
+        .read_word_checked(&zero(), domain.borrowed())
+        .unwrap();
     let mut setup = WorkBudget::new(usize::MAX);
-    let mut plan = prepare(&memory, domain, &mut setup);
+    let mut plan = prepare(&memory, &domain, &mut setup);
     let fallback = plan.fallback_work;
     let preparation = setup.used();
     plan.preparation.as_mut().unwrap().nodes = 0;
@@ -350,7 +359,7 @@ fn scratch_refusal_prepays_the_complete_original_fallback_on_the_same_budget() {
     for available in [prefix + fallback - 1, prefix + fallback] {
         let mut budget = WorkBudget::new(67 + preparation + available);
         assert!(budget.charge(67));
-        let mut plan = prepare(&memory, domain, &mut budget);
+        let mut plan = prepare(&memory, &domain, &mut budget);
         plan.preparation.as_mut().unwrap().nodes = 0;
         let result = plan.read_word_budgeted(&mut budget).unwrap();
         if available == prefix + fallback {
@@ -368,12 +377,14 @@ fn scratch_refusal_prepays_the_complete_original_fallback_on_the_same_budget() {
 
 #[test]
 fn scratch_refusal_after_numeric_work_keeps_that_work_and_pays_the_full_fallback() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let memory = scoped_word(domain);
     let frozen = memory.clone();
-    let expected = memory.read_word_checked(&zero(), domain).unwrap();
+    let expected = memory
+        .read_word_checked(&zero(), domain.borrowed())
+        .unwrap();
     let mut setup = WorkBudget::new(usize::MAX);
-    let plan = prepare(&memory, domain, &mut setup);
+    let plan = prepare(&memory, &domain, &mut setup);
     let preparation = setup.used();
     let fallback = plan.fallback_work;
     let full = trial(plan, &mut setup);
@@ -381,7 +392,7 @@ fn scratch_refusal_after_numeric_work_keeps_that_work_and_pays_the_full_fallback
     assert!(!full.refused && !full.work);
     assert!(full.numeric() > 0);
     assert!(full.nodes > 1);
-    let mut plan = prepare(&memory, domain, &mut setup);
+    let mut plan = prepare(&memory, &domain, &mut setup);
     plan.preparation.as_mut().unwrap().nodes = full.nodes - 1;
     let refused = trial(plan, &mut setup);
     assert!(refused.refused && !refused.work);
@@ -405,7 +416,7 @@ fn scratch_refusal_after_numeric_work_keeps_that_work_and_pays_the_full_fallback
     for available in [prefix + fallback - 1, prefix + fallback] {
         let mut budget = WorkBudget::new(79 + preparation + available);
         assert!(budget.charge(79));
-        let mut plan = prepare(&memory, domain, &mut budget);
+        let mut plan = prepare(&memory, &domain, &mut budget);
         plan.preparation.as_mut().unwrap().nodes = full.nodes - 1;
         let result = plan.read_word_budgeted(&mut budget).unwrap();
         if available == prefix + fallback {
@@ -427,12 +438,14 @@ fn scratch_refusal_after_numeric_work_keeps_that_work_and_pays_the_full_fallback
 
 #[test]
 fn scratch_refusal_after_full_retention_drops_the_graph_and_pays_the_original_fallback() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let memory = context_tree(5, domain);
     let frozen = memory.clone();
-    let expected = memory.read_word_checked(&zero(), domain).unwrap();
+    let expected = memory
+        .read_word_checked(&zero(), domain.borrowed())
+        .unwrap();
     let mut setup = WorkBudget::new(usize::MAX);
-    let plan = prepare(&memory, domain, &mut setup);
+    let plan = prepare(&memory, &domain, &mut setup);
     let preparation = setup.used();
     let maximum = plan.preparation.as_ref().unwrap().nodes;
     let fallback = plan.fallback_work;
@@ -445,7 +458,7 @@ fn scratch_refusal_after_full_retention_drops_the_graph_and_pays_the_original_fa
 
     // Refuse the last N action, after retention has filled, independently of
     // the number of temporary contexts. The original quote is never enlarged.
-    let mut plan = prepare(&memory, domain, &mut setup);
+    let mut plan = prepare(&memory, &domain, &mut setup);
     plan.preparation.as_mut().unwrap().nodes = full.nodes - 1;
     let before_trial = setup.used();
     let refused = trial(plan, &mut setup);
@@ -466,7 +479,7 @@ fn scratch_refusal_after_full_retention_drops_the_graph_and_pays_the_original_fa
     for available in [prefix + fallback - 1, prefix + fallback] {
         let mut budget = WorkBudget::new(83 + preparation + available);
         assert!(budget.charge(83));
-        let mut plan = prepare(&memory, domain, &mut budget);
+        let mut plan = prepare(&memory, &domain, &mut budget);
         plan.preparation.as_mut().unwrap().nodes = full.nodes - 1;
         let result = plan.read_word_budgeted(&mut budget).unwrap();
         if available == prefix + fallback {
@@ -493,20 +506,20 @@ fn scratch_refusal_after_full_retention_drops_the_graph_and_pays_the_original_fa
 
 #[test]
 fn zero_and_pre_cancelled_reads_preserve_work_and_typed_expression_errors() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let memory = scoped_word(domain);
     let frozen = memory.clone();
     let mut zero_budget = WorkBudget::new(0);
     assert!(
         memory
-            .prepare_word_read(&zero(), domain, &mut zero_budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut zero_budget)
             .unwrap()
             .is_none()
     );
     assert!(zero_budget.exhausted());
     assert_eq!(zero_budget.used(), 0);
     let mut setup = WorkBudget::new(usize::MAX);
-    let plan = prepare(&memory, domain, &mut setup);
+    let plan = prepare(&memory, &domain, &mut setup);
     let token = analysis_control::Cancellation::new();
     analysis_control::with_cancellation(&token, || {
         let mut budget = WorkBudget::new(usize::MAX);
@@ -518,7 +531,7 @@ fn zero_and_pre_cancelled_reads_preserve_work_and_typed_expression_errors() {
         );
         assert_eq!(budget.used(), 89);
     });
-    let mut plan = prepare(&memory, domain, &mut setup);
+    let mut plan = prepare(&memory, &domain, &mut setup);
     let error = ExprError::Limit {
         nodes: 100,
         depth: 10,
@@ -532,15 +545,17 @@ fn zero_and_pre_cancelled_reads_preserve_work_and_typed_expression_errors() {
 
 #[test]
 fn actual_metadata_finishes_when_the_unused_n_maximum_cannot_be_prepaid() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let memory = context_tree(2, domain);
     let frozen = memory.clone();
-    let expected = memory.read_word_checked(&zero(), domain).unwrap();
+    let expected = memory
+        .read_word_checked(&zero(), domain.borrowed())
+        .unwrap();
     let mut probe = WorkBudget::new(usize::MAX);
-    let plan = prepare(&memory, domain, &mut probe);
+    let plan = prepare(&memory, &domain, &mut probe);
     let prepared = probe.used();
     let n = plan.preparation.as_ref().unwrap().nodes;
-    let offset_work = zero().work_size();
+    let offset_work = zero::<crate::domain::NumericValue>().work_size();
     let facts = fact_work(&memory.operands);
     let quantum = (4 * (memory.root.work_size() + offset_work) + memory.operands.len() + 8)
         .min(PLANNING_QUANTUM);
@@ -558,7 +573,7 @@ fn actual_metadata_finishes_when_the_unused_n_maximum_cannot_be_prepaid() {
     assert!(receipt > prepared);
     assert!(receipt < prepared + n);
     let mut budget = WorkBudget::new(receipt);
-    let plan = prepare(&memory, domain, &mut budget);
+    let plan = prepare(&memory, &domain, &mut budget);
     assert!(
         !budget.can_afford(n),
         "this exact boundary cannot prepay the unused N maximum"

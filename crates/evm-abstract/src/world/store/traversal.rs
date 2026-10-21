@@ -50,7 +50,7 @@ impl<N: WordElement> EvmStore<N> {
         out
     }
     /// Apply one map to the whole store. Any error leaves the savepoint untouched.
-    pub fn rename_fresh_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn rename_fresh<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         map: &BTreeMap<ExprId, ExprId>,
         limits: ExprLimits,
@@ -98,7 +98,7 @@ impl<N: WordElement> EvmStore<N> {
             for topic in &mut log.topics {
                 rename_value(topic)?;
             }
-            log.data.rename_fresh_with(map, limits, domain)?;
+            log.data.rename_fresh(map, limits, domain)?;
             Ok(())
         })?;
         *self = out;
@@ -109,20 +109,5 @@ impl<N: WordElement> EvmStore<N> {
         let mut failed = self.persistent.failure.is_some() || self.transient.failure.is_some();
         self.visit_values(&mut |value| failed |= value.symbolic_limit_reached());
         failed
-    }
-}
-
-impl EvmStore<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn rename_fresh(
-        &mut self,
-        map: &BTreeMap<ExprId, ExprId>,
-        limits: ExprLimits,
-    ) -> Result<(), StoreError> {
-        self.rename_fresh_with(
-            map,
-            limits,
-            crate::domain::ValueAlgebra::new(crate::domain::Domain::default()).borrowed(),
-        )
     }
 }

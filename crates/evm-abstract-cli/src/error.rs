@@ -1,14 +1,18 @@
 //! Concrete errors at the CLI's acquisition, analysis and output boundary.
 
 use evm_abstract::{
-    analysis::{ConfigError, RpcAnalysisError, layers::SessionError},
+    analysis::{
+        ConfigError, ProjectionError, RpcAnalysisError, cooperation::CooperationError,
+        layers::SessionError,
+    },
     bytecode::DecodeError,
     ssa::SsaError,
     world::rpc::RpcError,
 };
+use std::convert::Infallible;
 use thiserror::Error;
 
-use crate::{evm::EnvironmentInputError, world::InputError};
+use crate::{evm::EnvironmentInputError, numeric::NumericConfigError, world::InputError};
 
 #[derive(Debug, Error)]
 pub(crate) enum CliError {
@@ -19,7 +23,13 @@ pub(crate) enum CliError {
     #[error("{0}")]
     Config(ConfigError),
     #[error("{0}")]
-    Session(SessionError),
+    Session(SessionError<Infallible>),
+    #[error("{0}")]
+    Analysis(CooperationError<Infallible>),
+    #[error("{0}")]
+    Projection(ProjectionError),
+    #[error("{0}")]
+    Numeric(NumericConfigError),
     #[error("{0}")]
     Cancelled(evm_abstract::analysis::control::Cancelled),
     #[error("{0}")]
@@ -66,14 +76,15 @@ impl From<RpcError> for CliError {
     }
 }
 
-impl From<RpcAnalysisError> for CliError {
-    fn from(error: RpcAnalysisError) -> Self {
+impl From<RpcAnalysisError<Infallible>> for CliError {
+    fn from(error: RpcAnalysisError<Infallible>) -> Self {
         match error {
             RpcAnalysisError::Session(SessionError::Cancelled(error)) => Self::Cancelled(error),
             RpcAnalysisError::Session(SessionError::Config(error)) => Self::Config(error),
             RpcAnalysisError::Session(SessionError::World(error)) => {
                 Self::Input(InputError::World(error))
             }
+            RpcAnalysisError::Session(SessionError::Cooperation(error)) => Self::from(error),
             RpcAnalysisError::Session(error) => Self::Session(error),
             RpcAnalysisError::Cancelled(error) => Self::Cancelled(error),
             RpcAnalysisError::Config(error) => Self::Config(error),
@@ -108,3 +119,27 @@ impl From<EnvironmentInputError> for CliError {
 
 #[cfg(test)]
 mod tests;
+
+impl From<CooperationError<Infallible>> for CliError {
+    fn from(error: CooperationError<Infallible>) -> Self {
+        match error {
+            CooperationError::Cancelled => {
+                Self::Cancelled(evm_abstract::analysis::control::Cancelled)
+            }
+            CooperationError::Config(error) => Self::Config(error),
+            error => Self::Analysis(error),
+        }
+    }
+}
+
+impl From<ProjectionError> for CliError {
+    fn from(error: ProjectionError) -> Self {
+        Self::Projection(error)
+    }
+}
+
+impl From<NumericConfigError> for CliError {
+    fn from(error: NumericConfigError) -> Self {
+        Self::Numeric(error)
+    }
+}

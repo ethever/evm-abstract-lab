@@ -1,25 +1,31 @@
 //! Storage reuse distinguishes writes with equal numeric caches and new symbolic roots.
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use std::collections::BTreeMap;
 
 use evm_abstract::{
     Address, Fork, U256,
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         symbolic::{ExprId, ExprKind, SlotStateKind},
     },
-    world::{Account, Store, World},
+    world::{EvmAccount, EvmStore, EvmWorld},
 };
 
-fn word(value: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+fn word(value: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(value))
 }
 
-fn partial_world() -> (World, Address) {
+fn partial_world() -> (EvmWorld<NumericValue>, Address) {
     let address = Address::repeat_byte(0x31);
-    let mut account = Account::unknown();
-    account.storage.insert(U256::from(4), AbstractValue::top());
-    let mut world = World::new(Fork::Osaka, "initial storage dependencies");
+    let mut account = EvmAccount::<NumericValue>::unknown();
+    account
+        .storage
+        .insert(U256::from(4), EvmValue::<NumericValue>::top());
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "initial storage dependencies");
     world.insert(address, account).unwrap();
     (world, address)
 }
@@ -27,13 +33,15 @@ fn partial_world() -> (World, Address) {
 #[test]
 fn strong_top_write_changes_reuse_state_work_and_symbolic_json() {
     let (world, address) = partial_world();
-    let domain = Domain::default();
-    let top = AbstractValue::top();
-    let initial = Store::new(&world);
+    let domain = native::product();
+    let top = EvmValue::<NumericValue>::top();
+    let initial = EvmStore::<NumericValue>::new(&world, native::product().borrowed());
     let initial_root = initial.slot_root(address, false).unwrap();
     let initial_snapshot = initial.snapshot();
     let initial_json = serde_json::to_value(&initial).unwrap();
-    let initial_read = initial.read_checked(address, &word(4), domain).unwrap();
+    let initial_read = initial
+        .read_checked(address, &word(4), domain.borrowed())
+        .unwrap();
 
     let SlotStateKind::Input { source, bindings } = initial_root.kind() else {
         panic!("partial storage must retain its initial observed source");
@@ -78,7 +86,7 @@ fn strong_top_write_changes_reuse_state_work_and_symbolic_json() {
     );
 
     let mut written = initial.clone();
-    written.write(address, &word(4), &top, domain);
+    written.write(address, &word(4), &top, domain.borrowed());
 
     assert_eq!(written.slots(), initial.slots());
     assert_eq!(written.slots().get(&(address, U256::from(4))), Some(&top));
@@ -101,7 +109,9 @@ fn strong_top_write_changes_reuse_state_work_and_symbolic_json() {
     assert_eq!(key, &ExprId::constant(U256::from(4)));
     assert!(matches!(value.kind(), ExprKind::Fresh(_)));
     assert_ne!(value, &bindings[0].value);
-    let written_read = written.read_checked(address, &word(4), domain).unwrap();
+    let written_read = written
+        .read_checked(address, &word(4), domain.borrowed())
+        .unwrap();
     assert_eq!(written_read.numeric(), initial_read.numeric());
     assert_eq!(written_read.provenance(), initial_read.provenance());
     assert_eq!(written_read.expression(), Some(value));
@@ -113,11 +123,15 @@ fn strong_top_write_changes_reuse_state_work_and_symbolic_json() {
         BTreeMap::from([(&bindings[0].value, &top), (value, &top)])
     );
     assert_eq!(
-        written.read_checked(address, &word(4), domain).unwrap(),
+        written
+            .read_checked(address, &word(4), domain.borrowed())
+            .unwrap(),
         written_read
     );
     assert_eq!(
-        initial.read_checked(address, &word(4), domain).unwrap(),
+        initial
+            .read_checked(address, &word(4), domain.borrowed())
+            .unwrap(),
         initial_read
     );
     assert_eq!(initial_snapshot.state(), &initial);
@@ -139,7 +153,7 @@ fn strong_top_write_changes_reuse_state_work_and_symbolic_json() {
     );
     assert_eq!(
         observed_bindings[0]["numeric"],
-        serde_json::json!(top.numeric())
+        serde_json::json!(evm_abstract::domain::WordObservation::top())
     );
     assert_eq!(
         observed["source"]["namespace"],
@@ -191,7 +205,9 @@ fn strong_top_write_changes_reuse_state_work_and_symbolic_json() {
     assert_eq!(restored, initial);
     assert_eq!(restored.slot_root(address, false).unwrap(), initial_root);
     assert_eq!(
-        restored.read_checked(address, &word(4), domain).unwrap(),
+        restored
+            .read_checked(address, &word(4), domain.borrowed())
+            .unwrap(),
         initial_read
     );
     assert_eq!(serde_json::to_value(&restored).unwrap(), initial_json);
@@ -200,13 +216,19 @@ fn strong_top_write_changes_reuse_state_work_and_symbolic_json() {
 #[test]
 fn a_product_singleton_is_a_strong_storage_key() {
     let (world, address) = partial_world();
-    let mut store = Store::new(&world);
+    let mut store = EvmStore::<NumericValue>::new(&world, native::product().borrowed());
     let initial_root = store.slot_root(address, false).unwrap();
-    let key = AbstractValue::unsigned_range(U256::from(4), U256::from(4)).unwrap();
+    let key = EvmValue::<NumericValue>::unsigned_range(U256::from(4), U256::from(4)).unwrap();
     assert!(key.constants().is_none());
-    store.write(address, &key, &word(7), Domain::default());
-    assert_eq!(store.read(address, &word(4), Domain::default()), word(7));
-    assert_eq!(store.read(address, &key, Domain::default()), word(7));
+    store.write(address, &key, &word(7), native::product().borrowed());
+    assert_eq!(
+        store.read(address, &word(4), native::product().borrowed()),
+        word(7)
+    );
+    assert_eq!(
+        store.read(address, &key, native::product().borrowed()),
+        word(7)
+    );
     let root = store.slot_root(address, false).unwrap();
     let SlotStateKind::Store {
         previous,
@@ -221,7 +243,7 @@ fn a_product_singleton_is_a_strong_storage_key() {
     assert_eq!(value, &ExprId::constant(U256::from(7)));
     assert_eq!(
         store
-            .read_checked(address, &key, Domain::default())
+            .read_checked(address, &key, native::product().borrowed())
             .unwrap(),
         word(7)
     );

@@ -1,5 +1,7 @@
 //! Real opcode execution is projected, encoded and parsed before assertions.
 use super::*;
+use evm_abstract::domain::NumericValue;
+use evm_abstract::domain::{ProductAlgebra, ValueAlgebra};
 
 fn analyze_hex(hex: &str) -> api::AnalysisReport {
     crate::analyze::analyze(api::AnalyzeRequest {
@@ -358,9 +360,9 @@ fn legal_twenty_four_kib_codecopy_exports_one_lazy_copy_and_exact_source() {
 }
 #[test]
 fn symbolic_export_limits_and_cancellation_are_typed_without_changing_native_values() {
-    use evm_abstract::domain::{AbstractValue, symbolic::ExprId};
+    use evm_abstract::domain::{EvmValue, symbolic::ExprId};
     let control = Control::default();
-    let source = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    let source = EvmValue::<NumericValue>::top().with_expression(ExprId::fresh().unwrap());
     let retained = source.clone();
     let mut pool = super::super::symbolic::Pool::new(&control);
     pool.limits.max_nodes = 0;
@@ -410,7 +412,7 @@ fn mixed_projection_keeps_binding_scopes_sharing_fresh_numbers_and_work() {
 fn mixed_projection(width: usize) {
     use alloy_primitives::U256;
     use evm_abstract::domain::{
-        AbstractValue, Domain,
+        EvmValue,
         identity::Symbol,
         relational::{CheckResult, RelationLimits, RelationState},
         symbolic::{
@@ -422,10 +424,10 @@ fn mixed_projection(width: usize) {
     let token = ExprId::fresh().unwrap();
     let length = ExprId::input(u64::MAX, Symbol::CalldataLength);
     let cell = ExprId::fresh().unwrap();
-    let numeric = Domain::default()
+    let numeric = ValueAlgebra::new(ProductAlgebra::default())
         .join(
-            &AbstractValue::constant(U256::from(7)),
-            &AbstractValue::constant(U256::from(9)),
+            &EvmValue::<NumericValue>::constant(U256::from(7)),
+            &EvmValue::<NumericValue>::constant(U256::from(9)),
         )
         .numeric()
         .into();
@@ -509,7 +511,12 @@ fn mixed_projection(width: usize) {
 
     let mut relations = RelationState::default();
     assert_eq!(
-        relations.add_equal(&cell, &length, &RelationLimits::default()),
+        relations.add_equal(
+            &cell,
+            &length,
+            &RelationLimits::default(),
+            ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
+        ),
         CheckResult::MayBeFeasible
     );
     let path = pool.relations(&relations).unwrap();

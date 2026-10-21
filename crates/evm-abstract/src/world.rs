@@ -1,34 +1,34 @@
 //! Fixed multi-account input and transaction-local abstract state.
 //!
-//! An omitted account is unknown, while [`Account::empty`] is a present empty
-//! account and [`Account::absent`] confirms absence. Typed snapshot identity,
+//! An omitted account is unknown, while [`EvmAccount::empty`] is a present empty
+//! account and [`EvmAccount::absent`] confirms absence. Typed snapshot identity,
 //! fork and code bytes are fixed before execution. Explicit [`rpc`] acquisition
-//! is separate from execution, which changes a [`Store`] for nested rollback.
+//! is separate from execution, which changes a [`EvmStore`] for nested rollback.
 
-#[cfg(test)]
-use crate::domain::AbstractValue;
 use crate::domain::{EvmNumericAlgebra, WordElement};
+#[cfg(test)]
+use crate::world::test_support::TestValue;
 mod bytes;
 pub mod environment;
 mod initial;
+#[cfg(test)]
+mod native_algebras_tests;
 pub mod rpc;
 #[cfg(test)]
 mod runtime_code_tests;
 mod snapshot;
+#[cfg(test)]
+mod test_support;
 pub use environment::{
-    AddressInput, BlobHashes, EvmBlobHashes, EvmEnvironment, EvmEnvironmentValues, GasInput,
-    InputScope, Symbol,
+    AddressInput, EvmBlobHashes, EvmEnvironmentValues, GasInput, InputScope, Symbol,
 };
 mod store;
 
-pub use bytes::{
-    ByteArray, ByteArraySummary, EvmByteArray, EvmByteArraySummary, GuardRefinementError,
-    RangeError,
-};
+pub use bytes::{EvmByteArray, EvmByteArraySummary, GuardRefinementError, RangeError};
 pub use snapshot::{FingerprintError, SnapshotEnvironment, SnapshotIdentity};
 pub use store::{
-    AbstractLog, EvmLog, EvmSnapshot, EvmStore, EvmStoreSummary, LogError, LogKey, LogSourceKind,
-    OrderedMap, Snapshot, Store, StoreError, StoreSummary,
+    EvmLog, EvmSnapshot, EvmStore, EvmStoreSummary, LogError, LogKey, LogSourceKind, OrderedMap,
+    StoreError,
 };
 
 use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::EvmValue};
@@ -254,38 +254,43 @@ pub enum WorldError {
 }
 
 impl<N: WordElement> EvmWorld<N> {
-    /// 原子补入固定快照的初始 slot 观测，不改事务 Store 或其他账户事实。
+    /// Install a checked batch of new exact RPC slots without opaque queries.
+    /// Acquisition filters cached keys; a duplicate never overwrites native state.
     pub(crate) fn install_storage(
         &mut self,
         address: Address,
-        storage: BTreeMap<U256, EvmValue<N>>,
+        storage: &BTreeMap<U256, U256>,
     ) -> Result<(), WorldError> {
         let account = self
             .accounts
             .get(&address)
             .ok_or(WorldError::Conflict { address })?;
-        for (slot, value) in &storage {
-            if account.storage.get(slot).is_some_and(|old| old != value)
-                || ((!account.storage_unknown && !account.storage.contains_key(slot))
-                    || account.existence == Existence::Absent)
-                    && value.singleton() != Some(U256::ZERO)
+        for (slot, value) in storage {
+            if account.storage.contains_key(slot)
+                || (!account.storage_unknown || account.existence == Existence::Absent)
+                    && *value != U256::ZERO
             {
                 return Err(WorldError::Conflict { address });
             }
         }
-        let nonzero = storage
-            .values()
-            .any(|value| value.singleton().is_some_and(|word| word != U256::ZERO));
-        let account = self.accounts.get_mut(&address).unwrap();
-        account.storage.extend(storage);
-        if nonzero && account.existence == Existence::Unknown {
+        let present = storage.values().any(|value| *value != U256::ZERO);
+        let account = self
+            .accounts
+            .get_mut(&address)
+            .expect("validated account exists");
+        account.storage.extend(
+            storage
+                .iter()
+                .map(|(slot, value)| (*slot, EvmValue::<N>::constant(*value))),
+        );
+        if present && account.existence == Existence::Unknown {
             account.existence = Existence::Present;
         }
         Ok(())
     }
 
     /// Store 初始化投影可能生成的完整候选；复制费用由输入 work_size 另计。
-    pub(crate) fn projection_work_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn projection_work<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: crate::domain::AlgebraRef<'_, D>,
     ) -> usize {
@@ -498,10 +503,3 @@ impl<N: WordElement> EvmEntry<N> {
         entry
     }
 }
-
-/// Default numeric-carrier compatibility alias.
-pub type Account = EvmAccount<crate::domain::NumericValue>;
-/// Default numeric-carrier compatibility alias.
-pub type World = EvmWorld<crate::domain::NumericValue>;
-/// Default numeric-carrier compatibility alias.
-pub type Entry = EvmEntry<crate::domain::NumericValue>;

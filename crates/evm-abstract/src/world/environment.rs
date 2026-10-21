@@ -7,7 +7,7 @@
 use super::{EvmByteArray, SnapshotIdentity};
 use crate::domain::AlgebraRef;
 use crate::domain::EvmValue;
-pub use crate::domain::provenance::Symbol;
+pub use crate::domain::identity::Symbol;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use alloy_primitives::{Address, B256, U256};
 use serde::Serialize;
@@ -79,7 +79,7 @@ impl AddressInput {
         }
     }
     /// Numeric representation with the high 96 bits guaranteed zero.
-    pub fn value_with<N: WordElement>(self) -> EvmValue<N> {
+    pub fn value<N: WordElement>(self) -> EvmValue<N> {
         match self {
             Self::Concrete(address) => {
                 EvmValue::<N>::constant(U256::from_be_slice(address.as_slice()))
@@ -87,10 +87,10 @@ impl AddressInput {
             Self::Symbolic(_) => EvmValue::<N>::unknown_address(),
         }
     }
-    pub(crate) fn scoped_value_with<N: WordElement>(self, scope: Option<u64>) -> EvmValue<N> {
+    pub(crate) fn scoped_value<N: WordElement>(self, scope: Option<u64>) -> EvmValue<N> {
         match self {
-            Self::Concrete(_) => self.value_with::<N>(),
-            Self::Symbolic(symbol) => self.value_with::<N>().with_symbol(symbol, scope),
+            Self::Concrete(_) => self.value::<N>(),
+            Self::Symbolic(symbol) => self.value::<N>().with_symbol(symbol, scope),
         }
     }
 }
@@ -121,7 +121,7 @@ pub enum GasInput {
 }
 
 impl GasInput {
-    pub(crate) fn value_with<N: WordElement>(self) -> EvmValue<N> {
+    pub(crate) fn value<N: WordElement>(self) -> EvmValue<N> {
         match self {
             Self::Unknown => EvmValue::<N>::top(),
             Self::UpperBound(upper) => EvmValue::<N>::unsigned_range(U256::ZERO, upper)
@@ -164,7 +164,7 @@ impl<N: WordElement> EvmBlobHashes<N> {
 
     /// Consume caller-prepared length/index proofs without discovering N again.
     /// Output construction and joins remain caller-funded.
-    pub(crate) fn get_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn get<D: EvmNumericAlgebra<Element = N>>(
         &self,
         length: Option<U256>,
         indices: Option<impl Iterator<Item = U256>>,
@@ -291,7 +291,7 @@ pub enum EnvironmentError {
 
 impl<N: WordElement> EvmEnvironmentValues<N> {
     pub(crate) fn address_value(&self, address: AddressInput) -> EvmValue<N> {
-        address.scoped_value_with::<N>(self.input_scope.id())
+        address.scoped_value::<N>(self.input_scope.id())
     }
 
     /// Transaction origin with the default caller alias resolved.
@@ -299,8 +299,8 @@ impl<N: WordElement> EvmEnvironmentValues<N> {
         self.origin.unwrap_or(self.caller)
     }
 
-    /// Validate bounded, non-contradictory indexed observations.
-    pub fn validate(&self) -> Result<(), EnvironmentError> {
+    /// Validate bounded table/index structure without querying the numeric carrier.
+    pub fn validate_structure(&self) -> Result<(), EnvironmentError> {
         if self.block_hashes.len() > 256 || self.blob_hashes.hashes.len() > 4096 {
             return Err(EnvironmentError::TableLimit);
         }
@@ -310,6 +310,14 @@ impl<N: WordElement> EvmEnvironmentValues<N> {
                 count: U256::MAX,
             });
         }
+        Ok(())
+    }
+
+    /// Validate numeric length consistency after the caller funds singleton discovery.
+    /// Immutable input constructors use `validate_structure`; execution admission
+    /// prepays `blob_hashes.length.singleton_work()` before calling this method.
+    pub fn validate(&self) -> Result<(), EnvironmentError> {
+        self.validate_structure()?;
         if let Some(count) = self.blob_hashes.length.singleton()
             && let Some(index) = self
                 .blob_hashes
@@ -351,7 +359,7 @@ impl<N: WordElement> EvmEnvironmentValues<N> {
         )
     }
 
-    pub(crate) fn projection_work_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn projection_work<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> usize {
@@ -367,7 +375,7 @@ impl<N: WordElement> EvmEnvironmentValues<N> {
             &self.blob_hashes.length,
         ]
         .iter()
-        .fold(self.calldata.projection_work_with(domain), |cost, value| {
+        .fold(self.calldata.projection_work(domain), |cost, value| {
             cost.saturating_add(domain.projection_work(value))
         })
         .saturating_add(
@@ -375,10 +383,10 @@ impl<N: WordElement> EvmEnvironmentValues<N> {
                 .as_ref()
                 .map_or(0, |value| domain.projection_work(value)),
         )
-        .saturating_add(domain.projection_work(&self.to.value_with::<N>()))
-        .saturating_add(domain.projection_work(&self.caller.value_with::<N>()))
-        .saturating_add(domain.projection_work(&self.resolved_origin().value_with::<N>()))
-        .saturating_add(domain.projection_work(&self.coinbase.value_with::<N>()))
+        .saturating_add(domain.projection_work(&self.to.value::<N>()))
+        .saturating_add(domain.projection_work(&self.caller.value::<N>()))
+        .saturating_add(domain.projection_work(&self.resolved_origin().value::<N>()))
+        .saturating_add(domain.projection_work(&self.coinbase.value::<N>()))
     }
 
     pub(crate) fn chain_id(&self, identity: &SnapshotIdentity) -> EvmValue<N> {
@@ -394,7 +402,7 @@ impl<N: WordElement> EvmEnvironmentValues<N> {
     /// Evaluate an already prepared current-number proof and complete index
     /// cover. The caller funds construction/joins; this performs no independent
     /// opaque singleton discovery. A missing cover remains conservatively unknown.
-    pub(crate) fn block_hash_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn block_hash<D: EvmNumericAlgebra<Element = N>>(
         &self,
         current: Option<U256>,
         indices: Option<impl Iterator<Item = U256>>,
@@ -435,17 +443,5 @@ impl<N: WordElement> EvmEnvironmentValues<N> {
         });
         let first = values.next().expect("finite value candidates are nonempty");
         values.fold(first, |value, incoming| domain.join(&value, &incoming))
-    }
-}
-
-/// Default numeric-carrier compatibility alias.
-pub type EvmEnvironment = EvmEnvironmentValues<crate::domain::NumericValue>;
-/// Default numeric-carrier compatibility alias.
-pub type BlobHashes = EvmBlobHashes<crate::domain::NumericValue>;
-
-impl AddressInput {
-    /// Resolve this input with the default numeric carrier.
-    pub fn value(self) -> crate::domain::AbstractValue {
-        self.value_with::<crate::domain::NumericValue>()
     }
 }

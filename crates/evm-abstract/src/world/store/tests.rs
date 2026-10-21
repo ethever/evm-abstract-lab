@@ -7,4 +7,3 @@ mod provenance;
 mod refinement;
 mod state;
 mod summary;
-mod widening;

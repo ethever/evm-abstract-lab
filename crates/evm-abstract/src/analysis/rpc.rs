@@ -5,18 +5,18 @@
 //! transaction entry, while retaining the same execution and acquisition limits.
 
 use super::{
-    ConfigError, ExecutionConfig, FrontierReason, Limit, MachineFrontier, Status, WorldAnalysis,
+    AnalysisEngine, ConfigError, ContextPolicy, EvmMachineFrontier, EvmWorldAnalysis,
+    ExecutionConfig, FrontierReason, PartitionPolicy, StatePolicy, Status,
     control::{Cancelled, Control},
-    engine::Counters,
+    cooperation::Composition,
     layers::SessionError,
-    progress::{Observer, Phase},
+    progress::Phase,
     transfer::StorageReadPolicy,
 };
 use crate::{
     Address, U256,
-    resource::WorkBudget,
     world::{
-        Entry,
+        EvmEntry,
         rpc::{AccountRequest, RpcError, RpcInput, Session},
     },
 };
@@ -68,14 +68,16 @@ pub struct RpcStorageSlot {
 
 /// An acquired graph with concrete late RPC errors available to library callers.
 #[derive(Debug)]
-pub struct RpcAnalysis {
-    analysis: WorldAnalysis,
+pub struct RpcAnalysis<N: crate::domain::WordElement> {
+    analysis: EvmWorldAnalysis<N>,
     failures: Vec<RpcError>,
 }
 
-impl RpcAnalysis {
+type RpcAnalysisResult<N, E> = Result<RpcAnalysis<N>, RpcAnalysisError<E>>;
+
+impl<N: crate::domain::WordElement> RpcAnalysis<N> {
     /// Last graph, with typed incomplete frontiers for acquisition failures.
-    pub fn analysis(&self) -> &WorldAnalysis {
+    pub fn analysis(&self) -> &EvmWorldAnalysis<N> {
         &self.analysis
     }
 
@@ -85,17 +87,17 @@ impl RpcAnalysis {
     }
 
     /// Consume the acquisition wrapper; serialized frontier evidence remains in the graph.
-    pub fn into_analysis(self) -> WorldAnalysis {
+    pub fn into_analysis(self) -> EvmWorldAnalysis<N> {
         self.analysis
     }
 }
 
 /// Invalid configuration or failure acquiring the initial fixed world.
 #[derive(Debug, Error)]
-pub enum RpcAnalysisError {
+pub enum RpcAnalysisError<E> {
     /// Typed immutable observation/catalogue projection failed before execution.
     #[error("{0}")]
-    Session(SessionError),
+    Session(SessionError<E>),
     /// Analysis did not start because its parameters were invalid.
     #[error("{0}")]
     Config(ConfigError),
@@ -107,25 +109,25 @@ pub enum RpcAnalysisError {
     Rpc(RpcError),
 }
 
-impl From<SessionError> for RpcAnalysisError {
-    fn from(error: SessionError) -> Self {
+impl<E> From<SessionError<E>> for RpcAnalysisError<E> {
+    fn from(error: SessionError<E>) -> Self {
         Self::Session(error)
     }
 }
 
-impl From<Cancelled> for RpcAnalysisError {
+impl<E> From<Cancelled> for RpcAnalysisError<E> {
     fn from(error: Cancelled) -> Self {
         Self::Cancelled(error)
     }
 }
 
-impl From<ConfigError> for RpcAnalysisError {
+impl<E> From<ConfigError> for RpcAnalysisError<E> {
     fn from(error: ConfigError) -> Self {
         Self::Config(error)
     }
 }
 
-impl From<RpcError> for RpcAnalysisError {
+impl<E> From<RpcError> for RpcAnalysisError<E> {
     fn from(error: RpcError) -> Self {
         Self::Rpc(error)
     }
@@ -142,49 +144,49 @@ impl From<RpcError> for RpcAnalysisError {
 ///
 /// Initial acquisition errors return `Err`. Late failures preserve an
 /// `Incomplete` graph and original errors in [`RpcAnalysis::failures`].
-pub fn analyze_rpc(
+pub fn analyze_rpc<'a, D, C, P, S, X>(
+    engine: AnalysisEngine<'a, D, C, P, S, X>,
     input: &RpcInput,
-    entry: Entry,
-    config: ExecutionConfig,
-) -> Result<RpcAnalysis, RpcAnalysisError> {
-    analyze_rpc_with_control(input, entry, config, &Control::default())
-}
-
-/// Analyze with bounded progress reporting and caller-owned cancellation.
-pub fn analyze_rpc_with_control(
-    input: &RpcInput,
-    entry: Entry,
+    entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     control: &Control,
-) -> Result<RpcAnalysis, RpcAnalysisError> {
-    control.scope(|| analyze_controlled(input, entry, config, control))
+) -> RpcAnalysisResult<D::Element, <X as Composition<D::Element>>::Error>
+where
+    D: crate::domain::EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element>,
+{
+    control.scope(|| analyze_controlled(engine, input, entry, config, control))
 }
 
-/// Analyze with progress observations and no cancellation.
-pub fn analyze_rpc_with_observer(
+fn analyze_controlled<'a, D, C, P, S, X>(
+    engine: AnalysisEngine<'a, D, C, P, S, X>,
     input: &RpcInput,
-    entry: Entry,
-    config: ExecutionConfig,
-    observer: &Observer,
-) -> Result<RpcAnalysis, RpcAnalysisError> {
-    analyze_rpc_with_control(
-        input,
-        entry,
-        config,
-        &Control::with_observer(observer.clone()),
-    )
-}
-
-fn analyze_controlled(
-    input: &RpcInput,
-    entry: Entry,
+    entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     control: &Control,
-) -> Result<RpcAnalysis, RpcAnalysisError> {
+) -> RpcAnalysisResult<D::Element, <X as Composition<D::Element>>::Error>
+where
+    D: crate::domain::EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element>,
+{
     control.checkpoint()?;
     control.observer().phase(Phase::Validating);
-    config.domain()?;
-    entry.environment.validate().map_err(ConfigError::from)?;
+    config.validate()?;
+    engine
+        .algebra
+        .spec()
+        .validate()
+        .map_err(ConfigError::from)?;
+    entry
+        .environment
+        .validate_structure()
+        .map_err(ConfigError::from)?;
     if let Some(observed) = entry.environment.to.as_concrete()
         && observed != entry.address
     {
@@ -210,31 +212,14 @@ fn analyze_controlled(
     let initial = Session::load_with_control(&input, control);
     control.checkpoint()?;
     let mut session = initial?;
-    let mut layered = session.layered(entry.clone(), config.clone())?;
-    let mut budget = WorkBudget::new(config.max_work);
-    let mut counters = Counters::with_observer(control.observer());
+    let mut layered = session.layered(engine, entry, config.clone(), control)?;
     let mut discovery = Discovery::default();
-    let mut analysis;
+    let mut analysis = layered.run_uncached(control, StorageReadPolicy::Discover)?;
     loop {
         control.checkpoint()?;
-        // Preparation and all reruns belong to execution, not the last RPC batch.
         control.observer().phase(Phase::Analyzing);
         discovery.rounds += 1;
         session.discovery_round(discovery.rounds);
-        // 重跑复制也使用累计账本，不让补入的新初始事实重置预算。
-        let copy_work = session
-            .world()
-            .work_size()
-            .saturating_add(entry.environment.work_size());
-        if !budget.charge(copy_work) {
-            let acquisition = discovery.acquisition(session.requests(), counters.states);
-            analysis =
-                layered.run_metered(&mut budget, &mut counters, StorageReadPolicy::Discover)?;
-            control.checkpoint()?;
-            return Ok(finish(analysis, acquisition, discovery));
-        }
-        analysis = layered.run_metered(&mut budget, &mut counters, StorageReadPolicy::Discover)?;
-        control.checkpoint()?;
         let mut accounts = BTreeSet::new();
         let mut storage: BTreeMap<Address, BTreeSet<U256>> = BTreeMap::new();
         for frontier in &analysis.frontiers {
@@ -260,7 +245,7 @@ fn analyze_controlled(
         }
         let mut progress = false;
         for address in accounts {
-            if let Some(reason) = refinement_limit(&config, &counters, &mut budget, 1) {
+            if let Some(reason) = layered.reserve_acquisition(1) {
                 resource_frontier(&mut analysis, reason);
                 break;
             }
@@ -270,7 +255,7 @@ fn analyze_controlled(
                 Ok(installed) => {
                     progress |= installed;
                     if installed {
-                        session.refine_layered(&mut layered, [address])?;
+                        session.refine_layered(&mut layered, [address], control)?;
                         discovery.fetched_accounts.insert(address);
                     }
                 }
@@ -280,15 +265,14 @@ fn analyze_controlled(
             }
         }
         for (address, slots) in storage {
-            // 覆盖 key 扫描、快照初始账户复制与 slot 观测安装的工作。
-            let slot_work = crate::domain::AbstractValue::constant(U256::ZERO)
-                .work_size()
-                .saturating_add(4);
+            // Acquisition retains raw U256 observations. Fund their fixed-width
+            // bookkeeping here; the session quotes its actual N literal factory
+            // at the later paid lift, without manufacturing a value to price it.
             let work = slots
                 .len()
-                .saturating_mul(slot_work.saturating_mul(4))
+                .saturating_mul(128)
                 .saturating_add(session.world().work_size());
-            if let Some(reason) = refinement_limit(&config, &counters, &mut budget, work) {
+            if let Some(reason) = layered.reserve_acquisition(work) {
                 resource_frontier(&mut analysis, reason);
                 break;
             }
@@ -297,7 +281,7 @@ fn analyze_controlled(
             match acquired {
                 Ok(installed) => {
                     if !installed.is_empty() {
-                        session.refine_layered(&mut layered, [address])?;
+                        session.refine_layered(&mut layered, [address], control)?;
                     }
                     progress |= !installed.is_empty();
                     discovery.fetched_storage.extend(
@@ -325,11 +309,19 @@ fn analyze_controlled(
         if !progress {
             break;
         }
+        match layered.run_uncached(control, StorageReadPolicy::Discover) {
+            Ok(next) => analysis = next,
+            Err(SessionError::Work) => {
+                resource_frontier(&mut analysis, FrontierReason::Work);
+                break;
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
     control.checkpoint()?;
     control.observer().phase(Phase::Analyzing);
-    analysis.work = budget.used();
-    let acquisition = discovery.acquisition(session.requests(), counters.states);
+    analysis.work = layered.work_used();
+    let acquisition = discovery.acquisition(session.requests(), layered.states_created());
     Ok(finish(analysis, acquisition, discovery))
 }
 
@@ -376,27 +368,11 @@ impl Discovery {
     }
 }
 
-fn refinement_limit(
-    config: &ExecutionConfig,
-    counters: &Counters,
-    budget: &mut WorkBudget,
-    work: usize,
-) -> Option<FrontierReason> {
-    if budget.exhausted() {
-        Some(FrontierReason::Work)
-    } else if counters.states >= config.analysis.max_states {
-        Some(FrontierReason::Budget(Limit::States))
-    } else if counters.transfers >= config.analysis.max_transfers {
-        Some(FrontierReason::Budget(Limit::Transfers))
-    } else if !budget.charge(work) {
-        Some(FrontierReason::Work)
-    } else {
-        None
-    }
-}
-
-fn resource_frontier(analysis: &mut WorldAnalysis, reason: FrontierReason) {
-    analysis.frontiers.push(MachineFrontier {
+fn resource_frontier<N: crate::domain::WordElement>(
+    analysis: &mut EvmWorldAnalysis<N>,
+    reason: FrontierReason,
+) {
+    analysis.frontiers.push(EvmMachineFrontier {
         from: None,
         target: None,
         pc: None,
@@ -406,11 +382,11 @@ fn resource_frontier(analysis: &mut WorldAnalysis, reason: FrontierReason) {
     });
 }
 
-fn finish(
-    mut analysis: WorldAnalysis,
+fn finish<N: crate::domain::WordElement>(
+    mut analysis: EvmWorldAnalysis<N>,
     acquisition: RpcAcquisition,
     mut discovery: Discovery,
-) -> RpcAnalysis {
+) -> RpcAnalysis<N> {
     // A previous acquisition failure remains authoritative even if a later
     // execution round stops before revisiting its demand. Disposal was prepaid
     // by root preparation; provider failures never publish terminal coverage.

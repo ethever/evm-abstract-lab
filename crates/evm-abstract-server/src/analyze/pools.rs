@@ -7,23 +7,24 @@ use super::{checkpoint, mapping, symbolic, value};
 use alloy_primitives::{Address, B256, hex, keccak256};
 use evm_abstract::analysis::control::Control;
 use evm_abstract::{
-    analysis::{FrameCode, MachinePayload},
+    analysis::{EvmMachinePayload, FrameCode},
     bytecode::Program,
-    world::{ByteArray, Code, Existence, LogSourceKind, Store},
+    domain::WordElement,
+    world::{Code, EvmByteArray, EvmStore, Existence, LogSourceKind},
 };
 use evm_abstract_protocol as api;
 use std::collections::BTreeMap;
 
-pub(super) struct Pools<'a> {
+pub(super) struct Pools<'a, N: WordElement> {
     control: &'a Control,
-    buffers: Vec<ByteArray>,
+    buffers: Vec<EvmByteArray<N>>,
     buffer_roots: BTreeMap<evm_abstract::domain::symbolic::ByteStateId, Vec<usize>>,
-    stores_native: Vec<Store>,
+    stores_native: Vec<EvmStore<N>>,
     pub buffers_dto: Vec<api::ByteArraySnapshot>,
     pub stores: Vec<api::StoreSnapshot>,
     pub programs: Vec<api::ProgramInfo>,
     pub symbolic: symbolic::Pool<'a>,
-    pending_native: Vec<std::sync::Arc<MachinePayload>>,
+    pending_native: Vec<std::sync::Arc<EvmMachinePayload<N>>>,
     pub pending: Vec<api::MachineSnapshot>,
 }
 
@@ -54,7 +55,7 @@ pub(super) fn mode(code: FrameCode) -> api::CodeKind {
         FrameCode::Unknown => api::CodeKind::AbstractEnvironment,
     }
 }
-impl<'a> Pools<'a> {
+impl<'a, N: WordElement> Pools<'a, N> {
     pub fn new(control: &'a Control) -> Self {
         Self {
             control,
@@ -105,7 +106,7 @@ impl<'a> Pools<'a> {
         });
         Ok(id)
     }
-    pub fn buffer(&mut self, source: &ByteArray) -> Result<usize, api::ApiError> {
+    pub fn buffer(&mut self, source: &EvmByteArray<N>) -> Result<usize, api::ApiError> {
         self.symbolic.charge(1)?;
         let work = budget::BufferWork::new(source, &mut self.symbolic)?;
         if let Some(candidates) = self.buffer_roots.get(source.state_root()) {
@@ -166,7 +167,7 @@ impl<'a> Pools<'a> {
     }
     pub fn account(
         &mut self,
-        source: &Store,
+        source: &EvmStore<N>,
         address: Address,
     ) -> Result<api::AccountState, api::ApiError> {
         checkpoint(self.control)?;
@@ -239,7 +240,7 @@ impl<'a> Pools<'a> {
             pending_destruction: source.pending_destruction(address),
         })
     }
-    pub fn store(&mut self, source: &Store) -> Result<usize, api::ApiError> {
+    pub fn store(&mut self, source: &EvmStore<N>) -> Result<usize, api::ApiError> {
         checkpoint(self.control)?;
         for id in 0..self.stores_native.len() {
             self.symbolic.charge(1)?;
@@ -339,7 +340,7 @@ impl<'a> Pools<'a> {
     }
     pub fn machine(
         &mut self,
-        source: &MachinePayload,
+        source: &EvmMachinePayload<N>,
     ) -> Result<api::MachineSnapshot, api::ApiError> {
         let store = self.store(&source.store)?;
         let frames = source
@@ -419,7 +420,7 @@ impl<'a> Pools<'a> {
     }
     fn slot_root(
         &mut self,
-        store: &Store,
+        store: &EvmStore<N>,
         address: Address,
         transient: bool,
     ) -> Result<api::SlotStateRef, api::ApiError> {
@@ -435,7 +436,7 @@ impl<'a> Pools<'a> {
     }
     pub fn pending(
         &mut self,
-        source: &std::sync::Arc<MachinePayload>,
+        source: &std::sync::Arc<EvmMachinePayload<N>>,
     ) -> Result<usize, api::ApiError> {
         for id in 0..self.pending_native.len() {
             self.symbolic.charge(1)?;
@@ -452,7 +453,7 @@ impl<'a> Pools<'a> {
     }
     pub fn range(
         &mut self,
-        witness: &evm_abstract::analysis::RangeWitness,
+        witness: &evm_abstract::analysis::EvmRangeWitness<N>,
     ) -> Result<api::RangeWitness, api::ApiError> {
         let request = &witness.request;
         Ok(api::RangeWitness {

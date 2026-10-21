@@ -1,14 +1,13 @@
 //! Real public RPC entry against a local fixture, never a chain endpoint.
 
 use super::{Reply, Server, healthy};
-use crate::{
-    Address, U256,
-    analysis::{ExecutionConfig, OutcomeKind, RpcStorageSlot, Status, analyze_rpc},
-    domain::{AbstractValue, Domain},
-    world::Entry,
-};
 use serde_json::json;
 use std::thread;
+use {
+    crate::Address, crate::U256, crate::analysis::ExecutionConfig, crate::analysis::OutcomeKind,
+    crate::analysis::RpcStorageSlot, crate::analysis::Status,
+    crate::world::test_support::TestEntry, crate::world::test_support::TestValue,
+};
 
 #[test]
 fn public_rpc_route_injects_known_zero_while_unrequested_slots_and_inputs_stay_unknown() {
@@ -25,7 +24,25 @@ fn public_rpc_route_injects_known_zero_while_unrequested_slots_and_inputs_stay_u
         let mut input = server.input();
         input.accounts[0].slots.clear();
         let owner = input.accounts[0].address;
-        let report = analyze_rpc(&input, Entry::new(owner), ExecutionConfig::default()).unwrap();
+        let report = {
+            let algebra =
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+            let policies = crate::analysis::EnginePolicies::new(
+                crate::analysis::ContextInsensitive,
+                crate::analysis::MergeResumeStatus,
+            );
+            let mut extension = crate::analysis::cooperation::NoExtension;
+            let control = crate::analysis::control::Control::default();
+            let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+            crate::analysis::analyze_rpc(
+                engine,
+                &input,
+                TestEntry::new(owner),
+                ExecutionConfig::default(),
+                &control,
+            )
+        }
+        .unwrap();
         let analysis = report.analysis();
         assert_eq!(
             analysis.status(),
@@ -64,7 +81,11 @@ fn public_rpc_route_injects_known_zero_while_unrequested_slots_and_inputs_stay_u
             assert_eq!(
                 outcome
                     .data
-                    .read_word(&AbstractValue::constant(U256::ZERO), Domain::default())
+                    .read_word(
+                        &TestValue::constant(U256::ZERO),
+                        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                            .borrowed()
+                    )
                     .singleton(),
                 Some(U256::ZERO)
             );
@@ -73,8 +94,9 @@ fn public_rpc_route_injects_known_zero_while_unrequested_slots_and_inputs_stay_u
                     .store
                     .read(
                         owner,
-                        &AbstractValue::constant(U256::from(1)),
-                        Domain::default()
+                        &TestValue::constant(U256::from(1)),
+                        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                            .borrowed()
                     )
                     .singleton()
                     .is_none()
@@ -107,7 +129,25 @@ fn public_rpc_injection_after_runtime_write_retains_rollback_initial_roots() {
         let mut input = server.input();
         input.accounts[0].slots.clear();
         let owner = input.accounts[0].address;
-        let report = analyze_rpc(&input, Entry::new(owner), ExecutionConfig::default()).unwrap();
+        let report = {
+            let algebra =
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+            let policies = crate::analysis::EnginePolicies::new(
+                crate::analysis::ContextInsensitive,
+                crate::analysis::MergeResumeStatus,
+            );
+            let mut extension = crate::analysis::cooperation::NoExtension;
+            let control = crate::analysis::control::Control::default();
+            let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+            crate::analysis::analyze_rpc(
+                engine,
+                &input,
+                TestEntry::new(owner),
+                ExecutionConfig::default(),
+                &control,
+            )
+        }
+        .unwrap();
         let analysis = report.analysis();
         assert_eq!(
             analysis.status(),
@@ -140,8 +180,9 @@ fn public_rpc_injection_after_runtime_write_retains_rollback_initial_roots() {
             exit.store
                 .read(
                     owner,
-                    &AbstractValue::constant(U256::ZERO),
-                    Domain::default()
+                    &TestValue::constant(U256::ZERO),
+                    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                        .borrowed()
                 )
                 .singleton(),
             Some(U256::from(9))
@@ -158,8 +199,9 @@ fn public_rpc_injection_after_runtime_write_retains_rollback_initial_roots() {
                     .store
                     .read(
                         owner,
-                        &AbstractValue::constant(U256::ZERO),
-                        Domain::default()
+                        &TestValue::constant(U256::ZERO),
+                        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                            .borrowed()
                     )
                     .singleton()
                     .is_none()
@@ -169,8 +211,9 @@ fn public_rpc_injection_after_runtime_write_retains_rollback_initial_roots() {
                     .store
                     .read(
                         owner,
-                        &AbstractValue::constant(U256::from(1)),
-                        Domain::default()
+                        &TestValue::constant(U256::from(1)),
+                        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                            .borrowed()
                     )
                     .singleton(),
                 Some(U256::from(3))

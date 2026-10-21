@@ -1,4 +1,5 @@
 //! Procedure reports remain immutable across atomic graph import transactions.
+use crate::domain::ProductAlgebra;
 
 use super::{Counters, FrontierReason, Status, WorkBudget, WorldAnalysis, engine, fixtures};
 use crate::{
@@ -17,7 +18,13 @@ fn fixture() -> (WorldAnalysis, usize, usize) {
     let (world, entry) = fixtures::fixture(&[(0x101, caller), (0x200, "00")]);
     let mut config = fixtures::config();
     config.root_terminal_coverage = false;
-    let mut result = super::run_world(world, entry, config).unwrap();
+    let mut result = crate::analysis::testing::execute(
+        world,
+        entry,
+        config,
+        crate::domain::DomainSpec::default(),
+    )
+    .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -102,7 +109,8 @@ fn retained_native_reports_share_clone_work_and_keep_the_serialized_array() {
     let (result, child, _) = fixture();
     let mut counters = counters(&result);
     let mut budget = WorkBudget::new(100_000_000);
-    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+    let numeric_policy =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
     let precision_policies: super::super::EnginePolicies = Default::default();
 
@@ -158,7 +166,8 @@ fn replay_commit_and_partial_import_refusal_release_the_evidence_writer() {
         }
         let mut counters = counters(&result);
         let mut budget = WorkBudget::new(100_000_000);
-        let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+        let numeric_policy =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
         let precision_policies: super::super::EnginePolicies = Default::default();
 
@@ -238,7 +247,8 @@ fn replay_admission_and_cancellation_leave_retained_reports_and_inputs_untouched
         let token = analysis_control::Cancellation::new();
         let (after, snapshot) = analysis_control::with_cancellation(&token, || {
             let mut budget = WorkBudget::new(100_000_000);
-            let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+            let numeric_policy =
+                crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
             let precision_policies: super::super::EnginePolicies = Default::default();
 

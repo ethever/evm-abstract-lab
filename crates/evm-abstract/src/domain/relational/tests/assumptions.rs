@@ -1,6 +1,7 @@
 //! Assumption retention and optional feasibility work have different outcomes.
 
 use super::super::{CheckResult, Constraint, QueryReason, RelationLimits, RelationState};
+use super::product_algebra;
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SourceId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -29,9 +30,12 @@ fn opaque_hash_guards_are_retained_without_claiming_consistency() {
     assert!(condition.depth() < limits.max_depth);
     for nonzero in [false, true] {
         let mut state = RelationState::default();
-        assert_eq!(state.check(&limits), CheckResult::MayBeFeasible);
         assert_eq!(
-            state.assume_checked(&condition, nonzero, &limits),
+            state.check(&limits, product_algebra().borrowed()),
+            CheckResult::MayBeFeasible
+        );
+        assert_eq!(
+            state.assume_checked(&condition, nonzero, &limits, product_algebra().borrowed()),
             Ok(CheckResult::MayBeFeasible)
         );
         assert_eq!(state.len(), 1);
@@ -49,7 +53,12 @@ fn expression_retention_failure_leaves_the_original_state_unchanged() {
     let mut state = RelationState::default();
     let input = ExprId::fresh().unwrap();
     assert_eq!(
-        state.assume_checked(&input, true, &RelationLimits::default()),
+        state.assume_checked(
+            &input,
+            true,
+            &RelationLimits::default(),
+            product_algebra().borrowed()
+        ),
         Ok(CheckResult::MayBeFeasible)
     );
     let condition = ExprId::operation(
@@ -70,7 +79,7 @@ fn expression_retention_failure_leaves_the_original_state_unchanged() {
         },
     ] {
         assert_eq!(
-            state.assume_checked(&condition, true, &limits),
+            state.assume_checked(&condition, true, &limits, product_algebra().borrowed()),
             Err(QueryReason::ExpressionLimit)
         );
         assert_eq!(state, before);
@@ -86,17 +95,22 @@ fn constraint_retention_failure_keeps_existing_facts_and_accepts_duplicates() {
     let mut state = RelationState::default();
     let first = ExprId::fresh().unwrap();
     assert_eq!(
-        state.assume_checked(&first, true, &limits),
+        state.assume_checked(&first, true, &limits, product_algebra().borrowed()),
         Ok(CheckResult::MayBeFeasible)
     );
     let before = state.clone();
     assert_eq!(
-        state.assume_checked(&ExprId::fresh().unwrap(), false, &limits),
+        state.assume_checked(
+            &ExprId::fresh().unwrap(),
+            false,
+            &limits,
+            product_algebra().borrowed()
+        ),
         Err(QueryReason::ConstraintLimit)
     );
     assert_eq!(state, before);
     assert_eq!(
-        state.assume_checked(&first, true, &limits),
+        state.assume_checked(&first, true, &limits, product_algebra().borrowed()),
         Ok(CheckResult::MayBeFeasible)
     );
     assert_eq!(state, before);
@@ -122,7 +136,10 @@ fn disabled_and_invalid_policy_fail_before_retaining_an_atom() {
             QueryReason::Configuration,
         ),
     ] {
-        assert_eq!(state.assume_checked(&condition, true, &limits), Err(reason));
+        assert_eq!(
+            state.assume_checked(&condition, true, &limits, product_algebra().borrowed()),
+            Err(reason)
+        );
         assert_eq!(state, RelationState::default());
     }
 }
@@ -136,7 +153,7 @@ fn cancellation_after_retention_is_not_a_rejected_assumption() {
     let mut state = RelationState::default();
     analysis_control::with_cancellation(&token, || {
         assert_eq!(
-            state.assume_checked(&condition, true, &limits),
+            state.assume_checked(&condition, true, &limits, product_algebra().borrowed()),
             Ok(CheckResult::Undetermined(QueryReason::Cancelled))
         );
     });

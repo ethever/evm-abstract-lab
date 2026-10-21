@@ -1,14 +1,17 @@
 //! User-visible EVM inputs keep unknown values and address aliases explicit.
 
+use crate::domain::WordElement;
 use crate::{
-    analysis::WorldAnalysis,
-    domain::AbstractValue,
-    world::{AddressInput, EvmEnvironment, GasInput, SnapshotIdentity},
+    analysis::EvmWorldAnalysis,
+    domain::EvmValue,
+    world::{AddressInput, EvmEnvironmentValues, GasInput, SnapshotIdentity},
 };
 use alloy_primitives::Address;
 use std::{collections::BTreeSet, fmt::Write};
 
-pub(super) fn owner_alias(analysis: &WorldAnalysis) -> Option<(Address, String)> {
+pub(super) fn owner_alias<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+) -> Option<(Address, String)> {
     let input = analysis.entry().environment.to;
     input
         .as_concrete()
@@ -16,13 +19,16 @@ pub(super) fn owner_alias(analysis: &WorldAnalysis) -> Option<(Address, String)>
         .then(|| (analysis.entry().address, input.to_string()))
 }
 
-pub(super) fn owner(analysis: &WorldAnalysis, address: Address) -> String {
+pub(super) fn owner<N: WordElement>(analysis: &EvmWorldAnalysis<N>, address: Address) -> String {
     owner_alias(analysis)
         .filter(|(internal, _)| *internal == address)
         .map_or_else(|| address.to_string(), |(_, label)| label)
 }
 
-pub(super) fn collect_addresses(environment: &EvmEnvironment, addresses: &mut BTreeSet<Address>) {
+pub(super) fn collect_addresses<N: WordElement>(
+    environment: &EvmEnvironmentValues<N>,
+    addresses: &mut BTreeSet<Address>,
+) {
     addresses.extend(
         [
             environment.to,
@@ -37,12 +43,13 @@ pub(super) fn collect_addresses(environment: &EvmEnvironment, addresses: &mut BT
 
 /// Full reports include every field; teaching reports add only concrete overrides
 /// to the root inputs, so a symbolic block environment does not bury the graph.
-pub(crate) fn write(
+pub(crate) fn write<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
     output: &mut String,
-    environment: &EvmEnvironment,
+    environment: &EvmEnvironmentValues<N>,
     identity: Option<&SnapshotIdentity>,
     full: bool,
     address: impl Fn(AddressInput) -> String,
+    algebra: &crate::domain::ValueAlgebra<D>,
 ) {
     output.push_str("\nEVM inputs\n");
     writeln!(
@@ -64,15 +71,18 @@ pub(crate) fn write(
         environment.value, environment.is_static
     )
     .unwrap();
-    let content = environment.calldata.exact_bytes_bounded(64).map_or_else(
-        || {
-            format!(
-                "abstract bytes (default={})",
-                environment.calldata.default_byte()
-            )
-        },
-        |bytes| format!("0x{}", alloy_primitives::hex::encode(bytes)),
-    );
+    let content = environment
+        .calldata
+        .exact_bytes_bounded(64, algebra.borrowed())
+        .map_or_else(
+            || {
+                format!(
+                    "abstract bytes (default={})",
+                    environment.calldata.default_byte()
+                )
+            },
+            |bytes| format!("0x{}", alloy_primitives::hex::encode(bytes)),
+        );
     writeln!(
         output,
         "  calldata: length={} | content={content}",
@@ -85,6 +95,7 @@ pub(crate) fn write(
             "  ",
             "calldata observations",
             &environment.calldata,
+            algebra,
         );
     }
     for (name, value) in [
@@ -96,7 +107,7 @@ pub(crate) fn write(
         ("base fee", &environment.base_fee),
         ("blob base fee", &environment.blob_base_fee),
     ] {
-        if full || value != &AbstractValue::top() {
+        if full || value != &EvmValue::<N>::top() {
             writeln!(output, "  {name}={value}").unwrap();
         }
     }
@@ -139,7 +150,7 @@ pub(crate) fn write(
         }
     }
     if full
-        || environment.blob_hashes.length != AbstractValue::top()
+        || environment.blob_hashes.length != EvmValue::<N>::top()
         || !environment.blob_hashes.hashes.is_empty()
     {
         writeln!(
@@ -158,11 +169,20 @@ pub(crate) fn write(
     }
 }
 
-pub(crate) fn summary(environment: &EvmEnvironment, identity: Option<&SnapshotIdentity>) -> String {
+pub(crate) fn summary<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    environment: &EvmEnvironmentValues<N>,
+    identity: Option<&SnapshotIdentity>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+) -> String {
     let mut output = String::new();
-    write(&mut output, environment, identity, true, |input| {
-        input.to_string()
-    });
+    write(
+        &mut output,
+        environment,
+        identity,
+        true,
+        |input| input.to_string(),
+        algebra,
+    );
     output.trim().to_owned()
 }
 

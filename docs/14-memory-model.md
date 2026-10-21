@@ -102,7 +102,7 @@ MLOAD(1) 读取 1～32，因此得到 `0x1234`。MLOAD(0) 读取的窗口是 0�
 
 ## 3. Rust 里怎样保存这份 memory
 
-[`ByteArray`](../crates/evm-abstract/src/world/bytes.rs) 保存内容根 `ByteStateId`、抽象 length、已具体展开的数值 bytes/default，以及 memory 标志。内容根通过 Zero、Input、Exact、WriteByte、WriteWord、Copy、Slice、Ite 表达来源、地址和更新顺序。`view()` 捕获 root、offset、length；后续写入产生新根，不修改历史 view。
+[`EvmByteArray<N>`](../crates/evm-abstract/src/world/bytes.rs) 保存内容根 `ByteStateId`、抽象 length、已具体展开的数值 bytes/default，以及 memory 标志。内容根通过 Zero、Input、Exact、WriteByte、WriteWord、Copy、Slice、Ite 表达来源、地址和更新顺序。`view()` 捕获 root、offset、length；后续写入产生新根，不修改历史 view。
 
 | 观察 | 含义 |
 | --- | --- |
@@ -115,7 +115,7 @@ MLOAD(1) 读取 1～32，因此得到 `0x1234`。MLOAD(0) 读取的窗口是 0�
 
 新 memory 的 Zero 根保证初始内容全零。Input 有独立来源和有限长度；Exact 保存精确 source。Copy 可以改变大片内容而没有逐字节生成表项，所以不能只靠 `bytes.len()` 或 default 重建 lazy array。读取同时解释根与 view 边界，普通源在边界之外补零。
 
-### 每个字节为什么也用 AbstractValue
+### 每个字节为什么也用 EvmValue<N>
 
 数值事实仍包含有限候选、位、signed/unsigned interval、congruence、nonzero 与 provenance；表达式另保存读自哪个历史状态。数值摘要 Top 不必意味着来源或读写关系丢失。完整跨值条件属于整机 RelationState，不能仅凭来源标签证明别名。详细节点与格式见[第 17 课](17-symbolic-state.md)。
 
@@ -160,7 +160,7 @@ nix run . -- explain --hex 595f515900
 
 三个槽依次是：访问前的长度 0、从新 memory 读出的数值 0、访问后的长度 32。内存的当前长度与读取到的内容分别变化。
 
-源码分成两层：`ByteArray::read_word` 只读取已有摘要，本身不扩容；执行 EVM 的 MLOAD 时，[指令转换](../crates/evm-abstract/src/analysis/transfer.rs)先调用 `touch_memory` / `expand`，再调用 `read_word`。直接阅读这些 Rust 辅助函数时要保留这个顺序。
+源码分成两层：`EvmByteArray::read_word` 只读取已有摘要，本身不扩容；执行 EVM 的 MLOAD 时，[指令转换](../crates/evm-abstract/src/analysis/transfer.rs)先调用 `touch_memory` / `expand`，再调用 `read_word`。直接阅读这些 Rust 辅助函数时要保留这个顺序。
 
 ## 5. MSTORE8：只取最低一个字节
 
@@ -221,7 +221,7 @@ nix run . -- explain --file examples/memory-word-overwrite.hex
 nix run . -- cfg --file examples/memory-write-alias.hex \
   --context-depth 0 --format json > /tmp/memory-alias.json
 jq '.states[] | select(.key.basic_block_index == 3)
-    | .exit_stack[0].Constants' /tmp/memory-alias.json
+    | .exit_stack[0].numeric.constants' /tmp/memory-alias.json
 ```
 
 默认关系模式下，这个例子的 MLOAD 只保留表中的两个 word。若把两个 byte 的 `{0,0xaa}` 独立组合，还会得到全零或同时两个 `aa`；这些额外组合属于逐字节投影，不是本例完整读取的结果。WriteByte 保存同一个 p，整机 guarded join 为地址、值、memory/store 根和路径公式使用同一个 selector，保留两侧配对。
@@ -247,7 +247,7 @@ WriteByte/WriteWord 保存符号偏移、值和旧根。后续同址或别名读
 ```bash
 nix run . -- cfg --hex 5f35603f16600781525100 \
   --format json > /tmp/memory-same-address.json
-jq '.states[0].exit_stack[0].Constants' /tmp/memory-same-address.json
+jq '.states[0].exit_stack[0].numeric.constants' /tmp/memory-same-address.json
 ```
 
 结果为 `["0x7"]`。WriteWord 保存符号地址 p，WordRead 捕获写后的根与同一个 p，所以无需先枚举 p 的全部候选来恢复 7。原来已读出的 word 仍绑定旧根。
@@ -278,7 +278,7 @@ nix run . -- cfg --file examples/memory-symbolic-offset.hex --format json
 nix run . -- cfg --file examples/memory-byte-correlation.hex \
   --context-depth 0 --format json > /tmp/memory-correlation.json
 jq '.states[] | select(.key.basic_block_index == 3)
-    | .exit_stack[0].Constants' /tmp/memory-correlation.json
+    | .exit_stack[0].numeric.constants' /tmp/memory-correlation.json
 ```
 
 默认模式输出 `["0x101","0x202"]`。完整 WordWrite/WordRead 保存同一个输入 word 和写序，恢复的是两种完整选择。partial overwrite 则需要逐一解释覆盖范围：`MSTORE(p,x); MSTORE8(p+31,0xaa)` 改变最后一个 byte，不能继续宣称整个 word 等于 x。
@@ -291,7 +291,7 @@ jq '.states[] | select(.key.basic_block_index == 3)
 
 ```bash
 nix run . -- explain --hex 5f3560ff16600117601f535f515900 \
-  --max-constants 1 --domain product --no-relations
+  --max-constants 1 --numeric-model product --no-relations
 ```
 
 表达式是 `(x AND 255) OR 1`，结果为 1～255 中的奇数。偏移 0～30 仍为零，所以 MLOAD 的结果也是这些奇数。`--max-constants 1` 只能保存一个常量，装不下全部 128 个候选；product 的其他组件应继续保留：
@@ -311,7 +311,7 @@ nix run . -- explain --hex 5f3560ff16600117601f535f515900 \
 
 ```bash
 nix run . -- explain --hex 5f3560ff16600117601f535f515900 \
-  --max-constants 1 --domain constants-only --no-relations
+  --max-constants 1 --numeric-model finite-set --no-relations
 ```
 
 本例出口为 `[⊤, {0x20}]`。这里损失的是字节内容的数值性质，地址 31 仍确定，所以内存长度仍能保留。
@@ -354,7 +354,7 @@ MLOAD(0) 得到 `0x01010203`，MSIZE 仍为 32，出口显示 `[{0x1010203}, {0x
 
 ## 11. 每个帧的 memory 独立，调用通过字节传递数据
 
-**帧**（frame）是一次合约执行所用的栈、memory、calldata 等上下文。A 调用 B 时，A 暂停，B 使用自己的新栈和新 memory；B 返回后，A 继续使用原来的 memory。[FrameState](../crates/evm-abstract/src/analysis/machine/frame.rs) 中的 `memory` 属于该帧。
+**帧**（frame）是一次合约执行所用的栈、memory、calldata 等上下文。A 调用 B 时，A 暂停，B 使用自己的新栈和新 memory；B 返回后，A 继续使用原来的 memory。[`EvmFrameState<N>`](../crates/evm-abstract/src/analysis/machine/frame.rs) 中的 `memory` 属于该帧。
 
 ```mermaid
 flowchart LR
@@ -460,7 +460,7 @@ CLI/Web 的 `max_memory_bytes` 默认 64 MiB，库 ExecutionConfig 默认 64 KiB
 
 | 想核对的规则 | 源码入口 |
 | --- | --- |
-| 内容根、数值事实、初始零与长度补零 | [`world/bytes.rs`](../crates/evm-abstract/src/world/bytes.rs)：`ByteArray`、`memory`、`byte_at` |
+| 内容根、数值事实、初始零与长度补零 | [`world/bytes.rs`](../crates/evm-abstract/src/world/bytes.rs)：`EvmByteArray<N>`、`memory`、`byte_at` |
 | MSTORE/MSTORE8 有序 byte/word 更新 | 同文件的 `write_word`、`write_byte`、`write_values` |
 | 32 字节取整、范围上限 | `world/bytes/ranges.rs` 和 `analysis/transfer/ranges.rs` |
 | WordRead、guarded join 与 captured-source 重叠复制 | 同文件的 `read_word`、`join`、`copy_from` |
@@ -494,4 +494,4 @@ CLI/Web 的 `max_memory_bytes` 默认 64 MiB，库 ExecutionConfig 默认 64 KiB
 
 </details>
 
-接着读[第 16 课](16-storage-model.md)，用同样的前后状态表比较 storage 的默认值、读写与回滚；[第 15 课](15-symbolic-relations.md)进一步解释表达式和路径条件怎样保留关系。也可以回到[第 09 课](09-cross-contract.md)观察实际调用图，或读[第 12 课](12-product-domains-facts.md)研究单个 AbstractValue 的数值性质。[例子索引](../examples/README.md)列出本课的可运行输入。
+接着读[第 16 课](16-storage-model.md)，用同样的前后状态表比较 storage 的默认值、读写与回滚；[第 15 课](15-symbolic-relations.md)进一步解释表达式和路径条件怎样保留关系。也可以回到[第 09 课](09-cross-contract.md)观察实际调用图，或读[第 12 课](12-product-domains-facts.md)研究单个 EvmValue<N> 的数值性质。[例子索引](../examples/README.md)列出本课的可运行输入。

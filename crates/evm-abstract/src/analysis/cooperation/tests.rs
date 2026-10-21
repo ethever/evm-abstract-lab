@@ -44,21 +44,16 @@ fn reachable_view_allocation_is_prepaid_and_keeps_the_anchor_detached() {
     use super::{LocalInput, RefinementError, apply_refinements};
     use crate::{
         analysis::{MachineError, machine::fixtures},
-        domain::{Domain, NumericValue, ValueAlgebra},
+        domain::{NumericValue, ProductAlgebra, ValueAlgebra},
         resource::WorkBudget,
     };
 
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(domain);
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let domain = algebra.borrowed();
     let anchor = fixtures::payload(domain);
     let mut budget = WorkBudget::new(usize::MAX);
-    let result = apply_refinements(
-        anchor.clone(),
-        &StackFacts::none(),
-        algebra.borrowed(),
-        &mut budget,
-    )
-    .unwrap();
+    let result =
+        apply_refinements(anchor.clone(), &StackFacts::none(), domain, &mut budget).unwrap();
     let LocalInput::Reachable { payload, limited } = result else {
         panic!("a ready Top guarantee must preserve the reachable input");
     };
@@ -69,12 +64,7 @@ fn reachable_view_allocation_is_prepaid_and_keeps_the_anchor_detached() {
     assert!(paid > 0, "the added allocation must be reserved first");
     let mut refused = WorkBudget::new(paid - 1);
     assert!(matches!(
-        apply_refinements(
-            anchor.clone(),
-            &StackFacts::none(),
-            algebra.borrowed(),
-            &mut refused,
-        ),
+        apply_refinements(anchor.clone(), &StackFacts::none(), domain, &mut refused,),
         Err(RefinementError::Stopped(MachineError::Work))
     ));
     assert_eq!(refused.used(), 0, "the new reservation is all-or-nothing");
@@ -90,18 +80,18 @@ fn unreachable_needs_no_view_allocation_and_cancelled_reachable_stays_an_error()
     use super::{LocalInput, RefinementError, apply_refinements};
     use crate::{
         analysis::{MachineError, control::Control, machine::fixtures},
-        domain::{Domain, ValueAlgebra, relational::QueryReason},
+        domain::{ProductAlgebra, ValueAlgebra, relational::QueryReason},
         resource::WorkBudget,
     };
 
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(domain);
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let domain = algebra.borrowed();
     let mut budget = WorkBudget::new(0);
     assert!(matches!(
         apply_refinements(
             fixtures::payload(domain),
             &StackFacts::Unreachable,
-            algebra.borrowed(),
+            domain,
             &mut budget,
         ),
         Ok(LocalInput::Unreachable)
@@ -115,12 +105,7 @@ fn unreachable_needs_no_view_allocation_and_cancelled_reachable_stays_an_error()
     control.scope(|| {
         let mut budget = WorkBudget::new(usize::MAX);
         assert!(matches!(
-            apply_refinements(
-                payload,
-                &StackFacts::none(),
-                algebra.borrowed(),
-                &mut budget
-            ),
+            apply_refinements(payload, &StackFacts::none(), domain, &mut budget),
             Err(RefinementError::Stopped(MachineError::Relations(
                 QueryReason::Cancelled
             )))
@@ -178,13 +163,14 @@ fn shared_inputs_route_foreign_subjects_and_keep_unknown_providers_pending() {
     use super::{Input, Ports, Shared, initialize};
     use crate::{
         analysis::machine::fixtures,
-        domain::{Domain, NumericValue},
+        domain::{NumericValue, ProductAlgebra},
     };
     use analysis_kernel::{Availability, LocalClosure, Nil, Scoped};
 
     let mut kernel = Kernel::<u8>::new().unwrap();
     let mut meter = TestMeter;
     let mut shared = Shared::<NumericValue>::new(&mut kernel, &mut meter).unwrap();
+    let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let mut subjects = Vec::new();
     for generation in 1..=2 {
         let scope = kernel
@@ -217,7 +203,7 @@ fn shared_inputs_route_foreign_subjects_and_keep_unknown_providers_pending() {
         initialize(
             &mut run,
             &mut ports,
-            Input::new(subject, fixtures::payload(Domain::default())),
+            Input::new(subject, fixtures::payload(algebra.borrowed())),
         )
         .unwrap();
         run.finish(LocalClosure::Stable).unwrap();

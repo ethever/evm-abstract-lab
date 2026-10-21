@@ -4,22 +4,27 @@ use super::{
     DeferredSsaEdge, PartialBlockCoverage, PartialInstruction, PartialWorldBlock, PartialWorldSsa,
     coverage, deferred_reason, is_call,
 };
+use crate::domain::WordElement;
 use crate::ssa::{SsaInvariantKind as Kind, error::invariant};
 use crate::{
-    analysis::{InstructionProgress, MachineEdgeKind, Status, WorldAnalysis},
+    analysis::{EvmWorldAnalysis, InstructionProgress, MachineEdgeKind, Status},
     ssa::{EffectInput, EffectPhi, FramePhi, Instruction, SsaError, Transition},
 };
 use revm_bytecode::opcode;
 use std::collections::BTreeMap;
 
-pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaError> {
-    crate::ssa::checkpoint()?;
+pub(super) fn build<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<PartialWorldSsa<N>, SsaError> {
+    crate::ssa::pay(budget, 0)?;
+    crate::ssa::work::partial_build(analysis, budget)?;
     let mut next = 0;
     let mut effect_next = 0;
     let mut blocks = Vec::new();
     for state in analysis.states() {
         let invariant = |kind| invariant(kind).state(state.id);
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         let mut phis = Vec::new();
         let mut stacks = Vec::new();
         for (frame, entry) in state.entry.call_stack.iter().enumerate() {
@@ -59,7 +64,7 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
                 .ok_or_else(|| invariant(Kind::PartialFrameMissing))?;
             for (order, progress) in evidence.instructions().iter().copied().enumerate() {
                 let invariant = |kind| invariant(kind).pc(state.executed_pcs[order]);
-                crate::ssa::checkpoint()?;
+                crate::ssa::pay(budget, 0)?;
                 let source = original
                     .and_then(|b| b.instructions.get(order))
                     .ok_or_else(|| invariant(Kind::ReceiptOutsideRuntime))?;
@@ -164,7 +169,7 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
                 .source_state(edge.from)
                 .target_state(edge.to)
         };
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         if let Some(reason) = deferred_reason(analysis, edge) {
             deferred_edges.push(DeferredSsaEdge {
                 edge: index,
@@ -230,7 +235,7 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
                 .source_state(edge.from)
                 .target_state(edge.to)
         };
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         let Some(transition) = by_edge.get(&index) else {
             continue;
         };
@@ -259,7 +264,7 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
         blocks,
         transitions,
         deferred_edges,
-        frontiers: analysis.frontiers().to_vec(),
+        frontiers: super::clone_frontiers(analysis.frontiers(), budget)?,
         value_count: next,
         effect_count: effect_next,
     })

@@ -1,22 +1,27 @@
 //! Public root coverage keeps one input valuation separate from detailed evidence.
+use evm_abstract::analysis::AnalysisInput;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::{NumericValue, ProductAlgebra};
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{
-        self, ConfigError, ControlledAnalysisError, ExecutionConfig, FrameCode, FrontierReason,
-        Limit, OutcomeKind, RootTerminalScope, RootTerminalTrigger, Status,
+        self, ConfigError, ExecutionConfig, FrameCode, FrontierReason, Limit, OutcomeKind,
+        RootTerminalScope, RootTerminalTrigger, Status,
         control::Control,
         layers::{AnalysisSession, FactDependency, Observation, RefinementEffect},
         progress::Observer,
     },
     domain::{
-        AbstractValue, Domain,
+        EvmValue, ValueAlgebra,
         symbolic::{
             ByteStateKind, ExprId, ExprKind, ExprLimits, SlotStateId, SlotStateKind, SourceId,
         },
     },
     ssa::{self, PartialBlockCoverage},
-    world::{Account, ByteArray, Code, Entry, Existence, Store, World},
+    world::{Code, EvmAccount, EvmByteArray, EvmEntry, EvmStore, EvmWorld, Existence},
 };
 use std::sync::Arc;
 
@@ -30,20 +35,26 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(number))
 }
 
-fn fixture(fork: Fork) -> (World, Entry, ExecutionConfig) {
-    let mut world = World::new(fork, "public root terminal coverage");
+fn fixture(
+    fork: Fork,
+) -> (
+    EvmWorld<NumericValue>,
+    EvmEntry<NumericValue>,
+    ExecutionConfig,
+) {
+    let mut world = EvmWorld::<NumericValue>::new(fork, "public root terminal coverage");
     for (owner, code) in [(0x101, TWO_BLOCK_RETURN), (0x202, "00")] {
-        let mut account = Account::from_hex(code, fork).unwrap();
+        let mut account = EvmAccount::<NumericValue>::from_hex(code, fork).unwrap();
         account.storage_unknown = true;
         account.balance = word(10);
         account.nonce = word(1);
         world.insert(address(owner), account).unwrap();
     }
-    let mut entry = Entry::new(address(0x101));
+    let mut entry = EvmEntry::<NumericValue>::new(address(0x101));
     entry.environment.caller = address(0x900).into();
     entry.environment.value = word(0);
     let mut config = ExecutionConfig::default();
@@ -60,8 +71,16 @@ fn fixture(fork: Fork) -> (World, Entry, ExecutionConfig) {
 /// every byte below a selected complete data length is explicitly assigned.
 impl JointWitness {
     // Public coverage also admits a proven singleton without an expression.
-    fn storage(&mut self, store: &Store, owner: Address, expected: u64, domain: Domain) -> bool {
-        let value = store.read_checked(owner, &word(8), domain).unwrap();
+    fn storage(
+        &mut self,
+        store: &EvmStore<NumericValue>,
+        owner: Address,
+        expected: u64,
+        domain: &ValueAlgebra<ProductAlgebra>,
+    ) -> bool {
+        let value = store
+            .read_checked(owner, &word(8), domain.borrowed())
+            .unwrap();
         let expected = U256::from(expected);
         value.contains(expected)
             && match value.expression() {
@@ -70,7 +89,7 @@ impl JointWitness {
             }
     }
 
-    fn data(&mut self, data: &ByteArray, expected: &[u8]) -> bool {
+    fn data(&mut self, data: &EvmByteArray<NumericValue>, expected: &[u8]) -> bool {
         if !data.len().contains(U256::from(expected.len())) {
             return false;
         }
@@ -101,7 +120,13 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     config.root_terminal_coverage = false;
     assert!(!config.root_terminal_coverage);
     assert_eq!(config.max_work, 20_000_000);
-    let ordinary = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let ordinary = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+        &Control::default(),
+    )
+    .unwrap();
     assert!(ordinary.root_terminal_coverage().is_none());
     assert!(
         serde_json::to_value(&ordinary)
@@ -111,11 +136,23 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     );
 
     config.root_terminal_coverage = true;
-    let mut session =
-        AnalysisSession::from_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let session_values = native::product();
+    let session_policies = evm_abstract::analysis::EnginePolicies::default();
+    let mut session_extension = evm_abstract::analysis::cooperation::NoExtension;
+    let session_engine = evm_abstract::analysis::AnalysisEngine::new(
+        &session_values,
+        &session_policies,
+        &mut session_extension,
+    );
+    let mut session = AnalysisSession::new(
+        session_engine,
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+    )
+    .unwrap();
     let snapshot = session.facts().snapshot().clone();
     let revision = session.facts().revision();
-    let report = session.analyze().unwrap();
+    let report = session.run(&Control::default()).unwrap();
     let covered = report.analysis();
     let coverage = covered.root_terminal_coverage().unwrap();
     assert_eq!(coverage.scope(), RootTerminalScope::AllInputStates);
@@ -140,7 +177,7 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     assert_eq!(input.entry(), &entry);
     assert_eq!(input.entry(), covered.entry());
     assert_eq!(input.domain_spec(), covered.domain_spec());
-    assert_eq!(input.domain_spec(), Domain::default().spec());
+    assert_eq!(input.domain_spec(), native::product().spec());
     assert_eq!(
         serde_json::to_value(input.config()).unwrap(),
         serde_json::to_value(&config).unwrap()
@@ -161,7 +198,11 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
         panic!("unknown calldata retains its original scoped input");
     };
     assert_eq!(input.input_scope(), Some(length.scope));
-    let request_store = Store::new_checked(&world, Domain::from_spec(input.domain_spec())).unwrap();
+    let request_store = EvmStore::<NumericValue>::new_checked(
+        &world,
+        native::product_with(input.domain_spec()).borrowed(),
+    )
+    .unwrap();
     let SlotStateKind::Input { source, .. } = request_store.global_storage_state().kind() else {
         panic!("the world owns an immutable storage source");
     };
@@ -208,9 +249,14 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     assert_eq!(covered.outcomes().len(), 1);
     assert_eq!(covered.outcomes()[0].kind, OutcomeKind::Failure);
     assert_eq!(covered.outcomes()[0].store, ordinary.outcomes()[0].store);
-    assert_eq!(covered.outcomes()[0].data, ByteArray::empty());
-    let partial = ssa::build_partial_world(covered).unwrap();
-    partial.verify(covered).unwrap();
+    assert_eq!(
+        covered.outcomes()[0].data,
+        EvmByteArray::<NumericValue>::empty()
+    );
+    let partial = ssa::build_partial_world(covered, &mut native::postprocessing()).unwrap();
+    partial
+        .verify(covered, &mut native::postprocessing())
+        .unwrap();
     assert_eq!(partial.status(), Status::Incomplete);
     assert_eq!(partial.frontiers().len(), 1);
     assert_eq!(partial.blocks().len(), 2);
@@ -223,12 +269,12 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     assert!(ssa::build_world(covered).is_err());
 
     let native = serde_json::to_value(covered).unwrap();
-    assert_eq!(analysis::SCHEMA_VERSION, 11);
-    assert_eq!(native["schema_version"], 11);
+    assert_eq!(analysis::SCHEMA_VERSION, 12);
+    assert_eq!(native["schema_version"], analysis::SCHEMA_VERSION);
     let binding = &native["root_terminal_coverage"]["input"]["domain_spec"];
     assert_eq!(binding, &native["domain_spec"]);
-    assert_eq!(binding["schema_version"], 2);
-    assert_eq!(binding["cost_version"], 6);
+    assert_eq!(binding["schema_version"], 3);
+    assert_eq!(binding["cost_version"], 7);
     assert_eq!(
         native["status"],
         serde_json::to_value(Status::Incomplete).unwrap()
@@ -250,11 +296,23 @@ fn default_on_public_contract_preserves_incomplete_detail_at_the_transfer_cap() 
     assert!(config.root_terminal_coverage);
     assert_eq!(config.max_work, 20_000_000);
     assert_eq!(config.analysis.max_transfers, 1);
-    let mut session =
-        AnalysisSession::from_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let session_values = native::product();
+    let session_policies = evm_abstract::analysis::EnginePolicies::default();
+    let mut session_extension = evm_abstract::analysis::cooperation::NoExtension;
+    let session_engine = evm_abstract::analysis::AnalysisEngine::new(
+        &session_values,
+        &session_policies,
+        &mut session_extension,
+    );
+    let mut session = AnalysisSession::new(
+        session_engine,
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+    )
+    .unwrap();
     let snapshot = session.facts().snapshot().clone();
     let revision = session.facts().revision();
-    let report = session.analyze().unwrap();
+    let report = session.run(&Control::default()).unwrap();
     let covered = report.analysis();
     assert_eq!(covered.status(), Status::Incomplete);
     assert_eq!(covered.transfers(), 1);
@@ -298,8 +356,10 @@ fn default_on_public_contract_preserves_incomplete_detail_at_the_transfer_cap() 
         serde_json::to_value(&config).unwrap()
     );
 
-    let partial = ssa::build_partial_world(covered).unwrap();
-    partial.verify(covered).unwrap();
+    let partial = ssa::build_partial_world(covered, &mut native::postprocessing()).unwrap();
+    partial
+        .verify(covered, &mut native::postprocessing())
+        .unwrap();
     assert_eq!(partial.status(), Status::Incomplete);
     assert_eq!(partial.frontiers().len(), 1);
     assert_eq!(partial.blocks().len(), 2);
@@ -332,11 +392,17 @@ fn default_on_public_contract_preserves_incomplete_detail_at_the_transfer_cap() 
 fn one_certificate_admits_two_whole_input_valuations_and_independent_return_effects() {
     let (world, entry, mut config) = fixture(Fork::Osaka);
     config.root_terminal_coverage = true;
-    let analysis = analysis::analyze_world(world, entry, config).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     let coverage = analysis.root_terminal_coverage().unwrap();
     let input = coverage.input();
     let [returned, reverted, failed] = coverage.outcomes();
-    let domain = Domain::from_spec(input.domain_spec());
+    let domain = native::product_with(input.domain_spec());
     let history = input
         .initial_store()
         .slot_root(address(0x101), false)
@@ -348,14 +414,14 @@ fn one_certificate_admits_two_whole_input_valuations_and_independent_return_effe
     for initial in [1, 7] {
         let mut joint = JointWitness::default();
         for (owner, value) in [(0x101, initial), (0x202, initial), (0x999, initial + 1)] {
-            assert!(joint.storage(input.initial_store(), address(owner), value, domain));
-            assert!(joint.storage(input.saved_store().state(), address(owner), value, domain));
-            assert!(joint.storage(reverted.store(), address(owner), value, domain));
-            assert!(joint.storage(failed.store(), address(owner), value, domain));
+            assert!(joint.storage(input.initial_store(), address(owner), value, &domain));
+            assert!(joint.storage(input.saved_store().state(), address(owner), value, &domain));
+            assert!(joint.storage(reverted.store(), address(owner), value, &domain));
+            assert!(joint.storage(failed.store(), address(owner), value, &domain));
         }
         assert!(joint.data(input.calldata(), &[0x11, 0x22]));
         for (owner, value) in [(0x101, 31), (0x202, 47), (0x999, 93)] {
-            assert!(joint.storage(returned.store(), address(owner), value, domain));
+            assert!(joint.storage(returned.store(), address(owner), value, &domain));
             // These scalar fields deliberately form Cartesian Top choices.
             assert!(
                 returned
@@ -377,7 +443,7 @@ fn one_certificate_admits_two_whole_input_valuations_and_independent_return_effe
                 assert_eq!(
                     outcome
                         .store()
-                        .read_transient(address(owner), &word(8), domain)
+                        .read_transient(address(owner), &word(8), domain.borrowed())
                         .singleton(),
                     Some(U256::ZERO)
                 );
@@ -396,10 +462,10 @@ fn one_certificate_admits_two_whole_input_valuations_and_independent_return_effe
         assert!(joint.data(failed.data(), &[]));
         assert!(!joint.data(failed.data(), &[1]));
         assert!(joint.slot(&history, U256::from(8), U256::from(initial)));
-        assert!(!joint.storage(input.initial_store(), address(0x101), 31, domain));
-        assert!(!joint.storage(reverted.store(), address(0x101), 31, domain));
-        assert!(!joint.storage(failed.store(), address(0x101), 31, domain));
-        assert!(!joint.storage(returned.store(), address(0x101), 47, domain));
+        assert!(!joint.storage(input.initial_store(), address(0x101), 31, &domain));
+        assert!(!joint.storage(reverted.store(), address(0x101), 31, &domain));
+        assert!(!joint.storage(failed.store(), address(0x101), 31, &domain));
+        assert!(!joint.storage(returned.store(), address(0x101), 47, &domain));
         assert!(!joint.data(input.calldata(), &[0xa1, 0xb2]));
     }
     assert!(returned.store().balance_default().numeric().is_top());
@@ -445,24 +511,36 @@ fn one_certificate_admits_two_whole_input_valuations_and_independent_return_effe
 fn exceptional_finalization_covers_both_future_sticky_three_choices() {
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         let (mut world, entry, mut config) = fixture(fork);
-        world.insert(address(3), Account::empty()).unwrap();
-        world.insert(address(0x303), Account::empty()).unwrap();
+        world
+            .insert(address(3), EvmAccount::<NumericValue>::empty())
+            .unwrap();
+        world
+            .insert(address(0x303), EvmAccount::<NumericValue>::empty())
+            .unwrap();
         config.root_terminal_coverage = true;
-        let analysis = analysis::analyze_world(world, entry.clone(), config).unwrap();
+        let analysis = native::run(
+            &native::product(),
+            AnalysisInput::new(world, entry.clone()).unwrap(),
+            config,
+            &Control::default(),
+        )
+        .unwrap();
         let coverage = analysis.root_terminal_coverage().unwrap();
         let saved = coverage.input().saved_store();
-        let domain = Domain::from_spec(coverage.input().domain_spec());
+        let domain = native::product_with(coverage.input().domain_spec());
         let original = saved.state().clone();
-        let exact = original.read_checked(address(3), &word(8), domain).unwrap();
+        let exact = original
+            .read_checked(address(3), &word(8), domain.borrowed())
+            .unwrap();
         assert_eq!(exact.singleton(), Some(U256::ZERO));
         assert!(exact.expression().is_none());
-        assert!(JointWitness::default().storage(&original, address(3), 0, domain));
+        assert!(JointWitness::default().storage(&original, address(3), 0, &domain));
         for future_touch in [false, true] {
             // Compose the actual public rollback and finalization operations on
             // one saved root. These are Store witnesses, not executed CALLs.
             let mut future = coverage.input().initial_store().clone();
             future
-                .write_checked(entry.address, &word(8), &word(99), domain)
+                .write_checked(entry.address, &word(8), &word(99), domain.borrowed())
                 .unwrap();
             future.write_balance(entry.address, word(1));
             future.touch_account(address(0x303));
@@ -470,7 +548,7 @@ fn exceptional_finalization_covers_both_future_sticky_three_choices() {
                 future.touch_account(address(3));
             }
             future.restore(saved.clone());
-            future.finalize_transaction(domain).unwrap();
+            future.finalize_transaction(domain.borrowed()).unwrap();
             let expected_existence = if future_touch {
                 Existence::Absent
             } else {
@@ -485,10 +563,10 @@ fn exceptional_finalization_covers_both_future_sticky_three_choices() {
             for outcome in &coverage.outcomes()[1..] {
                 let store = outcome.store();
                 let mut joint = JointWitness::default();
-                assert!(joint.storage(saved.state(), entry.address, 7, domain));
-                assert!(joint.storage(&future, entry.address, 7, domain));
-                assert!(joint.storage(store, entry.address, 7, domain));
-                assert!(!joint.storage(store, entry.address, 99, domain));
+                assert!(joint.storage(saved.state(), entry.address, 7, &domain));
+                assert!(joint.storage(&future, entry.address, 7, &domain));
+                assert!(joint.storage(store, entry.address, 7, &domain));
+                assert!(!joint.storage(store, entry.address, 99, &domain));
                 // Only presence differs between the two complete empty-account
                 // tuples. Unknown presence admits both; every other field is
                 // fixed to the same empty value, rather than chosen per read.
@@ -529,14 +607,30 @@ fn exceptional_finalization_covers_both_future_sticky_three_choices() {
 fn revised_facts_and_independent_requests_capture_fresh_bindings() {
     let (world, entry, mut config) = fixture(Fork::Osaka);
     config.root_terminal_coverage = true;
-    let mut session = AnalysisSession::from_world(world, entry, config).unwrap();
-    let old = session.analyze().unwrap();
+    let session_values = native::product();
+    let session_policies = evm_abstract::analysis::EnginePolicies::default();
+    let mut session_extension = evm_abstract::analysis::cooperation::NoExtension;
+    let session_engine = evm_abstract::analysis::AnalysisEngine::new(
+        &session_values,
+        &session_policies,
+        &mut session_extension,
+    );
+    let mut session = AnalysisSession::new(
+        session_engine,
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+    )
+    .unwrap();
+    let old = session.run(&Control::default()).unwrap();
     let old_coverage = old.analysis().root_terminal_coverage().unwrap();
     let snapshot = old.snapshot().clone();
     assert!(old.dependencies().reads().any(|(dependency, states)| {
         *dependency == FactDependency::AllInitialState && states.contains(&0)
     }));
-    assert!(Arc::ptr_eq(&old, &session.analyze().unwrap()));
+    assert!(Arc::ptr_eq(
+        &old,
+        &session.run(&Control::default()).unwrap()
+    ));
     let effect = session
         .refine(
             &snapshot,
@@ -545,6 +639,7 @@ fn revised_facts_and_independent_requests_capture_fresh_bindings() {
                 slot: U256::from(8),
                 value: U256::from(7),
             }],
+            &Control::default(),
         )
         .unwrap();
     let RefinementEffect::RestartRequired {
@@ -561,7 +656,7 @@ fn revised_facts_and_independent_requests_capture_fresh_bindings() {
     assert_eq!(executed_revision, old.revision());
     assert_ne!(current, old.revision());
     assert!(affected_states.contains(&0));
-    let new = session.analyze().unwrap();
+    let new = session.run(&Control::default()).unwrap();
     assert!(!Arc::ptr_eq(&old, &new));
     let new_coverage = new.analysis().root_terminal_coverage().unwrap();
     assert_eq!(new_coverage.input().snapshot(), &snapshot);
@@ -575,7 +670,7 @@ fn revised_facts_and_independent_requests_capture_fresh_bindings() {
         new_coverage.outcomes()[0].store().global_storage_state(),
         old_coverage.outcomes()[0].store().global_storage_state()
     );
-    let domain = Domain::from_spec(new_coverage.input().domain_spec());
+    let domain = native::product_with(new_coverage.input().domain_spec());
     for store in [
         new_coverage.input().initial_store(),
         new_coverage.input().saved_store().state(),
@@ -583,7 +678,7 @@ fn revised_facts_and_independent_requests_capture_fresh_bindings() {
         new_coverage.outcomes()[2].store(),
     ] {
         let value = store
-            .read_checked(address(0x202), &word(8), domain)
+            .read_checked(address(0x202), &word(8), domain.borrowed())
             .unwrap();
         assert_eq!(value.singleton(), Some(U256::from(7)));
         assert!(!value.contains(U256::from(1)));
@@ -594,13 +689,13 @@ fn revised_facts_and_independent_requests_capture_fresh_bindings() {
             old_coverage.input().initial_store(),
             address(0x202),
             initial,
-            domain
+            &domain
         ));
         assert!(joint.storage(
             old_coverage.input().saved_store().state(),
             address(0x202),
             initial,
-            domain
+            &domain
         ));
     }
 
@@ -608,9 +703,15 @@ fn revised_facts_and_independent_requests_capture_fresh_bindings() {
     let (other_world, mut other_entry, mut other_config) = fixture(Fork::Cancun);
     other_entry.environment.caller = address(0x901).into();
     other_entry.environment.value = word(9);
-    other_entry.environment.calldata = ByteArray::exact(&[0xfe, 0xed]);
+    other_entry.environment.calldata = EvmByteArray::<NumericValue>::exact(&[0xfe, 0xed]);
     other_config.root_terminal_coverage = true;
-    let other = analysis::analyze_world(other_world, other_entry.clone(), other_config).unwrap();
+    let other = native::run(
+        &native::product(),
+        AnalysisInput::new(other_world, other_entry.clone()).unwrap(),
+        other_config,
+        &Control::default(),
+    )
+    .unwrap();
     let other_input = other.root_terminal_coverage().unwrap().input();
     assert_eq!(
         other_input.snapshot().identity(),
@@ -631,28 +732,43 @@ fn revised_facts_and_independent_requests_capture_fresh_bindings() {
     assert_eq!(other_input.frame().caller, other_entry.environment.caller);
     assert_eq!(other_input.call_value().singleton(), Some(U256::from(9)));
     assert_eq!(
-        other_input.calldata().exact_bytes().as_deref(),
+        other_input
+            .calldata()
+            .exact_bytes(native::product().borrowed())
+            .as_deref(),
         Some(&[0xfe, 0xed][..])
     );
 }
 
 #[test]
 fn unsupported_precompile_preparation_keeps_its_paid_prefix_and_real_return() {
-    let world = World::new(Fork::Osaka, "unsupported root preparation");
-    let entry = Entry::concrete(
+    let world = EvmWorld::<NumericValue>::new(Fork::Osaka, "unsupported root preparation");
+    let entry = EvmEntry::<NumericValue>::concrete(
         address(4),
         address(0x900),
         word(0),
-        ByteArray::exact(b"identity"),
+        EvmByteArray::<NumericValue>::exact(b"identity"),
     );
     let mut config = ExecutionConfig {
         // The exact +1 refusal fee is relative to execution without preparation.
         root_terminal_coverage: false,
         ..ExecutionConfig::default()
     };
-    let ordinary = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let ordinary = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+        &Control::default(),
+    )
+    .unwrap();
     config.root_terminal_coverage = true;
-    let covered = analysis::analyze_world(world, entry, config).unwrap();
+    let covered = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(covered.status(), Status::Converged);
     assert!(covered.frontiers().is_empty());
     assert!(covered.root_terminal_coverage().is_none());
@@ -671,7 +787,10 @@ fn unsupported_precompile_preparation_keeps_its_paid_prefix_and_real_return() {
         .collect();
     assert_eq!(returns.len(), 1);
     assert_eq!(
-        returns[0].data.exact_bytes().as_deref(),
+        returns[0]
+            .data
+            .exact_bytes(native::product().borrowed())
+            .as_deref(),
         Some(&b"identity"[..])
     );
     ssa::build_world(&covered)
@@ -687,27 +806,38 @@ fn invalid_or_cancelled_requests_cannot_return_a_certificate() {
     let mut invalid = entry.clone();
     invalid.environment.to = address(0xdead).into();
     assert!(matches!(
-        analysis::analyze_world(world.clone(), invalid, config.clone()),
+        AnalysisInput::new(world.clone(), invalid),
         Err(ConfigError::Environment(_))
     ));
     let control = Control::new(Observer::default());
     control.cancellation().cancel();
     assert!(matches!(
-        analysis::analyze_world_with_control(
-            world.clone(),
-            entry.clone(),
+        native::run(
+            &native::product(),
+            AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
             config.clone(),
             &control
         ),
-        Err(ControlledAnalysisError::Cancelled)
+        Err(evm_abstract::analysis::cooperation::CooperationError::Cancelled)
     ));
     let mut invalid_config = config.clone();
     invalid_config.analysis.max_transfers = 0;
     assert!(matches!(
-        analysis::analyze_world(world.clone(), entry.clone(), invalid_config),
-        Err(ConfigError::Budget)
+        native::run(
+            &native::product(),
+            AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+            invalid_config,
+            &Control::default()
+        ),
+        Err(evm_abstract::analysis::cooperation::CooperationError::Config(ConfigError::Budget))
     ));
-    let next = analysis::analyze_world(world, entry, config).unwrap();
+    let next = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(next.status(), Status::Incomplete);
     assert_eq!(
         next.root_terminal_coverage().unwrap().trigger(),
@@ -718,29 +848,36 @@ fn invalid_or_cancelled_requests_cannot_return_a_certificate() {
 #[test]
 fn static_return_covers_cleanup_of_an_empty_unlisted_owner_under_the_same_input() {
     let fork = Fork::Osaka;
-    let mut world = World::new(fork, "unlisted static-call cleanup");
+    let mut world = EvmWorld::<NumericValue>::new(fork, "unlisted static-call cleanup");
     // The second block can STATICCALL the calldata-selected owner. A zero-value
     // static call may touch an empty account, whose persistent storage is then
     // cleared by transaction finalization even though execution was static.
-    let mut root = Account::from_hex("6003565b5f5f5f5f5f3561fffffa00", fork).unwrap();
+    let mut root =
+        EvmAccount::<NumericValue>::from_hex("6003565b5f5f5f5f5f3561fffffa00", fork).unwrap();
     root.balance = word(10);
     root.nonce = word(1);
     root.storage_unknown = true;
     world.insert(address(0x101), root).unwrap();
     let unlisted = address(0x999);
     assert!(!world.accounts().contains_key(&unlisted));
-    let mut entry = Entry::concrete(
+    let mut entry = EvmEntry::<NumericValue>::concrete(
         address(0x101),
         address(0x900),
         word(0),
-        ByteArray::exact(&U256::from(0x999).to_be_bytes::<32>()),
+        EvmByteArray::<NumericValue>::exact(&U256::from(0x999).to_be_bytes::<32>()),
     );
     entry.environment.is_static = true;
     let mut config = ExecutionConfig::default();
     config.analysis.max_transfers = 1;
     config.root_terminal_coverage = true;
     assert_eq!(config.max_work, 20_000_000);
-    let report = analysis::analyze_world(world, entry, config).unwrap();
+    let report = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(report.status(), Status::Incomplete);
     assert_eq!(report.transfers(), 1);
     assert_eq!(report.states()[0].executed_pcs, [0, 2]);
@@ -752,7 +889,7 @@ fn static_return_covers_cleanup_of_an_empty_unlisted_owner_under_the_same_input(
     let coverage = report.root_terminal_coverage().unwrap();
     assert!(coverage.input().frame().is_static);
     let input = coverage.input();
-    let domain = Domain::from_spec(input.domain_spec());
+    let domain = native::product_with(input.domain_spec());
     let [returned, reverted, failed] = coverage.outcomes();
     // One admissible whole initial owner is Present/Empty/balance0/nonce0 with
     // slot8=7. Storage does not participate in EIP-161's emptiness predicate.
@@ -766,25 +903,25 @@ fn static_return_covers_cleanup_of_an_empty_unlisted_owner_under_the_same_input(
     let returned_root = returned.store().slot_root(unlisted, false).unwrap();
     for post in [0, 7] {
         let mut joint = JointWitness::default();
-        assert!(joint.storage(input.initial_store(), unlisted, 7, domain));
-        assert!(joint.storage(input.saved_store().state(), unlisted, 7, domain));
-        assert!(joint.storage(reverted.store(), unlisted, 7, domain));
-        assert!(joint.storage(failed.store(), unlisted, 7, domain));
+        assert!(joint.storage(input.initial_store(), unlisted, 7, &domain));
+        assert!(joint.storage(input.saved_store().state(), unlisted, 7, &domain));
+        assert!(joint.storage(reverted.store(), unlisted, 7, &domain));
+        assert!(joint.storage(failed.store(), unlisted, 7, &domain));
         assert!(
-            joint.storage(returned.store(), unlisted, post, domain),
+            joint.storage(returned.store(), unlisted, post, &domain),
             "static cleanup must cover input7 -> output{post}; original_root_reused={}",
             initial_root == returned_root
         );
         assert!(joint.data(returned.data(), &[]));
         assert!(joint.data(reverted.data(), &[]));
         assert!(joint.data(failed.data(), &[]));
-        assert!(!joint.storage(reverted.store(), unlisted, 0, domain));
-        assert!(!joint.storage(failed.store(), unlisted, 0, domain));
+        assert!(!joint.storage(reverted.store(), unlisted, 0, &domain));
+        assert!(!joint.storage(failed.store(), unlisted, 0, &domain));
         for outcome in coverage.outcomes() {
             assert_eq!(
                 outcome
                     .store()
-                    .read_transient(unlisted, &word(8), domain)
+                    .read_transient(unlisted, &word(8), domain.borrowed())
                     .singleton(),
                 Some(U256::ZERO)
             );

@@ -1,18 +1,19 @@
 use super::*;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
     analysis::control::Control,
     domain::{
-        AbstractValue,
+        EvmValue,
         symbolic::{ExprId, ExprLimits},
     },
-    world::{Account, World},
+    world::{EvmAccount, EvmWorld},
 };
 
-fn world(expression: ExprId) -> World {
-    let mut world = World::new(Fork::Osaka, "typed fingerprint failure");
-    let mut account = Account::empty();
-    account.balance = AbstractValue::top().with_expression(expression);
+fn world(expression: ExprId) -> EvmWorld<NumericValue> {
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "typed fingerprint failure");
+    let mut account = EvmAccount::<NumericValue>::empty();
+    account.balance = EvmValue::<NumericValue>::top().with_expression(expression);
     world.insert(Address::repeat_byte(0x11), account).unwrap();
     world
 }
@@ -86,6 +87,13 @@ fn session_cancellation_is_cancelled_before_report_generation() {
         })
     ));
     roundtrip(&projected);
+    let refused = super::super::rpc_error(RpcAnalysisError::Session(SessionError::Work));
+    assert_eq!(refused.code, api::ApiErrorCode::Internal);
+    assert_eq!(
+        refused.details,
+        api::ErrorDetails::Session(Box::new(api::SessionFailure::Work))
+    );
+    roundtrip(&refused);
 }
 
 #[test]
@@ -131,6 +139,62 @@ fn rejected_initial_storage_fact_retains_exact_owner_and_full_slot_key() {
         )))
     );
     roundtrip(&projected);
+}
+
+#[test]
+fn native_refinement_refusals_keep_numeric_reason_and_location_through_wire() {
+    use evm_abstract::{
+        analysis::{
+            RpcAnalysisError,
+            layers::{FactKey, SessionError},
+        },
+        domain::facts::FactError as NumericFactError,
+    };
+    let owner = Address::repeat_byte(0x11);
+    let slot = U256::MAX;
+    for (source, expected, code) in [
+        (
+            NumericFactError::Capacity {
+                max_atoms: 4,
+                required: 7,
+            },
+            api::FactFailure::Capacity(api::FactCapacityFailure {
+                max_atoms: 4,
+                required: 7,
+            }),
+            api::ApiErrorCode::InvalidLimits,
+        ),
+        (
+            NumericFactError::UnsupportedOperation(0xf1),
+            api::FactFailure::UnsupportedOperation(0xf1),
+            api::ApiErrorCode::Internal,
+        ),
+    ] {
+        let source = SessionError::Refinement {
+            key: FactKey::Storage {
+                address: owner,
+                slot,
+            },
+            cause: source,
+        };
+        let message = source.to_string();
+        let projected = super::super::rpc_error(RpcAnalysisError::Session(source));
+        assert_eq!(projected.code, code);
+        assert_eq!(projected.message, message);
+        assert_eq!(
+            projected.details,
+            api::ErrorDetails::Session(Box::new(api::SessionFailure::Refinement(
+                api::SessionRefinementFailure {
+                    location: api::InitialFactLocation::Storage(api::StorageLocation {
+                        address: owner.to_string(),
+                        slot: format!("0x{slot:x}"),
+                    }),
+                    source: expected,
+                }
+            )))
+        );
+        roundtrip(&projected);
+    }
 }
 
 #[test]

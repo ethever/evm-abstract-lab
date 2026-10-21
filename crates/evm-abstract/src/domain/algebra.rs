@@ -5,8 +5,8 @@
 //! immutable-source observations cross the explicitly coarsening vocabulary.
 
 use super::{
-    Domain, DomainSpec, EvmReduction, EvmValue, NumericValue, ReductionStatus, WordElement,
-    WorkExhausted, facts, symbolic,
+    DomainSpec, EvmReduction, EvmValue, ReductionStatus, WordElement, WorkExhausted, facts,
+    symbolic,
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -19,21 +19,6 @@ pub(crate) enum SingletonProof {
     #[default]
     NotQueried,
     Answer(Option<U256>),
-}
-
-#[cfg(test)]
-pub(super) static OPERAND_COPIES: crate::test_instrumentation::Counter<usize> =
-    crate::test_instrumentation::Counter::new(0);
-
-pub(super) fn clone_numeric_operands<'a, N: WordElement + 'a>(
-    args: impl Iterator<Item = &'a N>,
-) -> Vec<N> {
-    args.inspect(|_| {
-        #[cfg(test)]
-        OPERAND_COPIES.update(|copies| *copies += 1);
-    })
-    .cloned()
-    .collect()
 }
 
 /// Numeric transfer/refinement result, independent of provenance and expressions.
@@ -95,54 +80,36 @@ pub trait EvmNumericAlgebra: Debug {
     fn widen_procedure_numeric(&self, old: &Self::Element, next: &Self::Element) -> Self::Element;
     /// Registered local reduction, retaining sound information on a limit.
     fn reduce_numeric(&self, value: &Self::Element) -> NumericReduction<Self::Element>;
-    /// Pure numeric instruction, with stack top first in `args`.
-    fn apply_numeric(&self, op: u8, args: &[Self::Element]) -> NumericReduction<Self::Element>;
-    /// Borrow facade operands. The compatible default materializes the owned
-    /// slice required by an existing custom implementation after prepayment.
-    fn apply_numeric_borrowed<'a>(
+    /// Pure numeric instruction over borrowed operands, with stack top first.
+    /// An implementation that copies operands includes that work in its quote.
+    fn apply_numeric<'a>(
         &self,
         op: u8,
         args: impl ExactSizeIterator<Item = &'a Self::Element>,
     ) -> NumericReduction<Self::Element>
     where
-        Self::Element: 'a,
-    {
-        self.apply_numeric(op, &clone_numeric_operands(args))
-    }
-    /// Additional facade operand work, without cloning or enumeration. Override
-    /// with borrowed execution when materialization is avoided.
+        Self::Element: 'a;
+    /// Facade metadata traversal/copy work, without numeric operand cloning.
+    /// Override only when the implementation needs a different metadata bound.
     fn operand_work<'a>(&self, args: impl Iterator<Item = &'a EvmValue<Self::Element>>) -> usize
     where
         Self::Element: 'a,
     {
-        args.fold(0usize, |work, value| {
-            work.saturating_add(value.numeric().clone_work())
-                .saturating_add(
-                    value
-                        .work_size()
-                        .saturating_sub(value.numeric().work_size()),
-                )
-        })
+        operand_metadata_work(args)
     }
-    /// Complete envelope for numeric transfer, dependency/reduction work and
-    /// the facade's singleton/symbolic-expression queries inside `apply_detailed`
-    /// or `observe_byte`. Include queries on the actual result. Do not separately
-    /// charge their `singleton_work` again inside this prepaid operation.
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    /// Complete opcode-aware envelope for transfer, dependency/reduction work
+    /// and singleton/expression queries inside apply_detailed or observe_byte.
+    /// This includes the numeric implementation's own operand copies and result
+    /// queries; independent caller queries require their separate payment.
+    /// The quote also upper-bounds `Element::work_size` for every possible numeric
+    /// result of the same opcode/operands, including facade-installed literals
+    /// from identity or expression folding. Callers may reuse this structural
+    /// bound to prepay release separately; execution payment does not pay release
+    /// or facade output metadata. Inspect only cached sizes while quoting, and
+    /// return `usize::MAX` when work or the output bound is unknown/overflows.
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize
     where
         Self::Element: 'a;
-    /// Opcode-aware quotation for already-precharged callers. The compatible
-    /// default retains an existing custom policy's whole-operation envelope.
-    fn operation_work_for<'a>(
-        &self,
-        _op: u8,
-        args: impl Iterator<Item = &'a Self::Element>,
-    ) -> usize
-    where
-        Self::Element: 'a,
-    {
-        self.operation_work(args)
-    }
     /// Construct and release a full literal operand. Opaque constructors need
     /// an explicit bound; unknown work refuses before constructing the value.
     fn literal_quote_work(&self, _literal: U256) -> usize {
@@ -212,12 +179,8 @@ pub trait EvmNumericAlgebra: Debug {
     ) -> Option<usize> {
         None
     }
-    /// Optional byte observation shortcut; the default runs ordinary transfer.
-    fn observe_byte_numeric(&self, op: u8, args: &[Self::Element]) -> Self::Element {
-        self.apply_numeric(op, args).value
-    }
-    /// Borrowed dispatch preserves an existing custom byte override by default.
-    fn observe_byte_numeric_borrowed<'a>(
+    /// Optional borrowed byte observation; ordinary transfer is a sound default.
+    fn observe_byte_numeric<'a>(
         &self,
         op: u8,
         args: impl ExactSizeIterator<Item = &'a Self::Element>,
@@ -225,7 +188,7 @@ pub trait EvmNumericAlgebra: Debug {
     where
         Self::Element: 'a,
     {
-        self.observe_byte_numeric(op, &clone_numeric_operands(args))
+        self.apply_numeric(op, args).value
     }
     /// Cheap admission for an explicitly paid full-byte-image certificate.
     fn byte_image_candidate(&self, _value: &Self::Element) -> bool {
@@ -285,10 +248,7 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     fn reduce_numeric(&self, value: &Self::Element) -> NumericReduction<Self::Element> {
         D::reduce_numeric(self, value)
     }
-    fn apply_numeric(&self, op: u8, args: &[Self::Element]) -> NumericReduction<Self::Element> {
-        D::apply_numeric(self, op, args)
-    }
-    fn apply_numeric_borrowed<'a>(
+    fn apply_numeric<'a>(
         &self,
         op: u8,
         args: impl ExactSizeIterator<Item = &'a Self::Element>,
@@ -296,7 +256,7 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     where
         Self::Element: 'a,
     {
-        D::apply_numeric_borrowed(self, op, args)
+        D::apply_numeric(self, op, args)
     }
     fn operand_work<'a>(&self, args: impl Iterator<Item = &'a EvmValue<Self::Element>>) -> usize
     where
@@ -304,17 +264,11 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     {
         D::operand_work(self, args)
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize
     where
         Self::Element: 'a,
     {
-        D::operation_work(self, args)
-    }
-    fn operation_work_for<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize
-    where
-        Self::Element: 'a,
-    {
-        D::operation_work_for(self, op, args)
+        D::operation_work(self, op, args)
     }
     fn literal_quote_work(&self, literal: U256) -> usize {
         D::literal_quote_work(self, literal)
@@ -357,10 +311,7 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     ) -> Option<usize> {
         D::refinement_import_work(self, value, facts, finite_values, expression_work)
     }
-    fn observe_byte_numeric(&self, op: u8, args: &[Self::Element]) -> Self::Element {
-        D::observe_byte_numeric(self, op, args)
-    }
-    fn observe_byte_numeric_borrowed<'a>(
+    fn observe_byte_numeric<'a>(
         &self,
         op: u8,
         args: impl ExactSizeIterator<Item = &'a Self::Element>,
@@ -368,7 +319,7 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     where
         Self::Element: 'a,
     {
-        D::observe_byte_numeric_borrowed(self, op, args)
+        D::observe_byte_numeric(self, op, args)
     }
     fn byte_image_candidate(&self, value: &Self::Element) -> bool {
         D::byte_image_candidate(self, value)
@@ -526,18 +477,6 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         let numeric = self
             .numeric
             .widen_procedure_numeric(old.numeric(), next.numeric());
-        let no_acceleration = old.numeric() == next.numeric()
-            || next.constants().is_some_and(|values| {
-                values.len() <= self.spec().widening_after_updates().saturating_add(1)
-            })
-            || (self.spec().profile() == super::Profile::Product
-                && old.interval().unsigned_bounds() == next.interval().unsigned_bounds());
-        if &numeric == next.numeric() && no_acceleration {
-            return next.copy_metadata(numeric);
-        }
-        if self.spec().profile() == super::Profile::ConstantsOnly {
-            return EvmValue::from_numeric(numeric);
-        }
         self.join_metadata(old, next, numeric)
     }
     /// Sound local closure; input and all metadata remain independently owned.
@@ -603,7 +542,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
             NumericReduction::stable(D::Element::constant(exact))
         } else {
             self.numeric
-                .apply_numeric_borrowed(op, args.iter().map(EvmValue::numeric))
+                .apply_numeric(op, args.iter().map(EvmValue::numeric))
         };
         let mut reduced = numeric.with_metadata(EvmValue::from_numeric);
         let limits = self.spec().relations();
@@ -668,7 +607,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         if budget.exhausted() || current.is_cancelled() {
             return Err(WorkExhausted);
         }
-        let work = self.operation_work(args);
+        let work = self.operation_work(op, args);
         if work == usize::MAX || current.is_cancelled() || !budget.charge(work) {
             return Err(WorkExhausted);
         }
@@ -712,36 +651,28 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         }
         let numeric = self
             .numeric
-            .observe_byte_numeric_borrowed(op, args.iter().map(EvmValue::numeric));
+            .observe_byte_numeric(op, args.iter().map(EvmValue::numeric));
         let mut out = EvmValue::from_numeric(numeric);
         out.provenance = EvmValue::transfer_provenance(args);
         out.symbolic_limit =
             args.iter().any(EvmValue::symbolic_limit_reached) && out.singleton().is_none();
         out
     }
-    /// Numeric plus expression/metadata work quotation; no work is run here.
-    pub fn operation_work(&self, args: &[EvmValue<D::Element>]) -> usize {
+    /// Complete opcode-aware quotation without operand copies or enumeration.
+    pub fn operation_work(&self, op: u8, args: &[EvmValue<D::Element>]) -> usize {
         self.operation_envelope(
             args.iter(),
             self.numeric
-                .operation_work(args.iter().map(EvmValue::numeric)),
-        )
-    }
-    /// Contextual quotation without operand copies or candidate enumeration.
-    pub fn operation_work_for(&self, op: u8, args: &[EvmValue<D::Element>]) -> usize {
-        self.operation_envelope(
-            args.iter(),
-            self.numeric
-                .operation_work_for(op, args.iter().map(EvmValue::numeric)),
+                .operation_work(op, args.iter().map(EvmValue::numeric)),
         )
     }
     /// Internal quote view for a fixed mix of existing and synthetic operands;
     /// callers retain the values, so quoting never clones their numeric payloads.
-    pub(crate) fn operation_work_for_refs(&self, op: u8, args: &[&EvmValue<D::Element>]) -> usize {
+    pub(crate) fn operation_work_refs(&self, op: u8, args: &[&EvmValue<D::Element>]) -> usize {
         self.operation_envelope(
             args.iter().copied(),
             self.numeric
-                .operation_work_for(op, args.iter().map(|value| value.numeric())),
+                .operation_work(op, args.iter().map(|value| value.numeric())),
         )
     }
     /// Reservation for constructing and releasing an actual literal operand.
@@ -761,7 +692,9 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     ) -> usize {
         self.numeric.memory_write_passes(offset, value, width)
     }
-    fn operation_envelope<'a>(
+    /// Compose a cached numeric quote without quoting it again when a caller
+    /// also uses its output-size guarantee for an independent lifecycle payment.
+    pub(crate) fn operation_envelope<'a>(
         &self,
         args: impl Iterator<Item = &'a EvmValue<D::Element>> + Clone,
         numeric: usize,
@@ -798,8 +731,8 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     }
 }
 
-pub(super) fn operand_metadata_work<'a>(
-    args: impl Iterator<Item = &'a EvmValue<NumericValue>>,
+pub(super) fn operand_metadata_work<'a, N: WordElement + 'a>(
+    args: impl Iterator<Item = &'a EvmValue<N>>,
 ) -> usize {
     args.fold(0usize, |work, value| {
         work.saturating_add(
@@ -808,223 +741,6 @@ pub(super) fn operand_metadata_work<'a>(
                 .saturating_sub(value.numeric().work_size()),
         )
     })
-}
-
-// The default implementation alone owns NumericValue. Custom implementations
-// are invoked directly above; no conversion to the default carrier occurs.
-impl EvmNumericAlgebra for Domain {
-    type Element = NumericValue;
-    fn spec(&self) -> DomainSpec {
-        Domain::spec(*self)
-    }
-    fn project_numeric(&self, value: &NumericValue) -> NumericValue {
-        self.numeric_project(value)
-    }
-    fn join_numeric(&self, left: &NumericValue, right: &NumericValue) -> NumericValue {
-        self.numeric_join(left, right)
-    }
-    fn widen_numeric(&self, old: &NumericValue, next: &NumericValue) -> NumericValue {
-        self.numeric_widen(old, next)
-    }
-    fn widen_procedure_numeric(&self, old: &NumericValue, next: &NumericValue) -> NumericValue {
-        self.numeric_widen_procedure(old, next)
-    }
-    fn reduce_numeric(&self, value: &NumericValue) -> NumericReduction<NumericValue> {
-        super::reduce::numeric(*self, value.clone())
-    }
-    fn apply_numeric(&self, op: u8, args: &[NumericValue]) -> NumericReduction<NumericValue> {
-        self.apply_numeric_borrowed(op, args.iter())
-    }
-    fn apply_numeric_borrowed<'a>(
-        &self,
-        op: u8,
-        args: impl ExactSizeIterator<Item = &'a NumericValue>,
-    ) -> NumericReduction<NumericValue> {
-        self.numeric_apply_with(op, args, |value| super::reduce::numeric(*self, value))
-    }
-    fn operand_work<'a>(&self, args: impl Iterator<Item = &'a EvmValue<NumericValue>>) -> usize {
-        // The legacy ConstantsOnly tuple envelope already owns facade metadata.
-        // Product retains its separate metadata fee, without operand copies.
-        if self.spec().profile() == super::Profile::ConstantsOnly {
-            0
-        } else {
-            operand_metadata_work(args)
-        }
-    }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a NumericValue>) -> usize {
-        self.numeric_operation_work(args)
-    }
-    fn operation_work_for<'a>(
-        &self,
-        op: u8,
-        args: impl Iterator<Item = &'a NumericValue>,
-    ) -> usize {
-        self.numeric_operation_work_for(op, args)
-    }
-    fn literal_quote_work(&self, _literal: U256) -> usize {
-        // Singleton containers/Arc and disposal, four-limb mask/range/congruence
-        // construction and common literal metadata fit this fixed envelope.
-        64
-    }
-    fn byte_quotes_uniform(&self) -> bool {
-        true
-    }
-    fn uniform_word_bytes(&self, word: &NumericValue) -> bool {
-        // Only the default transfer's coarse BYTE rule has this shape law.
-        // More precise policies using NumericValue opt in independently.
-        self.spec().profile() == super::Profile::Product
-            && word.finite_constants().is_top()
-            && *word.known_bits() == super::known_bits::KnownBits::top()
-            && word.interval().singleton().is_none()
-            && word.congruence().singleton().is_none()
-    }
-    fn uniform_word_write_work(
-        &self,
-        value: &EvmValue<NumericValue>,
-        length: &EvmValue<NumericValue>,
-        default: &EvmValue<NumericValue>,
-        allocations: usize,
-    ) -> usize {
-        use super::{provenance::MAX_ORIGINS, symbolic::ExprId};
-
-        // Finite sets and expressions share handles; origins are bounded deep
-        // copies. Literal scalar work is 13 numeric units plus one origin.
-        const VALUE_COPY: usize = 12 + MAX_ORIGINS + 4;
-        const LITERAL_WORK: usize = 14;
-        let nodes = value.expression().map_or(0, ExprId::nodes);
-        // MSIZE may be nonliteral even with a Zero content root. A length
-        // guard would change eligibility when touch collapses {0,16} to 32.
-        // Quote its original expansion instead, using cached shape only.
-        let exact_length = length.known_bits().singleton().is_some_and(|n| {
-            length.interval().singleton() == Some(n)
-                && length.congruence().singleton() == Some(n)
-                && length.finite_constants().singleton() == Some(n)
-        });
-        // A synthesized numeric-only source adds five nodes: observed root,
-        // fresh source token, fresh binding value, constant key and SlotRead.
-        let length_nodes = length.expression().map_or_else(
-            || {
-                if exact_length {
-                    1
-                } else {
-                    length.numeric().work_size().saturating_add(5)
-                }
-            },
-            ExprId::nodes,
-        );
-        let candidates = if exact_length {
-            0
-        } else {
-            length
-                .constants()
-                .map_or(0, std::collections::BTreeSet::len)
-        };
-        let joined = candidates.min(self.capacity()).saturating_add(1);
-        let join_height = (usize::BITS - joined.leading_zeros()) as usize + 1;
-        // At most k joins of a <=capacity set and one constant. Pay bounded
-        // set insertion/comparison shape, copies and the 256-bit congruence
-        // gcd/difference steps (4096, as in the numeric fixed-width base).
-        let length_joins = candidates.saturating_mul(
-            4096usize
-                .saturating_add(joined.saturating_mul(join_height).saturating_mul(256))
-                .saturating_add(VALUE_COPY.saturating_mul(6)),
-        );
-        // Reserve the allocation touch_memory may install after this quote.
-        let allocations = allocations.saturating_add(1);
-        let height = (usize::BITS - allocations.leading_zeros()) as usize + 1;
-        // Each B-tree node has at most eleven keys. Only the new literal pair
-        // is compared, so even a fingerprint collision with an arbitrary old
-        // key compares a kind tag or fixed-width constants, never its children.
-        let allocation_probes = allocations.min(height.saturating_mul(12));
-        let staged = VALUE_COPY
-            .saturating_mul(8)
-            .saturating_add(allocations.saturating_mul(VALUE_COPY.saturating_mul(2) + 3))
-            .saturating_add(allocation_probes.saturating_mul(16).saturating_mul(2));
-        // Expanded uses only constant candidates/joins and checked scalar
-        // terms here, never Domain::apply. Four old-expression copies bound
-        // its maximum/guard terms.
-        let expand_root = nodes
-            .saturating_add(length_nodes.saturating_mul(4))
-            .saturating_add(28)
-            .saturating_mul(256)
-            .saturating_add(length_joins)
-            .saturating_add(length.work_size())
-            .saturating_add(default.work_size());
-        // This default-only proof uses one nonfinite tuple: the numeric base
-        // plus cached operand sizes bounds the default BYTE transfer. Reader
-        // disables relations; authoritative expressions are paid below.
-        let numeric = ValueAlgebra::new(self)
-            .without_relations()
-            .operation_work(&[])
-            .saturating_add(LITERAL_WORK)
-            .saturating_add(value.work_size());
-        // Per cell: complete numeric clone, one source-fact map clone, literal
-        // remember/metadata copies, Context and checked ByteRead/attach. Roots
-        // have nodes+3; ByteRead adds two. Index collection and B-tree insertion
-        // visit at most 32 coordinates. No word-read packing is charged here.
-        let cells = VALUE_COPY
-            .saturating_mul(6)
-            .saturating_add(nodes.saturating_add(5).saturating_mul(256))
-            .saturating_add(32)
-            .saturating_mul(32);
-        staged
-            .saturating_add(expand_root)
-            .saturating_add(numeric)
-            .saturating_add(cells)
-    }
-    fn memory_write_passes(
-        &self,
-        offset: &EvmValue<NumericValue>,
-        value: &EvmValue<NumericValue>,
-        width: usize,
-    ) -> usize {
-        self.numeric_memory_write_passes(offset, value, width)
-    }
-    fn projection_work(&self, value: &NumericValue) -> usize {
-        self.numeric_projection_work(value)
-    }
-    fn refinement_work(&self, value: &NumericValue, facts: usize) -> usize {
-        self.numeric_refinement_work(value, facts)
-    }
-    fn refinement_import_work(
-        &self,
-        value: &NumericValue,
-        facts: usize,
-        finite_values: usize,
-        expression_work: usize,
-    ) -> Option<usize> {
-        Some(self.numeric_import_work(value, facts, finite_values, expression_work))
-    }
-    fn observe_byte_numeric(&self, op: u8, args: &[NumericValue]) -> NumericValue {
-        self.observe_byte_numeric_borrowed(op, args.iter())
-    }
-    fn observe_byte_numeric_borrowed<'a>(
-        &self,
-        op: u8,
-        args: impl ExactSizeIterator<Item = &'a NumericValue>,
-    ) -> NumericValue {
-        self.numeric_observe_byte_with(op, args, |value| super::reduce::numeric(*self, value))
-    }
-    fn byte_image_candidate(&self, value: &NumericValue) -> bool {
-        self.spec().profile() == super::Profile::Product
-            && value.finite_constants().is_top()
-            && value.congruence().is_top()
-    }
-    fn byte_image_complete(&self, value: &NumericValue) -> bool {
-        super::byte_projection::full_byte_image(value)
-    }
-    fn pack_word_work(&self, bytes: &[&NumericValue; 32]) -> Option<usize> {
-        Some(super::byte_projection::pack_work(*self, bytes))
-    }
-    fn pack_word_numeric(&self, bytes: &[&NumericValue; 32]) -> Option<NumericValue> {
-        super::byte_projection::pack_numeric(*self, bytes)
-    }
-    fn uniform_byte_top(&self, value: &NumericValue) -> bool {
-        value == &NumericValue::unknown_byte()
-    }
-    fn supports_product_scalar_shortcuts(&self) -> bool {
-        true
-    }
 }
 
 impl<D: EvmNumericAlgebra> AlgebraRef<'_, D> {

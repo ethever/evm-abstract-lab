@@ -26,18 +26,22 @@ flowchart TD
 
 本主题的独立模块：[字节码、协议与输入](../modules/execution.md)。
 
-先运行[第 00 课的直线程序](../00-start.md#第一步准备运行环境)，对照 [`straight-line.hex`](../../examples/straight-line.hex) 的手算与 `disasm / CFG / SSA` 三种输出。随后打开 [`main.rs`](../../crates/evm-abstract-cli/src/main.rs)，从 `run` 的命令分支往回找 `AnalysisArgs::analyze` 和 `WorldArgs::analyze`。此时只追踪传给库的对象，不必逐个背 CLI 参数。
+先运行[第 00 课的直线程序](../00-start.md#第一步准备运行环境)，对照 [`straight-line.hex`](../../examples/straight-line.hex) 的手算与 `disasm / CFG / SSA` 三种输出。随后打开 [`main.rs`](../../crates/evm-abstract-cli/src/main.rs)，从 `run` 的命令分支往回找 应用的数值选择与输入准备分支。此时只追踪传给库的对象，不必逐个背 CLI 参数。
 
 | 到达库之前的数据 | 它代表什么 | 源码中怎样建立 |
 | --- | --- | --- |
 | `Program` | 按选定 fork 解码的指令、基本块、合法 JUMPDEST | `Input::load` → [`Program::from_hex_with_fork`](../../crates/evm-abstract/src/bytecode.rs#L134) |
-| `World` | 入口执行前已观察到的账户事实 | [`world::load`](../../crates/evm-abstract-cli/src/world.rs#L138) 读取离线 JSON；RPC 路径另由采集器建立 |
-| `Entry` / `EvmEnvironment` | 从哪个状态账户开始，以及 caller、value、calldata 等输入的范围与身份 | [`EvmArgs::environment`](../../crates/evm-abstract-cli/src/evm.rs#L143) 与 [`Entry`](../../crates/evm-abstract/src/world.rs#L383) |
-| `Config` / `ExecutionConfig` | 值域、关系策略与分析资源上限 | [`Config::validate`](../../crates/evm-abstract/src/analysis/config.rs#L101) 生成 `ValidatedConfig`，`ExecutionConfig::domain` 另检查机器预算 |
+| `EvmWorld<N>` | 入口执行前已观察到的账户事实 | [`world::load`](../../crates/evm-abstract-cli/src/world.rs#L138) 读取离线 JSON；RPC 路径另由采集器建立 |
+| `EvmEntry<N>` / `EvmEnvironmentValues<N>` | 从哪个状态账户开始，以及 caller、value、calldata 等输入的范围与身份 | [`EvmArgs::environment`](../../crates/evm-abstract-cli/src/evm.rs#L143) 与 [`EvmEntry<N>`](../../crates/evm-abstract/src/world.rs#L383) |
+| `NumericModel` / `DomainSpec` | 应用选择的实际数值载体，以及共享数值和关系限制 | `ProductAlgebra::from_spec(spec)` 或 `FiniteSetAlgebra::from_spec(spec)`，再装入 `ValueAlgebra<D>` |
+| `Config` / `ExecutionConfig` | 上下文、状态、transfer、工作、调用深度与物化等执行限制 | [`analysis/config.rs`](../../crates/evm-abstract/src/analysis/config.rs)；不在这里重建数值代数 |
+| `AnalysisInput<N>` | 经校验的不可变 world/entry 及真实 snapshot/revision | `AnalysisInput::new(world, entry)`；单程序用 `AnalysisInput::from_program` |
 
-沿 [`analysis::analyze_with_environment`](../../crates/evm-abstract/src/analysis.rs#L273) 进入 [`single::analyze`](../../crates/evm-abstract/src/analysis/single.rs)。你会看到单字节码入口也先创建一个 world，调用 `analyze_world`，再把根帧状态投影成学习用的 `Analysis`。继续读 [`engine::run_world` / `run_metered`](../../crates/evm-abstract/src/analysis/engine.rs)：入口校验、域策略建立和输入投影后，才创建机器初始状态。单账户视图与跨账户视图共享这条执行核心。
+沿 [`AnalysisEngine`](../../crates/evm-abstract/src/analysis.rs) 进入 [`engine.rs`](../../crates/evm-abstract/src/analysis/engine.rs)：调用方借用 `ValueAlgebra<D>`、`EnginePolicies<C,P,S>` 和一个实现 `Composition<D::Element>` 的组件，调用唯一的 `run(input, config, &control)`。无需独立组件时直接传 `NoExtension`。数值模型只在应用分派一次，之后 input、世界、字节、栈和结果都保持实际载体类型。
 
-现在回看输入协议。[第 01 课](../01-bytecode.md#2-push-的立即数缺一半时怎么办)解释为什么 PUSH 后面的字节不能当成独立 opcode；[第 08 课](../08-forks.md#1-协议规则与分析精度是两种输入)解释 fork 为什么会改变具体执行规则；[第 13 课](../13-evm-environment.md#1-默认输入与目标账户)解释省略 calldata 与显式空 calldata 为什么覆盖不同输入。`Config` 的容量校验保证实现参数有效，不能证明输入事实完整；选择更大的预算也不会扩大用户明确限定的 calldata。
+单字节码输入同样建立原生 world/entry 并通过该引擎执行。显式的 `EvmAnalysis::from_execution(native, &mut postprocess)` 再产生教学 CFG；它保存完整 `EvmWorldAnalysis<N>`，用 `execution_state_id(local_state)` 连接两套状态编号。局部投影、SSA 构建、验证和所请求的渲染计算共用应用独立的有限 `WorkBudget`，默认上限 20 亿，不从可能已经耗尽的执行账本取余额，也不会在各阶段重置。复制实际泛型载体前先付款，Work/Cancelled 是输出阶段的类型化边界。SSA 使用已有执行证据，投影与渲染不会再启动一台解释器。投影的边使用 `MachineEdgeKind`，保留两个端点都被选中的全部原生边，包括 Summary、Call、Return、Revert 和 Failure；SSA 保留原生值、状态与边 ID，完整底层图始终可追溯。单程序与跨账户路径因此共享来源身份、rollback、付款和取消协议。
+
+现在回看输入协议。[第 01 课](../01-bytecode.md#2-push-的立即数缺一半时怎么办)解释为什么 PUSH 后面的字节不能当成独立 opcode；[第 08 课](../08-forks.md#1-协议规则与分析精度是两种输入)解释 fork 为什么会改变具体执行规则；[第 13 课](../13-evm-environment.md#1-默认输入与目标账户)解释省略 calldata 与显式空 calldata 为什么覆盖不同输入。`DomainSpec` 的类型和输入校验保证策略参数有效，不能证明输入事实完整；选择更大的预算也不会扩大用户明确限定的 calldata。
 
 **核对问题：**同一份字节码，只把“未指定 calldata”改成 `--evm.calldata 0x`，为什么两次都可以 `Converged`，却覆盖不同的调用？用[第 06 课实验 D](../06-boundaries.md#实验-d同样收敛覆盖的调用输入不同)核对，再在结果中找到环境字段。
 
@@ -56,8 +60,8 @@ flowchart TD
 | 结构 | 回答什么 | 要观察的字段 |
 | --- | --- | --- |
 | [`MachineKey`](../../crates/evm-abstract/src/analysis/machine.rs#L87) | 哪些入口具有可合并的同一结构？ | 全部帧的代码身份、状态账户、位置、栈高、跳转历史，以及 Store 的代码/生命周期身份 |
-| `MachinePayload` | 在这个结构下，值和效果可能是什么？ | `call_stack`、共享 `store`、`relations` |
-| `MachineState` | 此节点目前保存了哪些分析证据？ | 已 join 的 `entry`、最近出口、`executed_pcs` 与执行凭据 |
+| `EvmMachinePayload<N>` | 在这个结构下，值和效果可能是什么？ | `call_stack`、共享 `store`、`relations` |
+| `EvmMachineState<N>` | 此节点目前保存了哪些分析证据？ | 已 join 的 `entry`、最近出口、`executed_pcs` 与执行凭据 |
 
 在 [`Engine::successor`](../../crates/evm-abstract/src/analysis/engine.rs#L487) 中，找出“同键 join → 输入变化 → 旧执行凭据失效 → 重新排队”的分支。这里最容易漏掉的因果关系是：先前已执行的出口只对应先前的入口；入口扩大以后，不能用旧出口声称新输入也已处理。新输入没有扩大时不必重访，但发现的边仍要保存。
 
@@ -71,19 +75,19 @@ flowchart TD
 
 <a id="domains"></a>
 
-## 进入一条算术指令：AbstractValue 怎样变成另一个 AbstractValue？
+## 进入一条算术指令：`EvmValue<N>` 怎样变成另一个 `EvmValue<N>`？
 
 本主题的独立模块：[数值摘要与组合域](../modules/domains.md)。
 
-在 [`transfer::execute`](../../crates/evm-abstract/src/analysis/transfer.rs) 中找普通算术指令的处理：按 EVM 顺序弹出操作数，交给域运算，再把结果压回活动帧。它的输入是 opcode 和若干 `AbstractValue`；输出是数值结果以及本次计算留下的精度、表达式或资源信息。先用[第 02 课的 transfer 手算](../02-domain.md#4-transfer在摘要上执行指令)对齐弹栈顺序，再读 [`Domain::apply_detailed`](../../crates/evm-abstract/src/domain.rs#L294)。
+在 [`transfer::execute`](../../crates/evm-abstract/src/analysis/transfer.rs) 中找普通算术指令的处理：按 EVM 顺序弹出操作数，交给域运算，再把结果压回活动帧。它的输入是 opcode 和若干 `EvmValue<N>`；输出是数值结果以及本次计算留下的精度、表达式或资源信息。先用[第 02 课的 transfer 手算](../02-domain.md#4-transfer在摘要上执行指令)对齐弹栈顺序，再读 [`ValueAlgebra::apply_detailed`](../../crates/evm-abstract/src/domain/algebra.rs)。
 
-顺着结果往里追，会经过 [`AbstractValue`](../../crates/evm-abstract/src/domain/value.rs#L16) 和 [`NumericValue`](../../crates/evm-abstract/src/domain/numeric.rs)。前者把数值组件、来源、身份与可选表达式放在一起；后者表示同一个 word 的有限常量、位、区间和同余约束。`DomainSpec` 则是整次分析共用的策略，不能把某个值的内容和域策略混成同一对象。
+顺着结果往里追，会经过 [`EvmValue<N>`](../../crates/evm-abstract/src/domain/value.rs#L16) 和 [`EvmNumericAlgebra`](../../crates/evm-abstract/src/domain/algebra.rs)。前者把实际数值载体、来源、身份与可选表达式放在一起；`ProductAlgebra::Element = NumericValue` 保存有限常量、位、区间和同余，`FiniteSetAlgebra::Element = FiniteConstantSet` 直接保存有限集合。`DomainSpec` 则是整次分析共用的策略，不能把某个值的内容和域策略混成同一对象。
 
 最小实验选[第 12 课的位条件](../12-product-domains-facts.md#1-先手算这个条件可能为零吗)：[`known-bits-branch.hex`](../../examples/known-bits-branch.hex) 中 `(x AND 15) OR 1` 的最低位一定为 1。沿 [`domain/transfer.rs`](../../crates/evm-abstract/src/domain/transfer.rs) 看 opcode 怎样更新组件，再沿 [`reduce::reduce`](../../crates/evm-abstract/src/domain/reduce.rs#L329) 看组件怎样交换已证明的事实，最后回到 `may_be_zero` 的分支判断。这个结果如何少掉 false 边，现在可以从值传递解释出来。
 
 这里要用[第 02 课的 join](../02-domain.md#3-join把两条路径的信息合在一起)和[第 12 课的组件组合](../12-product-domains-facts.md#5-同一值的约束取交不同路径的可能取并)检查两个相反方向：多个组件描述同一值时，其约束取交；多个执行路径汇合时，摘要必须覆盖并集。当前实现保存组件逐项 join，事实交换有轮数和容量上限；不能因此称它已经计算出唯一、完全规约的 reduced product。
 
-再比较 [`copy-identity.hex`](../../examples/copy-identity.hex) 与 [`independent-inputs.hex`](../../examples/independent-inputs.hex)，按[身份实验](../12-product-domains-facts.md#2-再手算两个未知值一定相同吗)寻找 `numeric_apply_detailed` 中的身份规则。两个值都有 Calldata 来源，不足以证明相等；同一受信任输入或复制身份才提供相应依据。这些身份属于共用 `AbstractValue`，不是 product profile 独有的数值能力。
+再比较 [`copy-identity.hex`](../../examples/copy-identity.hex) 与 [`independent-inputs.hex`](../../examples/independent-inputs.hex)，按[身份实验](../12-product-domains-facts.md#2-再手算两个未知值一定相同吗)寻找 `ValueAlgebra` 中进入数值运算前的身份规则。两个值都有 Calldata 来源，不足以证明相等；同一受信任输入或复制身份才提供相应依据。这些身份属于共用 `EvmValue<N>`，两种实际数值载体都可以使用。
 
 **核对问题：**常量集合容不下候选时，为什么 product 仍可能证明非零？再看[局部交换停止的实验](../06-boundaries.md#实验-c局部交换停下整体传播仍然完成)：事实交换达到上限与根工作预算耗尽，为什么产生不同的完成状态？
 
@@ -99,11 +103,11 @@ flowchart TD
 
 | 指令路径 | 输入 → 输出 | 实现中的观察位置 |
 | --- | --- | --- |
-| MSTORE / MLOAD | 字节偏移与 word → 帧内字节更新，或组装出的 word | [`ByteArray::write_word` / `read_word`](../../crates/evm-abstract/src/world/bytes.rs)；[`FrameState::memory`](../../crates/evm-abstract/src/analysis/machine/frame.rs#L13) |
-| SSTORE / SLOAD | 状态账户、256 位 slot、word → 交易内状态更新，或 slot 摘要 | [`Store::write` / `read`](../../crates/evm-abstract/src/world/store.rs#L502)，向下追踪 `Plane::write` / `read` |
-| TSTORE / TLOAD | 同样的账户与 slot → 本次交易的 transient plane | `Store::write_transient` / `read_transient`，与 persistent plane 分开 |
+| MSTORE / MLOAD | 字节偏移与 word → 帧内字节更新，或组装出的 word | [`EvmByteArray::write_word` / `read_word`](../../crates/evm-abstract/src/world/bytes.rs)；[`EvmFrameState::memory`](../../crates/evm-abstract/src/analysis/machine/frame.rs#L13) |
+| SSTORE / SLOAD | 状态账户、256 位 slot、word → 交易内状态更新，或 slot 摘要 | [`EvmStore::write` / `read`](../../crates/evm-abstract/src/world/store.rs#L502)，向下追踪 `Plane::write` / `read` |
+| TSTORE / TLOAD | 同样的账户与 slot → 本次交易的 transient plane | `EvmStore::write_transient` / `read_transient`，与 persistent plane 分开 |
 
-先读数据结构再读分支：`ByteArray` 保存 ByteStateId 内容根与 length、数值 bytes/default；账户 `Plane` 保存 SlotStateId 根与数值 slots/defaults。数值表方便观察，完整根另保存来源、符号地址、写序和 Copy/View。memory 的 Zero 根保证初始读零；storage 未列出 slot 是否为零，取决于 world 的完整性声明，见[默认值对照](../16-storage-model.md#没列出的-slot-是零还是未知)。
+先读数据结构再读分支：`EvmByteArray<N>` 保存 ByteStateId 内容根与 length、数值 bytes/default；账户 `Plane` 保存 SlotStateId 根与数值 slots/defaults。数值表方便观察，完整根另保存来源、符号地址、写序和 Copy/View。memory 的 Zero 根保证初始读零；storage 未列出 slot 是否为零，取决于 world 的完整性声明，见[默认值对照](../16-storage-model.md#没列出的-slot-是零还是未知)。
 
 接着沿 [`world/store/slots.rs`](../../crates/evm-abstract/src/world/store/slots.rs) 和 [`world/bytes.rs`](../../crates/evm-abstract/src/world/bytes.rs) 分两条线追踪写入：数值表对唯一位置作强更新，对多个候选作弱更新；内容根保存一次使用同一符号地址的有序更新，不为每个位置另选一条路径。用 [`memory-write-alias.hex`](../../examples/memory-write-alias.hex) 和 [`storage-finite-alias.json`](../../examples/storage-finite-alias.json) 比较[内存读取](../14-memory-model.md#6-地址确定时覆盖地址有几个候选时合并)与[两个 slot 的候选](../16-storage-model.md#5-有两个可能的-slot为什么要保留旧值)，指出数值投影看不到哪些配对。
 
@@ -121,17 +125,17 @@ flowchart TD
 
 用 [`call-return-branch.json`](../../examples/worlds/call-return-branch.json) 跟踪[第 09 课的调用实验](../09-cross-contract.md#1-第一个实验b-返回-1a-写入-1)。从 [`calls::call`](../../crates/evm-abstract/src/analysis/transfer/calls.rs#L247) 进入：输入是 caller 的机器载荷和 CALL 参数；输出可能是安装了子帧的后继、立即失败的后继，或尚不能展开的 frontier。CALL 不是另开一个完全独立的分析器。
 
-打开 [`CallStack`](../../crates/evm-abstract/src/analysis/machine/stack.rs) 与 [`RootFrame` / `ChildFrame`](../../crates/evm-abstract/src/analysis/machine/frame.rs#L94)。根帧始终存在；子帧还携带 [`Continuation`](../../crates/evm-abstract/src/analysis/machine.rs#L96)，记录 caller 的继续位置和请求的输出范围。callee 有独立的 memory、calldata、returndata，而所有帧共享交易 `Store`。再用[代理实验](../09-cross-contract.md#4-代理实验读谁的代码写谁的-storage)核对 [`proxy-storage.json`](../../examples/worlds/proxy-storage.json)：执行代码账户与 storage owner 必须分别追踪。
+打开 [`EvmCallStack<N>`](../../crates/evm-abstract/src/analysis/machine/stack.rs) 与 [`EvmRootFrame<N>` / `EvmChildFrame<N>`](../../crates/evm-abstract/src/analysis/machine/frame.rs#L94)。根帧始终存在；子帧还携带 [`EvmContinuation<N>`](../../crates/evm-abstract/src/analysis/machine.rs#L96)，记录 caller 的继续位置和请求的输出范围。callee 有独立的 memory、calldata、returndata，而所有帧共享交易 `EvmStore<N>`。再用[代理实验](../09-cross-contract.md#4-代理实验读谁的代码写谁的-storage)核对 [`proxy-storage.json`](../../examples/worlds/proxy-storage.json)：执行代码账户与 storage owner 必须分别追踪。
 
 返回时沿 [`calls::finish`](../../crates/evm-abstract/src/analysis/transfer/calls.rs#L116) 阅读。成功、REVERT 和异常终止决定是否恢复子帧入口的 Store 检查点；随后恢复 caller，把返回字节放入 caller 的 returndata，按请求范围复制到 memory，并在调用结果位置压入结果。REVERT 的字节可以交回 caller，同时它的状态效果被撤销；这两件事并不矛盾。
 
-现在运行[嵌套回滚实验](../16-storage-model.md#9-revert-恢复的是调用入口检查点不是固定初始快照)，观察 [`storage-callback-revert.json`](../../examples/storage-callback-revert.json)。沿 [`Store::snapshot` / `restore`](../../crates/evm-abstract/src/world/store.rs) 进入 [`SharedCheckpoint<Store>`](../../crates/snapshot-state/src/shared_checkpoint.rs)：`capture` 克隆一次 Store，后续检查点 `clone` 共享不可变旧版本；唯一持有者恢复时移动 Store，共享版本恢复时先克隆，保证各版本后续写入隔离。原有 [`Checkpoint<T>`](../../crates/snapshot-state/src/checkpoint.rs) 仍支持非 Clone 状态的 `from_state` 与移动恢复。
+现在运行[嵌套回滚实验](../16-storage-model.md#9-revert-恢复的是调用入口检查点不是固定初始快照)，观察 [`storage-callback-revert.json`](../../examples/storage-callback-revert.json)。沿 [`EvmStore::snapshot` / `restore`](../../crates/evm-abstract/src/world/store.rs) 进入 [`SharedCheckpoint<EvmStore<N>>`](../../crates/snapshot-state/src/shared_checkpoint.rs)：`capture` 克隆一次 Store，后续检查点 `clone` 共享不可变旧版本；唯一持有者恢复时移动 Store，共享版本恢复时先克隆，保证各版本后续写入隔离。原有 [`Checkpoint<T>`](../../crates/snapshot-state/src/checkpoint.rs) 仍支持非 Clone 状态的 `from_state` 与移动恢复。
 
 再按[第 11 课的后端比较](../11-state-backends.md#先核对语义再观察时间)阅读 [`OrderedMap`](../../crates/snapshot-state/src/ordered_map.rs)。std 与 imbl 的复制与共享差异仍影响 `capture`、共享恢复的 Store 克隆和后续修改；何时回滚、如何 join 仍由执行器与 Store 决定。
 
 这一站的理论检验是“回到正确的调用入口状态”。B 内部成功的 C 会影响当前 Store；若 B 随后失败，恢复 B 的检查点必须连同 C 的效果一起撤销，同时保留 A 在调用 B 前的修改。用[重入实验](../09-cross-contract.md#6-重入新帧读到当前状态)检查新帧读的是当前 Store，而不是固定 world 的旧值。
 
-**核对问题：**暂停的 caller 为什么也必须留在 `MachinePayload` 中？若只缓存一个 callee 返回 word，会漏掉哪几项恢复 caller 所需的信息？再对照[缺失代码实验](../09-cross-contract.md#7-输入缺失和预算停止也要读出来)：`MissingCode` 或 `UnknownTarget` 为什么不能被替换成“CALL 已返回 0”？
+**核对问题：**暂停的 caller 为什么也必须留在 `EvmMachinePayload<N>` 中？若只缓存一个 callee 返回 word，会漏掉哪几项恢复 caller 所需的信息？再对照[缺失代码实验](../09-cross-contract.md#7-输入缺失和预算停止也要读出来)：`MissingCode` 或 `UnknownTarget` 为什么不能被替换成“CALL 已返回 0”？
 
 换个方向：[理论路线：调用、状态归属与回滚](theory.md#calls-state)。下一站检查调用结果什么时候能复用，以及世界事实从哪里补齐。
 
@@ -147,9 +151,9 @@ flowchart TD
 
 再读[固定快照实验](../10-snapshots-summaries-creation.md#5-固定快照同一个名字不代表同一组事实)，沿 [`analyze_rpc`](../../crates/evm-abstract/src/analysis/rpc.rs#L124) 进入 [`Session::load` / `fetch_account` / `fetch_storage`](../../crates/evm-abstract/src/world/rpc/session.rs)。先由可信 RPC 获取链身份，并把区块选择解析成固定 hash；后续普通 RPC 读取复用该身份。它信任 RPC 返回的事实，不使用 `eth_getProof`。发现 `MissingCode` 或需要的有限初始 slot 后，采集器补入 world，再从入口重新分析；累计执行和采集预算不会因此重置。
 
-这时回到[storage 初始依赖](../16-storage-model.md#11-rpc-补查的是初始事实不是当前交易值)，在 [`Store::missing_initial_slots`](../../crates/evm-abstract/src/world/store.rs) 找到查询依据。RPC 返回的是固定快照的初始值，不是当前交易执行到一半的 Store；强写已完全替换的 slot，与仍混有初始值的弱写 slot，补查需求不同。[关闭发现的实验](../10-snapshots-summaries-creation.md#rpc-without-discovery)可以帮助分清“当前离线事实下的抽象执行”和“尝试补齐具体初始事实”。
+这时回到[storage 初始依赖](../16-storage-model.md#11-rpc-补查的是初始事实不是当前交易值)，在 [`EvmStore::missing_initial_slots`](../../crates/evm-abstract/src/world/store.rs) 找到查询依据。RPC 返回的是固定快照的初始值，不是当前交易执行到一半的 Store；强写已完全替换的 slot，与仍混有初始值的弱写 slot，补查需求不同。[关闭发现的实验](../10-snapshots-summaries-creation.md#rpc-without-discovery)可以帮助分清“当前离线事实下的抽象执行”和“尝试补齐具体初始事实”。
 
-最后跟踪交易内的代码变化：用 [`create-runtime.json`](../../examples/worlds/create-runtime.json) 对照[创建生命周期](../10-snapshots-summaries-creation.md#2-create先执行构造代码再安装运行时代码)，阅读 [`create::create` / `finish_creation`](../../crates/evm-abstract/src/analysis/transfer/create.rs)；用 [`created-selfdestruct.json`](../../examples/worlds/created-selfdestruct.json) 对照[延迟删除](../10-snapshots-summaries-creation.md#3-selfdestruct转账和删除发生在不同时间)，阅读 [`Store::selfdestruct` / `finalize_transaction`](../../crates/evm-abstract/src/world/store.rs#L726)。initcode、已安装的 runtime、待删除标记和最终删除是不同状态。再以 [`identity-precompile.json`](../../examples/worlds/identity-precompile.json) 的[原生调用实验](../10-snapshots-summaries-creation.md#4-预编译没有普通字节码也有调用帧)追踪 [`precompile::execute`](../../crates/evm-abstract/src/analysis/transfer/precompile.rs#L66)：没有普通指令体，也仍须产生真实调用结果和效果。
+最后跟踪交易内的代码变化：用 [`create-runtime.json`](../../examples/worlds/create-runtime.json) 对照[创建生命周期](../10-snapshots-summaries-creation.md#2-create先执行构造代码再安装运行时代码)，阅读 [`create::create` / `finish_creation`](../../crates/evm-abstract/src/analysis/transfer/create.rs)；用 [`created-selfdestruct.json`](../../examples/worlds/created-selfdestruct.json) 对照[延迟删除](../10-snapshots-summaries-creation.md#3-selfdestruct转账和删除发生在不同时间)，阅读 [`EvmStore::selfdestruct` / `finalize_transaction`](../../crates/evm-abstract/src/world/store.rs#L726)。initcode、已安装的 runtime、待删除标记和最终删除是不同状态。再以 [`identity-precompile.json`](../../examples/worlds/identity-precompile.json) 的[原生调用实验](../10-snapshots-summaries-creation.md#4-预编译没有普通字节码也有调用帧)追踪 [`precompile::execute`](../../crates/evm-abstract/src/analysis/transfer/precompile.rs#L66)：没有普通指令体，也仍须产生真实调用结果和效果。
 
 理论上，这些路径都在检查复用和状态观察的前提：同名 provenance 不证明事实相同；旧代码身份不能代表部署后的账户；不完整子图不能充当完整摘要；固定 hash 也不意味着交易中的 Store 不再变化。
 
@@ -187,7 +191,7 @@ flowchart TD
 
 接着用 [`partial-ssa-memory.json`](../../examples/partial-ssa-memory.json) 做[块中途停下的实验](../04-ssa.md#从块中途停下的实际输出开始)。内存上限为 1 字节时，MLOAD 已弹出偏移，却不能完成 32 字节访问；`recorded prefix stack` 留下的是先前 PUSH 的 `%0`。把上限改为 32 后，MLOAD 和后面的 ADD 完成，最后留下 ADD 的 `%3`。两次最后数值都可能是 1，但定义来源与完成程度不同。
 
-读取 [`build_partial_world`](../../crates/evm-abstract/src/ssa/partial.rs#L151) 时，把本页工作表一站的“旧出口失效”带回来：[`ExecutionEvidence`](../../crates/evm-abstract/src/analysis/machine/evidence.rs) 只证明最新一次 transfer；历史积累的边不一定属于当前入口的执行凭据。结合[基本块为何只有执行前缀](../04-ssa.md#为什么基本块可以只执行一个前缀)和[进度与效果链](../04-ssa.md#进度和效果链怎样一起读)，再逐项读下面的字段。
+读取 [`build_partial_world`](../../crates/evm-abstract/src/ssa/partial.rs#L151) 时，把本页工作表一站的“旧出口失效”带回来：[`EvmExecutionEvidence<N>`](../../crates/evm-abstract/src/analysis/machine/evidence.rs) 只证明最新一次 transfer；历史积累的边不一定属于当前入口的执行凭据。结合[基本块为何只有执行前缀](../04-ssa.md#为什么基本块可以只执行一个前缀)和[进度与效果链](../04-ssa.md#进度和效果链怎样一起读)，再逐项读下面的字段。
 
 | 部分 SSA 数据 | 必须怎样解释 |
 | --- | --- |

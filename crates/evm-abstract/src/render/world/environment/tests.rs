@@ -1,28 +1,31 @@
+use crate::ssa::test_support::{
+    TestAccount, TestBlobHashes, TestBytes, TestEntry, TestEnvironment, TestValue, TestWorld,
+    postprocessing, product, run_program_with_environment, run_world,
+};
 use crate::{
     Fork,
-    analysis::{ExecutionConfig, analyze_world},
-    domain::AbstractValue,
+    analysis::ExecutionConfig,
     render::world,
     ssa,
-    world::{Account, AddressInput, BlobHashes, ByteArray, Entry, EvmEnvironment, GasInput, World},
+    world::{AddressInput, GasInput},
 };
 use alloy_primitives::{Address, B256, U256};
 
 #[test]
 fn symbolic_input_aliases_survive_all_reports_without_a_fake_address_legend() {
     let internal = Address::repeat_byte(0xee);
-    let mut world = World::new(Fork::Osaka, "symbolic rendering fixture");
+    let mut world = TestWorld::new(Fork::Osaka, "symbolic rendering fixture");
     world
         .insert(
             internal,
-            Account::from_hex("3032333400", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("3032333400", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    let mut entry = Entry::new(internal);
+    let mut entry = TestEntry::new(internal);
     entry.environment.to = AddressInput::unknown_to();
-    let analysis = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    let analysis = run_world(world, entry, ExecutionConfig::default()).unwrap();
     let ir = ssa::build_world(&analysis).unwrap();
-    let explanation = world::explain(&analysis).unwrap();
+    let explanation = world::explain(&analysis, &product(), &mut postprocessing()).unwrap();
     assert!(
         explanation.contains(
             "to=symbolic(To) | caller=symbolic(Caller) | origin=symbolic(Caller) (same as caller)"
@@ -36,9 +39,9 @@ fn symbolic_input_aliases_survive_all_reports_without_a_fake_address_legend() {
     );
     for report in [
         explanation,
-        world::explain_verbose(&analysis).unwrap(),
-        world::text(&analysis),
-        world::dot(&analysis),
+        world::explain_verbose(&analysis, &product(), &mut postprocessing()).unwrap(),
+        world::text(&analysis, &product()),
+        world::dot(&analysis, &product()),
         world::ssa(&analysis, &ir),
     ] {
         assert!(report.contains("symbolic(To)"), "{report}");
@@ -65,29 +68,34 @@ fn symbolic_input_aliases_survive_all_reports_without_a_fake_address_legend() {
 
 #[test]
 fn concrete_empty_calldata_and_independent_origin_are_explicit_with_every_override() {
-    let mut input = EvmEnvironment {
+    let mut input = TestEnvironment {
         origin: Some(AddressInput::unknown_origin()),
-        calldata: ByteArray::empty(),
-        gas_price: AbstractValue::constant(U256::from(2)),
+        calldata: TestBytes::empty(),
+        gas_price: TestValue::constant(U256::from(2)),
         coinbase: AddressInput::Concrete(Address::repeat_byte(0x44)),
-        timestamp: AbstractValue::constant(U256::from(3)),
-        number: AbstractValue::constant(U256::from(4)),
-        prevrandao: AbstractValue::constant(U256::from(5)),
-        gas_limit: AbstractValue::constant(U256::from(6)),
-        chain_id: Some(AbstractValue::constant(U256::from(7))),
-        base_fee: AbstractValue::constant(U256::from(8)),
-        blob_base_fee: AbstractValue::constant(U256::from(9)),
+        timestamp: TestValue::constant(U256::from(3)),
+        number: TestValue::constant(U256::from(4)),
+        prevrandao: TestValue::constant(U256::from(5)),
+        gas_limit: TestValue::constant(U256::from(6)),
+        chain_id: Some(TestValue::constant(U256::from(7))),
+        base_fee: TestValue::constant(U256::from(8)),
+        blob_base_fee: TestValue::constant(U256::from(9)),
         gas: GasInput::UpperBound(U256::from(10)),
-        blob_hashes: BlobHashes::exact(&[B256::repeat_byte(0x55)]),
-        ..EvmEnvironment::default()
+        blob_hashes: TestBlobHashes::exact(&[B256::repeat_byte(0x55)]),
+        ..TestEnvironment::default()
     };
     input
         .block_hashes
         .insert(U256::from(1), B256::repeat_byte(0x66));
     let mut report = String::new();
-    super::write(&mut report, &input, None, true, |address| {
-        address.to_string()
-    });
+    super::write(
+        &mut report,
+        &input,
+        None,
+        true,
+        |address| address.to_string(),
+        &product(),
+    );
     assert!(
         report.contains("caller=symbolic(Caller) | origin=symbolic(Origin)"),
         "{report}"
@@ -126,15 +134,15 @@ fn concrete_empty_calldata_and_independent_origin_are_explicit_with_every_overri
 #[test]
 fn a_concrete_caller_equal_to_the_internal_owner_keeps_its_concrete_identity() {
     let internal = Address::ZERO;
-    let mut world = World::new(Fork::Osaka, "concrete caller at internal key");
+    let mut world = TestWorld::new(Fork::Osaka, "concrete caller at internal key");
     world
-        .insert(internal, Account::from_hex("00", Fork::Osaka).unwrap())
+        .insert(internal, TestAccount::from_hex("00", Fork::Osaka).unwrap())
         .unwrap();
-    let mut entry = Entry::new(internal);
+    let mut entry = TestEntry::new(internal);
     entry.environment.to = AddressInput::unknown_to();
     entry.environment.caller = AddressInput::Concrete(internal);
-    let analysis = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
-    let report = world::explain(&analysis).unwrap();
+    let analysis = run_world(world, entry, ExecutionConfig::default()).unwrap();
+    let report = world::explain(&analysis, &product(), &mut postprocessing()).unwrap();
     assert!(
         report.contains("to=symbolic(To) | caller=A₀ | origin=A₀ (same as caller)"),
         "{report}"
@@ -146,18 +154,15 @@ fn a_concrete_caller_equal_to_the_internal_owner_keeps_its_concrete_identity() {
 #[test]
 fn single_program_cfg_ssa_and_dot_keep_the_execution_input_scope_visible() {
     let program = crate::bytecode::Program::from_hex_with_fork("3032333400", Fork::Osaka).unwrap();
-    let environment = EvmEnvironment::default();
-    let analysis = crate::analysis::analyze_with_environment(
-        program,
-        crate::analysis::Config::default(),
-        environment,
-    )
-    .unwrap();
+    let environment = TestEnvironment::default();
+    let analysis =
+        run_program_with_environment(program, crate::analysis::Config::default(), environment)
+            .unwrap();
     let ir = ssa::build(&analysis).unwrap();
     for report in [
-        crate::render::cfg(&analysis),
-        crate::render::ssa(&analysis, &ir),
-        crate::render::dot(&analysis),
+        crate::render::cfg(&analysis, &product()),
+        crate::render::ssa(&analysis, &ir, &product()),
+        crate::render::dot(&analysis, &product()),
     ] {
         assert!(report.contains("to=symbolic(To) | caller=symbolic(Caller) | origin=symbolic(Caller) (same as caller)"), "{report}");
         assert!(report.contains("calldata: length=⊤"), "{report}");

@@ -4,7 +4,8 @@
 //! deliberately coarse effect SSA, not an alias-partitioned MemorySSA.
 
 use super::{Instruction, SsaError, ValueId};
-use crate::analysis::{MachineEdgeKind, Status, WorldAnalysis};
+use crate::analysis::{EvmWorldAnalysis, MachineEdgeKind, Status};
+use crate::domain::WordElement;
 use crate::ssa::{SsaInvariantKind as Kind, error::invariant};
 use revm_bytecode::opcode;
 use serde::Serialize;
@@ -69,7 +70,7 @@ pub struct WorldBlock {
 /// it does not forward the callee's mutated store as a successful commit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Transition {
-    /// Index of the corresponding WorldAnalysis edge.
+    /// Index of the corresponding native analysis edge.
     pub edge: usize,
     /// Frame transition, including commit versus rollback.
     pub kind: MachineEdgeKind,
@@ -99,8 +100,8 @@ impl Transition {
 /// Verified frame-aware stack and machine-effect SSA.
 #[derive(Clone, Debug, Serialize)]
 pub struct WorldSsa {
-    blocks: Vec<WorldBlock>,
-    transitions: Vec<Transition>,
+    pub(super) blocks: Vec<WorldBlock>,
+    pub(super) transitions: Vec<Transition>,
     value_count: usize,
     effect_count: usize,
 }
@@ -124,8 +125,8 @@ impl WorldSsa {
     }
     /// Check bytecode uses, frame identity, edge parameters, checkpoint effects
     /// and exactly-once definitions against the original analysis.
-    pub fn verify(&self, analysis: &WorldAnalysis) -> Result<(), SsaError> {
-        verify::verify(self, analysis)
+    pub fn verify<N: WordElement>(&self, analysis: &EvmWorldAnalysis<N>) -> Result<(), SsaError> {
+        verify::verify(self, analysis, None)
     }
 }
 
@@ -141,19 +142,32 @@ fn is_call(op: u8) -> bool {
     )
 }
 
-/// Build SSA for the native multi-account graph. Missing facts, unsupported
+/// Unmetered structural utility; callers own its traversal/allocation cost.
+/// Ledger-taking normalized APIs admit this same algorithm and its verifier.
+/// Missing facts, unsupported
 /// semantics and resource frontiers all prevent a claim of complete SSA.
-pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
-    crate::ssa::checkpoint()?;
+pub fn build_world<N: WordElement>(analysis: &EvmWorldAnalysis<N>) -> Result<WorldSsa, SsaError> {
+    build(analysis, None)
+}
+
+/// Metered callers reserve the same algorithm and its verifier as one phase.
+pub(super) fn build<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    mut budget: Option<&mut crate::resource::WorkBudget>,
+) -> Result<WorldSsa, SsaError> {
+    super::work::checkpoint(budget.as_deref_mut())?;
     if analysis.status() != Status::Converged {
         return Err(SsaError::IncompleteAnalysis);
+    }
+    if let Some(budget) = budget.as_deref_mut() {
+        super::work::world(analysis, budget)?;
     }
     let mut next = 0;
     let mut effect_next = 0;
     let mut blocks = Vec::new();
     for state in analysis.states() {
         let invariant = |kind| invariant(kind).state(state.id);
-        crate::ssa::checkpoint()?;
+        super::work::checkpoint(budget.as_deref_mut())?;
         let mut phis = Vec::new();
         let mut stacks = Vec::new();
         for (frame, item) in state.entry.call_stack.iter().enumerate() {
@@ -189,7 +203,7 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
             .flat_map(|block| block.instructions.iter())
             .take(state.executed_pcs.len())
         {
-            crate::ssa::checkpoint()?;
+            super::work::checkpoint(budget.as_deref_mut())?;
             let op = source.opcode;
             let (inputs, outputs) = source.stack_io();
             let fault =
@@ -249,7 +263,7 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
                 .source_state(edge.from)
                 .target_state(edge.to)
         };
-        crate::ssa::checkpoint()?;
+        super::work::checkpoint(budget.as_deref_mut())?;
         let source = &blocks[edge.from];
         let destination = &analysis.states()[edge.to];
         let mut stacks = source.exit_frames.clone();
@@ -300,7 +314,7 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
                 .source_state(edge.from)
                 .target_state(edge.to)
         };
-        crate::ssa::checkpoint()?;
+        super::work::checkpoint(budget.as_deref_mut())?;
         let transition = &transitions[index];
         let block = &mut blocks[edge.to];
         for phi in &mut block.phis {
@@ -328,6 +342,7 @@ pub fn build_world(analysis: &WorldAnalysis) -> Result<WorldSsa, SsaError> {
         value_count: next,
         effect_count: effect_next,
     };
-    ir.verify(analysis)?;
+    verify::verify(&ir, analysis, budget.as_deref_mut())?;
+    super::work::checkpoint(budget)?;
     Ok(ir)
 }

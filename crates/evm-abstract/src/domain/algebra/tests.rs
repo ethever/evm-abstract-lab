@@ -1,9 +1,9 @@
 use super::{
-    Domain, DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, U256, ValueAlgebra,
-    WordElement, WorkExhausted, opcode, symbolic,
+    DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, U256, ValueAlgebra, WordElement,
+    WorkExhausted, opcode, symbolic,
 };
 use crate::domain::{
-    AlgebraRef, WordObservation,
+    AlgebraRef, FiniteConstantSet, FiniteSetAlgebra, NumericValue, ProductAlgebra, WordObservation,
     facts::FactError,
     relational::{EvmValueQuery, RelationLimits, RelationState},
 };
@@ -93,7 +93,7 @@ impl Policy {
             ..RelationLimits::default()
         };
         Self {
-            spec: Domain::default().spec().with_relations(limits),
+            spec: DomainSpec::default().with_relations(limits),
             calls: Cell::new(0),
             byte_calls: Cell::new(0),
         }
@@ -126,7 +126,11 @@ impl EvmNumericAlgebra for Policy {
     fn reduce_numeric(&self, v: &Word) -> NumericReduction<Word> {
         NumericReduction::stable(v.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Word]) -> NumericReduction<Word> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
         self.calls.set(self.calls.get() + 1);
         let expected = match op {
             opcode::ISZERO | opcode::NOT | opcode::CLZ => 1,
@@ -136,31 +140,51 @@ impl EvmNumericAlgebra for Policy {
         if !matches!(op,0x01..=0x0b|0x10..=0x1e) || args.len() != expected {
             return NumericReduction::stable(Word::top());
         }
-        let value =
-            if let Some(exact) = args.iter().map(Word::singleton).collect::<Option<Vec<_>>>() {
-                Word::constant(crate::domain::evaluate(
-                    op,
-                    exact[0],
-                    exact.get(1).copied().unwrap_or(U256::ZERO),
-                    exact.get(2).copied().unwrap_or(U256::ZERO),
-                ))
-            } else {
-                Word::top()
-            };
+        let value = if let Some(exact) = args.map(Word::singleton).collect::<Option<Vec<_>>>() {
+            Word::constant(crate::domain::evaluate(
+                op,
+                exact[0],
+                exact.get(1).copied().unwrap_or(U256::ZERO),
+                exact.get(2).copied().unwrap_or(U256::ZERO),
+            ))
+        } else {
+            Word::top()
+        };
         NumericReduction::stable(value)
     }
-    fn observe_byte_numeric(&self, op: u8, args: &[Word]) -> Word {
+    fn observe_byte_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> Word {
         self.byte_calls.set(self.byte_calls.get() + 1);
         self.apply_numeric(op, args).value
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
-        args.fold(1024usize, |n, v| n.saturating_add(v.work_size()))
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
+        // Pay both the policy's concrete evaluation and a possible retained
+        // expression fold. EXP has up to 512 fixed-width multiplications;
+        // widened modular arithmetic and division need their own envelopes.
+        let evaluations = match op {
+            opcode::EXP => 2 * 16_384,
+            opcode::ADDMOD | opcode::MULMOD => 2 * 4096,
+            opcode::DIV | opcode::SDIV | opcode::MOD | opcode::SMOD => 2 * 1024,
+            _ => 2 * 64,
+        };
+        args.fold(1024usize + evaluations, |n, v| {
+            n.saturating_add(v.singleton_work())
+        })
     }
     fn projection_work(&self, _: &Word) -> usize {
         0
     }
     fn refinement_work(&self, v: &Word, _: usize) -> usize {
-        v.work_size() + 1024
+        // Scalar import may clone the input, its detached wrapper and the
+        // constrained value, then reduce, project and copy out the result.
+        // Numeric intersection uses a subset of that same six-copy envelope.
+        v.clone_work()
+            .saturating_mul(6)
+            .saturating_add(v.singleton_work())
+            .saturating_add(1024)
     }
 }
 
@@ -176,7 +200,7 @@ fn quote_and_denied_execution_never_clone_numeric_operands() {
     assert!(word.singleton_work() >= 4096);
     let copies = Rc::clone(&word.copies);
     let values = [EvmValue::from_numeric(word), EvmValue::constant(U256::ONE)];
-    let quote = domain.operation_work(&values);
+    let quote = domain.operation_work(opcode::ADD, &values);
     assert!(quote >= 2 * 64);
     assert_eq!(copies.get(), 0, "quotation must only borrow the carrier");
     let mut denied = crate::resource::WorkBudget::new(quote - 1);
@@ -186,16 +210,16 @@ fn quote_and_denied_execution_never_clone_numeric_operands() {
             .unwrap_err(),
         WorkExhausted
     );
-    assert_eq!(
-        copies.get(),
-        0,
-        "payment must precede actual operand copies"
-    );
+    assert_eq!(copies.get(), 0, "refusal must precede any carrier work");
     let mut paid = crate::resource::WorkBudget::new(quote);
     domain
         .apply_budgeted(opcode::ADD, &values, &mut paid)
         .unwrap();
-    assert!(copies.get() > 0);
+    assert_eq!(
+        copies.get(),
+        0,
+        "the native policy only borrows its operands"
+    );
     assert_eq!(paid.used(), quote);
     assert_eq!(domain.numeric_algebra().calls.get(), 1);
 }
@@ -210,7 +234,7 @@ fn borrowed_recursive_overlay_keeps_the_original_noncopy_policy() {
         }
     }
     let policy = Policy {
-        spec: Domain::default().spec(),
+        spec: DomainSpec::default(),
         calls: Cell::new(0),
         byte_calls: Cell::new(0),
     };
@@ -311,7 +335,7 @@ fn relational_queries_dispatch_to_injected_policy_and_keep_singletons_without_fi
     assert!(numeric.constants().is_none());
     state.observe(&x, &numeric, &limits).unwrap();
     assert!(
-        matches!(state.local_value_with(&x,&limits,domain.borrowed()),EvmValueQuery::Exact(v) if v==U256::from(7))
+        matches!(state.local_value(&x,&limits,domain.borrowed()),EvmValueQuery::Exact(v) if v==U256::from(7))
     );
     let sum = symbolic::ExprId::operation(
         opcode::ADD,
@@ -320,28 +344,61 @@ fn relational_queries_dispatch_to_injected_policy_and_keep_singletons_without_fi
     )
     .unwrap();
     assert!(
-        matches!(state.local_value_with(&sum,&limits,domain.borrowed()),EvmValueQuery::Exact(v) if v==U256::from(8))
+        matches!(state.local_value(&sum,&limits,domain.borrowed()),EvmValueQuery::Exact(v) if v==U256::from(8))
     );
     assert!(domain.numeric_algebra().calls.get() > 0);
 }
 
 #[test]
 fn procedure_acceleration_keeps_default_metadata_policy_when_numeric_is_already_top() {
-    let domain = Domain::default();
-    let old = crate::domain::AbstractValue::unsigned_range(U256::ONE, U256::from(5))
+    let domain = ValueAlgebra::new(ProductAlgebra::default());
+    let old = crate::domain::EvmValue::<NumericValue>::unsigned_range(U256::ONE, U256::from(5))
         .unwrap()
         .with_expression(symbolic::ExprId::fresh().unwrap())
         .with_origin(crate::domain::provenance::Origin::Calldata);
-    let next = crate::domain::AbstractValue::top()
+    let next = crate::domain::EvmValue::<NumericValue>::top()
         .with_expression(symbolic::ExprId::fresh().unwrap())
         .with_origin(crate::domain::provenance::Origin::Storage);
     let result = domain.widen_procedure(&old, &next);
     assert_eq!(result, domain.widen(&old, &next));
     assert!(result.expression().is_none());
-    let constants = Domain::new(std::num::NonZeroUsize::new(1).unwrap());
-    let result =
-        constants.widen_procedure(&crate::domain::AbstractValue::constant(U256::ONE), &next);
-    assert_eq!(result, crate::domain::AbstractValue::top());
+    let finite = ValueAlgebra::new(FiniteSetAlgebra::from_spec(DomainSpec::default()));
+    let result = finite.widen_procedure(
+        &EvmValue::<FiniteConstantSet>::constant(U256::ONE),
+        &EvmValue::<FiniteConstantSet>::top(),
+    );
+    assert!(result.numeric().is_top());
+    assert!(result.expression().is_none());
+}
+
+#[test]
+fn procedure_widening_joins_metadata_when_hidden_constraints_share_the_same_top_views() {
+    use crate::domain::{
+        identity::Symbol,
+        provenance::{Origin, OriginSet, Provenance},
+    };
+
+    let domain = ValueAlgebra::new(Policy::new());
+    let mut old = EvmValue::from_numeric(Word {
+        odd: true,
+        ..Word::top()
+    })
+    .with_symbol(Symbol::CallValue, Some(3))
+    .with_symbolic_limit();
+    old.provenance = Provenance::source(Origin::Storage);
+    let mut next = EvmValue::<Word>::top().with_symbol(Symbol::CallValue, Some(3));
+    next.provenance = Provenance::source(Origin::Calldata);
+    assert_eq!(old.interval(), next.interval());
+    assert!(!old.numeric().is_top());
+    let widened = domain.widen_procedure(&old, &next);
+    assert_eq!(widened.numeric(), next.numeric());
+    assert_eq!(
+        widened.provenance().origins(),
+        &OriginSet::from_sources([Origin::Storage, Origin::Calldata]).unwrap()
+    );
+    assert_eq!(widened.identity(), old.identity());
+    assert_eq!(widened.expression(), old.expression());
+    assert!(widened.symbolic_limit_reached());
 }
 
 #[test]
@@ -360,7 +417,7 @@ fn byte_observation_rejects_invalid_arity_before_the_custom_hook() {
     ] {
         let expected = domain.apply(op, &args);
         let calls = domain.numeric_algebra().calls.get();
-        let quote = domain.operation_work(&args);
+        let quote = domain.operation_work(op, &args);
         let observed = domain.observe_byte(op, &args);
         assert_eq!(observed, expected);
         assert_eq!(domain.numeric_algebra().byte_calls.get(), 0);
@@ -369,7 +426,7 @@ fn byte_observation_rejects_invalid_arity_before_the_custom_hook() {
             calls + 1,
             "ordinary fallback must keep the actual custom D"
         );
-        assert_eq!(domain.operation_work(&args), quote);
+        assert_eq!(domain.operation_work(op, &args), quote);
     }
     let args = [EvmValue::<Word>::constant(U256::from(31)), operand];
     let observed = domain.observe_byte(opcode::BYTE, &args);
@@ -379,21 +436,21 @@ fn byte_observation_rejects_invalid_arity_before_the_custom_hook() {
 
 #[test]
 fn invalid_byte_arity_preserves_ordinary_default_provenance_and_limits() {
-    use crate::domain::{AbstractValue, provenance::Provenance};
-    for policy in [
-        Domain::default(),
-        Domain::new(std::num::NonZeroUsize::new(8).unwrap()),
-    ] {
-        let domain = ValueAlgebra::new(policy);
+    use crate::domain::provenance::Provenance;
+    fn check<D: EvmNumericAlgebra>(domain: ValueAlgebra<D>) {
         let view = domain.borrowed().without_relations();
         let args = [
-            AbstractValue::constant(U256::ZERO),
-            AbstractValue::unknown_address().with_symbolic_limit(),
-            AbstractValue::constant(U256::ZERO),
+            EvmValue::<D::Element>::constant(U256::ZERO),
+            EvmValue::<D::Element>::unknown_address().with_symbolic_limit(),
+            EvmValue::<D::Element>::constant(U256::ZERO),
         ];
         let value = view.observe_byte(opcode::BYTE, &args);
         assert_eq!(value, view.apply(opcode::BYTE, &args));
         assert_eq!(value.provenance(), &Provenance::top());
         assert!(value.symbolic_limit_reached());
     }
+    check(ValueAlgebra::new(ProductAlgebra::default()));
+    check(ValueAlgebra::new(FiniteSetAlgebra::from_spec(
+        DomainSpec::default(),
+    )));
 }

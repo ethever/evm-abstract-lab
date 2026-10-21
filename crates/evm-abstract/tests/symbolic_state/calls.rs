@@ -5,12 +5,13 @@ use super::{
         return_words, run_world, word,
     },
 };
+use crate::native;
 use alloy_primitives::U256;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
     analysis::{MachineEdgeKind, OutcomeKind},
-    domain::Domain,
-    world::{Account, ByteArray, World},
+    world::{EvmAccount, EvmByteArray, EvmWorld},
 };
 use revm_bytecode::opcode;
 
@@ -59,7 +60,7 @@ fn all_call_kinds_keep_code_state_caller_value_input_and_private_memory() {
                 .return_word(0);
             let root = root.finish();
             let world = construct_world(fork, &[(ROOT, &root.code), (0x200, &child.code)]);
-            let entry = entry(ByteArray::empty());
+            let entry = entry(EvmByteArray::<NumericValue>::empty());
             let analysis = run_world(world.clone(), entry.clone(), config());
             complete(&analysis);
             let owner = if matches!(op, opcode::CALLCODE | opcode::DELEGATECALL) {
@@ -100,7 +101,7 @@ fn all_call_kinds_keep_code_state_caller_value_input_and_private_memory() {
                 for (index, expected) in expected.iter().enumerate() {
                     let actual = outcome
                         .data
-                        .read_word(&word(index as u64 * 32), Domain::default());
+                        .read_word(&word(index as u64 * 32), native::product().borrowed());
                     assert_eq!(
                         actual.singleton(),
                         Some(*expected),
@@ -132,7 +133,7 @@ fn delegate_inherits_the_parents_nonzero_value_and_original_caller() {
         Fork::Osaka,
         &[(ROOT, &root.finish().code), (0x200, "345f5260205ff3")],
     );
-    let mut entry = entry(ByteArray::empty());
+    let mut entry = entry(EvmByteArray::<NumericValue>::empty());
     entry.environment.value = word(42);
     let analysis = run_world(world, entry, config());
     return_words(&analysis, &[0, 42]);
@@ -190,7 +191,7 @@ fn static_callcode(writes: bool, insufficient: bool) {
         "345f5260205ff3"
     };
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
-        let mut world = World::new(fork, "issue111:static-callcode");
+        let mut world = EvmWorld::<NumericValue>::new(fork, "issue111:static-callcode");
         for (owner, code, balance) in [
             (ROOT, root.code.as_str(), 1_000_000),
             (
@@ -200,11 +201,11 @@ fn static_callcode(writes: bool, insufficient: bool) {
             ),
             (0x300, child, 1_000_000),
         ] {
-            let mut account = Account::from_hex(code, fork).unwrap();
+            let mut account = EvmAccount::<NumericValue>::from_hex(code, fork).unwrap();
             account.balance = word(balance);
             world.insert(address(owner), account).unwrap();
         }
-        let entry = entry(ByteArray::empty());
+        let entry = entry(EvmByteArray::<NumericValue>::empty());
         let analysis = run_world(world.clone(), entry.clone(), config());
         complete(&analysis);
         let concrete = oracle::compare(&world, &entry, &analysis);
@@ -333,7 +334,7 @@ fn nested_delegate_rollback_restores_symbolic_persistent_and_transient_state() {
                     (0x300, &child.code),
                 ],
             ),
-            entry(ByteArray::unknown()),
+            entry(EvmByteArray::<NumericValue>::unknown()),
             policy,
         );
         assert!(
@@ -368,7 +369,7 @@ fn identical_code_in_two_accounts_keeps_storage_owners_separate() {
             (0x300, "5f355f5500"),
         ],
     );
-    let entry = entry(ByteArray::empty());
+    let entry = entry(EvmByteArray::<NumericValue>::empty());
     let analysis = run_world(world.clone(), entry.clone(), config());
     complete(&analysis);
     let concrete = oracle::compare(&world, &entry, &analysis);
@@ -386,7 +387,7 @@ fn identical_code_in_two_accounts_keeps_storage_owners_separate() {
         for (owner, expected) in [(0x200, 7), (0x300, 9)] {
             let value = outcome
                 .store
-                .read(address(owner), &word(0), Domain::default());
+                .read(address(owner), &word(0), native::product().borrowed());
             assert!(
                 value.constants().is_some_and(|values| {
                     values
@@ -399,7 +400,7 @@ fn identical_code_in_two_accounts_keeps_storage_owners_separate() {
         assert_eq!(
             outcome
                 .store
-                .read(address(ROOT), &word(0), Domain::default())
+                .read(address(ROOT), &word(0), native::product().borrowed())
                 .singleton(),
             Some(U256::ZERO)
         );

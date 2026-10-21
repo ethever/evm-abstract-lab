@@ -1,12 +1,16 @@
+use crate::native;
 use alloy_primitives::{Address, U256, hex};
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
-    analysis::{Config, ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
+    analysis::{Config, EvmWorldAnalysis, ExecutionConfig, OutcomeKind, Status},
     domain::{
-        AbstractValue, Domain,
-        relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
+        EvmValue,
+        relational::{CheckResult, EvmValueQuery, RelationLimits, RelationState},
     },
-    world::{Account, ByteArray, Entry, EvmEnvironment, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmEnvironmentValues, EvmWorld},
 };
 use revm_bytecode::opcode;
 use std::{collections::BTreeMap, time::Instant};
@@ -18,8 +22,8 @@ pub(super) fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-pub(super) fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+pub(super) fn word(number: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(number))
 }
 
 /// Small assembler: labels resolve only PUSH2 jump operands, not EVM semantics.
@@ -124,19 +128,21 @@ impl Assembly {
     }
 }
 
+pub(super) fn numeric_spec() -> evm_abstract::domain::DomainSpec {
+    native::spec(8, 4, 256).with_relations(RelationLimits {
+        max_nodes: 8192,
+        max_depth: 128,
+        max_constraints: 256,
+        ..RelationLimits::default()
+    })
+}
+
 pub(super) fn config() -> ExecutionConfig {
     ExecutionConfig {
         analysis: Config {
             context_depth: 0,
             max_states: 512,
             max_transfers: 4096,
-            relations: RelationLimits {
-                max_nodes: 8192,
-                max_depth: 128,
-                max_constraints: 256,
-                ..RelationLimits::default()
-            },
-            ..Config::default()
         },
         max_memory_bytes: 4096,
         max_work: 100_000_000,
@@ -144,34 +150,44 @@ pub(super) fn config() -> ExecutionConfig {
     }
 }
 
-pub(super) fn construct_world(fork: Fork, accounts: &[(u64, &str)]) -> World {
-    let mut world = World::new(fork, "issue111:offline-behavior-acceptance");
+pub(super) fn construct_world(fork: Fork, accounts: &[(u64, &str)]) -> EvmWorld<NumericValue> {
+    let mut world = EvmWorld::<NumericValue>::new(fork, "issue111:offline-behavior-acceptance");
     for (number, code) in accounts {
-        let mut account = Account::from_hex(code, fork).unwrap();
+        let mut account = EvmAccount::<NumericValue>::from_hex(code, fork).unwrap();
         account.balance = word(1_000_000);
         world.insert(address(*number), account).unwrap();
     }
     world
 }
 
-pub(super) fn entry(calldata: ByteArray) -> Entry {
-    Entry {
+pub(super) fn entry(calldata: EvmByteArray<NumericValue>) -> EvmEntry<NumericValue> {
+    EvmEntry {
         address: address(ROOT),
-        environment: EvmEnvironment {
+        environment: EvmEnvironmentValues {
             to: address(ROOT).into(),
             caller: address(USER).into(),
             value: word(0),
             calldata,
             is_static: false,
-            ..EvmEnvironment::default()
+            ..EvmEnvironmentValues::<NumericValue>::default()
         },
     }
 }
 
-pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> WorldAnalysis {
+pub(super) fn run_world(
+    world: EvmWorld<NumericValue>,
+    entry: EvmEntry<NumericValue>,
+    config: ExecutionConfig,
+) -> EvmWorldAnalysis<NumericValue> {
     let policy = config.clone();
     let started = Instant::now();
-    let analysis = analyze_world(world, entry, config).unwrap();
+    let analysis = native::run(
+        &native::product_with(numeric_spec()),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     let max_memory_work = analysis
         .states()
         .iter()
@@ -190,7 +206,7 @@ pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> 
                 .iter()
                 .chain(state.exit_stack.iter())
         })
-        .filter_map(AbstractValue::expression)
+        .filter_map(EvmValue::<NumericValue>::expression)
         .map(|expression| expression.nodes())
         .max()
         .unwrap_or(0);
@@ -222,9 +238,9 @@ pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> 
         analysis.summary_stats().hits,
         analysis.summary_stats().misses,
         started.elapsed().as_micros(),
-        policy.analysis.relations.max_nodes,
-        policy.analysis.relations.max_depth,
-        policy.analysis.relations.max_constraints,
+        analysis.domain_spec().relations().max_nodes,
+        analysis.domain_spec().relations().max_depth,
+        analysis.domain_spec().relations().max_constraints,
         policy.max_memory_bytes,
         policy.max_work,
         policy.analysis.max_states,
@@ -239,15 +255,15 @@ pub(super) fn run_world(world: World, entry: Entry, config: ExecutionConfig) -> 
     analysis
 }
 
-pub(super) fn run(code: &str) -> WorldAnalysis {
+pub(super) fn run(code: &str) -> EvmWorldAnalysis<NumericValue> {
     run_world(
         construct_world(Fork::Osaka, &[(ROOT, code)]),
-        entry(ByteArray::unknown()),
+        entry(EvmByteArray::<NumericValue>::unknown()),
         config(),
     )
 }
 
-pub(super) fn complete(analysis: &WorldAnalysis) {
+pub(super) fn complete(analysis: &EvmWorldAnalysis<NumericValue>) {
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -263,7 +279,7 @@ pub(super) fn complete(analysis: &WorldAnalysis) {
     assert!(!analysis.outcomes().is_empty());
 }
 
-pub(super) fn reachable(analysis: &WorldAnalysis, owner: u64, pc: usize) -> bool {
+pub(super) fn reachable(analysis: &EvmWorldAnalysis<NumericValue>, owner: u64, pc: usize) -> bool {
     analysis.states().iter().any(|state| {
         state.active().code_address == address(owner) && state.executed_pcs.contains(&pc)
     })
@@ -272,7 +288,7 @@ pub(super) fn reachable(analysis: &WorldAnalysis, owner: u64, pc: usize) -> bool
 /// Labels immediately before effects make the actual opcode, not just a nearby
 /// JUMPDEST, part of the execution witness.
 pub(super) fn executed_opcode(
-    analysis: &WorldAnalysis,
+    analysis: &EvmWorldAnalysis<NumericValue>,
     fixture: &Fixture,
     label: &str,
     opcode: u8,
@@ -285,11 +301,20 @@ pub(super) fn executed_opcode(
 
 /// Keep each boundary sample in the numeric bound and check that the retained
 /// relation does not locally exclude it. This does not claim a satisfying witness.
-pub(super) fn possible_lengths(relations: &RelationState, length: &AbstractValue, samples: &[u64]) {
+pub(super) fn possible_lengths(
+    relations: &RelationState,
+    length: &EvmValue<NumericValue>,
+    samples: &[u64],
+) {
     assert!(length.singleton().is_none());
     let expression = length.expression().expect("symbolic input length");
-    let projected = relations.local_value(expression, &config().analysis.relations);
-    let ValueQuery::Bounds(bounds) = projected else {
+    let projected = relations.local_value(
+        expression,
+        &numeric_spec().relations(),
+        native::product_with(native::spec(8, 4, 256).with_relations(numeric_spec().relations()))
+            .borrowed(),
+    );
+    let EvmValueQuery::<NumericValue>::Bounds(bounds) = projected else {
         panic!("boundary lengths need completed local bounds, got {projected:?}");
     };
     for sample in samples {
@@ -302,7 +327,11 @@ pub(super) fn possible_lengths(relations: &RelationState, length: &AbstractValue
             relations.can_equal(
                 expression,
                 U256::from(*sample),
-                &config().analysis.relations
+                &numeric_spec().relations(),
+                native::product_with(
+                    native::spec(8, 4, 256).with_relations(numeric_spec().relations())
+                )
+                .borrowed()
             ),
             CheckResult::MayBeFeasible,
             "local reasoning must not exclude length {sample}"
@@ -310,7 +339,11 @@ pub(super) fn possible_lengths(relations: &RelationState, length: &AbstractValue
     }
 }
 
-pub(super) fn no_bad_branch(analysis: &WorldAnalysis, fixture: &Fixture, owner: u64) {
+pub(super) fn no_bad_branch(
+    analysis: &EvmWorldAnalysis<NumericValue>,
+    fixture: &Fixture,
+    owner: u64,
+) {
     assert!(
         !reachable(analysis, owner, fixture.labels["bad"]),
         "a later EVM branch failed to consume the required state relation at pc {}",
@@ -318,7 +351,7 @@ pub(super) fn no_bad_branch(analysis: &WorldAnalysis, fixture: &Fixture, owner: 
     );
 }
 
-pub(super) fn return_words(analysis: &WorldAnalysis, expected: &[u64]) {
+pub(super) fn return_words(analysis: &EvmWorldAnalysis<NumericValue>, expected: &[u64]) {
     complete(analysis);
     let outcomes: Vec<_> = analysis
         .outcomes()
@@ -328,7 +361,9 @@ pub(super) fn return_words(analysis: &WorldAnalysis, expected: &[u64]) {
     assert!(!outcomes.is_empty(), "no successful return");
     for outcome in outcomes {
         assert_eq!(outcome.data.len().singleton(), Some(U256::from(32)));
-        let value = outcome.data.read_word(&word(0), Domain::default());
+        let value = outcome
+            .data
+            .read_word(&word(0), native::product().borrowed());
         assert!(
             value.constants().is_some_and(|values| !values.is_empty()
                 && values
@@ -341,7 +376,10 @@ pub(super) fn return_words(analysis: &WorldAnalysis, expected: &[u64]) {
 
 /// Unknown compound correlations may retain the fixture's 0xffff guard return.
 /// Required normal results must still occur; arbitrary or empty returns fail.
-pub(super) fn conservative_guarded_returns_include(analysis: &WorldAnalysis, required: &[u64]) {
+pub(super) fn conservative_guarded_returns_include(
+    analysis: &EvmWorldAnalysis<NumericValue>,
+    required: &[u64],
+) {
     let mut allowed = required.to_vec();
     allowed.push(0xffff);
     return_words(analysis, &allowed);
@@ -351,7 +389,7 @@ pub(super) fn conservative_guarded_returns_include(analysis: &WorldAnalysis, req
                 outcome.kind == OutcomeKind::Return
                     && outcome
                         .data
-                        .read_word(&word(0), Domain::default())
+                        .read_word(&word(0), native::product().borrowed())
                         .contains(U256::from(*expected))
             }),
             "conservative guard evaluation lost normal return {expected}"

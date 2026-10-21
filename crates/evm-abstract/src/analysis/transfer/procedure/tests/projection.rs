@@ -1,9 +1,13 @@
+use crate::domain::ProductAlgebra;
+
+#[cfg(test)]
+use crate::analysis::testing::TestValue;
 use crate::{
     analysis::{
         ExecutionConfig,
         machine::fixtures::{address, payload, word},
     },
-    domain::{AbstractValue, symbolic::ExprId},
+    domain::symbolic::ExprId,
     resource::WorkBudget,
 };
 use alloy_primitives::U256;
@@ -22,7 +26,9 @@ fn callee_subscription_projects_the_actual_target_guard_before_erasing_relations
     };
     let (world, entry) = fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
-    let domain = config.domain().unwrap();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let mut input = payload(domain);
     let mut table = Table::default();
     let mut budget = WorkBudget::new(config.max_work);
@@ -41,29 +47,29 @@ fn callee_subscription_projects_the_actual_target_guard_before_erasing_relations
     input.store.write(
         address(0x101),
         &word(1),
-        &AbstractValue::top().with_expression(expression.clone()),
+        &TestValue::top().with_expression(expression.clone()),
         domain,
     );
     let mask = (U256::ONE << 160usize) - U256::ONE;
     let projected = ExprId::operation(
         opcode::AND,
         &[expression, ExprId::constant(mask)],
-        config.analysis.relations.expressions(),
+        config_numeric.relations.expressions(),
     )
     .unwrap();
     let equal = ExprId::operation(
         opcode::EQ,
         &[projected, ExprId::constant(U256::from(0x101))],
-        config.analysis.relations.expressions(),
+        config_numeric.relations.expressions(),
     )
     .unwrap();
     input
         .relations
-        .assume_checked(&equal, true, &config.analysis.relations)
+        .assume_checked(&equal, true, &config_numeric.relations, domain)
         .unwrap();
     let mut child = input.active().clone();
     child.key.caller = address(0x101).into();
-    child.caller_operand = Some(AbstractValue::constant(U256::from(0x101)));
+    child.caller_operand = Some(TestValue::constant(U256::from(0x101)));
     input.call_stack.push_child(ChildFrame {
         state: child,
         continuation: Continuation {

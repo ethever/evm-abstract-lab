@@ -19,7 +19,7 @@ fn snapshot(ui: &mut Ui, title: &str, source: &api::SessionSnapshotDescription) 
         }
     }
 }
-fn fact(ui: &mut Ui, location: &api::InitialFactLocation) {
+fn fact(ui: &mut Ui, label: &str, location: &api::InitialFactLocation) {
     use api::InitialFactLocation as F;
     let (kind, address, slot) = match location {
         F::Code(address) => ("Code", address, None),
@@ -29,7 +29,7 @@ fn fact(ui: &mut Ui, location: &api::InitialFactLocation) {
         F::Storage(location) => ("Storage", &location.address, Some(&location.slot)),
         F::StorageComplete(address) => ("Complete storage", address, None),
     };
-    value::text(ui, "Conflicting observation", kind);
+    value::text(ui, label, kind);
     value::text(ui, "Account", address);
     if let Some(slot) = slot {
         value::text(ui, "Slot", slot);
@@ -38,6 +38,11 @@ fn fact(ui: &mut Ui, location: &api::InitialFactLocation) {
 pub(super) fn show(ui: &mut Ui, detail: &api::SessionFailure) {
     use api::SessionFailure as S;
     super::fields(ui, |ui| match detail {
+        S::Work => value::text(
+            ui,
+            "Session preparation",
+            "Required preparation work could not be funded",
+        ),
         S::CatalogFork(detail) => {
             value::text(ui, "Session input", "Mixed catalog execution rules");
             value::text(ui, "Catalog rules", format!("{:?}", detail.catalog));
@@ -57,7 +62,11 @@ pub(super) fn show(ui: &mut Ui, detail: &api::SessionFailure) {
                 "Equal labels do not establish snapshot identity",
             );
         }
-        S::FactConflict(location) => fact(ui, location),
+        S::FactConflict(location) => fact(ui, "Conflicting observation", location),
+        S::Refinement(detail) => {
+            fact(ui, "Refinement observation", &detail.location);
+            super::super::evidence::fact(ui, &detail.source);
+        }
         S::MissingCode(identity) => {
             value::text(ui, "Session input", "Code missing from catalog");
             code(ui, identity);

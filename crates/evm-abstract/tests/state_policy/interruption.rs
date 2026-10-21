@@ -3,34 +3,36 @@ use super::{
     procedures::recursive_config,
     support::{complete, default_run, entry, input, recursive_counter, run, world},
 };
+use crate::native;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
+use evm_abstract::domain::ProductAlgebra;
 use evm_abstract::{
     analysis::{
-        Acceleration, ControlledAnalysisError, CorrelatedJoin, EnginePolicies,
-        FeedbackAcceleration, FirstResumeStatus, FrontierReason, JoinBoundary, MachineError,
-        MachineKey, MachinePartition, MachinePayload, Partitioned, PartitionedRelative,
-        PolicyContext, PolicyKey, PolicySite, ProcedureOutput, ProcedureSummaryPolicy,
-        ProjectedSummaries, QuotedKey, RecentDistinctJumps, RelativeState, SemanticPolicies,
-        Status, StructuralPartition, analyze_world_with_components_control,
+        Acceleration, CorrelatedJoin, EnginePolicies, EvmMachinePayload, FeedbackAcceleration,
+        FirstResumeStatus, FrontierReason, JoinBoundary, MachineError, MachineKey,
+        MachinePartition, Partitioned, PartitionedRelative, PolicyContext, PolicyKey, PolicySite,
+        ProcedureOutput, ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey,
+        RecentDistinctJumps, RelativeState, SemanticPolicies, Status, StructuralPartition,
         control::{CancelToken, Control},
         progress::Observer,
     },
-    domain::{Domain, NumericValue, ValueAlgebra},
-    world::ByteArray,
+    domain::NumericValue,
+    world::EvmByteArray,
 };
 
 struct RefusePartition<'a> {
     site: &'a PolicySite,
 }
 
-impl MachinePartition<Domain, Option<bool>> for RefusePartition<'_> {
+impl MachinePartition<ProductAlgebra, Option<bool>> for RefusePartition<'_> {
     type Key = (MachineKey, Option<bool>);
 
     fn prepare(
         &self,
-        input: &MachinePayload,
+        input: &EvmMachinePayload<NumericValue>,
         site: PolicySite,
         class: Option<bool>,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<Partitioned<Self::Key, NumericValue>, MachineError> {
         if site == *self.site {
             return Err(MachineError::Shape);
@@ -43,7 +45,7 @@ impl MachinePartition<Domain, Option<bool>> for RefusePartition<'_> {
         input: &RelativeState<NumericValue>,
         site: PolicySite,
         class: Option<bool>,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<PartitionedRelative<Self::Key, NumericValue>, MachineError> {
         if site == *self.site {
             return Err(MachineError::Shape);
@@ -55,7 +57,7 @@ impl MachinePartition<Domain, Option<bool>> for RefusePartition<'_> {
 #[test]
 fn refused_machine_preparation_is_incomplete_in_ordinary_and_recursive_paths() {
     let world = world(&recursive_counter(false));
-    let entry = entry(ByteArray::unknown());
+    let entry = entry(EvmByteArray::<NumericValue>::unknown());
     let baseline = default_run(&world, &entry, recursive_config());
     complete(&baseline);
     oracle::execute(&world, &super::support::entry(input(6))).covers(&baseline);
@@ -96,14 +98,14 @@ struct WorkRefusal<'a> {
     only_growth: bool,
 }
 
-impl ProcedureSummaryPolicy<Domain> for WorkRefusal<'_> {
+impl ProcedureSummaryPolicy<ProductAlgebra> for WorkRefusal<'_> {
     fn admit_relative(
         &self,
         current: &RelativeState<NumericValue>,
         incoming: &RelativeState<NumericValue>,
         site: PolicySite,
         acceleration: Acceleration,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<RelativeState<NumericValue>, MachineError> {
         if site == *self.site && (!self.only_growth || !current.semantic_eq(incoming, cx)?) {
             cx.reserve(usize::MAX)?;
@@ -116,7 +118,7 @@ impl ProcedureSummaryPolicy<Domain> for WorkRefusal<'_> {
         current: Option<&ProcedureOutput<NumericValue>>,
         incoming: &ProcedureOutput<NumericValue>,
         acceleration: Acceleration,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<ProcedureOutput<NumericValue>, MachineError> {
         if *self.site == PolicySite::Output {
             let refusal = if self.only_growth {
@@ -140,7 +142,7 @@ impl ProcedureSummaryPolicy<Domain> for WorkRefusal<'_> {
 #[test]
 fn body_subscriber_and_output_refusals_keep_pending_recursive_growth_open() {
     let world = world(&recursive_counter(true));
-    let entry = entry(ByteArray::unknown());
+    let entry = entry(EvmByteArray::<NumericValue>::unknown());
     let baseline = default_run(&world, &entry, recursive_config());
     complete(&baseline);
     oracle::execute(&world, &super::support::entry(input(17))).covers(&baseline);
@@ -190,14 +192,14 @@ struct CancelBody<'a> {
     cancellation: &'a CancelToken,
 }
 
-impl ProcedureSummaryPolicy<Domain> for CancelBody<'_> {
+impl ProcedureSummaryPolicy<ProductAlgebra> for CancelBody<'_> {
     fn admit_relative(
         &self,
         current: &RelativeState<NumericValue>,
         incoming: &RelativeState<NumericValue>,
         site: PolicySite,
         acceleration: Acceleration,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<RelativeState<NumericValue>, MachineError> {
         if site == PolicySite::Body {
             self.cancellation.cancel();
@@ -211,7 +213,7 @@ impl ProcedureSummaryPolicy<Domain> for CancelBody<'_> {
         current: Option<&ProcedureOutput<NumericValue>>,
         incoming: &ProcedureOutput<NumericValue>,
         acceleration: Acceleration,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<ProcedureOutput<NumericValue>, MachineError> {
         ProjectedSummaries.admit_output(current, incoming, acceleration, cx)
     }
@@ -220,7 +222,7 @@ impl ProcedureSummaryPolicy<Domain> for CancelBody<'_> {
 #[test]
 fn cancellation_inside_a_borrowed_recursive_policy_returns_no_report_and_scope_recovers() {
     let world = world(&recursive_counter(false));
-    let entry = entry(ByteArray::unknown());
+    let entry = entry(EvmByteArray::<NumericValue>::unknown());
     let control = Control::new(Observer::default());
     let policies = EnginePolicies::new(RecentDistinctJumps, FirstResumeStatus).with_state(
         SemanticPolicies::new(
@@ -232,19 +234,22 @@ fn cancellation_inside_a_borrowed_recursive_policy_returns_no_report_and_scope_r
             },
         ),
     );
-    let result = analyze_world_with_components_control(
-        world.clone(),
-        entry.clone(),
-        recursive_config(),
-        &ValueAlgebra::new(Domain::default()),
-        &policies,
-        &control,
-    );
+    let result = {
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        AnalysisEngine::new(&native::product(), &policies, &mut extension).run(
+            AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+            recursive_config(),
+            &control,
+        )
+    };
     assert!(
         control.cancellation().is_cancelled(),
         "the actual relative body must reach the policy"
     );
-    assert!(matches!(result, Err(ControlledAnalysisError::Cancelled)));
+    assert!(matches!(
+        result,
+        Err(evm_abstract::analysis::cooperation::CooperationError::Cancelled)
+    ));
     let recovered = default_run(&world, &entry, recursive_config());
     complete(&recovered);
     oracle::execute(&world, &super::support::entry(input(6))).covers(&recovered);
@@ -254,15 +259,15 @@ struct QuotedPartition<'a> {
     refused: &'a PolicySite,
 }
 
-impl MachinePartition<Domain, Option<bool>> for QuotedPartition<'_> {
+impl MachinePartition<ProductAlgebra, Option<bool>> for QuotedPartition<'_> {
     type Key = QuotedKey<(MachineKey, Option<bool>)>;
 
     fn prepare(
         &self,
-        input: &MachinePayload,
+        input: &EvmMachinePayload<NumericValue>,
         site: PolicySite,
         class: Option<bool>,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<Partitioned<Self::Key, NumericValue>, MachineError> {
         let prepared = StructuralPartition.prepare(input, site, class, cx)?;
         let work = if site == *self.refused {
@@ -281,7 +286,7 @@ impl MachinePartition<Domain, Option<bool>> for QuotedPartition<'_> {
         input: &RelativeState<NumericValue>,
         site: PolicySite,
         class: Option<bool>,
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<PartitionedRelative<Self::Key, NumericValue>, MachineError> {
         let prepared = StructuralPartition.prepare_relative(input, site, class, cx)?;
         let work = if site == *self.refused {
@@ -300,7 +305,7 @@ impl MachinePartition<Domain, Option<bool>> for QuotedPartition<'_> {
 fn unpriced_keys_keep_real_world_procedure_body_and_subscriber_obligations_open() {
     let fixture = recursive_counter(false);
     let world = world(&fixture);
-    let entry = entry(ByteArray::unknown());
+    let entry = entry(EvmByteArray::<NumericValue>::unknown());
     let baseline = default_run(&world, &entry, recursive_config());
     complete(&baseline);
     oracle::execute(&world, &super::support::entry(input(6))).covers(&baseline);

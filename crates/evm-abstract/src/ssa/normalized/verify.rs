@@ -3,28 +3,35 @@
 use super::{
     NormalizationInvariant, NormalizationInvariantKind as Kind, NormalizedSsa, build, invariant,
 };
+use crate::domain::WordElement;
 use crate::{
-    analysis::{Status, WorldAnalysis},
+    analysis::{EvmWorldAnalysis, Status},
     ssa::{PartialWorldSsa, SsaError, ValueId},
 };
 use std::collections::BTreeSet;
 
-pub(super) fn verify(ir: &NormalizedSsa, analysis: &WorldAnalysis) -> Result<(), SsaError> {
-    crate::ssa::checkpoint()?;
+pub(super) fn verify<N: WordElement>(
+    ir: &NormalizedSsa<N>,
+    analysis: &EvmWorldAnalysis<N>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<(), SsaError> {
+    crate::ssa::pay(budget, 0)?;
     if ir.complete {
         // Preserve the complete verifier's original bytecode and effect contracts.
-        crate::ssa::build_world(analysis)?;
+        crate::ssa::world::build(analysis, Some(&mut *budget))?;
     }
-    let raw = crate::ssa::build_partial_world(analysis)?;
-    against_raw(ir, &raw, analysis)
+    let raw = crate::ssa::build_partial_world(analysis, budget)?;
+    against_raw(ir, &raw, analysis, budget)
 }
 
-pub(super) fn against_raw(
-    ir: &NormalizedSsa,
-    raw: &PartialWorldSsa,
-    analysis: &WorldAnalysis,
+pub(super) fn against_raw<N: WordElement>(
+    ir: &NormalizedSsa<N>,
+    raw: &PartialWorldSsa<N>,
+    analysis: &EvmWorldAnalysis<N>,
+    budget: &mut crate::resource::WorkBudget,
 ) -> Result<(), SsaError> {
-    crate::ssa::checkpoint()?;
+    crate::ssa::pay(budget, 0)?;
+    crate::ssa::work::normalized_verify(ir, budget)?;
     if ir.status != raw.status() || ir.complete != (analysis.status() == Status::Converged) {
         return Err(invariant(Kind::Coverage));
     }
@@ -49,7 +56,7 @@ pub(super) fn against_raw(
     // Proofs are replayed from the validated raw receipt, not from the artifact's
     // own facts or altered operations. In particular a State observation cannot
     // certify a Definition rewrite by changing its serialized scope.
-    let expected = build::normalize(raw, analysis, ir.complete)?;
+    let expected = build::normalize(raw, analysis, ir.complete, budget)?;
     if ir.value_count != expected.value_count || ir.blocks.len() != expected.blocks.len() {
         return Err(invariant(Kind::ValueNames));
     }
@@ -57,15 +64,12 @@ pub(super) fn against_raw(
         return Err(invariant(Kind::Effects));
     }
     if ir.deferred_edges != expected.deferred_edges
-        || ir.frontiers.len() != expected.frontiers.len()
-        || ir.frontiers.iter().zip(&expected.frontiers).any(|(a, b)| {
-            a.from != b.from || a.target != b.target || a.pc != b.pc || a.reason != b.reason
-        })
+        || !crate::ssa::partial::same_frontiers(&ir.frontiers, &expected.frontiers, budget)?
     {
         return Err(invariant(Kind::Coverage));
     }
     for (block, original) in ir.blocks.iter().zip(&expected.blocks) {
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         if block.state != original.state
             || block.coverage != original.coverage
             || block.open_incoming != original.open_incoming
@@ -120,12 +124,21 @@ pub(super) fn against_raw(
     if ir.transitions != expected.transitions {
         return Err(invariant(Kind::Transitions));
     }
+    for fact in ir.facts.iter().chain(&expected.facts) {
+        if let Some(provenance) = &fact.provenance {
+            crate::ssa::pay(budget, provenance.origins().work_size())?;
+        }
+        if let Some(numeric) = &fact.numeric {
+            crate::ssa::pay(budget, numeric.work_size())?;
+        }
+    }
     if ir.facts != expected.facts {
         return Err(invariant(Kind::Facts));
     }
     if ir.mappings != expected.mappings {
         return Err(invariant(Kind::Mappings));
     }
+    crate::ssa::pay(budget, 0)?;
     Ok(())
 }
 

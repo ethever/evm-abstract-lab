@@ -1,16 +1,18 @@
 //! Regress native cache reuse across complete metadata and typed export bounds.
 use super::Pools;
+use evm_abstract::domain::NumericValue;
+use evm_abstract::domain::{ProductAlgebra, ValueAlgebra};
 use evm_abstract::{
     U256,
     analysis::control::Control,
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         identity::Symbol,
         provenance::Origin,
         relational::RelationLimits,
         symbolic::{ByteStateId, ByteView, ExprId, ExprKind, ExprLimits, SourceId},
     },
-    world::ByteArray,
+    world::EvmByteArray,
 };
 use evm_abstract_protocol as api;
 
@@ -30,37 +32,48 @@ fn deep_expression() -> ExprId {
     expression
 }
 
-fn deep_buffer() -> ByteArray {
+fn deep_buffer() -> EvmByteArray<NumericValue> {
     deep_buffer_with(deep_expression())
 }
 
-fn deep_buffer_with(expression: ExprId) -> ByteArray {
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_nodes: 65_536,
-        max_depth: 256,
-        ..RelationLimits::default()
-    }));
-    let mut source = ByteArray::memory();
+fn deep_buffer_with(expression: ExprId) -> EvmByteArray<NumericValue> {
+    let domain = ValueAlgebra::new(ProductAlgebra::from_spec(
+        ValueAlgebra::new(ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_nodes: 65_536,
+                max_depth: 256,
+                ..RelationLimits::default()
+            }),
+    ));
+    let mut source = EvmByteArray::<NumericValue>::memory();
     source
         .write_word(
-            &AbstractValue::constant(U256::ZERO),
-            &AbstractValue::top().with_expression(expression),
-            1024,
-            domain,
+            &EvmValue::<NumericValue>::constant(U256::ZERO),
+            &EvmValue::<NumericValue>::top().with_expression(expression),
+            domain.borrowed(),
         )
         .unwrap();
     source
 }
 
-fn byte_buffer(value: &AbstractValue) -> ByteArray {
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_nodes: 65_536,
-        max_depth: 256,
-        ..RelationLimits::default()
-    }));
-    let mut source = ByteArray::memory();
+fn byte_buffer(value: &EvmValue<NumericValue>) -> EvmByteArray<NumericValue> {
+    let domain = ValueAlgebra::new(ProductAlgebra::from_spec(
+        ValueAlgebra::new(ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_nodes: 65_536,
+                max_depth: 256,
+                ..RelationLimits::default()
+            }),
+    ));
+    let mut source = EvmByteArray::<NumericValue>::memory();
     source
-        .write_byte(&AbstractValue::constant(U256::ZERO), value, 1024, domain)
+        .write_byte(
+            &EvmValue::<NumericValue>::constant(U256::ZERO),
+            value,
+            domain.borrowed(),
+        )
         .unwrap();
     source
 }
@@ -83,7 +96,7 @@ fn failure(error: api::ApiError, kind: api::ExportFailureKind) -> api::ExportFai
     *detail
 }
 
-fn assert_buffer_roundtrip(pools: &Pools<'_>, id: usize) {
+fn assert_buffer_roundtrip(pools: &Pools<'_, NumericValue>, id: usize) {
     pools.symbolic.graph.validate().unwrap();
     let snapshot = (
         &pools.buffers_dto[id],
@@ -105,23 +118,33 @@ fn assert_buffer_roundtrip(pools: &Pools<'_>, id: usize) {
 #[test]
 fn range_projection_preserves_kinds_word_limits_and_expression_references_through_json() {
     use evm_abstract::{
-        analysis::{self, Config, RangeKind, RangeRequest, RangeWitness},
+        analysis::{self, AnalysisInput, EvmRangeRequest, EvmRangeWitness, RangeKind},
         bytecode::Program,
     };
     use std::sync::Arc;
 
     // Construct the witness directly to test transport independently of the
     // engine's range classifier.
-    let analysis = analysis::analyze(Program::from_hex("00").unwrap(), Config::default()).unwrap();
-    let payload = Arc::new(analysis.execution().states()[0].entry.clone());
+    let input = AnalysisInput::<NumericValue>::from_program(
+        Program::from_hex("00").unwrap(),
+        Default::default(),
+    )
+    .unwrap();
+    let native = crate::analyze::tests::execute(
+        input.world().clone(),
+        input.entry().clone(),
+        analysis::ExecutionConfig::default(),
+        &ValueAlgebra::new(ProductAlgebra::default()),
+    );
+    let payload = Arc::new(native.states()[0].entry.clone());
     let word = format!("0x{:x}", U256::MAX);
-    let offset = AbstractValue::top()
+    let offset = EvmValue::<NumericValue>::top()
         .with_expression(ExprId::input(u64::MAX, Symbol::CalldataWord(U256::MAX)));
-    let condition = AbstractValue::unsigned_range(U256::ZERO, U256::ONE)
+    let condition = EvmValue::<NumericValue>::unsigned_range(U256::ZERO, U256::ONE)
         .unwrap()
         .with_expression(ExprId::input(78, Symbol::CallValue));
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     for (kind, expected_kind, limit) in [
         (
             RangeKind::MemoryPolicy,
@@ -135,12 +158,12 @@ fn range_projection_preserves_kinds_word_limits_and_expression_references_throug
         ),
         (RangeKind::ReturnData, api::RangeKind::ReturnData, U256::MAX),
     ] {
-        let source = RangeWitness {
-            request: RangeRequest {
+        let source = EvmRangeWitness {
+            request: EvmRangeRequest::<NumericValue> {
                 kind,
                 offset: offset.clone(),
-                size: AbstractValue::constant(U256::MAX),
-                limit: AbstractValue::constant(limit),
+                size: EvmValue::<NumericValue>::constant(U256::MAX),
+                limit: EvmValue::<NumericValue>::constant(limit),
             },
             condition: condition.clone(),
             nonzero: Some(false),
@@ -202,7 +225,7 @@ fn complete_buffer_clones_reuse_one_snapshot_without_repaying_expanded_cells() {
     let expanded = source.work_size();
     assert!(expanded > 1_000_000);
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let id = pools.buffer(&source).unwrap();
     let graph_nodes = pools.symbolic.graph.nodes.len();
     let snapshot = pools.buffers_dto[id].clone();
@@ -225,11 +248,12 @@ fn complete_buffer_clones_reuse_one_snapshot_without_repaying_expanded_cells() {
 #[test]
 fn same_root_numeric_provenance_and_operand_expression_facts_remain_distinct() {
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let expression = ExprId::input(99, Symbol::CallValue);
-    let broad = byte_buffer(&AbstractValue::unknown_byte().with_expression(expression.clone()));
+    let broad =
+        byte_buffer(&EvmValue::<NumericValue>::unknown_byte().with_expression(expression.clone()));
     let narrow = byte_buffer(
-        &AbstractValue::unsigned_range(U256::ZERO, U256::from(127))
+        &EvmValue::<NumericValue>::unsigned_range(U256::ZERO, U256::from(127))
             .unwrap()
             .with_expression(expression),
     );
@@ -239,7 +263,7 @@ fn same_root_numeric_provenance_and_operand_expression_facts_remain_distinct() {
     assert_ne!(broad_id, narrow_id);
     assert_ne!(pools.buffers_dto[broad_id], pools.buffers_dto[narrow_id]);
 
-    let constant = AbstractValue::constant(U256::from(7));
+    let constant = EvmValue::<NumericValue>::constant(U256::from(7));
     let memory = byte_buffer(&constant.clone().with_origin(Origin::Memory));
     let calldata = byte_buffer(&constant.clone().with_origin(Origin::Calldata));
     assert_eq!(memory.state_root(), calldata.state_root());
@@ -248,36 +272,33 @@ fn same_root_numeric_provenance_and_operand_expression_facts_remain_distinct() {
     assert_ne!(memory_id, calldata_id);
     assert_ne!(pools.buffers_dto[memory_id], pools.buffers_dto[calldata_id]);
 
-    let domain = Domain::default();
-    let mut first = ByteArray::memory();
+    let domain = ValueAlgebra::new(ProductAlgebra::default());
+    let mut first = EvmByteArray::<NumericValue>::memory();
     first
         .expand(
-            &AbstractValue::constant(U256::ZERO),
-            &AbstractValue::constant(U256::from(1024)),
-            2048,
-            domain,
+            &EvmValue::<NumericValue>::constant(U256::ZERO),
+            &EvmValue::<NumericValue>::constant(U256::from(1024)),
+            domain.borrowed(),
         )
         .unwrap();
     let mut second = first.clone();
     let offset = ExprId::input(123, Symbol::CallValue);
     first
         .write_byte(
-            &AbstractValue::unsigned_range(U256::ZERO, U256::from(16))
+            &EvmValue::<NumericValue>::unsigned_range(U256::ZERO, U256::from(16))
                 .unwrap()
                 .with_expression(offset.clone()),
             &constant,
-            2048,
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     second
         .write_byte(
-            &AbstractValue::unsigned_range(U256::ZERO, U256::from(32))
+            &EvmValue::<NumericValue>::unsigned_range(U256::ZERO, U256::from(32))
                 .unwrap()
                 .with_expression(offset),
             &constant,
-            2048,
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     assert_eq!(first.state_root(), second.state_root());
@@ -297,33 +318,30 @@ fn same_root_numeric_provenance_and_operand_expression_facts_remain_distinct() {
 
 #[test]
 fn same_root_length_and_hidden_allocation_metadata_still_require_native_equality() {
-    let domain = Domain::default();
-    let zero = AbstractValue::constant(U256::ZERO);
-    let mut source = ByteArray::memory();
+    let domain = ValueAlgebra::new(ProductAlgebra::default());
+    let zero = EvmValue::<NumericValue>::constant(U256::ZERO);
+    let mut source = EvmByteArray::<NumericValue>::memory();
     source
         .expand(
             &zero,
-            &AbstractValue::constant(U256::from(128)),
-            1024,
-            domain,
+            &EvmValue::<NumericValue>::constant(U256::from(128)),
+            domain.borrowed(),
         )
         .unwrap();
     let mut allocated = source.clone();
     allocated
         .expand(
-            &AbstractValue::constant(U256::from(32)),
-            &AbstractValue::constant(U256::from(32)),
-            1024,
-            domain,
+            &EvmValue::<NumericValue>::constant(U256::from(32)),
+            &EvmValue::<NumericValue>::constant(U256::from(32)),
+            domain.borrowed(),
         )
         .unwrap();
     let mut longer = source.clone();
     longer
         .expand(
             &zero,
-            &AbstractValue::constant(U256::from(256)),
-            1024,
-            domain,
+            &EvmValue::<NumericValue>::constant(U256::from(256)),
+            domain.borrowed(),
         )
         .unwrap();
     assert_eq!(source.state_root(), allocated.state_root());
@@ -331,7 +349,7 @@ fn same_root_length_and_hidden_allocation_metadata_still_require_native_equality
     assert_ne!(source, allocated);
     assert_eq!(source.state_root(), longer.state_root());
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let id = pools.buffer(&source).unwrap();
     let allocated_id = pools.buffer(&allocated).unwrap();
     let longer_id = pools.buffer(&longer).unwrap();
@@ -348,10 +366,10 @@ fn same_root_length_and_hidden_allocation_metadata_still_require_native_equality
 
 #[test]
 fn forced_candidate_collision_does_not_merge_independent_input_sources() {
-    let first = ByteArray::unknown();
-    let second = ByteArray::unknown();
+    let first = EvmByteArray::<NumericValue>::unknown();
+    let second = EvmByteArray::<NumericValue>::unknown();
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let first_id = pools.buffer(&first).unwrap();
     pools
         .buffer_roots
@@ -371,11 +389,13 @@ fn independently_allocated_equal_expression_trees_keep_full_comparison_accountin
     let right = deep_expression();
     assert!(left == right);
     assert!(!std::ptr::eq(left.kind(), right.kind()));
-    let source = byte_buffer(&AbstractValue::constant(U256::from(7)).with_expression(left));
-    let incoming = byte_buffer(&AbstractValue::constant(U256::from(7)).with_expression(right));
+    let source =
+        byte_buffer(&EvmValue::<NumericValue>::constant(U256::from(7)).with_expression(left));
+    let incoming =
+        byte_buffer(&EvmValue::<NumericValue>::constant(U256::from(7)).with_expression(right));
     assert!(source == incoming);
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let id = pools.buffer(&source).unwrap();
     let snapshot = pools.buffers_dto[id].clone();
     let before = pools.symbolic.usage.work;
@@ -409,7 +429,7 @@ fn independently_allocated_equal_reads_do_not_compare_their_backing_history() {
             })
     );
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let id = pools.buffer(&source).unwrap();
     let nodes = pools.symbolic.graph.nodes.len();
     let snapshot = pools.buffers_dto[id].clone();
@@ -466,11 +486,11 @@ fn equal_word_reads_reuse_large_history_and_retain_full_view_scalars() {
     assert!(first == second);
     assert!(!std::ptr::eq(first.kind(), second.kind()));
     assert!(first.nodes() > 32_000);
-    let source = byte_buffer(&AbstractValue::top().with_expression(first.clone()));
-    let incoming = byte_buffer(&AbstractValue::top().with_expression(second));
+    let source = byte_buffer(&EvmValue::<NumericValue>::top().with_expression(first.clone()));
+    let incoming = byte_buffer(&EvmValue::<NumericValue>::top().with_expression(second));
     assert!(source == incoming);
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let id = pools.buffer(&source).unwrap();
     let before = pools.symbolic.usage.work;
     let nodes = pools.symbolic.graph.nodes.len();
@@ -509,7 +529,7 @@ fn equal_word_reads_reuse_large_history_and_retain_full_view_scalars() {
             ExprId::constant(U256::from(offset)),
             ExprId::constant(U256::from(length)),
         );
-        let other = byte_buffer(&AbstractValue::top().with_expression(expression));
+        let other = byte_buffer(&EvmValue::<NumericValue>::top().with_expression(expression));
         assert_ne!(pools.buffer(&other).unwrap(), id);
     }
 }
@@ -539,11 +559,11 @@ fn nonshared_word_view_offset_and_length_keep_recursive_work_accounting() {
         let second = word_read(&state, right_at, right_len);
         assert!(first == second);
         assert!(!std::ptr::eq(first.kind(), second.kind()));
-        let source = byte_buffer(&AbstractValue::top().with_expression(first));
-        let incoming = byte_buffer(&AbstractValue::top().with_expression(second));
+        let source = byte_buffer(&EvmValue::<NumericValue>::top().with_expression(first));
+        let incoming = byte_buffer(&EvmValue::<NumericValue>::top().with_expression(second));
         assert!(source == incoming);
         let control = Control::default();
-        let mut pools = Pools::new(&control);
+        let mut pools = Pools::<NumericValue>::new(&control);
         let id = pools.buffer(&source).unwrap();
         let snapshot = pools.buffers_dto[id].clone();
         let before = pools.symbolic.usage.work;
@@ -558,10 +578,10 @@ fn nonshared_word_view_offset_and_length_keep_recursive_work_accounting() {
 #[test]
 fn buffer_projection_past_former_work_cap_remains_lossless_and_cancellable() {
     let bytes = vec![1; 4096];
-    let source = ByteArray::exact(&bytes);
+    let source = EvmByteArray::<NumericValue>::exact(&bytes);
     let retained = source.clone();
     let control = Control::new(Default::default());
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let id = pools.buffer(&source).unwrap();
     let snapshot = pools.buffers_dto[id].clone();
     let before = pools.symbolic.usage;
@@ -593,7 +613,7 @@ fn buffer_projection_past_former_work_cap_remains_lossless_and_cancellable() {
         pools.symbolic.graph.nodes[view.state.node],
         api::Expression::BytesExact(format!("0x{}", "01".repeat(bytes.len())))
     );
-    let next = ByteArray::exact(&[2, 3, 4, 5]);
+    let next = EvmByteArray::<NumericValue>::exact(&[2, 3, 4, 5]);
     let after_hits = pools.symbolic.usage.work;
     let next_id = pools.buffer(&next).unwrap();
     assert_ne!(next_id, id);
@@ -615,10 +635,10 @@ fn buffer_projection_past_former_work_cap_remains_lossless_and_cancellable() {
 
 #[test]
 fn saturated_work_still_allows_projection_and_preserves_payload_bounds_and_cancellation() {
-    let source = ByteArray::exact(&[1, 2, 3, 4]);
+    let source = EvmByteArray::<NumericValue>::exact(&[1, 2, 3, 4]);
     let retained = source.clone();
     let control = Control::new(Default::default());
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     pools.symbolic.usage.work = u64::MAX - 1;
     let id = pools.buffer(&source).unwrap();
     assert_eq!(pools.symbolic.usage.work, u64::MAX);
@@ -628,7 +648,9 @@ fn saturated_work_still_allows_projection_and_preserves_payload_bounds_and_cance
     assert_buffer_roundtrip(&pools, id);
     pools.symbolic.limits.max_exact_bytes = pools.symbolic.usage.exact_bytes;
     let detail = failure(
-        pools.buffer(&ByteArray::exact(&[5, 6, 7, 8])).unwrap_err(),
+        pools
+            .buffer(&EvmByteArray::<NumericValue>::exact(&[5, 6, 7, 8]))
+            .unwrap_err(),
         api::ExportFailureKind::ExactBytes,
     );
     assert_eq!(detail.usage.work, u64::MAX);
@@ -652,13 +674,15 @@ fn buffer_export_bounds_and_cache_hit_cancellation_remain_typed_and_lossless() {
         (api::ExportFailureKind::ExactBytes, 3),
     ] {
         let source = if kind == api::ExportFailureKind::Depth {
-            byte_buffer(&AbstractValue::unknown_byte().with_expression(ExprId::fresh().unwrap()))
+            byte_buffer(
+                &EvmValue::<NumericValue>::unknown_byte().with_expression(ExprId::fresh().unwrap()),
+            )
         } else {
-            ByteArray::exact(&[1, 2, 3, 4])
+            EvmByteArray::<NumericValue>::exact(&[1, 2, 3, 4])
         };
         let retained = source.clone();
         let control = Control::default();
-        let mut pools = Pools::new(&control);
+        let mut pools = Pools::<NumericValue>::new(&control);
         match kind {
             api::ExportFailureKind::Nodes => pools.symbolic.limits.max_nodes = limit,
             api::ExportFailureKind::Depth => pools.symbolic.limits.max_depth = limit,
@@ -671,10 +695,10 @@ fn buffer_export_bounds_and_cache_hit_cancellation_remain_typed_and_lossless() {
         assert!(detail.required > limit as u64);
         assert_eq!(source, retained);
     }
-    let source = ByteArray::memory();
+    let source = EvmByteArray::<NumericValue>::memory();
     let retained = source.clone();
     let control = Control::new(Default::default());
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     pools.buffer(&source).unwrap();
     let usage = pools.symbolic.usage;
     control.cancellation().cancel();
@@ -692,13 +716,16 @@ fn log_pool_preserves_captured_hash_and_init_runtime_identity_through_json() {
     use alloy_primitives::{Address, B256};
     use evm_abstract::{
         Fork,
-        world::{AbstractLog, LogKey, LogSourceKind, Store, World},
+        world::{EvmLog, EvmStore, EvmWorld, LogKey, LogSourceKind},
     };
     let owner = Address::from([0x11; 20]);
     let code_owner = Address::from([0x22; 20]);
     let hash = B256::from([0x33; 32]);
     let other_hash = B256::from([0x44; 32]);
-    let mut source = Store::new(&World::new(Fork::Osaka, "log source projection"));
+    let mut source = EvmStore::<NumericValue>::new(
+        &EvmWorld::<NumericValue>::new(Fork::Osaka, "log source projection"),
+        ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
+    );
     let cases = [
         (hash, LogSourceKind::Init, api::LogSourceKind::Init),
         (hash, LogSourceKind::Runtime, api::LogSourceKind::Runtime),
@@ -718,16 +745,16 @@ fn log_pool_preserves_captured_hash_and_init_runtime_identity_through_json() {
                     source_kind,
                     pc: 7,
                 },
-                AbstractLog {
-                    topics: vec![AbstractValue::constant(U256::from(index)); index],
-                    data: ByteArray::exact(&[index as u8]),
+                EvmLog {
+                    topics: vec![EvmValue::<NumericValue>::constant(U256::from(index)); index],
+                    data: EvmByteArray::<NumericValue>::exact(&[index as u8]),
                 },
-                Domain::default(),
+                ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
             )
             .unwrap();
     }
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let id = pools.store(&source).unwrap();
     assert_eq!(pools.store(&source.clone()).unwrap(), id);
     let snapshot = &pools.stores[id];
@@ -754,22 +781,27 @@ fn log_pool_preserves_captured_hash_and_init_runtime_identity_through_json() {
 fn touch_only_store_versions_project_account_and_unlisted_guarantees_without_intern_merging() {
     use evm_abstract::{
         Address, Fork,
-        world::{Account, Store, World},
+        world::{EvmAccount, EvmStore, EvmWorld},
     };
     let owner = Address::repeat_byte(0x11);
     let other = Address::repeat_byte(0x22);
     let unlisted = Address::repeat_byte(0x33);
-    let mut world = World::new(Fork::Osaka, "transaction touch projection");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "transaction touch projection");
     for address in [owner, other] {
-        world.insert(address, Account::empty()).unwrap();
+        world
+            .insert(address, EvmAccount::<NumericValue>::empty())
+            .unwrap();
     }
-    let untouched = Store::new(&world);
+    let untouched = EvmStore::<NumericValue>::new(
+        &world,
+        ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
+    );
     let mut touched = untouched.clone();
     touched.touch_account(owner);
     let mut optional = touched.clone();
     optional.may_touch_all();
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let original_id = pools.store(&untouched).unwrap();
     let touched_id = pools.store(&touched).unwrap();
     let optional_id = pools.store(&optional).unwrap();

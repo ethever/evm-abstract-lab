@@ -1,8 +1,6 @@
 //! Capture-avoiding traversal includes immutable byte/slot roots and source
 //! tokens. Numeric visit_values is intentionally insufficient for this job.
 
-#[cfg(test)]
-use crate::domain::ValueAlgebra;
 use crate::domain::{AlgebraRef, EvmNumericAlgebra, WordElement};
 
 use super::{EvmFrameState, EvmMachinePayload, MachineError, join::checkpoint};
@@ -50,7 +48,7 @@ impl<N: WordElement> EvmMachinePayload<N> {
 
     /// The same map renames every occurrence of one local source/selector. A
     /// failed traversal leaves the original payload and its history untouched.
-    pub(crate) fn rename_fresh_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn rename_fresh<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         map: &BTreeMap<ExprId, ExprId>,
         limits: ExprLimits,
@@ -65,29 +63,15 @@ impl<N: WordElement> EvmMachinePayload<N> {
                     value.forget_identity();
                     value.rename_fresh(map, limits)?;
                 }
-                StatePart::Bytes(bytes) => bytes.rename_fresh_with(map, limits, domain)?,
-                StatePart::Store(store) => store.to_mut().rename_fresh_with(map, limits, domain)?,
+                StatePart::Bytes(bytes) => bytes.rename_fresh(map, limits, domain)?,
+                StatePart::Store(store) => store.to_mut().rename_fresh(map, limits, domain)?,
             }
             Ok(())
         })?;
-        renamed.store.rename_fresh_with(map, limits, domain)?;
+        renamed.store.rename_fresh(map, limits, domain)?;
         renamed.relations = renamed.relations.rename_fresh(map, limits)?;
         checkpoint()?;
         *self = renamed;
         Ok(())
-    }
-}
-
-// Default regression fixtures retain their scalar-free call syntax.
-// Executable paths carry their run's algebra into `_with`.
-#[cfg(test)]
-impl super::MachinePayload {
-    pub(crate) fn rename_fresh(
-        &mut self,
-        map: &BTreeMap<ExprId, ExprId>,
-        limits: ExprLimits,
-    ) -> Result<(), MachineError> {
-        let numeric = crate::domain::Domain::default();
-        self.rename_fresh_with(map, limits, ValueAlgebra::new(numeric).borrowed())
     }
 }

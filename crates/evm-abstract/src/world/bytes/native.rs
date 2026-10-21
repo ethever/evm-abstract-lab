@@ -49,7 +49,7 @@ pub(in crate::world) fn serialize_facts<S: Serializer, N: WordElement>(
     sequence.end()
 }
 
-/// Failed compatibility operations must remain visible in native snapshots;
+/// Failed conservative operations must remain visible in native snapshots;
 /// reports must not interpret the conservative fallback as a completed state.
 pub(in crate::world) fn serialize_failure<S: Serializer, E: Display>(
     failure: &Option<E>,

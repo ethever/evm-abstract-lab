@@ -9,9 +9,9 @@ use alloy_primitives::{Address, B256, U256, hex};
 use evm_abstract::{
     Fork,
     bytecode::DecodeError,
-    domain::AbstractValue,
+    domain::{EvmValue, WordElement},
     fork::ParseForkError,
-    world::{Account, Existence, FingerprintError, World, WorldError},
+    world::{EvmAccount, EvmWorld, Existence, FingerprintError, WorldError},
 };
 use std::{fs, path::Path};
 use thiserror::Error;
@@ -142,7 +142,7 @@ pub(crate) fn calldata(input: &str) -> Result<Vec<u8>, InputError> {
     })
 }
 
-pub(crate) fn load(path: &Path) -> Result<World, InputError> {
+pub(crate) fn load<N: WordElement>(path: &Path) -> Result<EvmWorld<N>, InputError> {
     let text = fs::read_to_string(path).map_err(|error| InputError::Read {
         path: path.display().to_string(),
         error,
@@ -150,20 +150,20 @@ pub(crate) fn load(path: &Path) -> Result<World, InputError> {
     parse(&text)
 }
 
-fn parse(text: &str) -> Result<World, InputError> {
+fn parse<N: WordElement>(text: &str) -> Result<EvmWorld<N>, InputError> {
     let snapshot: Snapshot = serde_json::from_str(text)?;
     let fork: Fork = snapshot.fork.parse()?;
     let anchored = matches!(snapshot.identity, Some(Identity::Chain { .. }));
     let mut world = match snapshot.identity {
-        None => World::new(fork, snapshot.provenance),
+        None => EvmWorld::<N>::new(fork, snapshot.provenance),
         Some(Identity::Offline { label }) => {
             // The old provenance field remains a description; identity is explicit.
-            World::offline(fork, label, snapshot.provenance)
+            EvmWorld::<N>::offline(fork, label, snapshot.provenance)
         }
         Some(Identity::Chain {
             chain_id,
             block_hash,
-        }) => World::anchored(
+        }) => EvmWorld::<N>::anchored(
             fork,
             word(&chain_id, "chain id")?,
             hash(&block_hash, "block")?,
@@ -177,28 +177,28 @@ fn parse(text: &str) -> Result<World, InputError> {
         }
         let has_code = input.code.is_some();
         let mut account = match input.code {
-            Some(code) => Account::from_hex(&code, fork)
+            Some(code) => EvmAccount::<N>::from_hex(&code, fork)
                 .map_err(|error| InputError::Code { address, error })?,
-            None => Account::unknown(),
+            None => EvmAccount::<N>::unknown(),
         };
         account.storage_unknown = input.storage_unknown;
         for (slot, value) in input.storage {
             let slot = word(&slot, "storage slot")?;
-            let value = AbstractValue::constant(word(&value, "storage value")?);
+            let value = EvmValue::<N>::constant(word(&value, "storage value")?);
             if account.storage.insert(slot, value).is_some() {
                 return Err(InputError::DuplicateSlot { address, slot });
             }
         }
         account.balance = input
             .balance
-            .map(|value| word(&value, "balance").map(AbstractValue::constant))
+            .map(|value| word(&value, "balance").map(EvmValue::<N>::constant))
             .transpose()?
-            .unwrap_or_else(AbstractValue::top);
+            .unwrap_or_else(EvmValue::<N>::top);
         account.nonce = input
             .nonce
-            .map(|value| word(&value, "nonce").map(AbstractValue::constant))
+            .map(|value| word(&value, "nonce").map(EvmValue::<N>::constant))
             .transpose()?
-            .unwrap_or_else(AbstractValue::top);
+            .unwrap_or_else(EvmValue::<N>::top);
         account.existence = match input.existence.as_deref() {
             None | Some("unknown") => Existence::Unknown,
             Some("present") => Existence::Present,

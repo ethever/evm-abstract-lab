@@ -153,6 +153,8 @@ fn original_binding_retains_full_identity_logical_address_and_captured_program()
         "18446744073709551615",
         "18446744073709551614",
         "Original input scope",
+        "Selected numeric model",
+        "Product",
         "Storage source expression",
         "Original storage source",
         "Physical storage owner",

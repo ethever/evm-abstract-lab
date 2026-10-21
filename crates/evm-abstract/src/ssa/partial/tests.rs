@@ -1,14 +1,17 @@
 use super::{PartialBlockCoverage, build_partial_world};
+use crate::ssa::test_support::{
+    TestAccount, TestBytes, TestEntry, TestEnvironment, TestValue, TestWorld, TestWorldAnalysis,
+    postprocessing, product_with_relations, product_without_relations, run_native, run_world,
+};
 use crate::{
     Address, Fork, U256,
     analysis::{
-        self, DiagnosticKind, ExecutionConfig, FrameCode, FrontierReason, InstructionProgress,
-        MachineEdgeKind, OutcomeKind, Status, WorldAnalysis,
+        CreationBoundary, DiagnosticKind, ExecutionConfig, FrameCode, FrontierReason,
+        InstructionProgress, MachineEdgeKind, OutcomeKind, Status,
     },
-    domain::{AbstractValue, relational::QueryReason},
+    domain::relational::QueryReason,
     ssa::{self, SsaError, SsaInvariantKind as Kind},
     test_instrumentation::work_boundary,
-    world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
 use revm_bytecode::opcode;
 
@@ -19,33 +22,42 @@ fn address(value: u64) -> Address {
 fn config() -> ExecutionConfig {
     let mut config = ExecutionConfig::default();
     config.analysis.context_depth = 0;
-    config.analysis.relations.enabled = false;
     config.use_summaries = false;
     config
 }
 
-fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {
-    run_with_value(code, config, AbstractValue::constant(U256::ZERO))
+fn run(code: &str, config: ExecutionConfig) -> TestWorldAnalysis {
+    run_with_value(code, config, TestValue::constant(U256::ZERO))
 }
 
-fn run_with_value(code: &str, config: ExecutionConfig, value: AbstractValue) -> WorldAnalysis {
-    let mut world = World::new(Fork::Osaka, "partial SSA execution phases");
+fn run_with_value(code: &str, config: ExecutionConfig, value: TestValue) -> TestWorldAnalysis {
+    run_with_algebra(code, config, value, &product_without_relations())
+}
+
+fn run_with_algebra(
+    code: &str,
+    config: ExecutionConfig,
+    value: TestValue,
+    algebra: &crate::domain::ValueAlgebra<crate::domain::ProductAlgebra>,
+) -> TestWorldAnalysis {
+    let mut world = TestWorld::new(Fork::Osaka, "partial SSA execution phases");
     world
         .insert(
             address(0x101),
-            Account::from_hex(code, Fork::Osaka).unwrap(),
+            TestAccount::from_hex(code, Fork::Osaka).unwrap(),
         )
         .unwrap();
-    analysis::analyze_world(
+    run_native(
+        algebra,
         world,
-        Entry {
+        TestEntry {
             address: address(0x101),
-            environment: EvmEnvironment {
+            environment: TestEnvironment {
                 to: address(0x101).into(),
                 caller: address(0x900).into(),
                 value,
-                calldata: ByteArray::empty(),
-                ..EvmEnvironment::default()
+                calldata: TestBytes::empty(),
+                ..TestEnvironment::default()
             },
         },
         config,
@@ -53,7 +65,7 @@ fn run_with_value(code: &str, config: ExecutionConfig, value: AbstractValue) -> 
     .unwrap()
 }
 
-fn pending_mload() -> WorldAnalysis {
+fn pending_mload() -> TestWorldAnalysis {
     const CODE: &str = "602a60405100";
     let mut config = config();
     // Bisect the detailed MLOAD receipt without optional preparation fees.
@@ -86,36 +98,36 @@ fn pending_mload() -> WorldAnalysis {
     analysis
 }
 
-fn unknown_call() -> WorldAnalysis {
-    let mut world = World::new(Fork::Osaka, "partial unknown call with covered candidates");
+fn unknown_call() -> TestWorldAnalysis {
+    let mut world = TestWorld::new(Fork::Osaka, "partial unknown call with covered candidates");
     world
         .insert(
             address(0x101),
-            Account::from_hex("5f5f5f5f5f345af100", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("5f5f5f5f5f345af100", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    world.insert(address(0x200), Account::empty()).unwrap();
-    world.insert(address(4), Account::empty()).unwrap();
-    // Keep a genuine uncovered effect: this target can attempt creation with
-    // unresolved destination facts. Unknown targets themselves are summarized.
+    world.insert(address(0x200), TestAccount::empty()).unwrap();
+    world.insert(address(4), TestAccount::empty()).unwrap();
+    // Retain this known candidate even when recursive unknown dispatch exhausts
+    // the work budget before its first instruction can execute.
     world
         .insert(
             address(0x300),
-            Account::from_hex("365f5ff000", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("365f5ff000", Fork::Osaka).unwrap(),
         )
         .unwrap();
     let mut config = config();
     config.max_call_depth = 3;
-    analysis::analyze_world(
+    run_world(
         world,
-        Entry {
+        TestEntry {
             address: address(0x101),
-            environment: EvmEnvironment {
+            environment: TestEnvironment {
                 to: address(0x101).into(),
                 caller: address(0x900).into(),
-                value: AbstractValue::top(),
-                calldata: ByteArray::empty(),
-                ..EvmEnvironment::default()
+                value: TestValue::top(),
+                calldata: TestBytes::empty(),
+                ..TestEnvironment::default()
             },
         },
         config,
@@ -131,11 +143,30 @@ fn unknown_call_keeps_frontiers_known_candidates_and_deferred_results() {
         analysis
             .frontiers()
             .iter()
-            .any(|f| matches!(f.reason, FrontierReason::Creation(_)))
+            .any(|f| f.reason == FrontierReason::Work)
     );
-    let ir = build_partial_world(&analysis).unwrap();
+    let creator = analysis
+        .states()
+        .iter()
+        .find(|state| state.active().code_address == address(0x300))
+        .expect("unknown dispatch must retain the known creator candidate");
+    assert!(creator.executed_pcs.is_empty());
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     assert_eq!(ir.status(), Status::Incomplete);
     assert_eq!(ir.frontiers().len(), analysis.frontiers().len());
+    for (retained, native) in ir.frontiers().iter().zip(analysis.frontiers()) {
+        assert_eq!(
+            (retained.from, retained.pc, &retained.reason),
+            (native.from, native.pc, &native.reason)
+        );
+    }
+    let creator_block = &ir.blocks()[creator.id];
+    assert_eq!(creator_block.coverage, PartialBlockCoverage::Unexecuted);
+    assert!(creator_block.instructions.is_empty());
+    assert!(ir.transitions().iter().any(|transition| {
+        analysis.edges()[transition.edge].to == creator.id
+            && transition.kind == MachineEdgeKind::Call
+    }));
     assert!(
         ir.transitions()
             .iter()
@@ -178,10 +209,69 @@ fn unknown_call_keeps_frontiers_known_candidates_and_deferred_results() {
 }
 
 #[test]
+fn unknown_nonempty_initcode_keeps_creation_frontier_and_deferred_result() {
+    // Store an unknown word, then CREATE its nonempty 32-byte memory region.
+    // The sole known creator has the concrete zero nonce supplied by from_hex.
+    let analysis = run_with_value("345f5260205f5ff000", config(), TestValue::top());
+    assert_eq!(analysis.status(), Status::Incomplete);
+    let [frontier] = analysis.frontiers() else {
+        panic!("expected the actual unknown initcode boundary")
+    };
+    assert_eq!((frontier.from, frontier.pc), (Some(0), Some(7)));
+    assert_eq!(
+        frontier.reason,
+        FrontierReason::Creation(CreationBoundary::UnknownInitCode)
+    );
+    let creator = &analysis.states()[0];
+    assert_eq!(creator.active().code_address, address(0x101));
+    assert!(creator.executed_pcs.contains(&7));
+    let exit = creator.exit.as_ref().unwrap();
+    assert_eq!(
+        exit.store.nonce(address(0x101)).singleton(),
+        Some(U256::ZERO)
+    );
+    let memory = &exit.active().memory;
+    assert_eq!(memory.len().singleton(), Some(U256::from(32)));
+    assert!(
+        memory
+            .read_byte_checked(
+                &TestValue::constant(U256::ZERO),
+                product_without_relations().borrowed()
+            )
+            .unwrap()
+            .singleton()
+            .is_none()
+    );
+    let mut budget = postprocessing();
+    let ir = build_partial_world(&analysis, &mut budget).unwrap();
+    assert_eq!(ir.status(), Status::Incomplete);
+    let [retained] = ir.frontiers() else {
+        panic!("partial SSA must preserve the creation frontier")
+    };
+    assert_eq!(
+        (retained.from, retained.pc, &retained.reason),
+        (frontier.from, frontier.pc, &frontier.reason)
+    );
+    let create = ir.blocks()[0].instructions.last().unwrap();
+    assert_eq!(create.instruction.pc, 7);
+    assert_eq!(create.instruction.opcode, opcode::CREATE);
+    assert_eq!(create.progress, InstructionProgress::Dispatched);
+    assert_eq!(create.instruction.operands.len(), 3);
+    assert!(create.instruction.results.is_empty());
+    assert!(ir.transitions().is_empty());
+    assert!(!ir.blocks()[0].incoming_complete);
+    ir.verify(&analysis, &mut budget).unwrap();
+    assert!(matches!(
+        ssa::build_world(&analysis),
+        Err(SsaError::IncompleteAnalysis)
+    ));
+}
+
+#[test]
 fn pending_mload_consumes_its_offset_without_inventing_the_loaded_word() {
     let analysis = pending_mload();
     assert_eq!(analysis.status(), Status::Incomplete);
-    let ir = build_partial_world(&analysis).unwrap();
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     let block = &ir.blocks()[0];
     assert_eq!(block.coverage, PartialBlockCoverage::Current);
     let pending = block
@@ -219,7 +309,7 @@ fn pending_mload_consumes_its_offset_without_inventing_the_loaded_word() {
             .iter()
             .all(|o| o.kind == OutcomeKind::Failure)
     );
-    ir.verify(&analysis).unwrap();
+    ir.verify(&analysis, &mut postprocessing()).unwrap();
 }
 
 #[test]
@@ -260,7 +350,7 @@ fn legal_logical_mload_beyond_the_host_cap_completes_with_a_real_result() {
             .any(|o| o.kind == OutcomeKind::Return)
     );
     let full = ssa::build_world(&analysis).unwrap();
-    let partial = build_partial_world(&analysis).unwrap();
+    let partial = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     let load = &partial.blocks()[0].instructions[2];
     assert_eq!(load.instruction.pc, 4);
     assert_eq!(load.instruction.opcode, opcode::MLOAD);
@@ -272,7 +362,7 @@ fn legal_logical_mload_beyond_the_host_cap_completes_with_a_real_result() {
     assert_eq!(partial.value_count(), full.value_count());
     assert_eq!(partial.effect_count(), full.effect_count());
     full.verify(&analysis).unwrap();
-    partial.verify(&analysis).unwrap();
+    partial.verify(&analysis, &mut postprocessing()).unwrap();
 }
 
 #[test]
@@ -287,7 +377,7 @@ fn joins_after_the_last_transfer_leave_a_stale_body_and_deferred_old_edge() {
         .find(|s| s.execution_evidence().is_some_and(|e| !e.is_current()))
         .expect("the loop entry must grow after its first transfer");
     assert!(!state.executed_pcs.is_empty());
-    let ir = build_partial_world(&analysis).unwrap();
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     let stale = &ir.blocks()[state.id];
     assert_eq!(stale.coverage, PartialBlockCoverage::Stale);
     assert!(stale.instructions.is_empty());
@@ -300,7 +390,7 @@ fn budget_pending_state_has_entry_parameters_and_no_unexecuted_body() {
     let mut config = config();
     config.analysis.max_transfers = 1;
     let analysis = run("5f5b600101600156", config);
-    let ir = build_partial_world(&analysis).unwrap();
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     let pending = ir
         .blocks()
         .iter()
@@ -346,7 +436,7 @@ fn a_fresh_shorter_retry_does_not_reuse_an_older_completed_backedge() {
         })
         .expect("a work frontier must stop a current retry before its old JUMP");
     let (analysis, state) = witness;
-    let ir = build_partial_world(&analysis).unwrap();
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     assert_eq!(ir.blocks()[state].coverage, PartialBlockCoverage::Current);
     assert!(
         ir.blocks()[state]
@@ -373,7 +463,7 @@ fn a_fresh_shorter_retry_does_not_reuse_an_older_completed_backedge() {
 fn completed_fault_has_no_fabricated_operands_or_results() {
     let analysis = run("fe", config());
     assert_eq!(analysis.status(), Status::Converged);
-    let ir = build_partial_world(&analysis).unwrap();
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     let fault = &ir.blocks()[0].instructions[0];
     assert_eq!(fault.progress, InstructionProgress::Faulted);
     assert!(fault.instruction.fault);
@@ -386,11 +476,13 @@ fn optional_expression_limit_preserves_completion_and_a_separate_real_work_front
     let mut config = config();
     // Isolate the semantic STOP boundary from shared Kernel bookkeeping.
     config.root_terminal_coverage = false;
-    config.analysis.relations.enabled = true;
-    config.analysis.relations.max_nodes = 2;
+    let algebra = product_with_relations(crate::domain::relational::RelationLimits {
+        max_nodes: 2,
+        ..Default::default()
+    });
     // CALLVALUE provides an unknown word with an input leaf. The bound admits
     // initial state roots, while adding 1 exceeds optional term retention.
-    let complete = run_with_value("3460010100", config.clone(), AbstractValue::top());
+    let complete = run_with_algebra("3460010100", config.clone(), TestValue::top(), &algebra);
     assert_eq!(complete.status(), Status::Converged);
     assert!(complete.frontiers().is_empty());
     assert!(
@@ -409,14 +501,14 @@ fn optional_expression_limit_preserves_completion_and_a_separate_real_work_front
     // total consumed work minus one may already include that Return.
     let minimum = work_boundary::first_work_reaching(config.max_work, |allowance| {
         config.max_work = allowance;
-        let candidate = run_with_value("3460010100", config.clone(), AbstractValue::top());
+        let candidate = run_with_algebra("3460010100", config.clone(), TestValue::top(), &algebra);
         candidate
             .outcomes()
             .iter()
             .any(|outcome| outcome.kind == OutcomeKind::Return)
     });
     config.max_work = minimum;
-    let returned = run_with_value("3460010100", config.clone(), AbstractValue::top());
+    let returned = run_with_algebra("3460010100", config.clone(), TestValue::top(), &algebra);
     assert!(
         returned
             .outcomes()
@@ -426,7 +518,7 @@ fn optional_expression_limit_preserves_completion_and_a_separate_real_work_front
     // One unit below this semantic boundary still dispatches STOP but refuses
     // its mandatory finalization, separately from ADD's optional proof refusal.
     config.max_work = minimum.checked_sub(1).unwrap();
-    let refused = run_with_value("3460010100", config, AbstractValue::top());
+    let refused = run_with_algebra("3460010100", config, TestValue::top(), &algebra);
     assert_eq!(refused.status(), Status::Incomplete);
     let [frontier] = refused.frontiers() else {
         panic!("expected exactly the refused STOP finalization")
@@ -463,7 +555,7 @@ fn optional_expression_limit_preserves_completion_and_a_separate_real_work_front
         assert_eq!(values.len(), 3);
         assert_eq!(values[2].instruction_index(), 2);
         assert!(values[2].numeric().is_top());
-        let ir = build_partial_world(analysis).unwrap();
+        let ir = build_partial_world(analysis, &mut postprocessing()).unwrap();
         let block = &ir.blocks()[0];
         let addition = block
             .instructions
@@ -479,14 +571,14 @@ fn optional_expression_limit_preserves_completion_and_a_separate_real_work_front
         assert!(stop.effect_result.is_some());
         assert_eq!(block.exit_effect, stop.effect_result.unwrap());
         assert_eq!(ir.frontiers().len(), analysis.frontiers().len());
-        ir.verify(analysis).unwrap();
+        ir.verify(analysis, &mut postprocessing()).unwrap();
     }
 }
 
 #[test]
 fn partial_verifier_rejects_phase_result_opcode_and_operand_tampering() {
     let analysis = pending_mload();
-    let ir = build_partial_world(&analysis).unwrap();
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     let pending_index = ir.blocks[0]
         .instructions
         .iter()
@@ -499,7 +591,8 @@ fn partial_verifier_rejects_phase_result_opcode_and_operand_tampering() {
     assert!(pending.instruction.results.is_empty());
     let mut phase = ir.clone();
     phase.blocks[0].instructions[pending_index].progress = InstructionProgress::Completed;
-    let SsaError::Invariant(error) = phase.verify(&analysis).unwrap_err() else {
+    let SsaError::Invariant(error) = phase.verify(&analysis, &mut postprocessing()).unwrap_err()
+    else {
         panic!("expected invariant")
     };
     assert_eq!(error.kind, Kind::PartialInstructionIdentity);
@@ -510,29 +603,32 @@ fn partial_verifier_rejects_phase_result_opcode_and_operand_tampering() {
         .instruction
         .results
         .push(0);
-    assert!(result.verify(&analysis).is_err());
+    assert!(result.verify(&analysis, &mut postprocessing()).is_err());
     let mut opcode = ir.clone();
     opcode.blocks[0].instructions[pending_index]
         .instruction
         .opcode = opcode::ADD;
-    assert!(opcode.verify(&analysis).is_err());
+    assert!(opcode.verify(&analysis, &mut postprocessing()).is_err());
     let mut operand = ir.clone();
     operand.blocks[0].instructions[pending_index]
         .instruction
         .operands[0] = ir.value_count();
-    assert!(operand.verify(&analysis).is_err());
+    assert!(operand.verify(&analysis, &mut postprocessing()).is_err());
 }
 
 #[test]
 fn partial_verifier_rejects_lost_frontiers_and_broken_effects() {
     let analysis = unknown_call();
-    let ir = build_partial_world(&analysis).unwrap();
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     let mut frontiers = ir.clone();
     frontiers.frontiers.clear();
-    assert!(frontiers.verify(&analysis).is_err());
+    assert!(frontiers.verify(&analysis, &mut postprocessing()).is_err());
     let mut effects = ir.clone();
     effects.blocks[0].instructions[0].effect_input = ir.effect_count();
-    let SsaError::Invariant(error) = effects.verify(&analysis).unwrap_err() else {
+    let SsaError::Invariant(error) = effects
+        .verify(&analysis, &mut postprocessing())
+        .unwrap_err()
+    else {
         panic!("expected invariant")
     };
     assert_eq!(error.kind, Kind::PartialInstructionEffectChain);
@@ -546,7 +642,7 @@ fn partial_verifier_rejects_lost_frontiers_and_broken_effects() {
         .find(|t| t.kind == MachineEdgeKind::Call)
         .unwrap()
         .result = Some(0);
-    assert!(transition.verify(&analysis).is_err());
+    assert!(transition.verify(&analysis, &mut postprocessing()).is_err());
 }
 
 #[test]
@@ -554,13 +650,13 @@ fn partial_verifier_rejects_omitted_deferred_edges_and_false_closed_phi_coverage
     let mut config = config();
     config.analysis.max_transfers = 2;
     let analysis = run("5f5b600101600156", config);
-    let ir = build_partial_world(&analysis).unwrap();
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     let mut edges = ir.clone();
     edges.deferred_edges.clear();
-    assert!(edges.verify(&analysis).is_err());
+    assert!(edges.verify(&analysis, &mut postprocessing()).is_err());
     let mut coverage = ir.clone();
     coverage.blocks[0].incoming_complete = true;
-    assert!(coverage.verify(&analysis).is_err());
+    assert!(coverage.verify(&analysis, &mut postprocessing()).is_err());
     let mut stale = ir.clone();
     stale
         .blocks
@@ -568,7 +664,7 @@ fn partial_verifier_rejects_omitted_deferred_edges_and_false_closed_phi_coverage
         .find(|b| b.coverage == PartialBlockCoverage::Stale)
         .unwrap()
         .coverage = PartialBlockCoverage::Current;
-    assert!(stale.verify(&analysis).is_err());
+    assert!(stale.verify(&analysis, &mut postprocessing()).is_err());
 }
 
 #[test]
@@ -586,7 +682,7 @@ fn strict_verifier_still_rejects_an_incomplete_analysis() {
 fn closed_prefixes_keep_the_complete_ssa_definitions_and_edge_namespace() {
     let analysis = run("600260030100", config());
     let full = ssa::build_world(&analysis).unwrap();
-    let partial = build_partial_world(&analysis).unwrap();
+    let partial = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     assert_eq!(partial.status(), Status::Converged);
     assert!(partial.deferred_edges().is_empty());
     assert!(partial.frontiers().is_empty());
@@ -613,10 +709,64 @@ fn empty_input_frontier_does_not_invent_a_root_block() {
     config.max_work = 1;
     let analysis = run("00", config);
     assert!(analysis.states().is_empty());
-    let ir = build_partial_world(&analysis).unwrap();
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     assert_eq!(ir.status(), Status::Incomplete);
     assert!(ir.blocks().is_empty());
     assert_eq!(ir.value_count(), 0);
     assert_eq!(ir.effect_count(), 0);
     assert!(!ir.frontiers().is_empty());
+}
+
+#[test]
+fn frontier_verification_preserves_range_operands_and_immutable_source_identity() {
+    let root = address(0x101);
+    let mut world = TestWorld::new(Fork::Osaka, "partial range source identity");
+    world
+        .insert(
+            root,
+            TestAccount::from_hex("366000803700", Fork::Osaka).unwrap(),
+        )
+        .unwrap();
+    let calldata = TestBytes::unknown();
+    let algebra = product_with_relations(crate::domain::relational::RelationLimits {
+        max_nodes: calldata.state_root().nodes(),
+        ..Default::default()
+    });
+    let analysis = run_native(
+        &algebra,
+        world,
+        TestEntry::concrete(root, root, TestValue::constant(U256::ZERO), calldata),
+        ExecutionConfig::default(),
+    )
+    .unwrap();
+    assert_eq!(analysis.status(), Status::Incomplete);
+    let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
+    let index = ir
+        .frontiers
+        .iter()
+        .position(|frontier| frontier.range.is_some())
+        .unwrap();
+    let valid = &ir.frontiers[index].range.as_ref().unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &valid.payload,
+        &analysis.frontiers()[index].range.as_ref().unwrap().payload
+    ));
+    let mut missing = ir.clone();
+    missing.frontiers[index].range = None;
+    assert!(matches!(missing.verify(&analysis, &mut postprocessing()),
+        Err(SsaError::Invariant(error)) if error.kind == Kind::FrontierCoverage));
+    let mut changed = ir.clone();
+    changed.frontiers[index]
+        .range
+        .as_mut()
+        .unwrap()
+        .request
+        .size = TestValue::constant(U256::ZERO);
+    assert!(matches!(changed.verify(&analysis, &mut postprocessing()),
+        Err(SsaError::Invariant(error)) if error.kind == Kind::FrontierCoverage));
+    let mut detached = ir.clone();
+    let range = detached.frontiers[index].range.as_mut().unwrap();
+    range.payload = std::sync::Arc::new(range.payload.as_ref().clone());
+    assert!(matches!(detached.verify(&analysis, &mut postprocessing()),
+        Err(SsaError::Invariant(error)) if error.kind == Kind::FrontierCoverage));
 }

@@ -15,12 +15,10 @@ use crate::{
     world::{RangeError, StoreError},
 };
 use serde::Serialize;
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 use thiserror::Error;
 
-mod cases;
 mod coverage;
-mod widening;
 
 /// Machine-level policy failures, independently of scalar or array retention.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -219,7 +217,7 @@ pub(super) fn join_value<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 ) -> Result<EvmValue<N>, MachineError> {
     checkpoint()?;
     if domain.spec().relations().enabled {
-        Ok(left.join_guarded_with(right, domain, selector.clone(), limits)?)
+        Ok(left.join_guarded(right, domain, selector.clone(), limits)?)
     } else {
         Ok(domain.join(left, right))
     }
@@ -289,9 +287,9 @@ impl<N: WordElement> EvmMachinePayload<N> {
         result.call_stack =
             self.call_stack
                 .join_guarded(&other.call_stack, domain, selector.clone(), limits)?;
-        result.store =
-            self.store
-                .join_guarded_with(&other.store, domain, selector.clone(), limits)?;
+        result.store = self
+            .store
+            .join_guarded(&other.store, domain, selector.clone(), limits)?;
         result.relations = if policy.enabled {
             self.relations
                 .join_guarded(&other.relations, selector, &policy)
@@ -312,7 +310,6 @@ impl<N: WordElement> EvmMachinePayload<N> {
 #[derive(Clone)]
 pub(crate) struct EvmEntryAlternatives<N: WordElement> {
     represented: Vec<Arc<EvmMachinePayload<N>>>,
-    cycle_widened: bool,
     loop_bound: Option<crate::analysis::state::EvmLoopBound<N>>,
 }
 
@@ -321,7 +318,6 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
     pub(crate) fn new(payload: &EvmMachinePayload<N>) -> Self {
         Self {
             represented: vec![Arc::new(payload.clone())],
-            cycle_widened: false,
             loop_bound: None,
         }
     }
@@ -345,10 +341,6 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
     /// Failed attempts keep metadata and both operands intact, but never refund
     /// work. The persistent bounded representation owns the paid materialization
     /// fallback, independently of this admission and publication policy.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "whole-entry policy shares the execution environment, selectors and ledger"
-    )]
     pub(crate) fn join_entry<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         entry: &EvmMachinePayload<N>,
@@ -356,7 +348,6 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
         environment: &crate::world::EvmEntry<N>,
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
-        selectors: &BTreeSet<ExprId>,
         accelerate: bool,
     ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
         if self.has_loop_bound() || accelerate {
@@ -366,7 +357,7 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
                 self.join_loop_scheduled(entry, incoming, environment, domain, budget, false)
             };
         }
-        match self.join_cyclic(entry, incoming, domain, budget, selectors, accelerate) {
+        match self.join_correlated(entry, incoming, domain, budget) {
             Err(error) if error.permits_bounded_promotion() => {
                 checkpoint()?;
                 self.join_loop_scheduled(entry, incoming, environment, domain, budget, accelerate)
@@ -432,7 +423,6 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
         checkpoint()?;
         self.loop_bound = Some(bound);
         self.represented.clear();
-        self.cycle_widened = false;
         Ok(Some(payload))
     }
 
@@ -446,17 +436,15 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
     ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
-        self.join_cyclic(entry, incoming, domain, budget, &BTreeSet::new(), false)
+        self.join_correlated(entry, incoming, domain, budget)
     }
 
-    pub(crate) fn join_cyclic<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn join_correlated<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         entry: &EvmMachinePayload<N>,
         incoming: &EvmMachinePayload<N>,
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
-        selectors: &BTreeSet<ExprId>,
-        cyclic: bool,
     ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
         let mut incoming_content = None;
         for previous in std::iter::once(entry).chain(self.represented.iter().map(Arc::as_ref)) {
@@ -485,53 +473,6 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
                 return Ok(None);
             }
         }
-        if cyclic && !self.cycle_widened && self.represented.len() >= 2 {
-            let cost = entry
-                .work_size()
-                .saturating_add(incoming.work_size())
-                .saturating_mul(8);
-            if cost == usize::MAX || !budget.charge(cost) {
-                return Err(MachineError::work_failure());
-            }
-            if let Some(widened) = widening::stack(entry, incoming, domain)? {
-                return Ok((widened.content_form()? != entry.content_form()?).then_some(widened));
-            }
-        }
-        let unconstrained = entry.relations.is_empty() && incoming.relations.is_empty();
-        if self.cycle_widened && !cyclic && !unconstrained {
-            let joined = entry.join(incoming, domain)?;
-            checkpoint()?;
-            self.represented = vec![Arc::new(entry.clone())];
-            self.cycle_widened = false;
-            return Ok(Some(joined));
-        }
-        if self.cycle_widened || cyclic && self.represented.len() >= 2 {
-            let (previous, initial) = if self.cycle_widened {
-                (self.represented.as_slice(), None)
-            } else {
-                (&[][..], Some(entry))
-            };
-            let prepared = cases::prepare(previous, initial, incoming, selectors, domain, budget)?;
-            if self.cycle_widened && prepared == self.represented {
-                return Ok(None);
-            }
-            let mut iter = prepared.iter();
-            let mut widened = iter.next().ok_or(MachineError::Shape)?.as_ref().clone();
-            for alternative in iter {
-                let cost = widened
-                    .work_size()
-                    .saturating_add(alternative.work_size())
-                    .saturating_mul(4);
-                if cost == usize::MAX || !budget.charge(cost) {
-                    return Err(MachineError::work_failure());
-                }
-                widened = widened.join(alternative, domain)?;
-            }
-            checkpoint()?;
-            self.represented = prepared;
-            self.cycle_widened = true;
-            return Ok(Some(widened));
-        }
         let limit = domain.spec().relations().max_constraints;
         if self.represented.len() >= limit {
             return Err(MachineError::Alternatives { limit });
@@ -549,7 +490,7 @@ impl<N: WordElement> EvmEntryAlternatives<N> {
     }
 
     pub(crate) fn retain(&mut self, incoming: EvmMachinePayload<N>) {
-        if !self.cycle_widened && !self.has_loop_bound() {
+        if !self.has_loop_bound() {
             self.represented.push(Arc::new(incoming));
         }
     }

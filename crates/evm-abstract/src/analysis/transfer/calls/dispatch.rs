@@ -31,7 +31,7 @@ pub(super) fn target_guard<D: EvmNumericAlgebra>(
     let operands = [projected.clone(), candidate.clone()];
     if !context
         .budget
-        .charge(context.domain.operation_work_for(opcode::EQ, &operands))
+        .charge(context.domain.operation_work(opcode::EQ, &operands))
     {
         boundary(result, pc, FrontierReason::Work);
         return None;
@@ -55,7 +55,7 @@ pub(super) fn target_guard<D: EvmNumericAlgebra>(
         return None;
     }
     let mut guarded = payload.clone();
-    let limits = context.config.analysis.relations;
+    let limits = context.domain.spec().relations();
     if !limits.enabled || matches!(truth.singleton, SingletonProof::Answer(Some(_))) {
         return Some(guarded);
     }
@@ -100,7 +100,7 @@ pub(super) fn target_guard<D: EvmNumericAlgebra>(
         }
         return Some(guarded);
     }
-    let answer = guarded.relations.assume_checked_budgeted_with(
+    let answer = guarded.relations.assume_checked_budgeted(
         &expression,
         true,
         &limits,

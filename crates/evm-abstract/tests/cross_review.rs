@@ -1,14 +1,20 @@
 //! Independent regressions for fork dispatch, retained frontier identity and work.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{
         ExecutionConfig, FrameCode, FrontierReason, InstructionProgress, MachineEdgeKind,
-        OutcomeKind, Status, analyze_world,
+        OutcomeKind, Status,
     },
-    domain::{AbstractValue, Domain, relational::QueryReason},
+    domain::{EvmValue, relational::QueryReason},
     ssa::{self, SsaError},
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
@@ -25,24 +31,27 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn entry(number: u64) -> Entry {
-    Entry {
+fn entry(number: u64) -> EvmEntry<NumericValue> {
+    EvmEntry {
         address: address(number),
-        environment: evm_abstract::world::EvmEnvironment {
+        environment: evm_abstract::world::EvmEnvironmentValues {
             to: (address(number)).into(),
             caller: (address(0x900)).into(),
-            value: AbstractValue::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
+            value: EvmValue::<NumericValue>::constant(U256::ZERO),
+            calldata: EvmByteArray::<NumericValue>::empty(),
             is_static: false,
-            ..evm_abstract::world::EvmEnvironment::default()
+            ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
         },
     }
 }
 
-fn world(fork: Fork, code: &str) -> World {
-    let mut world = World::new(fork, "review:independent");
+fn world(fork: Fork, code: &str) -> EvmWorld<NumericValue> {
+    let mut world = EvmWorld::<NumericValue>::new(fork, "review:independent");
     world
-        .insert(address(0x101), Account::from_hex(code, fork).unwrap())
+        .insert(
+            address(0x101),
+            EvmAccount::<NumericValue>::from_hex(code, fork).unwrap(),
+        )
         .unwrap();
     world
 }
@@ -50,11 +59,20 @@ fn world(fork: Fork, code: &str) -> World {
 #[test]
 fn osaka_p256_entry_executes_native_code_instead_of_fixture_bytecode() {
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
-        let mut world = World::new(fork, "review:precompile");
+        let mut world = EvmWorld::<NumericValue>::new(fork, "review:precompile");
         world
-            .insert(address(0x100), Account::from_hex("00", fork).unwrap())
+            .insert(
+                address(0x100),
+                EvmAccount::<NumericValue>::from_hex("00", fork).unwrap(),
+            )
             .unwrap();
-        let analysis = analyze_world(world, entry(0x100), ExecutionConfig::default()).unwrap();
+        let analysis = native::run(
+            &native::product(),
+            AnalysisInput::new(world, entry(0x100)).unwrap(),
+            ExecutionConfig::default(),
+            &Control::default(),
+        )
+        .unwrap();
         if fork == Fork::Osaka {
             assert_eq!(analysis.status(), Status::Converged);
             assert_eq!(
@@ -75,15 +93,22 @@ fn osaka_p256_entry_executes_native_code_instead_of_fixture_bytecode() {
 
 #[test]
 fn initialization_expression_limit_has_no_instruction_frontier() {
+    let mut numeric_limits = native::product().spec().relations();
+
     // The global Store Input root includes a Fresh child and needs two nodes,
     // so this policy refuses initialization before reaching KECCAK.
-    let mut config = ExecutionConfig {
+    let config = ExecutionConfig {
         max_memory_bytes: 32,
         ..ExecutionConfig::default()
     };
-    config.analysis.relations.max_nodes = 1;
-    let analysis =
-        analyze_world(world(Fork::Osaka, "602a602060402000"), entry(0x101), config).unwrap();
+    numeric_limits.max_nodes = 1;
+    let analysis = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world(Fork::Osaka, "602a602060402000"), entry(0x101)).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(analysis.status(), Status::Incomplete);
     let [frontier] = analysis.frontiers() else {
         panic!("expected exactly the initialization refusal")
@@ -109,17 +134,24 @@ fn initialization_expression_limit_has_no_instruction_frontier() {
 
 #[test]
 fn model_frontier_key_retains_the_current_stack_height() {
+    let mut numeric_limits = native::product().spec().relations();
+
     // Two nodes admit the initial Store. MSTORE then needs four nodes for its
     // mandatory WriteWord root, after consuming offset 0 and value 7.
-    let mut config = ExecutionConfig {
+    let config = ExecutionConfig {
         max_memory_bytes: 32,
         ..ExecutionConfig::default()
     };
-    config.analysis.relations.max_nodes = 2;
-    let analysis =
-        analyze_world(world(Fork::Osaka, "602a60075f5200"), entry(0x101), config).unwrap();
+    numeric_limits.max_nodes = 2;
+    let analysis = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world(Fork::Osaka, "602a60075f5200"), entry(0x101)).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(analysis.status(), Status::Incomplete);
-    assert_eq!(analysis.config().analysis.relations.max_nodes, 2);
+    assert_eq!(analysis.domain_spec().relations().max_nodes, 2);
     let [frontier] = analysis.frontiers() else {
         panic!("expected exactly the mandatory MSTORE root refusal")
     };
@@ -170,7 +202,10 @@ fn model_frontier_key_retains_the_current_stack_height() {
     // change the two-node retention policy used for actual execution above.
     assert_eq!(
         memory
-            .read_word_checked(&AbstractValue::constant(U256::ZERO), Domain::default(),)
+            .read_word_checked(
+                &EvmValue::<NumericValue>::constant(U256::ZERO),
+                native::product().borrowed(),
+            )
             .unwrap()
             .singleton(),
         Some(U256::ZERO),
@@ -187,7 +222,7 @@ fn model_frontier_key_retains_the_current_stack_height() {
         ssa::build_world(&analysis),
         Err(SsaError::IncompleteAnalysis)
     ));
-    let ir = ssa::build_partial_world(&analysis).unwrap();
+    let ir = ssa::build_partial_world(&analysis, &mut native::postprocessing()).unwrap();
     let [block] = ir.blocks() else {
         panic!("expected only the evidenced instruction prefix")
     };
@@ -212,7 +247,7 @@ fn model_frontier_key_retains_the_current_stack_height() {
         [block.instructions[0].instruction.results.clone()]
     );
     assert_eq!(ir.frontiers().len(), 1);
-    ir.verify(&analysis).unwrap();
+    ir.verify(&analysis, &mut native::postprocessing()).unwrap();
 }
 
 #[test]
@@ -221,16 +256,17 @@ fn external_code_hash_scanning_uses_the_shared_work_budget() {
     world
         .insert(
             address(0x200),
-            Account::from_hex(&"5f".repeat(10_000), Fork::Osaka).unwrap(),
+            EvmAccount::<NumericValue>::from_hex(&"5f".repeat(10_000), Fork::Osaka).unwrap(),
         )
         .unwrap();
-    let analysis = analyze_world(
-        world,
-        entry(0x101),
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry(0x101)).unwrap(),
         ExecutionConfig {
             max_work: 1_000,
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(analysis.status(), Status::Incomplete);
@@ -258,7 +294,7 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
     let middle = "5f5f5f5f6005610300620f4240f15060075f5560085f5d60b25f5fa15f5ffd";
     let child = "60095f55600a5f5d60c35f5fa100";
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
-        let mut world = World::new(fork, "review:deep-rollback");
+        let mut world = EvmWorld::<NumericValue>::new(fork, "review:deep-rollback");
         let mut db = InMemoryDB::default();
         for (number, code, balance, initial_slot) in [
             (0x101, root, 1_000_000_u64, 0_u64),
@@ -266,11 +302,11 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
             (0x300, child, 10, 4),
         ] {
             let owner = address(number);
-            let mut account = Account::from_hex(code, fork).unwrap();
-            account.balance = AbstractValue::constant(U256::from(balance));
+            let mut account = EvmAccount::<NumericValue>::from_hex(code, fork).unwrap();
+            account.balance = EvmValue::<NumericValue>::constant(U256::from(balance));
             account.storage.insert(
                 U256::ZERO,
-                AbstractValue::constant(U256::from(initial_slot)),
+                EvmValue::<NumericValue>::constant(U256::from(initial_slot)),
             );
             world.insert(owner, account).unwrap();
             let bytecode = Bytecode::new_raw(Bytes::from(hex::decode(code).unwrap()));
@@ -288,7 +324,13 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
                 ..AccountInfo::default()
             },
         );
-        let analysis = analyze_world(world, entry(0x101), ExecutionConfig::default()).unwrap();
+        let analysis = native::run(
+            &native::product(),
+            AnalysisInput::new(world, entry(0x101)).unwrap(),
+            ExecutionConfig::default(),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(analysis.status(), Status::Converged);
         ssa::build_world(&analysis)
             .unwrap()
@@ -322,8 +364,8 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
         let logs = concrete.result.logs();
         assert_eq!(logs.len(), 2);
         assert!(logs.iter().all(|log| log.address == address(0x101)));
-        let domain = Domain::default();
-        let zero = AbstractValue::constant(U256::ZERO);
+        let domain = native::product();
+        let zero = EvmValue::<NumericValue>::constant(U256::ZERO);
         let grandchild_returns: Vec<_> = analysis
             .edges()
             .iter()
@@ -338,12 +380,12 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
             let child_state = &analysis.states()[edge.from];
             let effects = &child_state.exit.as_ref().unwrap().store;
             assert_eq!(
-                effects.read(address(0x300), &zero, domain),
-                AbstractValue::constant(U256::from(9))
+                effects.read(address(0x300), &zero, domain.borrowed()),
+                EvmValue::<NumericValue>::constant(U256::from(9))
             );
             assert_eq!(
-                effects.read_transient(address(0x300), &zero, domain),
-                AbstractValue::constant(U256::from(10))
+                effects.read_transient(address(0x300), &zero, domain.borrowed()),
+                EvmValue::<NumericValue>::constant(U256::from(10))
             );
             assert!(
                 effects
@@ -360,14 +402,18 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
             );
             // The child committed on this edge, within a still-revertible outer call.
             let resumed_middle = &analysis.states()[edge.to].entry;
-            let persistent = resumed_middle.store.read(address(0x300), &zero, domain);
-            let expected_persistent = effects.read(address(0x300), &zero, domain);
+            let persistent = resumed_middle
+                .store
+                .read(address(0x300), &zero, domain.borrowed());
+            let expected_persistent = effects.read(address(0x300), &zero, domain.borrowed());
             assert_eq!(persistent.numeric(), expected_persistent.numeric());
             assert_eq!(persistent.provenance(), expected_persistent.provenance());
-            let transient = resumed_middle
-                .store
-                .read_transient(address(0x300), &zero, domain);
-            let expected_transient = effects.read_transient(address(0x300), &zero, domain);
+            let transient =
+                resumed_middle
+                    .store
+                    .read_transient(address(0x300), &zero, domain.borrowed());
+            let expected_transient =
+                effects.read_transient(address(0x300), &zero, domain.borrowed());
             assert_eq!(transient.numeric(), expected_transient.numeric());
             assert_eq!(transient.provenance(), expected_transient.provenance());
             assert!(
@@ -393,12 +439,12 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
             let checkpoint = middle_state.entry.active().saved_store.state();
             let effects = &middle_state.exit.as_ref().unwrap().store;
             assert_eq!(
-                effects.read(address(0x200), &zero, domain),
-                AbstractValue::constant(U256::from(7))
+                effects.read(address(0x200), &zero, domain.borrowed()),
+                EvmValue::<NumericValue>::constant(U256::from(7))
             );
             assert_eq!(
-                effects.read_transient(address(0x200), &zero, domain),
-                AbstractValue::constant(U256::from(8))
+                effects.read_transient(address(0x200), &zero, domain.borrowed()),
+                EvmValue::<NumericValue>::constant(U256::from(8))
             );
             assert!(
                 effects
@@ -416,23 +462,27 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
             let resumed = &analysis.states()[edge.to].entry;
             assert_eq!(&resumed.store, checkpoint);
             assert_eq!(
-                resumed.store.read_transient(address(0x101), &zero, domain),
-                AbstractValue::constant(U256::from(17))
+                resumed
+                    .store
+                    .read_transient(address(0x101), &zero, domain.borrowed()),
+                EvmValue::<NumericValue>::constant(U256::from(17))
             );
             for (owner, expected_slot, expected_balance) in
                 [(0x101, 3, 1_000_000), (0x200, 2, 100), (0x300, 4, 10)]
             {
                 assert_eq!(
-                    resumed.store.read(address(owner), &zero, domain),
-                    AbstractValue::constant(U256::from(expected_slot))
+                    resumed.store.read(address(owner), &zero, domain.borrowed()),
+                    EvmValue::<NumericValue>::constant(U256::from(expected_slot))
                 );
                 assert_eq!(
                     resumed.store.read_balance(address(owner)),
-                    AbstractValue::constant(U256::from(expected_balance))
+                    EvmValue::<NumericValue>::constant(U256::from(expected_balance))
                 );
                 if owner != 0x101 {
                     assert_eq!(
-                        resumed.store.read_transient(address(owner), &zero, domain),
+                        resumed
+                            .store
+                            .read_transient(address(owner), &zero, domain.borrowed()),
                         zero
                     );
                 }
@@ -467,39 +517,45 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
         assert!(!returns.is_empty());
         for outcome in &returns {
             assert_eq!(
-                outcome
-                    .store
-                    .read(address(0x101), &AbstractValue::constant(U256::ZERO), domain),
-                AbstractValue::constant(U256::from(3))
+                outcome.store.read(
+                    address(0x101),
+                    &EvmValue::<NumericValue>::constant(U256::ZERO),
+                    domain.borrowed()
+                ),
+                EvmValue::<NumericValue>::constant(U256::from(3))
             );
             assert_eq!(
                 outcome.store.read_transient(
                     address(0x101),
-                    &AbstractValue::constant(U256::ZERO),
-                    domain
+                    &EvmValue::<NumericValue>::constant(U256::ZERO),
+                    domain.borrowed()
                 ),
                 zero
             );
             assert!(outcome.store.transient_slots().is_empty());
             assert_eq!(
-                outcome
-                    .store
-                    .read(address(0x200), &AbstractValue::constant(U256::ZERO), domain),
-                AbstractValue::constant(U256::from(2))
+                outcome.store.read(
+                    address(0x200),
+                    &EvmValue::<NumericValue>::constant(U256::ZERO),
+                    domain.borrowed()
+                ),
+                EvmValue::<NumericValue>::constant(U256::from(2))
             );
             assert_eq!(
-                outcome
-                    .store
-                    .read(address(0x300), &AbstractValue::constant(U256::ZERO), domain),
-                AbstractValue::constant(U256::from(4))
+                outcome.store.read(
+                    address(0x300),
+                    &EvmValue::<NumericValue>::constant(U256::ZERO),
+                    domain.borrowed()
+                ),
+                EvmValue::<NumericValue>::constant(U256::from(4))
             );
             assert_eq!(
                 outcome.store.read_transient(
                     address(0x300),
-                    &AbstractValue::constant(U256::ZERO),
-                    domain
+                    &EvmValue::<NumericValue>::constant(U256::ZERO),
+                    domain.borrowed()
                 ),
-                AbstractValue::constant(U256::ZERO)
+                EvmValue::<NumericValue>::constant(U256::ZERO)
             );
             assert_eq!(outcome.store.possible_logs().len(), 2);
             assert!(
@@ -523,7 +579,11 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
                         && account.storage.iter().all(|(slot, value)| {
                             outcome
                                 .store
-                                .read(*owner, &AbstractValue::constant(*slot), domain)
+                                .read(
+                                    *owner,
+                                    &EvmValue::<NumericValue>::constant(*slot),
+                                    domain.borrowed(),
+                                )
                                 .contains(value.present_value())
                         })
                 })
@@ -536,7 +596,8 @@ fn outer_revert_restores_committed_grandchild_effects_and_preserves_root_events(
                                     topic.contains(U256::from_be_slice(concrete.as_slice()))
                                 },
                             )
-                            && observed.data.exact_bytes() == Some(log.data.data.to_vec())
+                            && observed.data.exact_bytes(native::product().borrowed())
+                                == Some(log.data.data.to_vec())
                     })
                 })
         }));

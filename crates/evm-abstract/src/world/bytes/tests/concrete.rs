@@ -4,7 +4,7 @@ use super::super::*;
 use crate::domain::{
     identity::Symbol,
     provenance::Origin,
-    relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
+    relational::{CheckResult, EvmValueQuery, RelationLimits, RelationState},
     symbolic::ExprKind,
 };
 
@@ -18,25 +18,38 @@ fn policy() -> RelationLimits {
     }
 }
 
-fn domain(policy: RelationLimits) -> Domain {
-    Domain::from_spec(Domain::default().spec().with_relations(policy))
+fn domain(policy: RelationLimits) -> TestAlgebra {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(policy),
+    ))
 }
 
-fn observed(scope: u64, origin: Origin) -> AbstractValue {
-    let mut value = AbstractValue::top();
+fn observed(scope: u64, origin: Origin) -> TestValue {
+    let mut value = TestValue::top();
     value.set_origin(origin);
     value
         .with_symbol(Symbol::CalldataWord(U256::ZERO), Some(scope))
-        .with_numeric(constant(7).numeric().clone())
+        .with_numeric(constant::<crate::domain::NumericValue>(7).numeric().clone())
 }
 
-fn prove(relations: &RelationState, value: &AbstractValue, expected: U256, limits: RelationLimits) {
+fn prove(relations: &RelationState, value: &TestValue, expected: U256, limits: RelationLimits) {
     assert_eq!(
-        relations.local_value(&expr(value).unwrap(), &limits),
-        ValueQuery::Exact(expected)
+        relations.local_value(
+            &expr(value).unwrap(),
+            &limits,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        ),
+        EvmValueQuery::Exact(expected)
     );
     assert_eq!(
-        relations.can_equal(&expr(value).unwrap(), expected ^ U256::ONE, &limits),
+        relations.can_equal(
+            &expr(value).unwrap(),
+            expected ^ U256::ONE,
+            &limits,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        ),
         CheckResult::ProvenImpossible
     );
 }
@@ -45,14 +58,16 @@ fn prove(relations: &RelationState, value: &AbstractValue, expected: U256, limit
 fn concrete_free_pointer_history_stays_bounded_at_original_budgets() {
     let limits = policy();
     let domain = domain(limits);
-    let mut memory = ByteArray::memory();
+    let mut memory = TestBytes::memory();
     memory
-        .write_word(&constant(64), &constant(128), 4096, domain)
+        .write_word(&constant(64), &constant(128), domain.borrowed())
         .unwrap();
     let mut historical = Vec::new();
     // On 03cdf, iteration7's offset write needs32067 nodes, beyond16384.
     for iteration in 0..48 {
-        let pointer = memory.read_word_checked(&constant(64), domain).unwrap();
+        let pointer = memory
+            .read_word_checked(&constant(64), domain.borrowed())
+            .unwrap();
         let expected = U256::from(128 + iteration * 64);
         assert_eq!(pointer.singleton(), Some(expected));
         historical.push((pointer.clone(), expected));
@@ -63,7 +78,9 @@ fn concrete_free_pointer_history_stays_bounded_at_original_budgets() {
             (constant(128 + iteration * 64 + 32), constant(96)),
             (constant(128 + iteration * 32), pointer),
         ] {
-            memory.write_word(&offset, &value, 4096, domain).unwrap();
+            memory
+                .write_word(&offset, &value, domain.borrowed())
+                .unwrap();
         }
         assert!(memory.state_root().nodes() <= 4 + (iteration + 1) * 12);
         assert!(memory.state_root().depth() <= limits.max_depth);
@@ -80,16 +97,24 @@ fn disjoint_reads_keep_original_singleton_sources_and_local_facts() {
     let domain = domain(limits);
     let a = observed(851, Origin::Calldata);
     let b = observed(852, Origin::Returndata);
-    let mut memory = ByteArray::memory();
-    memory.write_word(&constant(0), &a, 256, domain).unwrap();
-    let old = memory.read_word_checked(&constant(0), domain).unwrap();
-    memory.write_word(&constant(32), &b, 256, domain).unwrap();
-    memory.write_byte(&constant(128), &a, 256, domain).unwrap();
+    let mut memory = TestBytes::memory();
     memory
-        .write_word(&constant(160), &constant(99), 256, domain)
+        .write_word(&constant(0), &a, domain.borrowed())
+        .unwrap();
+    let old = memory
+        .read_word_checked(&constant(0), domain.borrowed())
+        .unwrap();
+    memory
+        .write_word(&constant(32), &b, domain.borrowed())
+        .unwrap();
+    memory
+        .write_byte(&constant(128), &a, domain.borrowed())
+        .unwrap();
+    memory
+        .write_word(&constant(160), &constant(99), domain.borrowed())
         .unwrap();
     let saved = memory.clone();
-    let form = memory.widening_form(domain, limits.expressions()).unwrap();
+    let form = memory.project(domain.borrowed());
     for current in [&memory, &form] {
         let mut relations = RelationState::default();
         for (expression, value) in current.symbolic_facts() {
@@ -97,7 +122,10 @@ fn disjoint_reads_keep_original_singleton_sources_and_local_facts() {
                 .observe(expression, value.numeric(), &limits)
                 .unwrap();
         }
-        assert_eq!(relations.check(&limits), CheckResult::MayBeFeasible);
+        assert_eq!(
+            relations.check(&limits, domain.borrowed()),
+            CheckResult::MayBeFeasible
+        );
         for (offset, original, origin) in [(0, &a, Origin::Calldata), (32, &b, Origin::Returndata)]
         {
             assert_eq!(
@@ -105,7 +133,7 @@ fn disjoint_reads_keep_original_singleton_sources_and_local_facts() {
                 Some(original)
             );
             let read = current
-                .read_word_checked(&constant(offset), domain)
+                .read_word_checked(&constant(offset), domain.borrowed())
                 .unwrap();
             assert_eq!(read.numeric(), original.numeric());
             assert_eq!(read.expression(), original.expression());
@@ -118,7 +146,9 @@ fn disjoint_reads_keep_original_singleton_sources_and_local_facts() {
             );
             prove(&relations, &read, U256::from(7), limits);
         }
-        let byte = current.read_byte_checked(&constant(128), domain).unwrap();
+        let byte = current
+            .read_byte_checked(&constant(128), domain.borrowed())
+            .unwrap();
         assert!(
             byte.provenance()
                 .origins()
@@ -133,8 +163,8 @@ fn disjoint_reads_keep_original_singleton_sources_and_local_facts() {
         prove(&relations, &byte, U256::from(7), limits);
         assert!(
             !current
-                .read_word(&constant(0), domain)
-                .same_identity(&current.read_word(&constant(32), domain))
+                .read_word(&constant(0), domain.borrowed())
+                .same_identity(&current.read_word(&constant(32), domain.borrowed()))
         );
     }
     assert!(old.same_identity(&a));
@@ -146,15 +176,19 @@ fn disjoint_reads_keep_original_singleton_sources_and_local_facts() {
 fn symbolic_effects_and_unconstrained_guards_keep_both_values() {
     let limits = policy();
     let domain = domain(limits);
-    let offset = AbstractValue::unsigned_range(U256::ZERO, U256::from(64))
+    let offset = TestValue::unsigned_range(U256::ZERO, U256::from(64))
         .unwrap()
         .with_expression(ExprId::fresh().unwrap());
-    let value = AbstractValue::unsigned_range(U256::from(7), U256::from(8))
+    let value = TestValue::unsigned_range(U256::from(7), U256::from(8))
         .unwrap()
         .with_expression(ExprId::fresh().unwrap());
-    let mut memory = ByteArray::memory();
-    memory.write_word(&offset, &value, 96, domain).unwrap();
-    let read = memory.read_word_checked(&constant(0), domain).unwrap();
+    let mut memory = TestBytes::memory();
+    memory
+        .write_word(&offset, &value, domain.borrowed())
+        .unwrap();
+    let read = memory
+        .read_word_checked(&constant(0), domain.borrowed())
+        .unwrap();
     assert!(
         matches!(read.expression().unwrap().kind(), ExprKind::WordRead { view, .. } if &view.state == memory.state_root())
     );
@@ -163,30 +197,37 @@ fn symbolic_effects_and_unconstrained_guards_keep_both_values() {
         relations
             .observe(
                 offset.expression().unwrap(),
-                constant(at).numeric(),
+                constant::<crate::domain::NumericValue>(at).numeric(),
                 &limits,
             )
             .unwrap();
         relations
             .observe(
                 value.expression().unwrap(),
-                constant(written).numeric(),
+                constant::<crate::domain::NumericValue>(written).numeric(),
                 &limits,
             )
             .unwrap();
         prove(&relations, &read, U256::from(expected), limits);
     }
     let selector = ExprId::fresh().unwrap();
-    let mut yes = ByteArray::memory();
-    yes.write_word(&constant(0), &constant(7), 32, domain)
+    let mut yes = TestBytes::memory();
+    yes.write_word(&constant(0), &constant(7), domain.borrowed())
         .unwrap();
-    let mut no = ByteArray::memory();
-    no.write_word(&constant(0), &constant(11), 32, domain)
+    let mut no = TestBytes::memory();
+    no.write_word(&constant(0), &constant(11), domain.borrowed())
         .unwrap();
     let joined = yes
-        .join_guarded(&no, domain, selector.clone(), limits.expressions())
+        .join_guarded(
+            &no,
+            domain.borrowed(),
+            selector.clone(),
+            limits.expressions(),
+        )
         .unwrap();
-    let read = joined.read_word_checked(&constant(0), domain).unwrap();
+    let read = joined
+        .read_word_checked(&constant(0), domain.borrowed())
+        .unwrap();
     assert!(read.singleton().is_none());
     assert!(matches!(
         joined.state_root().kind(),
@@ -195,7 +236,7 @@ fn symbolic_effects_and_unconstrained_guards_keep_both_values() {
     for (nonzero, expected) in [(true, 7), (false, 11)] {
         let mut relations = RelationState::default();
         assert_eq!(
-            relations.assume(&selector, nonzero, &limits),
+            relations.assume(&selector, nonzero, &limits, domain.borrowed()),
             CheckResult::MayBeFeasible
         );
         prove(&relations, &read, U256::from(expected), limits);
@@ -206,30 +247,33 @@ fn symbolic_effects_and_unconstrained_guards_keep_both_values() {
 fn overlaps_padding_and_overwritten_history_keep_their_own_values() {
     let limits = policy();
     let domain = domain(limits);
-    let mut memory = ByteArray::memory();
+    let mut memory = TestBytes::memory();
     memory
         .write_word(
             &constant(0),
-            &AbstractValue::constant(U256::MAX),
-            96,
-            domain,
+            &TestValue::constant(U256::MAX),
+            domain.borrowed(),
         )
         .unwrap();
-    let old = memory.read_word_checked(&constant(1), domain).unwrap();
+    let old = memory
+        .read_word_checked(&constant(1), domain.borrowed())
+        .unwrap();
     let old_hash = memory
-        .slice(&constant(0), &constant(32), 96, domain)
+        .slice(&constant(0), &constant(32), domain.borrowed())
         .unwrap()
-        .keccak(domain, 32)
+        .keccak(domain.borrowed(), 32)
         .unwrap();
     let snapshot = memory.clone();
     memory
-        .write_byte(&constant(31), &constant(42), 96, domain)
+        .write_byte(&constant(31), &constant(42), domain.borrowed())
         .unwrap();
     let overlapping = memory.state_root().clone();
     memory
-        .write_word(&constant(64), &constant(9), 96, domain)
+        .write_word(&constant(64), &constant(9), domain.borrowed())
         .unwrap();
-    let read = memory.read_word_checked(&constant(0), domain).unwrap();
+    let read = memory
+        .read_word_checked(&constant(0), domain.borrowed())
+        .unwrap();
     assert!(
         matches!(read.expression().unwrap().kind(), ExprKind::WordRead { view, .. } if view.state == overlapping)
     );
@@ -241,9 +285,9 @@ fn overlaps_padding_and_overwritten_history_keep_their_own_values() {
     );
     prove(&RelationState::default(), &old, U256::MAX << 8, limits);
     let hash = snapshot
-        .slice(&constant(0), &constant(32), 96, domain)
+        .slice(&constant(0), &constant(32), domain.borrowed())
         .unwrap()
-        .keccak(domain, 32)
+        .keccak(domain.borrowed(), 32)
         .unwrap();
     assert_eq!(old_hash, hash);
     let short = ExprId::word_read(
@@ -258,7 +302,7 @@ fn overlaps_padding_and_overwritten_history_keep_their_own_values() {
     .unwrap();
     prove(
         &RelationState::default(),
-        &AbstractValue::top().with_expression(short),
+        &TestValue::top().with_expression(short),
         U256::MAX & !U256::from(255),
         limits,
     );
@@ -288,7 +332,7 @@ fn overlaps_padding_and_overwritten_history_keep_their_own_values() {
     .unwrap();
     prove(
         &RelationState::default(),
-        &AbstractValue::top().with_expression(read),
+        &TestValue::top().with_expression(read),
         U256::from(255) << 248,
         limits,
     );
@@ -297,43 +341,43 @@ fn overlaps_padding_and_overwritten_history_keep_their_own_values() {
 #[test]
 fn normalization_keeps_retention_and_cancellation_checks_and_failed_writes_atomic() {
     let domain = domain(policy());
-    let mut memory = ByteArray::memory();
+    let mut memory = TestBytes::memory();
     memory
-        .write_word(&constant(0), &constant(7), 96, domain)
+        .write_word(&constant(0), &constant(7), domain.borrowed())
         .unwrap();
     memory
-        .write_word(&constant(64), &constant(9), 96, domain)
+        .write_word(&constant(64), &constant(9), domain.borrowed())
         .unwrap();
     let original = memory.clone();
-    let low = Domain::from_spec(domain.spec().with_relations(RelationLimits {
-        max_depth: 1,
-        ..policy()
-    }));
+    let low = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        domain.spec().with_relations(RelationLimits {
+            max_depth: 1,
+            ..policy()
+        }),
+    ));
     assert!(matches!(
-        memory.read_word_checked(&constant(0), low),
+        memory.read_word_checked(&constant(0), low.borrowed()),
         Err(RangeError::Expression(ExprError::Limit { .. }))
     ));
     assert!(matches!(
-        memory.write_word(&constant(0), &constant(11), 96, low),
+        memory.write_word(&constant(0), &constant(11), low.borrowed()),
         Err(RangeError::State(StateError::Limit { .. }))
     ));
     assert_eq!(memory, original);
     assert!(matches!(
         memory.write_word(
-            &AbstractValue::constant(U256::MAX),
+            &TestValue::constant(U256::MAX),
             &constant(11),
-            96,
-            domain
+            domain.borrowed()
         ),
         Err(RangeError::OffsetTooLarge(_))
     ));
     assert_eq!(memory, original);
     memory
         .expand(
-            &AbstractValue::constant(U256::MAX),
+            &TestValue::constant(U256::MAX),
             &constant(0),
-            96,
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     assert_eq!(memory, original);
@@ -341,12 +385,12 @@ fn normalization_keeps_retention_and_cancellation_checks_and_failed_writes_atomi
     cancellation.cancel();
     analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
-            memory.read_word_checked(&constant(0), domain),
+            memory.read_word_checked(&constant(0), domain.borrowed()),
             Err(RangeError::Expression(ExprError::Cancelled))
         );
         assert!(
             memory
-                .write_byte(&constant(0), &constant(11), 96, domain)
+                .write_byte(&constant(0), &constant(11), domain.borrowed())
                 .is_err()
         );
         assert_eq!(memory, original);

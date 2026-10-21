@@ -23,7 +23,8 @@ mod wire;
 
 pub use session::Session;
 
-use super::{World, WorldError};
+use super::{EvmWorld, WorldError};
+use crate::domain::WordElement;
 use crate::{
     Fork,
     analysis::{control::Control, progress::Observer},
@@ -504,17 +505,23 @@ impl RpcError {
 /// An omitted account remains absent from the observation map (unknown); an
 /// omitted storage slot remains unknown. This function never follows CALL
 /// targets discovered by execution and never performs implicit networking.
-pub fn load(input: &RpcInput) -> Result<World, RpcError> {
+pub fn load<N: WordElement>(input: &RpcInput) -> Result<EvmWorld<N>, RpcError> {
     Session::load(input).map(Session::into_world)
 }
 
 /// Acquire a pinned snapshot with cancellation and typed progress observations.
-pub fn load_with_control(input: &RpcInput, control: &Control) -> Result<World, RpcError> {
+pub fn load_with_control<N: WordElement>(
+    input: &RpcInput,
+    control: &Control,
+) -> Result<EvmWorld<N>, RpcError> {
     Session::load_with_control(input, control).map(Session::into_world)
 }
 
 /// Observe acquisition without enabling cancellation.
-pub fn load_with_observer(input: &RpcInput, observer: &Observer) -> Result<World, RpcError> {
+pub fn load_with_observer<N: WordElement>(
+    input: &RpcInput,
+    observer: &Observer,
+) -> Result<EvmWorld<N>, RpcError> {
     load_with_control(input, &Control::with_observer(observer.clone()))
 }
 

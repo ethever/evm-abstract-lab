@@ -26,7 +26,7 @@ impl<
     C: ContextPolicy,
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
-    X: Composition<D::Element, E>,
+    X: Composition<D::Element, Error = E>,
     E,
 > EvmSolver<'_, D, C, P, S, X, E>
 {
@@ -258,7 +258,7 @@ impl<
     C: ContextPolicy,
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
-    X: Composition<D::Element, E>,
+    X: Composition<D::Element, Error = E>,
     E,
 > EvmSolver<'_, D, C, P, S, X, E>
 {
@@ -495,7 +495,7 @@ impl<
                         if !budget.charge(payload.work_size().saturating_mul(4)) {
                             return Err(MachineError::work_failure());
                         }
-                        super::instantiate_with(payload, domain)
+                        super::instantiate(payload, domain)
                     },
                 )
                 .map_err(|error| self.cooperation.stop(error, self.budget))?;
@@ -568,7 +568,7 @@ impl<N: crate::domain::WordElement, Key: super::PolicyKey> super::EvmTable<N, Ke
         C: ContextPolicy,
         P: PartitionPolicy,
         S: StatePolicy<D, P::Class, Key = Key>,
-        X: Composition<N, E>,
+        X: Composition<N, Error = E>,
         E,
     >(
         &mut self,

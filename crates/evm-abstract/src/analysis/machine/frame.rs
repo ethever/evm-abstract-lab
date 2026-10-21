@@ -270,7 +270,7 @@ impl<N: WordElement> EvmFrameState<N> {
                 _ => {
                     // None denotes the key's EVM value, never its state-owner
                     // namespace. Environment materialization belongs to form.
-                    let implicit = implicit.value_with::<N>();
+                    let implicit = implicit.value::<N>();
                     Ok(Some(join::join_value(
                         left.as_ref().unwrap_or(&implicit),
                         right.as_ref().unwrap_or(&implicit),
@@ -280,9 +280,9 @@ impl<N: WordElement> EvmFrameState<N> {
                     )?))
                 }
             },
-            |left, right, _| Ok(left.join_guarded_with(right, domain, selector.clone(), limits)?),
+            |left, right, _| Ok(left.join_guarded(right, domain, selector.clone(), limits)?),
             |left, right| {
-                Ok(EvmSnapshot::from_state(left.state().join_guarded_with(
+                Ok(EvmSnapshot::from_state(left.state().join_guarded(
                     right.state(),
                     domain,
                     selector.clone(),
@@ -318,9 +318,12 @@ impl<N: WordElement> EvmRootFrame<N> {
 /// A child cannot be constructed without its return contract:
 ///
 /// ```compile_fail
-/// use evm_abstract::analysis::{ChildFrame, FrameState};
-/// fn missing_continuation(state: FrameState) -> ChildFrame {
-///     ChildFrame { state }
+/// use evm_abstract::{
+///     analysis::{EvmChildFrame, EvmFrameState},
+///     domain::WordElement,
+/// };
+/// fn missing_continuation<N: WordElement>(state: EvmFrameState<N>) -> EvmChildFrame<N> {
+///     EvmChildFrame { state }
 /// }
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -340,11 +343,8 @@ impl<N: WordElement> EvmChildFrame<N> {
     }
 }
 
-/// Default numeric assembly for [`EvmFrameState`].
-pub type FrameState = EvmFrameState<crate::domain::NumericValue>;
-
-/// Default numeric assembly for [`EvmRootFrame`].
-pub type RootFrame = EvmRootFrame<crate::domain::NumericValue>;
-
-/// Default numeric assembly for [`EvmChildFrame`].
-pub type ChildFrame = EvmChildFrame<crate::domain::NumericValue>;
+// Local regression fixtures use explicit built-in carriers.
+#[cfg(test)]
+pub(in crate::analysis) type RootFrame = EvmRootFrame<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type ChildFrame = EvmChildFrame<crate::domain::NumericValue>;

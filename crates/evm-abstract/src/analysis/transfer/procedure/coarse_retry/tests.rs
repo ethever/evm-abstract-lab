@@ -1,5 +1,10 @@
 //! Source-only regressions; Root owns compilation and execution of these cases.
 
+use crate::domain::ProductAlgebra;
+
+#[cfg(test)]
+use crate::analysis::testing::{Entry, World};
+
 use super::super::{Solver, Table, execute_inner, form, instantiate, semantic_eq};
 
 mod before_body;
@@ -14,13 +19,13 @@ use crate::{
         machine::fixtures::{self, address, word},
         transfer::{self, RetentionCause, StorageReadPolicy},
     },
-    world::{Entry, World},
 };
 
 struct Harness {
     world: World,
     entry: Entry,
     config: ExecutionConfig,
+    config_numeric: crate::analysis::testing::NumericLimits,
     table: Table,
     budget: WorkBudget,
     counters: Counters,
@@ -29,15 +34,18 @@ struct Harness {
 impl Harness {
     fn new(code: &str) -> Self {
         let (world, entry) = fixtures::fixture(&[(0x101, code)]);
-        let mut config = fixtures::config();
-        let domain = config.domain().unwrap();
+        let config = fixtures::config();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
         let mut input =
             crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let byte = domain.join(&word(1), &word(2));
         input
             .active_mut()
             .memory
-            .write_byte(&word(0), &byte, 4096, domain)
+            .write_byte(&word(0), &byte, domain)
             .unwrap();
         input.active_mut().stack = vec![word(7), word(0)];
         input.normalize();
@@ -45,12 +53,13 @@ impl Harness {
         let live = instantiate(&summary, domain).unwrap();
         // The original root fits, but WriteWord adds previous + offset + value
         // + constructor. The explicitly coarse root drops the observed cells.
-        config.analysis.relations.max_nodes = live.active().memory.state_root().nodes() + 2;
+        config_numeric.relations.max_nodes = live.active().memory.state_root().nodes() + 2;
         let mut harness = Self {
             world,
             entry,
             budget: WorkBudget::new(config.max_work),
             config,
+            config_numeric,
             table: Table::default(),
             counters: Counters::default(),
         };
@@ -60,6 +69,7 @@ impl Harness {
     }
 
     fn solver(&mut self) -> Solver<'_> {
+        self.table.configure(self.config_numeric.spec());
         self.table.solver(
             &self.world,
             &self.entry,
@@ -71,7 +81,8 @@ impl Harness {
     }
 
     fn first(&mut self) -> Execution {
-        let domain = self.config.domain().unwrap();
+        self.table.configure(self.config_numeric.spec());
+        let domain = self.table.algebra();
         let input = instantiate(&self.table.nodes[0].payload, domain).unwrap();
         self.counters.transfers += 1;
         execute_inner(
@@ -160,7 +171,10 @@ fn actual_runtime_mstore_cap_retries_to_a_known_successor_once() {
     let written = post
         .active()
         .memory
-        .read_word_checked(&word(0), Domain::default())
+        .read_word_checked(
+            &word(0),
+            crate::analysis::testing::product(crate::domain::DomainSpec::default()).borrowed(),
+        )
         .unwrap();
     assert_eq!(written.singleton(), Some(U256::from(7)));
     assert_eq!(written.expression(), Some(value));
@@ -170,7 +184,8 @@ fn actual_runtime_mstore_cap_retries_to_a_known_successor_once() {
         Default::default(),
     )
     .unwrap();
-    let domain = h.config.domain().unwrap();
+    let domain = crate::analysis::testing::product(h.config_numeric.spec());
+    let domain = domain.borrowed();
     let current = post
         .store
         .read_checked(address(0x101), &word(0), domain)
@@ -331,7 +346,12 @@ fn max_transfers_keeps_first_result_and_does_not_run_or_install_a_retry() {
         Some(&original.location)
     );
     let checkpoint = stopped.frontiers[1].payload.as_ref().unwrap();
-    let retained = form(checkpoint, &h.entry, h.config.domain().unwrap()).unwrap();
+    let retained = form(
+        checkpoint,
+        &h.entry,
+        crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+    )
+    .unwrap();
     assert!(semantic_eq(&original, &retained));
     assert!(
         stopped

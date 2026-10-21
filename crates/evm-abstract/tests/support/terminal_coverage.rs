@@ -1,16 +1,17 @@
 //! Public work-stop oracle shared by symbolic-call and unknown-code fixtures.
 use alloy_primitives::U256;
 use evm_abstract::analysis::{
-    ExecutionConfig, FrontierReason, OutcomeKind, RootTerminalCoverage, RootTerminalScope,
-    RootTerminalTrigger, Status, WorldAnalysis,
+    EvmRootTerminalCoverage, EvmWorldAnalysis, ExecutionConfig, FrontierReason, OutcomeKind,
+    RootTerminalScope, RootTerminalTrigger, Status,
 };
+use evm_abstract::domain::NumericValue;
 
 /// Check the original request binding as one relation. Callers retain their
 /// own program, budget, frontier-set and concrete-witness assertions.
 pub fn assert_original_work_coverage<'a>(
-    analysis: &'a WorldAnalysis,
+    analysis: &'a EvmWorldAnalysis<NumericValue>,
     config: &ExecutionConfig,
-) -> &'a RootTerminalCoverage {
+) -> &'a EvmRootTerminalCoverage<NumericValue> {
     assert_eq!(analysis.status(), Status::Incomplete);
     assert_eq!(analysis.config().max_work, config.max_work);
     assert!(analysis.work() <= config.max_work);

@@ -4,9 +4,9 @@
 //! numeric upper bounds and bounded presentation; COPY never expands its range.
 
 use crate::domain::AlgebraRef;
-#[cfg(test)]
-use crate::domain::{AbstractValue, Domain};
 use crate::domain::{EvmNumericAlgebra, WordElement};
+#[cfg(test)]
+use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 mod clone_payment;
 pub(in crate::world) mod conditional;
 mod copy;
@@ -21,7 +21,9 @@ mod reads;
 mod refresh;
 mod slice;
 pub(in crate::world) mod summary;
-pub use summary::{ByteArraySummary, EvmByteArraySummary};
+#[cfg(test)]
+use crate::world::test_support::TestBytes;
+pub use summary::EvmByteArraySummary;
 #[cfg(test)]
 mod carrier_tests;
 #[cfg(test)]
@@ -29,12 +31,11 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 mod traversal;
-pub(super) mod widening;
 mod word_plan;
 mod write;
 
 use crate::domain::{
-    EvmValue, ValueAlgebra,
+    EvmValue,
     symbolic::{
         ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, ExprLimits, SourceId, StateError,
     },
@@ -120,10 +121,10 @@ const COPY_FACT_LIMIT: usize = 256;
 pub(super) fn limits<D: EvmNumericAlgebra>(domain: AlgebraRef<'_, D>) -> ExprLimits {
     domain.spec().relations().expressions()
 }
-pub(super) fn zero_with<N: WordElement>() -> EvmValue<N> {
-    constant_with(0)
+pub(super) fn zero<N: WordElement>() -> EvmValue<N> {
+    constant(0)
 }
-pub(super) fn constant_with<N: WordElement>(value: usize) -> EvmValue<N> {
+pub(super) fn constant<N: WordElement>(value: usize) -> EvmValue<N> {
     EvmValue::<N>::constant(U256::from(value))
 }
 pub(super) fn expr<N: WordElement>(value: &EvmValue<N>) -> Result<ExprId, RangeError> {
@@ -207,14 +208,14 @@ impl<N: WordElement> EvmByteArray<N> {
     /// Observed finite input, zero-padded beyond its length.
     pub fn exact(input: &[u8]) -> Self {
         Self {
-            length: constant_with(input.len()),
+            length: constant(input.len()),
             bytes: input
                 .iter()
                 .enumerate()
                 .filter(|(_, byte)| **byte != 0)
-                .map(|(i, byte)| (i, constant_with(usize::from(*byte))))
+                .map(|(i, byte)| (i, constant(usize::from(*byte))))
                 .collect(),
-            default: zero_with(),
+            default: zero(),
             memory: false,
             root: ByteStateId::exact(Arc::from(input)),
             allocations: BTreeSet::new(),
@@ -358,7 +359,7 @@ impl<N: WordElement> EvmByteArray<N> {
                 .any(EvmValue::<N>::symbolic_limit_reached)
     }
     /// Byte read from this immutable state, with finite input zero padding.
-    pub fn read_byte_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn read_byte_checked<D: EvmNumericAlgebra<Element = N>>(
         &self,
         offset: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
@@ -429,24 +430,24 @@ impl<N: WordElement> EvmByteArray<N> {
         Ok(numeric::attach(numeric, expression))
     }
     /// Read one byte; retention failure is marked for the analysis boundary.
-    pub fn read_byte_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn read_byte<D: EvmNumericAlgebra<Element = N>>(
         &self,
         offset: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) -> EvmValue<N> {
-        self.read_byte_checked_with(offset, domain)
+        self.read_byte_checked(offset, domain)
             .unwrap_or_else(|_| EvmValue::<N>::unknown_byte().with_symbolic_limit())
     }
     /// Read a concrete byte index, preserving the current state dependency.
-    pub fn byte_at_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn byte_at<D: EvmNumericAlgebra<Element = N>>(
         &self,
         index: usize,
         domain: AlgebraRef<'_, D>,
     ) -> EvmValue<N> {
-        self.read_byte_with(&constant_with(index), domain)
+        self.read_byte(&constant(index), domain)
     }
     /// A big-endian word, retaining a single state-aware expression.
-    pub fn read_word_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn read_word_checked<D: EvmNumericAlgebra<Element = N>>(
         &self,
         offset: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
@@ -476,22 +477,20 @@ impl<N: WordElement> EvmByteArray<N> {
         .map(|value| value.expect("an unprepared read has no optional cache refusal"))
     }
     /// Read one word; retention failure is marked for the analysis boundary.
-    pub fn read_word_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn read_word<D: EvmNumericAlgebra<Element = N>>(
         &self,
         offset: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) -> EvmValue<N> {
-        self.read_word_checked_with(offset, domain)
+        self.read_word_checked(offset, domain)
             .unwrap_or_else(|_| EvmValue::<N>::top().with_symbolic_limit())
     }
     /// Lazy zero-padded slice with the complete U256 requested length.
-    /// `max_bytes` is retained for API compatibility; only physical extraction
-    /// (exact_bytes_bounded) applies a host materialization limit.
-    pub fn slice_with<D: EvmNumericAlgebra<Element = N>>(
+    /// Only physical extraction applies a host materialization limit.
+    pub fn slice<D: EvmNumericAlgebra<Element = N>>(
         &self,
         offset: &EvmValue<N>,
         size: &EvmValue<N>,
-        _max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<Self, RangeError> {
         if size.singleton() == Some(U256::ZERO) {
@@ -546,40 +545,30 @@ impl<N: WordElement> EvmByteArray<N> {
         })
     }
     /// Expand U256 logical memory after transfer has constrained symbolic ranges.
-    /// The compatible max_bytes argument does not cap this lazy allocation.
-    pub fn expand_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn expand<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         offset: &EvmValue<N>,
         size: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
-        self.expand_with_queries(offset, size, max_bytes, domain, ranges::Queries::Discover)
+        self.expand_with_queries(offset, size, domain, ranges::Queries::Discover)
     }
 
     /// Caller-prepaid allocation using independent proofs/observations, without
     /// opaque numeric singleton discovery. Retention and range checks still run.
-    pub(crate) fn expand_independent_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn expand_independent<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         offset: &EvmValue<N>,
         size: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
-        self.expand_with_queries(
-            offset,
-            size,
-            max_bytes,
-            domain,
-            ranges::Queries::Independent,
-        )
+        self.expand_with_queries(offset, size, domain, ranges::Queries::Independent)
     }
 
     fn expand_with_queries<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         offset: &EvmValue<N>,
         size: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
         queries: ranges::Queries,
     ) -> Result<(), RangeError> {
@@ -602,7 +591,6 @@ impl<N: WordElement> EvmByteArray<N> {
             &self.length,
             offset,
             size,
-            max_bytes,
             self.memory,
             domain,
             queries,
@@ -620,53 +608,48 @@ impl<N: WordElement> EvmByteArray<N> {
         Ok(())
     }
     /// Append a big-endian 32-byte write atomically after range validation.
-    pub fn write_word_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn write_word<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         offset: &EvmValue<N>,
         value: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
-        self.write_with(offset, value, 32, max_bytes, domain)
+        self.write(offset, value, 32, domain)
     }
     /// Append a low-byte write atomically after range validation.
-    pub fn write_byte_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn write_byte<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         offset: &EvmValue<N>,
         value: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
-        self.write_with(offset, value, 1, max_bytes, domain)
+        self.write(offset, value, 1, domain)
     }
     /// The transfer keeps its original bulk fee; refresh pays its added work
     /// on that same ledger. False is mandatory Work, with no staged publication.
-    pub(crate) fn write_word_budgeted_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn write_word_budgeted<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         offset: &EvmValue<N>,
         value: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
         budget: &mut crate::resource::WorkBudget,
     ) -> Result<bool, RangeError> {
-        self.write_budgeted(offset, value, 32, max_bytes, domain, budget)
+        self.write_budgeted(offset, value, 32, domain, budget)
     }
-    pub(crate) fn write_byte_budgeted_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn write_byte_budgeted<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         offset: &EvmValue<N>,
         value: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
         budget: &mut crate::resource::WorkBudget,
     ) -> Result<bool, RangeError> {
-        self.write_budgeted(offset, value, 1, max_bytes, domain, budget)
+        self.write_budgeted(offset, value, 1, domain, budget)
     }
     fn write_budgeted<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         offset: &EvmValue<N>,
         value: &EvmValue<N>,
         width: usize,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
         budget: &mut crate::resource::WorkBudget,
     ) -> Result<bool, RangeError> {
@@ -674,7 +657,7 @@ impl<N: WordElement> EvmByteArray<N> {
             return Ok(false);
         }
         let uniform = write::eligible(self, offset, value, width, domain);
-        let mut out = self.staged_write(offset, value, width, max_bytes, domain)?;
+        let mut out = self.staged_write(offset, value, width, domain)?;
         if uniform {
             write::refresh(&mut out, domain);
         } else if !refresh::run(&mut out, domain, budget)? {
@@ -686,16 +669,15 @@ impl<N: WordElement> EvmByteArray<N> {
         *self = out;
         Ok(true)
     }
-    fn write_with<D: EvmNumericAlgebra<Element = N>>(
+    fn write<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         offset: &EvmValue<N>,
         value: &EvmValue<N>,
         width: usize,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
         let uniform = write::eligible(self, offset, value, width, domain);
-        let mut out = self.staged_write(offset, value, width, max_bytes, domain)?;
+        let mut out = self.staged_write(offset, value, width, domain)?;
         if uniform {
             write::refresh(&mut out, domain);
         } else {
@@ -710,12 +692,11 @@ impl<N: WordElement> EvmByteArray<N> {
         offset: &EvmValue<N>,
         value: &EvmValue<N>,
         width: usize,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<Self, RangeError> {
         let offset = &ranges::normalized(offset)?;
         let mut out = self.clone();
-        out.expand_with(offset, &constant_with(width), max_bytes, domain)?;
+        out.expand(offset, &constant(width), domain)?;
         let at = expr(offset)?;
         let val = expr(value)?;
         out.remember(at.clone(), offset, domain)?;
@@ -727,9 +708,9 @@ impl<N: WordElement> EvmByteArray<N> {
         {
             for index in 0..width {
                 let byte = if width == 1 {
-                    domain.apply(opcode::AND, &[value.clone(), constant_with(255)])
+                    domain.apply(opcode::AND, &[value.clone(), constant(255)])
                 } else {
-                    domain.apply(opcode::BYTE, &[constant_with(index), value.clone()])
+                    domain.apply(opcode::BYTE, &[constant(index), value.clone()])
                 };
                 out.remember(expr(&byte)?, &byte, domain)?;
             }
@@ -747,7 +728,7 @@ impl<N: WordElement> EvmByteArray<N> {
             };
             for i in 0..width {
                 if let Some(index) = start.checked_add(i) {
-                    out.bytes.entry(index).or_insert_with(zero_with);
+                    out.bytes.entry(index).or_insert_with(zero);
                 } else {
                     cached_all_offsets = false;
                     break;
@@ -756,12 +737,12 @@ impl<N: WordElement> EvmByteArray<N> {
         }
         if !cached_all_offsets {
             let upper = if width == 1 {
-                domain.apply(opcode::AND, &[value.clone(), constant_with(255)])
+                domain.apply(opcode::AND, &[value.clone(), constant(255)])
             } else {
-                (0..32).fold(zero_with(), |upper, index| {
+                (0..32).fold(zero(), |upper, index| {
                     domain.join(
                         &upper,
-                        &domain.apply(opcode::BYTE, &[constant_with(index), value.clone()]),
+                        &domain.apply(opcode::BYTE, &[constant(index), value.clone()]),
                     )
                 })
             };
@@ -770,20 +751,18 @@ impl<N: WordElement> EvmByteArray<N> {
         Ok(out)
     }
     /// One range node, capturing source before destination mutation (MCOPY).
-    pub fn copy_from_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn copy_from<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         target_offset: &EvmValue<N>,
         source: &Self,
         source_offset: &EvmValue<N>,
         size: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
         self.copy_from_with_queries(
             target_offset,
             (source, source_offset),
             size,
-            max_bytes,
             domain,
             ranges::Queries::Discover,
         )
@@ -795,7 +774,6 @@ impl<N: WordElement> EvmByteArray<N> {
         target_offset: &EvmValue<N>,
         source: (&Self, &EvmValue<N>),
         size: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
         queries: ranges::Queries,
     ) -> Result<(), RangeError> {
@@ -810,7 +788,7 @@ impl<N: WordElement> EvmByteArray<N> {
         let source_offset = &queries.normalized(source_offset)?;
         let size = &queries.normalized(size)?;
         let mut out = self.clone();
-        out.expand_with_queries(target_offset, size, max_bytes, domain, queries)?;
+        out.expand_with_queries(target_offset, size, domain, queries)?;
         let dst = queries.expression(target_offset)?;
         let at = queries.expression(source_offset)?;
         let len = queries.expression(size)?;
@@ -837,45 +815,29 @@ impl<N: WordElement> EvmByteArray<N> {
         Ok(())
     }
     /// CALL output updates only min(requested,actual), while MSIZE uses requested.
-    pub fn copy_return_data_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn copy_return_data<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         target_offset: &EvmValue<N>,
         returndata: &Self,
         requested: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
-        self.copy_return_data_prepared(
-            target_offset,
-            returndata,
-            requested,
-            max_bytes,
-            domain,
-            None,
-        )
-        .map(|_| ())
+        self.copy_return_data_prepared(target_offset, returndata, requested, domain, None)
+            .map(|_| ())
     }
 
     /// The caller funds original inputs and structural COPY work first. Newly
     /// produced range values get their own copy owner before the nested stage;
     /// a refused payment never publishes the private target.
-    pub(crate) fn copy_return_data_budgeted_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn copy_return_data_budgeted<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         target_offset: &EvmValue<N>,
         returndata: &Self,
         requested: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
         budget: &mut crate::resource::WorkBudget,
     ) -> Result<bool, RangeError> {
-        self.copy_return_data_prepared(
-            target_offset,
-            returndata,
-            requested,
-            max_bytes,
-            domain,
-            Some(budget),
-        )
+        self.copy_return_data_prepared(target_offset, returndata, requested, domain, Some(budget))
     }
 
     fn copy_return_data_prepared<D: EvmNumericAlgebra<Element = N>>(
@@ -883,7 +845,6 @@ impl<N: WordElement> EvmByteArray<N> {
         target_offset: &EvmValue<N>,
         returndata: &Self,
         requested: &EvmValue<N>,
-        max_bytes: usize,
         domain: AlgebraRef<'_, D>,
         budget: Option<&mut crate::resource::WorkBudget>,
     ) -> Result<bool, RangeError> {
@@ -896,9 +857,9 @@ impl<N: WordElement> EvmByteArray<N> {
             return Ok(true);
         }
         let mut out = self.clone();
-        out.expand_independent_with(target_offset, requested, max_bytes, domain)?;
+        out.expand_independent(target_offset, requested, domain)?;
         let copied = ranges::minimum(requested, returndata.len(), domain)?;
-        let source_offset = zero_with().with_expression(ExprId::constant(U256::ZERO));
+        let source_offset = zero().with_expression(ExprId::constant(U256::ZERO));
         if let Some(budget) = budget
             && !out.pay_return_copy_stage_with(&copied, &source_offset, budget)?
         {
@@ -908,7 +869,6 @@ impl<N: WordElement> EvmByteArray<N> {
             target_offset,
             (returndata, &source_offset),
             &copied,
-            max_bytes,
             domain,
             ranges::Queries::Independent,
         )?;
@@ -931,7 +891,7 @@ impl<N: WordElement> EvmByteArray<N> {
         result
     }
     /// Guarded merge paired with the selector used for stack values and relations.
-    pub fn join_guarded_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn join_guarded<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
@@ -952,7 +912,7 @@ impl<N: WordElement> EvmByteArray<N> {
             expression_limits,
         )?;
         let mut out = Self {
-            length: self.length.join_guarded_with(
+            length: self.length.join_guarded(
                 &other.length,
                 domain,
                 selector.clone(),
@@ -974,14 +934,14 @@ impl<N: WordElement> EvmByteArray<N> {
             failure: self.failure.clone().or_else(|| other.failure.clone()),
         };
         for index in self.bytes.keys().chain(other.bytes.keys()) {
-            out.bytes.entry(*index).or_insert_with(zero_with);
+            out.bytes.entry(*index).or_insert_with(zero);
         }
         out.refresh(domain);
         Ok(out)
     }
     /// Sound union. Identical wrappers retain the existing root and guard.
     /// Nonidentical states require a selector independent of their old guards.
-    pub fn join_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn join<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
@@ -990,7 +950,7 @@ impl<N: WordElement> EvmByteArray<N> {
             return self.clone();
         }
         let result = expr(&EvmValue::<N>::top())
-            .and_then(|selector| self.join_guarded_with(other, domain, selector, limits(domain)));
+            .and_then(|selector| self.join_guarded(other, domain, selector, limits(domain)));
         result.unwrap_or_else(|error| {
             let mut out = Self::unknown();
             out.memory = self.memory && other.memory;
@@ -1009,7 +969,7 @@ impl<N: WordElement> EvmByteArray<N> {
         })
     }
     /// Real Keccak for bounded exact data, otherwise a canonical content hash term.
-    pub fn keccak_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn keccak<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
         materialize_limit: usize,
@@ -1020,7 +980,7 @@ impl<N: WordElement> EvmByteArray<N> {
             return Err(error.clone());
         }
         let expression = ExprId::keccak(self.view(), limits(domain))?;
-        if let Some(bytes) = self.exact_bytes_bounded_with(materialize_limit, domain) {
+        if let Some(bytes) = self.exact_bytes_bounded(materialize_limit, domain) {
             return Ok(
                 EvmValue::<N>::constant(U256::from_be_bytes(keccak256(bytes).0))
                     .with_expression(expression),
@@ -1029,14 +989,14 @@ impl<N: WordElement> EvmByteArray<N> {
         Ok(EvmValue::<N>::top().with_expression(expression))
     }
     /// Recover a completely known input under the default 1 MiB allocation cap.
-    pub fn exact_bytes_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn exact_bytes<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> Option<Vec<u8>> {
-        self.exact_bytes_bounded_with(1024 * 1024, domain)
+        self.exact_bytes_bounded(1024 * 1024, domain)
     }
     /// Materialization is a separate explicitly bounded operation.
-    pub fn exact_bytes_bounded_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn exact_bytes_bounded<D: EvmNumericAlgebra<Element = N>>(
         &self,
         max_bytes: usize,
         domain: AlgebraRef<'_, D>,
@@ -1095,10 +1055,10 @@ impl<N: WordElement> EvmByteArray<N> {
     fn refresh<D: EvmNumericAlgebra<Element = N>>(&mut self, domain: AlgebraRef<'_, D>) {
         let indices = self.bytes.keys().copied().collect::<Vec<_>>();
         for i in indices {
-            self.bytes.insert(i, self.byte_at_with(i, domain));
+            self.bytes.insert(i, self.byte_at(i, domain));
         }
     }
-    pub(crate) fn word_numeric_work_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn word_numeric_work<D: EvmNumericAlgebra<Element = N>>(
         &self,
         _offset: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
@@ -1111,7 +1071,7 @@ impl<N: WordElement> EvmByteArray<N> {
             .saturating_add(self.conditional.work_size().saturating_mul(32))
             .saturating_add(256 * 32)
     }
-    pub(crate) fn project_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn project<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> Self {
@@ -1140,7 +1100,7 @@ impl<N: WordElement> EvmByteArray<N> {
             .expect("numeric projection is infallible");
         out
     }
-    pub(crate) fn projection_work_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn projection_work<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> usize {
@@ -1159,249 +1119,4 @@ impl<N: WordElement> EvmByteArray<N> {
         });
         work.saturating_add(self.retained_word_projection_work_with(domain, work))
     }
-}
-
-/// Default numeric-carrier compatibility alias.
-pub type ByteArray = EvmByteArray<crate::domain::NumericValue>;
-
-impl EvmByteArray<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn read_byte_checked(
-        &self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> Result<EvmValue<crate::domain::NumericValue>, RangeError> {
-        self.read_byte_checked_with(offset, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn read_byte(
-        &self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> EvmValue<crate::domain::NumericValue> {
-        self.read_byte_with(offset, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn byte_at(
-        &self,
-        index: usize,
-        domain: crate::domain::Domain,
-    ) -> EvmValue<crate::domain::NumericValue> {
-        self.byte_at_with(index, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn read_word_checked(
-        &self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> Result<EvmValue<crate::domain::NumericValue>, RangeError> {
-        self.read_word_checked_with(offset, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn read_word(
-        &self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> EvmValue<crate::domain::NumericValue> {
-        self.read_word_with(offset, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn slice(
-        &self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        size: &EvmValue<crate::domain::NumericValue>,
-        _max_bytes: usize,
-        domain: crate::domain::Domain,
-    ) -> Result<Self, RangeError> {
-        self.slice_with(
-            offset,
-            size,
-            _max_bytes,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn expand(
-        &mut self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        size: &EvmValue<crate::domain::NumericValue>,
-        max_bytes: usize,
-        domain: crate::domain::Domain,
-    ) -> Result<(), RangeError> {
-        self.expand_with(
-            offset,
-            size,
-            max_bytes,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn write_word(
-        &mut self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        value: &EvmValue<crate::domain::NumericValue>,
-        max_bytes: usize,
-        domain: crate::domain::Domain,
-    ) -> Result<(), RangeError> {
-        self.write_word_with(
-            offset,
-            value,
-            max_bytes,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn write_byte(
-        &mut self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        value: &EvmValue<crate::domain::NumericValue>,
-        max_bytes: usize,
-        domain: crate::domain::Domain,
-    ) -> Result<(), RangeError> {
-        self.write_byte_with(
-            offset,
-            value,
-            max_bytes,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    #[cfg(test)]
-    pub(crate) fn write_word_budgeted(
-        &mut self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        value: &EvmValue<crate::domain::NumericValue>,
-        max_bytes: usize,
-        domain: crate::domain::Domain,
-        budget: &mut crate::resource::WorkBudget,
-    ) -> Result<bool, RangeError> {
-        self.write_word_budgeted_with(
-            offset,
-            value,
-            max_bytes,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            budget,
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    #[cfg(test)]
-    pub(crate) fn write_byte_budgeted(
-        &mut self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        value: &EvmValue<crate::domain::NumericValue>,
-        max_bytes: usize,
-        domain: crate::domain::Domain,
-        budget: &mut crate::resource::WorkBudget,
-    ) -> Result<bool, RangeError> {
-        self.write_byte_budgeted_with(
-            offset,
-            value,
-            max_bytes,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            budget,
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn copy_from(
-        &mut self,
-        target_offset: &EvmValue<crate::domain::NumericValue>,
-        source: &Self,
-        source_offset: &EvmValue<crate::domain::NumericValue>,
-        size: &EvmValue<crate::domain::NumericValue>,
-        max_bytes: usize,
-        domain: crate::domain::Domain,
-    ) -> Result<(), RangeError> {
-        self.copy_from_with(
-            target_offset,
-            source,
-            source_offset,
-            size,
-            max_bytes,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn copy_return_data(
-        &mut self,
-        target_offset: &EvmValue<crate::domain::NumericValue>,
-        returndata: &Self,
-        requested: &EvmValue<crate::domain::NumericValue>,
-        max_bytes: usize,
-        domain: crate::domain::Domain,
-    ) -> Result<(), RangeError> {
-        self.copy_return_data_with(
-            target_offset,
-            returndata,
-            requested,
-            max_bytes,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn join_guarded(
-        &self,
-        other: &Self,
-        domain: crate::domain::Domain,
-        selector: ExprId,
-        expression_limits: ExprLimits,
-    ) -> Result<Self, RangeError> {
-        self.join_guarded_with(
-            other,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            selector,
-            expression_limits,
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn join(&self, other: &Self, domain: crate::domain::Domain) -> Self {
-        self.join_with(other, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn keccak(
-        &self,
-        domain: crate::domain::Domain,
-        materialize_limit: usize,
-    ) -> Result<EvmValue<crate::domain::NumericValue>, RangeError> {
-        self.keccak_with(
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            materialize_limit,
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    #[cfg(test)]
-    pub(crate) fn word_numeric_work(
-        &self,
-        _offset: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> usize {
-        self.word_numeric_work_with(_offset, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    #[cfg(test)]
-    pub(crate) fn project(&self, domain: crate::domain::Domain) -> Self {
-        self.project_with(crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-}
-
-impl EvmByteArray<crate::domain::NumericValue> {
-    /// Materialize with the default numeric policy.
-    pub fn exact_bytes(&self) -> Option<Vec<u8>> {
-        self.exact_bytes_with(ValueAlgebra::new(crate::domain::Domain::default()).borrowed())
-    }
-    /// Materialize within a host allocation limit using the default policy.
-    pub fn exact_bytes_bounded(&self, max_bytes: usize) -> Option<Vec<u8>> {
-        self.exact_bytes_bounded_with(
-            max_bytes,
-            ValueAlgebra::new(crate::domain::Domain::default()).borrowed(),
-        )
-    }
-}
-
-#[cfg(test)]
-pub(super) fn constant(value: usize) -> crate::domain::AbstractValue {
-    constant_with(value)
-}
-#[cfg(test)]
-pub(super) fn zero() -> crate::domain::AbstractValue {
-    zero_with()
 }

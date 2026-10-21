@@ -1,5 +1,7 @@
 use super::*;
+use evm_abstract::analysis::control::Control;
 use evm_abstract::analysis::cooperation::{CooperationError, PointKind};
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 
 struct Missing;
 impl<Cx> Analyzer<Cx> for Missing
@@ -46,13 +48,10 @@ fn unknown_global_provider_and_independent_error_never_certify_completion() {
     let calls = Calls::default();
     let algebra = evm_abstract::domain::ValueAlgebra::new(Policy::new(&calls));
     let mut missing = Extension::new(Missing);
-    let result = analyze_world_cooperating(
-        fixtures::world(&[opcode::STOP]),
-        fixtures::entry(),
+    let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut missing).run(
+        AnalysisInput::new(fixtures::world(&[opcode::STOP]), fixtures::entry()).unwrap(),
         fixtures::config(100_000_000),
-        &algebra,
-        &EnginePolicies::default(),
-        &mut missing,
+        &Control::default(),
     );
     assert!(matches!(
         result,
@@ -61,13 +60,10 @@ fn unknown_global_provider_and_independent_error_never_certify_completion() {
         ))
     ));
     let mut failing = Extension::new(Failing);
-    let result = analyze_world_cooperating(
-        fixtures::world(&[opcode::STOP]),
-        fixtures::entry(),
+    let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut failing).run(
+        AnalysisInput::new(fixtures::world(&[opcode::STOP]), fixtures::entry()).unwrap(),
         fixtures::config(100_000_000),
-        &algebra,
-        &EnginePolicies::default(),
-        &mut failing,
+        &Control::default(),
     );
     assert!(matches!(
         result,
@@ -145,15 +141,17 @@ fn optional_future_discovery_expands_native_cfg_then_wakes_the_same_generation()
     let calls = Calls::default();
     let algebra = evm_abstract::domain::ValueAlgebra::new(Policy::new(&calls));
     let mut extension = Extension::new(Explore::default());
-    let result = analyze_world_cooperating(
-        fixtures::world(&[opcode::PUSH0, opcode::JUMPDEST, opcode::STOP]),
-        fixtures::entry(),
-        fixtures::config(100_000_000),
-        &algebra,
-        &EnginePolicies::default(),
-        &mut extension,
-    )
-    .unwrap();
+    let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
+        .run(
+            AnalysisInput::new(
+                fixtures::world(&[opcode::PUSH0, opcode::JUMPDEST, opcode::STOP]),
+                fixtures::entry(),
+            )
+            .unwrap(),
+            fixtures::config(100_000_000),
+            &Control::default(),
+        )
+        .unwrap();
     fixtures::complete(&result);
     assert!(
         extension.analyzer.pending > 0,

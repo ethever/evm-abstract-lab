@@ -1,15 +1,21 @@
 //! Finite CREATE/CREATE2 fixtures exercise the same transaction machine as calls.
 //! The revm oracle below uses the pinned upstream interpreter and observes actual
 //! initcode entry, deployed-code calls, nonce changes, and SELFDESTRUCT.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::domain::NumericValue;
+
+#[path = "support/native.rs"]
+mod native;
 
 use alloy_primitives::{Address, U256, keccak256};
 use evm_abstract::{
     Fork,
     analysis::{
-        self, CreationBoundary, ExecutionConfig, FrontierReason, OutcomeKind, Status, WorldAnalysis,
+        CreationBoundary, EvmWorldAnalysis, ExecutionConfig, FrontierReason, OutcomeKind, Status,
     },
-    domain::{AbstractValue, Domain},
-    world::{Account, ByteArray, Entry, Existence, Store, World},
+    domain::EvmValue,
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmStore, EvmWorld, Existence},
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
@@ -26,17 +32,17 @@ use revm::{
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(number))
 }
-fn finite_contains(value: AbstractValue, expected: u64) -> bool {
+fn finite_contains(value: EvmValue<NumericValue>, expected: u64) -> bool {
     value
         .constants()
         .is_some_and(|values| values.contains(&U256::from(expected)))
 }
 
-fn code(bytes: &[u8], fork: Fork) -> Account {
-    Account::from_hex(&hex::encode(bytes), fork).unwrap()
+fn code(bytes: &[u8], fork: Fork) -> EvmAccount<NumericValue> {
+    EvmAccount::<NumericValue>::from_hex(&hex::encode(bytes), fork).unwrap()
 }
 fn push2(bytes: &mut Vec<u8>, number: usize) {
     bytes.extend([0x61, (number >> 8) as u8, number as u8]);
@@ -82,47 +88,65 @@ fn return_address() -> Vec<u8> {
     hex::decode("805f555f5260205ff3").unwrap()
 }
 
-fn fixture(fork: Fork, factory: &[u8], initcode: &[u8], create2: bool) -> (World, Address) {
+fn fixture(
+    fork: Fork,
+    factory: &[u8],
+    initcode: &[u8],
+    create2: bool,
+) -> (EvmWorld<NumericValue>, Address) {
     let creator = address(0x101);
     let destination = if create2 {
         creator.create2_from_code(U256::from(5).to_be_bytes::<32>(), initcode)
     } else {
         creator.create(0)
     };
-    let mut world = World::new(fork, "finite creation fixture");
+    let mut world = EvmWorld::<NumericValue>::new(fork, "finite creation fixture");
     let mut account = code(factory, fork);
     account.balance = word(100);
     world.insert(creator, account).unwrap();
-    world.insert(destination, Account::absent()).unwrap();
-    world.insert(Address::ZERO, Account::absent()).unwrap();
-    world.insert(address(0x200), Account::empty()).unwrap();
+    world
+        .insert(destination, EvmAccount::<NumericValue>::absent())
+        .unwrap();
+    world
+        .insert(Address::ZERO, EvmAccount::<NumericValue>::absent())
+        .unwrap();
+    world
+        .insert(address(0x200), EvmAccount::<NumericValue>::empty())
+        .unwrap();
     (world, destination)
 }
 
-fn run(world: World) -> WorldAnalysis {
+fn run(world: EvmWorld<NumericValue>) -> EvmWorldAnalysis<NumericValue> {
     let config = ExecutionConfig {
         max_work: 100_000_000,
         ..ExecutionConfig::default()
     };
-    analysis::analyze_world(
-        world,
-        Entry {
-            address: address(0x101),
-            environment: evm_abstract::world::EvmEnvironment {
-                to: (address(0x101)).into(),
-                caller: (address(0x1000)).into(),
-                value: word(0),
-                calldata: ByteArray::empty(),
-                is_static: false,
-                ..evm_abstract::world::EvmEnvironment::default()
+    native::run(
+        &native::product(),
+        AnalysisInput::new(
+            world,
+            EvmEntry {
+                address: address(0x101),
+                environment: evm_abstract::world::EvmEnvironmentValues {
+                    to: (address(0x101)).into(),
+                    caller: (address(0x1000)).into(),
+                    value: word(0),
+                    calldata: EvmByteArray::<NumericValue>::empty(),
+                    is_static: false,
+                    ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
+                },
             },
-        },
+        )
+        .unwrap(),
         config,
+        &Control::default(),
     )
     .unwrap()
 }
 
-fn returned(analysis: &WorldAnalysis) -> impl Iterator<Item = &Store> {
+fn returned(
+    analysis: &EvmWorldAnalysis<NumericValue>,
+) -> impl Iterator<Item = &EvmStore<NumericValue>> {
     analysis
         .outcomes()
         .iter()
@@ -157,12 +181,12 @@ impl<CTX> Inspector<CTX, EthInterpreter> for Trace {
 }
 
 fn oracle(
-    world: World,
+    world: EvmWorld<NumericValue>,
     destination: Address,
     expected_init: bool,
     expected_runtime: bool,
     expected_destroy: bool,
-) -> WorldAnalysis {
+) -> EvmWorldAnalysis<NumericValue> {
     oracle_expect_creation(
         world,
         destination,
@@ -174,13 +198,13 @@ fn oracle(
 }
 
 fn oracle_expect_creation(
-    world: World,
+    world: EvmWorld<NumericValue>,
     destination: Address,
     expected_init: bool,
     expected_runtime: bool,
     expected_destroy: bool,
     expected_create: bool,
-) -> WorldAnalysis {
+) -> EvmWorldAnalysis<NumericValue> {
     let mut db = InMemoryDB::default();
     for (owner, account) in world.accounts() {
         if account.existence == Existence::Absent {
@@ -281,7 +305,7 @@ fn oracle_expect_creation(
             && output.iter().enumerate().all(|(index, byte)| {
                 outcome
                     .data
-                    .byte_at(index, Domain::default())
+                    .byte_at(index, native::product().borrowed())
                     .contains(U256::from(*byte))
             })
             && result
@@ -306,7 +330,11 @@ fn oracle_expect_creation(
                         && account.storage.iter().all(|(slot, value)| {
                             outcome
                                 .store
-                                .read(*owner, &AbstractValue::constant(*slot), Domain::default())
+                                .read(
+                                    *owner,
+                                    &EvmValue::<NumericValue>::constant(*slot),
+                                    native::product().borrowed(),
+                                )
                                 .contains(value.present_value())
                         })
                         && account.info.code.as_ref().is_none_or(|code| {
@@ -334,7 +362,7 @@ fn oracle_expect_creation(
                             && log.data.data.iter().enumerate().all(|(index, byte)| {
                                 abstract_log
                                     .data
-                                    .byte_at(index, Domain::default())
+                                    .byte_at(index, native::product().borrowed())
                                     .contains(U256::from(*byte))
                             })
                     })
@@ -371,18 +399,18 @@ fn creation_and_subsequent_runtime_call_match_revm_for_all_supported_forks() {
                     && store.nonce(destination).singleton() == word(1).singleton()
                     && store.read_balance(destination).singleton() == word(7).singleton()
                     && store
-                        .read(destination, &word(0), Domain::default())
+                        .read(destination, &word(0), native::product().borrowed())
                         .contains(U256::from_be_slice(destination.as_slice()))
                     && store
-                        .read(destination, &word(1), Domain::default())
+                        .read(destination, &word(1), native::product().borrowed())
                         .singleton()
                         == word(0x101).singleton()
                     && store
-                        .read(destination, &word(2), Domain::default())
+                        .read(destination, &word(2), native::product().borrowed())
                         .singleton()
                         == word(7).singleton()
                     && store
-                        .read(destination, &word(3), Domain::default())
+                        .read(destination, &word(3), native::product().borrowed())
                         .singleton()
                         == word(0).singleton()
             }));
@@ -406,7 +434,7 @@ fn init_and_runtime_logs_with_different_arities_at_one_pc_match_revm() {
                         && site.code_hash == keccak256(&initcode)
                         && site.source_kind == evm_abstract::world::LogSourceKind::Init
                         && log.topics.is_empty()
-                        && log.data.exact_bytes() == Some(vec![0xaa])
+                        && log.data.exact_bytes(native::product().borrowed()) == Some(vec![0xaa])
                 })
                 && store.possible_logs().iter().any(|(site, log)| {
                     site.address == destination
@@ -415,7 +443,7 @@ fn init_and_runtime_logs_with_different_arities_at_one_pc_match_revm() {
                         && site.source_kind == evm_abstract::world::LogSourceKind::Runtime
                         && log.topics.len() == 1
                         && log.topics[0].contains(U256::ZERO)
-                        && log.data.exact_bytes() == Some(vec![0xbb])
+                        && log.data.exact_bytes(native::product().borrowed()) == Some(vec![0xbb])
                 })
         }));
     }
@@ -432,13 +460,13 @@ fn collision_balance_prefunding_and_nonce_rejection_match_revm() {
             let mut target = if collision == 2 {
                 code(&[0], fork)
             } else {
-                Account::empty()
+                EvmAccount::<NumericValue>::empty()
             };
             target.balance = word(3);
             if collision == 1 {
                 target.nonce = word(1);
             }
-            let mut replaced = World::new(fork, "prefund or collision");
+            let mut replaced = EvmWorld::<NumericValue>::new(fork, "prefund or collision");
             for (owner, account) in world.accounts() {
                 if *owner != destination {
                     replaced.insert(*owner, account.clone()).unwrap();
@@ -464,12 +492,13 @@ fn insufficient_balance_and_maximum_sender_nonce_reject_before_nonce_bump() {
         let bytes = factory(&initcode, false, 7, &return_address());
         for maximum_nonce in [false, true] {
             let (world, destination) = fixture(fork, &bytes, &initcode, false);
-            let mut modified = World::new(fork, "creation rejects before nonce bump");
+            let mut modified =
+                EvmWorld::<NumericValue>::new(fork, "creation rejects before nonce bump");
             for (owner, account) in world.accounts() {
                 let mut account = account.clone();
                 if *owner == address(0x101) {
                     if maximum_nonce {
-                        account.nonce = AbstractValue::constant(U256::from(u64::MAX));
+                        account.nonce = EvmValue::<NumericValue>::constant(U256::from(u64::MAX));
                     } else {
                         account.balance = word(6);
                     }
@@ -478,7 +507,11 @@ fn insufficient_balance_and_maximum_sender_nonce_reject_before_nonce_bump() {
             }
             let analysis = oracle(modified, destination, false, false, false);
             assert!(returned(&analysis).all(|store| store.nonce(address(0x101))
-                == AbstractValue::constant(U256::from(if maximum_nonce { u64::MAX } else { 0 }))
+                == EvmValue::<NumericValue>::constant(U256::from(if maximum_nonce {
+                    u64::MAX
+                } else {
+                    0
+                }))
                 && store.existence(destination) == Existence::Absent));
         }
     }
@@ -488,13 +521,16 @@ fn insufficient_balance_and_maximum_sender_nonce_reject_before_nonce_bump() {
 fn finite_nonce_alternatives_preserve_distinct_deployed_code_versions() {
     let initcode = init(&[0], &[]);
     let bytes = factory(&initcode, false, 0, &return_address());
-    let mut world = World::new(Fork::Osaka, "finite creator nonces");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "finite creator nonces");
     let mut creator = code(&bytes, Fork::Osaka);
-    creator.nonce = Domain::default().join(&word(0), &word(1));
+    creator.nonce = native::product().join(&word(0), &word(1));
     world.insert(address(0x101), creator).unwrap();
     for nonce in [0, 1] {
         world
-            .insert(address(0x101).create(nonce), Account::absent())
+            .insert(
+                address(0x101).create(nonce),
+                EvmAccount::<NumericValue>::absent(),
+            )
             .unwrap();
     }
     let analysis = run(world);
@@ -517,11 +553,11 @@ fn unobserved_nonce_endowment_and_runtime_are_explicit_creation_boundaries() {
     let initcode = init(&[0], &[]);
     let bytes = factory(&initcode, false, 0, &return_address());
     let (world, _) = fixture(Fork::Osaka, &bytes, &initcode, false);
-    let mut unknown_nonce = World::new(Fork::Osaka, "unknown creator nonce");
+    let mut unknown_nonce = EvmWorld::<NumericValue>::new(Fork::Osaka, "unknown creator nonce");
     for (owner, account) in world.accounts() {
         let mut account = account.clone();
         if *owner == address(0x101) {
-            account.nonce = AbstractValue::top();
+            account.nonce = EvmValue::<NumericValue>::top();
         }
         unknown_nonce.insert(*owner, account).unwrap();
     }
@@ -530,27 +566,32 @@ fn unobserved_nonce_endowment_and_runtime_are_explicit_creation_boundaries() {
     assert!(analysis.frontiers().iter().any(|frontier| frontier.reason
         == FrontierReason::Creation(CreationBoundary::UnknownNonce(address(0x101)))));
 
-    let mut world = World::new(Fork::Osaka, "unknown endowment");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "unknown endowment");
     world
         .insert(
             address(0x101),
-            Account::from_hex("5f5f5f35f000", Fork::Osaka).unwrap(),
+            EvmAccount::<NumericValue>::from_hex("5f5f5f35f000", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    let analysis = analysis::analyze_world(
-        world,
-        Entry {
-            address: address(0x101),
-            environment: evm_abstract::world::EvmEnvironment {
-                to: (address(0x101)).into(),
-                caller: (address(0x1000)).into(),
-                value: word(0),
-                calldata: ByteArray::unknown(),
-                is_static: false,
-                ..evm_abstract::world::EvmEnvironment::default()
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(
+            world,
+            EvmEntry {
+                address: address(0x101),
+                environment: evm_abstract::world::EvmEnvironmentValues {
+                    to: (address(0x101)).into(),
+                    caller: (address(0x1000)).into(),
+                    value: word(0),
+                    calldata: EvmByteArray::<NumericValue>::unknown(),
+                    is_static: false,
+                    ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
+                },
             },
-        },
+        )
+        .unwrap(),
         ExecutionConfig::default(),
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(analysis.status(), Status::Incomplete);
@@ -573,11 +614,12 @@ fn unrepresentable_nonce_and_shared_creation_limits_are_explicit() {
     let initcode = init(&[0], &[]);
     let bytes = factory(&initcode, false, 0, &return_address());
     let (world, _) = fixture(Fork::Osaka, &bytes, &initcode, false);
-    let mut invalid_nonce = World::new(Fork::Osaka, "nonce outside protocol representation");
+    let mut invalid_nonce =
+        EvmWorld::<NumericValue>::new(Fork::Osaka, "nonce outside protocol representation");
     for (owner, account) in world.accounts() {
         let mut account = account.clone();
         if *owner == address(0x101) {
-            account.nonce = AbstractValue::constant(U256::MAX);
+            account.nonce = EvmValue::<NumericValue>::constant(U256::MAX);
         }
         invalid_nonce.insert(*owner, account).unwrap();
     }
@@ -610,20 +652,25 @@ fn unrepresentable_nonce_and_shared_creation_limits_are_explicit() {
             FrontierReason::Creation(CreationBoundary::UnknownInitCode),
         ),
     ] {
-        let analysis = analysis::analyze_world(
-            world.clone(),
-            Entry {
-                address: address(0x101),
-                environment: evm_abstract::world::EvmEnvironment {
-                    to: (address(0x101)).into(),
-                    caller: (address(0x1000)).into(),
-                    value: word(0),
-                    calldata: ByteArray::empty(),
-                    is_static: false,
-                    ..evm_abstract::world::EvmEnvironment::default()
+        let analysis = native::run(
+            &native::product(),
+            AnalysisInput::new(
+                world.clone(),
+                EvmEntry {
+                    address: address(0x101),
+                    environment: evm_abstract::world::EvmEnvironmentValues {
+                        to: (address(0x101)).into(),
+                        caller: (address(0x1000)).into(),
+                        value: word(0),
+                        calldata: EvmByteArray::<NumericValue>::empty(),
+                        is_static: false,
+                        ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
+                    },
                 },
-            },
+            )
+            .unwrap(),
             config,
+            &Control::default(),
         )
         .unwrap();
         assert_eq!(analysis.status(), Status::Incomplete);
@@ -642,7 +689,8 @@ fn a_known_collision_fact_does_not_require_the_other_account_observation() {
     let bytes = factory(&initcode, false, 0, &return_address());
     let (world, destination) = fixture(Fork::Osaka, &bytes, &initcode, false);
     for observed_code in [false, true] {
-        let mut modified = World::new(Fork::Osaka, "one collision fact is sufficient");
+        let mut modified =
+            EvmWorld::<NumericValue>::new(Fork::Osaka, "one collision fact is sufficient");
         for (owner, account) in world.accounts() {
             if *owner != destination {
                 modified.insert(*owner, account.clone()).unwrap();
@@ -651,10 +699,10 @@ fn a_known_collision_fact_does_not_require_the_other_account_observation() {
         let mut target = if observed_code {
             code(&[0], Fork::Osaka)
         } else {
-            Account::unknown()
+            EvmAccount::<NumericValue>::unknown()
         };
         target.nonce = if observed_code {
-            AbstractValue::top()
+            EvmValue::<NumericValue>::top()
         } else {
             word(1)
         };
@@ -689,7 +737,7 @@ fn failed_init_and_outer_revert_restore_creation_effects_at_the_correct_savepoin
                 && store.existence(destination) == Existence::Absent
                 && store.read_balance(address(0x101)).singleton() == word(100).singleton()
                 && store
-                    .read(destination, &word(0), Domain::default())
+                    .read(destination, &word(0), native::product().borrowed())
                     .singleton()
                     == word(0).singleton()
         }));
@@ -723,7 +771,7 @@ fn create_revert_exposes_revert_data_while_success_exposes_no_runtime_data() {
         let (world, destination) = fixture(fork, &bytes, &initcode, false);
         let analysis = oracle(world, destination, true, false, false);
         assert!(returned(&analysis).any(|store| finite_contains(
-            store.read(address(0x101), &word(1), Domain::default()),
+            store.read(address(0x101), &word(1), native::product().borrowed()),
             1
         ) && finite_contains(
             store.nonce(address(0x101)),
@@ -741,7 +789,7 @@ fn create_revert_exposes_revert_data_while_success_exposes_no_runtime_data() {
         let analysis = oracle(world, destination, true, false, false);
         assert!(returned(&analysis).all(|store| {
             store
-                .read(address(0x101), &word(1), Domain::default())
+                .read(address(0x101), &word(1), native::product().borrowed())
                 .singleton()
                 == word(0).singleton()
         }));
@@ -823,14 +871,14 @@ fn same_transaction_selfdestruct_keeps_code_visible_until_final_deletion() {
                 store.existence(destination) == Existence::Absent
                     && store.raw_account_code(destination) == Some(Vec::new())
                     && store
-                        .read(destination, &word(0), Domain::default())
+                        .read(destination, &word(0), native::product().borrowed())
                         .singleton()
                         == word(0).singleton()
                     && store
-                        .read(address(0x101), &word(1), Domain::default())
+                        .read(address(0x101), &word(1), native::product().borrowed())
                         .contains(U256::from(runtime.len()))
                     && store
-                        .read(address(0x101), &word(2), Domain::default())
+                        .read(address(0x101), &word(2), native::product().borrowed())
                         .contains(U256::from_be_slice(keccak256(&runtime).as_slice()))
             }));
         }
@@ -853,7 +901,7 @@ fn initcode_selfdestruct_commits_endowment_then_deletes_the_created_account() {
             store.existence(destination) == Existence::Absent
                 && store.read_balance(address(0x200)).singleton() == word(7).singleton()
                 && store
-                    .read(address(0x101), &word(1), Domain::default())
+                    .read(address(0x101), &word(1), native::product().borrowed())
                     .contains(U256::from_be_slice(keccak256([]).as_slice()))
         }));
     }
@@ -866,19 +914,21 @@ fn preexisting_selfdestruct_preserves_code_storage_and_self_beneficiary_balance(
             hex::decode("610200ff").unwrap(),
             hex::decode("30ff").unwrap(),
         ] {
-            let mut world = World::new(fork, "preexisting selfdestruct");
+            let mut world = EvmWorld::<NumericValue>::new(fork, "preexisting selfdestruct");
             let mut account = code(&runtime, fork);
             account.balance = word(7);
             account.storage.insert(U256::ZERO, word(42));
             world.insert(address(0x101), account).unwrap();
-            world.insert(address(0x200), Account::empty()).unwrap();
+            world
+                .insert(address(0x200), EvmAccount::<NumericValue>::empty())
+                .unwrap();
             let analysis = oracle_expect_creation(world, address(0x101), false, true, true, false);
             assert_eq!(analysis.status(), Status::Converged);
             assert!(returned(&analysis).all(|store| {
                 store.raw_account_code(address(0x101)) == Some(runtime.clone())
                     && store.existence(address(0x101)) == Existence::Present
                     && store
-                        .read(address(0x101), &word(0), Domain::default())
+                        .read(address(0x101), &word(0), native::product().borrowed())
                         .singleton()
                         == word(42).singleton()
                     && store.read_balance(address(0x101)).singleton()
@@ -907,7 +957,7 @@ fn reverted_child_selfdestruct_restores_deletion_balance_and_all_deeper_effects(
                 && store.read_balance(destination).singleton() == word(7).singleton()
                 && store.read_balance(address(0x200)).singleton() == word(0).singleton()
                 && store
-                    .read(destination, &word(0), Domain::default())
+                    .read(destination, &word(0), native::product().borrowed())
                     .singleton()
                     == word(0).singleton()
         }));
@@ -928,7 +978,7 @@ fn repeat_create2_collides_even_after_same_transaction_selfdestruct() {
         assert!(returned(&analysis).any(|store| {
             store.nonce(address(0x101)).singleton() == word(2).singleton()
                 && store
-                    .read(address(0x101), &word(1), Domain::default())
+                    .read(address(0x101), &word(1), native::product().borrowed())
                     .singleton()
                     == word(0).singleton()
                 && store.existence(destination) == Existence::Absent
@@ -942,13 +992,16 @@ fn prefunded_creation_resets_previous_persistent_slots_and_retains_balance() {
         let initcode = init(&[0], &hex::decode("5f54600155").unwrap());
         let bytes = factory(&initcode, false, 7, &return_address());
         let (world, destination) = fixture(fork, &bytes, &initcode, false);
-        let mut reset = World::new(fork, "zero nonce and empty code with pre-existing storage");
+        let mut reset = EvmWorld::<NumericValue>::new(
+            fork,
+            "zero nonce and empty code with pre-existing storage",
+        );
         for (owner, account) in world.accounts() {
             if *owner != destination {
                 reset.insert(*owner, account.clone()).unwrap();
             }
         }
-        let mut prefunded = Account::empty();
+        let mut prefunded = EvmAccount::<NumericValue>::empty();
         prefunded.balance = word(3);
         prefunded.storage.insert(U256::ZERO, word(99));
         reset.insert(destination, prefunded).unwrap();
@@ -956,11 +1009,11 @@ fn prefunded_creation_resets_previous_persistent_slots_and_retains_balance() {
         assert!(returned(&analysis).any(|store| {
             store.read_balance(destination).singleton() == word(10).singleton()
                 && store
-                    .read(destination, &word(0), Domain::default())
+                    .read(destination, &word(0), native::product().borrowed())
                     .singleton()
                     == word(0).singleton()
                 && store
-                    .read(destination, &word(1), Domain::default())
+                    .read(destination, &word(1), native::product().borrowed())
                     .singleton()
                     == word(0).singleton()
         }));
@@ -972,7 +1025,7 @@ fn unknown_creation_inputs_report_explicit_frontiers() {
     let initcode = init(&[0], &[]);
     let bytes = factory(&initcode, true, 0, &return_address());
     let (world, destination) = fixture(Fork::Osaka, &bytes, &initcode, true);
-    let mut unknown = World::new(Fork::Osaka, "unknown collision");
+    let mut unknown = EvmWorld::<NumericValue>::new(Fork::Osaka, "unknown collision");
     for (owner, account) in world.accounts() {
         if *owner != destination {
             unknown.insert(*owner, account.clone()).unwrap();
@@ -986,27 +1039,32 @@ fn unknown_creation_inputs_report_explicit_frontiers() {
         ("5f355f5f5ff5", CreationBoundary::UnknownSalt),
         ("60205f5f3760205f5ff0", CreationBoundary::UnknownInitCode),
     ] {
-        let mut world = World::new(Fork::Osaka, "unknown creation input");
+        let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "unknown creation input");
         world
             .insert(
                 address(0x101),
-                Account::from_hex(program, Fork::Osaka).unwrap(),
+                EvmAccount::<NumericValue>::from_hex(program, Fork::Osaka).unwrap(),
             )
             .unwrap();
-        let analysis = analysis::analyze_world(
-            world,
-            Entry {
-                address: address(0x101),
-                environment: evm_abstract::world::EvmEnvironment {
-                    to: (address(0x101)).into(),
-                    caller: (address(0x1000)).into(),
-                    value: word(0),
-                    calldata: ByteArray::unknown(),
-                    is_static: false,
-                    ..evm_abstract::world::EvmEnvironment::default()
+        let analysis = native::run(
+            &native::product(),
+            AnalysisInput::new(
+                world,
+                EvmEntry {
+                    address: address(0x101),
+                    environment: evm_abstract::world::EvmEnvironmentValues {
+                        to: (address(0x101)).into(),
+                        caller: (address(0x1000)).into(),
+                        value: word(0),
+                        calldata: EvmByteArray::<NumericValue>::unknown(),
+                        is_static: false,
+                        ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
+                    },
                 },
-            },
+            )
+            .unwrap(),
             ExecutionConfig::default(),
+            &Control::default(),
         )
         .unwrap();
         assert_eq!(analysis.status(), Status::Incomplete);
@@ -1021,11 +1079,15 @@ fn unknown_creation_inputs_report_explicit_frontiers() {
 
 #[test]
 fn store_lifecycle_rollback_and_join_include_code_nonce_and_pending_deletion() {
-    let mut world = World::new(Fork::Osaka, "store lifecycle");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "store lifecycle");
     let target = address(0x400);
-    world.insert(target, Account::absent()).unwrap();
-    world.insert(address(0x200), Account::empty()).unwrap();
-    let mut store = Store::new(&world);
+    world
+        .insert(target, EvmAccount::<NumericValue>::absent())
+        .unwrap();
+    world
+        .insert(address(0x200), EvmAccount::<NumericValue>::empty())
+        .unwrap();
+    let mut store = EvmStore::<NumericValue>::new(&world, native::product().borrowed());
     let before = store.clone();
     let saved = store.snapshot();
     store.begin_creation(target);
@@ -1033,12 +1095,12 @@ fn store_lifecycle_rollback_and_join_include_code_nonce_and_pending_deletion() {
         target,
         evm_abstract::bytecode::Program::decode(&[0]).unwrap(),
     );
-    store.write(target, &word(0), &word(42), Domain::default());
+    store.write(target, &word(0), &word(42), native::product().borrowed());
     store.write_balance(target, word(7));
-    store.selfdestruct(target, address(0x200), Domain::default());
+    store.selfdestruct(target, address(0x200), native::product().borrowed());
     assert_eq!(store.raw_account_code(target), Some(vec![0]));
     assert_eq!(store.pending_destruction(target), Some(true));
-    let joined = before.join(&store, Domain::default());
+    let joined = before.join(&store, native::product().borrowed());
     assert_eq!(joined.created_in_transaction(target), None);
     assert_eq!(joined.pending_destruction(target), None);
     assert_eq!(joined.existence(target), Existence::Unknown);

@@ -36,6 +36,7 @@ fn identity_scope() -> Option<u64> {
 mod arithmetic_proof_tests;
 mod budget;
 mod calls;
+pub(super) use calls::resolve_code;
 mod candidates;
 #[cfg(test)]
 mod clone_payment_tests;
@@ -342,7 +343,6 @@ fn expand_memory<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
-    let config = context.config;
     let domain = context.domain;
     if !context.budget.charge(byte_work(
         &[offset, size],
@@ -353,12 +353,12 @@ fn expand_memory<D: EvmNumericAlgebra>(
         boundary(result, pc, FrontierReason::Work);
         return false;
     }
-    if let Err(error) = result.payload.active_mut().memory.expand_with(
-        offset,
-        size,
-        config.max_memory_bytes,
-        domain,
-    ) {
+    if let Err(error) = result
+        .payload
+        .active_mut()
+        .memory
+        .expand(offset, size, domain)
+    {
         boundary_bytes(result, pc, error);
         return false;
     }
@@ -409,7 +409,7 @@ fn try_environment_targets<D: EvmNumericAlgebra, E>(
             None => value,
         });
     }
-    Ok(output.expect("AbstractValue constant sets are nonempty"))
+    Ok(output.expect("TestValue constant sets are nonempty"))
 }
 
 #[expect(
@@ -489,7 +489,7 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
         .into_iter()
         .map(|mut value| {
             value.forget_identity();
-            let mut value = relations::identify(value, config.analysis.relations.enabled);
+            let mut value = relations::identify(value, domain.spec().relations().enabled);
             if let Some(scope) = scope {
                 value = value.with_identity(scope, definition);
             }
@@ -653,7 +653,7 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
         let mut args: Vec<EvmValue<D::Element>> = stack.drain(stack.len() - inputs..).collect();
         result.mark_instruction(InstructionProgress::OperandsConsumed);
         args.reverse();
-        if config.analysis.relations.enabled
+        if domain.spec().relations().enabled
             && args
                 .iter()
                 .any(EvmValue::<D::Element>::symbolic_limit_reached)
@@ -952,12 +952,12 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                 if !touch_memory(&mut result, &args[0], &args[1], context, pc) {
                     return result;
                 }
-                let data = match result.payload.active().memory.slice_with(
-                    &args[0],
-                    &args[1],
-                    config.max_memory_bytes,
-                    domain,
-                ) {
+                let data = match result
+                    .payload
+                    .active()
+                    .memory
+                    .slice(&args[0], &args[1], domain)
+                {
                     Ok(data) => data,
                     Err(error) => {
                         boundary_bytes(&mut result, pc, error);
@@ -1075,14 +1075,12 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
             opcode::SSTORE | opcode::TSTORE => {
                 let state_address = result.payload.active().key.address;
                 let write = if op == opcode::SSTORE {
-                    result.payload.store.write_checked_with(
-                        state_address,
-                        &args[0],
-                        &args[1],
-                        domain,
-                    )
+                    result
+                        .payload
+                        .store
+                        .write_checked(state_address, &args[0], &args[1], domain)
                 } else {
-                    result.payload.store.write_transient_checked_with(
+                    result.payload.store.write_transient_checked(
                         state_address,
                         &args[0],
                         &args[1],
@@ -1101,21 +1099,9 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                 }
                 let memory = &mut result.payload.active_mut().memory;
                 let write = if op == opcode::MSTORE {
-                    memory.write_word_budgeted_with(
-                        &args[0],
-                        &args[1],
-                        config.max_memory_bytes,
-                        domain,
-                        context.budget,
-                    )
+                    memory.write_word_budgeted(&args[0], &args[1], domain, context.budget)
                 } else {
-                    memory.write_byte_budgeted_with(
-                        &args[0],
-                        &args[1],
-                        config.max_memory_bytes,
-                        domain,
-                        context.budget,
-                    )
+                    memory.write_byte_budgeted(&args[0], &args[1], domain, context.budget)
                 };
                 match write {
                     Err(error) => {
@@ -1168,14 +1154,12 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                 if !admitted {
                     return result;
                 }
-                if let Err(error) = result.payload.active_mut().memory.copy_from_with(
-                    &args[0],
-                    &source,
-                    &args[1],
-                    &args[2],
-                    config.max_memory_bytes,
-                    domain,
-                ) {
+                if let Err(error) = result
+                    .payload
+                    .active_mut()
+                    .memory
+                    .copy_from(&args[0], &source, &args[1], &args[2], domain)
+                {
                     boundary_bytes(&mut result, pc, error);
                     return result;
                 }
@@ -1210,11 +1194,11 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                                         crate::domain::symbolic::StateError::IdentityExhausted,
                                     ),
                                 )?;
-                                left.join_guarded_with(
+                                left.join_guarded(
                                     &right,
                                     domain,
                                     selector,
-                                    config.analysis.relations.expressions(),
+                                    domain.spec().relations().expressions(),
                                 )
                             });
                             match joined {
@@ -1228,14 +1212,12 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         None => EvmByteArray::<D::Element>::unknown(),
                     }
                 };
-                if let Err(error) = result.payload.active_mut().memory.copy_from_with(
-                    &args[1],
-                    &source,
-                    &args[2],
-                    &args[3],
-                    config.max_memory_bytes,
-                    domain,
-                ) {
+                if let Err(error) = result
+                    .payload
+                    .active_mut()
+                    .memory
+                    .copy_from(&args[1], &source, &args[2], &args[3], domain)
+                {
                     boundary_bytes(&mut result, pc, error);
                     return result;
                 }
@@ -1244,12 +1226,12 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                 if !touch_memory(&mut result, &args[0], &args[1], context, pc) {
                     return result;
                 }
-                let data = match result.payload.active().memory.slice_with(
-                    &args[0],
-                    &args[1],
-                    config.max_memory_bytes,
-                    domain,
-                ) {
+                let data = match result
+                    .payload
+                    .active()
+                    .memory
+                    .slice(&args[0], &args[1], domain)
+                {
                     Ok(data) => data,
                     Err(error) => {
                         boundary_bytes(&mut result, pc, error);
@@ -1278,7 +1260,7 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                 if result
                     .payload
                     .store
-                    .emit_log_with(
+                    .emit_log(
                         source,
                         EvmLog {
                             topics: args[2..].to_vec(),
@@ -1389,28 +1371,28 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                             return result;
                         }
                     },
-                    opcode::GAS => entry.environment.gas.value_with(),
+                    opcode::GAS => entry.environment.gas.value(),
                     opcode::PC => constant(pc),
                     opcode::CODESIZE => constant(program.byte_len()),
                     opcode::CALLDATASIZE => frame.calldata.len().clone(),
                     opcode::RETURNDATASIZE => frame.returndata.len().clone(),
                     opcode::MSIZE => frame.memory.len().clone(),
                     opcode::CALLDATALOAD => {
-                        let plan = match frame.calldata.prepare_word_read_with(
-                            &args[0],
-                            domain,
-                            context.budget,
-                        ) {
-                            Ok(Some(plan)) => plan,
-                            Ok(None) => {
-                                boundary(&mut result, pc, FrontierReason::Work);
-                                return result;
-                            }
-                            Err(error) => {
-                                boundary_bytes(&mut result, pc, error);
-                                return result;
-                            }
-                        };
+                        let plan =
+                            match frame
+                                .calldata
+                                .prepare_word_read(&args[0], domain, context.budget)
+                            {
+                                Ok(Some(plan)) => plan,
+                                Ok(None) => {
+                                    boundary(&mut result, pc, FrontierReason::Work);
+                                    return result;
+                                }
+                                Err(error) => {
+                                    boundary_bytes(&mut result, pc, error);
+                                    return result;
+                                }
+                            };
                         match plan.read_word_budgeted(context.budget) {
                             Ok(Some(value)) => value,
                             Ok(None) => {
@@ -1425,13 +1407,12 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                     }
                     opcode::SLOAD | opcode::TLOAD => {
                         let read = if op == opcode::SLOAD {
-                            result.payload.store.read_checked_with(
-                                frame.key.address,
-                                &args[0],
-                                domain,
-                            )
+                            result
+                                .payload
+                                .store
+                                .read_checked(frame.key.address, &args[0], domain)
                         } else {
-                            result.payload.store.read_transient_checked_with(
+                            result.payload.store.read_transient_checked(
                                 frame.key.address,
                                 &args[0],
                                 domain,
@@ -1479,21 +1460,21 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         }
                     },
                     opcode::MLOAD => {
-                        let plan = match frame.memory.prepare_word_read_with(
-                            &args[0],
-                            domain,
-                            context.budget,
-                        ) {
-                            Ok(Some(plan)) => plan,
-                            Ok(None) => {
-                                boundary(&mut result, pc, FrontierReason::Work);
-                                return result;
-                            }
-                            Err(error) => {
-                                boundary_bytes(&mut result, pc, error);
-                                return result;
-                            }
-                        };
+                        let plan =
+                            match frame
+                                .memory
+                                .prepare_word_read(&args[0], domain, context.budget)
+                            {
+                                Ok(Some(plan)) => plan,
+                                Ok(None) => {
+                                    boundary(&mut result, pc, FrontierReason::Work);
+                                    return result;
+                                }
+                                Err(error) => {
+                                    boundary_bytes(&mut result, pc, error);
+                                    return result;
+                                }
+                            };
                         if !touch_memory(&mut result, &args[0], &constant(32), context, pc) {
                             return result;
                         }
@@ -1521,12 +1502,12 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         {
                             return result;
                         }
-                        match result.payload.active().memory.slice_with(
-                            &args[0],
-                            &args[1],
-                            config.max_memory_bytes,
-                            domain,
-                        ) {
+                        match result
+                            .payload
+                            .active()
+                            .memory
+                            .slice(&args[0], &args[1], domain)
+                        {
                             Ok(bytes) => match hash::evaluate(&bytes, &mut result, context, pc) {
                                 Some(value) => value,
                                 None => return result,
@@ -1615,7 +1596,7 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         ),
                     );
                 }
-                value = relations::identify(value, config.analysis.relations.enabled);
+                value = relations::identify(value, domain.spec().relations().enabled);
                 match relations::refine(&mut value, &result.payload.relations, context) {
                     Ok(false) => return result,
                     Ok(true) => {}
@@ -1703,13 +1684,12 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
 
 #[cfg(test)]
 mod tests {
+    use crate::analysis::testing::Entry;
+    use crate::analysis::testing::World;
     use crate::analysis::transfer::ExecutionFrontier;
-    use crate::domain::ValueAlgebra;
-    use crate::world::Entry;
-    use crate::world::World;
 
     use super::*;
-    use crate::{Fork, world::Account};
+    use crate::{Fork, analysis::testing::Account};
 
     #[test]
     fn cancelled_transfer_preserves_input_and_differs_from_exhausted_work() {
@@ -1720,8 +1700,9 @@ mod tests {
             .unwrap();
         let entry = Entry::new(owner);
         let config = ExecutionConfig::default();
-        let domain = config.domain().unwrap();
-        let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+        let domain = crate::analysis::testing::product(crate::domain::DomainSpec::default());
+        let domain = domain.borrowed();
+        let input = initial(&world, &entry, domain).unwrap();
         for cancelled in [false, true] {
             let control = crate::analysis::control::Control::new(Default::default());
             let (result, budget) = control.scope(|| {
@@ -1734,7 +1715,7 @@ mod tests {
                     &entry,
                     input.clone(),
                     &config,
-                    ValueAlgebra::new(&domain),
+                    domain,
                     &crate::analysis::RecentDistinctJumps,
                     &mut budget,
                     StorageReadPolicy::Abstract,
@@ -1776,8 +1757,9 @@ mod tests {
         world.insert(owner, Account::empty()).unwrap();
         let entry = Entry::new(owner);
         let config = ExecutionConfig::default();
-        let domain = config.domain().unwrap();
-        let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+        let domain = crate::analysis::testing::product(crate::domain::DomainSpec::default());
+        let domain = domain.borrowed();
+        let mut payload = initial(&world, &entry, domain).unwrap();
         // Exercise the defensive evidence boundary directly: ordinary validated
         // delegation facts normally provide the marker bytes at resolution.
         let frame = payload.active_mut();
@@ -1789,7 +1771,7 @@ mod tests {
             &entry,
             payload,
             &config,
-            ValueAlgebra::new(&domain),
+            domain,
             &crate::analysis::RecentDistinctJumps,
             &mut WorkBudget::new(config.max_work),
             StorageReadPolicy::Abstract,

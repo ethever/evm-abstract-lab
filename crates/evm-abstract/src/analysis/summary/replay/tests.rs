@@ -1,28 +1,31 @@
 use super::Replay;
+#[cfg(test)]
+use crate::analysis::testing::{ByteArray, TestValue};
 use crate::{
     analysis::{
-        self, Continuation, FrontierReason, InstructionProgress, MachineError, OutcomeKind,
-        RootFrame, Status,
+        Continuation, FrontierReason, InstructionProgress, MachineError, OutcomeKind, RootFrame,
+        Status,
         machine::fixtures,
         summary::{Certificate, Node, SummaryOutput, Terminal},
         transfer::CompletedCall,
     },
     domain::{
-        AbstractValue, Domain,
+        ProductAlgebra,
         relational::{CheckResult, QueryReason, RelationState},
         symbolic::ExprId,
     },
     resource::WorkBudget,
-    world::ByteArray,
 };
 use revm_bytecode::opcode;
 use std::{collections::BTreeSet, sync::Arc};
 
-fn certificate(domain: Domain) -> (Certificate, crate::analysis::MachinePayload, ByteArray) {
+fn certificate(
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+) -> (Certificate, crate::analysis::MachinePayload, ByteArray) {
     let mut entry = fixtures::payload(domain);
     entry.active_mut().calldata = ByteArray::unknown();
     entry.active_mut().calldata.bind_input(41).unwrap();
-    entry.active_mut().stack = vec![AbstractValue::top().with_expression(ExprId::fresh().unwrap())];
+    entry.active_mut().stack = vec![TestValue::top().with_expression(ExprId::fresh().unwrap())];
     entry.normalize();
     let mut exit = entry.clone();
     let guard = ExprId::fresh().unwrap();
@@ -34,7 +37,7 @@ fn certificate(domain: Domain) -> (Certificate, crate::analysis::MachinePayload,
             domain.spec().relations().expressions(),
         )
         .unwrap();
-    let key = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    let key = TestValue::top().with_expression(ExprId::fresh().unwrap());
     exit.active_mut()
         .memory
         .copy_from(
@@ -42,7 +45,6 @@ fn certificate(domain: Domain) -> (Certificate, crate::analysis::MachinePayload,
             &data,
             &fixtures::word(0),
             data.len(),
-            4096,
             domain,
         )
         .unwrap();
@@ -60,7 +62,7 @@ fn certificate(domain: Domain) -> (Certificate, crate::analysis::MachinePayload,
     exit.active_mut().call_value = key.clone();
     assert!(
         exit.relations
-            .assume(&guard, true, &domain.spec().relations())
+            .assume(&guard, true, &domain.spec().relations(), domain)
             != crate::domain::relational::CheckResult::ProvenImpossible
     );
     let nested = RootFrame {
@@ -136,7 +138,10 @@ fn certificate(domain: Domain) -> (Certificate, crate::analysis::MachinePayload,
 
 #[test]
 fn replay_renames_all_hidden_sources_roots_history_and_outputs_with_one_map() {
-    let domain = fixtures::config().domain().unwrap();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    ));
+    let domain = domain.borrowed();
     let (certificate, caller, original_data) = certificate(domain);
     let caller_before = caller.clone();
     let original_root = certificate.nodes[0]
@@ -161,12 +166,7 @@ fn replay_renames_all_hidden_sources_roots_history_and_outputs_with_one_map() {
     assert!(!old_tokens.is_empty());
     assert!(old_tokens.iter().all(|token| map.contains_key(token)));
     let expected: BTreeSet<_> = old_tokens.iter().map(|token| map[token].clone()).collect();
-    let prepared = replay
-        .prepare(
-            &mut budget,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-        .unwrap();
+    let prepared = replay.prepare(&mut budget, domain).unwrap();
     let node = &prepared.nodes[0];
     assert_eq!(node.resume_status, Some(true));
     assert_eq!(
@@ -222,12 +222,7 @@ fn replay_renames_all_hidden_sources_roots_history_and_outputs_with_one_map() {
     )
     .unwrap();
     let second_map = replay.renaming.clone();
-    let second = replay
-        .prepare(
-            &mut budget,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-        .unwrap();
+    let second = replay.prepare(&mut budget, domain).unwrap();
     assert!(
         map.values()
             .all(|token| !second_map.values().any(|other| token == other))
@@ -250,7 +245,10 @@ fn replay_renames_all_hidden_sources_roots_history_and_outputs_with_one_map() {
 
 #[test]
 fn replay_failure_and_cancellation_do_not_change_input_or_certificate_snapshots() {
-    let domain = fixtures::config().domain().unwrap();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    ));
+    let domain = domain.borrowed();
     let (certificate, caller, data) = certificate(domain);
     let before = caller.clone();
     let original = certificate.nodes[0].exit.clone();
@@ -260,14 +258,7 @@ fn replay_failure_and_cancellation_do_not_change_input_or_certificate_snapshots(
         max_depth: 1,
     };
     let replay = Replay::new(&certificate, &caller, &mut budget, limits).unwrap();
-    assert!(
-        replay
-            .prepare(
-                &mut budget,
-                crate::domain::ValueAlgebra::new(domain).borrowed()
-            )
-            .is_err()
-    );
+    assert!(replay.prepare(&mut budget, domain).is_err());
     assert_eq!(caller, before);
     assert_eq!(certificate.nodes[0].exit, original);
     assert_eq!(certificate.terminals[0].raw_data, data);
@@ -295,13 +286,27 @@ fn call(output: u8) -> String {
 
 #[test]
 fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
+    let algebra = crate::analysis::testing::product(crate::domain::DomainSpec::default());
+    let domain = algebra.borrowed();
     let caller = format!("{}50{}5060405ff3", call(0), call(32));
     let (world, entry) = fixtures::fixture(&[(0x101, &caller), (0x200, "5a5f5260205ff3")]);
     let mut enabled = fixtures::config();
     enabled.use_summaries = true;
-    let cached = analysis::analyze_world(world.clone(), entry.clone(), enabled.clone()).unwrap();
+    let cached = crate::analysis::testing::execute(
+        world.clone(),
+        entry.clone(),
+        enabled.clone(),
+        crate::domain::DomainSpec::default(),
+    )
+    .unwrap();
     enabled.use_summaries = false;
-    let direct = analysis::analyze_world(world, entry, enabled).unwrap();
+    let direct = crate::analysis::testing::execute(
+        world,
+        entry,
+        enabled,
+        crate::domain::DomainSpec::default(),
+    )
+    .unwrap();
     for result in [&cached, &direct] {
         assert_eq!(
             result.status(),
@@ -322,7 +327,7 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
                     && [0, 32].into_iter().all(|offset| {
                         outcome
                             .data
-                            .read_word(&fixtures::word(offset), Domain::default())
+                            .read_word(&fixtures::word(offset), domain)
                             .contains(alloy_primitives::U256::from(1))
                     })
             })
@@ -333,17 +338,17 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
         );
         let first = returned
             .data
-            .read_word_checked(&fixtures::word(0), Domain::default())
+            .read_word_checked(&fixtures::word(0), domain)
             .unwrap();
         let second = returned
             .data
-            .read_word_checked(&fixtures::word(32), Domain::default())
+            .read_word_checked(&fixtures::word(32), domain)
             .unwrap();
         assert_ne!(first.expression(), second.expression());
         // Independent leaves may have equal concrete valuations. This test
         // checks identity, not an unsupported inequality assumption.
         assert!(returned.data.fresh_leaves().len() >= 2);
-        let policy = fixtures::config().analysis.relations;
+        let policy = domain.spec().relations();
         let mut models = Vec::new();
         for outcome in result
             .outcomes()
@@ -353,11 +358,11 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
             let words = [0, 32].map(|offset| {
                 outcome
                     .data
-                    .read_word_checked(&fixtures::word(offset), Domain::default())
+                    .read_word_checked(&fixtures::word(offset), domain)
                     .unwrap()
             });
             let cases = [(1u64, 2u64), (1, 1)].map(|(left, right)| {
-                let equal = |value: &AbstractValue, constant: u64| {
+                let equal = |value: &TestValue, constant: u64| {
                     ExprId::operation(
                         opcode::EQ,
                         &[
@@ -374,7 +379,12 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
                     policy.expressions(),
                 )
                 .unwrap();
-                RelationState::default().can_equal(&pair, alloy_primitives::U256::from(1), &policy)
+                RelationState::default().can_equal(
+                    &pair,
+                    alloy_primitives::U256::from(1),
+                    &policy,
+                    domain,
+                )
             });
             models.push((outcome.state, cases));
         }
@@ -402,11 +412,11 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
             assert_eq!(
                 cached
                     .data
-                    .read_word(&fixtures::word(offset), Domain::default())
+                    .read_word(&fixtures::word(offset), domain)
                     .numeric(),
                 direct
                     .data
-                    .read_word(&fixtures::word(offset), Domain::default())
+                    .read_word(&fixtures::word(offset), domain)
                     .numeric()
             );
         }
@@ -422,7 +432,13 @@ fn budget_interrupted_import_is_atomic_and_keeps_all_input_paths_recoverable() {
     // Bisect detailed import admission without optional preparation fees.
     config.root_terminal_coverage = false;
     config.use_summaries = true;
-    let complete = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let complete = crate::analysis::testing::execute(
+        world.clone(),
+        entry.clone(),
+        config.clone(),
+        crate::domain::DomainSpec::default(),
+    )
+    .unwrap();
     assert_eq!(
         complete.status(),
         Status::Converged,
@@ -434,7 +450,13 @@ fn budget_interrupted_import_is_atomic_and_keeps_all_input_paths_recoverable() {
     while low < high {
         let midpoint = low + (high - low) / 2;
         config.max_work = midpoint;
-        let result = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
+        let result = crate::analysis::testing::execute(
+            world.clone(),
+            entry.clone(),
+            config.clone(),
+            crate::domain::DomainSpec::default(),
+        )
+        .unwrap();
         if result.summary_stats().imported_states > 0 {
             high = midpoint;
         } else {
@@ -442,7 +464,13 @@ fn budget_interrupted_import_is_atomic_and_keeps_all_input_paths_recoverable() {
         }
     }
     config.max_work = low - 1;
-    let interrupted = analysis::analyze_world(world, entry, config).unwrap();
+    let interrupted = crate::analysis::testing::execute(
+        world,
+        entry,
+        config,
+        crate::domain::DomainSpec::default(),
+    )
+    .unwrap();
     assert_eq!(interrupted.status(), Status::Incomplete);
     assert!(interrupted.summary_stats().hits > 0);
     assert_eq!(interrupted.summary_stats().imported_states, 0);
@@ -468,8 +496,12 @@ fn budget_interrupted_import_is_atomic_and_keeps_all_input_paths_recoverable() {
         assert!(!root.executed_pcs.is_empty());
     }
     assert!(crate::ssa::build_world(&interrupted).is_err());
-    let partial = crate::ssa::build_partial_world(&interrupted).unwrap();
-    partial.verify(&interrupted).unwrap();
+    let partial = crate::analysis::control::Control::default().scope(|| {
+        let mut postprocessing = WorkBudget::new(2_000_000_000);
+        let partial = crate::ssa::build_partial_world(&interrupted, &mut postprocessing).unwrap();
+        partial.verify(&interrupted, &mut postprocessing).unwrap();
+        partial
+    });
     assert_eq!(partial.status(), Status::Incomplete);
 }
 
@@ -478,7 +510,8 @@ fn rejected_world_fingerprint_runs_without_a_summary_or_a_guessed_key() {
     use crate::domain::symbolic::{ByteStateId, ByteView, ExprLimits, GraphLimits};
     let caller = format!("{}50{}5000", call(0), call(0));
     let (_, entry) = fixtures::fixture(&[(0x101, &caller), (0x200, "00")]);
-    let mut world = crate::world::World::new(crate::Fork::Osaka, "uncacheable symbolic world");
+    let mut world =
+        crate::analysis::testing::World::new(crate::Fork::Osaka, "uncacheable symbolic world");
     let size = GraphLimits::default().max_exact_bytes + 1;
     let input = ByteView::new(
         ByteStateId::exact(Arc::from(vec![0u8; size])),
@@ -486,14 +519,14 @@ fn rejected_world_fingerprint_runs_without_a_summary_or_a_guessed_key() {
         ExprId::constant(alloy_primitives::U256::from(size)),
     );
     let hash = ExprId::keccak(input, ExprLimits::default()).unwrap();
-    let mut account = crate::world::Account::from_hex(&caller, world.fork()).unwrap();
+    let mut account = crate::analysis::testing::Account::from_hex(&caller, world.fork()).unwrap();
     account.balance = fixtures::word(1_000_000);
     account.storage.insert(
         alloy_primitives::U256::ZERO,
-        AbstractValue::top().with_expression(hash),
+        TestValue::top().with_expression(hash),
     );
     world.insert(fixtures::address(0x101), account).unwrap();
-    let mut callee = crate::world::Account::from_hex("00", world.fork()).unwrap();
+    let mut callee = crate::analysis::testing::Account::from_hex("00", world.fork()).unwrap();
     callee.balance = fixtures::word(1_000_000);
     world.insert(fixtures::address(0x200), callee).unwrap();
     assert!(matches!(
@@ -503,7 +536,13 @@ fn rejected_world_fingerprint_runs_without_a_summary_or_a_guessed_key() {
     let mut config = fixtures::config();
     config.max_work = 1_000_000_000;
     config.use_summaries = true;
-    let result = analysis::analyze_world(world, entry, config).unwrap();
+    let result = crate::analysis::testing::execute(
+        world,
+        entry,
+        config,
+        crate::domain::DomainSpec::default(),
+    )
+    .unwrap();
     assert_eq!(result.status(), Status::Converged);
     assert_eq!(result.summary_stats().hits, 0);
     assert!(result.summaries().is_empty());
@@ -520,7 +559,8 @@ fn actual_replay_rejects_current_and_captured_cancellation_after_paid_class_clon
     use std::cell::Cell;
 
     for cancel_captured in [false, true] {
-        let domain = Domain::default();
+        let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+        let domain = domain.borrowed();
         let (original, caller, _) = certificate(domain);
         let owner = Cancellation::new();
         let current = Cancellation::new();
@@ -564,12 +604,7 @@ fn actual_replay_rejects_current_and_captured_cancellation_after_paid_class_clon
                 &mut budget,
                 domain.spec().relations().expressions(),
             )
-            .and_then(|replay| {
-                replay.prepare(
-                    &mut budget,
-                    crate::domain::ValueAlgebra::new(domain).borrowed(),
-                )
-            })
+            .and_then(|replay| replay.prepare(&mut budget, domain))
         });
         assert!(matches!(
             result,

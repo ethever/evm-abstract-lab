@@ -2,6 +2,9 @@
 //! Every execution fixture is runtime bytecode; helpers only assemble labels
 //! and inspect observable outputs, never emulate an unknown summary.
 
+#[path = "support/native.rs"]
+mod native;
+
 #[path = "unknown_world/concrete.rs"]
 mod concrete;
 #[path = "unknown_world/contexts.rs"]

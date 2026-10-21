@@ -57,11 +57,13 @@ fn fixture(name: &str, extra: &[&str]) -> Json {
 }
 
 fn contains(value: &Json, expected: U256) -> bool {
-    value["Constants"].as_array().is_some_and(|values| {
-        values.iter().any(|value| {
-            value.as_str().and_then(|value| value.parse::<U256>().ok()) == Some(expected)
+    value["numeric"]["constants"]
+        .as_array()
+        .is_some_and(|values| {
+            values.iter().any(|value| {
+                value.as_str().and_then(|value| value.parse::<U256>().ok()) == Some(expected)
+            })
         })
-    })
 }
 
 fn account<'a>(store: &'a Json, address: &str) -> Option<&'a Json> {

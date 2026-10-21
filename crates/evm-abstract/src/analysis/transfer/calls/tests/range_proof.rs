@@ -21,11 +21,10 @@ fn disabled_relations_keep_paid_call_output_and_empty_failure_proofs() {
 }
 
 fn paid_call_output_range(relations_enabled: bool) {
-    let mut config = ExecutionConfig {
+    let config = ExecutionConfig {
         max_work: 1_000_000_000,
         ..ExecutionConfig::default()
     };
-    config.analysis.relations.enabled = relations_enabled;
     let numeric = ValueAlgebra::new(Policy);
     let algebra = if relations_enabled {
         numeric.borrowed()
@@ -161,7 +160,7 @@ fn paid_call_output_range(relations_enabled: bool) {
                     .payload
                     .active()
                     .memory
-                    .read_word_with(&value(0), algebra)
+                    .read_word(&value(0), algebra)
                     .singleton(),
                 Some(U256::from(42))
             );

@@ -25,7 +25,7 @@
 //! 最终状态由是否存在 frontier 决定，仅队列排空不足以证明 `Converged`。
 
 use super::{
-    ConfigError, Diagnostic, Limit, Status, SummaryStats, WorldAnalysis,
+    ConfigError, Diagnostic, Limit, Status, SummaryStats,
     machine::{
         EvmExecutionEvidence, EvmMachineFrontier, EvmMachineOutcome, EvmMachinePayload,
         EvmMachineState, EvmWorldAnalysis, ExecutionConfig, FrontierReason, MachineEdge,
@@ -39,10 +39,9 @@ use super::{
         transfer_stop,
     },
 };
-use crate::world::{Entry, World};
 
 use crate::{
-    domain::{AlgebraRef, EvmNumericAlgebra, ValueAlgebra, WordElement, symbolic::ExprId},
+    domain::{AlgebraRef, EvmNumericAlgebra, WordElement, symbolic::ExprId},
     world::{EvmEntry, EvmWorld},
 };
 use analysis_kernel::{Availability, Change, RunningJob, SlotMeta};
@@ -51,7 +50,9 @@ use std::{collections::BTreeSet, sync::Arc};
 pub(in crate::analysis) mod cooperation;
 pub(in crate::analysis) mod policy;
 use super::cooperation::{Composition, CooperationError, InputTasks, LocalInput, Point, PointKind};
-use cooperation::{Borrowed, Cooperation, Empty};
+use cooperation::Cooperation;
+#[cfg(test)]
+use cooperation::Empty;
 mod input;
 mod installation;
 mod reuse;
@@ -70,30 +71,11 @@ pub use policy::{
     Arrival, ContextInsensitive, ContextPolicy, EnginePolicies, FirstResumeStatus,
     MergeResumeStatus, PartitionPolicy, RecentDistinctJumps,
 };
+pub(super) use reuse::EvmExecutionReuse;
+#[cfg(test)]
+use reuse::ExecutionReuse;
 pub use reuse::ReuseStats;
-pub(super) use reuse::{EvmExecutionReuse, ExecutionReuse};
 use terminal::boundary::Boundary as TerminalBoundary;
-
-/// 从固定世界、入口上下文和执行策略建立初始机器，并运行同一事务的工作表。
-///
-/// 配置不合法返回 `ConfigError`；缺少入口代码等模型边界则返回带 frontier 的
-/// `Incomplete` 分析，让调用者能够区分“不能完成分析”和 EVM 自身执行失败。
-pub(super) fn run_world(
-    world: World,
-    entry: Entry,
-    config: ExecutionConfig,
-) -> Result<WorldAnalysis, ConfigError> {
-    run_world_with_observer(world, entry, config, &super::progress::Observer::default())
-}
-
-pub(super) fn run_world_with_observer(
-    world: World,
-    entry: Entry,
-    config: ExecutionConfig,
-    observer: &super::progress::Observer,
-) -> Result<WorldAnalysis, ConfigError> {
-    super::layers::AnalysisSession::from_world(world, entry, config)?.execute_base(observer)
-}
 
 /// Allocations and transfers remain charged when RPC refinement discards a graph.
 #[derive(Default)]
@@ -111,6 +93,10 @@ impl Counters {
         }
     }
 
+    pub(super) fn set_observer(&mut self, observer: &super::progress::Observer) {
+        self.observer = observer.clone();
+    }
+
     pub(super) fn report(&self, work: usize) {
         self.observer.emit(super::progress::Event::Execution {
             states: self.states,
@@ -120,147 +106,18 @@ impl Counters {
     }
 }
 
-/// Execute one fixed snapshot under the caller's cumulative resource ledger.
-#[cfg(test)]
-pub(super) fn run_metered(
-    world: World,
-    entry: Entry,
-    config: ExecutionConfig,
-    budget: &mut WorkBudget,
-    counters: &mut Counters,
-    storage_reads: transfer::StorageReadPolicy,
-) -> Result<WorldAnalysis, ConfigError> {
-    run_reusing(
-        world,
-        entry,
-        config,
-        budget,
-        counters,
-        storage_reads,
-        None,
-        None,
-    )
-}
-
-/// Execute the existing default session through the injected generic engine.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "session ledger and immutable identity"
-)]
-pub(super) fn run_reusing(
-    world: World,
-    entry: Entry,
-    config: ExecutionConfig,
-    budget: &mut WorkBudget,
-    counters: &mut Counters,
-    storage_reads: transfer::StorageReadPolicy,
-    reuse: Option<&mut ExecutionReuse>,
-    identity: Option<(&super::layers::SnapshotId, super::layers::FactRevision)>,
-) -> Result<WorldAnalysis, ConfigError> {
-    let domain = ValueAlgebra::new(config.domain()?);
-    let policies: EnginePolicies = EnginePolicies::default();
-    run_reusing_with(
-        world,
-        entry,
-        config,
-        domain.borrowed(),
-        &policies,
-        budget,
-        counters,
-        storage_reads,
-        reuse,
-        identity,
-        Cooperation::new(Empty::default()),
-    )
-    .map_err(default_cooperation_error)
-}
-
-/// Execute an injected numeric algebra and frozen precision policies directly.
-pub(super) fn run_world_with<
-    D: EvmNumericAlgebra,
-    C: ContextPolicy,
-    P: PartitionPolicy,
-    S: StatePolicy<D, P::Class>,
->(
-    world: EvmWorld<D::Element>,
-    entry: EvmEntry<D::Element>,
-    config: ExecutionConfig,
-    domain: AlgebraRef<'_, D>,
-    policies: &EnginePolicies<C, P, S>,
-    observer: &super::progress::Observer,
-) -> Result<EvmWorldAnalysis<D::Element>, ConfigError> {
-    let mut budget = WorkBudget::new(config.max_work);
-    let mut counters = Counters::with_observer(observer);
-    run_reusing_with(
-        world,
-        entry,
-        config,
-        domain,
-        policies,
-        &mut budget,
-        &mut counters,
-        transfer::StorageReadPolicy::Abstract,
-        None,
-        None,
-        Cooperation::new(Empty::default()),
-    )
-    .map_err(default_cooperation_error)
-}
-
-/// Join the real interpreter with a caller-owned static analyzer assembly.
-pub(super) fn run_world_cooperating<D, C, P, H, X, E>(
-    world: EvmWorld<D::Element>,
-    entry: EvmEntry<D::Element>,
-    config: ExecutionConfig,
-    domain: AlgebraRef<'_, D>,
-    policies: &EnginePolicies<C, P, H>,
-    extension: &mut X,
-    observer: &super::progress::Observer,
-) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>>
-where
-    D: EvmNumericAlgebra,
-    C: ContextPolicy,
-    P: PartitionPolicy,
-    H: StatePolicy<D, P::Class>,
-    X: Composition<D::Element, E>,
-{
-    let mut budget = WorkBudget::new(config.max_work);
-    let mut counters = Counters::with_observer(observer);
-    run_reusing_with(
-        world,
-        entry,
-        config,
-        domain,
-        policies,
-        &mut budget,
-        &mut counters,
-        transfer::StorageReadPolicy::Abstract,
-        None,
-        None,
-        Cooperation::new(Borrowed(extension)),
-    )
-}
-
-fn default_cooperation_error(error: CooperationError<std::convert::Infallible>) -> ConfigError {
-    match error {
-        CooperationError::Config(error) => error,
-        CooperationError::Extension(never) => match never {},
-        _ => unreachable!("empty extension performs no cooperation operations"),
-    }
-}
-
 /// Immutable-fact sessions retain pure computation while every run creates a
 /// fresh `EvmStore<D::Element>` and rollback namespace. Existing callers need no reuse state.
 #[expect(
     clippy::too_many_arguments,
     reason = "original execution ledger and immutable session identity are separate inputs"
 )]
-fn run_reusing_with<
+pub(super) fn run_reusing<
     D: EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
-    X: Composition<D::Element, E>,
+    X: Composition<D::Element, Error = E>,
     E,
 >(
     world: EvmWorld<D::Element>,
@@ -272,7 +129,7 @@ fn run_reusing_with<
     counters: &mut Counters,
     storage_reads: transfer::StorageReadPolicy,
     mut reuse: Option<&mut EvmExecutionReuse<D::Element>>,
-    identity: Option<(&super::layers::SnapshotId, super::layers::FactRevision)>,
+    identity: (&super::layers::SnapshotId, super::layers::FactRevision),
     cooperation: Cooperation<D::Element, X, E>,
 ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>> {
     if let Some(reuse) = &mut reuse {
@@ -283,7 +140,10 @@ fn run_reusing_with<
     }
     counters.observer.phase(super::progress::Phase::Analyzing);
     world.apply_snapshot_environment(&mut entry.environment);
-    entry.environment.validate().map_err(ConfigError::from)?;
+    entry
+        .environment
+        .validate_structure()
+        .map_err(ConfigError::from)?;
     if let Some(observed) = entry.environment.to.as_concrete()
         && observed != entry.address
     {
@@ -295,7 +155,8 @@ fn run_reusing_with<
             .into(),
         );
     }
-    config.analysis.validated_spec()?;
+    config.validate()?;
+    domain.spec().validate().map_err(ConfigError::from)?;
     if config.max_work == 0 || config.max_call_depth == 0 || config.max_memory_bytes == 0 {
         return Err(ConfigError::Budget.into());
     }
@@ -305,6 +166,8 @@ fn run_reusing_with<
         config,
         schema_version: super::SCHEMA_VERSION,
         domain_spec: domain.spec(),
+        snapshot: identity.0.clone(),
+        revision: identity.1,
         states: Vec::new(),
         edges: Vec::new(),
         diagnostics: Vec::new(),
@@ -319,6 +182,51 @@ fn run_reusing_with<
         summaries: Vec::new(),
         procedure_summaries: Default::default(),
     };
+    // Structural input admission performs no opaque query. Pay the actual
+    // carrier's independent blob-count proof before numeric consistency checks.
+    let validation_work = result
+        .entry
+        .environment
+        .blob_hashes
+        .length
+        .singleton_work()
+        .saturating_add(
+            result
+                .entry
+                .environment
+                .blob_hashes
+                .hashes
+                .len()
+                .saturating_mul(4),
+        );
+    if validation_work == usize::MAX || !budget.charge(validation_work) {
+        if budget.cancellation().is_cancelled()
+            || analysis_control::current_cancellation().is_cancelled()
+        {
+            return Err(CooperationError::Cancelled);
+        }
+        result.frontiers.push(EvmMachineFrontier {
+            from: None,
+            target: None,
+            pc: None,
+            reason: FrontierReason::Work,
+            range: None,
+            payload: None,
+        });
+        result.status = Status::Incomplete;
+        result.work = budget.used();
+        return Ok(result);
+    }
+    result
+        .entry
+        .environment
+        .validate()
+        .map_err(ConfigError::from)?;
+    if budget.cancellation().is_cancelled()
+        || analysis_control::current_cancellation().is_cancelled()
+    {
+        return Err(CooperationError::Cancelled);
+    }
     // 输入 lift、EvmStore<D::Element> 与回滚点复制也使用根账本，不让初始化获得免费工作。
     if counters.states >= result.config.analysis.max_states {
         result.frontiers.push(EvmMachineFrontier {
@@ -337,8 +245,8 @@ fn run_reusing_with<
         .world
         .work_size()
         .saturating_add(result.entry.environment.work_size())
-        .saturating_add(result.world.projection_work_with(domain))
-        .saturating_add(result.entry.environment.projection_work_with(domain))
+        .saturating_add(result.world.projection_work(domain))
+        .saturating_add(result.entry.environment.projection_work(domain))
         .saturating_mul(4);
     // 饱和后已不能证明预留的是可信上界，即使用户给了 usize::MAX 预算。
     if initial_work == usize::MAX || !budget.charge(initial_work) {
@@ -483,13 +391,13 @@ fn run_reusing_with<
                 .dependencies
                 .add(0, super::layers::FactDependency::AllInitialState);
         }
-        terminal::prepare_with(
+        terminal::prepare(
             &initial,
             &result.world,
             &result.entry,
             &result.config,
             domain,
-            identity,
+            Some(identity),
             budget,
         )
         .ok()
@@ -633,7 +541,7 @@ struct EvmEngine<
     C: ContextPolicy,
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
-    X: Composition<D::Element, E>,
+    X: Composition<D::Element, Error = E>,
     E,
 > {
     /// 对外返回的分析结果；状态入口可继续 join，出口保存最近一次转换的证据。
@@ -702,7 +610,7 @@ impl<
     C: ContextPolicy,
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
-    X: Composition<D::Element, E>,
+    X: Composition<D::Element, Error = E>,
     E,
 > EvmEngine<'_, D, C, P, S, X, E>
 {
@@ -1912,7 +1820,7 @@ impl<
             certificate,
             &self.result.states[root].entry,
             self.budget,
-            self.result.config.analysis.relations.expressions(),
+            self.domain.spec().relations().expressions(),
         )
         .and_then(|replay| replay.prepare(self.budget, self.domain))
         {
@@ -2285,7 +2193,7 @@ mod tests;
 #[cfg(test)]
 type Engine<'a> = EvmEngine<
     'a,
-    crate::domain::Domain,
+    crate::domain::ProductAlgebra,
     RecentDistinctJumps,
     FirstResumeStatus,
     SemanticPolicies,

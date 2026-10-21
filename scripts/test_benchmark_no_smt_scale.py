@@ -104,6 +104,33 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse(sample["policy_matches"])
         self.assertEqual(sample["nativefinal"]["config"], {"synthetic": True})
 
+    def test_native_policy_checks_model_and_algebra_limits_beyond_execution_config(self):
+        # Synthetic envelopes check the harness boundary, never EVM coverage.
+        native = {**report(), "schema_version": 12, "numeric_model": "product",
+                  "domain_spec": {"capacity": 512, "cost_version": 7},
+                  "postprocessing_max_work": 2_000_000_000, "postprocessing_work": 7}
+        self.commands.update(interface={"versions": {"native": 12}},
+                             expected_native_numeric_model="product",
+                             expected_native_domain_spec=copy.deepcopy(native["domain_spec"]),
+                             expected_native_postprocessing_max_work=2_000_000_000)
+        self.write_stdout(native)
+        self.assertTrue(self.collect()["policy_matches"])
+        for field, value in [("numeric_model", "finite-set"),
+                             ("domain_spec", {"capacity": 1, "cost_version": 7}),
+                             ("domain_spec", {"capacity": 512, "cost_version": 6}),
+                             ("postprocessing_max_work", 1_000_000_000)]:
+            with self.subTest(field=field, value=value):
+                self.write_stdout({**native, field: value})
+                sample = self.collect()
+                self.assertTrue(sample["report_delivered"])
+                self.assertFalse(sample["policy_matches"])
+                self.assertEqual(sample["nativefinal"][field], value)
+        self.write_stdout({**native, "schema_version": 11})
+        self.assertFalse(self.collect()["report_delivered"])
+        for used in (-1, 2_000_000_001, "7"):
+            self.write_stdout({**native, "postprocessing_work": used})
+            self.assertFalse(self.collect()["report_delivered"])
+
     def test_parse_guard_retains_raw_bytes_and_does_not_infer_final(self):
         raw = (self.directory / "stdout.log").read_bytes()
         sample = self.collect(limit=len(raw) - 1)

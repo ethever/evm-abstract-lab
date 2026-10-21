@@ -8,7 +8,7 @@
 //! instruction graph and world SSA retain every call and return boundary.
 
 use crate::analysis::engine::policy::{PolicyKey, key_checkpoint};
-use crate::domain::{NumericValue, WordElement};
+use crate::domain::WordElement;
 
 use super::{
     Diagnostic, EvmCallStack, EvmInstructionValue, EvmMachinePayload, EvmRootFrame,
@@ -81,8 +81,6 @@ pub struct EvmSummaryInput<N: WordElement> {
     pub max_call_depth: usize,
     /// Intraprocedural jump-history precision policy.
     pub context_depth: usize,
-    /// Finite-domain capacity used to compute the relation.
-    pub max_constants: usize,
     /// Frozen component, exchange, provenance and cost policy.
     pub domain_spec: crate::domain::DomainSpec,
     /// Memory/range modeling policy.
@@ -346,7 +344,6 @@ impl<N: WordElement, Tag: PolicyKey> EvmCache<N, Tag> {
                 .saturating_sub(payload.call_stack.depth()),
             max_call_depth: analysis.config.max_call_depth,
             context_depth: analysis.config.analysis.context_depth,
-            max_constants: analysis.config.analysis.max_constants,
             domain_spec: analysis.domain_spec(),
             max_memory_bytes: analysis.config.max_memory_bytes,
         }))
@@ -753,17 +750,14 @@ fn capture<N: WordElement, Tag: PolicyKey, T>(
     })
 }
 
-/// Default numeric carrier for exact summary inputs.
-pub type SummaryInput = EvmSummaryInput<NumericValue>;
-/// Default numeric carrier for exact summary outcomes.
-pub type SummaryOutput = EvmSummaryOutput<NumericValue>;
-/// Default numeric carrier for closed exact summary evidence.
-pub type SummaryRecord = EvmSummaryRecord<NumericValue>;
+// Local regression fixtures use explicit built-in carriers.
 #[cfg(test)]
-pub(super) type Node = EvmNode<NumericValue>;
+pub(in crate::analysis) type SummaryOutput = EvmSummaryOutput<crate::domain::NumericValue>;
 #[cfg(test)]
-pub(super) type Terminal = EvmTerminal<NumericValue>;
+pub(in crate::analysis) type Node = EvmNode<crate::domain::NumericValue>;
 #[cfg(test)]
-pub(super) type Certificate = EvmCertificate<NumericValue>;
+pub(in crate::analysis) type Terminal = EvmTerminal<crate::domain::NumericValue>;
 #[cfg(test)]
-pub(super) type Cache = EvmCache<NumericValue>;
+pub(in crate::analysis) type Certificate = EvmCertificate<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type Cache = EvmCache<crate::domain::NumericValue>;

@@ -6,7 +6,7 @@ use crate::domain::WordElement;
 use super::{Config, ConfigError, Diagnostic, EdgeKind, Limit, Status};
 use crate::{
     bytecode::Program,
-    domain::{EvmValue, NumericValue},
+    domain::EvmValue,
     world::{AddressInput, EvmByteArray, EvmEntry, EvmStore, EvmWorld},
 };
 use alloy_primitives::{Address, B256, U256};
@@ -23,20 +23,17 @@ mod range;
 mod stack;
 mod symbolic;
 
-pub use evidence::{
-    EvmExecutionEvidence, EvmInstructionValue, ExecutionEvidence, InstructionProgress,
-    InstructionValue,
-};
-pub use frame::{
-    ChildFrame, EvmChildFrame, EvmFrame, EvmFrameState, EvmRootFrame, FrameState, RootFrame,
-};
+pub use evidence::{EvmExecutionEvidence, EvmInstructionValue, InstructionProgress};
+#[cfg(test)]
+pub(in crate::analysis) use frame::{ChildFrame, RootFrame};
+pub use frame::{EvmChildFrame, EvmFrame, EvmFrameState, EvmRootFrame};
 pub(in crate::analysis) use frame::{FrameByteKind, FrameMapOrder};
 pub(crate) use join::EvmEntryAlternatives;
 pub use join::{JoinBoundary, MachineError};
-pub use range::{
-    ByteRangeBoundary, EvmRangeRequest, EvmRangeWitness, RangeKind, RangeRequest, RangeWitness,
-};
-pub use stack::{CallStack, EvmCallStack};
+pub use range::{ByteRangeBoundary, EvmRangeRequest, EvmRangeWitness, RangeKind};
+#[cfg(test)]
+pub(in crate::analysis) use stack::CallStack;
+pub use stack::EvmCallStack;
 
 /// One shared budget covers the root and every callee.
 #[derive(Clone, Debug, Serialize)]
@@ -72,12 +69,13 @@ impl Default for ExecutionConfig {
 }
 
 impl ExecutionConfig {
-    pub(crate) fn domain(&self) -> Result<crate::domain::Domain, ConfigError> {
-        let (_, domain) = self.analysis.clone().validate()?.into_parts();
+    /// Validate execution budgets without constructing a numeric algebra.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        self.analysis.check()?;
         if self.max_work == 0 || self.max_call_depth == 0 || self.max_memory_bytes == 0 {
             return Err(ConfigError::Budget);
         }
-        Ok(domain)
+        Ok(())
     }
 }
 
@@ -477,6 +475,8 @@ pub struct EvmWorldAnalysis<N: WordElement> {
     pub(crate) config: ExecutionConfig,
     pub(crate) schema_version: u16,
     pub(crate) domain_spec: crate::domain::DomainSpec,
+    pub(crate) snapshot: super::layers::SnapshotId,
+    pub(crate) revision: super::layers::FactRevision,
     pub(crate) states: Vec<EvmMachineState<N>>,
     pub(crate) edges: Vec<MachineEdge>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -495,6 +495,15 @@ pub struct EvmWorldAnalysis<N: WordElement> {
 }
 
 impl<N: WordElement> EvmWorldAnalysis<N> {
+    /// Original request snapshot, also available for custom carriers/extensions.
+    pub fn snapshot(&self) -> &super::layers::SnapshotId {
+        &self.snapshot
+    }
+    /// Exact initial-fact version consumed by this result.
+    pub fn revision(&self) -> super::layers::FactRevision {
+        self.revision
+    }
+
     /// Separately prepaid terminal relation for the original entered root.
     pub fn root_terminal_coverage(&self) -> Option<&super::EvmRootTerminalCoverage<N>> {
         self.root_terminal_coverage.as_ref()
@@ -566,33 +575,18 @@ impl<N: WordElement> EvmWorldAnalysis<N> {
     }
 }
 
-/// Default numeric assembly for [`EvmContinuation`].
-pub type Continuation = EvmContinuation<NumericValue>;
-
-/// Default numeric assembly for [`EvmMachinePayload`].
-pub type MachinePayload = EvmMachinePayload<NumericValue>;
-
-/// Default numeric assembly for [`EvmMachineState`].
-pub type MachineState = EvmMachineState<NumericValue>;
-
-/// Default numeric assembly for [`EvmMachineFrontier`].
-pub type MachineFrontier = EvmMachineFrontier<NumericValue>;
-
-/// Default numeric assembly for [`EvmMachineOutcome`].
-pub type MachineOutcome = EvmMachineOutcome<NumericValue>;
-
-/// Default numeric assembly for [`EvmProcedureSummaryOutput`].
-pub type ProcedureSummaryOutput = EvmProcedureSummaryOutput<NumericValue>;
-
-/// Default numeric assembly for [`EvmProcedureSummary`].
-pub type ProcedureSummary = EvmProcedureSummary<NumericValue>;
-
-/// Default numeric assembly for [`EvmProcedureSummaryRecord`].
-pub type ProcedureSummaryRecord = EvmProcedureSummaryRecord<NumericValue>;
-
-/// Default numeric assembly for [`EvmWorldAnalysis`].
-pub type WorldAnalysis = EvmWorldAnalysis<NumericValue>;
-
+// Local regression fixtures use explicit built-in carriers.
+#[cfg(test)]
+pub(in crate::analysis) type Continuation = EvmContinuation<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type MachinePayload = EvmMachinePayload<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type MachineOutcome = EvmMachineOutcome<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type ProcedureSummaryRecord =
+    EvmProcedureSummaryRecord<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type WorldAnalysis = EvmWorldAnalysis<crate::domain::NumericValue>;
 impl<N: WordElement> Default for EvmProcedureEvidence<N> {
     fn default() -> Self {
         Self(Arc::new(Vec::new()))

@@ -1,4 +1,8 @@
 //! One interrupted evaluation and its queued successor are separate obligations.
+use crate::domain::ProductAlgebra;
+
+#[cfg(test)]
+use crate::analysis::testing::TestValue;
 
 use super::{Engine, engine, interrupted_fixture};
 use crate::{
@@ -9,7 +13,7 @@ use crate::{
         transfer::EvmSuccessor,
         worklist::{MachineMeter, kernel_failure},
     },
-    domain::{AbstractValue, ValueAlgebra, relational::QueryReason},
+    domain::{ValueAlgebra, relational::QueryReason},
     resource::WorkBudget,
 };
 use analysis_kernel::{Change, Closure};
@@ -17,14 +21,15 @@ use analysis_kernel::{Change, Closure};
 #[test]
 fn completed_stop_keeps_its_outcome_when_only_kernel_finish_is_unpaid() {
     let mut config = fixtures::config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config.root_terminal_coverage = false;
-    config.analysis.relations.enabled = false;
-    let complete = fixtures::run("00", config.clone());
+    config_numeric.relations.enabled = false;
+    let complete = fixtures::run("00", config.clone(), config_numeric.spec());
     assert_eq!(complete.status(), Status::Converged);
     // This one-block STOP has no optional cache or successor work. Its last
     // payment is kernel finish, after the real terminal was already installed.
     config.max_work = complete.work() - 1;
-    let interrupted = fixtures::run("00", config);
+    let interrupted = fixtures::run("00", config, config_numeric.spec());
     assert_eq!(interrupted.status(), Status::Incomplete);
     assert_eq!(interrupted.states()[0].executed_pcs, [0]);
     assert_eq!(
@@ -76,7 +81,7 @@ fn precise_gap_keeps_distinct_queued_inputs_and_self_dirty_evaluations() {
             let cancellation = analysis_control::Cancellation::new();
             analysis_control::with_cancellation(&cancellation, || {
                 let (result, child) = interrupted_fixture();
-                let algebra = ValueAlgebra::new(result.config.domain().unwrap());
+                let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
                 let policies: EnginePolicies = Default::default();
                 let mut budget = WorkBudget::new(WORK);
                 let mut counters = super::Counters::default();
@@ -119,7 +124,7 @@ fn precise_gap_keeps_distinct_queued_inputs_and_self_dirty_evaluations() {
                     }
                     Wake::Input => {
                         let mut incoming = payload.clone();
-                        incoming.active_mut().call_value = AbstractValue::top();
+                        incoming.active_mut().call_value = TestValue::top();
                         assert_eq!(
                             engine.successor(
                                 id,
@@ -216,7 +221,7 @@ fn precise_gap_keeps_distinct_queued_inputs_and_self_dirty_evaluations() {
 #[test]
 fn a_prior_precise_frontier_does_not_cover_a_later_completed_evaluation() {
     let (result, child) = interrupted_fixture();
-    let algebra = ValueAlgebra::new(result.config.domain().unwrap());
+    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
     let policies: EnginePolicies = Default::default();
     let mut budget = WorkBudget::new(WORK);
     let mut counters = super::Counters::default();

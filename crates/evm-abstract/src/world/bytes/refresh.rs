@@ -1,6 +1,6 @@
 //! Reader reuse belongs only to one staged refresh with immutable read inputs.
 
-use super::{EvmByteArray, RangeError, conditional::Context, constant_with, numeric};
+use super::{EvmByteArray, RangeError, conditional::Context, constant, numeric};
 use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::{
@@ -42,7 +42,8 @@ fn compatible<N: WordElement>(
             error @ (RangeError::Expression(ExprError::Cancelled)
             | RangeError::State(StateError::Cancelled)),
         ) => Err(error),
-        // Preserve byte_at's existing compatibility marker for checked failures.
+        // Failed checked reads retain a conservative unknown byte marked with
+        // symbolic_limit; cancellation propagates as the typed error above.
         Err(_) => Ok(EvmValue::<N>::unknown_byte().with_symbolic_limit()),
         Ok(value) => Ok(value),
     }
@@ -122,7 +123,7 @@ pub(super) fn run<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     }
     let indices = array.bytes.keys().copied().collect::<Vec<_>>();
     let (first, rest) = indices.split_first().expect("nonempty staged coordinates");
-    let (first_offset, facts) = match array.prepare_byte_read(&constant_with(*first), domain) {
+    let (first_offset, facts) = match array.prepare_byte_read(&constant(*first), domain) {
         Ok(prepared) => prepared,
         Err(error) => {
             array.bytes.insert(*first, compatible(Err(error))?);
@@ -130,8 +131,7 @@ pub(super) fn run<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                 if !charge(budget, 0)? {
                     return Ok(false);
                 }
-                let value =
-                    compatible(array.read_byte_checked_with(&constant_with(*index), domain))?;
+                let value = compatible(array.read_byte_checked(&constant(*index), domain))?;
                 array.bytes.insert(*index, value);
             }
             return charge(budget, 0);
@@ -169,8 +169,7 @@ pub(super) fn run<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         // The checks precede equality and Reader.read, including cache hits.
         context.check()?;
         let value = (|| {
-            let (offset, current_facts) =
-                array.prepare_byte_read(&constant_with(*index), domain)?;
+            let (offset, current_facts) = array.prepare_byte_read(&constant(*index), domain)?;
             let current = Context::<N, D>::new(&current_facts, Some(&array.conditional), domain);
             let same = current_facts == facts;
             array.read_byte_prepared(&offset, &current, domain, || {

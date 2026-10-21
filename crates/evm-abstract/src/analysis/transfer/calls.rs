@@ -38,28 +38,39 @@ pub(super) fn resolve<N: WordElement>(
     store: &EvmStore<N>,
     target: Address,
 ) -> Result<(Address, FrameCode, Option<Program>), FrontierReason> {
-    if precompile(world, target) {
-        return Ok((target, FrameCode::Precompile(target), None));
+    let (address, mode, program) =
+        resolve_code(world.fork(), target, |address| store.code(address));
+    Ok((address, mode, program.cloned()))
+}
+
+/// Shared source resolution for execution and a declared, unexpanded root view.
+/// Lookup borrows only code; projecting an incomplete input never builds a Store
+/// or invents an entered frame just to discover which program is declared.
+pub(in crate::analysis) fn resolve_code<'a>(
+    fork: crate::Fork,
+    target: Address,
+    code: impl Fn(Address) -> Option<&'a Code>,
+) -> (Address, FrameCode, Option<&'a Program>) {
+    if super::precompile::contains(fork, target) {
+        return (target, FrameCode::Precompile(target), None);
     }
-    match store.code(target) {
-        Some(Code::Runtime(program)) => Ok((target, FrameCode::Runtime, Some(program.clone()))),
-        Some(Code::Empty) => Ok((target, FrameCode::Empty, None)),
+    match code(target) {
+        Some(Code::Runtime(program)) => (target, FrameCode::Runtime, Some(program)),
+        Some(Code::Empty) => (target, FrameCode::Empty, None),
         Some(Code::Delegation(implementation)) => {
-            if precompile(world, *implementation) {
-                return Ok((*implementation, FrameCode::Empty, None));
+            if super::precompile::contains(fork, *implementation) {
+                return (*implementation, FrameCode::Empty, None);
             }
-            match store.code(*implementation) {
+            match code(*implementation) {
                 Some(Code::Runtime(program)) => {
-                    Ok((*implementation, FrameCode::Runtime, Some(program.clone())))
+                    (*implementation, FrameCode::Runtime, Some(program))
                 }
-                Some(Code::Empty) => Ok((*implementation, FrameCode::Empty, None)),
-                Some(Code::Delegation(_)) => {
-                    Ok((*implementation, FrameCode::InvalidDelegation, None))
-                }
-                _ => Ok((*implementation, FrameCode::Unknown, None)),
+                Some(Code::Empty) => (*implementation, FrameCode::Empty, None),
+                Some(Code::Delegation(_)) => (*implementation, FrameCode::InvalidDelegation, None),
+                _ => (*implementation, FrameCode::Unknown, None),
             }
         }
-        _ => Ok((target, FrameCode::Unknown, None)),
+        _ => (target, FrameCode::Unknown, None),
     }
 }
 
@@ -87,14 +98,14 @@ pub(super) fn initial<D: EvmNumericAlgebra>(
     domain: AlgebraRef<'_, D>,
 ) -> Result<EvmMachinePayload<D::Element>, FrontierReason> {
     let mut store =
-        EvmStore::<D::Element>::new_checked_with(world, domain).map_err(super::errors::store)?;
-    store.project_with(domain);
+        EvmStore::<D::Element>::new_checked(world, domain).map_err(super::errors::store)?;
+    store.project(domain);
     store
         .check_existing(domain.spec().relations().expressions())
         .map_err(super::errors::store)?;
     let (code_address, code, program) = resolve(world, &store, entry.address)?;
     let code_hash = captured_hash(&program, &store, code_address, code);
-    let mut calldata = entry.environment.calldata.project_with(domain);
+    let mut calldata = entry.environment.calldata.project(domain);
     if let Some(scope) = entry.environment.input_scope.id() {
         calldata.bind_input(scope).map_err(super::errors::bytes)?;
     }
@@ -160,7 +171,7 @@ pub(super) fn finish_root_store<D: EvmNumericAlgebra>(
     if !context.procedure {
         let rollback = (kind != OutcomeKind::Return).then_some(saved_store);
         store
-            .finalize_transaction_checked_with(context.domain, rollback, context.budget)
+            .finalize_transaction_checked(context.domain, rollback, context.budget)
             .map_err(|error| {
                 if error.is_cancelled() {
                     FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
@@ -188,7 +199,6 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) {
-    let config = context.config;
     let domain = context.domain;
     if let Err(reason) = query::checkpoint(context.budget) {
         boundary_on(result, pc, reason, payload.key());
@@ -297,11 +307,10 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
     parent
         .stack
         .push(EvmValue::<D::Element>::constant(result_value));
-    let copied = parent.memory.copy_return_data_budgeted_with(
+    let copied = parent.memory.copy_return_data_budgeted(
         &continuation.output_offset,
         &parent.returndata,
         &continuation.output_size,
-        config.max_memory_bytes,
         domain,
         context.budget,
     );
@@ -511,7 +520,7 @@ fn call_prepared<D: EvmNumericAlgebra>(
     // Identity attachment is optional metadata, and does not need an opaque
     // singleton query. The paid projection owns its actual result discovery.
     let mut target_value = args[1].clone();
-    if config.analysis.relations.enabled
+    if domain.spec().relations().enabled
         && target_value.expression().is_none()
         && target_value
             .constants()
@@ -522,7 +531,7 @@ fn call_prepared<D: EvmNumericAlgebra>(
     }
     let projection_args = [target_value, EvmValue::<D::Element>::constant(mask)];
     query::checkpoint(context.budget)?;
-    let projection_work = domain.operation_work_for(opcode::AND, &projection_args);
+    let projection_work = domain.operation_work(opcode::AND, &projection_args);
     query::checkpoint(context.budget)?;
     if projection_work == usize::MAX || !context.budget.charge(projection_work) {
         return Err(FrontierReason::Work);
@@ -580,7 +589,7 @@ fn call_prepared<D: EvmNumericAlgebra>(
     {
         // A symbolic address denotes the complete address input. Retain its
         // scoped term directly; constructing its metadata needs no discovery.
-        let mut candidate = logical.value_with();
+        let mut candidate = logical.value();
         if let (AddressInput::Symbolic(symbol), Some(scope)) = (logical, context.input_scope) {
             candidate =
                 candidate.with_expression(crate::domain::symbolic::ExprId::input(scope, symbol));
@@ -704,12 +713,7 @@ fn call_prepared<D: EvmNumericAlgebra>(
             );
             continue;
         }
-        let calldata = match caller.memory.slice_with(
-            &args[input],
-            &args[input + 1],
-            config.max_memory_bytes,
-            domain,
-        ) {
+        let calldata = match caller.memory.slice(&args[input], &args[input + 1], domain) {
             Ok(data) => data,
             Err(error) => {
                 boundary(result, pc, super::errors::bytes(error));
@@ -776,8 +780,11 @@ fn call_prepared<D: EvmNumericAlgebra>(
             let recipient = payload.store.read_balance(target);
             if !context.budget.charge(
                 domain
-                    .operation_work(&[balance.clone(), value.clone()])
-                    .saturating_add(domain.operation_work(&[recipient.clone(), value.clone()])),
+                    .operation_work_refs(opcode::SUB, &[&balance, &value])
+                    .saturating_add(domain.operation_work_refs(opcode::ADD, &[&recipient, &value]))
+                    .saturating_add(balance.clone_work())
+                    .saturating_add(value.clone_work().saturating_mul(3))
+                    .saturating_add(recipient.clone_work()),
             ) {
                 return Err(FrontierReason::Work);
             }

@@ -228,7 +228,7 @@ pub(super) fn reason(source: &analysis::FrontierReason) -> evm_abstract_protocol
     }
 }
 
-fn fact_failure(
+pub(super) fn fact_failure(
     source: &evm_abstract::domain::facts::FactError,
 ) -> evm_abstract_protocol::FactFailure {
     use evm_abstract::domain::facts::FactError as N;

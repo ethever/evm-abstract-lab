@@ -33,7 +33,7 @@ impl<N: WordElement> EvmStore<N> {
     /// plane has a checked fresh source; account scoping separates owners within
     /// it. No original operands, observations or must-touch facts are rebound.
     /// This is a pre-finalization Store: transaction cleanup must still run.
-    pub(crate) fn root_terminal_all_effects_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn root_terminal_all_effects_checked<D: EvmNumericAlgebra<Element = N>>(
         domain: AlgebraRef<'_, D>,
     ) -> Result<Self, StoreError> {
         let out = Self {
@@ -60,15 +60,3 @@ impl<N: WordElement> EvmStore<N> {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-impl EvmStore<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn root_terminal_all_effects_checked(
-        domain: crate::domain::Domain,
-    ) -> Result<Self, StoreError> {
-        Self::root_terminal_all_effects_checked_with(
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-}

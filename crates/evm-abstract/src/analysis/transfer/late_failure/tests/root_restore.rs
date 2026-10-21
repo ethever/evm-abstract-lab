@@ -1,6 +1,7 @@
 //! Relative root rollback is owned by the common termination boundary.
 
 use super::super::*;
+use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
     analysis::{
@@ -46,9 +47,10 @@ fn fixture(
         value(0),
         EvmByteArray::empty(),
     );
-    let mut config = ExecutionConfig::default();
-    config.analysis.relations.enabled = false;
-    let policy = ValueAlgebra::new(Policy(config.domain().unwrap()));
+    let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.enabled = false;
+    let policy = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(config_numeric.spec())));
     let mut payload = initial(&world, &entry, policy.borrowed()).unwrap();
     assert_eq!(
         payload.store.touched_in_transaction(address(3)),

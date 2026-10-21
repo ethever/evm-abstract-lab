@@ -3,10 +3,11 @@
 //! 代码目录不重新查询初始账户：创建部署的覆盖层、委托调用的代码身份和
 //! 暂停帧都必须保留。反汇编是语法指令列表，不能冒充抽象状态图的具体执行轨迹。
 
+use crate::domain::WordElement;
 use evm_abstract_notation::Symbol;
 
 use crate::{
-    analysis::{FrameCode, MachinePayload, MachineState, Status, WorldAnalysis},
+    analysis::{EvmMachinePayload, EvmMachineState, EvmWorldAnalysis, FrameCode, Status},
     bytecode::Program,
     ssa::{self, SsaError},
     world::Code,
@@ -35,30 +36,63 @@ struct FrameReference {
     active: bool,
 }
 
-#[derive(Default)]
-struct CapturedCode<'a> {
+struct CapturedCode<'a, N: WordElement> {
     program: Option<&'a Program>,
     owners: BTreeSet<Address>,
     references: BTreeSet<FrameReference>,
-    transfers: Vec<&'a MachineState>,
+    transfers: Vec<&'a EvmMachineState<N>>,
+}
+
+impl<N: WordElement> Default for CapturedCode<'_, N> {
+    fn default() -> Self {
+        Self {
+            program: None,
+            owners: BTreeSet::new(),
+            references: BTreeSet::new(),
+            transfers: Vec::new(),
+        }
+    }
 }
 
 /// 完整解释允许保留未完成分析；只有收敛图才构建并验证 SSA。
-pub(super) fn render(analysis: &WorldAnalysis) -> Result<String, SsaError> {
-    render_with_mode(analysis, false)
+pub(super) fn render<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<String, SsaError> {
+    render_with_mode(analysis, false, algebra, budget)
 }
 
-pub(super) fn render_partial(analysis: &WorldAnalysis) -> Result<String, SsaError> {
-    render_with_mode(analysis, true)
+pub(super) fn render_partial<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<String, SsaError> {
+    render_with_mode(analysis, true, algebra, budget)
 }
 
-fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result<String, SsaError> {
+fn render_with_mode<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    analysis: &EvmWorldAnalysis<N>,
+    allow_partial_ssa: bool,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<String, SsaError> {
+    crate::ssa::work::explanation(analysis, budget)?;
+    // SSA admission/replay precedes report allocation. A rejected structural
+    // operation cannot first build a large code/reference report.
+    let normalized = if analysis.status() == Status::Converged {
+        Some(ssa::build_normalized_world(analysis, budget)?)
+    } else if allow_partial_ssa {
+        Some(ssa::build_normalized_partial_world(analysis, budget)?)
+    } else {
+        None
+    };
     let mut output = String::from("Cross-contract explanation\n");
     writeln!(
         output,
-        "  fork={} | domain={:?} | status={:?}",
+        "  fork={} | numeric capacity={} | status={:?}",
         analysis.world().fork(),
-        analysis.domain_spec().profile(),
+        analysis.domain_spec().capacity(),
         analysis.status(),
     )
     .unwrap();
@@ -72,25 +106,20 @@ fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result
         .push_str("  Context-sensitive abstract state graph; not a concrete instruction trace.\n");
     write_code(&mut output, analysis);
     output.push('\n');
-    output.push_str(&super::text(analysis));
+    output.push_str(&super::text(analysis, algebra));
     output.push('\n');
-    if analysis.status() == Status::Converged {
-        let ir = ssa::build_normalized_world(analysis)?;
-        output.push_str(&super::normalized_ssa_verbose(analysis, &ir));
-    } else if allow_partial_ssa {
-        output.push_str(&super::normalized_ssa_verbose(
-            analysis,
-            &ssa::build_normalized_partial_world(analysis)?,
-        ));
+    if let Some(ir) = &normalized {
+        output.push_str(&super::normalized_ssa_verbose(analysis, ir));
     } else {
         output.push_str("SSA unavailable: cross-contract frontiers remain\n");
     }
+    crate::ssa::pay(budget, 0)?;
     Ok(output)
 }
 
-fn capture<'a>(
-    codes: &mut BTreeMap<CodeIdentity, CapturedCode<'a>>,
-    payload: &'a MachinePayload,
+fn capture<'a, N: WordElement>(
+    codes: &mut BTreeMap<CodeIdentity, CapturedCode<'a, N>>,
+    payload: &'a EvmMachinePayload<N>,
     state: usize,
     phase: CapturePhase,
 ) {
@@ -112,8 +141,8 @@ fn capture<'a>(
     }
 }
 
-fn write_code(output: &mut String, analysis: &WorldAnalysis) {
-    let mut codes = BTreeMap::<CodeIdentity, CapturedCode<'_>>::new();
+fn write_code<N: WordElement>(output: &mut String, analysis: &EvmWorldAnalysis<N>) {
+    let mut codes = BTreeMap::<CodeIdentity, CapturedCode<'_, N>>::new();
     for state in analysis.states() {
         capture(&mut codes, &state.entry, state.id, CapturePhase::Entry);
         if let Some(exit) = &state.exit {
@@ -236,7 +265,7 @@ fn write_code(output: &mut String, analysis: &WorldAnalysis) {
     }
 }
 
-fn write_input_code(output: &mut String, analysis: &WorldAnalysis) {
+fn write_input_code<N: WordElement>(output: &mut String, analysis: &EvmWorldAnalysis<N>) {
     // 初始化预算可能耗尽而没有帧。快照已知代码仍可供学习，但不能算作执行证据。
     output.push_str("\nInput code observations (not execution evidence)\n");
     output.push_str(

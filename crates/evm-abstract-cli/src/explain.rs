@@ -2,11 +2,18 @@
 //! 四个输入来源互斥；世界/RPC 复用 analyze 的准入、采集与执行规则。
 
 use crate::{
-    AnalysisArgs, DomainProfile, Input, RootTerminalCoverageArgs, StorageSlot, WorldArgs, defaults,
+    AnalysisArgs, ExecutionArgs, Input, NumericArgs, StorageSlot, WorldArgs, defaults,
     error::CliError, evm::EvmArgs, number, parse_slot, text_with_root_terminal_coverage,
 };
 use clap::{ArgGroup, Args};
-use evm_abstract::{Fork, analysis::Status, render, ssa};
+use evm_abstract::{
+    Fork,
+    analysis::{EvmAnalysis, EvmWorldAnalysis, FrameCode, Status, control::Control},
+    domain::{EvmNumericAlgebra, ValueAlgebra},
+    render,
+    resource::WorkBudget,
+    ssa,
+};
 use std::path::PathBuf;
 
 #[derive(Args)]
@@ -15,7 +22,7 @@ use std::path::PathBuf;
 #[command(group(ArgGroup::new("world-input").args(["world","rpc"]).multiple(false)))]
 pub(crate) struct ExplainArgs {
     #[command(flatten)]
-    symbolic: crate::symbolic::SymbolicArgs,
+    pub(crate) numeric: NumericArgs,
     /// Ordinary EVM runtime bytecode as hex.
     #[arg(long)]
     hex: Option<String>,
@@ -35,7 +42,7 @@ pub(crate) struct ExplainArgs {
     #[arg(long)]
     allow_partial_ssa: bool,
     #[command(flatten)]
-    coverage: RootTerminalCoverageArgs,
+    execution: ExecutionArgs,
     /// Disable on-demand acquisition of missing RPC code and storage slots.
     #[arg(long, requires = "rpc", conflicts_with_all = ["hex", "file", "world"])]
     no_rpc_discovery: bool,
@@ -71,44 +78,19 @@ pub(crate) struct ExplainArgs {
     /// Disable complete callee summary reuse for the world.
     #[arg(long, requires = "world-input")]
     no_summaries: bool,
-    /// Maximum live frames, including the entry frame.
-    #[arg(long, default_value_t = defaults::MAX_CALL_DEPTH)]
-    max_call_depth: usize,
-    /// Maximum cumulative execution and domain work.
-    #[arg(long, default_value_t = defaults::MAX_WORK)]
-    max_work: usize,
-    /// Maximum logical memory footprint per frame; copies retain lazy ranges.
-    #[arg(long, default_value_t = defaults::MAX_MEMORY_BYTES)]
-    max_memory_bytes: usize,
-    /// Constants retained per value; positive usize, without an additional cap.
-    #[arg(long, default_value_t = defaults::MAX_CONSTANTS)]
-    max_constants: usize,
-    /// Numerical domain profile, shared across every call.
-    #[arg(long,value_enum,default_value_t=DomainProfile::Product)]
-    domain: DomainProfile,
-    /// Maximum rounds in one temporary semantic fact exchange.
-    #[arg(long, default_value_t = defaults::REDUCTION_ROUNDS)]
-    reduction_rounds: usize,
-    /// Maximum semantic atoms in one temporary fact exchange.
-    #[arg(long, default_value_t = defaults::MAX_FACTS)]
-    max_facts: usize,
-    /// Recent jump-source blocks per frame; zero disables context sensitivity.
-    #[arg(long, default_value_t = defaults::CONTEXT_DEPTH)]
-    context_depth: usize,
-    /// Maximum abstract states; unfinished explanations exit with code 2.
-    #[arg(long, default_value_t = defaults::MAX_STATES)]
-    max_states: usize,
-    /// Maximum block transfers, including revisits.
-    #[arg(long, default_value_t = defaults::MAX_TRANSFERS)]
-    max_transfers: usize,
 }
 
 impl ExplainArgs {
     /// 同一份解释只运行一次分析。输入事实、准入错误及预算语义与原入口保持一致。
-    pub(crate) fn run(self) -> Result<(String, bool), CliError> {
+    pub(crate) fn run<D: EvmNumericAlgebra>(
+        self,
+        algebra: &ValueAlgebra<D>,
+        control: &Control,
+        reporting: &mut WorkBudget,
+    ) -> Result<(String, bool), CliError> {
         if self.world.is_some() || self.rpc.is_some() {
             let args = WorldArgs {
-                symbolic: self.symbolic,
+                numeric: self.numeric,
                 world: self.world,
                 rpc: self.rpc,
                 no_rpc_discovery: self.no_rpc_discovery,
@@ -122,72 +104,49 @@ impl ExplainArgs {
                 slot: self.slot,
                 fork: self.fork,
                 no_summaries: self.no_summaries,
-                coverage: self.coverage,
+                execution: self.execution,
                 evm: self.evm,
-                max_call_depth: self.max_call_depth,
-                max_work: self.max_work,
-                max_memory_bytes: self.max_memory_bytes,
-                max_constants: self.max_constants,
-                domain: self.domain,
-                reduction_rounds: self.reduction_rounds,
-                max_facts: self.max_facts,
-                context_depth: self.context_depth,
-                max_states: self.max_states,
-                max_transfers: self.max_transfers,
             };
-            let analysis = args.analyze()?;
-            let complete = analysis.status() == Status::Converged;
-            let output = if self.verbose {
-                if self.allow_partial_ssa {
-                    render::world::explain_verbose_with_partial_ssa(&analysis)?
-                } else {
-                    render::world::explain_verbose(&analysis)?
-                }
-            } else if self.allow_partial_ssa {
-                render::world::explain_with_partial_ssa(&analysis)?
-            } else {
-                render::world::explain(&analysis)?
-            };
-            return Ok((
-                text_with_root_terminal_coverage(output, analysis.root_terminal_coverage()),
-                complete,
-            ));
+            let analysis = args.analyze(algebra, control)?;
+            return world_explanation(
+                &analysis,
+                algebra,
+                reporting,
+                self.verbose,
+                self.allow_partial_ssa,
+            );
         }
         let args = AnalysisArgs {
-            coverage: self.coverage,
-            max_work: self.max_work,
-            max_call_depth: self.max_call_depth,
-            max_memory_bytes: self.max_memory_bytes,
-            symbolic: self.symbolic,
+            execution: self.execution,
+            numeric: self.numeric,
             evm: self.evm,
             input: Input {
                 hex: self.hex,
                 file: self.file,
                 fork: self.fork.unwrap_or_default(),
             },
-            context_depth: self.context_depth,
-            max_constants: self.max_constants,
-            domain: self.domain,
-            reduction_rounds: self.reduction_rounds,
-            max_facts: self.max_facts,
-            max_states: self.max_states,
-            max_transfers: self.max_transfers,
         };
-        let analysis = args.analyze()?;
+        let native = args.analyze(algebra, control)?;
+        if native.root_code(reporting)? != FrameCode::Runtime {
+            return world_explanation(&native, algebra, reporting, false, self.allow_partial_ssa);
+        }
+        let analysis = EvmAnalysis::from_execution(native, reporting)?;
         let mut text = render::disassembly(analysis.program());
         text.push('\n');
-        text.push_str(&render::cfg(&analysis));
+        text.push_str(&render::cfg(&analysis, algebra));
         text.push('\n');
         let complete = analysis.status() == Status::Converged;
         if complete {
             text.push_str(&render::normalized_ssa(
                 &analysis,
-                &ssa::build_normalized(&analysis)?,
+                &ssa::build_normalized(&analysis, reporting)?,
+                algebra,
             ));
         } else if self.allow_partial_ssa {
             text.push_str(&render::normalized_ssa(
                 &analysis,
-                &ssa::build_normalized_partial_world(analysis.execution())?,
+                &ssa::build_normalized_partial_world(analysis.execution(), reporting)?,
+                algebra,
             ));
         } else {
             text.push_str("SSA unavailable: analysis frontiers remain\n");
@@ -197,4 +156,25 @@ impl ExplainArgs {
             complete,
         ))
     }
+}
+
+fn world_explanation<D: EvmNumericAlgebra>(
+    analysis: &EvmWorldAnalysis<D::Element>,
+    algebra: &ValueAlgebra<D>,
+    reporting: &mut WorkBudget,
+    verbose: bool,
+    allow_partial_ssa: bool,
+) -> Result<(String, bool), CliError> {
+    let output = match (verbose, allow_partial_ssa) {
+        (true, true) => {
+            render::world::explain_verbose_with_partial_ssa(analysis, algebra, reporting)?
+        }
+        (true, false) => render::world::explain_verbose(analysis, algebra, reporting)?,
+        (false, true) => render::world::explain_with_partial_ssa(analysis, algebra, reporting)?,
+        (false, false) => render::world::explain(analysis, algebra, reporting)?,
+    };
+    Ok((
+        text_with_root_terminal_coverage(output, analysis.root_terminal_coverage()),
+        analysis.status() == Status::Converged,
+    ))
 }

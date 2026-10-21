@@ -1,6 +1,7 @@
 //! Captured call-word history, read boundaries and conservative alias regressions.
 
-use super::super::{CheckResult, QueryReason, RelationLimits, RelationState, ValueQuery};
+use super::super::{CheckResult, EvmValueQuery, QueryReason, RelationLimits, RelationState};
+use super::product_algebra;
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -77,24 +78,32 @@ fn captured_copy_history_survives_disjoint_status_words_and_freshening() {
         let second = read(latest.clone(), c(0xc0), limits);
         assert_eq!(first, snapshot, "captured state identity survives writes");
         assert_eq!(
-            RelationState::default()
-                .local_value(&equality(current, historical.clone(), limits), &limits,),
-            ValueQuery::Exact(U256::from(1)),
+            RelationState::default().local_value(
+                &equality(current, historical.clone(), limits),
+                &limits,
+                product_algebra().borrowed()
+            ),
+            EvmValueQuery::Exact(U256::from(1)),
             "local history across both call alternatives"
         );
         let mut successful = RelationState::default();
         assert_eq!(
-            successful.assume(&first_guard, false, &limits),
+            successful.assume(&first_guard, false, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            successful.assume(&second_guard, false, &limits),
+            successful.assume(&second_guard, false, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         let equal_observations = equality(historical.clone(), second, limits);
         for value in [U256::ZERO, U256::from(1)] {
             assert_eq!(
-                successful.can_equal(&equal_observations, value, &limits),
+                successful.can_equal(
+                    &equal_observations,
+                    value,
+                    &limits,
+                    product_algebra().borrowed()
+                ),
                 CheckResult::MayBeFeasible,
                 "local: independent GAS observations may agree or differ"
             );
@@ -111,8 +120,9 @@ fn captured_copy_history_survives_disjoint_status_words_and_freshening() {
             RelationState::default().local_value(
                 &equality(read(renamed, c(0x80), limits), renamed_history, limits),
                 &limits,
+                product_algebra().borrowed()
             ),
-            ValueQuery::Exact(U256::from(1)),
+            EvmValueQuery::Exact(U256::from(1)),
             "local: replay keeps shared historical dependencies"
         );
     }
@@ -151,13 +161,23 @@ fn later_word_aliases_and_overflow_do_not_inherit_disjoint_history() {
                 (y, U256::from_be_bytes([0xaa; 32])),
             ] {
                 assert_eq!(
-                    path.add_equal(&leaf, &ExprId::constant(value), &limits),
+                    path.add_equal(
+                        &leaf,
+                        &ExprId::constant(value),
+                        &limits,
+                        product_algebra().borrowed()
+                    ),
                     CheckResult::MayBeFeasible
                 );
             }
             if symbolic {
                 assert_eq!(
-                    path.add_equal(&key, &ExprId::constant(written), &limits),
+                    path.add_equal(
+                        &key,
+                        &ExprId::constant(written),
+                        &limits,
+                        product_algebra().borrowed()
+                    ),
                     CheckResult::MayBeFeasible
                 );
             }
@@ -172,8 +192,12 @@ fn later_word_aliases_and_overflow_do_not_inherit_disjoint_history() {
                 }
             });
             assert_eq!(
-                path.local_value(&read(after, ExprId::constant(at), limits), &limits),
-                ValueQuery::Exact(U256::from_be_bytes(expected)),
+                path.local_value(
+                    &read(after, ExprId::constant(at), limits),
+                    &limits,
+                    product_algebra().borrowed()
+                ),
+                EvmValueQuery::Exact(U256::from_be_bytes(expected)),
                 "local: read={at}, written={written}, symbolic={symbolic}"
             );
         }
@@ -224,7 +248,8 @@ fn copied_word_history_respects_short_views_overlap_and_mathematical_padding() {
                 path.add_equal(
                     &old,
                     &ExprId::constant(U256::from_be_bytes([0x11; 32])),
-                    &limits
+                    &limits,
+                    product_algebra().borrowed()
                 ),
                 CheckResult::MayBeFeasible
             );
@@ -233,13 +258,19 @@ fn copied_word_history_respects_short_views_overlap_and_mathematical_padding() {
                 path.add_equal(
                     &data,
                     &ExprId::constant(U256::from_be_bytes(source_bytes)),
-                    &limits
+                    &limits,
+                    product_algebra().borrowed()
                 ),
                 CheckResult::MayBeFeasible
             );
             if symbolic {
                 assert_eq!(
-                    path.add_equal(&address, &ExprId::constant(destination), &limits),
+                    path.add_equal(
+                        &address,
+                        &ExprId::constant(destination),
+                        &limits,
+                        product_algebra().borrowed()
+                    ),
                     CheckResult::MayBeFeasible
                 );
             }
@@ -259,8 +290,12 @@ fn copied_word_history_respects_short_views_overlap_and_mathematical_padding() {
                 }
             });
             assert_eq!(
-                path.local_value(&read(memory, ExprId::constant(at), limits), &limits),
-                ValueQuery::Exact(U256::from_be_bytes(expected)),
+                path.local_value(
+                    &read(memory, ExprId::constant(at), limits),
+                    &limits,
+                    product_algebra().borrowed()
+                ),
+                EvmValueQuery::Exact(U256::from_be_bytes(expected)),
                 "local: read={at}, copy={destination}, length={copied}, symbolic={symbolic}"
             );
         }
@@ -306,12 +341,12 @@ fn guarded_word_views_keep_boundaries_and_typed_query_denials() {
         ] {
             let mut path = RelationState::default();
             assert_eq!(
-                path.assume(&guard, nonzero, &limits),
+                path.assume(&guard, nonzero, &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
             assert_eq!(
-                path.local_value(&value, &limits),
-                ValueQuery::Exact(expected),
+                path.local_value(&value, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Exact(expected),
                 "local, guard={nonzero}"
             );
         }
@@ -320,23 +355,23 @@ fn guarded_word_views_keep_boundaries_and_typed_query_denials() {
             ..limits
         };
         assert_eq!(
-            RelationState::default().local_value(&value, &denied),
-            ValueQuery::Undetermined(QueryReason::ExpressionLimit)
+            RelationState::default().local_value(&value, &denied, product_algebra().borrowed()),
+            EvmValueQuery::Undetermined(QueryReason::ExpressionLimit)
         );
         let denied = RelationLimits {
             max_depth: value.depth() - 1,
             ..limits
         };
         assert_eq!(
-            RelationState::default().local_value(&value, &denied),
-            ValueQuery::Undetermined(QueryReason::ExpressionLimit)
+            RelationState::default().local_value(&value, &denied, product_algebra().borrowed()),
+            EvmValueQuery::Undetermined(QueryReason::ExpressionLimit)
         );
         let token = analysis_control::Cancellation::new();
         token.cancel();
         analysis_control::with_cancellation(&token, || {
             assert_eq!(
-                RelationState::default().local_value(&value, &limits),
-                ValueQuery::Undetermined(QueryReason::Cancelled)
+                RelationState::default().local_value(&value, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Undetermined(QueryReason::Cancelled)
             );
         });
     }

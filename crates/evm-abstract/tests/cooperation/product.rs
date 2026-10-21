@@ -1,22 +1,21 @@
 //! Real production assembly with independent mask/range removal controls.
 use alloy_primitives::{Address, U256, hex};
 use analysis_kernel::Reduction;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 use evm_abstract::{
     Fork,
-    analysis::{
-        Config, EnginePolicies, ExecutionConfig, OutcomeKind, Status, WorldAnalysis,
-        analyze_world_with,
-    },
+    analysis::{EnginePolicies, EvmWorldAnalysis, ExecutionConfig, OutcomeKind, Status},
     domain::{
-        AbstractValue, DomainSpec, EvmNumericAlgebra, NumericValue, Profile, ValueAlgebra,
-        WordElement, WordObservation,
+        DomainSpec, EvmNumericAlgebra, EvmValue, NumericValue, ValueAlgebra, WordElement,
+        WordObservation,
         cooperation::{
             BoundsToMask, KeepBounds, KeepMasks, MaskToBounds, ProductAlgebra, RuleWork,
         },
         known_bits::KnownBits,
         relational::RelationLimits,
     },
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use revm_bytecode::opcode;
 use std::{cell::Cell, num::NonZeroUsize};
@@ -45,7 +44,6 @@ impl<Cx, R: Reduction<Cx>> Reduction<Cx> for Counted<'_, R> {
 }
 fn spec() -> DomainSpec {
     DomainSpec::new(
-        Profile::Product,
         NonZeroUsize::new(1).unwrap(),
         NonZeroUsize::new(16).unwrap(),
         NonZeroUsize::new(256).unwrap(),
@@ -60,7 +58,7 @@ fn run<D: EvmNumericAlgebra<Element = NumericValue>>(
     numeric: D,
     initial: NumericValue,
     operations: &[u8],
-) -> (WorldAnalysis, Vec<AbstractValue>) {
+) -> (EvmWorldAnalysis<NumericValue>, Vec<EvmValue<NumericValue>>) {
     let address = Address::from_word(U256::from(0x101).into());
     let mut code = vec![opcode::PUSH0, opcode::SLOAD];
     code.extend(operations);
@@ -76,41 +74,37 @@ fn run<D: EvmNumericAlgebra<Element = NumericValue>>(
         opcode::PUSH0,
         opcode::RETURN,
     ]);
-    let mut world = World::new(Fork::Osaka, "production bit-range ablation");
-    let mut account = Account::from_hex(&hex::encode(code), Fork::Osaka).unwrap();
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "production bit-range ablation");
+    let mut account =
+        EvmAccount::<NumericValue>::from_hex(&hex::encode(code), Fork::Osaka).unwrap();
     account.storage_unknown = false;
     account
         .storage
-        .insert(U256::ZERO, AbstractValue::from_numeric(initial));
+        .insert(U256::ZERO, EvmValue::<NumericValue>::from_numeric(initial));
     world.insert(address, account).unwrap();
     let algebra = ValueAlgebra::new(numeric);
     let limits = ExecutionConfig {
         max_work: 1_000_000_000,
         root_terminal_coverage: false,
-        analysis: Config {
-            max_constants: 1,
-            reduction_rounds: 16,
-            max_facts: 256,
-            relations: RelationLimits {
-                enabled: false,
-                ..RelationLimits::default()
-            },
-            ..Config::default()
-        },
         ..ExecutionConfig::default()
     };
-    let result = analyze_world_with(
-        world,
-        Entry::concrete(
-            address,
-            address,
-            AbstractValue::constant(U256::ZERO),
-            ByteArray::empty(),
-        ),
-        limits,
-        &algebra,
-        &EnginePolicies::default(),
-    )
+    let result = {
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension).run(
+            AnalysisInput::new(
+                world,
+                EvmEntry::<NumericValue>::concrete(
+                    address,
+                    address,
+                    EvmValue::<NumericValue>::constant(U256::ZERO),
+                    EvmByteArray::<NumericValue>::empty(),
+                ),
+            )
+            .unwrap(),
+            limits,
+            &Control::default(),
+        )
+    }
     .unwrap();
     assert_eq!(
         result.status(),
@@ -123,9 +117,9 @@ fn run<D: EvmNumericAlgebra<Element = NumericValue>>(
         .iter()
         .filter(|outcome| outcome.kind == OutcomeKind::Return)
         .map(|outcome| {
-            outcome.store.read_with(
+            outcome.store.read(
                 address,
-                &AbstractValue::constant(U256::ONE),
+                &EvmValue::<NumericValue>::constant(U256::ONE),
                 algebra.borrowed(),
             )
         })

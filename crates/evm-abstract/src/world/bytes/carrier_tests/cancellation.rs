@@ -36,7 +36,7 @@ fn last_retained_payload_clone_cannot_complete_a_cancelled_prepaid_word_read() {
     memory.operands.insert(expression, value);
     let frozen = memory.clone();
     let offset = EvmValue::<Heavy>::constant(U256::ZERO);
-    let full_read_work = memory.word_numeric_work_with(&offset, domain);
+    let full_read_work = memory.word_numeric_work(&offset, domain);
 
     for cancel in [false, true] {
         let token = analysis_control::Cancellation::new();

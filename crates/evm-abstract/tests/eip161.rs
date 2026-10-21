@@ -1,12 +1,20 @@
 //! EIP-161 clearing uses transaction-scoped touches, including child rollback.
 //! The concrete oracle checks revm's touch/empty state; the deletion decision
 //! then follows EIP-161, rather than treating every observed empty account dead.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
-    domain::{AbstractValue, Domain},
-    world::{Account, AddressInput, ByteArray, Code, Entry, Existence, Store, World},
+    analysis::{EvmWorldAnalysis, ExecutionConfig, OutcomeKind, Status},
+    domain::EvmValue,
+    world::{
+        AddressInput, Code, EvmAccount, EvmByteArray, EvmEntry, EvmStore, EvmWorld, Existence,
+    },
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
@@ -25,35 +33,45 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(number))
 }
 
-fn fixture(code: &str, target: Account) -> World {
-    let mut world = World::new(Fork::Osaka, "issue134:eip161");
+fn fixture(code: &str, target: EvmAccount<NumericValue>) -> EvmWorld<NumericValue> {
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "issue134:eip161");
     world
         .insert(
             address(0x101),
-            Account::from_hex(code, world.fork()).unwrap(),
+            EvmAccount::<NumericValue>::from_hex(code, world.fork()).unwrap(),
         )
         .unwrap();
     world.insert(address(0x200), target).unwrap();
-    world.insert(address(0x300), Account::empty()).unwrap();
+    world
+        .insert(address(0x300), EvmAccount::<NumericValue>::empty())
+        .unwrap();
     world
 }
 
-fn run(world: World, summaries: bool) -> WorldAnalysis {
-    let mut config = ExecutionConfig {
+fn run(world: EvmWorld<NumericValue>, summaries: bool) -> EvmWorldAnalysis<NumericValue> {
+    let mut numeric_limits = native::product().spec().relations();
+
+    let config = ExecutionConfig {
         max_work: 100_000_000,
         use_summaries: summaries,
         ..ExecutionConfig::default()
     };
-    config.analysis.relations.enabled = false;
-    let mut entry = Entry::new(address(0x101));
+    numeric_limits.enabled = false;
+    let mut entry = EvmEntry::<NumericValue>::new(address(0x101));
     entry.environment.caller = address(0x1000).into();
     entry.environment.value = word(0);
-    entry.environment.calldata = ByteArray::empty();
-    let analysis = analyze_world(world, entry, config).unwrap();
+    entry.environment.calldata = EvmByteArray::<NumericValue>::empty();
+    let analysis = native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -63,7 +81,9 @@ fn run(world: World, summaries: bool) -> WorldAnalysis {
     analysis
 }
 
-fn returns(analysis: &WorldAnalysis) -> impl Iterator<Item = &Store> {
+fn returns(
+    analysis: &EvmWorldAnalysis<NumericValue>,
+) -> impl Iterator<Item = &EvmStore<NumericValue>> {
     analysis
         .outcomes()
         .iter()
@@ -73,23 +93,25 @@ fn returns(analysis: &WorldAnalysis) -> impl Iterator<Item = &Store> {
 
 #[test]
 fn only_touched_definitely_empty_accounts_are_definitely_cleared() {
-    let domain = Domain::default();
-    let mut world = fixture("00", Account::empty());
-    let mut unknown_balance = Account::empty();
+    let domain = native::product();
+    let mut world = fixture("00", EvmAccount::<NumericValue>::empty());
+    let mut unknown_balance = EvmAccount::<NumericValue>::empty();
     unknown_balance.balance = domain.join(&word(0), &word(7));
     world.insert(address(0x400), unknown_balance).unwrap();
-    let mut unknown_nonce = Account::empty();
+    let mut unknown_nonce = EvmAccount::<NumericValue>::empty();
     unknown_nonce.nonce = domain.join(&word(0), &word(1));
     world.insert(address(0x500), unknown_nonce).unwrap();
-    world.insert(address(0x600), Account::absent()).unwrap();
-    let mut nonempty = Account::empty();
+    world
+        .insert(address(0x600), EvmAccount::<NumericValue>::absent())
+        .unwrap();
+    let mut nonempty = EvmAccount::<NumericValue>::empty();
     nonempty.balance = word(1);
     world.insert(address(0x700), nonempty).unwrap();
-    let mut store = Store::new_checked(&world, domain).unwrap();
+    let mut store = EvmStore::<NumericValue>::new_checked(&world, domain.borrowed()).unwrap();
     for number in [0x200, 0x400, 0x500, 0x600, 0x700] {
         store.touch_account(address(number));
     }
-    store.finalize_transaction(domain).unwrap();
+    store.finalize_transaction(domain.borrowed()).unwrap();
     assert_eq!(store.existence(address(0x200)), Existence::Absent);
     assert_eq!(
         store.existence(address(0x300)),
@@ -106,7 +128,7 @@ fn only_touched_definitely_empty_accounts_are_definitely_cleared() {
         assert_eq!(store.touched_in_transaction(address(number)), Some(false));
     }
     let finalized = store.clone();
-    store.finalize_transaction(domain).unwrap();
+    store.finalize_transaction(domain.borrowed()).unwrap();
     assert_eq!(
         store, finalized,
         "clearing must not leak into a later transaction"
@@ -115,54 +137,54 @@ fn only_touched_definitely_empty_accounts_are_definitely_cleared() {
 
 #[test]
 fn touch_may_must_joins_and_summary_widening_keep_both_outcomes() {
-    let domain = Domain::default();
-    let world = fixture("00", Account::empty());
-    let untouched = Store::new_checked(&world, domain).unwrap();
+    let domain = native::product();
+    let world = fixture("00", EvmAccount::<NumericValue>::empty());
+    let untouched = EvmStore::<NumericValue>::new_checked(&world, domain.borrowed()).unwrap();
     assert_eq!(untouched.touched_default(), Some(false));
     let mut touched = untouched.clone();
     touched.touch_account(address(0x200));
     for (left, right) in [(&touched, &untouched), (&untouched, &touched)] {
-        let joined = left.join(right, domain);
+        let joined = left.join(right, domain.borrowed());
         assert_eq!(joined.touched_in_transaction(address(0x200)), None);
         assert_eq!(joined.touched_in_transaction(address(0x300)), Some(false));
         let mut finalized = joined.clone();
-        finalized.finalize_transaction(domain).unwrap();
+        finalized.finalize_transaction(domain.borrowed()).unwrap();
         assert_eq!(finalized.existence(address(0x200)), Existence::Unknown);
         assert_eq!(finalized.existence(address(0x300)), Existence::Present);
         for widen in [false, true] {
-            let summary = left.summary_projection(domain).unwrap().join(
-                &right.summary_projection(domain).unwrap(),
-                domain,
+            let summary = left.summary_projection(domain.borrowed()).unwrap().join(
+                &right.summary_projection(domain.borrowed()).unwrap(),
+                domain.borrowed(),
                 widen,
             );
-            let mut replay = summary.instantiate(domain).unwrap();
+            let mut replay = summary.instantiate(domain.borrowed()).unwrap();
             assert_eq!(replay.touched_in_transaction(address(0x200)), None);
             assert_eq!(replay.touched_in_transaction(address(0x300)), Some(false));
-            replay.finalize_transaction(domain).unwrap();
+            replay.finalize_transaction(domain.borrowed()).unwrap();
             assert_eq!(replay.existence(address(0x200)), Existence::Unknown);
             assert_eq!(replay.existence(address(0x300)), Existence::Present);
         }
     }
     let must = touched
-        .summary_projection(domain)
+        .summary_projection(domain.borrowed())
         .unwrap()
-        .instantiate(domain)
+        .instantiate(domain.borrowed())
         .unwrap();
     assert_eq!(must.touched_in_transaction(address(0x200)), Some(true));
     let mut all_may = untouched.clone();
     all_may.may_touch_all();
     assert_eq!(all_may.touched_default(), None);
     let replay = all_may
-        .summary_projection(domain)
+        .summary_projection(domain.borrowed())
         .unwrap()
-        .instantiate(domain)
+        .instantiate(domain.borrowed())
         .unwrap();
     assert_eq!(
         replay.touched_in_transaction(address(0x999)),
         None,
         "unlisted recipient default"
     );
-    let joined = untouched.join(&replay, domain);
+    let joined = untouched.join(&replay, domain.borrowed());
     assert_eq!(joined.touched_in_transaction(address(0x999)), None);
     assert_eq!(replay.touched_default(), None);
     assert_eq!(joined.touched_default(), None);
@@ -170,9 +192,9 @@ fn touch_may_must_joins_and_summary_widening_keep_both_outcomes() {
 
 #[test]
 fn snapshots_roll_back_touches_except_the_ripemd_consensus_exception() {
-    let domain = Domain::default();
-    let world = fixture("00", Account::empty());
-    let mut store = Store::new_checked(&world, domain).unwrap();
+    let domain = native::product();
+    let world = fixture("00", EvmAccount::<NumericValue>::empty());
+    let mut store = EvmStore::<NumericValue>::new_checked(&world, domain.borrowed()).unwrap();
     store.touch_account(address(0x200));
     let before = store.clone();
     let saved = store.snapshot();
@@ -180,11 +202,11 @@ fn snapshots_roll_back_touches_except_the_ripemd_consensus_exception() {
     store.may_touch_account(address(0x400));
     store.restore(saved);
     assert_eq!(store, before);
-    store.finalize_transaction(domain).unwrap();
+    store.finalize_transaction(domain.borrowed()).unwrap();
     assert_eq!(store.existence(address(0x200)), Existence::Absent);
     assert_eq!(store.existence(address(0x300)), Existence::Present);
 
-    let mut store = Store::new_checked(&world, domain).unwrap();
+    let mut store = EvmStore::<NumericValue>::new_checked(&world, domain.borrowed()).unwrap();
     let saved = store.snapshot();
     store.touch_account(address(3));
     store.write_balance(address(3), word(9));
@@ -198,14 +220,20 @@ fn snapshots_roll_back_touches_except_the_ripemd_consensus_exception() {
 
 #[test]
 fn unknown_effects_preserve_must_touches_and_static_value_state() {
-    let domain = Domain::default();
-    let world = fixture("00", Account::empty());
+    let domain = native::product();
+    let world = fixture("00", EvmAccount::<NumericValue>::empty());
     for is_static in [false, true] {
-        let mut store = Store::new_checked(&world, domain).unwrap();
+        let mut store = EvmStore::<NumericValue>::new_checked(&world, domain.borrowed()).unwrap();
         store.touch_account(address(0x200));
         let before = store.clone();
         store
-            .apply_unknown_effects(&BTreeSet::new(), None, is_static, world.fork())
+            .apply_unknown_effects(
+                &BTreeSet::new(),
+                None,
+                is_static,
+                world.fork(),
+                domain.borrowed(),
+            )
             .unwrap();
         assert_eq!(store.touched_in_transaction(address(0x200)), Some(true));
         assert_eq!(store.touched_in_transaction(address(0x300)), None);
@@ -214,25 +242,25 @@ fn unknown_effects_preserve_must_touches_and_static_value_state() {
             let mut expected = before;
             expected.may_touch_all();
             assert_eq!(store, expected);
-            store.finalize_transaction(domain).unwrap();
+            store.finalize_transaction(domain.borrowed()).unwrap();
             assert_eq!(store.existence(address(0x200)), Existence::Absent);
             assert_eq!(store.existence(address(0x300)), Existence::Unknown);
         }
     }
-    let mut created = Store::new_checked(&world, domain).unwrap();
+    let mut created = EvmStore::<NumericValue>::new_checked(&world, domain.borrowed()).unwrap();
     created.begin_creation(address(0x300));
     assert_eq!(created.touched_in_transaction(address(0x300)), Some(true));
-    created.finalize_transaction(domain).unwrap();
+    created.finalize_transaction(domain.borrowed()).unwrap();
     assert_eq!(
         created.existence(address(0x300)),
         Existence::Present,
         "created account nonce is one"
     );
 
-    let mut destroyed = Store::new_checked(&world, domain).unwrap();
-    destroyed.selfdestruct(address(0x101), address(0x200), domain);
+    let mut destroyed = EvmStore::<NumericValue>::new_checked(&world, domain.borrowed()).unwrap();
+    destroyed.selfdestruct(address(0x101), address(0x200), domain.borrowed());
     assert_eq!(destroyed.touched_in_transaction(address(0x200)), Some(true));
-    destroyed.finalize_transaction(domain).unwrap();
+    destroyed.finalize_transaction(domain.borrowed()).unwrap();
     assert_eq!(
         destroyed.existence(address(0x200)),
         Existence::Absent,
@@ -246,7 +274,10 @@ fn actual_call_clears_empty_recipient_and_failed_entry_does_not_touch_it() {
     for summaries in [false, true] {
         // The Issue134 bytecode, including a separate immediate-failure route.
         let analysis = run(
-            fixture("5f5f5f5f5f61020062fffffff15000", Account::empty()),
+            fixture(
+                "5f5f5f5f5f61020062fffffff15000",
+                EvmAccount::<NumericValue>::empty(),
+            ),
             summaries,
         );
         assert!(
@@ -261,7 +292,10 @@ fn actual_call_clears_empty_recipient_and_failed_entry_does_not_touch_it() {
 
         // Balance zero cannot fund value one: no successful child touch exists.
         let analysis = run(
-            fixture("5f5f5f5f600161020062fffffff15000", Account::empty()),
+            fixture(
+                "5f5f5f5f600161020062fffffff15000",
+                EvmAccount::<NumericValue>::empty(),
+            ),
             summaries,
         );
         assert!(returns(&analysis).next().is_some());
@@ -270,15 +304,18 @@ fn actual_call_clears_empty_recipient_and_failed_entry_does_not_touch_it() {
         );
 
         let analysis = run(
-            fixture("5f5f5f5f5f61020062fffffff15000", Account::absent()),
+            fixture(
+                "5f5f5f5f5f61020062fffffff15000",
+                EvmAccount::<NumericValue>::absent(),
+            ),
             summaries,
         );
         assert!(
             returns(&analysis).all(|store| store.existence(address(0x200)) == Existence::Absent)
         );
 
-        let mut uncertain = Account::empty();
-        uncertain.balance = Domain::default().join(&word(0), &word(7));
+        let mut uncertain = EvmAccount::<NumericValue>::empty();
+        uncertain.balance = native::product().join(&word(0), &word(7));
         let analysis = run(
             fixture("5f5f5f5f5f61020062fffffff15000", uncertain),
             summaries,
@@ -297,7 +334,10 @@ fn actual_call_clears_empty_recipient_and_failed_entry_does_not_touch_it() {
 fn root_and_child_reverts_restore_their_own_touch_scope() {
     for summaries in [false, true] {
         let analysis = run(
-            fixture("5f5f5f5f5f61020062fffffff1505f5ffd", Account::empty()),
+            fixture(
+                "5f5f5f5f5f61020062fffffff1505f5ffd",
+                EvmAccount::<NumericValue>::empty(),
+            ),
             summaries,
         );
         assert!(
@@ -313,15 +353,19 @@ fn root_and_child_reverts_restore_their_own_touch_scope() {
                 .all(|outcome| outcome.store.existence(address(0x200)) == Existence::Present)
         );
 
-        let child = Account::from_hex("5f5f5f5f5f61030062fffffff1505f5ffd", Fork::Osaka).unwrap();
+        let child =
+            EvmAccount::<NumericValue>::from_hex("5f5f5f5f5f61030062fffffff1505f5ffd", Fork::Osaka)
+                .unwrap();
         let analysis = run(fixture("5f5f5f5f5f61020062fffffff15000", child), summaries);
         assert!(returns(&analysis).next().is_some());
         assert!(
             returns(&analysis).all(|store| store.existence(address(0x300)) == Existence::Present)
         );
 
-        let mut empty_root = fixture("", Account::empty());
-        empty_root.insert(address(0x900), Account::empty()).unwrap();
+        let mut empty_root = fixture("", EvmAccount::<NumericValue>::empty());
+        empty_root
+            .insert(address(0x900), EvmAccount::<NumericValue>::empty())
+            .unwrap();
         let analysis = run(empty_root, summaries);
         assert!(
             returns(&analysis).any(|store| store.existence(address(0x101)) == Existence::Absent)
@@ -345,25 +389,37 @@ struct Trace {
 #[test]
 fn symbolic_root_recipient_does_not_definitely_clear_a_synthetic_owner() {
     for summaries in [false, true] {
-        let mut world = World::new(Fork::Osaka, "symbolic recipient touch");
+        let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "symbolic recipient touch");
         for owner in [address(0x101), address(0x200)] {
-            world.insert(owner, Account::empty()).unwrap();
+            world
+                .insert(owner, EvmAccount::<NumericValue>::empty())
+                .unwrap();
         }
         world
             .insert(
                 address(0x300),
-                Account::from_hex("00", Fork::Osaka).unwrap(),
+                EvmAccount::<NumericValue>::from_hex("00", Fork::Osaka).unwrap(),
             )
             .unwrap();
-        let mut entry =
-            Entry::concrete(address(0x101), address(0x1000), word(0), ByteArray::empty());
+        let mut entry = EvmEntry::<NumericValue>::concrete(
+            address(0x101),
+            address(0x1000),
+            word(0),
+            EvmByteArray::<NumericValue>::empty(),
+        );
         entry.environment.to = AddressInput::unknown_to();
         let config = ExecutionConfig {
             max_work: 100_000_000,
             use_summaries: summaries,
             ..ExecutionConfig::default()
         };
-        let graph = analyze_world(world, entry, config).unwrap();
+        let graph = native::run(
+            &native::product(),
+            AnalysisInput::new(world, entry).unwrap(),
+            config,
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         let returned: Vec<_> = returns(&graph).collect();
         assert!(!returned.is_empty());
@@ -392,11 +448,15 @@ impl<CTX> Inspector<CTX, EthInterpreter> for Trace {
     }
 }
 
-fn concrete(world: &World, expected_calls: usize) -> ResultAndState {
+fn concrete(world: &EvmWorld<NumericValue>, expected_calls: usize) -> ResultAndState {
     concrete_with_gas(world, expected_calls, 10_000_000)
 }
 
-fn concrete_with_gas(world: &World, expected_calls: usize, gas_limit: u64) -> ResultAndState {
+fn concrete_with_gas(
+    world: &EvmWorld<NumericValue>,
+    expected_calls: usize,
+    gas_limit: u64,
+) -> ResultAndState {
     let mut db = InMemoryDB::default();
     for (owner, account) in world.accounts() {
         let bytecode = Bytecode::new_raw(Bytes::from(world.raw_account_code(*owner).unwrap()));
@@ -449,9 +509,11 @@ fn revm_touch_and_rollback_agree_with_eip161_abstract_outcomes() {
         // the specific consensus exception retained by upstream checkpoint_revert.
         ("5f5f5f5f5f60035ff15000", 3, true),
     ] {
-        let mut world = fixture(code, Account::empty());
+        let mut world = fixture(code, EvmAccount::<NumericValue>::empty());
         if target != 0x200 {
-            world.insert(address(target), Account::empty()).unwrap();
+            world
+                .insert(address(target), EvmAccount::<NumericValue>::empty())
+                .unwrap();
         }
         let concrete = concrete(&world, 1);
         let recipient = concrete.state.get(&address(target)).unwrap();
@@ -484,7 +546,7 @@ fn revm_touch_and_rollback_agree_with_eip161_abstract_outcomes() {
 // Absence is included by Unknown after a may-touch join. Keep the remaining
 // concrete account fields too: a lifecycle flag alone cannot admit a funded or
 // definitely nonempty RIPEMD account as this oracle's empty recipient.
-fn includes_cleared_empty(store: &Store, target: Address) -> bool {
+fn includes_cleared_empty(store: &EvmStore<NumericValue>, target: Address) -> bool {
     matches!(
         store.existence(target),
         Existence::Absent | Existence::Unknown
@@ -503,11 +565,14 @@ fn selfdestruct_dynamic_gas_failure_restores_value_but_keeps_ripemd_touch() {
         for (balance, gas_limit, fails) in
             [(1, 29_003, true), (1, 100_000, false), (0, 29_003, false)]
         {
-            let mut world = World::new(fork, "SELFDESTRUCT instruction-local failure");
-            let mut root = Account::from_hex("6003ff", fork).unwrap();
+            let mut world =
+                EvmWorld::<NumericValue>::new(fork, "SELFDESTRUCT instruction-local failure");
+            let mut root = EvmAccount::<NumericValue>::from_hex("6003ff", fork).unwrap();
             root.balance = word(balance);
             world.insert(address(0x101), root).unwrap();
-            world.insert(address(3), Account::empty()).unwrap();
+            world
+                .insert(address(3), EvmAccount::<NumericValue>::empty())
+                .unwrap();
             let concrete = concrete_with_gas(&world, 0, gas_limit);
             let recipient = concrete.state.get(&address(3)).unwrap();
             assert!(recipient.is_touched());
@@ -556,8 +621,13 @@ fn selfdestruct_dynamic_gas_failure_restores_value_but_keeps_ripemd_touch() {
 fn revm_ripemd_then_pure_loop_oog_is_included_in_failure_outcomes() {
     // Exact demonstrated witness: CALL3, then a memory-free JUMP loop. Entry
     // and memory Failure cannot represent its later sticky-touch state.
-    let mut world = fixture("5f5f5f5f5f600361fffff1505b600c56", Account::empty());
-    world.insert(address(3), Account::empty()).unwrap();
+    let mut world = fixture(
+        "5f5f5f5f5f600361fffff1505b600c56",
+        EvmAccount::<NumericValue>::empty(),
+    );
+    world
+        .insert(address(3), EvmAccount::<NumericValue>::empty())
+        .unwrap();
     let concrete = concrete(&world, 1);
     assert!(matches!(
         concrete.result,
@@ -584,7 +654,7 @@ fn revm_ripemd_then_pure_loop_oog_is_included_in_failure_outcomes() {
 fn child_ripemd_then_loop_failure_resumes_parent_and_rolls_back_ordinary_effects() {
     // Child writes slot 0, touches an ordinary empty recipient, calls RIPEMD,
     // then loops at PC 0x1d. Only RIPEMD's touch survives the child's OOG.
-    let child = Account::from_hex(
+    let child = EvmAccount::<NumericValue>::from_hex(
         "60075f555f5f5f5f5f61030061fffff1505f5f5f5f5f600361fffff1505b601d56",
         Fork::Osaka,
     )
@@ -592,7 +662,9 @@ fn child_ripemd_then_loop_failure_resumes_parent_and_rolls_back_ordinary_effects
     // Parent records the CALL status at slot 0 and then writes a continuation
     // marker at slot 1. EIP-150 leaves it enough gas after the child's OOG.
     let mut world = fixture("5f5f5f5f5f61020062fffffff15f55600160015500", child);
-    world.insert(address(3), Account::empty()).unwrap();
+    world
+        .insert(address(3), EvmAccount::<NumericValue>::empty())
+        .unwrap();
     let concrete = concrete(&world, 3);
     assert!(matches!(concrete.result, ExecutionResult::Success { .. }));
     let ripemd = concrete.state.get(&address(3)).unwrap();
@@ -629,19 +701,19 @@ fn child_ripemd_then_loop_failure_resumes_parent_and_rolls_back_ordinary_effects
             assert_eq!(store.existence(address(0x300)), Existence::Present);
             assert_eq!(
                 store
-                    .read(address(0x200), &word(0), Domain::default())
+                    .read(address(0x200), &word(0), native::product().borrowed())
                     .singleton(),
                 Some(U256::ZERO)
             );
             assert_eq!(
                 store
-                    .read(address(0x101), &word(0), Domain::default())
+                    .read(address(0x101), &word(0), native::product().borrowed())
                     .singleton(),
                 Some(U256::ZERO)
             );
             assert_eq!(
                 store
-                    .read(address(0x101), &word(1), Domain::default())
+                    .read(address(0x101), &word(1), native::product().borrowed())
                     .singleton(),
                 Some(U256::ONE)
             );
@@ -652,7 +724,10 @@ fn child_ripemd_then_loop_failure_resumes_parent_and_rolls_back_ordinary_effects
 #[test]
 fn static_unknown_callback_touches_survive_the_relative_summary() {
     for summaries in [false, true] {
-        let world = fixture("5f5f5f5f61020062fffffffa5000", Account::unknown());
+        let world = fixture(
+            "5f5f5f5f61020062fffffffa5000",
+            EvmAccount::<NumericValue>::unknown(),
+        );
         let analysis = run(world, summaries);
         assert!(
             returns(&analysis)

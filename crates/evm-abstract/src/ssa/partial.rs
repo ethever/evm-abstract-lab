@@ -7,8 +7,9 @@
 
 use super::{EffectId, Instruction, SsaError, Transition};
 use crate::analysis::{
-    InstructionProgress, MachineEdgeKind, MachineFrontier, Status, WorldAnalysis,
+    EvmMachineFrontier, EvmWorldAnalysis, InstructionProgress, MachineEdgeKind, Status,
 };
+use crate::domain::WordElement;
 use serde::Serialize;
 
 mod build;
@@ -61,7 +62,7 @@ pub enum DeferredEdgeReason {
 /// An observed analysis edge whose SSA arguments are deliberately unavailable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DeferredSsaEdge {
-    /// Original index into `WorldAnalysis::edges()`.
+    /// Original index into `EvmWorldAnalysis::edges()`.
     pub edge: usize,
     /// Native source state.
     pub from: usize,
@@ -79,17 +80,17 @@ pub struct DeferredSsaEdge {
 /// IDs are original analysis edge IDs, so a sparse transition vector must not be
 /// indexed by those IDs. Phis and deferred edges use the same original namespace.
 #[derive(Clone, Debug, Serialize)]
-pub struct PartialWorldSsa {
+pub struct PartialWorldSsa<N: WordElement> {
     status: Status,
     blocks: Vec<PartialWorldBlock>,
     transitions: Vec<Transition>,
     deferred_edges: Vec<DeferredSsaEdge>,
-    frontiers: Vec<MachineFrontier>,
+    frontiers: Vec<EvmMachineFrontier<N>>,
     value_count: usize,
     effect_count: usize,
 }
 
-impl PartialWorldSsa {
+impl<N: WordElement> PartialWorldSsa<N> {
     /// Unmodified completion status of the underlying analysis.
     pub fn status(&self) -> Status {
         self.status
@@ -107,7 +108,7 @@ impl PartialWorldSsa {
         &self.deferred_edges
     }
     /// All original resource and model frontiers, including unknown call targets.
-    pub fn frontiers(&self) -> &[MachineFrontier] {
+    pub fn frontiers(&self) -> &[EvmMachineFrontier<N>] {
         &self.frontiers
     }
     /// Number of contiguous, unique SSA value definitions.
@@ -119,16 +120,23 @@ impl PartialWorldSsa {
         self.effect_count
     }
     /// Verify phases, currentness, covered and deferred edges, and retained frontiers.
-    pub fn verify(&self, analysis: &WorldAnalysis) -> Result<(), SsaError> {
-        verify::verify(self, analysis)
+    pub fn verify(
+        &self,
+        analysis: &EvmWorldAnalysis<N>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<(), SsaError> {
+        verify::verify(self, analysis, budget)
     }
 }
 
 /// Build only execution-evidenced prefixes; preserve `Incomplete` and every frontier.
-pub fn build_partial_world(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaError> {
-    crate::ssa::checkpoint()?;
-    let ir = build::build(analysis)?;
-    ir.verify(analysis)?;
+pub fn build_partial_world<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<PartialWorldSsa<N>, SsaError> {
+    super::pay(budget, 0)?;
+    let ir = build::build(analysis, budget)?;
+    ir.verify(analysis, budget)?;
     Ok(ir)
 }
 
@@ -145,7 +153,7 @@ fn is_call(op: u8) -> bool {
     )
 }
 
-fn coverage(state: &crate::analysis::MachineState) -> PartialBlockCoverage {
+fn coverage<N: WordElement>(state: &crate::analysis::EvmMachineState<N>) -> PartialBlockCoverage {
     match state.execution_evidence() {
         None => PartialBlockCoverage::Unexecuted,
         Some(evidence) if !evidence.is_current() => PartialBlockCoverage::Stale,
@@ -153,8 +161,8 @@ fn coverage(state: &crate::analysis::MachineState) -> PartialBlockCoverage {
     }
 }
 
-fn deferred_reason(
-    analysis: &WorldAnalysis,
+fn deferred_reason<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
     edge: &crate::analysis::MachineEdge,
 ) -> Option<DeferredEdgeReason> {
     let state = &analysis.states()[edge.from];
@@ -176,4 +184,96 @@ fn deferred_reason(
         return Some(DeferredEdgeReason::SourcePendingInstruction);
     }
     None
+}
+
+/// Preserve every native frontier, including range operands and shared payload roots.
+/// Only range operands own N; machine payloads remain immutable Arc handles.
+pub(crate) fn clone_frontiers<N: WordElement>(
+    frontiers: &[EvmMachineFrontier<N>],
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<Vec<EvmMachineFrontier<N>>, SsaError> {
+    super::pay(budget, frontiers.len().saturating_add(1))?;
+    let mut result = Vec::with_capacity(frontiers.len());
+    for frontier in frontiers {
+        super::pay(budget, 0)?;
+        let mut work = super::work::frontier(frontier, budget)?;
+        if let Some(range) = &frontier.range {
+            for value in [
+                &range.request.offset,
+                &range.request.size,
+                &range.request.limit,
+                &range.condition,
+            ] {
+                work = work.saturating_add(value.clone_work());
+            }
+        }
+        super::pay(budget, work)?;
+        result.push(frontier.clone());
+        super::pay(budget, 0)?;
+    }
+    super::pay(budget, 0)?;
+    Ok(result)
+}
+
+/// Range evidence retains its actual operands and immutable machine identity.
+/// Comparing only a frontier's location would miss lost source assumptions.
+pub(crate) fn same_frontiers<N: WordElement>(
+    actual: &[EvmMachineFrontier<N>],
+    expected: &[EvmMachineFrontier<N>],
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<bool, SsaError> {
+    use std::sync::Arc;
+    super::pay(
+        budget,
+        actual
+            .len()
+            .saturating_add(expected.len())
+            .saturating_add(1),
+    )?;
+    if actual.len() != expected.len() {
+        return Ok(false);
+    }
+    for (a, b) in actual.iter().zip(expected) {
+        super::pay(budget, 0)?;
+        let a_structure = super::work::frontier(a, budget)?;
+        let b_structure = super::work::frontier(b, budget)?;
+        super::pay(budget, a_structure.saturating_add(b_structure))?;
+        if a.from != b.from || a.target != b.target || a.pc != b.pc || a.reason != b.reason {
+            return Ok(false);
+        }
+        let shared = match (&a.payload, &b.payload) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if !shared {
+            return Ok(false);
+        }
+        match (&a.range, &b.range) {
+            (None, None) => {}
+            (Some(a), Some(b)) => {
+                if a.nonzero != b.nonzero
+                    || !Arc::ptr_eq(&a.payload, &b.payload)
+                    || a.request.kind != b.request.kind
+                {
+                    return Ok(false);
+                }
+                for (a, b) in [
+                    (&a.request.offset, &b.request.offset),
+                    (&a.request.size, &b.request.size),
+                    (&a.request.limit, &b.request.limit),
+                    (&a.condition, &b.condition),
+                ] {
+                    super::pay(budget, a.work_size().saturating_add(b.work_size()))?;
+                    if a != b {
+                        return Ok(false);
+                    }
+                    super::pay(budget, 0)?;
+                }
+            }
+            _ => return Ok(false),
+        }
+    }
+    super::pay(budget, 0)?;
+    Ok(true)
 }

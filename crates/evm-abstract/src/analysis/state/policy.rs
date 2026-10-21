@@ -185,8 +185,8 @@ impl<N: WordElement> ProcedureOutput<N> {
                 .saturating_add(store.work_size())
                 .saturating_mul(4),
         )?;
-        let data = data.summary_projection_with(cx.domain)?;
-        let store = store.summary_projection_with(cx.domain)?;
+        let data = data.summary_projection(cx.domain)?;
+        let store = store.summary_projection(cx.domain)?;
         Self::from_summaries(data, store, cx)
     }
 
@@ -238,8 +238,8 @@ impl<N: WordElement> ProcedureOutput<N> {
                 .saturating_mul(4),
         )?;
         let widen = acceleration == Acceleration::Widen;
-        let data = self.data.join_with(&incoming.data, cx.domain, widen);
-        let store = self.store.join_with(&incoming.store, cx.domain, widen);
+        let data = self.data.join(&incoming.data, cx.domain, widen);
+        let store = self.store.join(&incoming.store, cx.domain, widen);
         Self::from_summaries(data, store, cx)
     }
 
@@ -269,18 +269,18 @@ impl<N: WordElement> ProcedureOutput<N> {
                 .saturating_mul(8),
         )?;
         let widen = acceleration == Acceleration::Widen;
-        let data = self.data.forget_loop_content().join_with(
+        let data = self.data.forget_loop_content().join(
             &incoming
                 .data
-                .project_to_layout_with(&self.data, cx.domain)
+                .project_to_layout(&self.data, cx.domain)
                 .forget_loop_content(),
             cx.domain,
             widen,
         );
-        let store = self.store.forget_loop_numeric().join_with(
+        let store = self.store.forget_loop_numeric().join(
             &incoming
                 .store
-                .project_to_layout_with(&self.store, cx.domain)
+                .project_to_layout(&self.store, cx.domain)
                 .forget_loop_numeric(),
             cx.domain,
             widen,

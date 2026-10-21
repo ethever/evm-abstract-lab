@@ -1,4 +1,5 @@
 use crate::analysis::machine::fixtures::fixture;
+use crate::domain::ProductAlgebra;
 
 #[test]
 fn context_depth_zero_stays_empty_during_actual_loop_execution_and_replay() {
@@ -10,10 +11,12 @@ fn context_depth_zero_stays_empty_during_actual_loop_execution_and_replay() {
         max_work: 1_000_000_000,
         ..ExecutionConfig::default()
     };
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config.analysis.context_depth = 0;
-    config.analysis.max_constants = 512;
-    config.analysis.relations.enabled = false;
-    let domain = config.domain().unwrap();
+    config_numeric.max_constants = 512;
+    config_numeric.relations.enabled = false;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let input =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut table = Table::default();

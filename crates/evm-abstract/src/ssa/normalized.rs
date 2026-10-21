@@ -7,9 +7,10 @@
 //! Open-input observations remain visible facts and cannot justify a rewrite.
 
 use super::{DeferredSsaEdge, EffectId, Instruction, SsaError, Transition, ValueId};
+use crate::domain::WordElement;
 use crate::{
-    analysis::{Analysis, InstructionProgress, MachineFrontier, Status, WorldAnalysis},
-    domain::{NumericValue, provenance::Provenance},
+    analysis::{EvmAnalysis, EvmMachineFrontier, EvmWorldAnalysis, InstructionProgress, Status},
+    domain::provenance::Provenance,
 };
 use alloy_primitives::U256;
 use serde::Serialize;
@@ -116,7 +117,7 @@ pub enum FactSource {
 /// A numeric or provenance observation. Multiple facts for a value preserve an
 /// observed source separately from a definition-wide arithmetic proof.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ValueFact {
+pub struct ValueFact<N: WordElement> {
     /// Final SSA definition receiving this property.
     pub value: ValueId,
     /// The boundary within which the property is valid.
@@ -125,11 +126,12 @@ pub struct ValueFact {
     pub validity: FactValidity,
     /// Evidence producing this property.
     pub source: FactSource,
-    /// Numeric guarantees, absent when no projection was collected.
-    pub numeric: Option<NumericValue>,
+    /// Retained actual native observation. Independent derived word proofs
+    /// deliberately omit a redundant numeric carrier.
+    pub numeric: Option<N>,
     /// Possible source categories; they do not establish equal values.
     pub provenance: Option<Provenance>,
-    /// The singleton query uses every numeric component, including KnownBits.
+    /// Exact native singleton or independently derived EVM word proof.
     pub constant: Option<U256>,
 }
 
@@ -199,20 +201,20 @@ pub struct ValueMapping {
 
 /// Validated, instruction-preserving SSA shared by CLI and server consumers.
 #[derive(Clone, Debug, Serialize)]
-pub struct NormalizedSsa {
+pub struct NormalizedSsa<N: WordElement> {
     status: Status,
     complete: bool,
     blocks: Vec<NormalizedBlock>,
     transitions: Vec<Transition>,
     deferred_edges: Vec<DeferredSsaEdge>,
-    frontiers: Vec<MachineFrontier>,
+    frontiers: Vec<EvmMachineFrontier<N>>,
     value_count: usize,
     effect_count: usize,
-    facts: Vec<ValueFact>,
+    facts: Vec<ValueFact<N>>,
     mappings: Vec<ValueMapping>,
 }
 
-impl NormalizedSsa {
+impl<N: WordElement> NormalizedSsa<N> {
     /// Unmodified underlying analysis status.
     pub fn status(&self) -> Status {
         self.status
@@ -234,7 +236,7 @@ impl NormalizedSsa {
         &self.deferred_edges
     }
     /// Every original resource and model frontier.
-    pub fn frontiers(&self) -> &[MachineFrontier] {
+    pub fn frontiers(&self) -> &[EvmMachineFrontier<N>] {
         &self.frontiers
     }
     /// Number of contiguous retained value definitions.
@@ -246,7 +248,7 @@ impl NormalizedSsa {
         self.effect_count
     }
     /// Scoped observations and definition proofs; a value may have several.
-    pub fn facts(&self) -> &[ValueFact] {
+    pub fn facts(&self) -> &[ValueFact<N>] {
         &self.facts
     }
     /// One mapping per definition, indexed by final ValueId.
@@ -256,8 +258,12 @@ impl NormalizedSsa {
 
     /// Recheck origins, coverage, value scopes and normalization proofs against
     /// this execution. The temporary raw SSA is used only for validation.
-    pub fn verify(&self, analysis: &WorldAnalysis) -> Result<(), SsaError> {
-        verify::verify(self, analysis)
+    pub fn verify(
+        &self,
+        analysis: &EvmWorldAnalysis<N>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<(), SsaError> {
+        verify::verify(self, analysis, budget)
     }
 }
 
@@ -315,28 +321,39 @@ fn invariant(kind: NormalizationInvariantKind) -> SsaError {
 }
 
 /// Normalize the native machine underlying a converged single-program view.
-/// Returned state IDs belong to `Analysis::execution()`, including child frames.
-pub fn build_normalized(analysis: &Analysis) -> Result<NormalizedSsa, SsaError> {
-    build_normalized_world(analysis.execution())
+/// Returned state IDs belong to `EvmAnalysis::execution()`, including child frames.
+pub fn build_normalized<N: WordElement>(
+    analysis: &EvmAnalysis<N>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<NormalizedSsa<N>, SsaError> {
+    build_normalized_world(analysis.execution(), budget)
 }
 
 /// Build a complete normalized artifact after the stronger world SSA verifier.
-pub fn build_normalized_world(analysis: &WorldAnalysis) -> Result<NormalizedSsa, SsaError> {
-    super::build_world(analysis)?;
-    let raw = super::build_partial_world(analysis)?;
-    let ir = build::normalize(&raw, analysis, true)?;
-    verify::against_raw(&ir, &raw, analysis)?;
+pub fn build_normalized_world<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<NormalizedSsa<N>, SsaError> {
+    super::pay(budget, 0)?;
+    super::world::build(analysis, Some(&mut *budget))?;
+    let raw = super::build_partial_world(analysis, budget)?;
+    let ir = build::normalize(&raw, analysis, true, budget)?;
+    verify::against_raw(&ir, &raw, analysis, budget)?;
     Ok(ir)
 }
 
 /// Build only supported execution prefixes. A converged input also receives
 /// closed-world verification before its normalized artifact claims completeness.
-pub fn build_normalized_partial_world(analysis: &WorldAnalysis) -> Result<NormalizedSsa, SsaError> {
+pub fn build_normalized_partial_world<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<NormalizedSsa<N>, SsaError> {
+    super::pay(budget, 0)?;
     if analysis.status() == Status::Converged {
-        return build_normalized_world(analysis);
+        return build_normalized_world(analysis, budget);
     }
-    let raw = super::build_partial_world(analysis)?;
-    let ir = build::normalize(&raw, analysis, false)?;
-    verify::against_raw(&ir, &raw, analysis)?;
+    let raw = super::build_partial_world(analysis, budget)?;
+    let ir = build::normalize(&raw, analysis, false, budget)?;
+    verify::against_raw(&ir, &raw, analysis, budget)?;
     Ok(ir)
 }

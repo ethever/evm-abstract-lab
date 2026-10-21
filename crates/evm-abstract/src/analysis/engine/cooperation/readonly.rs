@@ -28,7 +28,7 @@ pub(super) struct Binding<N: WordElement> {
     pub(super) entry: GenerationEntry,
 }
 
-impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
+impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
     /// Publish the actual retained entry, independently of Body keys/callers.
     /// The lazy materializer must prepay its native construction/traversal from
     /// this root budget. It is never called for an unchanged current source.

@@ -1,6 +1,7 @@
 //! Fresh range results have copy prices independent of the original operands.
 
 use super::*;
+use crate::domain::ProductAlgebra;
 use std::{
     sync::Mutex,
     thread::{self, ThreadId},
@@ -152,13 +153,13 @@ impl EvmNumericAlgebra for DerivedPolicy {
     type Element = DerivedWord;
 
     fn spec(&self) -> DomainSpec {
-        Domain::default().spec()
+        ProductAlgebra::default().spec()
     }
     fn project_numeric(&self, value: &DerivedWord) -> DerivedWord {
         value.clone()
     }
     fn join_numeric(&self, left: &DerivedWord, right: &DerivedWord) -> DerivedWord {
-        DerivedWord::cheap(Domain::default().join_numeric(&left.native, &right.native))
+        DerivedWord::cheap(ProductAlgebra::default().join_numeric(&left.native, &right.native))
     }
     fn widen_numeric(&self, old: &DerivedWord, next: &DerivedWord) -> DerivedWord {
         self.join_numeric(old, next)
@@ -169,14 +170,23 @@ impl EvmNumericAlgebra for DerivedPolicy {
     fn reduce_numeric(&self, value: &DerivedWord) -> NumericReduction<DerivedWord> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[DerivedWord]) -> NumericReduction<DerivedWord> {
-        let args: Vec<_> = args.iter().map(|value| value.native.clone()).collect();
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a DerivedWord>,
+    ) -> NumericReduction<DerivedWord> {
         NumericReduction::stable(DerivedWord::cheap(
-            Domain::default().apply_numeric(op, &args).value,
+            ProductAlgebra::default()
+                .apply_numeric(op, args.map(|value| &value.native))
+                .value,
         ))
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a DerivedWord>) -> usize {
-        EvmNumericAlgebra::operation_work(&Domain::default(), args.map(|value| &value.native))
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a DerivedWord>) -> usize {
+        EvmNumericAlgebra::operation_work(
+            &ProductAlgebra::default(),
+            op,
+            args.map(|value| &value.native),
+        )
     }
     fn projection_work(&self, value: &DerivedWord) -> usize {
         value.clone_work()
@@ -185,7 +195,7 @@ impl EvmNumericAlgebra for DerivedPolicy {
         value
             .clone_work()
             .saturating_add(EvmNumericAlgebra::refinement_work(
-                &Domain::default(),
+                &ProductAlgebra::default(),
                 &value.native,
                 facts,
             ))
@@ -289,11 +299,10 @@ fn fresh_result_full_fee_preserves_copy_and_raw_capture_but_fee_minus_one_publis
         });
         let mut expected = payload.call_stack.parent().unwrap().memory.clone();
         expected
-            .copy_return_data_with(
+            .copy_return_data(
                 &literal(32),
                 &source,
                 &literal(requested),
-                0,
                 algebra.borrowed(),
             )
             .unwrap();
@@ -331,13 +340,13 @@ fn fresh_result_full_fee_preserves_copy_and_raw_capture_but_fee_minus_one_publis
         assert!(expected.len().contains(U256::from(64)));
         assert!(
             expected
-                .read_byte_checked_with(&literal(32), algebra.borrowed())
+                .read_byte_checked(&literal(32), algebra.borrowed())
                 .unwrap()
                 .contains(U256::from(0x11))
         );
         assert!(
             expected
-                .read_byte_checked_with(&literal(31), algebra.borrowed())
+                .read_byte_checked(&literal(31), algebra.borrowed())
                 .unwrap()
                 .contains(U256::ZERO)
         );

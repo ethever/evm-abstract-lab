@@ -6,7 +6,7 @@ use crate::{
     analysis::{ExecutionConfig, machine::fixtures::address, transfer},
     bytecode::Program,
     domain::{
-        Domain, DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue,
+        DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue, ProductAlgebra,
         ValueAlgebra, WordElement, WordObservation, symbolic::ExprId,
     },
     resource::WorkBudget,
@@ -113,7 +113,7 @@ impl Indexed {
 impl EvmNumericAlgebra for Indexed {
     type Element = Word;
     fn spec(&self) -> DomainSpec {
-        Domain::default().spec()
+        ProductAlgebra::default().spec()
     }
     fn project_numeric(&self, value: &Word) -> Word {
         value.clone()
@@ -130,7 +130,12 @@ impl EvmNumericAlgebra for Indexed {
     fn reduce_numeric(&self, value: &Word) -> NumericReduction<Word> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Word]) -> NumericReduction<Word> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
+        let args: Vec<&Word> = args.collect();
         if op == opcode::BYTE && args.len() == 2 {
             let index = args[0]
                 .singleton()
@@ -151,13 +156,8 @@ impl EvmNumericAlgebra for Indexed {
                 },
             });
         }
-        let numeric = Domain::default().apply_numeric(
-            op,
-            &args
-                .iter()
-                .map(|value| value.numeric.clone())
-                .collect::<Vec<_>>(),
-        );
+        let numeric =
+            ProductAlgebra::default().apply_numeric(op, args.iter().map(|value| &value.numeric));
         NumericReduction {
             value: Word {
                 numeric: numeric.value,
@@ -168,13 +168,16 @@ impl EvmNumericAlgebra for Indexed {
             strengthened: numeric.strengthened,
         }
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
-        args.fold(200_000usize, |work, value| {
-            work.saturating_add(value.work_size())
-        })
-    }
-    fn operation_work_for<'a>(&self, op: u8, mut args: impl Iterator<Item = &'a Word>) -> usize {
-        if op == opcode::BYTE {
+    fn operation_work<'a>(&self, op: u8, mut args: impl Iterator<Item = &'a Word>) -> usize {
+        // The facade may replace the native result with Word::constant. Its
+        // declared heap construction/release fee is additional operation work.
+        // The native reservation covers Word's fixed fields; adding two visits
+        // to the declared heap also bounds the final numeric work_size.
+        let literal = self.literal_quote_work(U256::ZERO);
+        if literal == usize::MAX {
+            return usize::MAX;
+        }
+        let native = if op == opcode::BYTE {
             if let Some(index) = args
                 .next()
                 .and_then(Word::singleton)
@@ -182,11 +185,16 @@ impl EvmNumericAlgebra for Indexed {
                 .filter(|index| *index < 32)
             {
                 INDICES.update(|indices| *indices |= 1 << index);
-                return Self::projection_work(index);
+                Self::projection_work(index)
+            } else {
+                200_000
             }
-            return 200_000;
-        }
-        self.operation_work(args)
+        } else {
+            args.fold(200_000usize, |work, value| {
+                work.saturating_add(value.work_size())
+            })
+        };
+        native.saturating_add(literal)
     }
     fn literal_quote_work(&self, _literal: U256) -> usize {
         self.literal_bytes.map_or(usize::MAX, |bytes| {
@@ -198,6 +206,72 @@ impl EvmNumericAlgebra for Indexed {
     }
     fn refinement_work(&self, value: &Word, _facts: usize) -> usize {
         value.work_size() * 16 + 1024
+    }
+}
+
+#[test]
+fn operation_quote_covers_facade_literal_heap_and_refuses_unknown_or_overflow() {
+    let _heap = LITERAL_BYTES.scope();
+    let _copies = COPIES.scope();
+    let _literals = LITERALS.scope();
+    let _applies = APPLIES.scope();
+    LITERAL_BYTES.set(4096);
+    let args = [
+        EvmValue::<Word>::constant(U256::ZERO).with_expression(ExprId::constant(U256::ZERO)),
+        EvmValue::<Word>::constant(U256::ZERO).with_expression(ExprId::constant(U256::ZERO)),
+    ];
+    LITERALS.set(0);
+    let algebra = ValueAlgebra::new(Indexed {
+        literal_bytes: Some(4096),
+    });
+    let native = algebra
+        .numeric_algebra()
+        .operation_work(opcode::BYTE, args.iter().map(EvmValue::numeric));
+    assert_eq!(native, 1024 + 64 + 2 * 4096);
+    let complete = algebra.operation_work(opcode::BYTE, &args);
+    assert!(complete >= native);
+    assert_eq!((LITERALS.get(), APPLIES.get(), COPIES.get()), (0, 0, 0));
+
+    let mut short = WorkBudget::new(complete - 1);
+    assert!(
+        algebra
+            .apply_budgeted(opcode::BYTE, &args, &mut short)
+            .is_err()
+    );
+    assert_eq!(short.used(), 0);
+    assert_eq!((LITERALS.get(), APPLIES.get(), COPIES.get()), (0, 0, 0));
+
+    let mut paid = WorkBudget::new(complete);
+    let result = algebra
+        .apply_budgeted(opcode::BYTE, &args, &mut paid)
+        .unwrap();
+    assert_eq!(paid.used(), complete);
+    assert!(!paid.exhausted());
+    assert_eq!((LITERALS.get(), APPLIES.get(), COPIES.get()), (1, 1, 0));
+    assert_eq!(result.value.singleton(), Some(U256::ZERO));
+    assert_eq!(result.value.numeric().payload.len(), 4096);
+    assert_eq!(result.value.numeric().work_size(), 4173);
+    assert!(native >= result.value.numeric().work_size());
+
+    for literal_bytes in [None, Some(usize::MAX / 2)] {
+        let unknown = ValueAlgebra::new(Indexed { literal_bytes });
+        LITERALS.set(0);
+        APPLIES.set(0);
+        assert_eq!(unknown.literal_quote_work(U256::ZERO), usize::MAX);
+        assert_eq!(
+            unknown
+                .numeric_algebra()
+                .operation_work(opcode::BYTE, args.iter().map(EvmValue::numeric)),
+            usize::MAX
+        );
+        let mut maximum = WorkBudget::new(usize::MAX);
+        assert!(
+            unknown
+                .apply_budgeted(opcode::BYTE, &args, &mut maximum)
+                .is_err()
+        );
+        assert_eq!(maximum.used(), 0);
+        assert_eq!((LITERALS.get(), APPLIES.get(), COPIES.get()), (0, 0, 0));
     }
 }
 
@@ -252,7 +326,9 @@ fn mstore_prices_every_real_index_and_refuses_before_quote_construction_or_deep_
             * (32 * 64
                 + 32 * args[1].clone_work()
                 + (0..32)
-                    .map(|index| Indexed::projection_work(index) + operands + symbolic)
+                    // Each operation can also install its own zero-heap literal;
+                    // this is separate from constructing the quoted index.
+                    .map(|index| Indexed::projection_work(index) + 64 + operands + symbolic)
                     .sum::<usize>());
     let prepare = 32 * 64;
     for maximum in [prepare - 1, prepare] {
@@ -305,9 +381,7 @@ fn mstore_prices_every_real_index_and_refuses_before_quote_construction_or_deep_
     let _applies = APPLIES.scope();
     let _applied_indices = APPLIED_INDICES.scope();
     let mut memory = execution.payload.active().memory.clone();
-    memory
-        .write_word_with(&args[0], &args[1], config.max_memory_bytes, domain)
-        .unwrap();
+    memory.write_word(&args[0], &args[1], domain).unwrap();
     assert_eq!(APPLIES.get(), 64, "both real writer loops are covered");
     assert_eq!(APPLIED_INDICES.get(), u32::MAX);
 

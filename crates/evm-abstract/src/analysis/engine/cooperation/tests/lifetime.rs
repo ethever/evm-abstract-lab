@@ -1,14 +1,14 @@
 //! Real-generation ownership witnesses, without retaining public Input handles.
+
+#[cfg(test)]
+use crate::analysis::testing::{Account, ByteArray, Entry, TestValue, World};
 use crate::{
     Fork,
     analysis::{
         EnginePolicies, ExecutionConfig, FrontierReason, Status,
-        cooperation::{
-            Extension, ExtraStores, InputRoute, Inputs, Point, Subject, analyze_world_cooperating,
-        },
+        cooperation::{Extension, ExtraStores, InputRoute, Inputs, Point, Subject},
     },
-    domain::{AbstractValue, Domain, NumericValue, ValueAlgebra},
-    world::{Account, ByteArray, Entry, World},
+    domain::{NumericValue, ProductAlgebra, ValueAlgebra},
 };
 use alloy_primitives::{Address, U256};
 use analysis_kernel::{Analyzer, Kernel, KernelError, LocalClosure, Meter, Read, Scoped};
@@ -101,7 +101,7 @@ fn run(refuse: bool) -> (crate::analysis::WorldAnalysis, Watch, Rc<Counts>) {
     let entry = Entry::concrete(
         owner,
         Address::ZERO,
-        AbstractValue::constant(U256::ZERO),
+        TestValue::constant(U256::ZERO),
         ByteArray::empty(),
     );
     let counts = Rc::new(Counts::default());
@@ -116,17 +116,19 @@ fn run(refuse: bool) -> (crate::analysis::WorldAnalysis, Watch, Rc<Counts>) {
         counts: Rc::clone(&counts),
         refuse,
     });
-    let result = analyze_world_cooperating(
-        world,
-        entry,
+    let result = crate::analysis::AnalysisEngine::new(
+        &ValueAlgebra::new(ProductAlgebra::default()),
+        &EnginePolicies::default(),
+        &mut extension,
+    )
+    .run(
+        crate::analysis::AnalysisInput::new(world, entry).unwrap(),
         ExecutionConfig {
             max_work: 100_000_000,
             root_terminal_coverage: false,
             ..ExecutionConfig::default()
         },
-        &ValueAlgebra::new(Domain::default()),
-        &EnginePolicies::default(),
-        &mut extension,
+        &crate::analysis::control::Control::default(),
     )
     .unwrap();
     (result, extension.analyzer, counts)
@@ -190,7 +192,7 @@ struct Inventory {
     assumption: analysis_kernel::SlotMeta<bool>,
     owner: analysis_kernel::JobId,
     payload: crate::analysis::EvmMachinePayload<NumericValue>,
-    algebra: ValueAlgebra<Domain>,
+    algebra: ValueAlgebra<ProductAlgebra>,
     budget: crate::resource::WorkBudget,
     counts: Rc<Counts>,
 }
@@ -203,8 +205,8 @@ impl Inventory {
                 runtime::{Runtime, TaskKind},
             },
         };
-        let domain = Domain::default();
-        let mut payload = fixtures::payload(domain);
+        let algebra = ValueAlgebra::new(ProductAlgebra::default());
+        let mut payload = fixtures::payload(algebra.borrowed());
         payload.active_mut().stack.push(fixtures::word(0));
         payload.normalize();
         let mut budget = crate::resource::WorkBudget::new(1_000_000_000);
@@ -240,7 +242,7 @@ impl Inventory {
             assumption,
             owner,
             payload,
-            algebra: ValueAlgebra::new(domain),
+            algebra,
             budget,
             counts,
         }
@@ -394,7 +396,7 @@ fn self_loop_native_growth_during_evaluation_cannot_withdraw_old_contributions()
     let work = h.payload.work_size().saturating_mul(8);
     MachineMeter(&mut h.budget).reserve(work).unwrap();
     let mut grown = h.payload.clone();
-    grown.active_mut().stack[0] = Domain::default().join(&fixtures::word(0), &fixtures::word(1));
+    grown.active_mut().stack[0] = h.algebra.join(&fixtures::word(0), &fixtures::word(1));
     let payload = &mut h.payload;
     h.runtime
         .with_run(&mut current, &mut h.budget, |run| {

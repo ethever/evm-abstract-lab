@@ -15,20 +15,32 @@ use crate::{
         control::Control,
         progress::{Observer, Phase},
     },
-    domain::AbstractValue,
-    world::World,
+    domain::WordElement,
+    world::{Code, EvmWorld, Existence},
 };
 use alloy_primitives::{Address, U256};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Bounded RPC acquisition whose observed accounts never change or disappear.
+/// Exact transport observations remain independent of the chosen numeric carrier.
+/// Only an atomically checked batch is published to this cache or the native world.
 #[derive(Debug)]
-pub struct Session {
-    loader: Loader,
-    world: World,
+pub(super) struct AccountObservation {
+    pub(super) code: Code,
+    pub(super) balance: U256,
+    pub(super) nonce: U256,
+    pub(super) existence: Existence,
+    pub(super) storage: BTreeMap<U256, U256>,
 }
 
-impl Session {
+/// Bounded RPC acquisition whose observed accounts never change or disappear.
+#[derive(Debug)]
+pub struct Session<N: WordElement> {
+    loader: Loader,
+    world: EvmWorld<N>,
+    observations: BTreeMap<Address, AccountObservation>,
+}
+
+impl<N: WordElement> Session<N> {
     /// Load the explicitly selected accounts as one checked initial batch.
     pub fn load(input: &RpcInput) -> Result<Self, RpcError> {
         Self::load_with_control(input, &Control::default())
@@ -40,13 +52,18 @@ impl Session {
         loader.pin()?;
         control.observer().phase(Phase::Acquiring);
         let mut world = loader.world();
+        let mut observations = BTreeMap::new();
         for request in &input.accounts {
-            loader.account(&mut world, request)?;
+            observations.insert(request.address, loader.account(&mut world, request)?);
         }
         loader.check_chain()?;
         loader.check_block()?;
         loader.observe_world(&world);
-        Ok(Self { loader, world })
+        Ok(Self {
+            loader,
+            world,
+            observations,
+        })
     }
 
     /// Observe acquisition without enabling cancellation.
@@ -60,25 +77,53 @@ impl Session {
     }
 
     /// Current complete account observations at the fixed chain and block hash.
-    pub fn world(&self) -> &World {
+    pub fn world(&self) -> &EvmWorld<N> {
         &self.world
     }
 
-    pub(crate) fn layered(
+    pub(crate) fn layered<'a, D, C, P, S, X>(
         &self,
-        entry: crate::world::Entry,
+        engine: crate::analysis::AnalysisEngine<'a, D, C, P, S, X>,
+        entry: crate::world::EvmEntry<N>,
         config: crate::analysis::ExecutionConfig,
-    ) -> Result<crate::analysis::layers::AnalysisSession, crate::analysis::layers::SessionError>
+        control: &Control,
+    ) -> super::layers::AcquisitionSessionResult<'a, D, C, P, S, X>
+    where
+        D: crate::domain::EvmNumericAlgebra<Element = N>,
+        C: crate::analysis::ContextPolicy,
+        P: crate::analysis::PartitionPolicy,
+        S: crate::analysis::StatePolicy<D, P::Class>,
+        X: crate::analysis::cooperation::Composition<N>,
     {
-        super::layers::start(&self.world, self.loader.world(), entry, config)
+        super::layers::start(
+            self.loader.world(),
+            &self.observations,
+            engine,
+            entry,
+            config,
+            control,
+        )
     }
 
-    pub(crate) fn refine_layered(
+    pub(crate) fn refine_layered<D, C, P, S, X>(
         &self,
-        session: &mut crate::analysis::layers::AnalysisSession,
+        session: &mut crate::analysis::layers::AnalysisSession<'_, D, C, P, S, X>,
         addresses: impl IntoIterator<Item = Address>,
-    ) -> Result<(), crate::analysis::layers::SessionError> {
-        super::layers::refine(&self.world, session, addresses)
+        control: &Control,
+    ) -> Result<
+        (),
+        crate::analysis::layers::SessionError<
+            <X as crate::analysis::cooperation::Composition<N>>::Error,
+        >,
+    >
+    where
+        D: crate::domain::EvmNumericAlgebra<Element = N>,
+        C: crate::analysis::ContextPolicy,
+        P: crate::analysis::PartitionPolicy,
+        S: crate::analysis::StatePolicy<D, P::Class>,
+        X: crate::analysis::cooperation::Composition<N>,
+    {
+        super::layers::refine(&self.world, &self.observations, session, addresses, control)
     }
 
     /// Acquire a discovered account, or reuse its prior cached observation.
@@ -103,7 +148,7 @@ impl Session {
         self.loader.control.observer().phase(Phase::Acquiring);
         self.loader.check_chain()?;
         self.loader.check_block()?;
-        self.loader.account(
+        let observation = self.loader.account(
             &mut pending,
             &AccountRequest {
                 address,
@@ -113,14 +158,16 @@ impl Session {
         self.loader.check_chain()?;
         self.loader.check_block()?;
         let account = pending
-            .account(address)
+            .accounts
+            .remove(&address)
             .expect("validated account was inserted");
         self.world
-            .insert(address, account.clone())
+            .insert(address, account)
             .map_err(|source| RpcError::World {
                 context: Box::new(self.loader.context("eth_getCode", Some(address), None)),
                 source,
             })?;
+        self.observations.insert(address, observation);
         self.loader.observe_world(&self.world);
         Ok(true)
     }
@@ -172,20 +219,23 @@ impl Session {
         self.loader.check_storage_block(block_number)?;
         let mut pending = BTreeMap::new();
         for key in missing {
-            pending.insert(
-                key,
-                AbstractValue::constant(self.loader.storage(address, key)?),
-            );
+            pending.insert(key, self.loader.storage(address, key)?);
         }
         self.loader.check_chain()?;
         self.loader.check_storage_block(block_number)?;
         let installed = pending.keys().copied().collect();
         self.world
-            .install_storage(address, pending)
+            .install_storage(address, &pending)
             .map_err(|source| RpcError::World {
                 context: Box::new(self.loader.context("eth_getStorageAt", Some(address), None)),
                 source,
             })?;
+        if let Some(account) = self.observations.get_mut(&address) {
+            if pending.values().any(|value| *value != U256::ZERO) {
+                account.existence = Existence::Present;
+            }
+            account.storage.extend(pending);
+        }
         self.loader.observe_world(&self.world);
         Ok(installed)
     }
@@ -196,7 +246,7 @@ impl Session {
     }
 
     /// Finish acquisition, retaining the observations without the RPC client.
-    pub fn into_world(self) -> World {
+    pub fn into_world(self) -> EvmWorld<N> {
         self.world
     }
 }
@@ -204,16 +254,16 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::{Session, configured_loader};
-    use crate::{
-        Address, Fork, U256,
-        world::{Account, rpc::RpcInput},
-    };
     use alloy_primitives::B256;
     use std::collections::BTreeSet;
+    use {
+        crate::Address, crate::Fork, crate::U256, crate::world::rpc::RpcInput,
+        crate::world::test_support::TestAccount,
+    };
 
     #[test]
     fn complete_and_absent_storage_need_no_requests_or_extra_observations() {
-        for account in [Account::empty(), Account::absent()] {
+        for account in [TestAccount::empty(), TestAccount::absent()] {
             let mut loader =
                 configured_loader(&RpcInput::new("http://127.0.0.1:1", Fork::Osaka)).unwrap();
             loader.chain_id = Some(U256::from(1));
@@ -221,7 +271,11 @@ mod tests {
             let mut world = loader.world();
             let address = Address::repeat_byte(0x22);
             world.insert(address, account.clone()).unwrap();
-            let mut session = Session { loader, world };
+            let mut session = Session {
+                loader,
+                world,
+                observations: Default::default(),
+            };
             assert!(
                 session
                     .fetch_storage(address, &BTreeSet::from([U256::ZERO, U256::from(2)]))

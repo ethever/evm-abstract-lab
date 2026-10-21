@@ -1,18 +1,23 @@
 //! Lossless human rendering of sparse byte facts without expanding their range.
 
 use super::write_table;
-use crate::{domain::AbstractValue, world::ByteArray};
+use crate::domain::WordElement;
+use crate::{domain::EvmValue, world::EvmByteArray};
 use alloy_primitives::U256;
 use std::fmt::Write;
 
 /// Keep abstract length, default, kind, and every explicitly stored byte visible.
 /// Hex rows combine only consecutive exact bytes, so gaps and abstract facts
 /// cannot silently become a concrete sequence. Work scales with stored facts.
-pub(in crate::render::world) fn write_bytes(
+pub(in crate::render::world) fn write_bytes<
+    N: WordElement,
+    D: crate::domain::EvmNumericAlgebra<Element = N>,
+>(
     output: &mut String,
     indent: &str,
     label: &str,
-    array: &ByteArray,
+    array: &EvmByteArray<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
 ) {
     writeln!(
         output,
@@ -31,7 +36,7 @@ pub(in crate::render::world) fn write_bytes(
 
     // This optional convenience is independently bounded. The sparse table
     // remains authoritative and also includes facts outside any exact length.
-    if let Some(bytes) = array.exact_bytes_bounded(256) {
+    if let Some(bytes) = array.exact_bytes_bounded(256, algebra.borrowed()) {
         let prefix = format!("{indent}  exact hex: 0x");
         output.push_str(&prefix);
         let continuation_indent = " ".repeat(prefix.chars().count());
@@ -87,23 +92,20 @@ pub(in crate::render::world) fn write_bytes(
 }
 
 /// Add decimal byte counts without replacing the original abstract length.
-fn byte_count(length: &AbstractValue) -> String {
-    let Some(lengths) = length.constants() else {
-        return "unknown byte count".to_owned();
-    };
-    if lengths.len() == 1 {
-        let length = lengths
-            .first()
-            .expect("AbstractValue constants are nonempty");
+fn byte_count<N: WordElement>(length: &EvmValue<N>) -> String {
+    if let Some(exact) = length.singleton() {
         return format!(
-            "{length} {}",
-            if *length == U256::from(1) {
+            "{exact} {}",
+            if exact == U256::from(1) {
                 "byte"
             } else {
                 "bytes"
             }
         );
     }
+    let Some(lengths) = length.constants() else {
+        return "unknown byte count".to_owned();
+    };
     format!(
         "possible byte counts: {}",
         lengths
@@ -114,12 +116,8 @@ fn byte_count(length: &AbstractValue) -> String {
     )
 }
 
-fn singleton_byte(value: &AbstractValue) -> Option<u8> {
-    let constants = value.constants()?;
-    if constants.len() != 1 {
-        return None;
-    }
-    let byte = *constants.first()?;
+fn singleton_byte<N: WordElement>(value: &EvmValue<N>) -> Option<u8> {
+    let byte = value.singleton()?;
     (byte <= U256::from(u8::MAX)).then(|| byte.to::<u8>())
 }
 

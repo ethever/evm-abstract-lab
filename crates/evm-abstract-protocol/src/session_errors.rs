@@ -48,7 +48,7 @@ record! {
     }
 }
 variant! {
-    /// Exact initial-state location whose observation was contradicted.
+    /// Exact initial-state location of a session observation.
     pub enum InitialFactLocation {
         /// Account code.
         Code(String),
@@ -64,9 +64,20 @@ variant! {
         StorageComplete(String),
     }
 }
+record! {
+    /// Native refinement refusal, without a proof of inconsistent initial facts.
+    pub struct SessionRefinementFailure {
+        /// Initial observation whose native constraint import was refused.
+        pub location: InitialFactLocation,
+        /// Complete typed numeric import failure.
+        pub source: crate::FactFailure,
+    }
+}
 variant! {
-    /// Rejected session inputs; cancellation/configuration/world use existing causes.
+    /// Session input or preparation failures; cancellation/configuration/world use existing causes.
     pub enum SessionFailure {
+        /// Required preparation work could not be paid from the session ledger.
+        Work,
         /// Mixed execution rules in a catalog.
         CatalogFork(CatalogForkMismatch),
         /// Distinct bytecode contents shared a catalog hash identity.
@@ -75,6 +86,8 @@ variant! {
         Snapshot(SessionSnapshotMismatch),
         /// An immutable initial observation was contradicted.
         FactConflict(InitialFactLocation),
+        /// Native constraint import failed without proving an immutable-fact conflict.
+        Refinement(SessionRefinementFailure),
         /// Referenced code was not supplied.
         MissingCode(SessionCodeIdentity),
         /// Initialization code was bound as installed runtime.

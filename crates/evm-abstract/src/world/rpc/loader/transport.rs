@@ -1,4 +1,4 @@
-//! Domain-facing calls do not expose Alloy's erased transport futures.
+//! Algebra-facing calls do not expose Alloy's erased transport futures.
 use super::super::{RpcContext, RpcError};
 use super::Loader;
 use alloy::rpc::json_rpc::{RpcRecv, RpcSend};

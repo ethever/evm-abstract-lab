@@ -52,7 +52,7 @@ fn rpc_header_environment_reaches_discovery_and_preloaded_cli_execution() {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .map(|value| value["Constants"].clone())
+                    .map(|value| value["numeric"]["constants"].clone())
                     .collect();
                 assert_eq!(stack[0], json!([if overrides { "0x63" } else { "0x10" }]));
                 assert_eq!(stack[1], json!([if overrides { "0x58" } else { "0x1234" }]));

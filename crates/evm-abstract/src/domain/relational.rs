@@ -5,7 +5,7 @@
 //! A consistent local approximation is not a satisfiability proof.
 
 use super::{
-    AlgebraRef, EvmNumericAlgebra, NumericValue, WordElement, WordObservation,
+    AlgebraRef, EvmNumericAlgebra, WordElement, WordObservation,
     symbolic::{ExprError, ExprId, ExprKind, ExprLimits},
 };
 use alloy_primitives::U256;
@@ -16,7 +16,7 @@ mod local;
 mod path;
 mod scalar;
 pub use path::{RelationPath, RelationPathKind};
-pub use scalar::{EvmScalarQuery, ScalarQuery};
+pub use scalar::EvmScalarQuery;
 #[cfg(test)]
 mod tests;
 
@@ -98,9 +98,6 @@ pub enum EvmValueQuery<N: WordElement> {
     /// A real bound or cancellation prevented the query from completing.
     Undetermined(QueryReason),
 }
-
-/// Default-domain compatibility query result.
-pub type ValueQuery = EvmValueQuery<NumericValue>;
 
 /// Intersect two numeric upper approximations without changing expression identity.
 /// The caller pays scalar reduction work before invoking this helper.
@@ -310,21 +307,6 @@ impl RelationState {
                 .fold(n.saturating_add(1), |n, e| n.saturating_add(e.work_size()))
         })
     }
-    fn insert(
-        &mut self,
-        constraint: Constraint,
-        limits: &RelationLimits,
-    ) -> Result<CheckResult, QueryReason> {
-        if self.bottom {
-            return Ok(CheckResult::ProvenImpossible);
-        }
-        self.retain(constraint, limits)?;
-        let checked = self.check(limits);
-        if checked == CheckResult::ProvenImpossible {
-            self.bottom = true;
-        }
-        Ok(checked)
-    }
     fn retain(
         &mut self,
         constraint: Constraint,
@@ -480,87 +462,15 @@ impl RelationState {
     /// An interrupted local check retains the new sound assumption; a capacity failure
     /// preserves the prior, weaker state instead of pruning the path.
     /// Use [`Self::assume_checked`] when coverage depends on retaining the guard.
-    pub fn assume(
+    pub fn assume<D: EvmNumericAlgebra>(
         &mut self,
         expression: &ExprId,
         nonzero: bool,
         limits: &RelationLimits,
+        domain: AlgebraRef<'_, D>,
     ) -> CheckResult {
-        self.assume_checked(expression, nonzero, limits)
+        self.assume_checked(expression, nonzero, limits, domain)
             .unwrap_or_else(CheckResult::Undetermined)
-    }
-    /// Retain an assumption before checking its feasibility.
-    ///
-    /// `Err` leaves this state unchanged because the assumption did not fit its
-    /// policy. `Ok(Undetermined(_))` keeps the complete assumption: a traversal
-    /// bound loses pruning precision without losing its guarded input domain.
-    /// Coverage-sensitive callers must preserve this distinction. An already
-    /// contradictory state returns `Ok(ProvenImpossible)` without needing another atom.
-    pub fn assume_checked(
-        &mut self,
-        expression: &ExprId,
-        nonzero: bool,
-        limits: &RelationLimits,
-    ) -> Result<CheckResult, QueryReason> {
-        self.insert(
-            Constraint::Truth {
-                expression: expression.clone(),
-                nonzero,
-            },
-            limits,
-        )
-    }
-    /// Add sound unsigned numeric bounds for one value.
-    pub fn add_unsigned_bounds(
-        &mut self,
-        expression: &ExprId,
-        lower: U256,
-        upper: U256,
-        limits: &RelationLimits,
-    ) -> CheckResult {
-        self.insert(
-            Constraint::Range {
-                expression: expression.clone(),
-                lower,
-                upper,
-            },
-            limits,
-        )
-        .unwrap_or_else(CheckResult::Undetermined)
-    }
-    /// Add sound bit guarantees; contradictory bits may prove bottom.
-    pub fn add_known_bits(
-        &mut self,
-        expression: &ExprId,
-        zero: U256,
-        one: U256,
-        limits: &RelationLimits,
-    ) -> CheckResult {
-        self.insert(
-            Constraint::Bits {
-                expression: expression.clone(),
-                zero,
-                one,
-            },
-            limits,
-        )
-        .unwrap_or_else(CheckResult::Undetermined)
-    }
-    /// Add equality between two value expressions, for state/call substitutions.
-    pub fn add_equal(
-        &mut self,
-        left: &ExprId,
-        right: &ExprId,
-        limits: &RelationLimits,
-    ) -> CheckResult {
-        self.insert(
-            Constraint::Equal {
-                left: left.clone(),
-                right: right.clone(),
-            },
-            limits,
-        )
-        .unwrap_or_else(CheckResult::Undetermined)
     }
     /// Whether any retained guarantee depends on a variable in this value.
     /// Names alone are insufficient: leaf equality includes private input scope
@@ -584,87 +494,6 @@ impl RelationState {
     /// Alias for dependency-aware caller code.
     pub fn mentions(&self, expression: &ExprId) -> bool {
         self.relevant(expression)
-    }
-    /// Look for a contradiction using bounded local facts and path alternatives.
-    pub fn check(&self, limits: &RelationLimits) -> CheckResult {
-        match local::project(self, None, None, limits, None) {
-            Ok(None) => CheckResult::ProvenImpossible,
-            Ok(Some(_)) => CheckResult::MayBeFeasible,
-            Err(reason) => CheckResult::Undetermined(reason),
-        }
-    }
-    /// Exclude a candidate only when local consequences prove it impossible.
-    pub fn can_equal(
-        &self,
-        expression: &ExprId,
-        value: U256,
-        limits: &RelationLimits,
-    ) -> CheckResult {
-        match local::project(self, Some(expression), Some(value), limits, None) {
-            Ok(None) => CheckResult::ProvenImpossible,
-            Ok(Some(_)) => CheckResult::MayBeFeasible,
-            Err(reason) => CheckResult::Undetermined(reason),
-        }
-    }
-    /// Evaluate retained numeric/equality/state identities without model queries.
-    pub fn local_value(&self, expression: &ExprId, limits: &RelationLimits) -> ValueQuery {
-        match local::project(self, Some(expression), None, limits, None) {
-            Ok(None) => ValueQuery::ProvenImpossible,
-            Ok(Some(value)) => value.singleton().map_or_else(
-                || ValueQuery::Bounds(Box::new(value.clone())),
-                ValueQuery::Exact,
-            ),
-            Err(reason) => ValueQuery::Undetermined(reason),
-        }
-    }
-    /// Production projection pays local work to the existing root ledger.
-    /// A refused ledger reservation leaves the mathematical result uninstalled;
-    /// callers distinguish it through `budget.exhausted()` before applying it.
-    #[cfg(test)]
-    pub(crate) fn local_value_budgeted(
-        &self,
-        expression: &ExprId,
-        limits: &RelationLimits,
-        budget: &mut crate::resource::WorkBudget,
-    ) -> ValueQuery {
-        self.local_value_budgeted_with(
-            expression,
-            limits,
-            budget,
-            super::ValueAlgebra::new(super::Domain::default()).borrowed(),
-        )
-    }
-    #[cfg(test)]
-    pub(crate) fn can_equal_budgeted(
-        &self,
-        expression: &ExprId,
-        value: U256,
-        limits: &RelationLimits,
-        budget: &mut crate::resource::WorkBudget,
-    ) -> CheckResult {
-        self.can_equal_budgeted_with(
-            expression,
-            value,
-            limits,
-            budget,
-            super::ValueAlgebra::new(super::Domain::default()).borrowed(),
-        )
-    }
-    #[cfg(test)]
-    pub(crate) fn assume_checked_budgeted(
-        &mut self,
-        expression: &ExprId,
-        nonzero: bool,
-        limits: &RelationLimits,
-        budget: &mut crate::resource::WorkBudget,
-    ) -> Result<CheckResult, QueryReason> {
-        self.assume_checked_budgeted_with(
-            expression,
-            nonzero,
-            limits,
-            budget,
-            super::ValueAlgebra::new(super::Domain::default()).borrowed(),
-        )
     }
     /// Cover both paths by keeping only guarantees common to both.
     /// This intentionally loses disjunction precision, never intersects paths.
@@ -811,12 +640,12 @@ impl RelationState {
 
 impl RelationState {
     /// Evaluate using the same injected numeric policy as the current execution.
-    pub fn check_with<D: EvmNumericAlgebra>(
+    pub fn check<D: EvmNumericAlgebra>(
         &self,
         limits: &RelationLimits,
         domain: AlgebraRef<'_, D>,
     ) -> CheckResult {
-        match local::project_with(self, None, None, limits, None, domain) {
+        match local::project(self, None, None, limits, None, domain) {
             Ok(None) => CheckResult::ProvenImpossible,
             Ok(Some(_)) => CheckResult::MayBeFeasible,
             Err(reason) => CheckResult::Undetermined(reason),
@@ -824,14 +653,14 @@ impl RelationState {
     }
 
     /// Evaluate using the same injected numeric policy as the current execution.
-    pub fn can_equal_with<D: EvmNumericAlgebra>(
+    pub fn can_equal<D: EvmNumericAlgebra>(
         &self,
         expression: &ExprId,
         value: U256,
         limits: &RelationLimits,
         domain: AlgebraRef<'_, D>,
     ) -> CheckResult {
-        match local::project_with(self, Some(expression), Some(value), limits, None, domain) {
+        match local::project(self, Some(expression), Some(value), limits, None, domain) {
             Ok(None) => CheckResult::ProvenImpossible,
             Ok(Some(_)) => CheckResult::MayBeFeasible,
             Err(reason) => CheckResult::Undetermined(reason),
@@ -839,13 +668,13 @@ impl RelationState {
     }
 
     /// Evaluate using the same injected numeric policy as the current execution.
-    pub fn local_value_with<D: EvmNumericAlgebra>(
+    pub fn local_value<D: EvmNumericAlgebra>(
         &self,
         expression: &ExprId,
         limits: &RelationLimits,
         domain: AlgebraRef<'_, D>,
     ) -> EvmValueQuery<D::Element> {
-        match local::project_with(self, Some(expression), None, limits, None, domain) {
+        match local::project(self, Some(expression), None, limits, None, domain) {
             Ok(None) => EvmValueQuery::ProvenImpossible,
             Ok(Some(value)) => value.singleton().map_or_else(
                 || EvmValueQuery::Bounds(Box::new(value.clone())),
@@ -856,14 +685,14 @@ impl RelationState {
     }
 
     /// Evaluate using the same injected numeric policy as the current execution.
-    pub(crate) fn local_value_budgeted_with<D: EvmNumericAlgebra>(
+    pub(crate) fn local_value_budgeted<D: EvmNumericAlgebra>(
         &self,
         expression: &ExprId,
         limits: &RelationLimits,
         budget: &mut crate::resource::WorkBudget,
         domain: AlgebraRef<'_, D>,
     ) -> EvmValueQuery<D::Element> {
-        match local::project_with(self, Some(expression), None, limits, Some(budget), domain) {
+        match local::project(self, Some(expression), None, limits, Some(budget), domain) {
             Ok(None) => EvmValueQuery::ProvenImpossible,
             Ok(Some(value)) => value.singleton().map_or_else(
                 || EvmValueQuery::Bounds(Box::new(value.clone())),
@@ -874,7 +703,7 @@ impl RelationState {
     }
 
     /// Evaluate using the same injected numeric policy as the current execution.
-    pub(crate) fn can_equal_budgeted_with<D: EvmNumericAlgebra>(
+    pub(crate) fn can_equal_budgeted<D: EvmNumericAlgebra>(
         &self,
         expression: &ExprId,
         value: U256,
@@ -882,7 +711,7 @@ impl RelationState {
         budget: &mut crate::resource::WorkBudget,
         domain: AlgebraRef<'_, D>,
     ) -> CheckResult {
-        match local::project_with(
+        match local::project(
             self,
             Some(expression),
             Some(value),
@@ -897,7 +726,7 @@ impl RelationState {
     }
 
     /// Evaluate using the same injected numeric policy as the current execution.
-    pub(crate) fn assume_checked_budgeted_with<D: EvmNumericAlgebra>(
+    pub(crate) fn assume_checked_budgeted<D: EvmNumericAlgebra>(
         &mut self,
         expression: &ExprId,
         nonzero: bool,
@@ -915,7 +744,7 @@ impl RelationState {
             },
             limits,
         )?;
-        let answer = match local::project_with(self, None, None, limits, Some(budget), domain) {
+        let answer = match local::project(self, None, None, limits, Some(budget), domain) {
             Ok(None) => CheckResult::ProvenImpossible,
             Ok(Some(_)) => CheckResult::MayBeFeasible,
             Err(reason) => CheckResult::Undetermined(reason),
@@ -926,15 +755,21 @@ impl RelationState {
         Ok(answer)
     }
 
-    /// Retain this scoped guarantee and check through the injected algebra.
-    pub fn assume_checked_with<D: EvmNumericAlgebra>(
+    /// Retain an assumption before checking its feasibility.
+    ///
+    /// `Err` leaves this state unchanged because the assumption did not fit its
+    /// policy. `Ok(Undetermined(_))` keeps the complete assumption: a traversal
+    /// bound loses pruning precision without losing its guarded input domain.
+    /// Coverage-sensitive callers must preserve this distinction. An already
+    /// contradictory state returns `Ok(ProvenImpossible)` without needing another atom.
+    pub fn assume_checked<D: EvmNumericAlgebra>(
         &mut self,
         expression: &ExprId,
         nonzero: bool,
         limits: &RelationLimits,
         domain: AlgebraRef<'_, D>,
     ) -> Result<CheckResult, QueryReason> {
-        self.insert_with(
+        self.insert(
             Constraint::Truth {
                 expression: expression.clone(),
                 nonzero,
@@ -945,7 +780,7 @@ impl RelationState {
     }
 
     /// Retain this scoped guarantee and check through the injected algebra.
-    pub fn add_unsigned_bounds_with<D: EvmNumericAlgebra>(
+    pub fn add_unsigned_bounds<D: EvmNumericAlgebra>(
         &mut self,
         expression: &ExprId,
         lower: U256,
@@ -953,7 +788,7 @@ impl RelationState {
         limits: &RelationLimits,
         domain: AlgebraRef<'_, D>,
     ) -> CheckResult {
-        self.insert_with(
+        self.insert(
             Constraint::Range {
                 expression: expression.clone(),
                 lower,
@@ -966,7 +801,7 @@ impl RelationState {
     }
 
     /// Retain this scoped guarantee and check through the injected algebra.
-    pub fn add_known_bits_with<D: EvmNumericAlgebra>(
+    pub fn add_known_bits<D: EvmNumericAlgebra>(
         &mut self,
         expression: &ExprId,
         zero: U256,
@@ -974,7 +809,7 @@ impl RelationState {
         limits: &RelationLimits,
         domain: AlgebraRef<'_, D>,
     ) -> CheckResult {
-        self.insert_with(
+        self.insert(
             Constraint::Bits {
                 expression: expression.clone(),
                 zero,
@@ -987,14 +822,14 @@ impl RelationState {
     }
 
     /// Retain this scoped guarantee and check through the injected algebra.
-    pub fn add_equal_with<D: EvmNumericAlgebra>(
+    pub fn add_equal<D: EvmNumericAlgebra>(
         &mut self,
         left: &ExprId,
         right: &ExprId,
         limits: &RelationLimits,
         domain: AlgebraRef<'_, D>,
     ) -> CheckResult {
-        self.insert_with(
+        self.insert(
             Constraint::Equal {
                 left: left.clone(),
                 right: right.clone(),
@@ -1004,7 +839,7 @@ impl RelationState {
         )
         .unwrap_or_else(CheckResult::Undetermined)
     }
-    fn insert_with<D: EvmNumericAlgebra>(
+    fn insert<D: EvmNumericAlgebra>(
         &mut self,
         constraint: Constraint,
         limits: &RelationLimits,
@@ -1014,7 +849,7 @@ impl RelationState {
             return Ok(CheckResult::ProvenImpossible);
         }
         self.retain(constraint, limits)?;
-        let checked = self.check_with(limits, domain);
+        let checked = self.check(limits, domain);
         if checked == CheckResult::ProvenImpossible {
             self.bottom = true;
         }

@@ -1,11 +1,12 @@
 use super::{contexts, support::*};
+use crate::native;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     analysis::{
         ExecutionConfig, FrameCode, FrontierReason, MachineEdgeKind, Status, control::Control,
         progress::Observer,
     },
-    domain::relational::QueryReason,
-    world::ByteArray,
+    world::EvmByteArray,
 };
 use revm_bytecode::opcode;
 
@@ -23,7 +24,7 @@ fn resource_budgets_leave_real_frontiers_and_do_not_claim_convergence() {
             "depth" => config.max_call_depth = 1,
             _ => unreachable!(),
         }
-        let analysis = run_config(world, entry(ByteArray::empty()), config);
+        let analysis = run_config(world, entry(EvmByteArray::<NumericValue>::empty()), config);
         assert_eq!(
             analysis.status(),
             Status::Incomplete,
@@ -51,7 +52,7 @@ fn closed_static_unknown_summary_has_evidence_and_feeds_later_storage_reads() {
     let a = contexts::readonly_parent(opcode::STATICCALL);
     let mut world = new_world();
     insert(&mut world, A, &a, &[(0, 42)]);
-    let analysis = run(world, entry(ByteArray::empty()));
+    let analysis = run(world, entry(EvmByteArray::<NumericValue>::empty()));
     complete(&analysis);
     assert!(
         !analysis.procedure_summaries().is_empty(),
@@ -118,7 +119,7 @@ fn missing_known_callback_effect_coverage_remains_incomplete() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[(0, 42)]);
     insert(&mut world, C, &c.finish(), &[]);
-    let analysis = run(world, entry(ByteArray::empty()));
+    let analysis = run(world, entry(EvmByteArray::<NumericValue>::empty()));
     assert_eq!(
         analysis.status(),
         Status::Incomplete,
@@ -158,25 +159,19 @@ fn local_cancellation_is_reported_without_poisoning_possible_unknown_interaction
     insert(&mut world, C, &c.finish(), &[(0, 5)]);
     // The removed solver-fuel fixture now exercises real scoped cancellation.
     // The fresh retry uses the same world, input and complete default policy.
-    let input = entry(ByteArray::empty());
+    let input = entry(EvmByteArray::<NumericValue>::empty());
     let control = Control::new(Observer::default());
     control.cancellation().cancel();
-    let cancelled =
-        control.scope(|| run_config(world.clone(), input.clone(), ExecutionConfig::default()));
-    assert_eq!(cancelled.status(), Status::Incomplete);
-    assert!(
-        cancelled
-            .frontiers()
-            .iter()
-            .any(|frontier| frontier.reason == FrontierReason::Relations(QueryReason::Cancelled)),
-        "local cancellation cause was not retained"
+    let cancelled = native::run(
+        &native::product(),
+        evm_abstract::analysis::AnalysisInput::new(world.clone(), input.clone()).unwrap(),
+        ExecutionConfig::default(),
+        &control,
     );
-    assert!(
-        cancelled
-            .outcomes()
-            .iter()
-            .all(|outcome| outcome.kind != evm_abstract::analysis::OutcomeKind::Return)
-    );
+    assert!(matches!(
+        cancelled,
+        Err(evm_abstract::analysis::cooperation::CooperationError::Cancelled)
+    ));
     let analysis = run_config(world, input, ExecutionConfig::default());
     let outcomes = returns(&analysis);
     for expected in [5, 9] {
@@ -239,7 +234,7 @@ fn repeated_static_fixture(calls: usize) -> Fixture {
 fn default_work_budget_retains_an_explicit_frontier_for_large_static_workload() {
     let mut world = new_world();
     insert(&mut world, A, &repeated_static_fixture(256), &[(0, 42)]);
-    let analysis = run(world, entry(ByteArray::empty()));
+    let analysis = run(world, entry(EvmByteArray::<NumericValue>::empty()));
     assert_eq!(analysis.config().max_work, 20_000_000);
     assert_eq!(analysis.status(), Status::Incomplete);
     assert!(
@@ -273,7 +268,7 @@ fn check_repeated_static_calls(use_summaries: bool) {
             ..Default::default()
         };
         let started = std::time::Instant::now();
-        let analysis = run_config(world, entry(ByteArray::empty()), config);
+        let analysis = run_config(world, entry(EvmByteArray::<NumericValue>::empty()), config);
         complete(&analysis);
         assert!(!analysis.procedure_summaries().is_empty());
         assert!(

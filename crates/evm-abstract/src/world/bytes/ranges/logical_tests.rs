@@ -1,20 +1,20 @@
-use super::super::ByteArray;
-use crate::domain::{AbstractValue, Domain, symbolic::ExprId};
+use crate::world::test_support::TestBytes;
 use alloy_primitives::U256;
+use {crate::domain::symbolic::ExprId, crate::world::test_support::TestValue};
 
-fn value(value: U256) -> AbstractValue {
-    AbstractValue::constant(value)
+fn value(value: U256) -> TestValue {
+    TestValue::constant(value)
 }
 
 #[test]
 fn huge_copy_slice_and_write_retain_u256_lengths_without_materializing() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let size = value(U256::from(1) << 128usize);
     let at = value(U256::from(1) << 160usize);
-    let source = ByteArray::unknown();
-    let mut memory = ByteArray::memory();
+    let source = TestBytes::unknown();
+    let mut memory = TestBytes::memory();
     memory
-        .copy_from(&at, &source, &value(U256::ZERO), &size, 64, domain)
+        .copy_from(&at, &source, &value(U256::ZERO), &size, domain.borrowed())
         .unwrap();
     assert_eq!(
         memory.len().singleton(),
@@ -22,24 +22,35 @@ fn huge_copy_slice_and_write_retain_u256_lengths_without_materializing() {
             .unwrap()
             .checked_add(size.singleton().unwrap())
     );
-    let sliced = memory.slice(&at, &size, 64, domain).unwrap();
+    let sliced = memory.slice(&at, &size, domain.borrowed()).unwrap();
     assert_eq!(sliced.len().singleton(), size.singleton());
     assert_eq!(
         sliced.state_root(),
         source
-            .slice(&value(U256::ZERO), &size, 64, domain)
+            .slice(&value(U256::ZERO), &size, domain.borrowed())
             .unwrap()
             .state_root()
     );
     assert_eq!(memory.stored_bytes().len(), 0);
     assert!(memory.work_size() < 4096);
     assert!(sliced.work_size() < 4096);
-    assert!(sliced.exact_bytes_bounded(64).is_none());
+    assert!(
+        sliced
+            .exact_bytes_bounded(
+                64,
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed()
+            )
+            .is_none()
+    );
     memory
-        .write_byte(&at, &value(U256::from(0xab)), 64, domain)
+        .write_byte(&at, &value(U256::from(0xab)), domain.borrowed())
         .unwrap();
     assert_eq!(
-        memory.read_byte_checked(&at, domain).unwrap().singleton(),
+        memory
+            .read_byte_checked(&at, domain.borrowed())
+            .unwrap()
+            .singleton(),
         Some(U256::from(0xab))
     );
     assert!(memory.stored_bytes().len() <= 256);
@@ -47,32 +58,35 @@ fn huge_copy_slice_and_write_retain_u256_lengths_without_materializing() {
 
 #[test]
 fn word_rounded_bound_is_exact_and_zero_at_max_is_unchanged() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let bound = U256::MAX & !U256::from(31);
-    let mut memory = ByteArray::memory();
+    let mut memory = TestBytes::memory();
     memory
         .expand(
             &value(bound - U256::from(32)),
             &value(U256::from(32)),
-            1,
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     assert_eq!(memory.len().singleton(), Some(bound));
     let before = memory.clone();
     memory
-        .expand(&value(U256::MAX), &value(U256::ZERO), 1, domain)
+        .expand(&value(U256::MAX), &value(U256::ZERO), domain.borrowed())
         .unwrap();
     assert_eq!(memory, before);
     assert!(
         memory
-            .expand(&value(bound), &value(U256::from(1)), 1, domain)
+            .expand(&value(bound), &value(U256::from(1)), domain.borrowed())
             .is_err()
     );
     assert_eq!(memory, before);
     assert!(
         memory
-            .expand(&value(U256::ZERO), &value(bound + U256::from(1)), 1, domain)
+            .expand(
+                &value(U256::ZERO),
+                &value(bound + U256::from(1)),
+                domain.borrowed()
+            )
             .is_err()
     );
     assert_eq!(memory, before);
@@ -80,16 +94,20 @@ fn word_rounded_bound_is_exact_and_zero_at_max_is_unchanged() {
 
 #[test]
 fn possible_symbolic_overflow_uses_a_stable_coarse_length_not_wrapped_add() {
-    let domain = Domain::default();
-    let offset = AbstractValue::unsigned_range(U256::MAX - U256::from(64), U256::MAX)
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let offset = TestValue::unsigned_range(U256::MAX - U256::from(64), U256::MAX)
         .unwrap()
         .with_expression(ExprId::fresh().unwrap());
     let size = value(U256::from(32));
-    let mut memory = ByteArray::memory();
+    let mut memory = TestBytes::memory();
     memory
-        .expand(&value(U256::ZERO), &value(U256::from(96)), 1, domain)
+        .expand(
+            &value(U256::ZERO),
+            &value(U256::from(96)),
+            domain.borrowed(),
+        )
         .unwrap();
-    memory.expand(&offset, &size, 1, domain).unwrap();
+    memory.expand(&offset, &size, domain.borrowed()).unwrap();
     let length = memory.len().clone();
     assert_eq!(
         length.interval().unsigned_bounds(),
@@ -101,7 +119,7 @@ fn possible_symbolic_overflow_uses_a_stable_coarse_length_not_wrapped_add() {
         crate::domain::symbolic::ExprKind::Operation { .. }
     ));
     for _ in 0..4 {
-        memory.expand(&offset, &size, 1, domain).unwrap();
+        memory.expand(&offset, &size, domain.borrowed()).unwrap();
         assert_eq!(memory.len(), &length);
     }
 }
@@ -109,18 +127,17 @@ fn possible_symbolic_overflow_uses_a_stable_coarse_length_not_wrapped_add() {
 #[test]
 fn numeric_only_copy_uses_the_same_synthesized_operand_in_root_and_allocation() {
     use crate::domain::symbolic::ByteStateKind;
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let offset = domain.join(&value(U256::from(64)), &value(U256::from(96)));
     let size = domain.join(&value(U256::from(1)), &value(U256::from(2)));
-    let mut memory = ByteArray::memory();
+    let mut memory = TestBytes::memory();
     memory
         .copy_from(
             &offset,
-            &ByteArray::exact(&[1, 2]),
+            &TestBytes::exact(&[1, 2]),
             &value(U256::ZERO),
             &size,
-            1,
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     let ByteStateKind::Copy {

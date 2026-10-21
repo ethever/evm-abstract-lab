@@ -24,7 +24,7 @@ pub(in crate::world::bytes) use memo::{CONTEXTS, Preparation, preparation};
 pub(in crate::world) struct Context<
     'a,
     N: WordElement = crate::domain::NumericValue,
-    D: EvmNumericAlgebra<Element = N> = crate::domain::Domain,
+    D: EvmNumericAlgebra<Element = N> = crate::domain::ProductAlgebra,
 > {
     domain: AlgebraRef<'a, D>,
     facts: &'a Facts<N>,
@@ -136,7 +136,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
             let right = self
                 .branch(condition, false)
                 .retained_word(else_value, domain)?;
-            return Some(self.join_with(domain, &left, &right));
+            return Some(self.join(domain, &left, &right));
         }
         if expression.as_constant().is_some() {
             return Some(super::super::numeric::scalar_in(expression, self, domain));
@@ -329,7 +329,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
     }
 
     /// Pay each actual Reader transfer on the original demand ledger. The
-    /// payment borrow ends before Domain runs; None/oracle keep their old path.
+    /// payment borrow ends before the algebra runs; absent demands and oracles remain unmetered.
     /// A refused action yields only the checked demand's private stop sentinel.
     pub(in crate::world::bytes) fn apply(
         &self,
@@ -337,7 +337,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
         op: u8,
         args: &[EvmValue<N>],
     ) -> EvmValue<N> {
-        if !self.pay_apply(domain, args) {
+        if !self.pay_apply(domain, op, args) {
             return EvmValue::<N>::top();
         }
         domain.apply(op, args)
@@ -352,16 +352,16 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
         op: u8,
         args: &[EvmValue<N>],
     ) -> EvmValue<N> {
-        if !self.pay_apply(domain, args) {
+        if !self.pay_apply(domain, op, args) {
             return EvmValue::<N>::top();
         }
         domain.observe_byte(op, args)
     }
 
-    fn pay_apply(&self, domain: AlgebraRef<'_, D>, args: &[EvmValue<N>]) -> bool {
+    fn pay_apply(&self, domain: AlgebraRef<'_, D>, op: u8, args: &[EvmValue<N>]) -> bool {
         if self.stopped()
             || self.demand.as_ref().is_some_and(|demand| {
-                !demand.policy(domain) || !demand.pay_reader(|| domain.operation_work(args))
+                !demand.policy(domain) || !demand.pay_reader(|| domain.operation_work(op, args))
             })
         {
             return false;
@@ -388,7 +388,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
     }
 
     /// This join is separate from resolve's already-paid source metadata join.
-    pub(in crate::world::bytes) fn join_with(
+    pub(in crate::world::bytes) fn join(
         &self,
         domain: AlgebraRef<'_, D>,
         left: &EvmValue<N>,
@@ -647,7 +647,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
         if let Some(value) = self
             .memo
             .borrow()
-            .get_with(expression, domain, demand, &|nodes| self.reserve(nodes))
+            .get(expression, domain, demand, &|nodes| self.reserve(nodes))
         {
             return value;
         }

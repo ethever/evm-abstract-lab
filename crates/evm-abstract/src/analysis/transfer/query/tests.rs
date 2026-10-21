@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     Fork,
-    analysis::{EnginePolicies, ExecutionConfig, Status, analyze_world_with, transfer::relations},
+    analysis::{EnginePolicies, ExecutionConfig, Status, transfer::relations},
     domain::{EvmValue, ValueAlgebra, symbolic::ExprId},
     world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
@@ -129,18 +129,25 @@ fn cancellation_during_singleton_keeps_payment_but_discards_the_answer() {
 
 #[test]
 fn refinement_prepays_opaque_singletons_and_leaves_refused_values_intact() {
-    let _receipt = RECEIPT.scope();
     let config = ExecutionConfig::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let algebra = ValueAlgebra::new(Policy);
     let expression = ExprId::fresh().unwrap();
     let mut relations = crate::domain::relational::RelationState::default();
-    relations.add_equal(
-        &expression,
-        &ExprId::constant(U256::from(7)),
-        &config.analysis.relations,
+    assert_eq!(
+        relations.add_equal(
+            &expression,
+            &ExprId::constant(U256::from(7)),
+            &config_numeric.relations,
+            algebra.borrowed(),
+        ),
+        crate::domain::relational::CheckResult::MayBeFeasible,
     );
     let before = EvmValue::constant(U256::from(7)).with_expression(expression);
     let mut value = before.clone();
+    // Equality admission checks the injected carrier in pure, caller-funded
+    // fixture setup. The receipt measures the transfer operation's own payer.
+    let _receipt = RECEIPT.scope();
     let mut budget = WorkBudget::new(61);
     assert_eq!(
         relations::refine(
@@ -201,12 +208,16 @@ fn refinement_prepays_opaque_singletons_and_leaves_refused_values_intact() {
     assert_eq!(value, before);
 }
 
+// Build and check the caller-funded fixture before starting operation receipts
+// or enabling refusal/cancellation hooks on the injected carrier.
 fn scalar_fixture() -> (
     ExecutionConfig,
     EvmValue<Word>,
     crate::domain::relational::RelationState,
 ) {
     let config = ExecutionConfig::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
+    let algebra = ValueAlgebra::new(Policy);
     let expression = ExprId::fresh().unwrap();
     let before = EvmValue::from_numeric(Word {
         lower: U256::ONE,
@@ -217,10 +228,14 @@ fn scalar_fixture() -> (
     .with_expression(expression.clone())
     .with_symbolic_limit();
     let mut relations = crate::domain::relational::RelationState::default();
-    relations.add_equal(
-        &expression,
-        &ExprId::constant(U256::from(7)),
-        &config.analysis.relations,
+    assert_eq!(
+        relations.add_equal(
+            &expression,
+            &ExprId::constant(U256::from(7)),
+            &config_numeric.relations,
+            algebra.borrowed(),
+        ),
+        crate::domain::relational::CheckResult::MayBeFeasible,
     );
     (config, before, relations)
 }
@@ -236,8 +251,6 @@ fn cooperative_refinement_skips_discovery_and_checks_stop_before_interpreting_ho
     };
     use analysis_control::{Cancellation, with_cancellation};
 
-    let _receipt = RECEIPT.scope();
-    RECEIPT.update(|receipt| receipt.fee = usize::MAX);
     let (_, before, _) = scalar_fixture();
     let algebra = ValueAlgebra::new(Policy);
     let mut input = crate::analysis::transfer::initial(
@@ -253,6 +266,8 @@ fn cooperative_refinement_skips_discovery_and_checks_stop_before_interpreting_ho
         .borrowed()
         .refinement_work(&before, observation.work_size())
         + before.clone_work();
+    let _receipt = RECEIPT.scope();
+    RECEIPT.update(|receipt| receipt.fee = usize::MAX);
     let mut budget = WorkBudget::new(1_000_000);
     let LocalInput::Reachable { payload, limited } =
         apply_refinements(input.clone(), &facts, algebra.borrowed(), &mut budget).unwrap()
@@ -321,11 +336,11 @@ fn cooperative_refinement_skips_discovery_and_checks_stop_before_interpreting_ho
 
 #[test]
 fn refined_result_has_one_paid_query_and_preserves_owned_constraints() {
-    let _receipt = RECEIPT.scope();
     let (config, before, relations) = scalar_fixture();
     let algebra = ValueAlgebra::new(Policy);
     let mut budget = WorkBudget::new(1_000_000);
     let mut value = before.clone();
+    let _receipt = RECEIPT.scope();
     assert_eq!(
         relations::refine(
             &mut value,
@@ -381,9 +396,9 @@ fn refined_result_has_one_paid_query_and_preserves_owned_constraints() {
 
 #[test]
 fn refinement_checks_cancellation_after_import_reduction_and_result_query() {
-    let _receipt = RECEIPT.scope();
     let (config, before, relations) = scalar_fixture();
     let algebra = ValueAlgebra::new(Policy);
+    let _receipt = RECEIPT.scope();
     for stage in 0..3 {
         RECEIPT.update(|receipt| {
             receipt.cancel_on_constrain = stage == 0;
@@ -523,7 +538,7 @@ fn complete_operation_envelope_owns_internal_queries_without_a_second_payment() 
     let arg = EvmValue::<Word>::top()
         .with_expression(ExprId::fresh().unwrap())
         .with_symbolic_limit();
-    let work = algebra.operation_work(std::slice::from_ref(&arg));
+    let work = algebra.operation_work(revm_bytecode::opcode::ISZERO, std::slice::from_ref(&arg));
     let mut budget = WorkBudget::new(work);
     let result = algebra
         .apply_budgeted(revm_bytecode::opcode::ISZERO, &[arg], &mut budget)
@@ -611,12 +626,15 @@ fn public_pop_probe_needs_no_singleton_discovery_even_with_a_max_quote() {
     };
     let algebra = ValueAlgebra::new(Policy);
     RECEIPT.update(|receipt| receipt.fee = usize::MAX);
-    let skipped = analyze_world_with(
-        world.clone(),
-        entry.clone(),
-        config.clone(),
+    let skipped = crate::analysis::AnalysisEngine::new(
         &algebra,
         &EnginePolicies::default(),
+        &mut crate::analysis::cooperation::NoExtension,
+    )
+    .run(
+        crate::analysis::AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+        &crate::analysis::control::Control::default(),
     )
     .unwrap();
     assert_eq!(skipped.status(), Status::Converged);
@@ -627,8 +645,17 @@ fn public_pop_probe_needs_no_singleton_discovery_even_with_a_max_quote() {
         receipt.quotes = 0;
         receipt.queries = 0;
     });
-    let paid =
-        analyze_world_with(world, entry, config, &algebra, &EnginePolicies::default()).unwrap();
+    let paid = crate::analysis::AnalysisEngine::new(
+        &algebra,
+        &EnginePolicies::default(),
+        &mut crate::analysis::cooperation::NoExtension,
+    )
+    .run(
+        crate::analysis::AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &crate::analysis::control::Control::default(),
+    )
+    .unwrap();
     assert_eq!(paid.status(), Status::Converged);
     assert!(paid.frontiers().is_empty());
     assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));

@@ -2,12 +2,13 @@ use super::support::{
     Assembly, ROOT, complete, config, construct_world, entry, no_bad_branch, reachable,
     return_words, run_world, word,
 };
+use crate::native;
 use alloy_primitives::U256;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
     analysis::{FrontierReason, OutcomeKind, Status},
-    domain::Domain,
-    world::ByteArray,
+    world::EvmByteArray,
 };
 use revm_bytecode::opcode;
 
@@ -28,7 +29,7 @@ fn repeated_constant_memory_store_reaches_a_fixed_point() {
     policy.analysis.max_transfers = 128;
     let analysis = run_world(
         construct_world(Fork::Osaka, &[(ROOT, &code.finish().code)]),
-        entry(ByteArray::unknown()),
+        entry(EvmByteArray::<NumericValue>::unknown()),
         policy,
     );
     return_words(&analysis, &[7]);
@@ -58,7 +59,7 @@ fn continuously_changing_loop_keeps_completion_or_an_explicit_frontier() {
     policy.analysis.max_transfers = 64;
     let analysis = run_world(
         construct_world(Fork::Osaka, &[(ROOT, &code.finish().code)]),
-        entry(ByteArray::unknown()),
+        entry(EvmByteArray::<NumericValue>::unknown()),
         policy,
     );
     assert!(
@@ -68,7 +69,7 @@ fn continuously_changing_loop_keeps_completion_or_an_explicit_frontier() {
             .any(|outcome| outcome.kind == OutcomeKind::Return
                 && outcome
                     .data
-                    .read_word(&word(0), Domain::default())
+                    .read_word(&word(0), native::product().borrowed())
                     .contains(U256::from(1))),
         "the terminating calldata=0 witness must survive convergence/budget policy"
     );
@@ -134,7 +135,11 @@ fn summary_reuse_freshens_per_call_observations_and_preserves_history() {
             policy.use_summaries = use_summaries;
             (
                 use_summaries,
-                run_world(world.clone(), entry(ByteArray::empty()), policy),
+                run_world(
+                    world.clone(),
+                    entry(EvmByteArray::<NumericValue>::empty()),
+                    policy,
+                ),
             )
         })
         .collect();
@@ -188,7 +193,7 @@ fn summary_reuse_observes_current_storage_without_rewriting_the_previous_return(
     for use_summaries in [false, true] {
         let mut policy = config();
         policy.use_summaries = use_summaries;
-        let entry = entry(ByteArray::empty());
+        let entry = entry(EvmByteArray::<NumericValue>::empty());
         let analysis = run_world(world.clone(), entry.clone(), policy);
         return_words(&analysis, &[0, 9]);
         no_bad_branch(&analysis, &root, ROOT);

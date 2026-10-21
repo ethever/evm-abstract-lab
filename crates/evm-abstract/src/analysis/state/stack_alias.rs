@@ -1,14 +1,14 @@
 //! Finite must-equalities between stack positions, without retained expressions.
 
+#[cfg(test)]
+use crate::analysis::testing::TestValue;
+
 use crate::domain::WordElement;
 
 use super::{BTreeMap, EvmValue, MachineError, identify};
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-use crate::domain::AbstractValue;
 
 /// Each class is labelled by its first position; singleton positions label themselves.
 /// Mixed numeric bounds on one node deliberately lose their alias guarantee.

@@ -1,7 +1,8 @@
 use super::*;
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::transfer::resource_tests::words::{COPIES, Heavy, Policy, copies, reset},
-    domain::{Domain, ValueAlgebra, WordElement, relational::EvmValueQuery},
+    domain::{ProductAlgebra, ValueAlgebra, WordElement, relational::EvmValueQuery},
 };
 
 fn query(limits: RelationLimits) -> (RelationState, ExprId, EvmValueQuery<Heavy>) {
@@ -12,10 +13,10 @@ fn query(limits: RelationLimits) -> (RelationState, ExprId, EvmValueQuery<Heavy>
         limits.expressions(),
     )
     .unwrap();
-    let algebra = ValueAlgebra::new(Policy(Domain::from_spec(
-        Domain::default().spec().with_relations(limits),
+    let algebra = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(
+        ProductAlgebra::default().spec().with_relations(limits),
     )));
-    let answer = state.local_value_with(&expression, &limits, algebra.borrowed());
+    let answer = state.local_value(&expression, &limits, algebra.borrowed());
     assert!(
         matches!(&answer, EvmValueQuery::Bounds(value) if value.owned.len() == 16_384 && value.singleton().is_none())
     );
@@ -115,7 +116,7 @@ fn the_old_metadata_only_six_unit_cap_cannot_retain_a_boxed_default_bound() {
     let state = RelationState::default();
     let expression = ExprId::fresh().unwrap();
     let mut cache = QueryCache::default();
-    let answer = ValueQuery::Bounds(Box::new(NumericValue::top()));
+    let answer = TestValueQuery::Bounds(Box::new(NumericValue::top()));
     let mut budget = WorkBudget::new(10_000);
     cache.remember(&state, &expression, &limits, &answer, &mut budget);
     assert!(cache.values.is_empty() && cache.snapshot.is_none());

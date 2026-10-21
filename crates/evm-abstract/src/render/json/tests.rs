@@ -1,13 +1,14 @@
 use super::*;
+use crate::ssa::test_support::{
+    TestAccount, TestBytes, TestEntry, TestValue, TestWorld, TestWorldAnalysis, product,
+    product_with_relations, run_native,
+};
 use crate::{
     Address, Fork, U256,
-    analysis::{ExecutionConfig, analyze_world},
+    analysis::ExecutionConfig,
     bytecode::Program,
-    domain::{
-        AbstractValue,
-        symbolic::{ExprId, ExprLimits},
-    },
-    world::{Account, ByteArray, Code, Entry, World},
+    domain::symbolic::{ExprId, ExprLimits},
+    world::Code,
 };
 use serde::ser::SerializeSeq;
 
@@ -133,23 +134,22 @@ fn real_native_frontier_and_streamed_account_evidence_retain_the_native_shape() 
 
     let address = Address::repeat_byte(0x11);
     let program = Program::from_hex("366000803700").unwrap();
-    let mut world = World::new(Fork::Osaka, "native export");
-    let mut account = Account::empty();
+    let mut world = TestWorld::new(Fork::Osaka, "native export");
+    let mut account = TestAccount::empty();
     account.code = Code::Runtime(program);
     world.insert(address, account).unwrap();
-    let calldata = ByteArray::unknown();
-    let mut config = ExecutionConfig::default();
+    let calldata = TestBytes::unknown();
+    let config = ExecutionConfig::default();
     // Admit the complete input root (source token and length), while refusing
     // the larger compound logical-range guard before CALLDATACOPY's effect.
-    config.analysis.relations.max_nodes = calldata.state_root().nodes();
-    let analysis = analyze_world(
+    let algebra = product_with_relations(crate::domain::relational::RelationLimits {
+        max_nodes: calldata.state_root().nodes(),
+        ..Default::default()
+    });
+    let analysis = run_native(
+        &algebra,
         world,
-        Entry::concrete(
-            address,
-            address,
-            AbstractValue::constant(U256::ZERO),
-            calldata,
-        ),
+        TestEntry::concrete(address, address, TestValue::constant(U256::ZERO), calldata),
         config,
     )
     .unwrap();
@@ -236,21 +236,25 @@ fn real_native_frontier_and_streamed_account_evidence_retain_the_native_shape() 
     );
 }
 
-fn symbolic_balance_analysis(expression: ExprId) -> crate::analysis::WorldAnalysis {
+fn symbolic_balance_analysis(expression: ExprId) -> TestWorldAnalysis {
     let address = Address::repeat_byte(0x22);
-    let mut world = World::new(Fork::Osaka, "fingerprint export boundary");
-    let mut account = Account::from_hex("00", Fork::Osaka).unwrap();
-    account.balance = AbstractValue::top().with_expression(expression);
+    let mut world = TestWorld::new(Fork::Osaka, "fingerprint export boundary");
+    let mut account = TestAccount::from_hex("00", Fork::Osaka).unwrap();
+    account.balance = TestValue::top().with_expression(expression);
     world.insert(address, account).unwrap();
-    let mut config = ExecutionConfig::default();
-    config.analysis.relations.max_depth = 512;
-    analyze_world(
+    let config = ExecutionConfig::default();
+    let algebra = product_with_relations(crate::domain::relational::RelationLimits {
+        max_depth: 512,
+        ..Default::default()
+    });
+    run_native(
+        &algebra,
         world,
-        Entry::concrete(
+        TestEntry::concrete(
             address,
             address,
-            AbstractValue::constant(U256::ZERO),
-            ByteArray::exact(&[]),
+            TestValue::constant(U256::ZERO),
+            TestBytes::exact(&[]),
         ),
         config,
     )
@@ -275,8 +279,8 @@ fn cancelled_exact_fingerprint_is_reported_before_native_evidence_output() {
             ))
         ));
         for rendered in [
-            crate::render::world::text(&analysis),
-            crate::render::world::dot(&analysis),
+            crate::render::world::text(&analysis, &product()),
+            crate::render::world::dot(&analysis, &product()),
         ] {
             assert!(rendered.contains("Snapshot fingerprint unavailable:"));
             assert!(rendered.contains("cancelled"));
@@ -316,8 +320,8 @@ fn exact_fingerprint_encoding_boundary_cannot_be_serialized_as_a_digest() {
         ))
     ));
     for rendered in [
-        crate::render::world::text(&analysis),
-        crate::render::world::dot(&analysis),
+        crate::render::world::text(&analysis, &product()),
+        crate::render::world::dot(&analysis, &product()),
     ] {
         assert!(rendered.contains("Snapshot fingerprint unavailable:"));
     }

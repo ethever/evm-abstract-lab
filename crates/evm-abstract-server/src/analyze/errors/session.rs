@@ -57,11 +57,13 @@ fn fact(source: FactKey) -> api::InitialFactLocation {
         }
     }
 }
-pub(in crate::analyze) fn error(source: SessionError) -> api::ApiError {
+pub(in crate::analyze) fn error(source: SessionError<std::convert::Infallible>) -> api::ApiError {
     let message = source.to_string();
     let detail = match source {
         SessionError::Cancelled(_) => return super::super::cancelled(),
+        SessionError::Cooperation(error) => return super::execution(error),
         SessionError::Config(error) => return super::configuration(error),
+        SessionError::Work => api::SessionFailure::Work,
         SessionError::World(error) => return super::world(error),
         SessionError::Catalog(CatalogError::MixedFork { catalog, program }) => {
             api::SessionFailure::CatalogFork(api::CatalogForkMismatch {
@@ -81,13 +83,30 @@ pub(in crate::analyze) fn error(source: SessionError) -> api::ApiError {
         SessionError::Facts(FactError::Conflict { key }) => {
             api::SessionFailure::FactConflict(fact(key))
         }
+        SessionError::Refinement { key, cause } => {
+            api::SessionFailure::Refinement(api::SessionRefinementFailure {
+                location: fact(key),
+                source: super::super::mapping::fact_failure(&cause),
+            })
+        }
         SessionError::MissingCode(id) => api::SessionFailure::MissingCode(code(id)),
         SessionError::InitcodeBinding(id) => api::SessionFailure::InitcodeBinding(code(id)),
         SessionError::EntryCode(address) => api::SessionFailure::EntryCode(address.to_string()),
         SessionError::Seed => api::SessionFailure::Seed,
     };
     api::ApiError {
-        code: api::ApiErrorCode::InvalidRequest,
+        // Capacity is a limit refusal; other numeric import refusals identify
+        // unavailable native capability. Keep both distinct from fact conflicts.
+        code: match &detail {
+            api::SessionFailure::Refinement(api::SessionRefinementFailure {
+                source: api::FactFailure::Capacity(_),
+                ..
+            }) => api::ApiErrorCode::InvalidLimits,
+            api::SessionFailure::Work | api::SessionFailure::Refinement(_) => {
+                api::ApiErrorCode::Internal
+            }
+            _ => api::ApiErrorCode::InvalidRequest,
+        },
         message,
         details: api::ErrorDetails::Session(Box::new(detail)),
     }

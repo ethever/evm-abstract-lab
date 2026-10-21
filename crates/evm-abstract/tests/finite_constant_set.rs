@@ -1,18 +1,22 @@
 //! 封装常量组件后，核对组合值、事实输入及原有输出合同。
+use evm_abstract::domain::FiniteConstantSet;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::{NumericValue, ProductAlgebra};
 use evm_abstract::{
     U256,
     domain::{
-        AbstractValue, Domain, DomainSpec, Profile,
+        DomainSpec, EvmValue, ValueAlgebra,
         facts::{FactError, FiniteSet, Symbol, UnaryPredicate},
         provenance::Origin,
     },
 };
 use std::{collections::BTreeSet, num::NonZeroUsize};
 
-fn domain(profile: Profile, capacity: usize, fact_limit: usize) -> Domain {
-    Domain::from_spec(DomainSpec::new(
-        profile,
+fn product(capacity: usize, fact_limit: usize) -> ValueAlgebra<ProductAlgebra> {
+    native::product_with(DomainSpec::new(
         NonZeroUsize::new(capacity).unwrap(),
         NonZeroUsize::new(4).unwrap(),
         NonZeroUsize::new(fact_limit).unwrap(),
@@ -29,11 +33,11 @@ fn membership(values: &[u64]) -> UnaryPredicate {
 
 #[test]
 fn a_top_constant_component_does_not_erase_byte_constraints() {
-    let byte = AbstractValue::unknown_byte();
+    let byte = EvmValue::<NumericValue>::unknown_byte();
     assert!(byte.finite_constants().is_top());
     assert_eq!(byte.finite_constants().as_values(), byte.constants());
     assert!(byte.constants().is_none());
-    assert_ne!(byte, AbstractValue::top());
+    assert_ne!(byte, EvmValue::<NumericValue>::top());
     assert!(byte.contains(U256::ZERO));
     assert!(byte.contains(U256::from(255)));
     assert!(!byte.contains(U256::from(256)));
@@ -42,40 +46,50 @@ fn a_top_constant_component_does_not_erase_byte_constraints() {
 
 #[test]
 fn projecting_over_capacity_forgets_only_the_constant_component() {
-    let wide = domain(Profile::Product, 3, 256);
-    let input = [5_u64, 8]
-        .into_iter()
-        .fold(AbstractValue::constant(U256::from(2)), |old, next| {
-            wide.join(&old, &AbstractValue::constant(U256::from(next)))
-        });
+    let wide = product(3, 256);
+    let input = [5_u64, 8].into_iter().fold(
+        EvmValue::<NumericValue>::constant(U256::from(2)),
+        |old, next| wide.join(&old, &EvmValue::<NumericValue>::constant(U256::from(next))),
+    );
     let input = input.with_origin(Origin::Storage);
     assert_eq!(
         input.finite_constants().as_values(),
         Some(&constants(&[2, 5, 8]))
     );
 
-    let projected = domain(Profile::Product, 1, 256).project(&input);
+    let projected = product(1, 256).project(&input);
     assert!(projected.finite_constants().is_top());
     assert_eq!(projected.known_bits(), input.known_bits());
     assert_eq!(projected.interval(), input.interval());
     assert_eq!(projected.congruence(), input.congruence());
     assert_eq!(projected.provenance(), input.provenance());
-    assert_eq!(serde_json::to_value(&projected).unwrap()["nonzero"], true);
+    assert_eq!(
+        serde_json::to_value(&projected).unwrap()["numeric"]["nonzero"],
+        true
+    );
     for member in [2_u64, 5, 8] {
         assert!(projected.contains(U256::from(member)));
     }
     for excluded in [0_u64, 1, 3, 4, 6, 7, 9, 16] {
         assert!(!projected.contains(U256::from(excluded)));
     }
-    let constants_only = domain(Profile::ConstantsOnly, 1, 256).project(&input);
-    assert_eq!(constants_only.numeric(), AbstractValue::top().numeric());
+    let finite_values = native::finite_with(native::spec(3, 4, 256));
+    let finite_input = [5_u64, 8]
+        .into_iter()
+        .fold(
+            EvmValue::<FiniteConstantSet>::constant(U256::from(2)),
+            |old, next| finite_values.join(&old, &EvmValue::constant(U256::from(next))),
+        )
+        .with_origin(Origin::Storage);
+    let constants_only = native::finite_with(native::spec(1, 4, 256)).project(&finite_input);
+    assert_eq!(constants_only.numeric(), &FiniteConstantSet::top());
     assert_eq!(constants_only.provenance(), input.provenance());
 }
 
 #[test]
 fn fact_membership_uses_fact_capacity_before_domain_projection() {
     let input = membership(&[2, 5, 8]);
-    let projected = domain(Profile::Product, 1, 256)
+    let projected = product(1, 256)
         .from_facts(std::slice::from_ref(&input))
         .unwrap();
     assert!(projected.finite_constants().is_top());
@@ -91,13 +105,13 @@ fn fact_membership_uses_fact_capacity_before_domain_projection() {
     assert!(projected.contains(U256::from(5)));
     assert!(!projected.contains(U256::from(6)));
     assert_eq!(
-        domain(Profile::ConstantsOnly, 1, 256)
+        native::finite_with(native::spec(1, 4, 256))
             .from_facts(std::slice::from_ref(&input))
             .unwrap(),
-        AbstractValue::top()
+        EvmValue::<FiniteConstantSet>::top()
     );
     assert_eq!(
-        domain(Profile::Product, 3, 2).from_facts(&[input]),
+        product(3, 2).from_facts(&[input]),
         Err(FactError::Capacity {
             max_atoms: 2,
             required: 3,
@@ -107,7 +121,7 @@ fn fact_membership_uses_fact_capacity_before_domain_projection() {
 
 #[test]
 fn contradictory_finite_intersections_remain_errors() {
-    let domain = domain(Profile::Product, 1, 256);
+    let domain = product(1, 256);
     assert_eq!(
         domain.from_facts(&[membership(&[2, 5, 8]), membership(&[3, 6, 9])]),
         Err(FactError::Contradiction {
@@ -123,11 +137,11 @@ fn contradictory_finite_intersections_remain_errors() {
 }
 
 #[test]
-fn finite_queries_and_output_keep_the_existing_value_contract() {
-    let domain = domain(Profile::Product, 2, 256);
+fn finite_queries_and_native_json_preserve_the_actual_numeric_payload() {
+    let domain = product(2, 256);
     let value = domain.join(
-        &AbstractValue::constant(U256::from(8)),
-        &AbstractValue::constant(U256::from(16)),
+        &EvmValue::<NumericValue>::constant(U256::from(8)),
+        &EvmValue::<NumericValue>::constant(U256::from(16)),
     );
     let expected = constants(&[8, 16]);
     assert_eq!(value.finite_constants().as_values(), Some(&expected));
@@ -138,8 +152,36 @@ fn finite_queries_and_output_keep_the_existing_value_contract() {
     assert!(!value.contains(U256::from(12)));
     assert_eq!(value.to_string(), "{0x8, 0x10}");
     let json = serde_json::to_value(&value).unwrap();
-    assert_eq!(json["Constants"], serde_json::to_value(expected).unwrap());
-    assert_eq!(json.as_object().unwrap().len(), 6);
-    assert!(json.get("finite").is_none());
-    assert_eq!(serde_json::to_value(AbstractValue::top()).unwrap(), "Top");
+    assert_eq!(
+        json["numeric"]["constants"],
+        serde_json::to_value(&expected).unwrap()
+    );
+    assert_eq!(
+        json["numeric"],
+        serde_json::to_value(value.numeric()).unwrap()
+    );
+    assert!(json.get("Constants").is_none());
+    let top = serde_json::to_value(EvmValue::<NumericValue>::top()).unwrap();
+    assert!(top.is_object());
+    assert_eq!(top["numeric"], serde_json::json!({}));
+
+    let finite = native::finite_with(native::spec(2, 4, 256));
+    let value = finite.join(
+        &EvmValue::constant(U256::from(8)),
+        &EvmValue::constant(U256::from(16)),
+    );
+    let json = serde_json::to_value(&value).unwrap();
+    assert!(json["numeric"].is_object());
+    assert_eq!(
+        json["numeric"]["constants"],
+        serde_json::to_value(&expected).unwrap()
+    );
+    assert_eq!(
+        json["numeric"],
+        serde_json::to_value(value.numeric()).unwrap()
+    );
+    assert_eq!(value.constants(), Some(&expected));
+    let top = serde_json::to_value(EvmValue::<FiniteConstantSet>::top()).unwrap();
+    assert!(top.is_object());
+    assert!(top["numeric"].is_object());
 }

@@ -1,5 +1,8 @@
 //! The two engine installation paths share admission, partition and scheduling.
 
+#[cfg(test)]
+use crate::analysis::testing::ByteArray;
+
 use super::*;
 use crate::{
     analysis::{
@@ -9,32 +12,37 @@ use crate::{
         summary::{Node, Prepared},
         transfer::Successor,
     },
-    domain::Domain,
-    world::ByteArray,
+    domain::ProductAlgebra,
 };
 use alloy_primitives::U256;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-fn with_word(base: &MachinePayload, word: u64, domain: Domain) -> MachinePayload {
+fn with_word(
+    base: &MachinePayload,
+    word: u64,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+) -> MachinePayload {
     let mut payload = base.clone();
     payload.active_mut().stack = vec![fixtures::word(word)];
     payload.active_mut().memory = ByteArray::memory();
     payload
         .active_mut()
         .memory
-        .write_word(&fixtures::word(0), &fixtures::word(word), 4096, domain)
+        .write_word(&fixtures::word(0), &fixtures::word(word), domain)
         .unwrap();
     payload.normalize();
     payload
 }
 
 fn fixture() -> (WorldAnalysis, usize, [MachinePayload; 3]) {
-    let mut config = fixtures::config();
-    config.analysis.relations.enabled = false;
-    config.analysis.relations.max_constraints = 2;
-    let domain = config.domain().unwrap();
-    let mut result = fixtures::run("6003565b00", config);
+    let config = fixtures::config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.enabled = false;
+    config_numeric.relations.max_constraints = 2;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
+    let mut result = fixtures::run("6003565b00", config, config_numeric.spec());
     let target = 1;
     assert_eq!(result.states[target].active().basic_block_index, 1);
     let inputs = [1, 2, 3].map(|n| with_word(&result.states[target].entry, n, domain));
@@ -102,7 +110,8 @@ fn successor_promotes_invalidates_reexecutes_and_keeps_canonical_roots_bounded()
         states: result.states.len(),
         ..Default::default()
     };
-    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+    let numeric_policy =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
     let precision_policies: super::super::EnginePolicies = Default::default();
 
@@ -205,7 +214,8 @@ fn replay_keeps_same_key_resume_partitions_and_reexecutes_incompatible_certifica
         states: result.states.len(),
         ..Default::default()
     };
-    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+    let numeric_policy =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
     let precision_policies: super::super::EnginePolicies = Default::default();
 
@@ -219,7 +229,7 @@ fn replay_keeps_same_key_resume_partitions_and_reexecutes_incompatible_certifica
     );
     engine.reuse = Some(&mut reuse);
     engine.reset_pending(&[]);
-    let failed = with_word(&first, 9, **engine.domain.numeric_algebra());
+    let failed = with_word(&first, 9, engine.domain);
     let certificate = certificate(vec![
         node(first.clone(), Some(true), 71),
         node(failed.clone(), Some(false), 72),
@@ -300,7 +310,8 @@ fn successor_work_refusal_keeps_old_entry_proof_and_full_incoming_frontier() {
         let (result, target, [first, _, third]) = fixture();
         let mut budget = WorkBudget::new(0);
         let mut counters = Counters::default();
-        let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+        let numeric_policy =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
         let precision_policies: super::super::EnginePolicies = Default::default();
 
@@ -341,15 +352,21 @@ fn successor_work_refusal_keeps_old_entry_proof_and_full_incoming_frontier() {
 fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success() {
     for reject_after_promotion in [false, true] {
         let (mut result, child) = interrupted_fixture();
-        result.config.analysis.relations.enabled = false;
-        result.config.analysis.relations.max_constraints = 2;
-        let domain = result.config.domain().unwrap();
+        result.domain_spec =
+            result
+                .domain_spec()
+                .with_relations(crate::domain::relational::RelationLimits {
+                    enabled: false,
+                    max_constraints: 2,
+                    ..result.domain_spec().relations()
+                });
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
+        let domain = domain.borrowed();
         let first = with_word(&result.states[child].entry, 1, domain);
         let second = with_word(&first, 2, domain);
         let third = with_word(&first, 3, domain);
-        let exact = first
-            .join(&second, crate::domain::ValueAlgebra::new(domain).borrowed())
-            .unwrap();
+        let exact = first.join(&second, domain).unwrap();
         result.states[child].entry = exact.clone();
         result.states[child].key = exact.key();
         let mut relative = third.clone();
@@ -372,7 +389,8 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
             states: result.states.len(),
             ..Default::default()
         };
-        let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+        let numeric_policy =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
         let precision_policies: super::super::EnginePolicies = Default::default();
 
@@ -443,7 +461,8 @@ fn replay_satisfaction_then_growth_retains_live_work_cost_and_stop_coverage() {
     let (result, target, [first, second, _]) = fixture();
     let mut budget = WorkBudget::new(100_000_000);
     let mut counters = Counters::default();
-    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+    let numeric_policy =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
 
     let precision_policies: super::super::EnginePolicies = Default::default();
 
@@ -492,10 +511,9 @@ fn replay_satisfaction_then_growth_retains_live_work_cost_and_stop_coverage() {
     let mut probe = engine.runtime.fork(&mut setup).unwrap();
     let mut quote = WorkBudget::new(usize::MAX);
     let (task, token) = probe.next(false, &mut quote).unwrap().unwrap();
-    let crate::analysis::worklist::runtime::TaskKind::World { node: quoted, .. } = &task.0 else {
+    let crate::analysis::worklist::runtime::TaskKind::World { node: quoted, .. } = task.0 else {
         panic!("world work")
     };
-    let quoted = *quoted;
     probe.finish(token, &mut quote).unwrap();
     let used = engine.budget.used();
     let popped = engine.next_pending().unwrap().unwrap();

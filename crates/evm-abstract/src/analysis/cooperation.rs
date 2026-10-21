@@ -47,7 +47,6 @@
 //! supports optional precision with an independently valid fallback.
 
 mod composition;
-mod entry;
 mod error;
 mod facts;
 mod global;
@@ -60,10 +59,6 @@ mod refinement;
 pub use composition::{
     Composition, Extension, ExtraStores, InputTasks, NoExtension, NoStores, NoTasks, PairedTasks,
     PerInput, SharedStores,
-};
-pub use entry::{
-    analyze_world_cooperating, analyze_world_cooperating_with_control,
-    analyze_world_cooperating_with_observer,
 };
 pub use error::CooperationError;
 pub use facts::{Refinements, StackFacts, StackMeet};

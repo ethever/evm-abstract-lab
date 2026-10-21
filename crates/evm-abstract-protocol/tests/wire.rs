@@ -44,7 +44,7 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         max_memory_bytes: count,
         use_summaries: false,
         root_terminal_coverage: true,
-        domain_profile: DomainProfile::ConstantsOnly,
+        numeric_model: NumericModel::FiniteSet,
         reduction_rounds: count,
         max_facts: count,
         relations_enabled: false,
@@ -70,8 +70,57 @@ fn consumer_defaults_enable_fast_conservative_coverage() {
     assert!(defaults.root_terminal_coverage);
     assert_eq!(defaults.context_depth, 128);
     assert_eq!(defaults.max_work, 2_000_000_000);
+    assert_eq!(defaults.numeric_model, NumericModel::Product);
     assert_eq!(AnalyzeRequest::default().limits, defaults);
     roundtrip(defaults);
+}
+
+#[test]
+fn numeric_models_are_explicit_and_legacy_selectors_are_rejected() {
+    for model in [NumericModel::Product, NumericModel::FiniteSet] {
+        let mut request = AnalyzeRequest::default();
+        request.limits.numeric_model = model;
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert_eq!(encoded["limits"]["numeric_model"], format!("{model:?}"));
+        assert!(encoded["limits"].get("domain_profile").is_none());
+        roundtrip(request);
+    }
+    let encoded = serde_json::to_value(AnalyzeRequest::default()).unwrap();
+    for keep_model in [true, false] {
+        let mut legacy = encoded.clone();
+        let limits = legacy["limits"].as_object_mut().unwrap();
+        limits.insert("domain_profile".into(), "ConstantsOnly".into());
+        if !keep_model {
+            limits.remove("numeric_model");
+        }
+        let error = serde_json::from_value::<AnalyzeRequest>(legacy).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown AnalysisLimits field: domain_profile"),
+            "{error}"
+        );
+    }
+    for invalid in [
+        serde_json::json!("ConstantsOnly"),
+        serde_json::json!("constants-only"),
+        serde_json::json!("product"),
+        serde_json::json!("finite-set"),
+        serde_json::Value::Null,
+        serde_json::json!(0),
+        serde_json::json!({"FiniteSet": null}),
+    ] {
+        let mut request = encoded.clone();
+        request["limits"]["numeric_model"] = invalid;
+        assert!(serde_json::from_value::<AnalyzeRequest>(request).is_err());
+    }
+    let encoded = serde_json::to_string(&AnalysisLimits::default()).unwrap();
+    let duplicate = encoded.replacen('{', r#"{"numeric_model":"FiniteSet","#, 1);
+    let error = serde_json::from_str::<AnalysisLimits>(&duplicate).unwrap_err();
+    assert!(
+        error.to_string().contains("duplicate field: numeric_model"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -354,7 +403,7 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 16);
+    assert_eq!(SCHEMA_VERSION, 17);
 }
 
 #[test]

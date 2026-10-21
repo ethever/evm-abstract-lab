@@ -56,103 +56,165 @@ fn key_disjoint<N: WordElement>(a: &EvmValue<N>, b: &EvmValue<N>) -> bool {
             _ => false,
         }
 }
+
+// Continuations borrow the admitted root graph and move results rather than
+// copying numeric carriers. At most one continuation per root depth is live.
+enum ReadContinuation<'s, 'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> {
+    Stored(&'s ExprId),
+    Selected(Context<'a, N, D>),
+    Else {
+        condition: &'s ExprId,
+        state: &'s SlotStateId,
+        parent: Context<'a, N, D>,
+    },
+    Join {
+        parent: Context<'a, N, D>,
+        then_context: Context<'a, N, D>,
+    },
+}
+
 pub(super) fn read_numeric_in<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     root: &SlotStateId,
     key: &ExprId,
     context: &Context<'_, N, D>,
     domain: AlgebraRef<'_, D>,
 ) -> EvmValue<N> {
-    let domain = numeric::numeric_domain_with(domain);
-    match root.kind() {
-        SlotStateKind::Zero => numeric::scalar_in(&ExprId::constant(U256::ZERO), context, domain),
-        SlotStateKind::Input { bindings, .. } => {
-            let key = numeric::scalar_in(key, context, domain);
-            if let Some(keys) = crate::world::candidates(&key) {
-                let mut out = None;
-                for k in keys.iter() {
-                    let value = bindings.iter().find(|b| b.index == *k).map_or_else(
-                        EvmValue::<N>::top,
-                        |b| {
-                            let value = numeric::scalar_in(&b.value, context, domain);
-                            let retained = context.has_binding_value(&b.value);
-                            if retained && !context.pay_binding(value.numeric(), &b.numeric) {
-                                return EvmValue::<N>::top();
-                            }
-                            numeric::bound(value, retained, &b.numeric)
-                        },
-                    );
-                    out = Some(out.map_or_else(|| value.clone(), |old| domain.join(&old, &value)));
-                }
-                out.unwrap_or_else(EvmValue::<N>::top)
-            } else {
-                EvmValue::<N>::top()
+    let domain = numeric::numeric_domain(domain);
+    let mut cursor = root;
+    let mut context = context.clone();
+    let mut pending = Vec::new();
+    let mut values = Vec::new();
+    'read: loop {
+        let mut out = match cursor.kind() {
+            SlotStateKind::Zero => {
+                numeric::scalar_in(&ExprId::constant(U256::ZERO), &context, domain)
             }
-        }
-        SlotStateKind::Store {
-            previous,
-            key: written,
-            value,
-        } => {
-            if key == written {
-                return numeric::scalar_in(value, context, domain);
-            }
-            let requested = numeric::scalar_in(key, context, domain);
-            let stored = numeric::scalar_in(written, context, domain);
-            if let (Some(requested), Some(stored)) = (requested.singleton(), stored.singleton()) {
-                return if requested == stored {
-                    numeric::scalar_in(value, context, domain)
+            SlotStateKind::Input { bindings, .. } => {
+                let key = numeric::scalar_in(key, &context, domain);
+                if let Some(keys) = crate::world::candidates(&key) {
+                    let mut out = None;
+                    for k in keys.iter() {
+                        let value = bindings.iter().find(|b| b.index == *k).map_or_else(
+                            EvmValue::<N>::top,
+                            |b| {
+                                let value = numeric::scalar_in(&b.value, &context, domain);
+                                let retained = context.has_binding_value(&b.value);
+                                if retained && !context.pay_binding(value.numeric(), &b.numeric) {
+                                    return EvmValue::<N>::top();
+                                }
+                                numeric::bound(value, retained, &b.numeric)
+                            },
+                        );
+                        out = Some(
+                            out.map_or_else(|| value.clone(), |old| domain.join(&old, &value)),
+                        );
+                    }
+                    out.unwrap_or_else(EvmValue::<N>::top)
                 } else {
-                    read_numeric_in(previous, key, context, domain)
-                };
+                    EvmValue::<N>::top()
+                }
             }
-            if key_disjoint(&requested, &stored) {
-                read_numeric_in(previous, key, context, domain)
-            } else {
-                domain.join(
-                    &read_numeric_in(previous, key, context, domain),
-                    &numeric::scalar_in(value, context, domain),
-                )
+            SlotStateKind::Store {
+                previous,
+                key: written,
+                value,
+            } => {
+                if key == written {
+                    numeric::scalar_in(value, &context, domain)
+                } else {
+                    let requested = numeric::scalar_in(key, &context, domain);
+                    let stored = numeric::scalar_in(written, &context, domain);
+                    if let (Some(requested), Some(stored)) =
+                        (requested.singleton(), stored.singleton())
+                    {
+                        if requested == stored {
+                            numeric::scalar_in(value, &context, domain)
+                        } else {
+                            cursor = previous;
+                            continue 'read;
+                        }
+                    } else {
+                        if !key_disjoint(&requested, &stored) {
+                            // Evaluate the previous read before the stored value,
+                            // using this same scope and its original payers.
+                            pending.push(ReadContinuation::Stored(value));
+                        }
+                        cursor = previous;
+                        continue 'read;
+                    }
+                }
+            }
+            SlotStateKind::Ite {
+                condition,
+                then_state,
+                else_state,
+            } => {
+                let c = numeric::scalar_in(condition, &context, domain);
+                if !c.may_be_zero() {
+                    let branch = context.branch_when_scoped(condition, true);
+                    pending.push(ReadContinuation::Selected(std::mem::replace(
+                        &mut context,
+                        branch,
+                    )));
+                    cursor = then_state;
+                } else if !c.may_be_nonzero() {
+                    let branch = context.branch_when_scoped(condition, false);
+                    pending.push(ReadContinuation::Selected(std::mem::replace(
+                        &mut context,
+                        branch,
+                    )));
+                    cursor = else_state;
+                } else {
+                    let branch = context.branch_when_scoped(condition, true);
+                    pending.push(ReadContinuation::Else {
+                        condition,
+                        state: else_state,
+                        parent: std::mem::replace(&mut context, branch),
+                    });
+                    cursor = then_state;
+                }
+                continue 'read;
+            }
+        };
+        while let Some(continuation) = pending.pop() {
+            match continuation {
+                ReadContinuation::Stored(value) => {
+                    out = domain.join(&out, &numeric::scalar_in(value, &context, domain));
+                }
+                ReadContinuation::Selected(parent) => context = parent,
+                ReadContinuation::Else {
+                    condition,
+                    state,
+                    parent,
+                } => {
+                    // Construct the else context only after completing then.
+                    // Keep both branch contexts alive through the ordered join.
+                    let branch = parent.branch_when_scoped(condition, false);
+                    pending.push(ReadContinuation::Join {
+                        parent,
+                        then_context: std::mem::replace(&mut context, branch),
+                    });
+                    values.push(out);
+                    cursor = state;
+                    continue 'read;
+                }
+                ReadContinuation::Join {
+                    parent,
+                    then_context,
+                } => {
+                    let then_value = values.pop().expect("completed then read");
+                    out = domain.join(&then_value, &out);
+                    context = parent;
+                    drop(then_context);
+                }
             }
         }
-        SlotStateKind::Ite {
-            condition,
-            then_state,
-            else_state,
-        } => {
-            let c = numeric::scalar_in(condition, context, domain);
-            if !c.may_be_zero() {
-                read_numeric_in(
-                    then_state,
-                    key,
-                    &context.branch_when_scoped(condition, true),
-                    domain,
-                )
-            } else if !c.may_be_nonzero() {
-                read_numeric_in(
-                    else_state,
-                    key,
-                    &context.branch_when_scoped(condition, false),
-                    domain,
-                )
-            } else {
-                domain.join(
-                    &read_numeric_in(
-                        then_state,
-                        key,
-                        &context.branch_when_scoped(condition, true),
-                        domain,
-                    ),
-                    &read_numeric_in(
-                        else_state,
-                        key,
-                        &context.branch_when_scoped(condition, false),
-                        domain,
-                    ),
-                )
-            }
-        }
+        return out;
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 pub(super) fn expressions(root: &SlotStateId) -> Vec<ExprId> {
     let mut out = Vec::new();
@@ -314,7 +376,7 @@ impl<N: WordElement> Plane<N> {
             self.roots.insert(address, root);
         }
     }
-    pub(super) fn read_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(super) fn read_checked<D: EvmNumericAlgebra<Element = N>>(
         &self,
         address: Address,
         key: &EvmValue<N>,
@@ -342,25 +404,24 @@ impl<N: WordElement> Plane<N> {
             // operand metadata; do not erase that identity with a wider cache.
             // Finite keys use cache lookups, without another root traversal.
             let numeric = value.numeric().clone();
-            value = numeric::numeric_domain_with(domain)
+            value = numeric::numeric_domain(domain)
                 .join(&value, &self.read_numeric_cache(address, key, domain))
                 .with_numeric(numeric);
         }
         Ok(numeric::attach(value, expr))
     }
-    pub(super) fn read_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(super) fn read<D: EvmNumericAlgebra<Element = N>>(
         &self,
         address: Address,
         key: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) -> EvmValue<N> {
-        self.read_checked_with(address, key, domain)
-            .unwrap_or_else(|_| {
-                self.read_numeric_cache(address, key, domain)
-                    .with_symbolic_limit()
-            })
+        self.read_checked(address, key, domain).unwrap_or_else(|_| {
+            self.read_numeric_cache(address, key, domain)
+                .with_symbolic_limit()
+        })
     }
-    fn write_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    fn write_checked<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         address: Address,
         key: &EvmValue<N>,
@@ -406,7 +467,7 @@ impl<N: WordElement> Plane<N> {
         }
         Ok(())
     }
-    fn join_guarded_with<D: EvmNumericAlgebra<Element = N>>(
+    fn join_guarded<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
@@ -466,44 +527,42 @@ impl<N: WordElement> EvmStore<N> {
         }
     }
     /// Read persistent storage with an immutable state term or typed failure.
-    pub fn read_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn read_checked<D: EvmNumericAlgebra<Element = N>>(
         &self,
         address: Address,
         key: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) -> Result<EvmValue<N>, StoreError> {
-        self.persistent.read_checked_with(address, key, domain)
+        self.persistent.read_checked(address, key, domain)
     }
     /// Read transient storage with its independently scoped state term.
-    pub fn read_transient_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn read_transient_checked<D: EvmNumericAlgebra<Element = N>>(
         &self,
         address: Address,
         key: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) -> Result<EvmValue<N>, StoreError> {
-        self.transient.read_checked_with(address, key, domain)
+        self.transient.read_checked(address, key, domain)
     }
     /// Typed construction failure leaves all transaction state unchanged.
-    pub fn write_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn write_checked<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         address: Address,
         key: &EvmValue<N>,
         value: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
-        self.persistent
-            .write_checked_with(address, key, value, domain)
+        self.persistent.write_checked(address, key, value, domain)
     }
     /// Append an atomic transaction-local transient slot write.
-    pub fn write_transient_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn write_transient_checked<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         address: Address,
         key: &EvmValue<N>,
         value: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
-        self.transient
-            .write_checked_with(address, key, value, domain)
+        self.transient.write_checked(address, key, value, domain)
     }
     pub(crate) fn check_existing(&self, limits: ExprLimits) -> Result<(), StoreError> {
         self.persistent.check_existing(limits)?;
@@ -521,7 +580,7 @@ impl<N: WordElement> EvmStore<N> {
         Ok(())
     }
     /// A single selector pairs both storage planes, scalar accounts, and logs.
-    pub fn join_guarded_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn join_guarded<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
@@ -534,19 +593,16 @@ impl<N: WordElement> EvmStore<N> {
             return Ok(self.clone());
         }
         let mut out = self.join_numeric_cache(other, domain);
-        out.persistent = self.persistent.join_guarded_with(
-            &other.persistent,
-            domain,
-            selector.clone(),
-            limits,
-        )?;
+        out.persistent =
+            self.persistent
+                .join_guarded(&other.persistent, domain, selector.clone(), limits)?;
         out.transient =
             self.transient
-                .join_guarded_with(&other.transient, domain, selector.clone(), limits)?;
+                .join_guarded(&other.transient, domain, selector.clone(), limits)?;
         for address in self.addresses().union(&other.addresses()).copied() {
             out.balances.insert(
                 address,
-                self.read_balance(address).join_guarded_with(
+                self.read_balance(address).join_guarded(
                     &other.read_balance(address),
                     domain,
                     selector.clone(),
@@ -555,7 +611,7 @@ impl<N: WordElement> EvmStore<N> {
             );
             out.nonces.insert(
                 address,
-                self.nonce(address).join_guarded_with(
+                self.nonce(address).join_guarded(
                     &other.nonce(address),
                     domain,
                     selector.clone(),
@@ -563,7 +619,7 @@ impl<N: WordElement> EvmStore<N> {
                 )?,
             );
         }
-        out.balance_default = self.balance_default.join_guarded_with(
+        out.balance_default = self.balance_default.join_guarded(
             &other.balance_default,
             domain,
             selector.clone(),
@@ -577,13 +633,13 @@ impl<N: WordElement> EvmStore<N> {
                     .topics
                     .iter()
                     .zip(&right.topics)
-                    .map(|(a, b)| a.join_guarded_with(b, domain, selector.clone(), limits))
+                    .map(|(a, b)| a.join_guarded(b, domain, selector.clone(), limits))
                     .collect::<Result<_, _>>()?;
                 out.possible_logs.insert(
                     key.clone(),
                     super::EvmLog {
                         topics,
-                        data: left.data.join_guarded_with(
+                        data: left.data.join_guarded(
                             &right.data,
                             domain,
                             selector.clone(),
@@ -596,7 +652,7 @@ impl<N: WordElement> EvmStore<N> {
         Ok(out)
     }
     /// Sound union of complete stores; identical stores keep their existing root.
-    pub fn join_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn join<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
@@ -606,90 +662,12 @@ impl<N: WordElement> EvmStore<N> {
         }
         let numeric = self.join_numeric_cache(other, domain);
         let result = expression(&EvmValue::<N>::top())
-            .and_then(|guard| self.join_guarded_with(other, domain, guard, limits(domain)));
+            .and_then(|guard| self.join_guarded(other, domain, guard, limits(domain)));
         result.unwrap_or_else(|error| {
             let mut out = numeric;
             out.persistent.failure = Some(error.clone());
             out.transient.failure = Some(error);
             out
         })
-    }
-}
-
-impl EvmStore<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn read_checked(
-        &self,
-        address: Address,
-        key: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> Result<EvmValue<crate::domain::NumericValue>, StoreError> {
-        self.read_checked_with(
-            address,
-            key,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn read_transient_checked(
-        &self,
-        address: Address,
-        key: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> Result<EvmValue<crate::domain::NumericValue>, StoreError> {
-        self.read_transient_checked_with(
-            address,
-            key,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn write_checked(
-        &mut self,
-        address: Address,
-        key: &EvmValue<crate::domain::NumericValue>,
-        value: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> Result<(), StoreError> {
-        self.write_checked_with(
-            address,
-            key,
-            value,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn write_transient_checked(
-        &mut self,
-        address: Address,
-        key: &EvmValue<crate::domain::NumericValue>,
-        value: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> Result<(), StoreError> {
-        self.write_transient_checked_with(
-            address,
-            key,
-            value,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn join_guarded(
-        &self,
-        other: &Self,
-        domain: crate::domain::Domain,
-        selector: ExprId,
-        limits: ExprLimits,
-    ) -> Result<Self, StoreError> {
-        self.join_guarded_with(
-            other,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            selector,
-            limits,
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn join(&self, other: &Self, domain: crate::domain::Domain) -> Self {
-        self.join_with(other, crate::domain::ValueAlgebra::new(domain).borrowed())
     }
 }

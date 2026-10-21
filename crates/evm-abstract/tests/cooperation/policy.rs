@@ -1,7 +1,7 @@
 //! Borrowed immutable non-Copy, non-Clone policy executing the independent carrier.
 use super::carrier::ExcludingWord;
 use alloy_primitives::U256;
-use evm_abstract::domain::{DomainSpec, EvmNumericAlgebra, NumericReduction, Profile, WordElement};
+use evm_abstract::domain::{DomainSpec, EvmNumericAlgebra, NumericReduction, WordElement};
 use revm_bytecode::opcode;
 use std::{
     num::NonZeroUsize,
@@ -22,6 +22,7 @@ pub struct Policy<'a> {
     pub exclusion_queries: bool,
     pub retain_exclusions: bool,
     pub coarsen_one: bool,
+    pub relations: evm_abstract::domain::relational::RelationLimits,
 }
 impl<'a> Policy<'a> {
     pub fn new(calls: &'a Calls) -> Self {
@@ -31,11 +32,12 @@ impl<'a> Policy<'a> {
             exclusion_queries: true,
             retain_exclusions: true,
             coarsen_one: false,
+            relations: Default::default(),
         }
     }
-    fn transfer(&self, op: u8, args: &[ExcludingWord]) -> ExcludingWord {
-        let first = args.first();
-        let second = args.get(1);
+    fn transfer(&self, op: u8, args: &[&ExcludingWord]) -> ExcludingWord {
+        let first = args.first().copied();
+        let second = args.get(1).copied();
         if let Some(a) = first
             && op == opcode::ISZERO
             && !a.contains(U256::ZERO)
@@ -81,7 +83,7 @@ impl<'a> Policy<'a> {
                 }
             }
         }
-        let constants: Option<Vec<_>> = args.iter().map(WordElement::singleton).collect();
+        let constants: Option<Vec<_>> = args.iter().copied().map(WordElement::singleton).collect();
         if let Some(words) = constants {
             let a = words.first().copied().unwrap_or_default();
             let b = words.get(1).copied().unwrap_or_default();
@@ -122,7 +124,7 @@ impl<'a> Policy<'a> {
             }
         }
         if op == opcode::AND
-            && let Some(mask) = args.iter().find_map(WordElement::singleton)
+            && let Some(mask) = args.iter().copied().find_map(WordElement::singleton)
         {
             return ExcludingWord::range(U256::ZERO, mask);
         }
@@ -133,11 +135,11 @@ impl EvmNumericAlgebra for Policy<'_> {
     type Element = ExcludingWord;
     fn spec(&self) -> DomainSpec {
         DomainSpec::new(
-            Profile::Product,
             NonZeroUsize::new(8).unwrap(),
             NonZeroUsize::new(4).unwrap(),
             NonZeroUsize::new(256).unwrap(),
         )
+        .with_relations(self.relations)
     }
     fn project_numeric(&self, value: &ExcludingWord) -> ExcludingWord {
         self.calls.projections.fetch_add(1, Ordering::Relaxed);
@@ -171,7 +173,15 @@ impl EvmNumericAlgebra for Policy<'_> {
         self.calls.reductions.fetch_add(1, Ordering::Relaxed);
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[ExcludingWord]) -> NumericReduction<ExcludingWord> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a ExcludingWord>,
+    ) -> NumericReduction<ExcludingWord>
+    where
+        ExcludingWord: 'a,
+    {
+        let args: Vec<_> = args.collect();
         self.calls.arithmetic.fetch_add(1, Ordering::Relaxed);
         // Sound precision loss for the source-receipt regression: OR([0,1],1)
         // is one, but this configured carrier intentionally retains [1,2].
@@ -186,14 +196,23 @@ impl EvmNumericAlgebra for Policy<'_> {
         {
             return NumericReduction::stable(ExcludingWord::range(U256::ONE, U256::from(2)));
         }
-        NumericReduction::stable(self.transfer(op, args))
+        NumericReduction::stable(self.transfer(op, &args))
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a ExcludingWord>) -> usize
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a ExcludingWord>) -> usize
     where
         ExcludingWord: 'a,
     {
+        // Even an opcode this carrier leaves at Top can fold an exact retained
+        // expression in ValueAlgebra. Its quote must cover that opcode's real
+        // concrete evaluator as well as this policy's own data copies/queries.
+        let evaluation = match op {
+            opcode::EXP => 16_384,
+            opcode::ADDMOD | opcode::MULMOD => 4096,
+            opcode::DIV | opcode::SDIV | opcode::MOD | opcode::SMOD => 1024,
+            _ => 512,
+        };
         args.fold(
-            self.configuration.len().saturating_add(512),
+            self.configuration.len().saturating_add(evaluation),
             |cost, value| cost.saturating_add(value.work_size().saturating_mul(8)),
         )
     }

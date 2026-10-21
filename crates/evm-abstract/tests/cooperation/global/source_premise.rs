@@ -5,6 +5,8 @@ use super::{
     *,
 };
 use evm_abstract::analysis::OutcomeKind;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput, ExecutionConfig};
 
 struct Parent {
     pc: usize,
@@ -117,6 +119,7 @@ fn parent_only_assumption_expands_the_same_child_snapshot_and_actual_return() {
             let calls = Calls::default();
             let mut policy = Policy::new(&calls);
             policy.coarsen_one = true;
+            policy.relations.enabled = false;
             let algebra = evm_abstract::domain::ValueAlgebra::new(policy);
             let mut extension = Extension::with_tasks(
                 Pair::new(
@@ -131,20 +134,18 @@ fn parent_only_assumption_expands_the_same_child_snapshot_and_actual_return() {
                 Order(true),
             )
             .with_shared_stores(Factory);
-            let mut config = ExecutionConfig {
+            let config = ExecutionConfig {
                 use_summaries,
                 ..fixtures::config(5_000_000_000)
             };
-            config.analysis.relations.enabled = false;
-            let result = analyze_world_cooperating(
-                fixtures::world(&code),
-                fixtures::entry(),
-                config,
-                &algebra,
-                &EnginePolicies::default(),
-                &mut extension,
-            )
-            .unwrap();
+
+            let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
+                .run(
+                    AnalysisInput::new(fixtures::world(&code), fixtures::entry()).unwrap(),
+                    config,
+                    &Control::default(),
+                )
+                .unwrap();
             fixtures::complete(&result);
             assert!(extension.analyzer.left.grown > 0);
             let parent = extension.analyzer.right.rule();
@@ -195,7 +196,7 @@ fn parent_only_assumption_expands_the_same_child_snapshot_and_actual_return() {
                     .filter(|output| output.kind == OutcomeKind::Return)
                     .any(|output| output
                         .data
-                        .read_word_with(&fixtures::word(0), algebra.borrowed())
+                        .read_word(&fixtures::word(0), algebra.borrowed())
                         .contains(U256::from(2))),
                 widen
             );

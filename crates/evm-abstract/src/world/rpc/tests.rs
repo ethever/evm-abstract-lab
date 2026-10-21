@@ -7,11 +7,6 @@ mod limits;
 mod storage;
 
 use super::{AccountRequest, RpcBlock, RpcError, RpcFailureKind, RpcInput, Session, load};
-use crate::{
-    Address, Fork, U256,
-    domain::{AbstractValue, Domain},
-    world::{Existence, SnapshotIdentity, Store},
-};
 use alloy_primitives::{B256, keccak256};
 use serde_json::{Value as Json, json};
 use std::{
@@ -24,6 +19,11 @@ use std::{
     },
     thread,
     time::Duration,
+};
+use {
+    crate::Address, crate::Fork, crate::U256, crate::world::Existence,
+    crate::world::SnapshotIdentity, crate::world::test_support::TestStore,
+    crate::world::test_support::TestValue,
 };
 
 enum Reply {
@@ -198,7 +198,7 @@ fn rpc_world_pins_every_fact_and_keeps_unrequested_facts_unknown() {
     thread::scope(|scope| {
         let server = Server::new(scope, |request| Reply::Json(healthy(request)));
         let input = server.input();
-        let world = load(&input).unwrap();
+        let world = load::<crate::domain::NumericValue>(&input).unwrap();
         assert_eq!(
             world.identity(),
             &SnapshotIdentity::Chain {
@@ -207,13 +207,13 @@ fn rpc_world_pins_every_fact_and_keeps_unrequested_facts_unknown() {
             }
         );
         let account = world.account(Address::repeat_byte(0x22)).unwrap();
-        assert_eq!(account.balance, AbstractValue::constant(U256::from(9)));
-        assert_eq!(account.nonce, AbstractValue::constant(U256::from(1)));
+        assert_eq!(account.balance, TestValue::constant(U256::from(9)));
+        assert_eq!(account.nonce, TestValue::constant(U256::from(1)));
         assert_eq!(account.existence, Existence::Present);
         assert!(account.storage_unknown);
         assert_eq!(
             account.storage[&U256::ZERO],
-            AbstractValue::constant(U256::from(7))
+            TestValue::constant(U256::from(7))
         );
         assert!(world.account(Address::repeat_byte(0x44)).is_none());
         assert_eq!(
@@ -249,7 +249,7 @@ fn sdk_header_keeps_unconsumed_extension_data_out_of_snapshot_policy() {
             }
             Reply::Json(response)
         });
-        let world = load(&server.input()).unwrap();
+        let world = load::<crate::domain::NumericValue>(&server.input()).unwrap();
         assert_eq!(world.snapshot_environment().unwrap().number, U256::from(42));
     });
 }
@@ -272,7 +272,7 @@ fn alloy_header_aliases_cannot_replace_required_canonical_fields() {
                 }
                 Reply::Json(response)
             });
-            let error = load(&server.input()).unwrap_err();
+            let error = load::<crate::domain::NumericValue>(&server.input()).unwrap_err();
             assert!(matches!(error, RpcError::Response { .. }));
             assert_eq!(error.context().method, "eth_getBlockByHash");
             assert_eq!(server.requests().len(), 2);
@@ -309,7 +309,7 @@ fn latest_number_and_hash_pin_once_across_incremental_acquisition() {
             });
             let mut input = server.input();
             input.block = block;
-            let mut session = Session::load(&input).unwrap();
+            let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
             assert!(session.fetch_account(Address::repeat_byte(0x44)).unwrap());
             assert_eq!(
                 session.world().identity(),
@@ -364,7 +364,7 @@ fn latest_is_the_default_and_bootstrap_failures_retain_only_known_identity() {
         let mut input = RpcInput::new(&server.endpoint, Fork::Osaka);
         assert_eq!(input.block, RpcBlock::Latest);
         input.max_requests = 1;
-        let error = load(&input).unwrap_err();
+        let error = load::<crate::domain::NumericValue>(&input).unwrap_err();
         assert!(matches!(error, RpcError::AcquisitionLimit { limit: 1, .. }));
         assert_eq!(error.context().method, "eth_getBlockByNumber");
         assert_eq!(error.context().chain_id, Some(U256::from(1)));
@@ -379,7 +379,7 @@ fn explicit_number_rejects_a_different_returned_height_before_state_requests() {
         let server = Server::new(scope, |request| Reply::Json(healthy(request)));
         let mut input = server.input();
         input.block = RpcBlock::Number(43);
-        let error = load(&input).unwrap_err();
+        let error = load::<crate::domain::NumericValue>(&input).unwrap_err();
         assert!(matches!(error, RpcError::Response { .. }));
         assert_eq!(error.context().method, "eth_getBlockByNumber");
         assert_eq!(server.requests().len(), 2);
@@ -393,7 +393,7 @@ fn request_bound_includes_bootstrap_and_never_publishes_a_partial_account() {
         let mut input = server.input();
         input.block = RpcBlock::Latest;
         input.max_requests = 14;
-        let mut session = Session::load(&input).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
         assert_eq!(session.requests(), 8);
         let error = session
             .fetch_account(Address::repeat_byte(0x44))
@@ -437,7 +437,7 @@ fn canonical_state_rejection_never_repins_latest_or_publishes_an_account() {
         });
         let mut input = server.input();
         input.block = RpcBlock::Latest;
-        let mut session = Session::load(&input).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
         let error = session
             .fetch_account(Address::repeat_byte(0x44))
             .unwrap_err();
@@ -477,32 +477,36 @@ fn zero_account_keeps_presence_and_unrequested_storage_unknown() {
             }
             Reply::Json(response)
         });
-        let world = load(&server.input()).unwrap();
+        let world = load::<crate::domain::NumericValue>(&server.input()).unwrap();
         let account = world.account(Address::repeat_byte(0x22)).unwrap();
         assert_eq!(account.existence, Existence::Unknown);
         assert!(account.storage_unknown);
         assert_eq!(
             account.storage[&U256::ZERO],
-            AbstractValue::constant(U256::ZERO)
+            TestValue::constant(U256::ZERO)
         );
         assert!(!account.storage.contains_key(&U256::from(1)));
-        let store = Store::new(&world);
+        let store = TestStore::new(
+            &world,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        );
         let read = store.read(
             Address::repeat_byte(0x22),
-            &AbstractValue::constant(U256::from(1)),
-            Domain::default(),
+            &TestValue::constant(U256::from(1)),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
         );
         let mut plain = read.clone();
         plain.forget_expression();
-        assert_eq!(plain, AbstractValue::top());
+        assert_eq!(plain, TestValue::top());
         assert!(read.expression().is_some());
         assert_eq!(
             read.expression(),
             store
                 .read(
                     Address::repeat_byte(0x22),
-                    &AbstractValue::constant(U256::from(1)),
-                    Domain::default()
+                    &TestValue::constant(U256::from(1)),
+                    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                        .borrowed()
                 )
                 .expression()
         );
@@ -545,7 +549,7 @@ fn any_nonzero_ordinary_account_observation_establishes_presence() {
                 }
                 Reply::Json(response)
             });
-            let world = load(&server.input()).unwrap();
+            let world = load::<crate::domain::NumericValue>(&server.input()).unwrap();
             assert_eq!(
                 world.account(Address::repeat_byte(0x22)).unwrap().existence,
                 Existence::Present
@@ -570,7 +574,7 @@ fn missing_or_mismatched_chain_and_block_fail_before_state_requests() {
                 }
                 Reply::Json(response)
             });
-            let error = load(&server.input()).unwrap_err();
+            let error = load::<crate::domain::NumericValue>(&server.input()).unwrap_err();
             match case {
                 "malformed-chain" => assert!(matches!(error, RpcError::Response { .. })),
                 "missing-block" => assert!(matches!(error, RpcError::MissingResult { .. })),
@@ -629,7 +633,7 @@ fn state_failures_never_retry_at_latest_or_manufacture_empty_code() {
             if case == "timeout" {
                 input.timeout = request_timeout;
             }
-            let error = load(&input).unwrap_err();
+            let error = load::<crate::domain::NumericValue>(&input).unwrap_err();
             let context = error.context();
             assert_eq!(context.method, "eth_getCode");
             assert_eq!(context.account, Some(Address::repeat_byte(0x22)));
@@ -677,7 +681,7 @@ fn malformed_ordinary_state_is_rejected_without_partial_account() {
                 }
                 Reply::Json(response)
             });
-            let error = load(&server.input()).unwrap_err();
+            let error = load::<crate::domain::NumericValue>(&server.input()).unwrap_err();
             assert_eq!(error.context().method, method);
             assert_eq!(error.context().account, Some(Address::repeat_byte(0x22)));
             assert!(matches!(error, RpcError::Response { .. }));
@@ -696,7 +700,7 @@ fn alloy_bytes_and_error_defaults_cannot_weaken_acquisition_schema() {
                 }
                 Reply::Json(response)
             });
-            let error = load(&server.input()).unwrap_err();
+            let error = load::<crate::domain::NumericValue>(&server.input()).unwrap_err();
             assert!(matches!(error, RpcError::Response { .. }));
             assert_eq!(error.context().method, "eth_getCode");
             assert_eq!(server.requests().len(), 3);
@@ -708,7 +712,7 @@ fn alloy_bytes_and_error_defaults_cannot_weaken_acquisition_schema() {
             }
             Reply::Json(healthy(request))
         });
-        let error = load(&server.input()).unwrap_err();
+        let error = load::<crate::domain::NumericValue>(&server.input()).unwrap_err();
         assert!(matches!(error, RpcError::Response { .. }));
         assert_eq!(error.context().method, "eth_getCode");
         assert_eq!(server.requests().len(), 3);
@@ -731,7 +735,7 @@ fn pinned_snapshot_acquisition_rejects_endpoint_chain_switch() {
             Reply::Json(response)
         });
         assert!(matches!(
-            load(&server.input()),
+            load::<crate::domain::NumericValue>(&server.input()),
             Err(RpcError::ChainMismatch { .. })
         ));
     });
@@ -741,7 +745,7 @@ fn pinned_snapshot_acquisition_rejects_endpoint_chain_switch() {
 fn bootstrap_connection_failure_does_not_fabricate_snapshot_identity() {
     // 目的端口 0 不会有监听者，避免释放临时端口后被并行 mock 重新占用。
     let input = RpcInput::new("http://127.0.0.1:0", Fork::Osaka);
-    let error = load(&input).unwrap_err();
+    let error = load::<crate::domain::NumericValue>(&input).unwrap_err();
     assert!(matches!(error, RpcError::Transport { .. }));
     assert_eq!(error.context().method, "eth_chainId");
     assert_eq!(error.context().chain_id, None);
@@ -752,7 +756,7 @@ fn bootstrap_connection_failure_does_not_fabricate_snapshot_identity() {
 fn native_transport_diagnostic_keeps_io_cause_without_url_or_credentials() {
     use super::FailureCause;
     let endpoint = "http://rpc-user-sensitive:rpc-pass-sensitive@127.0.0.1:0/private-rpc-sensitive?api_key=rpc-query-sensitive";
-    let failure = load(&RpcInput::new(endpoint, Fork::Osaka))
+    let failure = load::<crate::domain::NumericValue>(&RpcInput::new(endpoint, Fork::Osaka))
         .unwrap_err()
         .failure();
     let Some(FailureCause::Transport(cause)) = &failure.cause else {
@@ -789,7 +793,7 @@ fn incremental_accounts_are_cached_and_keep_unrequested_storage_unknown() {
     thread::scope(|scope| {
         let server = Server::new(scope, |request| Reply::Json(incremental_healthy(request)));
         let input = server.input();
-        let mut session = Session::load(&input).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
         assert_eq!(session.requests(), 8);
         assert!(!session.fetch_account(Address::repeat_byte(0x22)).unwrap());
         assert_eq!(session.requests(), 8);
@@ -837,7 +841,8 @@ fn incremental_final_identity_failure_does_not_install_an_account() {
                 }
                 Reply::Json(response)
             });
-            let mut session = Session::load(&server.input()).unwrap();
+            let mut session =
+                Session::<crate::domain::NumericValue>::load(&server.input()).unwrap();
             let error = session
                 .fetch_account(Address::repeat_byte(0x44))
                 .unwrap_err();
@@ -883,7 +888,7 @@ fn remote_message_credentials_are_not_copied_to_public_failure_evidence() {
             }
             Reply::Json(incremental_healthy(request))
         });
-        let mut session = Session::load(&server.input()).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&server.input()).unwrap();
         let error = session
             .fetch_account(Address::repeat_byte(0x44))
             .unwrap_err();
@@ -940,7 +945,7 @@ fn incremental_timeout_and_response_limit_remain_typed_without_partial_cache() {
             if delayed {
                 input.timeout = request_timeout;
             }
-            let mut session = Session::load(&input).unwrap();
+            let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
             let error = session
                 .fetch_account(Address::repeat_byte(0x44))
                 .unwrap_err();
@@ -978,7 +983,7 @@ fn streamed_response_limit_without_content_length_consumes_attempt_and_preserves
         });
         let mut input = server.input();
         input.max_response_bytes = 4096;
-        let mut session = Session::load(&input).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
         let before = session
             .world()
             .account(Address::repeat_byte(0x22))
@@ -1022,7 +1027,7 @@ fn incremental_body_timeout_is_a_total_deadline_despite_continuing_chunks() {
         });
         let mut input = server.input();
         input.timeout = Duration::from_millis(500);
-        let mut session = Session::load(&input).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
         let error = session
             .fetch_account(Address::repeat_byte(0x44))
             .unwrap_err();
@@ -1048,5 +1053,26 @@ fn incremental_body_timeout_is_a_total_deadline_despite_continuing_chunks() {
                 .is_some()
         );
         assert_eq!(session.requests(), 11);
+    });
+}
+
+#[test]
+fn fixed_rpc_observations_construct_the_selected_finite_carrier_directly() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, |request| Reply::Json(healthy(request)));
+        let input = server.input();
+        let owner = Address::repeat_byte(0x22);
+        let world = load::<crate::domain::FiniteConstantSet>(&input).unwrap();
+        let account = world.account(owner).unwrap();
+        assert_eq!(account.balance.singleton(), Some(U256::from(9)));
+        assert_eq!(account.nonce.singleton(), Some(U256::ONE));
+        assert_eq!(
+            account.storage[&U256::ZERO].singleton(),
+            Some(U256::from(7))
+        );
+        assert!(matches!(world.identity(), SnapshotIdentity::Chain { .. }));
+        let json = serde_json::to_value(&account.balance).unwrap();
+        assert!(json["numeric"]["constants"].is_array());
+        assert!(json["numeric"].get("known_bits").is_none());
     });
 }

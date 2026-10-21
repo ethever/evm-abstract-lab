@@ -45,9 +45,9 @@ pub use terminal::*;
 
 /// Same-origin analysis endpoint.
 pub const API_PATH: &str = "/api/tasks";
-/// Wire schema version, independent of the engine's private JSON formats.
-/// Version 16 adds distinct WorkLimit, Cancelled and KernelFailure reduction reasons.
-pub const SCHEMA_VERSION: u16 = 16;
+/// Wire schema version, independent of native report JSON.
+/// Version 17 selects native numeric models and separates numeric policy from execution budgets.
+pub const SCHEMA_VERSION: u16 = 17;
 /// Maximum UTF-8 JSON request body accepted by the server.
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 

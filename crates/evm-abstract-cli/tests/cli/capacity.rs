@@ -7,20 +7,20 @@ use serde_json::Value;
 fn program_entrypoints_accept_every_positive_usize_capacity() {
     for capacity in [65, 1000, usize::MAX] {
         let capacity = capacity.to_string();
-        for profile in ["product", "constants-only"] {
+        for model in ["product", "finite-set"] {
             for command in ["cfg", "ssa", "explain"] {
                 let output = run_concrete(&[
                     command,
                     "--hex",
                     "00",
-                    "--domain",
-                    profile,
+                    "--numeric-model",
+                    model,
                     "--max-constants",
                     &capacity,
                 ]);
                 assert!(
                     output.status.success(),
-                    "{command} {profile} {capacity}: {}",
+                    "{command} {model} {capacity}: {}",
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
@@ -29,15 +29,15 @@ fn program_entrypoints_accept_every_positive_usize_capacity() {
 }
 
 #[test]
-fn constants_only_clz_keeps_the_complete_set_at_capacity_257() {
+fn finite_set_clz_keeps_the_complete_set_at_capacity_257() {
     for capacity in [256, 257] {
         let capacity = capacity.to_string();
         let output = run_concrete(&[
             "cfg",
             "--hex",
             "5f351e00",
-            "--domain",
-            "constants-only",
+            "--numeric-model",
+            "finite-set",
             "--max-constants",
             &capacity,
             "--format",
@@ -50,30 +50,16 @@ fn constants_only_clz_keeps_the_complete_set_at_capacity_257() {
         );
         let json: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(json["status"], "Converged");
-        assert_eq!(json["config"]["max_constants"].to_string(), capacity);
+        assert_eq!(json["domain_spec"]["capacity"].to_string(), capacity);
         let result = &json["states"][0]["exit_stack"][0];
         if capacity == "256" {
-            assert!(result.get("Constants").is_none());
-            assert_eq!(result["known_bits"]["zero"], "0x0");
-            assert_eq!(result["known_bits"]["one"], "0x0");
-            assert_eq!(result["interval"]["unsigned_lo"], "0x0");
-            assert_eq!(result["interval"]["signed_lo"], "0x0");
-            assert_eq!(
-                result["interval"]["signed_hi"],
-                format!("0x{}", "f".repeat(64))
-            );
-            assert_eq!(
-                result["interval"]["unsigned_hi"],
-                format!("0x{}", "f".repeat(64))
-            );
-            assert_eq!(result["congruence"], "Top");
-            assert_eq!(result["nonzero"], false);
+            assert_eq!(result["numeric"], serde_json::json!({}));
             assert_eq!(
                 super::native::root(&result["expression"])["Operation"]["opcode"],
                 0x1e
             );
         } else {
-            let candidates = result["Constants"].as_array().unwrap();
+            let candidates = result["numeric"]["constants"].as_array().unwrap();
             assert_eq!(candidates.len(), 257);
             for value in 0..=256 {
                 assert!(candidates.contains(&Value::String(format!("0x{value:x}"))));
@@ -83,37 +69,12 @@ fn constants_only_clz_keeps_the_complete_set_at_capacity_257() {
 }
 
 #[test]
-fn requested_explain_capacity_is_admitted_and_retains_work_frontiers() {
-    let output = run_concrete(&[
-        "explain",
-        "--hex",
-        "5f351e00",
-        "--domain",
-        "constants-only",
-        "--max-constants",
-        "1000",
-        "--max-work",
-        "20000000",
-    ]);
-    assert_eq!(output.status.code(), Some(2));
-    assert!(
-        output.stderr.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = String::from_utf8(output.stdout).unwrap();
-    assert!(text.contains("status=Incomplete"), "{text}");
-    assert!(text.contains("Work"), "{text}");
-    assert!(text.contains("SSA unavailable"), "{text}");
-}
-
-#[test]
 fn world_entrypoint_preserves_large_capacity_and_frozen_policy() {
     let output = analyze(
         "call-return-branch",
         &[
-            "--domain",
-            "constants-only",
+            "--numeric-model",
+            "finite-set",
             "--max-constants",
             "1000",
             "--max-work",
@@ -129,9 +90,9 @@ fn world_entrypoint_preserves_large_capacity_and_frozen_policy() {
     );
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["status"], "Converged");
-    assert_eq!(json["config"]["analysis"]["max_constants"], 1000);
+    assert!(json["config"]["analysis"].get("max_constants").is_none());
     assert_eq!(json["domain_spec"]["capacity"], 1000);
-    assert_eq!(json["domain_spec"]["profile"], "constants-only");
+    assert_eq!(json["numeric_model"], "finite-set");
 }
 
 #[test]

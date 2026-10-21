@@ -142,6 +142,16 @@ fn click(context: &Context, position: Pos2, mut contents: impl FnMut(&mut egui::
 #[test]
 fn inspector_preserves_observed_and_definition_scopes_with_numeric_properties() {
     let report = report();
+    let derived = &report.ssa.values[3].facts[1];
+    assert_eq!(derived.constant.as_deref(), Some("0x3"));
+    assert!(derived.value.is_none());
+    let wire = serde_json::to_value(derived).unwrap();
+    assert_eq!(wire["constant"], "0x3");
+    assert!(wire["value"].is_null());
+    assert_eq!(
+        serde_json::from_value::<api::SsaValueFacts>(wire).unwrap(),
+        *derived
+    );
     let context = Context::default();
     crate::palette::configure(&context);
     let mut inspector = Inspector::default();
@@ -214,6 +224,10 @@ fn inspector_preserves_observed_and_definition_scopes_with_numeric_properties() 
             "missing {expected}: {visible:?}"
         );
     }
+    assert!(!visible.iter().any(|text| {
+        text == "No numeric fact was collected for this scope."
+            || text == "No numeric facts were collected for this definition."
+    }));
     let summary = inspector.accessible_summary(&report, selection);
     for expected in [
         "SSA value %3",

@@ -1,25 +1,21 @@
 //! Native byte/word source facts remain complete in checked snapshot identities.
 
-use crate::{
-    Fork,
-    domain::{
-        AbstractValue,
-        provenance::Origin,
-        symbolic::{ExprId, ExprLimits},
-    },
-    world::{
-        Account, Code, Existence, FingerprintError, SnapshotEnvironment, SnapshotIdentity, World,
-    },
-};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use revm_bytecode::opcode;
+use {
+    crate::Fork, crate::domain::provenance::Origin, crate::domain::symbolic::ExprId,
+    crate::domain::symbolic::ExprLimits, crate::world::Code, crate::world::Existence,
+    crate::world::FingerprintError, crate::world::SnapshotEnvironment,
+    crate::world::SnapshotIdentity, crate::world::test_support::TestAccount,
+    crate::world::test_support::TestValue, crate::world::test_support::TestWorld,
+};
 
 // Reference the pre-streaming encoding exactly, using only small valid fixtures.
-fn legacy_fingerprint(world: &World) -> B256 {
+fn legacy_fingerprint(world: &TestWorld) -> B256 {
     fn length(bytes: &mut Vec<u8>, count: usize) {
         bytes.extend_from_slice(&(count as u64).to_be_bytes());
     }
-    fn scalar(bytes: &mut Vec<u8>, value: &AbstractValue) {
+    fn scalar(bytes: &mut Vec<u8>, value: &TestValue) {
         let encoded = serde_json::to_vec(value).unwrap();
         length(bytes, encoded.len());
         bytes.extend(encoded);
@@ -77,19 +73,19 @@ fn legacy_fingerprint(world: &World) -> B256 {
     keccak256(bytes)
 }
 
-fn fixture(fork: Fork, anchored: bool) -> World {
+fn fixture(fork: Fork, anchored: bool) -> TestWorld {
     let mut world = if anchored {
-        World::anchored(
+        TestWorld::anchored(
             fork,
             U256::MAX,
             B256::repeat_byte(0x17),
             "fingerprint observations",
         )
     } else {
-        World::offline(fork, "fixture 中文 \" quoted", "fingerprint observations")
+        TestWorld::offline(fork, "fixture 中文 \" quoted", "fingerprint observations")
     };
-    let mut account = Account::from_hex("600160025500", fork).unwrap();
-    let word = AbstractValue::unsigned_range(U256::ONE, U256::from(9))
+    let mut account = TestAccount::from_hex("600160025500", fork).unwrap();
+    let word = TestValue::unsigned_range(U256::ONE, U256::from(9))
         .unwrap()
         .with_expression(ExprId::fresh().unwrap())
         .with_origin(Origin::Storage);
@@ -98,18 +94,18 @@ fn fixture(fork: Fork, anchored: bool) -> World {
     account.storage.insert(U256::from(9), word);
     account
         .storage
-        .insert(U256::from(3), AbstractValue::constant(U256::from(7)));
+        .insert(U256::from(3), TestValue::constant(U256::from(7)));
     world.insert(Address::repeat_byte(0x11), account).unwrap();
-    let mut delegated = Account::empty();
+    let mut delegated = TestAccount::empty();
     if matches!(fork, Fork::Prague | Fork::Osaka) {
         delegated.code = Code::Delegation(Address::repeat_byte(0x22));
     }
     world.insert(Address::repeat_byte(0x12), delegated).unwrap();
     world
-        .insert(Address::repeat_byte(0x13), Account::unknown())
+        .insert(Address::repeat_byte(0x13), TestAccount::unknown())
         .unwrap();
     world
-        .insert(Address::repeat_byte(0x14), Account::absent())
+        .insert(Address::repeat_byte(0x14), TestAccount::absent())
         .unwrap();
     world.snapshot_environment = Some(SnapshotEnvironment {
         number: U256::from(23),
@@ -154,7 +150,7 @@ fn fingerprint_binds_numeric_guarantees_and_distinct_source_identity() {
     let mut changed = world.clone();
     let account = changed.accounts.get_mut(&address).unwrap();
     account.balance = account.balance.clone().with_numeric(
-        AbstractValue::unsigned_range(U256::ONE, U256::from(8))
+        TestValue::unsigned_range(U256::ONE, U256::from(8))
             .unwrap()
             .numeric()
             .clone(),
@@ -168,7 +164,7 @@ fn fingerprint_binds_numeric_guarantees_and_distinct_source_identity() {
         .with_expression(ExprId::fresh().unwrap());
     assert_ne!(changed.fingerprint().unwrap(), expected);
     let mut changed = world.clone();
-    changed.accounts.get_mut(&address).unwrap().nonce = AbstractValue::constant(U256::ONE);
+    changed.accounts.get_mut(&address).unwrap().nonce = TestValue::constant(U256::ONE);
     assert_ne!(changed.fingerprint().unwrap(), expected);
 }
 
@@ -201,9 +197,9 @@ fn fingerprint_rejected_native_graph_is_typed_encoding_error_without_panic() {
             ExprId::operation(opcode::ADD, &[expression, ExprId::fresh().unwrap()], policy)
                 .unwrap();
     }
-    let mut world = World::new(Fork::Osaka, "oversized native scalar graph");
-    let mut account = Account::unknown();
-    account.balance = AbstractValue::top().with_expression(expression.clone());
+    let mut world = TestWorld::new(Fork::Osaka, "oversized native scalar graph");
+    let mut account = TestAccount::unknown();
+    account.balance = TestValue::top().with_expression(expression.clone());
     world.insert(Address::repeat_byte(0x31), account).unwrap();
     assert!(matches!(
         world.fingerprint(),

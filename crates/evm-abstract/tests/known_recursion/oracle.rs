@@ -1,11 +1,12 @@
 //! Concrete bytecode and journaling belong to revm. Compare an entire witness
 //! with one abstract terminal, rather than combining independent alternatives.
 use super::support::{address, word};
+use crate::native;
 use alloy_primitives::{Address, B256, Log, U256};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
-    analysis::{OutcomeKind, WorldAnalysis},
-    domain::Domain,
-    world::{Entry, Existence, World},
+    analysis::{EvmWorldAnalysis, OutcomeKind},
+    world::{EvmEntry, EvmWorld, Existence},
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
@@ -110,7 +111,7 @@ impl Observation {
         self.storage[&(address(owner), U256::from(slot))]
     }
 
-    pub(super) fn covers(&self, analysis: &WorldAnalysis) {
+    pub(super) fn covers(&self, analysis: &EvmWorldAnalysis<NumericValue>) {
         assert!(
             analysis.outcomes().iter().any(|outcome| {
                 outcome.kind == self.kind
@@ -118,7 +119,7 @@ impl Observation {
                     && self.data.iter().enumerate().all(|(offset, byte)| {
                         outcome
                             .data
-                            .byte_at(offset, Domain::default())
+                            .byte_at(offset, native::product().borrowed())
                             .contains(U256::from(*byte))
                     })
                     && self.storage.iter().all(|((owner, slot), value)| {
@@ -126,8 +127,8 @@ impl Observation {
                             .store
                             .read(
                                 *owner,
-                                &evm_abstract::domain::AbstractValue::constant(*slot),
-                                Domain::default(),
+                                &evm_abstract::domain::EvmValue::<NumericValue>::constant(*slot),
+                                native::product().borrowed(),
                             )
                             .contains(*value)
                     })
@@ -147,7 +148,7 @@ impl Observation {
                                     && log.data.len().contains(U256::from(data.len()))
                                     && data.iter().enumerate().all(|(offset, byte)| {
                                         log.data
-                                            .byte_at(offset, Domain::default())
+                                            .byte_at(offset, native::product().borrowed())
                                             .contains(U256::from(*byte))
                                     })
                             })
@@ -162,11 +163,18 @@ impl Observation {
     }
 }
 
-pub(super) fn execute(world: &World, entry: &Entry) -> Observation {
+pub(super) fn execute(
+    world: &EvmWorld<NumericValue>,
+    entry: &EvmEntry<NumericValue>,
+) -> Observation {
     execute_gas(world, entry, 10_000_000)
 }
 
-pub(super) fn execute_gas(world: &World, entry: &Entry, gas_limit: u64) -> Observation {
+pub(super) fn execute_gas(
+    world: &EvmWorld<NumericValue>,
+    entry: &EvmEntry<NumericValue>,
+    gas_limit: u64,
+) -> Observation {
     let mut db = InMemoryDB::default();
     let mut initial_storage = BTreeMap::new();
     for (owner, account) in world.accounts() {
@@ -269,7 +277,7 @@ pub(super) fn execute_gas(world: &World, entry: &Entry, gas_limit: u64) -> Obser
                     entry
                         .environment
                         .calldata
-                        .exact_bytes()
+                        .exact_bytes(native::product().borrowed())
                         .expect("exact oracle input")
                         .into(),
                 )
@@ -338,7 +346,7 @@ pub(super) fn execute_gas(world: &World, entry: &Entry, gas_limit: u64) -> Obser
     }
 }
 
-pub(super) fn unchanged(analysis: &WorldAnalysis, owners: &[u64]) {
+pub(super) fn unchanged(analysis: &EvmWorldAnalysis<NumericValue>, owners: &[u64]) {
     for outcome in analysis.outcomes() {
         for owner in owners {
             assert_eq!(
@@ -357,7 +365,7 @@ pub(super) fn unchanged(analysis: &WorldAnalysis, owners: &[u64]) {
             assert_eq!(
                 outcome
                     .store
-                    .read_transient(address(*owner), &word(1), Domain::default())
+                    .read_transient(address(*owner), &word(1), native::product().borrowed())
                     .singleton(),
                 Some(U256::ZERO)
             );

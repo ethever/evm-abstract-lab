@@ -2,15 +2,16 @@
 //!
 //! 目录使用帧实际捕获的程序；简略效果只用于阅读，不能作为结果去重依据。
 
+use crate::domain::WordElement;
 use evm_abstract_notation::Symbol;
 
 use super::super::teaching::References;
 use crate::{
-    analysis::{FrameCode, FrameKey, MachinePayload, MachineState, Status, WorldAnalysis},
+    analysis::{EvmMachinePayload, EvmMachineState, EvmWorldAnalysis, FrameCode, FrameKey, Status},
     bytecode::Program,
-    domain::{AbstractValue, Domain},
+    domain::EvmValue,
     ssa::{self, SsaError},
-    world::{ByteArray, Code, Store},
+    world::{Code, EvmByteArray},
 };
 use alloy_primitives::{Address, B256, U256, hex};
 use std::{
@@ -27,25 +28,52 @@ struct CapturedCode<'a> {
 }
 
 /// 未完成的图仍保留捕获代码、结果和每个前沿；SSA 仅由收敛图构建。
-pub(in crate::render::world) fn render(analysis: &WorldAnalysis) -> Result<String, SsaError> {
-    render_with_mode(analysis, false)
-}
-
-pub(in crate::render::world) fn render_partial(
-    analysis: &WorldAnalysis,
+pub(in crate::render::world) fn render<
+    N: WordElement,
+    D: crate::domain::EvmNumericAlgebra<Element = N>,
+>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
 ) -> Result<String, SsaError> {
-    render_with_mode(analysis, true)
+    render_with_mode(analysis, false, algebra, budget)
 }
 
-fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result<String, SsaError> {
+pub(in crate::render::world) fn render_partial<
+    N: WordElement,
+    D: crate::domain::EvmNumericAlgebra<Element = N>,
+>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<String, SsaError> {
+    render_with_mode(analysis, true, algebra, budget)
+}
+
+fn render_with_mode<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    analysis: &EvmWorldAnalysis<N>,
+    allow_partial_ssa: bool,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<String, SsaError> {
+    crate::ssa::work::explanation(analysis, budget)?;
+    // SSA admission/replay precedes report allocation. A rejected structural
+    // operation cannot first build a large code/reference report.
+    let normalized = if analysis.status() == Status::Converged {
+        Some(ssa::build_normalized_world(analysis, budget)?)
+    } else if allow_partial_ssa {
+        Some(ssa::build_normalized_partial_world(analysis, budget)?)
+    } else {
+        None
+    };
     let refs = References::new(analysis);
     let mut output = String::from("Cross-contract explanation\n");
     writeln!(
         output,
-        "  status={:?} | fork={} | domain={:?} | states={} | edges={} | outcomes={}",
+        "  status={:?} | fork={} | numeric capacity={} | states={} | edges={} | outcomes={}",
         analysis.status(),
         analysis.world().fork(),
-        analysis.domain_spec().profile(),
+        analysis.domain_spec().capacity(),
         analysis.states().len(),
         analysis.edges().len(),
         analysis.outcomes().len(),
@@ -75,12 +103,13 @@ fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result
         Some(analysis.world().identity()),
         false,
         |input| refs.address_input(input),
+        algebra,
     );
     output
         .push_str("  Context-sensitive abstract state graph; not a concrete instruction trace.\n");
     output.push_str("  σᵢ = state; Bᵢ = frame-local block; fᵢ = frame within a state; Cᵢ = captured code; Uᵢ = unresolved frontier; stacks are bottom-to-top.\n");
     write_rpc(&mut output, analysis, &refs);
-    let relations = analysis.config().analysis.relations;
+    let relations = analysis.domain_spec().relations();
     writeln!(
         output,
         "  relations={} | local propagation | expression nodes={} | depth={} | constraints={}",
@@ -90,24 +119,17 @@ fn render_with_mode(analysis: &WorldAnalysis, allow_partial_ssa: bool) -> Result
     write_addresses(&mut output, &refs);
     write_code(&mut output, analysis, &refs);
     write_cfg(&mut output, analysis, &refs);
-    write_outcomes(&mut output, analysis, &refs);
+    write_outcomes(&mut output, analysis, &refs, algebra);
     write_diagnostics(&mut output, analysis);
     write_frontiers(&mut output, analysis, &refs);
     super::super::text::procedure_summaries::write(&mut output, analysis);
     output.push('\n');
-    if analysis.status() == Status::Converged {
-        output.push_str(&super::super::normalized_ssa(
-            analysis,
-            &ssa::build_normalized_world(analysis)?,
-        ));
-    } else if allow_partial_ssa {
-        output.push_str(&super::super::normalized_ssa(
-            analysis,
-            &ssa::build_normalized_partial_world(analysis)?,
-        ));
+    if let Some(ir) = &normalized {
+        output.push_str(&super::super::normalized_ssa(analysis, ir));
     } else {
         output.push_str("SSA unavailable: cross-contract frontiers remain\n");
     }
+    crate::ssa::pay(budget, 0)?;
     Ok(output)
 }
 
@@ -123,7 +145,11 @@ fn write_addresses(output: &mut String, refs: &References) {
     }
 }
 
-fn write_rpc(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
+fn write_rpc<N: WordElement>(
+    output: &mut String,
+    analysis: &EvmWorldAnalysis<N>,
+    refs: &References,
+) {
     let Some(acquisition) = analysis.rpc_acquisition() else {
         return;
     };
@@ -157,7 +183,10 @@ fn write_rpc(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
     }
 }
 
-fn capture<'a>(codes: &mut BTreeMap<CodeIdentity, CapturedCode<'a>>, payload: &'a MachinePayload) {
+fn capture<'a, N: WordElement>(
+    codes: &mut BTreeMap<CodeIdentity, CapturedCode<'a>>,
+    payload: &'a EvmMachinePayload<N>,
+) {
     for frame in payload.call_stack.iter() {
         let code = codes
             .entry((frame.key.code_address, frame.key.code_hash, frame.code))
@@ -169,7 +198,11 @@ fn capture<'a>(codes: &mut BTreeMap<CodeIdentity, CapturedCode<'a>>, payload: &'
     }
 }
 
-fn write_code(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
+fn write_code<N: WordElement>(
+    output: &mut String,
+    analysis: &EvmWorldAnalysis<N>,
+    refs: &References,
+) {
     let mut codes = BTreeMap::<CodeIdentity, CapturedCode<'_>>::new();
     for state in analysis.states() {
         capture(&mut codes, &state.entry);
@@ -240,7 +273,11 @@ fn write_code(output: &mut String, analysis: &WorldAnalysis, refs: &References) 
     }
 }
 
-fn write_input_code(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
+fn write_input_code<N: WordElement>(
+    output: &mut String,
+    analysis: &EvmWorldAnalysis<N>,
+    refs: &References,
+) {
     // 初始化预算耗尽时，初始快照的语法代码仍可学习，但不能当作执行证据。
     output.push_str("\nInput code observations (not execution evidence)\n");
     output.push_str(
@@ -278,7 +315,7 @@ fn write_input_code(output: &mut String, analysis: &WorldAnalysis, refs: &Refere
     }
 }
 
-fn location(state: &MachineState) -> String {
+fn location<N: WordElement>(state: &EvmMachineState<N>) -> String {
     let frame = state.active();
     if let Some(block) = state
         .program()
@@ -297,7 +334,11 @@ fn location(state: &MachineState) -> String {
     }
 }
 
-fn write_cfg(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
+fn write_cfg<N: WordElement>(
+    output: &mut String,
+    analysis: &EvmWorldAnalysis<N>,
+    refs: &References,
+) {
     output.push_str("\nCFG\n");
     output.push_str("  pcs records the last abstract block transfer, not a transaction trace.\n");
     if analysis.states().is_empty() {
@@ -351,7 +392,10 @@ fn write_cfg(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
     }
 }
 
-fn length(value: &AbstractValue) -> String {
+fn length<N: WordElement>(value: &EvmValue<N>) -> String {
+    if let Some(exact) = value.singleton() {
+        return format!("{value} ({exact} bytes)");
+    }
     match value.constants() {
         Some(values) if values.len() == 1 => format!(
             "{value} ({} bytes)",
@@ -362,8 +406,11 @@ fn length(value: &AbstractValue) -> String {
     }
 }
 
-fn data_summary(data: &ByteArray) -> String {
-    if let Some(bytes) = data.exact_bytes_bounded(32) {
+fn data_summary<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    data: &EvmByteArray<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+) -> String {
+    if let Some(bytes) = data.exact_bytes_bounded(32, algebra.borrowed()) {
         if bytes.len() == 32 {
             return format!("word=0x{:x}", U256::from_be_slice(&bytes));
         }
@@ -375,7 +422,12 @@ fn data_summary(data: &ByteArray) -> String {
     )
 }
 
-fn write_outcomes(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
+fn write_outcomes<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    output: &mut String,
+    analysis: &EvmWorldAnalysis<N>,
+    refs: &References,
+    algebra: &crate::domain::ValueAlgebra<D>,
+) {
     output.push_str("\nOutcomes\n");
     output.push_str(
         "  Each Oᵢ keeps its own state and effects; equal returndata does not merge outcomes.\n",
@@ -384,15 +436,7 @@ fn write_outcomes(output: &mut String, analysis: &WorldAnalysis, refs: &Referenc
     if analysis.outcomes().is_empty() {
         output.push_str("  (none)\n");
     }
-    let domain = Domain::from_spec(analysis.domain_spec());
-    let initial = (!analysis.outcomes().is_empty()).then(|| {
-        let mut initial = Store::new(analysis.world());
-        // 无结果时不重做预算已阻止的投影；有结果时与执行入口使用同一域表示。
-        initial.project(domain);
-        initial
-    });
     for (index, outcome) in analysis.outcomes().iter().enumerate() {
-        let initial = initial.as_ref().expect("outcomes have an initial store");
         writeln!(
             output,
             "  {} | {} | {:?} | returndata length={} | {}",
@@ -400,42 +444,28 @@ fn write_outcomes(output: &mut String, analysis: &WorldAnalysis, refs: &Referenc
             Symbol::State(outcome.state),
             outcome.kind,
             length(outcome.data.len()),
-            data_summary(&outcome.data)
+            data_summary(&outcome.data, algebra)
         )
         .unwrap();
-        let changed = outcome
-            .store
-            .slots()
-            .iter()
-            .filter(|((owner, slot), value)| {
-                !same_numeric_fact(
-                    &initial.read(*owner, &AbstractValue::constant(*slot), domain),
-                    value,
-                )
-            })
-            .collect::<Vec<_>>();
-        write!(output, "    abstract explicit storage changes:").unwrap();
-        for ((owner, slot), value) in changed.iter().take(4) {
+        let retained = outcome.store.slots().iter().collect::<Vec<_>>();
+        write!(output, "    abstract explicit storage facts:").unwrap();
+        for ((owner, slot), value) in retained.iter().take(4) {
             write!(output, " {}[{slot:#x}]={value}", address(refs, *owner)).unwrap();
         }
-        if changed.is_empty() {
+        if retained.is_empty() {
             output.push_str(" (none)");
-        } else if changed.len() > 4 {
-            write!(output, " | {} more in --verbose", changed.len() - 4).unwrap();
+        } else if retained.len() > 4 {
+            write!(output, " | {} more in --verbose", retained.len() - 4).unwrap();
         }
         output.push('\n');
         let balances = outcome
             .store
             .addresses()
             .into_iter()
-            .filter_map(|owner| {
-                let balance = outcome.store.read_balance(owner);
-                (!same_numeric_fact(&balance, &initial.read_balance(owner)))
-                    .then_some((owner, balance))
-            })
+            .map(|owner| (owner, outcome.store.read_balance(owner)))
             .collect::<Vec<_>>();
         if !balances.is_empty() {
-            output.push_str("    changed balances:");
+            output.push_str("    retained balances:");
             for (owner, balance) in balances.iter().take(4) {
                 write!(output, " {}={balance}", address(refs, *owner)).unwrap();
             }
@@ -467,21 +497,7 @@ fn write_outcomes(output: &mut String, analysis: &WorldAnalysis, refs: &Referenc
     .unwrap();
 }
 
-fn same_numeric_fact(left: &AbstractValue, right: &AbstractValue) -> bool {
-    // 来源改变不是余额或存储数值改变；相同单点无需比较其来源标签。
-    if let Some(value) = left.singleton()
-        && right.singleton() == Some(value)
-    {
-        return true;
-    }
-    left.constants() == right.constants()
-        && left.known_bits() == right.known_bits()
-        && left.interval() == right.interval()
-        && left.congruence() == right.congruence()
-        && left.may_be_zero() == right.may_be_zero()
-}
-
-fn write_diagnostics(output: &mut String, analysis: &WorldAnalysis) {
+fn write_diagnostics<N: WordElement>(output: &mut String, analysis: &EvmWorldAnalysis<N>) {
     output.push_str("\nDiagnostics\n");
     if analysis.diagnostics().is_empty() {
         output.push_str("  (none)\n");
@@ -500,7 +516,11 @@ fn write_diagnostics(output: &mut String, analysis: &WorldAnalysis) {
     }
 }
 
-fn write_frontiers(output: &mut String, analysis: &WorldAnalysis, refs: &References) {
+fn write_frontiers<N: WordElement>(
+    output: &mut String,
+    analysis: &EvmWorldAnalysis<N>,
+    refs: &References,
+) {
     output.push_str("\nFrontiers\n");
     if analysis.frontiers().is_empty() {
         output.push_str("  (none)\n");

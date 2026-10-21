@@ -1,21 +1,37 @@
 //! 回归测试验证端到端的可观察语义，不依赖工作表的具体访问顺序。
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisInput, ExecutionConfig};
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     U256,
-    analysis::{self, Analysis, Config, DiagnosticKind, EdgeKind, Status},
+    analysis::{self, Config, DiagnosticKind, EdgeKind, EvmAnalysis, Status},
     bytecode::{DecodeError, Program},
     ssa,
 };
 
-fn analyze(hex: &str) -> Analysis {
+fn cfg_fixture(hex: &str) -> EvmAnalysis<NumericValue> {
     // 基础 CFG/join 回归沿用上下文不敏感的对照，避免精度默认值掩盖汇合。
-    analysis::analyze(
-        Program::from_hex(hex).unwrap(),
-        Config {
-            context_depth: 0,
-            ..Config::default()
+    native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex(hex).unwrap(),
+            Default::default(),
+        )
+        .unwrap(),
+        ExecutionConfig {
+            analysis: Config {
+                context_depth: 0,
+                ..Config::default()
+            },
+            ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap()
 }
 fn fixture(name: &str) -> String {
@@ -25,7 +41,10 @@ fn fixture(name: &str) -> String {
     ))
     .unwrap()
 }
-fn states_at(analysis: &Analysis, pc: usize) -> Vec<&analysis::State> {
+fn states_at(
+    analysis: &EvmAnalysis<NumericValue>,
+    pc: usize,
+) -> Vec<&analysis::EvmState<NumericValue>> {
     analysis
         .states()
         .iter()
@@ -37,7 +56,7 @@ fn states_at(analysis: &Analysis, pc: usize) -> Vec<&analysis::State> {
 fn push_data_is_not_a_jumpdest() {
     let program = Program::from_hex("600456605b00").unwrap();
     assert!(program.jumpdest_blocks().is_empty());
-    let analysis = analyze("600456605b00");
+    let analysis = cfg_fixture("600456605b00");
     assert!(analysis.edges().is_empty());
     assert!(
         analysis
@@ -55,13 +74,13 @@ fn truncated_push_pads_on_the_right() {
         Some(U256::from(0xab00))
     );
     assert_eq!(
-        analyze("61ab").states()[0].exit_stack[0]
+        cfg_fixture("61ab").states()[0].exit_stack[0]
             .constants()
             .unwrap()
             .len(),
         1
     );
-    assert!(analyze("61ab").states()[0].exit_stack[0].contains(U256::from(0xab00)));
+    assert!(cfg_fixture("61ab").states()[0].exit_stack[0].contains(U256::from(0xab00)));
 }
 
 #[test]
@@ -80,7 +99,7 @@ fn unsupported_and_invalid_inputs_are_distinct() {
     ));
     assert_eq!(Program::from_hex("0x60 01\n00").unwrap().byte_len(), 3);
     for code in ["0c600100", "4b600100", "e6600100", "fe600100", "f8600100"] {
-        let a = analyze(code);
+        let a = cfg_fixture(code);
         assert_eq!(a.states()[0].executed_pcs, [0]);
         assert!(
             a.diagnostics()
@@ -93,7 +112,7 @@ fn unsupported_and_invalid_inputs_are_distinct() {
 
 #[test]
 fn empty_program_is_an_implicit_stop() {
-    let a = analyze("");
+    let a = cfg_fixture("");
     assert_eq!(a.status(), Status::Converged);
     assert!(a.states().is_empty());
     assert_eq!(ssa::build(&a).unwrap().value_count(), 0);
@@ -101,7 +120,7 @@ fn empty_program_is_an_implicit_stop() {
 
 #[test]
 fn unreachable_blocks_remain_visible_in_disassembly() {
-    let a = analyze("005b600100");
+    let a = cfg_fixture("005b600100");
     assert_eq!(a.program().blocks().len(), 2);
     assert_eq!(a.states().len(), 1);
     assert!(a.edges().is_empty());
@@ -110,7 +129,7 @@ fn unreachable_blocks_remain_visible_in_disassembly() {
 #[test]
 fn arithmetic_target_is_recovered() {
     // 3 + 3 -> pc=6，目标不是紧邻 JUMP 的 PUSH 常量。
-    let a = analyze("6003600301565b00");
+    let a = cfg_fixture("6003600301565b00");
     assert_eq!(a.edges().len(), 1);
     assert_eq!(states_at(&a, 6).len(), 1);
     assert!(
@@ -122,9 +141,12 @@ fn arithmetic_target_is_recovered() {
 
 #[test]
 fn zero_condition_does_not_validate_invalid_target() {
-    let a = analyze("600060ff5700");
+    let a = cfg_fixture("600060ff5700");
     assert_eq!(a.edges().len(), 1);
-    assert_eq!(a.edges()[0].kind, EdgeKind::BranchFalse);
+    assert_eq!(
+        a.edges()[0].kind,
+        evm_abstract::analysis::MachineEdgeKind::Intraprocedural(EdgeKind::BranchFalse)
+    );
     assert!(
         !a.diagnostics()
             .iter()
@@ -135,15 +157,18 @@ fn zero_condition_does_not_validate_invalid_target() {
 
 #[test]
 fn nonzero_condition_prunes_fallthrough() {
-    let a = analyze("600160075700005b00");
+    let a = cfg_fixture("600160075700005b00");
     assert_eq!(a.edges().len(), 1);
-    assert_eq!(a.edges()[0].kind, EdgeKind::BranchTrue);
+    assert_eq!(
+        a.edges()[0].kind,
+        evm_abstract::analysis::MachineEdgeKind::Intraprocedural(EdgeKind::BranchTrue)
+    );
     assert_eq!(states_at(&a, 7).len(), 1);
 }
 
 #[test]
 fn unknown_jump_preserves_the_storage_write_path() {
-    let a = analyze(&fixture("dynamic-jump"));
+    let a = cfg_fixture(&fixture("dynamic-jump"));
     assert_eq!(a.status(), Status::Converged);
     assert_eq!(states_at(&a, 4).len(), 1);
     assert!(
@@ -163,7 +188,7 @@ fn unknown_jump_preserves_the_storage_write_path() {
 
 #[test]
 fn unknown_jump_covers_every_actual_destination() {
-    let a = analyze("600035565b005b005b00");
+    let a = cfg_fixture("600035565b005b005b00");
     let targets: std::collections::BTreeSet<_> = a
         .edges()
         .iter()
@@ -175,7 +200,7 @@ fn unknown_jump_covers_every_actual_destination() {
 
 #[test]
 fn diamond_joins_values_and_ssa_tracks_each_predecessor() {
-    let a = analyze(&fixture("diamond"));
+    let a = cfg_fixture(&fixture("diamond"));
     let merge = states_at(&a, 14)[0];
     let values = merge.entry_stack[0].constants().unwrap();
     assert_eq!(
@@ -192,14 +217,23 @@ fn diamond_joins_values_and_ssa_tracks_each_predecessor() {
 
 #[test]
 fn loop_reaches_a_finite_fixed_point_and_has_a_backedge_phi() {
-    let a = analysis::analyze(
-        Program::from_hex(&fixture("loop")).unwrap(),
-        Config {
-            context_depth: 0,
-            domain_profile: evm_abstract::domain::Profile::ConstantsOnly,
-            ..Config::default()
+    let a = native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex(&fixture("loop")).unwrap(),
+            Default::default(),
+        )
+        .unwrap(),
+        ExecutionConfig {
+            analysis: Config {
+                context_depth: 0,
+                ..Config::default()
+            },
+            ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap();
     assert_eq!(a.status(), Status::Converged);
     assert!(a.transfers() < 30);
@@ -217,14 +251,20 @@ fn loop_reaches_a_finite_fixed_point_and_has_a_backedge_phi() {
 #[test]
 fn contexts_keep_two_internal_invocations_separate() {
     let program = Program::from_hex(&fixture("internal-calls")).unwrap();
-    let insensitive = analyze(&fixture("internal-calls"));
-    let sensitive = analysis::analyze(
-        program,
-        Config {
-            context_depth: 1,
-            ..Config::default()
+    let insensitive = cfg_fixture(&fixture("internal-calls"));
+    let sensitive = native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(program, Default::default()).unwrap(),
+        ExecutionConfig {
+            analysis: Config {
+                context_depth: 1,
+                ..Config::default()
+            },
+            ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap();
     assert_eq!(states_at(&insensitive, 14).len(), 1);
     let calls = states_at(&sensitive, 14);
@@ -247,7 +287,7 @@ fn contexts_keep_two_internal_invocations_separate() {
 
 #[test]
 fn stack_heights_are_separate_states() {
-    let a = analyze(&fixture("stack-heights"));
+    let a = cfg_fixture(&fixture("stack-heights"));
     let merge = states_at(&a, 12);
     assert_eq!(merge.len(), 2);
     let heights: std::collections::BTreeSet<_> = merge.iter().map(|s| s.key.stack_height).collect();
@@ -257,7 +297,7 @@ fn stack_heights_are_separate_states() {
 
 #[test]
 fn dup_and_swap_preserve_value_identity() {
-    let a = analyze("60018060029000");
+    let a = cfg_fixture("60018060029000");
     let ssa = ssa::build(&a).unwrap();
     let block = &ssa.blocks()[0];
     assert_eq!(ssa.value_count(), 2);
@@ -273,7 +313,7 @@ fn dup_and_swap_preserve_value_identity() {
 
 #[test]
 fn exceptional_stack_paths_do_not_execute_later_instructions() {
-    let underflow = analyze("01600100");
+    let underflow = cfg_fixture("01600100");
     assert_eq!(underflow.states()[0].executed_pcs, [0]);
     assert!(
         underflow
@@ -282,7 +322,7 @@ fn exceptional_stack_paths_do_not_execute_later_instructions() {
             .any(|d| d.kind == DiagnosticKind::StackUnderflow)
     );
     ssa::build(&underflow).unwrap();
-    let overflow = analyze(&format!("{}00", "5f".repeat(1025)));
+    let overflow = cfg_fixture(&format!("{}00", "5f".repeat(1025)));
     assert_eq!(overflow.states()[0].exit_stack.len(), 1024);
     assert!(
         overflow
@@ -305,7 +345,21 @@ fn budget_frontiers_are_typed_and_prevent_ssa() {
             ..Config::default()
         },
     ] {
-        let a = analysis::analyze(Program::from_hex(&fixture("diamond")).unwrap(), config).unwrap();
+        let a = native::run(
+            &native::product(),
+            AnalysisInput::<NumericValue>::from_program(
+                Program::from_hex(&fixture("diamond")).unwrap(),
+                Default::default(),
+            )
+            .unwrap(),
+            ExecutionConfig {
+                analysis: config,
+                ..ExecutionConfig::default()
+            },
+            &Control::default(),
+        )
+        .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
+        .unwrap();
         assert_eq!(a.status(), Status::Incomplete);
         assert!(!a.frontiers().is_empty());
         assert!(matches!(
@@ -319,10 +373,6 @@ fn budget_frontiers_are_typed_and_prevent_ssa() {
 fn invalid_configs_are_rejected_before_execution() {
     for config in [
         Config {
-            max_constants: 0,
-            ..Config::default()
-        },
-        Config {
             max_states: 0,
             ..Config::default()
         },
@@ -331,14 +381,30 @@ fn invalid_configs_are_rejected_before_execution() {
             ..Config::default()
         },
     ] {
-        assert!(analysis::analyze(Program::from_hex("00").unwrap(), config).is_err());
+        assert!(
+            native::run(
+                &native::product(),
+                AnalysisInput::<NumericValue>::from_program(
+                    Program::from_hex("00").unwrap(),
+                    Default::default()
+                )
+                .unwrap(),
+                ExecutionConfig {
+                    analysis: config,
+                    ..ExecutionConfig::default()
+                },
+                &Control::default()
+            )
+            .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
+            .is_err()
+        );
     }
 }
 
 #[test]
 fn result_exports_are_deterministic() {
-    let first = analyze(&fixture("loop"));
-    let second = analyze(&fixture("loop"));
+    let first = cfg_fixture(&fixture("loop"));
+    let second = cfg_fixture(&fixture("loop"));
     assert_eq!(first.status(), Status::Converged);
     assert_eq!(second.status(), Status::Converged);
     ssa::build(&first).unwrap();
@@ -352,8 +418,14 @@ fn result_exports_are_deterministic() {
         serde_json::to_string(&second).unwrap()
     );
     assert_eq!(
-        evm_abstract::render::dot(&first),
-        evm_abstract::render::dot(&second)
+        evm_abstract::render::dot(
+            &first,
+            &native::product_with(first.execution().domain_spec())
+        ),
+        evm_abstract::render::dot(
+            &second,
+            &native::product_with(second.execution().domain_spec())
+        )
     );
     assert!(native_exports_equal_with_fresh_bijection(
         &serde_json::to_value(&first).unwrap(),
@@ -467,7 +539,7 @@ fn result_export_fresh_bijection_preserves_aliasing_and_model_fields() {
         "source": {"token": 0, "namespace": "0x101"},
         "operands": [{
             "expression": {"identity_scope": "producer", "root": 0, "nodes": [{"Fresh": 2}]},
-            "value": evm_abstract::domain::AbstractValue::constant(U256::from(7))
+            "value": evm_abstract::domain::EvmValue::<NumericValue>::constant(U256::from(7))
         }],
         "failure": null,
         "state": {"entry_relations": {
@@ -524,7 +596,9 @@ fn result_export_fresh_bijection_preserves_aliasing_and_model_fields() {
         ),
         (
             "/operands/0/value",
-            serde_json::json!(evm_abstract::domain::AbstractValue::constant(U256::from(8))),
+            serde_json::json!(evm_abstract::domain::EvmValue::<NumericValue>::constant(
+                U256::from(8)
+            )),
         ),
         ("/failure", serde_json::json!("symbolic retention failed")),
     ] {

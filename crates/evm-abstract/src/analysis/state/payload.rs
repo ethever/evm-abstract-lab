@@ -158,12 +158,12 @@ fn form_with_history<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                             FrameByteKind::Memory => EvmByteArray::memory(),
                             _ => EvmByteArray::empty(),
                         }
-                        .summary_projection_with(domain)?
+                        .summary_projection(domain)?
                     } else {
-                        bytes.summary_projection_with(domain)?
+                        bytes.summary_projection(domain)?
                     })
                 },
-                |saved, _| Ok(saved.state().summary_projection_with(domain)?),
+                |saved, _| Ok(saved.state().summary_projection(domain)?),
             )?;
             summary.key.jump_history = history;
             summary.key.stack_height = summary.stack.len();
@@ -189,7 +189,7 @@ fn form_with_history<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     let mut summary = EvmPayloadSummary {
         frames,
         continuations,
-        store: payload.store.summary_projection_with(domain)?,
+        store: payload.store.summary_projection(domain)?,
         storage_observations,
         work: 0,
         location: payload.key(),
@@ -212,7 +212,7 @@ pub(in crate::analysis) fn join<N: WordElement, D: EvmNumericAlgebra<Element = N
     {
         return Err(MachineError::Shape);
     }
-    let store = old.store.join_with(&next.store, domain, widen);
+    let store = old.store.join(&next.store, domain, widen);
     let storage_observations =
         old.storage_observations
             .join(&next.storage_observations, domain, widen)?;
@@ -235,8 +235,8 @@ pub(in crate::analysis) fn join<N: WordElement, D: EvmNumericAlgebra<Element = N
                 FrameMapOrder::ScalarsFirst,
                 |left, right| Ok(join_scalar(left, right, domain, widen)),
                 |left, right, _| Ok(join_scalar(left, right, domain, widen)),
-                |left, right, _| Ok(left.join_with(right, domain, widen)),
-                |left, right| Ok(left.join_with(right, domain, widen)),
+                |left, right, _| Ok(left.join(right, domain, widen)),
+                |left, right| Ok(left.join(right, domain, widen)),
             )?,
             stack_aliases,
         });
@@ -298,8 +298,8 @@ pub(in crate::analysis) fn instantiate<N: WordElement, D: EvmNumericAlgebra<Elem
                 FrameMapOrder::BytesFirst,
                 |value, _| Ok(identify(value.clone(), enabled)),
                 |value, _, _| Ok(Some(identify(value.clone(), enabled))),
-                |bytes, _, _| Ok(bytes.instantiate_with(domain)?),
-                |saved, _| Ok(EvmSnapshot::from_state(saved.instantiate_with(domain)?)),
+                |bytes, _, _| Ok(bytes.instantiate(domain)?),
+                |saved, _| Ok(EvmSnapshot::from_state(saved.instantiate(domain)?)),
             )
         })
         .collect::<Result<Vec<_>, MachineError>>()?;
@@ -316,7 +316,7 @@ pub(in crate::analysis) fn instantiate<N: WordElement, D: EvmNumericAlgebra<Elem
         .collect();
     let mut output = EvmMachinePayload {
         call_stack: EvmCallStack::from_parts(root, children),
-        store: payload.store.instantiate_with(domain)?,
+        store: payload.store.instantiate(domain)?,
         relations: RelationState::default(),
     };
     payload

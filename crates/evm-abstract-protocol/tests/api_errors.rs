@@ -14,6 +14,148 @@ fn api_errors_stay_below_the_large_result_error_threshold() {
     }
 }
 
+#[test]
+fn execution_and_work_failures_keep_their_typed_wire_categories() {
+    for details in [
+        ErrorDetails::Execution(ExecutionFailureKind::Protocol),
+        ErrorDetails::Execution(ExecutionFailureKind::Initialization),
+        ErrorDetails::Execution(ExecutionFailureKind::Refinement),
+        ErrorDetails::Execution(ExecutionFailureKind::Unfinished),
+        ErrorDetails::Ssa(SsaFailure::Work),
+        ErrorDetails::Session(Box::new(SessionFailure::Work)),
+    ] {
+        let error = ApiError {
+            code: ApiErrorCode::Internal,
+            message: "native contextual diagnostic".into(),
+            details: details.clone(),
+        };
+        let encoded = serde_json::to_value(&error).unwrap();
+        assert_eq!(encoded["message"], error.message);
+        assert!(encoded["details"].get("Task").is_none());
+        assert!(encoded["details"].get("Worker").is_none());
+        assert!(encoded["details"].get("Transport").is_none());
+        let reply = AnalyzeReply { result: Err(error) };
+        assert_eq!(
+            serde_json::from_slice::<AnalyzeReply>(&serde_json::to_vec(&reply).unwrap()).unwrap(),
+            reply
+        );
+        if let ErrorDetails::Execution(kind) = details {
+            assert_eq!(
+                encoded["details"]["Execution"],
+                serde_json::to_value(kind).unwrap()
+            );
+        }
+    }
+    for invalid in [
+        r#"{"Execution":"Unknown"}"#,
+        r#"{"Execution":{"Protocol":null}}"#,
+        r#"{"Execution":null}"#,
+        r#"{"Execution":"Protocol","Execution":"Refinement"}"#,
+        r#"{"Ssa":{"Work":1}}"#,
+        r#"{"Session":{"Work":{}}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<ErrorDetails>(invalid).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn session_refinement_refusals_keep_the_location_and_typed_source() {
+    let location = InitialFactLocation::Storage(StorageLocation {
+        address: format!("0x{}", "11".repeat(20)),
+        slot: format!("0x{}", "22".repeat(32)),
+    });
+    for source in [
+        FactFailure::Capacity(FactCapacityFailure {
+            max_atoms: 64,
+            required: 65,
+        }),
+        FactFailure::UnsupportedOperation(0xfe),
+        FactFailure::OriginContradiction(u32::MAX),
+    ] {
+        let failure = SessionFailure::Refinement(SessionRefinementFailure {
+            location: location.clone(),
+            source: source.clone(),
+        });
+        let encoded = serde_json::to_value(&failure).unwrap();
+        assert_eq!(
+            encoded["Refinement"]["source"],
+            serde_json::to_value(source).unwrap()
+        );
+        assert_ne!(
+            encoded,
+            serde_json::to_value(SessionFailure::FactConflict(location.clone())).unwrap()
+        );
+        assert_eq!(
+            serde_json::from_value::<SessionFailure>(encoded.clone()).unwrap(),
+            failure
+        );
+        for field in ["location", "source"] {
+            let mut missing = encoded.clone();
+            missing["Refinement"].as_object_mut().unwrap().remove(field);
+            let error = serde_json::from_value::<SessionFailure>(missing).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("missing field: {field}"))
+            );
+        }
+        let mut unknown = encoded;
+        unknown["Refinement"]["reason"] = serde_json::json!("unavailable");
+        let error = serde_json::from_value::<SessionFailure>(unknown).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown SessionRefinementFailure field: reason")
+        );
+    }
+    for invalid in [
+        r#"{"Refinement":"unavailable"}"#,
+        r#"{"Refinement":{"location":{"Balance":"0x1"},"source":"Unsupported"}}"#,
+    ] {
+        assert!(serde_json::from_str::<SessionFailure>(invalid).is_err());
+    }
+}
+
+#[test]
+fn postprocessing_rejections_preserve_allowance_and_usage_as_u64() {
+    let failure = ReportValidationFailure::Postprocessing(PostprocessingWorkFailure {
+        max_work: 9_007_199_254_740_993,
+        work: u64::MAX,
+    });
+    let encoded = serde_json::to_string(&failure).unwrap();
+    assert_eq!(
+        serde_json::from_str::<ReportValidationFailure>(&encoded).unwrap(),
+        failure
+    );
+    for (field, count) in [("max_work", 9_007_199_254_740_993), ("work", u64::MAX)] {
+        let mut missing = serde_json::to_value(&failure).unwrap();
+        missing["Postprocessing"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        let duplicate = encoded.replace(
+            &format!("\"{field}\":{count}"),
+            &format!("\"{field}\":{count},\"{field}\":{count}"),
+        );
+        let error = serde_json::from_value::<ReportValidationFailure>(missing).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field: {field}"))
+        );
+        let error = serde_json::from_str::<ReportValidationFailure>(&duplicate).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("duplicate field: {field}"))
+        );
+        assert!(failure.to_string().contains(&count.to_string()));
+    }
+}
+
 fn assert_frozen_wire(error: ApiError, error_json: &str, reply_json: &str) {
     assert_eq!(serde_json::from_str::<ApiError>(error_json).unwrap(), error);
     assert_eq!(serde_json::to_string(&error).unwrap(), error_json);

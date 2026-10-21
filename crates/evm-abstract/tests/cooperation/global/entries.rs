@@ -1,5 +1,7 @@
 //! Public navigation of true entries across callers and site-specific Body keys.
 use super::*;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 use evm_abstract::{
     Fork,
     analysis::{
@@ -240,7 +242,12 @@ fn true_entries_support_multicaller_growth_and_distinct_body_policy_keys() {
             .insert(fixtures::address(fixtures::CALLEE), callee)
             .unwrap();
         let calls = Calls::default();
-        let algebra = fixtures::feedback_algebra(&calls);
+        let mut numeric = Policy::new(&calls);
+        numeric.exclusion_queries = false;
+        // This authored proof inspects immutable EQ expressions. The selected
+        // native algebra must retain those expressions; disabling relations
+        // intentionally erases them at policy projection.
+        let algebra = evm_abstract::domain::ValueAlgebra::new(numeric);
         let state = SemanticPolicies::new(
             BodyKeys(split),
             CorrelatedJoin,
@@ -254,16 +261,14 @@ fn true_entries_support_multicaller_growth_and_distinct_body_policy_keys() {
         }));
         let mut config = fixtures::config(5_000_000_000);
         config.analysis.context_depth = 0;
-        config.analysis.relations.enabled = false;
-        let result = analyze_world_cooperating(
-            world,
-            fixtures::entry(),
-            config,
-            &algebra,
-            &policies,
-            &mut extension,
-        )
-        .unwrap();
+
+        let result = AnalysisEngine::new(&algebra, &policies, &mut extension)
+            .run(
+                AnalysisInput::new(world, fixtures::entry()).unwrap(),
+                config,
+                &Control::default(),
+            )
+            .unwrap();
         fixtures::complete(&result);
         let nav = extension.analyzer.rule();
         assert!(
@@ -301,7 +306,7 @@ fn true_entries_support_multicaller_growth_and_distinct_body_policy_keys() {
                     |output| output.kind == evm_abstract::analysis::OutcomeKind::Return
                         && output
                             .data
-                            .read_word_with(&fixtures::word(0), algebra.borrowed())
+                            .read_word(&fixtures::word(0), algebra.borrowed())
                             .contains(U256::ONE)
                 )
         );

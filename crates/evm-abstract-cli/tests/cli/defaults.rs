@@ -11,7 +11,10 @@ fn report(output: Output) -> Value {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    super::native::without_application_metadata(&report);
+    assert_eq!(report["numeric_model"], "product");
+    report
 }
 
 fn policy(report: &Value, world: bool, expected: &AnalysisLimits) {
@@ -21,9 +24,6 @@ fn policy(report: &Value, world: bool, expected: &AnalysisLimits) {
         &report["config"]
     };
     for (name, value) in [
-        ("max_constants", expected.max_constants),
-        ("reduction_rounds", expected.reduction_rounds),
-        ("max_facts", expected.max_facts),
         ("context_depth", expected.context_depth),
         ("max_states", expected.max_states),
         ("max_transfers", expected.max_transfers),
@@ -35,12 +35,26 @@ fn policy(report: &Value, world: bool, expected: &AnalysisLimits) {
         ("max_depth", expected.max_expression_depth),
         ("max_constraints", expected.max_constraints),
     ] {
-        assert_eq!(config["relations"][name], value, "{name}: {config}");
+        assert_eq!(
+            report["domain_spec"]["relations"][name], value,
+            "{name}: {config}"
+        );
     }
-    assert_eq!(config["relations"]["enabled"], expected.relations_enabled);
-    assert!(config["relations"].get("provider").is_none());
-    assert!(config["relations"].get("rlimit").is_none());
-    assert_eq!(config["domain_profile"], "product");
+    assert_eq!(
+        report["domain_spec"]["relations"]["enabled"],
+        expected.relations_enabled
+    );
+    assert!(report["domain_spec"]["relations"].get("provider").is_none());
+    assert!(report["domain_spec"]["relations"].get("rlimit").is_none());
+    for name in [
+        "domain_profile",
+        "max_constants",
+        "reduction_rounds",
+        "max_facts",
+        "relations",
+    ] {
+        assert!(config.get(name).is_none(), "{name}: {config}");
+    }
     assert_eq!(report["domain_spec"]["capacity"], expected.max_constants);
     assert_eq!(
         report["domain_spec"]["reduction_rounds"],
@@ -212,7 +226,7 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
         assert_eq!(machine["status"], "Converged");
         assert_eq!(machine["frontiers"], serde_json::json!([]));
         assert_eq!(
-            machine["states"][0]["exit_stack"][0]["Constants"],
+            machine["states"][0]["exit_stack"][0]["numeric"]["constants"],
             serde_json::json!(["0x1"])
         );
         let load = complete["ssa"]["blocks"][0]["instructions"]
@@ -238,7 +252,7 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
     ]);
     assert_eq!(refused.status.code(), Some(2));
     let refused: Value = serde_json::from_slice(&refused.stdout).unwrap();
-    assert_eq!(refused["config"]["relations"]["max_nodes"], 2);
+    assert_eq!(refused["domain_spec"]["relations"]["max_nodes"], 2);
     assert_eq!(refused["status"], "Incomplete");
     assert_eq!(refused["states"], serde_json::json!([]));
     assert_eq!(refused["edges"], serde_json::json!([]));
@@ -276,7 +290,7 @@ fn raw_commands_use_the_larger_memory_default_but_preserve_explicit_memory_front
     let machine = &partial["machine_analysis"];
     assert_eq!(machine["status"], "Incomplete");
     assert_eq!(machine["config"]["max_memory_bytes"], 65536);
-    assert_eq!(machine["config"]["analysis"]["relations"]["max_nodes"], 2);
+    assert_eq!(machine["domain_spec"]["relations"]["max_nodes"], 2);
     assert_eq!(machine["states"], serde_json::json!([]));
     assert_eq!(machine["edges"], serde_json::json!([]));
     assert_eq!(machine["outcomes"], serde_json::json!([]));

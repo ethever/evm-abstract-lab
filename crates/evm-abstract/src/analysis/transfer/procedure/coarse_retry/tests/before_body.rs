@@ -1,5 +1,10 @@
 //! Real summary Input binding failures, before any instruction can execute.
 
+use crate::domain::ProductAlgebra;
+
+#[cfg(test)]
+use crate::analysis::testing::{ByteArray, ByteArraySummary};
+
 use super::*;
 use crate::{
     analysis::{Continuation, JoinBoundary, MachineEdgeKind},
@@ -7,11 +12,15 @@ use crate::{
         relational::{QueryReason, RelationLimits},
         symbolic::{ByteStateKind, ExprError, ExprId, StateError},
     },
-    world::{ByteArray, ByteArraySummary, RangeError, StoreError},
+    world::{RangeError, StoreError},
 };
 use std::collections::BTreeSet;
 
-fn input_summary(domain: Domain, coordinates: usize, values: &[u8]) -> ByteArraySummary {
+fn input_summary(
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+    coordinates: usize,
+    values: &[u8],
+) -> ByteArraySummary {
     // Every operand is an ordinary exact array. The union retains independent
     // non-dense finite cells; no unsupported value or poisoned root is used.
     values
@@ -27,10 +36,12 @@ fn input_summary(domain: Domain, coordinates: usize, values: &[u8]) -> ByteArray
 
 fn harness(code: &str, cap: usize, coordinates: usize, values: &[u8]) -> Harness {
     let (world, entry) = fixtures::fixture(&[(0x101, code)]);
-    let mut config = fixtures::config();
-    config.analysis.relations.max_nodes = cap;
-    config.analysis.max_constants = 128;
-    let domain = config.domain().unwrap();
+    let config = fixtures::config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.max_nodes = cap;
+    config_numeric.max_constants = 128;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let mut seed =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     seed.active_mut().stack = vec![word(7), word(0)];
@@ -41,6 +52,7 @@ fn harness(code: &str, cap: usize, coordinates: usize, values: &[u8]) -> Harness
         entry,
         budget: WorkBudget::new(config.max_work),
         config,
+        config_numeric,
         table: Table::default(),
         counters: Counters::default(),
     };
@@ -51,11 +63,15 @@ fn harness(code: &str, cap: usize, coordinates: usize, values: &[u8]) -> Harness
 }
 
 fn raw_failure(h: &Harness) -> MachineError {
-    let error = instantiate(&h.table.nodes[0].payload, h.config.domain().unwrap()).unwrap_err();
+    let error = instantiate(
+        &h.table.nodes[0].payload,
+        crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+    )
+    .unwrap_err();
     let MachineError::Bytes(RangeError::State(StateError::Limit { nodes, depth })) = &error else {
         panic!("must fail at the raw Input binding constructor: {error:?}")
     };
-    assert!(*nodes > h.config.analysis.relations.max_nodes && *nodes != usize::MAX);
+    assert!(*nodes > h.config_numeric.relations.max_nodes && *nodes != usize::MAX);
     assert_eq!(*depth, 2, "a shallow carrier, not a deep write history");
     assert_eq!(h.counters.transfers, 0);
     error
@@ -84,7 +100,8 @@ fn real_input_binding_limits_promote_before_body_at_small_library_and_screen13_c
         let original = h.table.nodes[0].payload.clone();
         let error = raw_failure(&h);
         assert!(retention_refusal(&error));
-        let domain = h.config.domain().unwrap();
+        let domain = crate::analysis::testing::product(h.config_numeric.spec());
+        let domain = domain.borrowed();
         // Every individual coordinate fits the same cap. Only their complete
         // Input carrier refuses; the selected policy itself remains unchanged.
         input_summary(domain, 1, &values)
@@ -112,7 +129,7 @@ fn real_input_binding_limits_promote_before_body_at_small_library_and_screen13_c
         let spent = h.budget.used();
         h.solver().run();
         assert!(h.table.frontiers.is_empty(), "{:?}", h.table.frontiers);
-        assert_eq!(h.config.analysis.relations.max_nodes, cap);
+        assert_eq!(h.config_numeric.relations.max_nodes, cap);
         assert_eq!(
             h.counters.transfers, 2,
             "one coarse body and its known successor"
@@ -136,7 +153,8 @@ fn real_input_binding_limits_promote_before_body_at_small_library_and_screen13_c
 #[test]
 fn prebody_promotion_keeps_the_whole_original_gamma_and_captured_context() {
     let mut h = harness("525b00", 256, 32, &[0, 1, 3]);
-    let domain = h.config.domain().unwrap();
+    let domain = crate::analysis::testing::product(h.config_numeric.spec());
+    let domain = domain.borrowed();
     let owner = address(0x101);
     let mut store =
         crate::analysis::transfer::procedure::testing::initial(&h.world, &h.entry, domain)
@@ -292,9 +310,10 @@ fn before_body_failed_preparation_or_transfer_keeps_first_frontier_and_metadata(
         // The one-node case refuses coarse rehydration itself. The other
         // prepares successfully but fails later in the replacement body.
         let mut h = harness(&code, 64, 8, &[0, 1, 3]);
-        h.config.analysis.relations.max_nodes = cap;
+        h.config_numeric.relations.max_nodes = cap;
         let original = h.table.nodes[0].payload.clone();
-        let domain = h.config.domain().unwrap();
+        let domain = crate::analysis::testing::product(h.config_numeric.spec());
+        let domain = domain.borrowed();
         let error = instantiate(&original, domain).unwrap_err();
         let reason = error.clone().frontier_reason();
         let spent = h.budget.used();
@@ -551,7 +570,8 @@ fn prebody_coarse_mode_and_frozen_layout_survive_fresh_incoming_ids() {
         RuntimeRetry::Coarse(coarse) => coarse.layout().clone(),
         _ => panic!("must have promoted before the body"),
     };
-    let domain = h.config.domain().unwrap();
+    let domain = crate::analysis::testing::product(h.config_numeric.spec());
+    let domain = domain.borrowed();
     let mut grown = None;
     for _ in 0..3 {
         let mut incoming = original.clone();

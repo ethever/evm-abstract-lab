@@ -8,12 +8,10 @@ use super::{
     Code, EvmSnapshot, EvmStore, StoreError, lifecycle, owner_deletion::OwnerCleanupFootprint,
 };
 use crate::domain::AlgebraRef;
-#[cfg(test)]
-use crate::domain::Domain;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::resource::{CloneError, WorkBudget};
 #[cfg(test)]
-use crate::world::Store;
+use crate::world::test_support::TestStore;
 use alloy_primitives::Address;
 
 mod preparation;
@@ -117,13 +115,18 @@ impl Deletion {
 
 pub(super) struct Plan {
     actions: Vec<(Address, Deletion)>,
-    fee: PlanFee,
+    fee: CleanupWork,
     removed_code_bytes: usize,
 }
 
-enum PlanFee {
-    Legacy { join_fields: usize },
-    NoDelete { owners: Vec<OwnerCleanupFootprint> },
+// A definite deletion resets owner state through whole-map retain passes;
+// without it, MAY cleanup visits only each selected owner and first-write COW
+// maps. Mixed plans must fund both the map-wide resets and local guarded joins.
+// Both quotes precede mutations on a private Store; final validation and the
+// original ledger's cancellation check precede publishing that Store.
+enum CleanupWork {
+    Reset { join_fields: usize },
+    OwnerLocal { owners: Vec<OwnerCleanupFootprint> },
 }
 
 impl Plan {
@@ -137,7 +140,7 @@ impl Plan {
             let action = Deletion::at(store, address);
             if action == Deletion::Join {
                 let owner = store.owner_cleanup_footprint(address, tree_work);
-                join_fields = join_fields.saturating_add(owner.legacy_fields());
+                join_fields = join_fields.saturating_add(owner.retained_fields());
                 owners.push(owner);
             }
             has_delete |= action == Deletion::Delete;
@@ -151,9 +154,9 @@ impl Plan {
         Self {
             actions,
             fee: if has_delete {
-                PlanFee::Legacy { join_fields }
+                CleanupWork::Reset { join_fields }
             } else {
-                PlanFee::NoDelete { owners }
+                CleanupWork::OwnerLocal { owners }
             },
             removed_code_bytes,
         }
@@ -161,12 +164,12 @@ impl Plan {
 
     fn work(&self, footprint: Footprint) -> usize {
         match &self.fee {
-            PlanFee::Legacy { join_fields } => self.legacy_work(footprint, *join_fields),
-            PlanFee::NoDelete { owners } => self.no_delete_work(footprint, owners).total(),
+            CleanupWork::Reset { join_fields } => self.reset_work(footprint, *join_fields),
+            CleanupWork::OwnerLocal { owners } => self.no_delete_work(footprint, owners).total(),
         }
     }
 
-    fn legacy_work(&self, footprint: Footprint, join_fields: usize) -> usize {
+    fn reset_work(&self, footprint: Footprint, join_fields: usize) -> usize {
         let deletes = self
             .actions
             .iter()
@@ -186,8 +189,8 @@ impl Plan {
             .saturating_add(join_fields)
             .saturating_add(deletes.saturating_mul(footprint.reset_growth));
 
-        // Four cleanup/drop passes; sixteen per definite reset retain the old
-        // bound for its four whole-map retain loops and ordered-map updates.
+        // Four cleanup/drop passes; sixteen per definite reset cover its four
+        // whole-map retain loops, ordered-map updates and disposal.
         // MAY actions never clone the Store. Eight shared passes cover the
         // first MAY input validation, first-write COW node/value copies and
         // their drops. Private map versions stay live for subsequent updates.
@@ -215,8 +218,8 @@ impl Plan {
         &self,
         footprint: Footprint,
         owners: &[OwnerCleanupFootprint],
-    ) -> NoDeleteWork {
-        let mut receipt = NoDeleteWork {
+    ) -> OwnerLocalWork {
+        let mut receipt = OwnerLocalWork {
             // Empty-plane/flag setup and action iteration/interrupt/consumption.
             setup: 32usize.saturating_add(self.actions.len().saturating_mul(2)),
             validation: if owners.is_empty() {
@@ -225,7 +228,7 @@ impl Plan {
                 footprint.validation_work
             },
             code_drop: self.removed_code_bytes.saturating_mul(4),
-            ..NoDeleteWork::default()
+            ..OwnerLocalWork::default()
         };
         let mut additions = [0usize; CleanupMap::COUNT];
         let mut touched = TouchedMaps::default();
@@ -390,7 +393,7 @@ impl TouchedMaps {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct NoDeleteWork {
+struct OwnerLocalWork {
     setup: usize,
     validation: usize,
     cow: usize,
@@ -399,7 +402,7 @@ struct NoDeleteWork {
     code_drop: usize,
 }
 
-impl NoDeleteWork {
+impl OwnerLocalWork {
     fn total(&self) -> usize {
         self.setup
             .saturating_add(self.validation)
@@ -452,7 +455,7 @@ impl<N: WordElement> EvmStore<N> {
     /// Finish a root transaction atomically under the shared work ledger.
     /// Return uses the live Store; Revert/Failure supply the root checkpoint.
     /// Restoration precedes planning so its sticky RIPEMD touch is included.
-    pub(crate) fn finalize_transaction_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn finalize_transaction_checked<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         domain: AlgebraRef<'_, D>,
         rollback: Option<&EvmSnapshot<N>>,
@@ -487,7 +490,7 @@ impl<N: WordElement> EvmStore<N> {
             snapshot.state().pay_clone_with(budget)?;
             staged.restore(snapshot.clone());
         }
-        staged.prepare_unlisted_finalization_checked_with(domain, budget)?;
+        staged.prepare_unlisted_finalization_checked(domain, budget)?;
         let footprint = Footprint::measure(&staged, budget)?;
         // Pay address-set construction, lookup/classification and plan disposal
         // before visiting any address; values remain borrowed during emptiness.
@@ -624,20 +627,3 @@ impl Footprint {
 mod tests;
 #[cfg(test)]
 mod unlisted;
-
-#[cfg(test)]
-impl EvmStore<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn finalize_transaction_checked(
-        &mut self,
-        domain: crate::domain::Domain,
-        rollback: Option<&EvmSnapshot<crate::domain::NumericValue>>,
-        budget: &mut WorkBudget,
-    ) -> Result<(), FinalizationError> {
-        self.finalize_transaction_checked_with(
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            rollback,
-            budget,
-        )
-    }
-}

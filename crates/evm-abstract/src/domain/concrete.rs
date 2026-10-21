@@ -2,6 +2,23 @@
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
+/// One fixed-width concrete evaluation, excluding carrier and facade work.
+pub(crate) fn evaluation_work(op: u8) -> usize {
+    match op {
+        // 256 squares plus up to 256 products of four-limb words, including
+        // exponent/loop bookkeeping in ruint's square-and-multiply evaluator.
+        opcode::EXP => 16_384,
+        // Include signed normalization and widened modular intermediates.
+        opcode::ADDMOD | opcode::MULMOD => 4096,
+        opcode::DIV | opcode::SDIV | opcode::MOD | opcode::SMOD => 1024,
+        _ => 64,
+    }
+}
+
+#[cfg(test)]
+pub(crate) static EVALUATIONS: crate::test_instrumentation::Counter<(usize, usize)> =
+    crate::test_instrumentation::Counter::new((0, 0));
+
 /// Supported pure word operations and their EVM pop-order operand count.
 pub(crate) fn arity(op: u8) -> Option<usize> {
     match op {
@@ -28,7 +45,14 @@ fn abs(value: U256) -> U256 {
     }
 }
 
-pub(super) fn evaluate(op: u8, a: U256, b: U256, c: U256) -> U256 {
+/// Evaluate in EVM pop order after validating opcode and operand count with [`arity`].
+/// This evaluator assumes that validation; zero padding is only for unused operand slots.
+pub(crate) fn evaluate(op: u8, a: U256, b: U256, c: U256) -> U256 {
+    #[cfg(test)]
+    EVALUATIONS.update(|(calls, work)| {
+        *calls = calls.saturating_add(1);
+        *work = work.saturating_add(evaluation_work(op));
+    });
     let boolean = |v: bool| U256::from(u8::from(v));
     // 256 bit 大整数、模乘和快速幂由 alloy/ruint 提供；这里只表达 EVM 规则。
     match op {

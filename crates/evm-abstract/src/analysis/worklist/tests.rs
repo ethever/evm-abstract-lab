@@ -1,15 +1,16 @@
 //! Live priority scans preserve FIFO obligations and prepaid work on cancellation.
 
-use super::{MachineError, WorkBudget, Worklist};
+use super::{MachineError, MachineMeter, WorkBudget, kernel_failure};
 use crate::domain::relational::QueryReason;
 use analysis_control::{Cancellation, with_cancellation};
+use analysis_kernel::worklist::Worklist;
 use std::cell::RefCell;
 
 const LIVE: [usize; 3] = [2, 0, 1];
 
-fn live_worklists() -> [Worklist; 2] {
+fn live_worklists() -> [Worklist<usize>; 2] {
     let fresh = LIVE.into_iter().collect();
-    let mut historical: Worklist = (3..10_003).chain(LIVE).collect();
+    let mut historical: Worklist<usize> = (3..10_003).chain(LIVE).collect();
     for id in 3..10_003 {
         historical.satisfy(id);
     }
@@ -24,7 +25,7 @@ fn satisfied_history_does_not_affect_live_priority_scans_or_work() {
             let mut budget = WorkBudget::new(usize::MAX);
             let visited = RefCell::new(Vec::new());
             assert_eq!(
-                worklist.pop_deepest(&mut budget, |id| {
+                worklist.pop_deepest(&mut MachineMeter(&mut budget), |id| {
                     visited.borrow_mut().push(id);
                     1
                 }),
@@ -37,9 +38,15 @@ fn satisfied_history_does_not_affect_live_priority_scans_or_work() {
 
             // Equal priorities retain FIFO order even when IDs are unsorted.
             for id in LIVE.into_iter().skip(1) {
-                assert_eq!(worklist.pop_deepest(&mut budget, |_| 1), Ok(Some(id)));
+                assert_eq!(
+                    worklist.pop_deepest(&mut MachineMeter(&mut budget), |_| 1),
+                    Ok(Some(id))
+                );
             }
-            assert_eq!(worklist.pop_deepest(&mut budget, |_| 1), Ok(None));
+            assert_eq!(
+                worklist.pop_deepest(&mut MachineMeter(&mut budget), |_| 1),
+                Ok(None)
+            );
             assert!(worklist.pending().next().is_none());
             selection_work
         })
@@ -54,7 +61,10 @@ fn cancellation_during_priority_scan_preserves_live_obligations_and_prepaid_work
         let control_token = Cancellation::new();
         let prepaid = with_cancellation(&control_token, || {
             let mut budget = WorkBudget::new(usize::MAX);
-            assert_eq!(control.pop_deepest(&mut budget, |_| 1), Ok(Some(LIVE[0])));
+            assert_eq!(
+                control.pop_deepest(&mut MachineMeter(&mut budget), |_| 1),
+                Ok(Some(LIVE[0]))
+            );
             assert!(budget.used() > 0);
             assert!(!budget.exhausted());
             budget.used()
@@ -67,14 +77,17 @@ fn cancellation_during_priority_scan_preserves_live_obligations_and_prepaid_work
                 let mut worklist = before.clone();
                 let mut budget = WorkBudget::new(usize::MAX);
                 let visited = RefCell::new(Vec::new());
-                let result = worklist.pop_deepest(&mut budget, |id| {
+                let result = worklist.pop_deepest(&mut MachineMeter(&mut budget), |id| {
                     visited.borrow_mut().push(id);
                     if id == LIVE[cancel_at] {
                         token.cancel();
                     }
                     1
                 });
-                assert_eq!(result, Err(MachineError::Relations(QueryReason::Cancelled)));
+                assert_eq!(
+                    result.map_err(kernel_failure),
+                    Err(MachineError::Relations(QueryReason::Cancelled))
+                );
                 assert_eq!(worklist, before);
                 assert_eq!(worklist.pending().collect::<Vec<_>>(), [0, 1, 2]);
                 assert_eq!(visited.into_inner(), LIVE[..=cancel_at]);

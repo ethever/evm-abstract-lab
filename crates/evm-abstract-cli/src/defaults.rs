@@ -9,6 +9,8 @@ pub(crate) const MAX_TRANSFERS: usize = 10_000_000;
 pub(crate) const CONTEXT_DEPTH: usize = 128;
 pub(crate) const MAX_CONSTANTS: usize = 512;
 pub(crate) const MAX_WORK: usize = 2_000_000_000;
+/// Independent allowance shared by local projection, SSA and requested rendering.
+pub(crate) const DEFAULT_POSTPROCESS_WORK: usize = 2_000_000_000;
 pub(crate) const MAX_CALL_DEPTH: usize = 1025;
 pub(crate) const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const REDUCTION_ROUNDS: usize = 16;

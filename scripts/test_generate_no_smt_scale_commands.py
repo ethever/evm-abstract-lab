@@ -19,9 +19,10 @@ SPEC.loader.exec_module(generator)
 WITNESSES = {
     "crates/evm-abstract-cli/src/main.rs": "// Synthetic selected CLI source.\n",
     "crates/evm-abstract-cli/src/symbolic.rs": "// Bounded local facts only.\n",
-    "crates/evm-abstract/src/analysis.rs": "pub const SCHEMA_VERSION: u16 = 11;\n",
-    "crates/evm-abstract-protocol/src/lib.rs": "pub const SCHEMA_VERSION: u16 = 16;\n",
-    "crates/evm-abstract/src/domain/spec.rs": "cost_version: 6,\n",
+    "crates/evm-abstract-cli/src/numeric.rs": "// Application-owned numeric model and limits.\n",
+    "crates/evm-abstract/src/analysis.rs": "pub const SCHEMA_VERSION: u16 = 12;\n",
+    "crates/evm-abstract-protocol/src/lib.rs": "pub const SCHEMA_VERSION: u16 = 17;\n",
+    "crates/evm-abstract/src/domain/spec.rs": "schema_version: 3, cost_version: 7,\n",
 }
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
@@ -52,19 +53,35 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(profile["report_exit_codes"], [0, 2])
         self.assertEqual(self.baseline["report_exit_codes"], [0])
         self.assertEqual(profile["policy"], {key: value for key, value in
-                         self.baseline["policy"].items() if key not in {"smt_provider", "smt_rlimit"}})
+                         self.baseline["policy"].items() if key not in {"smt_provider", "smt_rlimit", "domain_profile"}} |
+                         {"numeric_model": "Product", "postprocessing_max_work": 2_000_000_000})
         mapping = profile["policy_mapping"]
         self.assertEqual(set(mapping), set(self.baseline["policy_mapping"]) -
-                         {"smt_provider", "smt_rlimit"})
+                         {"smt_provider", "smt_rlimit", "domain_profile"} |
+                         {"numeric_model", "postprocessing_max_work"})
         for key in mapping:
-            if key != "relations_enabled":
+            if key not in {"relations_enabled", "numeric_model", "postprocessing_max_work"}:
                 self.assertEqual(mapping[key], self.baseline["policy_mapping"][key])
         expected_config = deepcopy(self.baseline["expected_native_config"])
         expected_config["root_terminal_coverage"] = False
         expected_config["analysis"]["relations"] = {
             key: value for key, value in expected_config["analysis"]["relations"].items()
             if key not in {"provider", "rlimit"}}
+        analysis = expected_config["analysis"]
+        expected_spec = {
+            "schema_version": 3, "word_bits": 256,
+            "capacity": analysis.pop("max_constants"),
+            "reduction_rounds": analysis.pop("reduction_rounds"),
+            "fact_limit": analysis.pop("max_facts"),
+            "cost_version": 7, "widening_after_updates": 2,
+            "provenance_policy": "scoped-expressions-and-value-identities-v3",
+            "relations": analysis.pop("relations"),
+        }
+        self.assertEqual(analysis.pop("domain_profile"), "product")
         self.assertEqual(profile["expected_native_config"], expected_config)
+        self.assertEqual(profile["expected_native_domain_spec"], expected_spec)
+        self.assertEqual(profile["expected_native_numeric_model"], "product")
+        self.assertEqual(profile["expected_native_postprocessing_max_work"], 2_000_000_000)
         self.assertEqual(set(profile["cases"]), set(self.baseline["cases"]))
         self.assertEqual(len(profile["cases"]), 7)
         for name, case in profile["cases"].items():
@@ -73,7 +90,8 @@ class GeneratorTests(unittest.TestCase):
             new = deepcopy(case)
             actual_argv = new.pop("argv")
             self.assertEqual(new, old)
-            # Preserve every old argument/value and explicitly retain coverage-off.
+            # Preserve input/budgets; migrate the selector and retain coverage-off.
+            argv[argv.index("--domain")] = "--numeric-model"
             omitted = set()
             for flag in ["--smt.provider", "--smt.rlimit"]:
                 position = argv.index(flag)
@@ -85,7 +103,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(actual_argv[actual_argv.index("--max-work") + 1], "1000000000000")
         interface = profile["interface"]
         self.assertEqual(interface["source_commit"], COMMIT)
-        self.assertEqual(interface["versions"], {"native": 11, "wire": 16, "cost": 6})
+        self.assertEqual(interface["versions"], {"native": 12, "wire": 17, "domain": 3, "cost": 7})
         self.assertEqual(interface["source_witnesses"], {
             name: hashlib.sha256((self.source / name).read_bytes()).hexdigest()
             for name in WITNESSES})
@@ -93,21 +111,23 @@ class GeneratorTests(unittest.TestCase):
 
     def test_obsolete_or_wrong_source_contract_is_rejected_before_git(self):
         bad_sources = [
-            ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 10;", "native schema 11"),
-            ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 15;", "wire schema 16"),
-            ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 12;", "native schema 11"),
-            ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 17;", "wire schema 16"),
+            ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 10;", "native schema 12"),
+            ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 15;", "wire schema 17"),
+            ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 11;", "native schema 12"),
+            ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 16;", "wire schema 17"),
             ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 9;", "native"),
             ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 14;", "wire"),
             ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 8;", "native"),
             ("crates/evm-abstract-protocol/src/lib.rs", "pub const SCHEMA_VERSION: u16 = 13;", "wire"),
-            ("crates/evm-abstract/src/domain/spec.rs", "cost_version: 2,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "cost_version: 3,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "cost_version: 4,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "cost_version: 5,", "cost version 6"),
-            ("crates/evm-abstract/src/domain/spec.rs", "cost_version: 7,", "cost version 6"),
-            ("crates/evm-abstract/src/domain/spec.rs", "cost_version: 50,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "// No cost version declared.", "cost"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 2,", "cost"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 3,", "cost"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 4,", "cost"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 5,", "cost version 7"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 6,", "cost version 7"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 50,", "cost"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3,", "cost"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 2, cost_version: 7,", "numeric policy schema 3"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 4, cost_version: 7,", "numeric policy schema 3"),
         ] + [("crates/evm-abstract-cli/src/symbolic.rs", field, "solver policy")
              for field in ["smt_provider", "smt_rlimit", "embedded_smt"]]
         for name, text, error in bad_sources:
@@ -143,13 +163,13 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(set(actual["cases"]), set(self.baseline["cases"]))
         self.assertEqual(self.baseline_path.read_bytes(), self.baseline_bytes)
 
-    def test_generated_wire16_requests_preserve_frozen_inputs_and_1t_off_policy(self):
+    def test_generated_wire17_requests_preserve_frozen_inputs_and_1t_off_policy(self):
         originals = {}
         for name in ("weth", "usdc"):
             path = ROOT / f"examples/no-smt-scale/wire14/{name}-original-request.json"
             originals[name] = (path, path.read_bytes())
         output = self.source / "selected-command-profile.json"
-        requests = self.source / "wire16"
+        requests = self.source / "wire17"
         with patch("sys.argv", ["generate-no-smt-scale-commands.py", "--interface-source",
                                str(self.source), "--output", str(output),
                                "--request-output-dir", str(requests)]), \
@@ -157,8 +177,10 @@ class GeneratorTests(unittest.TestCase):
             generator.main()
         for name, (path, frozen) in originals.items():
             original = json.loads(frozen)
-            actual = json.loads((requests / f"{name}-wire16-request.json").read_bytes())
+            actual = json.loads((requests / f"{name}-wire17-request.json").read_bytes())
             self.assertIs(actual["limits"].pop("root_terminal_coverage"), False)
+            self.assertEqual(actual["limits"].pop("numeric_model"), "Product")
+            self.assertEqual(original["limits"].pop("domain_profile"), "Product")
             self.assertEqual(actual, original)
             self.assertEqual(actual["limits"]["max_work"], 1_000_000_000_000)
             self.assertEqual(path.read_bytes(), frozen)

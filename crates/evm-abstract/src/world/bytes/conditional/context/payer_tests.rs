@@ -1,34 +1,42 @@
 use super::tests::{branches, constant};
 use super::{Context, Facts, Preparation, memo, preparation};
-use crate::world::bytes::test_support::{assert_complete_value, paid_prefix, total};
-use crate::{
-    domain::{
-        AbstractValue, Domain, ValueAlgebra,
-        identity::Symbol,
-        provenance::Origin,
-        relational::RelationLimits,
-        symbolic::{ExprError, ExprId},
-    },
-    resource::WorkBudget,
-    world::bytes::conditional::{Branch, ConditionalFacts, Scope},
-};
 use alloy_primitives::U256;
 use std::{rc::Rc, sync::Arc};
+use {
+    crate::domain::identity::Symbol, crate::domain::provenance::Origin,
+    crate::domain::relational::RelationLimits, crate::domain::symbolic::ExprError,
+    crate::domain::symbolic::ExprId, crate::resource::WorkBudget,
+    crate::world::bytes::conditional::Branch, crate::world::bytes::conditional::ConditionalFacts,
+    crate::world::bytes::conditional::Scope, crate::world::test_support::TestAlgebra,
+    crate::world::test_support::TestValue,
+};
+use {
+    crate::world::bytes::test_support::assert_complete_value,
+    crate::world::bytes::test_support::paid_prefix, crate::world::bytes::test_support::total,
+};
 
 #[test]
 fn byte_observations_and_fallbacks_keep_the_original_transfer_payment() {
     use revm_bytecode::opcode;
-    let numeric = crate::world::bytes::numeric::numeric_domain(Domain::default());
+    let numeric = crate::world::test_support::numeric_product(crate::domain::ValueAlgebra::new(
+        crate::domain::ProductAlgebra::default(),
+    ));
     for domain in [
-        Domain::default(),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()),
         numeric,
-        Domain::new(std::num::NonZeroUsize::new(8).unwrap()),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+            crate::domain::DomainSpec::new(
+                std::num::NonZeroUsize::new(8).unwrap(),
+                std::num::NonZeroUsize::new(8).unwrap(),
+                std::num::NonZeroUsize::new(256).unwrap(),
+            ),
+        )),
     ] {
-        let algebra = ValueAlgebra::new(&domain);
+        let algebra = domain.borrowed();
         let facts = Facts::new();
         let conditional = ConditionalFacts::default();
         let quote = preparation_for(&facts, &conditional, domain);
-        let scalar = AbstractValue::unknown_address().with_symbolic_limit();
+        let scalar = TestValue::unknown_address().with_symbolic_limit();
         for (op, args) in [
             (opcode::BYTE, vec![constant(31), scalar.clone()]),
             (opcode::AND, vec![scalar.clone(), constant(255)]),
@@ -44,7 +52,7 @@ fn byte_observations_and_fallbacks_keep_the_original_transfer_payment() {
             assert_eq!(oracle.observe_byte(algebra, op, &args), expected);
             assert_eq!(numeric_work(&oracle.demand_payments()), 0);
             assert_eq!(oracle.reader_calls(), (1, 0));
-            let price = domain.operation_work(&args);
+            let price = domain.operation_work(op, &args);
             let trace = trace_for(&facts, &conditional, &domain, &quote, |root| {
                 let usage = root.demand_usage();
                 assert_eq!(root.observe_byte(algebra, op, &args), expected);
@@ -66,33 +74,25 @@ fn byte_observations_and_fallbacks_keep_the_original_transfer_payment() {
 
 #[test]
 fn byte_observation_checks_the_complete_frozen_policy_before_any_evaluation() {
-    use crate::domain::{DomainSpec, Profile};
+    use crate::domain::DomainSpec;
     use revm_bytecode::opcode;
     use std::num::NonZeroUsize;
-    let domain = crate::world::bytes::numeric::numeric_domain(Domain::default());
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::world::test_support::numeric_product(crate::domain::ValueAlgebra::new(
+        crate::domain::ProductAlgebra::default(),
+    ));
+    let algebra = domain.borrowed();
     let spec = domain.spec();
     let changed = |capacity, rounds, facts, relations| {
-        Domain::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
             DomainSpec::new(
-                Profile::Product,
                 NonZeroUsize::new(capacity).unwrap(),
                 NonZeroUsize::new(rounds).unwrap(),
                 NonZeroUsize::new(facts).unwrap(),
             )
             .with_relations(relations),
-        )
+        ))
     };
     let policies = [
-        Domain::from_spec(
-            DomainSpec::new(
-                Profile::ConstantsOnly,
-                NonZeroUsize::new(spec.capacity()).unwrap(),
-                NonZeroUsize::new(spec.reduction_rounds()).unwrap(),
-                NonZeroUsize::new(spec.fact_limit()).unwrap(),
-            )
-            .with_relations(spec.relations()),
-        ),
         changed(
             spec.capacity() + 1,
             spec.reduction_rounds(),
@@ -131,22 +131,19 @@ fn byte_observation_checks_the_complete_frozen_policy_before_any_evaluation() {
             .unwrap();
         let trace = root.demand_payments();
         let usage = root.demand_usage();
-        let args = [constant(31), AbstractValue::unknown_address()];
+        let args = [constant(31), TestValue::unknown_address()];
         assert_eq!(
-            root.observe_byte(ValueAlgebra::new(&changed), opcode::BYTE, &args),
-            AbstractValue::top()
+            root.observe_byte(changed.borrowed(), opcode::BYTE, &args),
+            TestValue::top()
         );
         assert!(root.cache_refused());
         assert!(!root.work_exhausted());
         let clone = root.clone();
         assert_eq!(
             clone.observe_byte(algebra, opcode::BYTE, &args),
-            AbstractValue::top()
+            TestValue::top()
         );
-        assert_eq!(
-            clone.apply(algebra, opcode::BYTE, &args),
-            AbstractValue::top()
-        );
+        assert_eq!(clone.apply(algebra, opcode::BYTE, &args), TestValue::top());
         assert_eq!(root.reader_calls(), (0, 0));
         assert_eq!(root.demand_payments(), trace);
         assert_eq!(root.demand_usage(), usage);
@@ -156,8 +153,10 @@ fn byte_observation_checks_the_complete_frozen_policy_before_any_evaluation() {
 #[test]
 fn cancellation_before_a_byte_observation_precedes_payment_and_finite_fallback() {
     use revm_bytecode::opcode;
-    let domain = crate::world::bytes::numeric::numeric_domain(Domain::default());
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::world::test_support::numeric_product(crate::domain::ValueAlgebra::new(
+        crate::domain::ProductAlgebra::default(),
+    ));
+    let algebra = domain.borrowed();
     let facts = Facts::new();
     let conditional = ConditionalFacts::default();
     let quote = preparation_for(&facts, &conditional, domain);
@@ -175,18 +174,18 @@ fn cancellation_before_a_byte_observation_precedes_payment_and_finite_fallback()
     analysis_control::with_cancellation(&token, || {
         assert_eq!(
             root.observe_byte(algebra, opcode::BYTE, &args),
-            AbstractValue::top()
+            TestValue::top()
         );
         assert_eq!(
             unmetered.observe_byte(algebra, opcode::BYTE, &args),
-            AbstractValue::top()
+            TestValue::top()
         );
         assert_eq!(root.check(), Err(ExprError::Cancelled));
     });
     assert_eq!(clone.check(), Err(ExprError::Cancelled));
     assert_eq!(
         clone.observe_byte(algebra, opcode::BYTE, &args),
-        AbstractValue::top()
+        TestValue::top()
     );
     assert_eq!(root.demand_payments(), trace);
     assert_eq!(root.demand_usage(), usage);
@@ -195,17 +194,21 @@ fn cancellation_before_a_byte_observation_precedes_payment_and_finite_fallback()
     assert!(!root.cache_refused());
 }
 
-fn range(lower: usize, upper: usize) -> AbstractValue {
-    AbstractValue::unsigned_range(U256::from(lower), U256::from(upper)).unwrap()
+fn range(lower: usize, upper: usize) -> TestValue {
+    TestValue::unsigned_range(U256::from(lower), U256::from(upper)).unwrap()
 }
 
-fn source(mut value: AbstractValue, origin: Origin) -> AbstractValue {
+fn source(mut value: TestValue, origin: Origin) -> TestValue {
     value.set_origin(origin);
     value
 }
 
-fn preparation_for(facts: &Facts, conditional: &ConditionalFacts, domain: Domain) -> Preparation {
-    let algebra = ValueAlgebra::new(&domain);
+fn preparation_for(
+    facts: &Facts,
+    conditional: &ConditionalFacts,
+    domain: TestAlgebra,
+) -> Preparation {
+    let algebra = domain.borrowed();
     let work = facts.iter().fold(0usize, |work, (key, value)| {
         work.saturating_add(key.work_size())
             .saturating_add(value.work_size())
@@ -218,11 +221,11 @@ fn preparation_for(facts: &Facts, conditional: &ConditionalFacts, domain: Domain
 fn trace_for(
     facts: &Facts,
     conditional: &ConditionalFacts,
-    domain: &Domain,
+    domain: &TestAlgebra,
     quote: &Preparation,
     action: impl FnOnce(&Context<'_>),
 ) -> Vec<(bool, usize)> {
-    let algebra = ValueAlgebra::new(domain);
+    let algebra = domain.borrowed();
     let mut budget = WorkBudget::new(usize::MAX);
     let context = Context::budgeted(facts, conditional, algebra, quote, &mut budget)
         .unwrap()
@@ -245,15 +248,15 @@ fn numeric_work(trace: &[(bool, usize)]) -> usize {
 
 // A complete positive memo hit pays entry, policy search, B-tree comparison
 // envelope and the copied AV, with no retained object or numeric action.
-fn hit_work(key: &ExprId, value: &AbstractValue, len: usize, maximum_key: usize) -> usize {
+fn hit_work(key: &ExprId, value: &TestValue, len: usize, maximum_key: usize) -> usize {
     let comparisons = len.min(11 * (len.saturating_add(1).ilog2() as usize + 1));
     1 + 2 + comparisons * (key.work_size() + maximum_key + 1) + 1 + value.work_size()
 }
 
 #[test]
 fn more_than_thirty_two_same_parent_guards_keep_exact_paid_values_without_refusal() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let cases: Vec<_> = (0..memo::CONTEXTS + 8)
         .map(|index| {
@@ -369,8 +372,8 @@ fn more_than_thirty_two_same_parent_guards_keep_exact_paid_values_without_refusa
 
 #[test]
 fn full_retention_keeps_warm_hits_and_repeats_uncached_actions_for_both_full_policies() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let warm_guard = ExprId::fresh().unwrap();
     let cold_guard = ExprId::operation(
@@ -428,7 +431,7 @@ fn full_retention_keeps_warm_hits_and_repeats_uncached_actions_for_both_full_pol
             );
             assert_eq!(
                 numeric_work(&demand.payments()),
-                before + quote.reduction_work + memo::join_work(policy, &left, &right)
+                before + quote.reduction_work + memo::join_work(policy.borrowed(), &left, &right)
             );
         }
         for _ in 2..memo::CONTEXTS {
@@ -487,7 +490,9 @@ fn full_retention_keeps_warm_hits_and_repeats_uncached_actions_for_both_full_pol
                 assert_complete_value(&selected.value(&key, policy).unwrap(), &expected, &left);
                 assert_eq!(
                     numeric_work(&demand.payments()),
-                    before + quote.reduction_work + memo::join_work(policy, &left, &right)
+                    before
+                        + quote.reduction_work
+                        + memo::join_work(policy.borrowed(), &left, &right)
                 );
                 let paid = demand.paid_work();
                 assert_complete_value(&selected.value(&key, policy).unwrap(), &expected, &left);
@@ -497,7 +502,9 @@ fn full_retention_keeps_warm_hits_and_repeats_uncached_actions_for_both_full_pol
                 );
                 assert_eq!(
                     numeric_work(&demand.payments()),
-                    before + quote.reduction_work + memo::join_work(policy, &left, &right)
+                    before
+                        + quote.reduction_work
+                        + memo::join_work(policy.borrowed(), &left, &right)
                 );
             }
             let trace = demand.payments()[start..].to_vec();
@@ -530,8 +537,8 @@ fn full_retention_keeps_warm_hits_and_repeats_uncached_actions_for_both_full_pol
 
 #[test]
 fn actual_scope_meet_and_join_keep_the_complete_value_and_memo_receipt() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let guard = ExprId::fresh().unwrap();
     let left = source(range(0, 20), Origin::Calldata)
@@ -601,12 +608,12 @@ fn actual_scope_meet_and_join_keep_the_complete_value_and_memo_receipt() {
 
 #[test]
 fn equal_and_top_scope_shortcuts_still_pay_the_real_metadata_join() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     for (left, right) in [
         (range(2, 8), range(2, 8)),
-        (AbstractValue::top(), range(2, 8)),
-        (range(2, 8), AbstractValue::top()),
+        (TestValue::top(), range(2, 8)),
+        (range(2, 8), TestValue::top()),
     ] {
         let key = ExprId::fresh().unwrap();
         let guard = ExprId::fresh().unwrap();
@@ -657,8 +664,8 @@ fn equal_and_top_scope_shortcuts_still_pay_the_real_metadata_join() {
 
 #[test]
 fn first_scope_value_and_new_guard_truth_need_no_numeric_action() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let guard = ExprId::fresh().unwrap();
     let source = source(range(5, 25), Origin::Storage).with_identity(993_119, 1);
@@ -702,8 +709,8 @@ fn first_scope_value_and_new_guard_truth_need_no_numeric_action() {
 
 #[test]
 fn guard_truth_meets_pay_the_original_bound_and_keep_contradiction_fallback() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     for value in [range(0, 20), constant(0)] {
         let guard = ExprId::fresh().unwrap();
         let value = source(value, Origin::Calldata).with_expression(guard.clone());
@@ -742,8 +749,8 @@ fn guard_truth_meets_pay_the_original_bound_and_keep_contradiction_fallback() {
 
 #[test]
 fn work_boundaries_preserve_the_prefix_and_never_install_negative_or_partial_results() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let guard = ExprId::fresh().unwrap();
     let key = ExprId::fresh().unwrap();
     let cheap = ExprId::fresh().unwrap();
@@ -818,10 +825,7 @@ fn work_boundaries_preserve_the_prefix_and_never_install_negative_or_partial_res
                 assert!(!demand.reserve(0));
                 assert_eq!(demand.used(), used);
                 assert_eq!(
-                    selected
-                        .memo
-                        .borrow()
-                        .get_with(&key, algebra, demand, &|_| true),
+                    selected.memo.borrow().get(&key, algebra, demand, &|_| true),
                     None,
                     "interrupted resolve is neither a complete value nor a completed absence"
                 );
@@ -844,12 +848,14 @@ fn work_boundaries_preserve_the_prefix_and_never_install_negative_or_partial_res
 
 #[test]
 fn full_domain_policies_guard_scopes_and_fact_owners_have_separate_complete_memos() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
-    let changed = Domain::from_spec(domain.spec().with_relations(RelationLimits {
-        max_nodes: domain.spec().relations().max_nodes + 1,
-        ..domain.spec().relations()
-    }));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
+    let changed = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        domain.spec().with_relations(RelationLimits {
+            max_nodes: domain.spec().relations().max_nodes + 1,
+            ..domain.spec().relations()
+        }),
+    ));
     let key = ExprId::fresh().unwrap();
     let guard = ExprId::fresh().unwrap();
     let left = source(range(0, 30), Origin::Calldata);
@@ -880,7 +886,9 @@ fn full_domain_policies_guard_scopes_and_fact_owners_have_separate_complete_memo
                 assert!(demand.paid_work() > before);
                 assert_eq!(
                     numeric_work(&demand.payments()),
-                    before_numeric + quote.reduction_work + memo::join_work(policy, &left, value)
+                    before_numeric
+                        + quote.reduction_work
+                        + memo::join_work(policy.borrowed(), &left, value)
                 );
                 let after = demand.paid_work();
                 assert_eq!(root.branch(&guard, truth).value(&key, policy), expected);
@@ -893,7 +901,9 @@ fn full_domain_policies_guard_scopes_and_fact_owners_have_separate_complete_memo
                 assert_eq!(demand.paid_work(), after + 1 + 1 + memo::CONTEXTS + hit);
                 assert_eq!(
                     numeric_work(&demand.payments()),
-                    before_numeric + quote.reduction_work + memo::join_work(policy, &left, value)
+                    before_numeric
+                        + quote.reduction_work
+                        + memo::join_work(policy.borrowed(), &left, value)
                 );
             }
         }
@@ -905,7 +915,7 @@ fn full_domain_policies_guard_scopes_and_fact_owners_have_separate_complete_memo
                 .value(&key, algebra)
         );
         assert_eq!(root.value(&key, algebra), Some(left));
-        assert_eq!(root.value(&key, ValueAlgebra::new(&changed)), None);
+        assert_eq!(root.value(&key, changed.borrowed()), None);
         assert!(root.cache_refused());
         assert!(!root.work_exhausted());
         root.check().unwrap();
@@ -927,8 +937,8 @@ fn full_domain_policies_guard_scopes_and_fact_owners_have_separate_complete_memo
 
 #[test]
 fn an_already_exhausted_original_budget_cannot_return_a_cheap_or_cached_value() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let facts = Facts::from([(key.clone(), constant(7))]);
     let conditional = ConditionalFacts::default();
@@ -949,8 +959,8 @@ fn an_already_exhausted_original_budget_cannot_return_a_cheap_or_cached_value() 
 
 #[test]
 fn cancellation_during_numeric_payment_is_typed_and_does_not_complete_the_memo() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let guard = ExprId::fresh().unwrap();
     let left = range(0, 20);
@@ -979,10 +989,7 @@ fn cancellation_during_numeric_payment_is_typed_and_does_not_complete_the_memo()
             assert!(!selected.work_exhausted());
             assert!(!selected.cache_refused());
             assert_eq!(
-                selected
-                    .memo
-                    .borrow()
-                    .get_with(&key, algebra, demand, &|_| true),
+                selected.memo.borrow().get(&key, algebra, demand, &|_| true),
                 None
             );
             assert_eq!(
@@ -998,8 +1005,14 @@ fn cancellation_during_numeric_payment_is_typed_and_does_not_complete_the_memo()
 
 #[test]
 fn constants_only_join_pays_finite_insertions_and_numeric_summary_rebuilding() {
-    let domain = Domain::new(std::num::NonZeroUsize::new(8).unwrap());
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::DomainSpec::new(
+            std::num::NonZeroUsize::new(8).unwrap(),
+            std::num::NonZeroUsize::new(8).unwrap(),
+            std::num::NonZeroUsize::new(256).unwrap(),
+        ),
+    ));
+    let algebra = domain.borrowed();
     let left = domain
         .join(&constant(2), &constant(4))
         .with_origin(Origin::Calldata);
@@ -1045,8 +1058,10 @@ fn constants_only_join_pays_finite_insertions_and_numeric_summary_rebuilding() {
 
 #[test]
 fn scalar_apply_owes_its_original_price_after_context_intersection_and_source_join() {
-    let domain = crate::world::bytes::numeric::numeric_domain(Domain::default());
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::world::test_support::numeric_product(crate::domain::ValueAlgebra::new(
+        crate::domain::ProductAlgebra::default(),
+    ));
+    let algebra = domain.borrowed();
     let guard = ExprId::fresh().unwrap();
     let key = ExprId::fresh().unwrap();
     let expression = ExprId::operation(
@@ -1068,7 +1083,7 @@ fn scalar_apply_owes_its_original_price_after_context_intersection_and_source_jo
     let oracle = Context::new(&facts, Some(&conditional), algebra).branch(&guard, true);
     let resolved = oracle.value(&key, algebra).unwrap();
     let expected = crate::world::bytes::numeric::scalar_in(&expression, &oracle, algebra);
-    let apply = domain.operation_work(&[resolved, constant(1)]);
+    let apply = domain.operation_work(revm_bytecode::opcode::ADD, &[resolved, constant(1)]);
     let join = memo::join_work(algebra, &left, &right);
     let trace = trace_for(&facts, &conditional, &domain, &quote, |root| {
         let selected = root.branch(&guard, true);
@@ -1097,8 +1112,8 @@ fn scalar_apply_owes_its_original_price_after_context_intersection_and_source_jo
 
 #[test]
 fn cancellation_latches_across_all_existing_clones_after_the_cancel_scope_ends() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let missing = ExprId::fresh().unwrap();
     let facts = Facts::from([(key.clone(), constant(7))]);
@@ -1146,7 +1161,7 @@ fn cancellation_latches_across_all_existing_clones_after_the_cancel_scope_ends()
                 context
                     .memo
                     .borrow()
-                    .get_with(&missing, algebra, demand, &|_| true),
+                    .get(&missing, algebra, demand, &|_| true),
                 None
             );
         }
@@ -1156,8 +1171,8 @@ fn cancellation_latches_across_all_existing_clones_after_the_cancel_scope_ends()
 
 #[test]
 fn budgeted_metadata_keeps_all_source_keys_beyond_the_word_width_with_actual_charges() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let facts: Facts = (0..40)
         .map(|i| (ExprId::fresh().unwrap(), constant(i)))
         .collect();
@@ -1201,16 +1216,25 @@ fn choice_node_and_depth_refusals_are_optional_and_do_not_create_negative_memos(
     let large = ExprId::operation(
         revm_bytecode::opcode::ADD,
         &[ExprId::fresh().unwrap(), ExprId::constant(U256::ONE)],
-        Domain::default().spec().relations().expressions(),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .relations()
+            .expressions(),
     )
     .unwrap();
     for node_limit in [true, false] {
-        let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-            max_nodes: if node_limit { 2 } else { 32 },
-            max_depth: 2,
-            ..Domain::default().spec().relations()
-        }));
-        let algebra = ValueAlgebra::new(&domain);
+        let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                .spec()
+                .with_relations(RelationLimits {
+                    max_nodes: if node_limit { 2 } else { 32 },
+                    max_depth: 2,
+                    ..crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                        .spec()
+                        .relations()
+                }),
+        ));
+        let algebra = domain.borrowed();
         let quote = preparation_for(&facts, &conditional, domain);
         if node_limit {
             assert!(large.nodes() > domain.spec().relations().max_nodes);
@@ -1242,10 +1266,7 @@ fn choice_node_and_depth_refusals_are_optional_and_do_not_create_negative_memos(
         assert!(!demand.reserve(1));
         assert_eq!(demand.paid_work(), paid);
         assert_eq!(
-            selected
-                .memo
-                .borrow()
-                .get_with(&key, algebra, demand, &|_| true),
+            selected.memo.borrow().get(&key, algebra, demand, &|_| true),
             None
         );
     }
@@ -1253,8 +1274,8 @@ fn choice_node_and_depth_refusals_are_optional_and_do_not_create_negative_memos(
 
 #[test]
 fn metadata_payment_failure_is_shared_and_never_publishes_a_completed_absence() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let missing = ExprId::fresh().unwrap();
     let guard = ExprId::fresh().unwrap();
@@ -1323,13 +1344,11 @@ fn metadata_payment_failure_is_shared_and_never_publishes_a_completed_absence() 
             child
                 .memo
                 .borrow()
-                .get_with(&missing, algebra, demand, &|_| true),
+                .get(&missing, algebra, demand, &|_| true),
             None
         );
         assert_eq!(
-            root.memo
-                .borrow()
-                .get_with(&key, algebra, demand, &|_| true),
+            root.memo.borrow().get(&key, algebra, demand, &|_| true),
             Some(Some(value))
         );
         assert_eq!(demand.paid_work(), 109 + receipt);
@@ -1341,8 +1360,8 @@ fn metadata_payment_failure_is_shared_and_never_publishes_a_completed_absence() 
 
 #[test]
 fn scratch_admission_precedes_payment_and_unpaid_usage_never_commits() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let conditional = ConditionalFacts::default();
     let facts = Facts::new();
     let mut quote = preparation_for(&facts, &conditional, domain);
@@ -1392,8 +1411,8 @@ fn scratch_admission_precedes_payment_and_unpaid_usage_never_commits() {
 
 #[test]
 fn fixed_setup_is_paid_before_construction_and_cancellation_stays_typed() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let facts = Facts::new();
     let conditional = ConditionalFacts::default();
     let quote = preparation_for(&facts, &conditional, domain);
@@ -1435,8 +1454,8 @@ fn fixed_setup_is_paid_before_construction_and_cancellation_stays_typed() {
 
 #[test]
 fn negative_replacement_and_positive_memo_hits_pay_each_owned_lifecycle_once() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let facts = Facts::new();
     let conditional = ConditionalFacts::default();
     let quote = preparation_for(&facts, &conditional, domain);
@@ -1470,7 +1489,7 @@ fn negative_replacement_and_positive_memo_hits_pay_each_owned_lifecycle_once() {
         );
         let negative_hit = 2 + next.comparison_work(&next);
         assert_eq!(
-            memo.get_with(&next, algebra, &demand, &|n| demand.reserve(n)),
+            memo.get(&next, algebra, &demand, &|n| demand.reserve(n)),
             Some(None)
         );
         assert_eq!(demand.paid_work(), first_fee + next_fee + negative_hit);
@@ -1487,7 +1506,7 @@ fn negative_replacement_and_positive_memo_hits_pay_each_owned_lifecycle_once() {
         );
         let before = demand.paid_work();
         let actual = memo
-            .get_with(&first, algebra, &demand, &|n| demand.reserve(n))
+            .get(&first, algebra, &demand, &|n| demand.reserve(n))
             .unwrap()
             .unwrap();
         assert_eq!(actual, value);

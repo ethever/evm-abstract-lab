@@ -3,12 +3,19 @@
 use alloy_primitives::{Address, U256, keccak256};
 use evm_abstract::{
     Fork,
-    domain::{AbstractValue, Domain},
-    world::{Account, Store, World, WorldError},
+    domain::{
+        DomainSpec, EvmNumericAlgebra, EvmValue, ProductAlgebra, ValueAlgebra,
+        relational::RelationLimits,
+    },
+    world::{EvmAccount, EvmStore, EvmWorld, StoreError, WorldError},
 };
 use serde::Serialize;
-use std::{hint::black_box, num::ParseIntError, time::Instant};
+use std::{collections::BTreeSet, hint::black_box, num::ParseIntError, time::Instant};
 use thiserror::Error;
+
+const MAX_SPARSE_WRITES: usize = 8;
+const REPLACEMENT: u64 = 1_000_000;
+const OBSERVATION_SCOPE: &str = "all-listed-slots-plus-unlisted-default-read";
 
 #[derive(Debug, Error)]
 enum ExampleError {
@@ -20,10 +27,24 @@ enum ExampleError {
     Usage,
     #[error("{workload} changed its input Store")]
     StoreChanged { workload: &'static str },
+    #[error("{workload} did not change the tested storage observations")]
+    UnchangedEffect { workload: &'static str },
+    #[error(
+        "{workload} slot {slot:#x}: expected {expected:?}, actual finite candidates {actual:?}, expected candidates admitted={admitted}"
+    )]
+    StorageObservation {
+        workload: &'static str,
+        slot: U256,
+        expected: BTreeSet<U256>,
+        actual: Option<BTreeSet<U256>>,
+        admitted: bool,
+    },
     #[error("{0}")]
     Json(serde_json::Error),
     #[error("{0}")]
     World(WorldError),
+    #[error("transaction Store operation failed: {0}")]
+    Store(StoreError),
 }
 
 impl From<ParseIntError> for ExampleError {
@@ -44,6 +65,12 @@ impl From<WorldError> for ExampleError {
     }
 }
 
+impl From<StoreError> for ExampleError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
 #[derive(Serialize)]
 struct Sample {
     backend: &'static str,
@@ -51,12 +78,46 @@ struct Sample {
     slots: usize,
     iterations: usize,
     writes_per_iteration: usize,
+    relation_limits: RelationLimits,
     elapsed_ns: u128,
-    observation_checksum: u64,
     final_slot_count: usize,
     final_work_size: usize,
-    final_store_checksum: String,
-    effect_store_checksum: String,
+    storage_observation_scope: &'static str,
+    storage_observation_count: usize,
+    unlisted_slot: U256,
+    baseline_storage_observation_checksum: String,
+    effect_storage_observation_checksum: String,
+    restored_storage_observation_checksum: String,
+    restore_verified: bool,
+}
+
+struct Measurement {
+    address: Address,
+    slots: usize,
+    iterations: usize,
+    limits: RelationLimits,
+    baseline_checksum: String,
+}
+
+#[derive(Clone, Copy)]
+enum StorageEffect {
+    Baseline,
+    SparseWrite,
+    UnknownAlias,
+    Joined,
+}
+
+impl StorageEffect {
+    fn expected(self, index: usize, slots: usize) -> BTreeSet<U256> {
+        let original = U256::from(if index < slots { index + 1 } else { 0 });
+        let replacement = U256::from(REPLACEMENT);
+        match self {
+            Self::SparseWrite if index < slots.min(MAX_SPARSE_WRITES) => [replacement].into(),
+            Self::UnknownAlias => [original, replacement].into(),
+            Self::Joined if index < slots.min(MAX_SPARSE_WRITES) => [original, replacement].into(),
+            _ => [original].into(),
+        }
+    }
 }
 
 fn bounded_argument(
@@ -75,52 +136,105 @@ fn bounded_argument(
     Ok(value)
 }
 
-fn observation(value: AbstractValue) -> u64 {
-    match value.constants() {
-        Some(values) => values.iter().fold(values.len() as u64, |checksum, value| {
-            checksum.wrapping_add(value.to::<u64>())
-        }),
-        None => u64::MAX,
+fn relation_limits(slots: usize) -> RelationLimits {
+    let defaults = RelationLimits::default();
+    let writes = slots.min(MAX_SPARSE_WRITES);
+    // SlotState::zero has one node. Each literal-key/literal-value Store adds
+    // three nodes and one depth level. A round adds at most eight writes.
+    // Joining baseline with that round adds one ITE and a one-node selector;
+    // a checked SlotRead reserves its node plus the literal key before folding.
+    // Thus the largest read needs 6*S + 3*W + 6 nodes and S + W + 3 depth.
+    // Every iteration restores its checkpoint; iterations never multiply this
+    // bound. The only join guard fits the unchanged default constraint limit.
+    // Argument validation bounds S to 65536, so these finite sums cannot overflow.
+    RelationLimits {
+        max_nodes: defaults.max_nodes.max(6 * slots + 3 * writes + 6),
+        max_depth: defaults.max_depth.max(slots + writes + 3),
+        ..defaults
     }
 }
 
-fn store_checksum(store: &Store) -> Result<String, ExampleError> {
-    Ok(format!("{:#x}", keccak256(serde_json::to_vec(store)?)))
+fn storage_observation_checksum<D: EvmNumericAlgebra>(
+    store: &EvmStore<D::Element>,
+    address: Address,
+    slots: usize,
+    algebra: &ValueAlgebra<D>,
+    effect: StorageEffect,
+    workload: &'static str,
+) -> Result<String, ExampleError> {
+    let mut cells = Vec::with_capacity(slots + 1);
+    // Slot S is deterministically outside the initialized 0..S range. It reads
+    // the default region that an unknown alias write must also affect.
+    for index in 0..=slots {
+        let key = U256::from(index);
+        let value = store.read_checked(address, &EvmValue::constant(key), algebra.borrowed())?;
+        let expected = effect.expected(index, slots);
+        let candidates = value.constants();
+        let admitted = expected.iter().all(|word| value.contains(*word));
+        if candidates != Some(&expected) || !admitted {
+            return Err(ExampleError::StorageObservation {
+                workload,
+                slot: key,
+                expected,
+                actual: candidates.cloned(),
+                admitted,
+            });
+        }
+        // Preserve the actual complete numeric carrier, including every product
+        // component. Unsupported/non-finite candidate views fail above. This
+        // executable selects ProductAlgebra; no arbitrary-N exactness oracle or
+        // source-identity normalization is assumed by this generic collector.
+        cells.push((key, value.numeric().clone()));
+    }
+    Ok(format!(
+        "{:#x}",
+        keccak256(serde_json::to_vec(&(address, cells))?)
+    ))
 }
 
-fn sample(
+fn sample<D: EvmNumericAlgebra>(
     workload: &'static str,
-    baseline: &Store,
-    slots: usize,
-    iterations: usize,
+    baseline: &EvmStore<D::Element>,
+    algebra: &ValueAlgebra<D>,
+    measurement: &Measurement,
     writes_per_iteration: usize,
-    effect_store_checksum: &str,
-    mut operation: impl FnMut(&mut Store) -> u64,
+    effect_checksum: &str,
+    mut operation: impl FnMut(&mut EvmStore<D::Element>) -> Result<(), StoreError>,
 ) -> Result<Sample, ExampleError> {
-    // Initial construction and this per-workload clone are outside the timer.
     let mut store = baseline.clone();
-    let mut checksum = 0_u64;
     let start = Instant::now();
-    for _ in 0..iterations {
-        checksum = checksum.wrapping_add(black_box(operation(black_box(&mut store))));
+    for _ in 0..measurement.iterations {
+        operation(black_box(&mut store))?;
     }
     let elapsed_ns = start.elapsed().as_nanos();
     if store != *baseline {
         return Err(ExampleError::StoreChanged { workload });
     }
-    let final_store_checksum = store_checksum(&store)?;
+    let restored_checksum = storage_observation_checksum(
+        &store,
+        measurement.address,
+        measurement.slots,
+        algebra,
+        StorageEffect::Baseline,
+        workload,
+    )?;
     Ok(Sample {
         backend: snapshot_state::BACKEND,
         workload,
-        slots,
-        iterations,
+        slots: measurement.slots,
+        iterations: measurement.iterations,
         writes_per_iteration,
+        relation_limits: measurement.limits,
         elapsed_ns,
-        observation_checksum: checksum,
         final_slot_count: store.slots().len(),
         final_work_size: store.work_size(),
-        final_store_checksum,
-        effect_store_checksum: effect_store_checksum.to_owned(),
+        storage_observation_scope: OBSERVATION_SCOPE,
+        storage_observation_count: measurement.slots + 1,
+        unlisted_slot: U256::from(measurement.slots),
+        baseline_storage_observation_checksum: measurement.baseline_checksum.clone(),
+        effect_storage_observation_checksum: effect_checksum.to_owned(),
+        restored_storage_observation_checksum: restored_checksum,
+        restore_verified: true,
     })
 }
 
@@ -131,97 +245,136 @@ fn run() -> Result<(), ExampleError> {
     if arguments.next().is_some() {
         return Err(ExampleError::Usage);
     }
+    let spec = DomainSpec::default().with_relations(relation_limits(slots));
+    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(spec));
+    measure(slots, iterations, &algebra)
+}
 
+fn measure<D: EvmNumericAlgebra>(
+    slots: usize,
+    iterations: usize,
+    algebra: &ValueAlgebra<D>,
+) -> Result<(), ExampleError> {
     let address = Address::from([1_u8; 20]);
-    let domain = Domain::default();
-    let mut account = Account::empty();
+    let domain = algebra.borrowed();
+    let mut account = EvmAccount::<D::Element>::empty();
     account.storage = (0..slots)
-        .map(|slot| {
-            (
-                U256::from(slot),
-                AbstractValue::constant(U256::from(slot.saturating_add(1))),
-            )
-        })
+        .map(|slot| (U256::from(slot), EvmValue::constant(U256::from(slot + 1))))
         .collect();
-    let mut world = World::new(Fork::Osaka, "state-backend-comparison");
+    let mut world = EvmWorld::new(Fork::Osaka, "state-backend-comparison");
     world.insert(address, account)?;
-    let baseline = Store::new(&world);
-    let sparse_slots: Vec<_> = (0..slots.min(8))
-        .map(|slot| AbstractValue::constant(U256::from(slot)))
+    let baseline = EvmStore::new_checked(&world, domain)?;
+    let sparse_slots: Vec<_> = (0..slots.min(MAX_SPARSE_WRITES))
+        .map(|slot| EvmValue::constant(U256::from(slot)))
         .collect();
-    let first_slot = AbstractValue::constant(U256::ZERO);
-    let unknown_slot = AbstractValue::top();
-    let replacement = AbstractValue::constant(U256::from(1_000_000));
+    let first_slot = EvmValue::constant(U256::ZERO);
+    let unknown_slot = EvmValue::top();
+    let replacement = EvmValue::constant(U256::from(REPLACEMENT));
     let mut alternate = baseline.clone();
     for slot in &sparse_slots {
-        alternate.write(address, slot, &replacement, domain);
+        alternate.write_checked(address, slot, &replacement, domain)?;
     }
     let mut unknown_effect = baseline.clone();
-    unknown_effect.write(address, &unknown_slot, &replacement, domain);
-    // Preserve whole-map semantic evidence without timing JSON/hash overhead.
-    let baseline_checksum = store_checksum(&baseline)?;
-    let sparse_checksum = store_checksum(&alternate)?;
-    let unknown_checksum = store_checksum(&unknown_effect)?;
-    let joined_checksum = store_checksum(&baseline.join(&alternate, domain))?;
-
+    unknown_effect.write_checked(address, &unknown_slot, &replacement, domain)?;
+    let checksum = |store, effect, workload| {
+        storage_observation_checksum(store, address, slots, algebra, effect, workload)
+    };
+    let baseline_checksum = checksum(&baseline, StorageEffect::Baseline, "baseline")?;
+    let sparse_checksum = checksum(
+        &alternate,
+        StorageEffect::SparseWrite,
+        "sparse_write_restore",
+    )?;
+    let unknown_checksum = checksum(
+        &unknown_effect,
+        StorageEffect::UnknownAlias,
+        "unknown_alias_write_restore",
+    )?;
+    let joined_checksum = checksum(
+        &baseline.join(&alternate, domain),
+        StorageEffect::Joined,
+        "join_drop",
+    )?;
+    for (workload, effect) in [
+        ("sparse_write_restore", &sparse_checksum),
+        ("unknown_alias_write_restore", &unknown_checksum),
+        ("join_drop", &joined_checksum),
+    ] {
+        if effect == &baseline_checksum {
+            return Err(ExampleError::UnchangedEffect { workload });
+        }
+    }
+    let measurement = Measurement {
+        address,
+        slots,
+        iterations,
+        limits: algebra.spec().relations(),
+        baseline_checksum,
+    };
     let samples = [
         sample(
             "checkpoint_drop",
             &baseline,
-            slots,
-            iterations,
+            algebra,
+            &measurement,
             0,
-            &baseline_checksum,
+            &measurement.baseline_checksum,
             |store| {
                 let checkpoint = black_box(store.snapshot());
                 drop(checkpoint);
-                0
+                Ok(())
             },
         )?,
         sample(
             "sparse_write_restore",
             &baseline,
-            slots,
-            iterations,
+            algebra,
+            &measurement,
             sparse_slots.len(),
             &sparse_checksum,
             |store| {
                 let checkpoint = store.snapshot();
-                for slot in &sparse_slots {
-                    store.write(address, slot, black_box(&replacement), domain);
-                }
-                let observed = observation(black_box(store.read(address, &first_slot, domain)));
+                let result = (|| {
+                    for slot in &sparse_slots {
+                        store.write_checked(address, slot, black_box(&replacement), domain)?;
+                    }
+                    black_box(store.read_checked(address, &first_slot, domain)?);
+                    Ok(())
+                })();
                 store.restore(black_box(checkpoint));
-                observed
+                result
             },
         )?,
         sample(
             "unknown_alias_write_restore",
             &baseline,
-            slots,
-            iterations,
+            algebra,
+            &measurement,
             slots + 1,
             &unknown_checksum,
             |store| {
                 let checkpoint = store.snapshot();
-                store.write(address, &unknown_slot, black_box(&replacement), domain);
-                let observed = observation(black_box(store.read(address, &first_slot, domain)));
+                let result = (|| {
+                    store.write_checked(address, &unknown_slot, black_box(&replacement), domain)?;
+                    black_box(store.read_checked(address, &first_slot, domain)?);
+                    Ok(())
+                })();
                 store.restore(black_box(checkpoint));
-                observed
+                result
             },
         )?,
         sample(
             "join_drop",
             &baseline,
-            slots,
-            iterations,
+            algebra,
+            &measurement,
             0,
             &joined_checksum,
             |store| {
                 let joined = black_box(store.join(black_box(&alternate), domain));
-                let observed = observation(black_box(joined.read(address, &first_slot, domain)));
+                black_box(joined.read_checked(address, &first_slot, domain)?);
                 drop(joined);
-                observed
+                Ok(())
             },
         )?,
     ];

@@ -1,32 +1,37 @@
 //! Native account planes retain matching symbolic fact entries and failures.
 
 use super::super::*;
-use crate::{Fork, domain::relational::RelationLimits, world::Account};
+use {
+    crate::Fork, crate::domain::relational::RelationLimits, crate::world::test_support::TestAccount,
+};
 
 #[test]
 fn native_slot_facts_keep_both_planes_and_shared_key_bindings() {
     let address = Address::repeat_byte(0x31);
-    let mut world = World::new(Fork::Osaka, "native slot facts");
-    world.insert(address, Account::empty()).unwrap();
-    let mut store = Store::new(&world);
-    let key = AbstractValue::unsigned_range(U256::ONE, U256::from(8))
+    let mut world = TestWorld::new(Fork::Osaka, "native slot facts");
+    world.insert(address, TestAccount::empty()).unwrap();
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
+    let key = TestValue::unsigned_range(U256::ONE, U256::from(8))
         .unwrap()
         .with_expression(ExprId::fresh().unwrap());
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     store
         .write_checked(
             address,
             &key,
-            &AbstractValue::constant(U256::from(7)),
-            domain,
+            &TestValue::constant(U256::from(7)),
+            domain.borrowed(),
         )
         .unwrap();
     store
         .write_transient_checked(
             address,
             &key,
-            &AbstractValue::constant(U256::from(9)),
-            domain,
+            &TestValue::constant(U256::from(9)),
+            domain.borrowed(),
         )
         .unwrap();
     let json = serde_json::to_value(&store).unwrap();
@@ -48,18 +53,25 @@ fn native_slot_facts_keep_both_planes_and_shared_key_bindings() {
 
 #[test]
 fn native_legacy_slot_failure_cannot_look_like_a_successful_zero_root() {
-    let world = World::new(Fork::Osaka, "native failure");
-    let mut store = Store::new(&world);
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_nodes: 1,
-        max_depth: 1,
-        ..RelationLimits::default()
-    }));
+    let world = TestWorld::new(Fork::Osaka, "native failure");
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_nodes: 1,
+                max_depth: 1,
+                ..RelationLimits::default()
+            }),
+    ));
     store.write(
         Address::repeat_byte(0x31),
-        &AbstractValue::top(),
-        &AbstractValue::constant(U256::from(7)),
-        domain,
+        &TestValue::top(),
+        &TestValue::constant(U256::from(7)),
+        domain.borrowed(),
     );
     assert!(store.symbolic_limit_reached());
     let json = serde_json::to_value(&store).unwrap();
@@ -83,19 +95,19 @@ fn native_slot_and_log_arrays_keep_shape_order_and_cancel_without_buffering() {
     #[derive(Serialize)]
     struct Arrays<'a> {
         #[serde(serialize_with = "serialize_slots")]
-        slots: &'a OrderedMap<(Address, U256), AbstractValue>,
+        slots: &'a OrderedMap<(Address, U256), TestValue>,
         #[serde(serialize_with = "serialize_logs")]
-        logs: &'a OrderedMap<LogKey, AbstractLog>,
+        logs: &'a OrderedMap<LogKey, TestLog>,
     }
     let address = Address::repeat_byte(0x51);
     let slots: OrderedMap<_, _> = [
         (
             (address, U256::from(9)),
-            AbstractValue::constant(U256::from(19)),
+            TestValue::constant(U256::from(19)),
         ),
         (
             (address, U256::from(3)),
-            AbstractValue::constant(U256::from(13)),
+            TestValue::constant(U256::from(13)),
         ),
     ]
     .into_iter()
@@ -111,9 +123,9 @@ fn native_slot_and_log_arrays_keep_shape_order_and_cancel_without_buffering() {
                     source_kind: LogSourceKind::Runtime,
                     pc,
                 },
-                AbstractLog {
-                    topics: vec![AbstractValue::constant(U256::from(pc))],
-                    data: ByteArray::exact(&[pc as u8]),
+                TestLog {
+                    topics: vec![TestValue::constant(U256::from(pc))],
+                    data: TestBytes::exact(&[pc as u8]),
                 },
             )
         })
@@ -133,7 +145,7 @@ fn native_slot_and_log_arrays_keep_shape_order_and_cancel_without_buffering() {
     );
     assert_eq!(
         json["slots"][0]["value"],
-        serde_json::to_value(AbstractValue::constant(U256::from(13))).unwrap()
+        serde_json::to_value(TestValue::constant(U256::from(13))).unwrap()
     );
     assert_eq!(json["logs"][0]["pc"], 3);
     assert_eq!(json["logs"][1]["pc"], 9);

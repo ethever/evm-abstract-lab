@@ -94,6 +94,14 @@ fn binding(ui: &mut Ui, report: &AnalysisReport, coverage: &RootTerminalCoverage
                     .map_or("None".into(), |scope| scope.0.to_string()),
             );
             value::text(ui, "Fork", format!("{:?}", input.fork));
+            value::text(
+                ui,
+                "Selected numeric model",
+                match input.numeric_model {
+                    evm_abstract_protocol::NumericModel::Product => "Product",
+                    evm_abstract_protocol::NumericModel::FiniteSet => "Finite set",
+                },
+            );
             value::text(ui, "Entry storage owner", &input.entry_address);
             value::text(ui, "Physical storage owner", &input.frame.address);
             value::text(ui, "Original code account", &input.frame.code_address);
@@ -191,11 +199,7 @@ fn config(ui: &mut Ui, config: &RootTerminalConfig) {
     egui::Grid::new("root_terminal_config")
         .num_columns(2)
         .show(ui, |ui| {
-            value::text(ui, "Numeric domain", format!("{:?}", config.domain_profile));
             for (label, number) in [
-                ("Reduction rounds", config.reduction_rounds),
-                ("Scalar facts", config.max_facts),
-                ("Constants per value", config.max_constants),
                 ("Jump context depth", config.context_depth),
                 ("States", config.max_states),
                 ("Transfers", config.max_transfers),
@@ -215,7 +219,6 @@ fn config(ui: &mut Ui, config: &RootTerminalConfig) {
                 "Prepare conservative root terminal coverage",
                 config.root_terminal_coverage.to_string(),
             );
-            relations(ui, &config.relations);
         });
 }
 
@@ -225,7 +228,6 @@ fn domain(ui: &mut Ui, domain: &RootTerminalDomainSpec) {
         .show(ui, |ui| {
             value::text(ui, "Domain schema", domain.schema_version.to_string());
             value::text(ui, "Word bits", domain.word_bits.to_string());
-            value::text(ui, "Numeric domain", format!("{:?}", domain.profile));
             for (label, number) in [
                 ("Constant capacity", domain.capacity),
                 ("Reduction rounds", domain.reduction_rounds),

@@ -62,46 +62,44 @@ fn actual_custom_values_survive_word_storage_saved_current_and_summary_boundarie
     assert!(original.numeric().observation().is_top());
     let mut retained = Vec::new();
     let mut memory = EvmByteArray::memory();
-    memory
-        .write_word_with(&word(0), &original, 65_536, view)
-        .unwrap();
-    retained.push(("whole word memory", memory.read_word_with(&word(0), view)));
-    let memory_summary = memory.summary_projection_with(view).unwrap();
-    let memory_copy = memory_summary.instantiate_with(view).unwrap();
-    retained.push(("memory summary", memory_copy.read_word_with(&word(0), view)));
-    let mut store = EvmStore::new_with(&world, view);
+    memory.write_word(&word(0), &original, view).unwrap();
+    retained.push(("whole word memory", memory.read_word(&word(0), view)));
+    let memory_summary = memory.summary_projection(view).unwrap();
+    let memory_copy = memory_summary.instantiate(view).unwrap();
+    retained.push(("memory summary", memory_copy.read_word(&word(0), view)));
+    let mut store = EvmStore::new(&world, view);
     retained.push((
         "initial persistent",
-        store.read_with(address(OWNER), &word(0), view),
+        store.read(address(OWNER), &word(0), view),
     ));
-    store.write_with(address(OWNER), &word(1), &original, view);
-    store.write_transient_with(address(OWNER), &word(2), &original, view);
+    store.write(address(OWNER), &word(1), &original, view);
+    store.write_transient(address(OWNER), &word(2), &original, view);
     let checkpoint = store.snapshot();
-    store.write_with(address(OWNER), &word(1), &word(42), view);
+    store.write(address(OWNER), &word(1), &word(42), view);
     assert_eq!(
-        store.read_with(address(OWNER), &word(1), view).singleton(),
+        store.read(address(OWNER), &word(1), view).singleton(),
         Some(U256::from(42))
     );
     store.restore(checkpoint);
     for slot in [0, 1] {
         retained.push((
             "restored persistent",
-            store.read_with(address(OWNER), &word(slot), view),
+            store.read(address(OWNER), &word(slot), view),
         ));
     }
     retained.push((
         "restored transient",
-        store.read_transient_with(address(OWNER), &word(2), view),
+        store.read_transient(address(OWNER), &word(2), view),
     ));
-    let summary = store.summary_projection_with(view).unwrap();
-    let copy = summary.instantiate_with(view).unwrap();
+    let summary = store.summary_projection(view).unwrap();
+    let copy = summary.instantiate(view).unwrap();
     retained.push((
         "persistent summary",
-        copy.read_with(address(OWNER), &word(1), view),
+        copy.read(address(OWNER), &word(1), view),
     ));
     retained.push((
         "transient summary",
-        copy.read_transient_with(address(OWNER), &word(2), view),
+        copy.read_transient(address(OWNER), &word(2), view),
     ));
     for (boundary, value) in &retained {
         eprintln!("carrier boundary {boundary}: {}", value.numeric());
@@ -126,7 +124,7 @@ fn quotation_and_refused_execution_do_not_deep_clone_an_unpaid_custom_element() 
     element.excluded.extend((1..4096u64).map(U256::from));
     element.clone_counter = Some(Arc::clone(&clones));
     let args = [EvmValue::from_numeric(element), word(0)];
-    let quote = algebra.operation_work(&args);
+    let quote = algebra.operation_work(opcode::ADD, &args);
     assert!(quote >= args[0].work_size());
     assert_eq!(
         clones.load(Ordering::Relaxed),
@@ -154,4 +152,28 @@ fn quotation_and_refused_execution_do_not_deep_clone_an_unpaid_custom_element() 
         clones.load(Ordering::Relaxed) > 0,
         "execution cloning is observable after charging"
     );
+
+    // The native carrier intentionally retains Top here. Exact immutable terms
+    // still let the common facade evaluate EXP, so admission must cover that
+    // evaluator even though Policy::transfer itself does not implement EXP.
+    let terms = [U256::from(3), U256::MAX].map(|literal| {
+        EvmValue::<ExcludingWord>::top()
+            .with_expression(evm_abstract::domain::symbolic::ExprId::constant(literal))
+    });
+    let before = calls.arithmetic.load(Ordering::Relaxed);
+    let mut refused = WorkBudget::new(1);
+    assert!(
+        algebra
+            .apply_budgeted(opcode::EXP, &terms, &mut refused)
+            .is_err()
+    );
+    assert_eq!(calls.arithmetic.load(Ordering::Relaxed), before);
+    let mut funded = WorkBudget::new(1_000_000);
+    let power = algebra
+        .apply_budgeted(opcode::EXP, &terms, &mut funded)
+        .unwrap();
+    // 3^(2^256-1) is the multiplicative inverse of 3 modulo 2^256.
+    let mut inverse = [0xaa; 32];
+    inverse[31] = 0xab;
+    assert_eq!(power.value.singleton(), Some(U256::from_be_bytes(inverse)));
 }

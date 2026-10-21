@@ -2,15 +2,18 @@
 
 use super::{Cli, Command, ENTRY};
 use clap::Parser;
-use evm_abstract::{analysis::ExecutionConfig, domain::Profile};
-use evm_abstract_protocol::{AnalysisLimits, DomainProfile};
+use evm_abstract::{
+    analysis::{ExecutionConfig, control::Control},
+    domain::{DomainSpec, ProductAlgebra, ValueAlgebra},
+};
+use evm_abstract_protocol::{AnalysisLimits, NumericModel};
 
-fn assert_policy(actual: &ExecutionConfig, expected: &AnalysisLimits) {
+fn assert_policy(actual: &ExecutionConfig, spec: DomainSpec, expected: &AnalysisLimits) {
     let config = &actual.analysis;
     for (field, actual, expected) in [
-        ("constants", config.max_constants, expected.max_constants),
-        ("rounds", config.reduction_rounds, expected.reduction_rounds),
-        ("facts", config.max_facts, expected.max_facts),
+        ("constants", spec.capacity(), expected.max_constants),
+        ("rounds", spec.reduction_rounds(), expected.reduction_rounds),
+        ("facts", spec.fact_limit(), expected.max_facts),
         ("context", config.context_depth, expected.context_depth),
         ("states", config.max_states, expected.max_states),
         ("transfers", config.max_transfers, expected.max_transfers),
@@ -19,17 +22,17 @@ fn assert_policy(actual: &ExecutionConfig, expected: &AnalysisLimits) {
         ("memory", actual.max_memory_bytes, expected.max_memory_bytes),
         (
             "expression nodes",
-            config.relations.max_nodes,
+            spec.relations().max_nodes,
             expected.max_expression_nodes,
         ),
         (
             "expression depth",
-            config.relations.max_depth,
+            spec.relations().max_depth,
             expected.max_expression_depth,
         ),
         (
             "constraints",
-            config.relations.max_constraints,
+            spec.relations().max_constraints,
             expected.max_constraints,
         ),
     ] {
@@ -40,14 +43,8 @@ fn assert_policy(actual: &ExecutionConfig, expected: &AnalysisLimits) {
         actual.root_terminal_coverage,
         expected.root_terminal_coverage
     );
-    assert_eq!(
-        config.domain_profile,
-        match expected.domain_profile {
-            DomainProfile::Product => Profile::Product,
-            DomainProfile::ConstantsOnly => Profile::ConstantsOnly,
-        }
-    );
-    assert_eq!(config.relations.enabled, expected.relations_enabled);
+    assert_eq!(expected.numeric_model, NumericModel::Product);
+    assert_eq!(spec.relations().enabled, expected.relations_enabled);
 }
 
 #[test]
@@ -66,8 +63,14 @@ fn raw_hex_file_and_offline_world_execute_with_web_defaults() {
                 Command::Cfg { args, .. } | Command::Ssa { args, .. } => args,
                 _ => panic!("unexpected raw command"),
             };
-            let analysis = args.analyze().unwrap();
-            assert_policy(analysis.execution().config(), &AnalysisLimits::default());
+            let algebra =
+                ValueAlgebra::new(ProductAlgebra::from_spec(args.numeric.spec().unwrap()));
+            let analysis = args.analyze(&algebra, &Control::default()).unwrap();
+            assert_policy(
+                analysis.config(),
+                analysis.domain_spec(),
+                &AnalysisLimits::default(),
+            );
         }
     }
     let world = format!(
@@ -86,8 +89,13 @@ fn raw_hex_file_and_offline_world_execute_with_web_defaults() {
     let Command::Analyze { args, .. } = parsed.command else {
         panic!("expected world analysis")
     };
-    let analysis = args.analyze().unwrap();
-    assert_policy(analysis.config(), &AnalysisLimits::default());
+    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(args.numeric.spec().unwrap()));
+    let analysis = args.analyze(&algebra, &Control::default()).unwrap();
+    assert_policy(
+        analysis.config(),
+        analysis.domain_spec(),
+        &AnalysisLimits::default(),
+    );
 }
 
 #[test]
@@ -142,7 +150,9 @@ fn explicit_previous_policy_is_not_replaced_by_larger_defaults() {
             Command::Cfg { args, .. } | Command::Ssa { args, .. } => args,
             _ => panic!("unexpected raw command"),
         };
-        assert_policy(args.analyze().unwrap().execution().config(), &expected);
+        let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(args.numeric.spec().unwrap()));
+        let analysis = args.analyze(&algebra, &Control::default()).unwrap();
+        assert_policy(analysis.config(), analysis.domain_spec(), &expected);
     }
 }
 

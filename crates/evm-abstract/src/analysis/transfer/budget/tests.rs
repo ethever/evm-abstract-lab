@@ -1,4 +1,6 @@
 use super::{byte_work, operation_work};
+#[cfg(test)]
+use crate::analysis::testing::{Account, ByteArray, Entry, TestValue, World};
 use crate::domain::ValueAlgebra;
 use crate::{
     Fork,
@@ -7,18 +9,27 @@ use crate::{
         transfer::{StorageReadPolicy, empty_execution, execute, initial},
     },
     bytecode::Program,
-    domain::{AbstractValue, Domain, provenance::Origin, symbolic::ExprId},
+    domain::{
+        AlgebraRef, EvmNumericAlgebra, EvmValue, FiniteSetAlgebra, ProductAlgebra,
+        provenance::Origin, symbolic::ExprId,
+    },
     resource::WorkBudget,
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use alloy_primitives::{Address, U256};
 use revm_bytecode::opcode;
 
-fn constant(n: usize) -> AbstractValue {
-    AbstractValue::constant(U256::from(n))
+fn constant(n: usize) -> TestValue {
+    TestValue::constant(U256::from(n))
 }
 
-fn fixture() -> (World, Entry, ExecutionConfig, Domain, MachinePayload) {
+fn fixture() -> (
+    World,
+    Entry,
+    ExecutionConfig,
+    crate::domain::ValueAlgebra<ProductAlgebra>,
+    MachinePayload,
+) {
     let owner = Address::repeat_byte(0x11);
     let mut world = World::new(Fork::Osaka, "A1 prepayment");
     world
@@ -32,35 +43,86 @@ fn fixture() -> (World, Entry, ExecutionConfig, Domain, MachinePayload) {
         constant(0),
         ByteArray::empty(),
     );
-    let mut config = ExecutionConfig::default();
-    config.analysis.relations.enabled = false;
-    let domain = config.domain().unwrap();
-    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+    let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.enabled = false;
+    let algebra =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = algebra.borrowed();
+    let mut payload = initial(&world, &entry, domain).unwrap();
     assert_eq!(payload.store.touched_in_transaction(ripemd), Some(false));
-    let mut value = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    let mut value = TestValue::top().with_expression(ExprId::fresh().unwrap());
     value.set_origin(Origin::Calldata);
     payload.active_mut().stack = vec![value, constant(0)];
-    (world, entry, config, domain, payload)
+    (world, entry, config, algebra, payload)
+}
+
+fn assert_per_byte_quote<D: EvmNumericAlgebra>(
+    execution: &crate::analysis::transfer::EvmExecution<D::Element>,
+    entry: &EvmEntry<D::Element>,
+    config: &ExecutionConfig,
+    program: &Program,
+    offset: EvmValue<D::Element>,
+    value: EvmValue<D::Element>,
+    domain: AlgebraRef<'_, D>,
+) {
+    let frame = execution.payload.active();
+    let passes = domain.memory_write_passes(&offset, &value, 32);
+    let expected = byte_work(
+        &[&offset, &value],
+        32,
+        frame
+            .memory
+            .work_size()
+            .saturating_add(frame.calldata.work_size())
+            .saturating_add(frame.returndata.work_size()),
+        domain,
+    )
+    .saturating_add(passes.saturating_mul((0..32).fold(0usize, |work, index| {
+        let literal = U256::from(index);
+        let index = EvmValue::constant(literal);
+        work.saturating_add(domain.literal_quote_work(literal))
+            .saturating_add(domain.operation_work_refs(opcode::BYTE, &[&index, &value]))
+    })))
+    .saturating_add(passes.saturating_mul(32).saturating_mul(value.clone_work()));
+    assert_eq!(
+        frame
+            .memory
+            .uniform_word_write_work(&offset, &value, domain),
+        None
+    );
+    assert_eq!(
+        operation_work(
+            execution,
+            opcode::MSTORE,
+            &[offset, value],
+            program,
+            domain,
+            config,
+            entry,
+        ),
+        expected
+    );
 }
 
 #[test]
-fn selected_fee_precedes_touch_and_noneligible_quotes_are_exactly_original() {
-    let (_, entry, config, domain, payload) = fixture();
+fn selected_fee_precedes_touch_and_uncertified_writes_pay_each_byte() {
+    let (_, entry, config, algebra, payload) = fixture();
+    let domain = algebra.borrowed();
     let program = Program::from_hex_with_fork("525b00", Fork::Osaka).unwrap();
     let mut execution = empty_execution(payload);
     let args = [constant(0), execution.payload.active().stack[0].clone()];
-    let quote =
-        |execution: &crate::analysis::transfer::Execution, args: &[AbstractValue], domain| {
-            operation_work(
-                execution,
-                opcode::MSTORE,
-                args,
-                &program,
-                ValueAlgebra::new(&domain),
-                &config,
-                &entry,
-            )
-        };
+    let quote = |execution: &crate::analysis::transfer::Execution, args: &[TestValue], domain| {
+        operation_work(
+            execution,
+            opcode::MSTORE,
+            args,
+            &program,
+            domain,
+            &config,
+            &entry,
+        )
+    };
     let memory = &execution.payload.active().memory;
     assert_eq!(
         quote(&execution, &args, domain),
@@ -72,7 +134,7 @@ fn selected_fee_precedes_touch_and_noneligible_quotes_are_exactly_original() {
         .payload
         .active_mut()
         .memory
-        .expand(&constant(0), &constant(32), config.max_memory_bytes, domain)
+        .expand(&constant(0), &constant(32), domain)
         .unwrap();
     assert_eq!(
         quote(&execution, &args, domain),
@@ -85,50 +147,46 @@ fn selected_fee_precedes_touch_and_noneligible_quotes_are_exactly_original() {
     );
 
     let finite = domain.join(&constant(1), &constant(2));
-    let constants = Domain::new(std::num::NonZeroUsize::new(8).unwrap());
-    for (offset, value, selected) in [
-        (constant(1), args[1].clone(), domain),
+    for (offset, value) in [
+        (constant(1), args[1].clone()),
         (
             constant(0),
-            AbstractValue::unknown_byte().with_expression(ExprId::fresh().unwrap()),
-            domain,
+            TestValue::unknown_byte().with_expression(ExprId::fresh().unwrap()),
         ),
-        (constant(0), finite, domain),
-        (constant(0), args[1].clone(), constants),
+        (constant(0), finite),
     ] {
-        let frame = execution.payload.active();
-        let passes = ValueAlgebra::new(&selected).memory_write_passes(&offset, &value, 32);
-        let original = byte_work(
-            &[&offset, &value],
-            32,
-            frame
-                .memory
-                .work_size()
-                .saturating_add(frame.calldata.work_size())
-                .saturating_add(frame.returndata.work_size()),
-            ValueAlgebra::new(&selected),
-        )
-        .saturating_add(passes.saturating_mul((0..32).fold(0usize, |work, index| {
-            let literal = crate::U256::from(index);
-            let index = constant(index);
-            let domain = ValueAlgebra::new(&selected);
-            work.saturating_add(domain.literal_quote_work(literal))
-                .saturating_add(domain.operation_work_for_refs(opcode::BYTE, &[&index, &value]))
-        })))
-        .saturating_add(passes.saturating_mul(32).saturating_mul(value.clone_work()));
-        assert_eq!(
-            frame
-                .memory
-                .uniform_word_write_work(&offset, &value, selected),
-            None
-        );
-        assert_eq!(quote(&execution, &[offset, value], selected), original);
+        assert_per_byte_quote(&execution, &entry, &config, &program, offset, value, domain);
     }
+
+    let finite_algebra = ValueAlgebra::new(FiniteSetAlgebra::from_spec(domain.spec()));
+    let finite_domain = finite_algebra.borrowed();
+    let owner = Address::repeat_byte(0x11);
+    let mut world = EvmWorld::new(Fork::Osaka, "finite carrier per-byte quote");
+    world
+        .insert(owner, EvmAccount::from_hex("525b00", Fork::Osaka).unwrap())
+        .unwrap();
+    let entry = EvmEntry::concrete(
+        owner,
+        Address::repeat_byte(0x22),
+        EvmValue::constant(U256::ZERO),
+        EvmByteArray::empty(),
+    );
+    let execution = empty_execution(initial(&world, &entry, finite_domain).unwrap());
+    assert_per_byte_quote(
+        &execution,
+        &entry,
+        &config,
+        &program,
+        EvmValue::constant(U256::ZERO),
+        EvmValue::top().with_expression(ExprId::fresh().unwrap()),
+        finite_domain,
+    );
 }
 
 #[test]
 fn prepay_refusal_keeps_the_complete_payload_before_any_memory_effect() {
-    let (world, entry, config, domain, payload) = fixture();
+    let (world, entry, config, algebra, payload) = fixture();
+    let domain = algebra.borrowed();
     let args = [constant(0), payload.active().stack[0].clone()];
     let fee = payload
         .active()
@@ -145,7 +203,7 @@ fn prepay_refusal_keeps_the_complete_payload_before_any_memory_effect() {
         &entry,
         payload.clone(),
         &config,
-        ValueAlgebra::new(&domain),
+        domain,
         &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
@@ -169,7 +227,7 @@ fn prepay_refusal_keeps_the_complete_payload_before_any_memory_effect() {
         &entry,
         payload.clone(),
         &config,
-        ValueAlgebra::new(&domain),
+        domain,
         &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,

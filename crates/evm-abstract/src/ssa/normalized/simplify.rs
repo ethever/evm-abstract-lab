@@ -1,14 +1,10 @@
-//! Unconditional EVM identities and concrete evaluation through the shared domain.
+//! Unconditional EVM identities and exact, carrier-independent word evaluation.
 
 use super::{
     FactSource, NormalizedInstruction, NormalizedOperation, ValueMapping, ValueOperand,
     ValueTransformation,
 };
-use crate::{
-    analysis::InstructionProgress,
-    domain::{AbstractValue, Domain},
-    ssa::ValueId,
-};
+use crate::{analysis::InstructionProgress, ssa::ValueId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
@@ -23,14 +19,14 @@ pub(super) fn instruction(
     step: &NormalizedInstruction,
     known: &[Option<U256>],
     mappings: &[ValueMapping],
-    domain: Domain,
-) -> Simplification {
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<Simplification, crate::ssa::SsaError> {
     let operands = step
         .origin
         .operands
         .iter()
-        .map(|value| operand(*value, known, mappings))
-        .collect::<Vec<_>>();
+        .map(|value| operand(*value, known, mappings, budget))
+        .collect::<Result<Vec<_>, _>>()?;
     let original = || Simplification {
         operation: NormalizedOperation::Opcode {
             opcode: step.origin.opcode,
@@ -45,34 +41,40 @@ pub(super) fn instruction(
         || step.origin.fault
         || step.origin.results.len() != 1
     {
-        return original();
+        return Ok(original());
     }
     if let Some(value) = step.origin.immediate {
-        return constant(
+        return Ok(constant(
             value,
             ValueTransformation::Literal,
             Some(FactSource::Literal),
-        );
+        ));
     }
     let op = step.origin.opcode;
     if pure(op, operands.len()) {
         if let Some(constants) = operands
             .iter()
             .map(|value| match value {
-                ValueOperand::Constant(value) => Some(AbstractValue::constant(*value)),
+                ValueOperand::Constant(value) => Some(*value),
                 ValueOperand::Value(_) => None,
             })
             .collect::<Option<Vec<_>>>()
-            && let Some(value) = domain.apply(op, &constants).singleton()
         {
-            return constant(
+            crate::ssa::work::evaluate(op, budget)?;
+            let value = crate::domain::concrete::evaluate(
+                op,
+                constants[0],
+                constants.get(1).copied().unwrap_or(U256::ZERO),
+                constants.get(2).copied().unwrap_or(U256::ZERO),
+            );
+            return Ok(constant(
                 value,
                 ValueTransformation::ConstantFold,
                 Some(FactSource::ConstantFold),
-            );
+            ));
         }
         if let Some(operation) = algebraic(op, &operands) {
-            return match operation {
+            return Ok(match operation {
                 NormalizedOperation::Constant { value } => constant(
                     value,
                     ValueTransformation::AlgebraicIdentity,
@@ -90,13 +92,13 @@ pub(super) fn instruction(
                 NormalizedOperation::Opcode { .. } => {
                     unreachable!("algebraic rules produce only constants and copies")
                 }
-            };
+            });
         }
     }
     if let Some(value) = known[step.origin.results[0]] {
-        return constant(value, ValueTransformation::AnalyzedConstant, None);
+        return Ok(constant(value, ValueTransformation::AnalyzedConstant, None));
     }
-    original()
+    Ok(original())
 }
 
 fn constant(
@@ -112,27 +114,29 @@ fn constant(
     }
 }
 
-fn operand(mut value: ValueId, known: &[Option<U256>], mappings: &[ValueMapping]) -> ValueOperand {
+fn operand(
+    mut value: ValueId,
+    known: &[Option<U256>],
+    mappings: &[ValueMapping],
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<ValueOperand, crate::ssa::SsaError> {
     loop {
+        // A copy chain can visit arbitrarily many prior definitions; prepay
+        // each actual hop instead of imposing a blanket quadratic tariff.
+        crate::ssa::pay(budget, 1)?;
         if let Some(constant) = known[value] {
-            return ValueOperand::Constant(constant);
+            return Ok(ValueOperand::Constant(constant));
         }
         if let Some(equivalent) = mappings[value].equivalent {
             value = equivalent;
         } else {
-            return ValueOperand::Value(value);
+            return Ok(ValueOperand::Value(value));
         }
     }
 }
 
 fn pure(op: u8, arity: usize) -> bool {
-    matches!(op, 0x01..=0x0b | 0x10..=0x1e)
-        && arity
-            == match op {
-                opcode::ISZERO | opcode::NOT | opcode::CLZ => 1,
-                opcode::ADDMOD | opcode::MULMOD => 3,
-                _ => 2,
-            }
+    crate::domain::concrete::arity(op) == Some(arity)
 }
 
 fn algebraic(op: u8, operands: &[ValueOperand]) -> Option<NormalizedOperation> {

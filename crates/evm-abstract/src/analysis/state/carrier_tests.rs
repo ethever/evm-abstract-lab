@@ -9,7 +9,7 @@ use crate::{
         transfer,
     },
     domain::{
-        DomainSpec, EvmNumericAlgebra, NumericReduction, Profile, ValueAlgebra, WordObservation,
+        DomainSpec, EvmNumericAlgebra, NumericReduction, ValueAlgebra, WordObservation,
         facts::FactError,
     },
     world::{EvmAccount, EvmWorld},
@@ -35,7 +35,6 @@ impl Algebra {
     fn new() -> Self {
         Self {
             spec: DomainSpec::new(
-                Profile::Product,
                 NonZeroUsize::new(8).unwrap(),
                 NonZeroUsize::new(4).unwrap(),
                 NonZeroUsize::new(256).unwrap(),
@@ -69,14 +68,27 @@ impl EvmNumericAlgebra for Algebra {
         self.reductions.set(self.reductions.get() + 1);
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, _op: u8, _args: &[ExcludingWord]) -> NumericReduction<ExcludingWord> {
+    fn apply_numeric<'a>(
+        &self,
+        _op: u8,
+        _args: impl ExactSizeIterator<Item = &'a ExcludingWord>,
+    ) -> NumericReduction<ExcludingWord> {
+        let _args: Vec<&ExcludingWord> = _args.collect();
         NumericReduction::stable(ExcludingWord::top())
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize
     where
         Self::Element: 'a,
     {
-        args.count().saturating_add(1).saturating_mul(32)
+        let count = args.count();
+        let transfer = count.saturating_add(1).saturating_mul(32);
+        // This policy returns Top; a supported facade operation may still
+        // evaluate one retained constant expression with the actual opcode.
+        if crate::domain::concrete::arity(op) == Some(count) {
+            transfer.saturating_add(crate::domain::concrete::evaluation_work(op))
+        } else {
+            transfer
+        }
     }
     fn literal_quote_work(&self, _literal: U256) -> usize {
         // Fixed literal fields/empty payload and common metadata, including drop.
@@ -123,6 +135,40 @@ fn excludes(value: &EvmValue<ExcludingWord>, excluded: u64) {
     // This loss is explicit at immutable source export only. It cannot be used
     // as the stored scalar representation for a frame or numerical summary.
     assert!(value.numeric().observation().contains(U256::from(excluded)));
+}
+
+#[test]
+fn native_top_quote_prepays_a_retained_max_exp_before_facade_folding() {
+    use crate::domain::concrete::{EVALUATIONS, evaluation_work};
+
+    let _evaluations = EVALUATIONS.scope();
+    let algebra = ValueAlgebra::new(Algebra::new());
+    let args = [U256::from(3), U256::MAX]
+        .map(|word| EvmValue::<ExcludingWord>::top().with_expression(ExprId::constant(word)));
+    let quote = algebra.operation_work(revm_bytecode::opcode::EXP, &args);
+    assert!(quote >= evaluation_work(revm_bytecode::opcode::EXP));
+    assert_eq!(EVALUATIONS.get(), (0, 0));
+    let mut denied = WorkBudget::new(evaluation_work(revm_bytecode::opcode::EXP) - 1);
+    assert!(
+        algebra
+            .apply_budgeted(revm_bytecode::opcode::EXP, &args, &mut denied)
+            .is_err()
+    );
+    assert_eq!(denied.used(), 0);
+    assert_eq!(EVALUATIONS.get(), (0, 0));
+    let result = algebra
+        .apply_budgeted(
+            revm_bytecode::opcode::EXP,
+            &args,
+            &mut WorkBudget::new(quote),
+        )
+        .unwrap();
+    let inverse = (U256::MAX / U256::from(3)) * U256::from(2) + U256::ONE;
+    assert_eq!(result.value.singleton(), Some(inverse));
+    assert_eq!(
+        EVALUATIONS.get(),
+        (1, evaluation_work(revm_bytecode::opcode::EXP))
+    );
 }
 
 #[test]

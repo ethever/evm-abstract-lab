@@ -1,34 +1,38 @@
 //! Readable world reports preserve distinct paths, full identities and sparse byte facts.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract_notation::{Symbol, normalize_subscripts};
 
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{
-        ExecutionConfig, FrontierReason, OutcomeKind, Status, WorldAnalysis, analyze_world,
-    },
+    analysis::{EvmWorldAnalysis, ExecutionConfig, FrontierReason, OutcomeKind, Status},
     domain::{
-        AbstractValue, Domain,
-        relational::{CheckResult, ValueQuery},
+        EvmValue,
+        relational::{CheckResult, EvmValueQuery},
     },
     render,
-    world::{Account, ByteArray, Entry, Existence, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld, Existence},
 };
 
 fn address(value: u64) -> Address {
     Address::from_word(U256::from(value).into())
 }
 
-fn entry() -> Entry {
-    Entry {
+fn entry() -> EvmEntry<NumericValue> {
+    EvmEntry {
         address: address(0x101),
-        environment: evm_abstract::world::EvmEnvironment {
+        environment: evm_abstract::world::EvmEnvironmentValues {
             to: (address(0x101)).into(),
             caller: (Address::ZERO).into(),
-            value: AbstractValue::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
+            value: EvmValue::<NumericValue>::constant(U256::ZERO),
+            calldata: EvmByteArray::<NumericValue>::empty(),
             is_static: false,
-            ..evm_abstract::world::EvmEnvironment::default()
+            ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
         },
     }
 }
@@ -38,30 +42,31 @@ fn number(text: &str) -> U256 {
 }
 
 /// Read the same checked-in fixture used by the user's analyze command.
-fn fixture(name: &str) -> World {
+fn fixture(name: &str) -> EvmWorld<NumericValue> {
     let path = format!(
         "{}/../../examples/worlds/{name}.json",
         env!("CARGO_MANIFEST_DIR")
     );
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    let mut world = World::new(Fork::Osaka, json["provenance"].as_str().unwrap());
+    let mut world =
+        EvmWorld::<NumericValue>::new(Fork::Osaka, json["provenance"].as_str().unwrap());
     for input in json["accounts"].as_array().unwrap() {
         let mut account = input["code"]
             .as_str()
-            .map_or_else(Account::unknown, |code| {
-                Account::from_hex(code, world.fork()).unwrap()
+            .map_or_else(EvmAccount::<NumericValue>::unknown, |code| {
+                EvmAccount::<NumericValue>::from_hex(code, world.fork()).unwrap()
             });
         account.balance = input["balance"]
             .as_str()
-            .map_or_else(AbstractValue::top, |value| {
-                AbstractValue::constant(number(value))
+            .map_or_else(EvmValue::<NumericValue>::top, |value| {
+                EvmValue::<NumericValue>::constant(number(value))
             });
         // Match the CLI's partial-observation boundary instead of inheriting
         // the synthetic constructor's known nonce and account presence.
         account.nonce = input["nonce"]
             .as_str()
-            .map_or_else(AbstractValue::top, |value| {
-                AbstractValue::constant(number(value))
+            .map_or_else(EvmValue::<NumericValue>::top, |value| {
+                EvmValue::<NumericValue>::constant(number(value))
             });
         account.existence = match input["existence"].as_str() {
             None | Some("unknown") => Existence::Unknown,
@@ -74,7 +79,7 @@ fn fixture(name: &str) -> World {
             for (slot, value) in storage {
                 account.storage.insert(
                     number(slot),
-                    AbstractValue::constant(number(value.as_str().unwrap())),
+                    EvmValue::<NumericValue>::constant(number(value.as_str().unwrap())),
                 );
             }
         }
@@ -85,8 +90,14 @@ fn fixture(name: &str) -> World {
     world
 }
 
-fn analyze(name: &str, config: ExecutionConfig) -> WorldAnalysis {
-    analyze_world(fixture(name), entry(), config).unwrap()
+fn report_fixture(name: &str, config: ExecutionConfig) -> EvmWorldAnalysis<NumericValue> {
+    native::run(
+        &native::product(),
+        AnalysisInput::new(fixture(name), entry()).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap()
 }
 
 fn heading(line: &str) -> &str {
@@ -205,7 +216,7 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
         rows
     }
 
-    let analysis = analyze("returndata-copy", ExecutionConfig::default());
+    let analysis = report_fixture("returndata-copy", ExecutionConfig::default());
     assert_eq!(analysis.status(), Status::Converged);
     assert!(
         analysis
@@ -222,12 +233,15 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
         !returned.is_empty(),
         "the successful copy must reach RETURN"
     );
-    let domain = Domain::from_spec(analysis.domain_spec());
+    let domain = native::product_with(analysis.domain_spec());
     for outcome in returned {
         assert_eq!(outcome.data.len().singleton(), Some(U256::from(32)));
         let value = outcome
             .data
-            .read_word_checked(&AbstractValue::constant(U256::ZERO), domain)
+            .read_word_checked(
+                &EvmValue::<NumericValue>::constant(U256::ZERO),
+                domain.borrowed(),
+            )
             .unwrap();
         // The caller entry joins failed and successful CALL results. The
         // RETURNDATACOPY range condition excludes the empty-data alternative;
@@ -237,14 +251,26 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
             .as_ref()
             .expect("RETURN retains its completed payload")
             .relations;
-        let limits = &analysis.config().analysis.relations;
-        assert_eq!(relations.check(limits), CheckResult::MayBeFeasible);
+        let limits = &analysis.domain_spec().relations();
         assert_eq!(
-            relations.local_value(&value.symbolic_expression().unwrap(), limits),
-            ValueQuery::Exact(U256::from(1))
+            relations.check(
+                limits,
+                native::product_with(native::spec(8, 4, 256).with_relations(limits.to_owned()))
+                    .borrowed()
+            ),
+            CheckResult::MayBeFeasible
+        );
+        assert_eq!(
+            relations.local_value(
+                &value.symbolic_expression().unwrap(),
+                limits,
+                native::product_with(native::spec(8, 4, 256).with_relations(limits.to_owned()))
+                    .borrowed()
+            ),
+            EvmValueQuery::<NumericValue>::Exact(U256::from(1))
         );
     }
-    let text = render::world::text(&analysis);
+    let text = render::world::text(&analysis, &native::product_with(analysis.domain_spec()));
     for title in [
         "Analysis",
         "Snapshot",
@@ -281,7 +307,7 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
             .0;
         assert!(data.contains(&format!("length={}", outcome.data.len())));
         assert!(data.contains(&format!("default={}", outcome.data.default_byte())));
-        if let Some(bytes) = outcome.data.exact_bytes()
+        if let Some(bytes) = outcome.data.exact_bytes(native::product().borrowed())
             && !bytes.is_empty()
         {
             let hex = bytes
@@ -406,8 +432,8 @@ fn returndata_copy_report_has_sections_and_keeps_every_outcome_and_payload() {
 
 #[test]
 fn full_identity_legends_and_state_table_keep_proxy_code_and_storage_owners_distinct() {
-    let analysis = analyze("proxy-storage", ExecutionConfig::default());
-    let text = render::world::text(&analysis);
+    let analysis = report_fixture("proxy-storage", ExecutionConfig::default());
+    let text = render::world::text(&analysis, &native::product_with(analysis.domain_spec()));
     let states = section(&text, "States", "State details");
     let rows: Vec<_> = states
         .lines()
@@ -488,10 +514,10 @@ fn incomplete_reports_preserve_all_frontiers_and_every_target_frame() {
             },
         ),
     ] {
-        let analysis = analyze(name, config);
+        let analysis = report_fixture(name, config);
         assert_eq!(analysis.status(), Status::Incomplete);
         assert!(!analysis.frontiers().is_empty());
-        let text = render::world::text(&analysis);
+        let text = render::world::text(&analysis, &native::product_with(analysis.domain_spec()));
         assert!(section(&text, "Analysis", "Snapshot").contains("Incomplete"));
         let reports = numbered(section(&text, "Frontiers", ""), "U");
         assert_eq!(
@@ -568,14 +594,21 @@ fn incomplete_reports_preserve_all_frontiers_and_every_target_frame() {
 
 #[test]
 fn possible_log_records_keep_site_topics_payload_and_unknown_flag() {
-    let mut world = World::new(Fork::Osaka, "test:log-report");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "test:log-report");
     world
         .insert(
             address(0x101),
-            Account::from_hex("60ab5f53602a60015fa160015fa000", Fork::Osaka).unwrap(),
+            EvmAccount::<NumericValue>::from_hex("60ab5f53602a60015fa160015fa000", Fork::Osaka)
+                .unwrap(),
         )
         .unwrap();
-    let analysis = analyze_world(world, entry(), ExecutionConfig::default()).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry()).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(analysis.status(), Status::Converged);
     let outcome = analysis
         .outcomes()
@@ -583,7 +616,7 @@ fn possible_log_records_keep_site_topics_payload_and_unknown_flag() {
         .find(|outcome| outcome.kind == OutcomeKind::Return)
         .unwrap();
     assert_eq!(outcome.store.possible_logs().len(), 2);
-    let text = render::world::text(&analysis);
+    let text = render::world::text(&analysis, &native::product_with(analysis.domain_spec()));
     let reports = numbered(section(&text, "Outcomes", "Call summaries"), "O");
     let report = reports[analysis
         .outcomes()
@@ -604,7 +637,7 @@ fn possible_log_records_keep_site_topics_payload_and_unknown_flag() {
     }
 }
 
-fn stack(values: &[AbstractValue]) -> String {
+fn stack(values: &[EvmValue<NumericValue>]) -> String {
     format!(
         "[{}]",
         values
@@ -615,20 +648,17 @@ fn stack(values: &[AbstractValue]) -> String {
     )
 }
 
-fn length(value: &AbstractValue) -> String {
-    if let Some(constants) = value.constants()
-        && constants.len() == 1
-    {
-        format!("{} bytes", constants.first().unwrap())
-    } else {
-        format!("{value} bytes")
-    }
+fn length(value: &EvmValue<NumericValue>) -> String {
+    value.singleton().map_or_else(
+        || format!("{value} bytes"),
+        |exact| format!("{value} ({exact} bytes)"),
+    )
 }
 
 #[test]
 fn state_details_and_transitions_preserve_original_graph_evidence() {
-    let analysis = analyze("returndata-copy", ExecutionConfig::default());
-    let text = render::world::text(&analysis);
+    let analysis = report_fixture("returndata-copy", ExecutionConfig::default());
+    let text = render::world::text(&analysis, &native::product_with(analysis.domain_spec()));
     let reports = numbered(section(&text, "State details", "Transitions"), "σ");
     assert_eq!(reports.len(), analysis.states().len());
     for (state, report) in analysis.states().iter().zip(reports) {
@@ -688,7 +718,7 @@ fn state_details_and_transitions_preserve_original_graph_evidence() {
 
 #[test]
 fn call_summary_reports_keep_cache_statistics_and_each_complete_relation() {
-    let mut world = World::new(Fork::Osaka, "test:summary-report");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "test:summary-report");
     for (owner, code) in [
         (
             0x101,
@@ -696,18 +726,19 @@ fn call_summary_reports_keep_cache_statistics_and_each_complete_relation() {
         ),
         (0x200, "60015f5260205ff3"),
     ] {
-        let mut account = Account::from_hex(code, Fork::Osaka).unwrap();
-        account.balance = AbstractValue::constant(U256::from(1_000_000));
+        let mut account = EvmAccount::<NumericValue>::from_hex(code, Fork::Osaka).unwrap();
+        account.balance = EvmValue::<NumericValue>::constant(U256::from(1_000_000));
         world.insert(address(owner), account).unwrap();
     }
     for enabled in [true, false] {
-        let analysis = analyze_world(
-            world.clone(),
-            entry(),
+        let analysis = native::run(
+            &native::product(),
+            AnalysisInput::new(world.clone(), entry()).unwrap(),
             ExecutionConfig {
                 use_summaries: enabled,
                 ..ExecutionConfig::default()
             },
+            &Control::default(),
         )
         .unwrap();
         assert_eq!(analysis.status(), Status::Converged);
@@ -719,7 +750,7 @@ fn call_summary_reports_keep_cache_statistics_and_each_complete_relation() {
         } else {
             assert!(analysis.summaries().is_empty());
         }
-        let text = render::world::text(&analysis);
+        let text = render::world::text(&analysis, &native::product_with(analysis.domain_spec()));
         let section = section(&text, "Call summaries", "Diagnostics");
         let stats = analysis.summary_stats();
         for (field, value) in [

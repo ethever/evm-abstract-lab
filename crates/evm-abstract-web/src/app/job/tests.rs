@@ -1,4 +1,5 @@
 use super::*;
+use crate::Workspace;
 use evm_abstract_protocol::AnalysisProgress;
 
 fn task() -> Task {
@@ -198,4 +199,68 @@ fn task_identity_error_formats_full_u64_handles_as_symbols() {
         error.to_string(),
         format!("Task response identity mismatch: expected {expected}, received {received}")
     );
+}
+
+#[test]
+fn postprocessing_metadata_is_required_and_invalid_usage_keeps_the_previous_report() {
+    use evm_abstract_protocol as api;
+
+    let mut valid = crate::tests::report();
+    valid.metadata.postprocessing_max_work = 9_007_199_254_740_993;
+    valid.metadata.postprocessing_work = 9_007_199_254_740_992;
+    valid.validate().unwrap();
+    let wire = serde_json::to_string(&valid.metadata).unwrap();
+    assert_eq!(
+        serde_json::from_str::<api::ReportMetadata>(&wire).unwrap(),
+        valid.metadata
+    );
+    for (field, count) in [
+        ("postprocessing_max_work", 9_007_199_254_740_993_u64),
+        ("postprocessing_work", 9_007_199_254_740_992),
+    ] {
+        let mut missing = serde_json::to_value(&valid.metadata).unwrap();
+        missing.as_object_mut().unwrap().remove(field);
+        let error = serde_json::from_value::<api::ReportMetadata>(missing).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field: {field}"))
+        );
+        let duplicate = wire.replacen('{', &format!("{{\"{field}\":{count},"), 1);
+        let error = serde_json::from_str::<api::ReportMetadata>(&duplicate).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("duplicate field: {field}"))
+        );
+    }
+    let mut workspace = Workspace::default();
+    for (max_work, work) in [(1, 0), (1, 1), (2_000_000_000, 19), (u64::MAX, u64::MAX)] {
+        let mut boundary = valid.clone();
+        boundary.metadata.postprocessing_max_work = max_work;
+        boundary.metadata.postprocessing_work = work;
+        boundary.validate().unwrap();
+        workspace.receive(Ok(api::AnalyzeReply {
+            result: Ok(boundary.clone()),
+        }));
+        assert_eq!(workspace.report.as_ref(), Some(&boundary));
+    }
+    workspace.receive(Ok(api::AnalyzeReply {
+        result: Ok(valid.clone()),
+    }));
+    for (max_work, work) in [(0, 0), (0, 1), (1, 2), (u64::MAX - 1, u64::MAX)] {
+        let mut invalid = valid.clone();
+        invalid.metadata.postprocessing_max_work = max_work;
+        invalid.metadata.postprocessing_work = work;
+        assert_eq!(
+            invalid.validate(),
+            Err(api::ReportValidationFailure::Postprocessing(
+                api::PostprocessingWorkFailure { max_work, work }
+            ))
+        );
+        workspace.receive(Ok(api::AnalyzeReply {
+            result: Ok(invalid),
+        }));
+        assert_eq!(workspace.report.as_ref(), Some(&valid));
+    }
 }

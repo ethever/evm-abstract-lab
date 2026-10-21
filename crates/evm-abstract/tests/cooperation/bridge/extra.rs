@@ -1,4 +1,6 @@
 //! A downstream-owned query vocabulary; only the final adapter knows StackFacts.
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 #[path = "extra/consumer.rs"]
 mod consumer;
 #[path = "extra/contracts.rs"]
@@ -11,7 +13,7 @@ use crate::{fixtures, oracle, policy::Calls};
 use analysis_kernel::{Change, Pair, Registered};
 use evm_abstract::analysis::{
     EnginePolicies, OutcomeKind,
-    cooperation::{Extension, PairedTasks, PerInput, PointKind, analyze_world_cooperating},
+    cooperation::{Extension, PairedTasks, PerInput, PointKind},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,15 +33,13 @@ fn client_owned_capability_connects_independent_rules_to_real_evm_feedback() {
             PairedTasks::new(PerInput, PerInput),
         )
         .with_stores(contracts::Stores::default());
-        let result = analyze_world_cooperating(
-            fixtures::world(&fixture.code),
-            fixtures::entry(),
-            config(),
-            &algebra,
-            &EnginePolicies::default(),
-            &mut extension,
-        )
-        .unwrap();
+        let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
+            .run(
+                AnalysisInput::new(fixtures::world(&fixture.code), fixtures::entry()).unwrap(),
+                config(),
+                &Control::default(),
+            )
+            .unwrap();
         fixtures::complete(&result);
         let impossible = result
             .states()
@@ -122,15 +122,13 @@ fn client_owned_channels_are_recreated_when_recursive_summary_inputs_grow() {
         PairedTasks::new(PerInput, PerInput),
     )
     .with_stores(contracts::Stores::default());
-    let result = analyze_world_cooperating(
-        fixtures::world(&fixture.code),
-        fixtures::entry(),
-        config(),
-        &algebra,
-        &EnginePolicies::default(),
-        &mut extension,
-    )
-    .unwrap();
+    let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
+        .run(
+            AnalysisInput::new(fixtures::world(&fixture.code), fixtures::entry()).unwrap(),
+            config(),
+            &Control::default(),
+        )
+        .unwrap();
     fixtures::complete(&result);
     assert!(!result.procedure_summaries().is_empty());
     assert!(result.procedure_summaries().iter().all(|s| s.closed));

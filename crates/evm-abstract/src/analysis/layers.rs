@@ -12,6 +12,7 @@
 mod catalog;
 mod dependencies;
 mod facts;
+pub(in crate::analysis) mod payment;
 mod session;
 
 pub use catalog::{
@@ -28,3 +29,6 @@ pub use session::{
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod refinement_tests;

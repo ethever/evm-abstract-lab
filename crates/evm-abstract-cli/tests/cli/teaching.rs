@@ -316,7 +316,7 @@ fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
         let report: Json = serde_json::from_slice(&report.stdout).unwrap();
         assert!(!report["frontiers"].as_array().unwrap().is_empty());
         if extra == ["--max-symbolic-nodes", "2"] {
-            assert_eq!(report["config"]["analysis"]["relations"]["max_nodes"], 2);
+            assert_eq!(report["domain_spec"]["relations"]["max_nodes"], 2);
             assert!(
                 report["frontiers"]
                     .as_array()
@@ -381,7 +381,10 @@ fn verbose_preserves_full_analyze_report_and_original_ssa_fields() {
     let verbose = text(&verbose);
     let full = world("analyze", "call-return-branch", &["--ssa"]);
     success(&full);
-    assert!(verbose.contains(text(&full).trim_end()));
+    let full = text(&full);
+    let (model, machine_report) = full.split_once('\n').unwrap();
+    assert!(verbose.lines().any(|line| line == model));
+    assert!(verbose.contains(machine_report.trim_end()));
     for detail in [
         "State details",
         "Call summaries",
@@ -421,9 +424,13 @@ fn analyze_json_and_full_ssa_keep_the_same_semantic_analysis() {
         let with_ssa = json(&world("analyze", name, &["--ssa", "--format", "json"]));
         assert_eq!(
             super::native::canonical(&with_ssa["analysis"]),
-            super::native::canonical(&report),
+            super::native::canonical(&super::native::without_application_metadata(&report)),
             "{name}"
         );
+        assert_eq!(report["numeric_model"], with_ssa["numeric_model"]);
+        super::native::without_application_metadata(&with_ssa);
+        assert_eq!(report["postprocessing_work"], 0);
+        assert!(with_ssa["postprocessing_work"].as_u64().unwrap() > 0);
         assert_eq!(report["status"], "Converged");
         assert!(report["world"]["fingerprint"].is_string());
         assert!(
@@ -455,7 +462,7 @@ fn analyze_json_and_full_ssa_keep_the_same_semantic_analysis() {
                                     .any(|slot| {
                                         slot["address"] == ENTRY
                                             && slot["slot"] == "0x0"
-                                            && slot["value"]["Constants"]
+                                            && slot["value"]["numeric"]["constants"]
                                                 == serde_json::json!([value])
                                     })
                         })

@@ -88,7 +88,7 @@ fn fresh_renaming_preserves_the_actual_carrier_and_one_policy_view() {
     let old = input.active().stack[0].expression().unwrap().clone();
     let replacement = ExprId::fresh().unwrap();
     renamed
-        .rename_fresh_with(
+        .rename_fresh(
             &BTreeMap::from([(old.clone(), replacement.clone())]),
             domain.spec().relations().expressions(),
             domain.without_relations(),

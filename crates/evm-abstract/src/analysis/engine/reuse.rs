@@ -8,7 +8,10 @@
 //! changes only its active stack/control key. Stateful dependencies therefore
 //! enter through exact input values, rather than by patching historical roots.
 
-use crate::domain::{NumericValue, WordElement};
+#[cfg(test)]
+use crate::analysis::testing::TestValue;
+
+use crate::domain::WordElement;
 
 use crate::{
     U256,
@@ -185,13 +188,6 @@ impl<N: WordElement> EvmExecutionReuse<N> {
 
     pub fn begin(&mut self) {
         self.dependencies = FactDependencies::default();
-    }
-
-    pub fn disable_memo(&mut self) {
-        self.max_entries = 0;
-        self.memo.clear();
-        self.retained_bytes = 0;
-        self.stats.entries = 0;
     }
 
     pub fn stats(&self) -> ReuseStats {
@@ -546,7 +542,5 @@ impl<N: WordElement> EvmExecutionReuse<N> {
 #[cfg(test)]
 mod tests;
 
-pub(in crate::analysis) type ExecutionReuse = EvmExecutionReuse<NumericValue>;
-
 #[cfg(test)]
-use crate::domain::AbstractValue;
+pub(in crate::analysis) type ExecutionReuse = EvmExecutionReuse<crate::domain::NumericValue>;

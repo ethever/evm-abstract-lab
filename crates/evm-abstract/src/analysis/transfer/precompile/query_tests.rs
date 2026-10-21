@@ -18,10 +18,9 @@ fn native_materialization_pays_each_opaque_discovery_at_its_own_boundary() {
     let algebra = ValueAlgebra::new(Policy);
     // The byte case must reach a lazy view, rather than Exact's fast path.
     let view = EvmByteArray::<Word>::exact(&[0, 7])
-        .slice_with(
+        .slice(
             &EvmValue::constant(U256::ONE),
             &EvmValue::constant(U256::ONE),
-            config.max_memory_bytes,
             algebra.borrowed(),
         )
         .unwrap();
@@ -116,10 +115,9 @@ fn native_literal_length_can_decline_extraction_without_an_opaque_query() {
     };
     let algebra = ValueAlgebra::new(Policy);
     let input = EvmByteArray::<Word>::exact(&[1; 8])
-        .slice_with(
+        .slice(
             &EvmValue::constant(U256::ZERO),
             &EvmValue::constant(U256::from(7)),
-            config.max_memory_bytes,
             algebra.borrowed(),
         )
         .unwrap();

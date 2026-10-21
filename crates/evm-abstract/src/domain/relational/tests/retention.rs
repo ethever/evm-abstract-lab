@@ -1,6 +1,7 @@
 //! Default-policy local checks for shared ordered updates above guarded states.
 
-use super::super::{CheckResult, RelationLimits, RelationState, ValueQuery};
+use super::super::{CheckResult, EvmValueQuery, RelationLimits, RelationState};
+use super::product_algebra;
 use crate::domain::{
     NumericValue,
     symbolic::{
@@ -70,8 +71,9 @@ fn shared_updates_preserve_guarded_words_byte_overlays_and_slot_aliases_at_defau
                     &limits
                 ),
                 &limits,
+                product_algebra().borrowed()
             ),
-            ValueQuery::Exact(U256::from(1)),
+            EvmValueQuery::Exact(U256::from(1)),
             "local: byte update above guarded words"
         );
         let expected =
@@ -80,8 +82,9 @@ fn shared_updates_preserve_guarded_words_byte_overlays_and_slot_aliases_at_defau
             RelationState::default().local_value(
                 &op(opcode::EQ, &[read(&old, 0, &limits), expected], &limits),
                 &limits,
+                product_algebra().borrowed()
             ),
-            ValueQuery::Exact(U256::from(1)),
+            EvmValueQuery::Exact(U256::from(1)),
         );
 
         let later_word = old.write_word(c(32), c(0x33), states).unwrap();
@@ -109,8 +112,9 @@ fn shared_updates_preserve_guarded_words_byte_overlays_and_slot_aliases_at_defau
                     &limits
                 ),
                 &limits,
+                product_algebra().borrowed()
             ),
-            ValueQuery::Exact(U256::from(1)),
+            EvmValueQuery::Exact(U256::from(1)),
             "local: common disjoint word update"
         );
 
@@ -147,32 +151,37 @@ fn shared_updates_preserve_guarded_words_byte_overlays_and_slot_aliases_at_defau
         for (index, expected) in [(0, c(13)), (1, historical)] {
             let mut path = RelationState::default();
             assert_eq!(
-                path.add_equal(&key, &c(index), &limits),
+                path.add_equal(&key, &c(index), &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
             assert_eq!(
                 path.local_value(
                     &op(opcode::EQ, &[latest.clone(), expected], &limits),
-                    &limits
+                    &limits,
+                    product_algebra().borrowed()
                 ),
-                ValueQuery::Exact(U256::from(1)),
+                EvmValueQuery::Exact(U256::from(1)),
                 "local: alias at {index}"
             );
             assert_eq!(
-                path.local_value(&observed, &limits),
-                ValueQuery::Exact(U256::from(if index == 0 { 7 } else { 13 })),
+                path.local_value(&observed, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::from(if index == 0 { 7 } else { 13 })),
                 "local: observed initial slot at alias {index}"
             );
         }
         for (branch, expected) in [(1, 0x11aa), (0, 0x22aa)] {
             let mut path = RelationState::default();
             assert_eq!(
-                path.add_equal(&guard, &c(branch), &limits),
+                path.add_equal(&guard, &c(branch), &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
             assert_eq!(
-                path.local_value(&read(&overlaid, 0, &limits), &limits),
-                ValueQuery::Exact(U256::from(expected)),
+                path.local_value(
+                    &read(&overlaid, 0, &limits),
+                    &limits,
+                    product_algebra().borrowed()
+                ),
+                EvmValueQuery::Exact(U256::from(expected)),
                 "local: selected byte overlay {branch}"
             );
         }
@@ -222,8 +231,8 @@ fn shared_copy_keeps_observed_array_facts_and_captured_history_at_default_limits
         );
         let low_byte = op(opcode::AND, &[read(&copied, 32, &limits), c(255)], &limits);
         assert_eq!(
-            RelationState::default().local_value(&low_byte, &limits),
-            ValueQuery::Exact(U256::from(12)),
+            RelationState::default().local_value(&low_byte, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(12)),
             "local: captured initial numeric byte"
         );
         let expected = ExprId::ite(guard, c(7), c(9), limits.expressions()).unwrap();
@@ -231,8 +240,9 @@ fn shared_copy_keeps_observed_array_facts_and_captured_history_at_default_limits
             RelationState::default().local_value(
                 &op(opcode::EQ, &[read(&copied, 0, &limits), expected], &limits),
                 &limits,
+                product_algebra().borrowed()
             ),
-            ValueQuery::Exact(U256::from(1)),
+            EvmValueQuery::Exact(U256::from(1)),
             "local: disjoint historical word"
         );
     }
@@ -299,12 +309,17 @@ fn differing_updates_and_independent_captured_sources_keep_the_selector() {
         );
         let mut path = RelationState::default();
         assert_eq!(
-            path.add_equal(&length, &ExprId::constant(U256::MAX), &limits),
+            path.add_equal(
+                &length,
+                &ExprId::constant(U256::MAX),
+                &limits,
+                product_algebra().borrowed()
+            ),
             CheckResult::MayBeFeasible,
         );
         for result in [U256::ZERO, U256::from(1)] {
             assert_eq!(
-                path.can_equal(&equal, result, &limits),
+                path.can_equal(&equal, result, &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible,
                 "local: distinct source identities do not assert hash inequality or equality"
             );
@@ -354,12 +369,16 @@ fn shared_updates_bound_history_and_preserve_rename_max_padding_and_cancellation
         for (state, symbol) in [(&current, &input), (&renamed, &replacement)] {
             let mut path = RelationState::default();
             assert_eq!(
-                path.add_equal(symbol, &c(13), &limits),
+                path.add_equal(symbol, &c(13), &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
             assert_eq!(
-                path.local_value(&read(state, 32, &limits), &limits),
-                ValueQuery::Exact(U256::from(13 * 64)),
+                path.local_value(
+                    &read(state, 32, &limits),
+                    &limits,
+                    product_algebra().borrowed()
+                ),
+                EvmValueQuery::Exact(U256::from(13 * 64)),
                 "local: one captured scalar history"
             );
         }
@@ -380,8 +399,12 @@ fn shared_updates_bound_history_and_preserve_rename_max_padding_and_cancellation
                 Err(StateError::Cancelled)
             );
             assert_eq!(
-                RelationState::default().local_value(&demanded, &limits),
-                ValueQuery::Undetermined(super::super::QueryReason::Cancelled)
+                RelationState::default().local_value(
+                    &demanded,
+                    &limits,
+                    product_algebra().borrowed()
+                ),
+                EvmValueQuery::Undetermined(super::super::QueryReason::Cancelled)
             );
         });
 
@@ -402,8 +425,8 @@ fn shared_updates_bound_history_and_preserve_rename_max_padding_and_cancellation
         )
         .unwrap();
         assert_eq!(
-            RelationState::default().local_value(&word, &limits),
-            ValueQuery::Exact(U256::from(0xaa) << 248),
+            RelationState::default().local_value(&word, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(0xaa) << 248),
             "local: factored byte overlay must not wrap at MAX"
         );
     }
@@ -424,8 +447,8 @@ fn fixed_slot_reads_keep_guarded_history_initial_facts_and_symbolic_aliases() {
         let read = ExprId::slot_read(wide, c(0), limits.expressions()).unwrap();
         assert_eq!(read, full_word);
         assert_eq!(
-            RelationState::default().local_value(&read, &limits),
-            ValueQuery::Exact(U256::MAX - U256::from(17))
+            RelationState::default().local_value(&read, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::MAX - U256::from(17))
         );
         let wide = SlotStateId::zero()
             .store(high_key.clone(), full_word.clone(), states)
@@ -461,7 +484,7 @@ fn fixed_slot_reads_keep_guarded_history_initial_facts_and_symbolic_aliases() {
             let mut path = RelationState::default();
             for (input, value) in [(&x, 7), (&y, 9), (&key, alias)] {
                 assert_eq!(
-                    path.add_equal(input, &c(value), &limits),
+                    path.add_equal(input, &c(value), &limits, product_algebra().borrowed()),
                     CheckResult::MayBeFeasible
                 );
             }
@@ -469,9 +492,10 @@ fn fixed_slot_reads_keep_guarded_history_initial_facts_and_symbolic_aliases() {
             assert_eq!(
                 path.local_value(
                     &op(opcode::EQ, &[latest.clone(), expected], &limits),
-                    &limits
+                    &limits,
+                    product_algebra().borrowed()
                 ),
-                ValueQuery::Exact(U256::from(1)),
+                EvmValueQuery::Exact(U256::from(1)),
                 "local: fixed read alias {alias}"
             );
         }
@@ -491,8 +515,9 @@ fn fixed_slot_reads_keep_guarded_history_initial_facts_and_symbolic_aliases() {
             RelationState::default().local_value(
                 &ExprId::slot_read(initial, c(0), limits.expressions()).unwrap(),
                 &limits,
+                product_algebra().borrowed()
             ),
-            ValueQuery::Exact(U256::from(7)),
+            EvmValueQuery::Exact(U256::from(7)),
             "local: initial observed slot after a disjoint write"
         );
         let renamed = selected
@@ -501,12 +526,12 @@ fn fixed_slot_reads_keep_guarded_history_initial_facts_and_symbolic_aliases() {
         let read = ExprId::slot_read(renamed, c(0), limits.expressions()).unwrap();
         let mut path = RelationState::default();
         assert_eq!(
-            path.add_equal(&guard, &c(0), &limits),
+            path.add_equal(&guard, &c(0), &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            path.local_value(&read, &limits),
-            ValueQuery::Exact(U256::from(11))
+            path.local_value(&read, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(11))
         );
         assert!(
             ExprId::slot_read(

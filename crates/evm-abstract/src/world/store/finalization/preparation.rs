@@ -2,11 +2,11 @@
 
 use super::{FinalizationError, reserve, tree_height, tree_work};
 use crate::domain::AlgebraRef;
-#[cfg(test)]
-use crate::domain::{AbstractValue, Domain};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 #[cfg(test)]
-use crate::world::Store;
+use crate::world::test_support::TestStore;
+#[cfg(test)]
+use crate::world::test_support::TestValue;
 use crate::{
     domain::EvmValue,
     resource::WorkBudget,
@@ -127,7 +127,7 @@ impl<N: WordElement> EvmStore<N> {
             .havoc_except_checked(protected, domain.spec().relations().expressions())
     }
 
-    pub(in crate::world::store) fn prepare_unlisted_finalization_with<
+    pub(in crate::world::store) fn prepare_unlisted_finalization<
         D: EvmNumericAlgebra<Element = N>,
     >(
         &mut self,
@@ -140,7 +140,7 @@ impl<N: WordElement> EvmStore<N> {
         Ok(())
     }
 
-    pub(super) fn prepare_unlisted_finalization_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(super) fn prepare_unlisted_finalization_checked<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
@@ -162,25 +162,3 @@ impl<N: WordElement> EvmStore<N> {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-impl EvmStore<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(in crate::world::store) fn prepare_unlisted_finalization(
-        &mut self,
-        domain: crate::domain::Domain,
-    ) -> Result<(), StoreError> {
-        self.prepare_unlisted_finalization_with(crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub(super) fn prepare_unlisted_finalization_checked(
-        &mut self,
-        domain: crate::domain::Domain,
-        budget: &mut WorkBudget,
-    ) -> Result<(), FinalizationError> {
-        self.prepare_unlisted_finalization_checked_with(
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            budget,
-        )
-    }
-}

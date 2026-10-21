@@ -2,7 +2,7 @@
 
 本目录固定输入、命令策略、外部资源 guard 和报告验收边界，用于比较已有 SMT 基线与当前 no-SMT 分层抽象解释实现。[命令生成器](../../scripts/generate-no-smt-scale-commands.py)生成当前 CLI profile；[benchmark](../../scripts/benchmark-no-smt-scale.py)默认只核对输入，显式传入 `--execute` 才顺序启动已有 ELF。两者都不构建、不访问 RPC；benchmark 不翻译策略、不调用 shell、不计算速度倍数。
 
-基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**；当前接口为 **native11 / wire16 / cost6**。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。Cost3 移除了 SMT 额度预收费；Cost4 调整共享回放证据与规范数值上界的累计收费；Cost5 标记类型化标量依赖和操作数克隆；Cost6 更新共享 kernel、规则与独立数值查询的工作模型。跨 cost 版本的原始 work 不是同一单位，**不能把不同 cost 版本的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
+基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**；当前接口为 **native12 / wire17 / domain3 / cost7**。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。Cost3 移除了 SMT 额度预收费；Cost4 调整共享回放证据与规范数值上界的累计收费；Cost5 标记类型化标量依赖和操作数克隆；Cost6 更新共享 kernel、规则与独立数值查询的工作模型；Cost7 使用借用式数值操作数与显式 opcode 报价。跨 cost 版本的原始 work 不是同一单位，**不能把不同 cost 版本的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
 
 ## 固定输入与事实边界
 
@@ -52,9 +52,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
   --commands "$COMMAND_PROFILE"
 ```
 
-生成器检查 native11/wire16/cost6 和 CLI 关系参数，记录 interface source commit 及 CLI、关系配置、版本文件的 SHA256。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中记录 `root_terminal_coverage: false`，向新生成的 argv 显式追加 `--no-root-terminal-coverage`，保留原 1T/OFF 对照策略；这不是当前 CLI/Web 的默认值。每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
+生成器检查 native12/wire17/domain3/cost7 和 CLI 关系参数，记录 interface source commit 及 CLI、数值选择、关系配置和版本文件的 SHA256。它将历史数值选择迁移为 `--numeric-model product` / `numeric_model`，从预期执行 config 中移出数值限制，并分别记录 `expected_native_numeric_model` 与完整 `expected_native_domain_spec`。应用独立的 20 亿后处理工作上限另存为 `expected_native_postprocessing_max_work`，不改动原 1T 执行额度。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中记录 `root_terminal_coverage: false`，向新生成的 argv 显式追加 `--no-root-terminal-coverage`，保留原 1T/OFF 对照策略；这不是当前 CLI/Web 的默认值。每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
 
-每份 profile 提供完整 `argv`；仅有首参数 `BINARY` 和一个 `WORLD` 两个占位符，同时绑定 input identity、interface commit、完整 policy、policy 到参数的映射、`expected_native_config` 和允许的 Report 退出码。`input_mapping` 仍须对照入口与事实语义审核；harness 不证明任意 argv 实现了声明边界。生成器也不证明 ELF 来源或源码干净，最终构建提交确定后须重新生成匹配 profile。
+每份 profile 提供完整 `argv`；仅有首参数 `BINARY` 和一个 `WORLD` 两个占位符，同时绑定 input identity、interface commit、完整 policy、policy 到参数的映射、执行预算 `expected_native_config`、实际代数限制 `expected_native_domain_spec`、模型 `expected_native_numeric_model`、后处理上限 `expected_native_postprocessing_max_work` 和允许的 Report 退出码。`input_mapping` 仍须对照入口与事实语义审核；harness 不证明任意 argv 实现了声明边界。生成器也不证明 ELF 来源或源码干净，最终构建提交确定后须重新生成匹配 profile。
 
 ## 使用已有 ELF 运行
 
@@ -84,7 +84,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 
 包络同时保留任意长度/内容 returndata 的 Revert 和空 returndata 的 Failure；预编译本身是纯操作，touch、root/child rollback 由公共调用结束路径处理。父帧保存完整 returndata，CALL 输出只复制 `min(requested, actual)`，未覆盖后缀保留。摘要按保留的表示计费，不按符号逻辑字节数分配或收费；实际 Work、表示保留、内存或 backend 边界仍须报告。对应回归定义见 [`precompile/tests.rs`](../../crates/evm-abstract/src/analysis/transfer/precompile/tests.rs)，调用完成见 [`calls.rs`](../../crates/evm-abstract/src/analysis/transfer/calls.rs)。
 
-**逻辑内存已有 lazy 范围表示。** [`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs)用 U256 长度、捕获的 source view 和有序 Write/Copy/Slice/ITE 根表达读写、别名与重叠复制，不逐字节展开大范围；展示 facts 的上限不截断完整根。CALLDATACOPY、MCOPY、RETURN/REVERT、调用输入/输出等使用这条路径。`max_memory_bytes` 限制具体内容提取，不是逻辑足迹、EVM 协议最大内存或 host RSS；需要具体 initcode 等内容的操作仍有各自边界。
+**逻辑内存已有 lazy 范围表示。** [`EvmByteArray<N>`](../../crates/evm-abstract/src/world/bytes.rs)用 U256 长度、捕获的 source view 和有序 Write/Copy/Slice/ITE 根表达读写、别名与重叠复制，不逐字节展开大范围；展示 facts 的上限不截断完整根。CALLDATACOPY、MCOPY、RETURN/REVERT、调用输入/输出等使用这条路径。`max_memory_bytes` 限制具体内容提取，不是逻辑足迹、EVM 协议最大内存或 host RSS；需要具体 initcode 等内容的操作仍有各自边界。
 
 [`ranges.rs`](../../crates/evm-abstract/src/analysis/transfer/ranges.rs)先保留 size=0 不扩容分支，非空正常范围要求 `offset <= B`、`size <= B - offset`，其中 `B = U256::MAX & !31`，避免终点和 word-rounded MSIZE 回绕。`LogicalMemory` 域内保留正常执行与可能的 gas Failure，不精算可负担性；域外非空访问的 Failure 依据见 [`ranges/logical.rs`](../../crates/evm-abstract/src/analysis/transfer/ranges/logical.rs)，范围限于固定 fork 的默认 gas 规则。普通访问不再因超过 `max_memory_bytes` 产生 `MemoryPolicy`；RETURNDATACOPY 的源越界仍是指令 Failure。真实 Work、Relations、ByteRange、StateJoin、Memory 或 guard 保留失败仍可留下 frontier；有 range witness 时保留原操作数、条件及效果前载荷。详见[内存模型](../../docs/14-memory-model.md)与[逻辑内存回归定义](../../crates/evm-abstract/tests/logical_memory.rs)。
 
@@ -94,7 +94,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 
 [`wire14/weth-original-request.json`](wire14/weth-original-request.json)和 [`wire14/usdc-original-request.json`](wire14/usdc-original-request.json)是原捕获请求的显式 schema 派生。仅移除 `/limits/smt_provider`、`/limits/smt_rlimit`，保留 RPC 的 `input.Rpc.provider_id`、固定 block、accounts、caller/value 及任意长度/内容的 Unknown calldata。manifest 记录原始/派生 raw SHA256 和删除 pointer；默认输入检查验证除这两项外请求完全相同。它们仍是 RPC acquisition 请求，不是 offline CLI 输入。
 
-当前 server/Web 使用 wire16。上述 wire14 文件保留原派生字节与 hash；为保留历史 1T/OFF 策略而发送当前请求时，还需显式添加 `limits.root_terminal_coverage: false`；使用新默认则另存相应完整请求，不能改写这些捕获。旧请求的 SMT 字段仍会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
+当前 server/Web 使用 wire17。上述 wire14 文件保留原派生字节与 hash；为保留历史 1T/OFF 策略而发送当前请求时，需将历史 `limits.domain_profile` 显式迁移为 `limits.numeric_model: "Product"`，并添加 `limits.root_terminal_coverage: false`；使用新默认则另存相应完整请求，不能改写这些捕获。新生成的请求文件名为 `weth-wire17-request.json` / `usdc-wire17-request.json`。活跃请求中的旧选择器或 SMT 字段都会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
 
 ## 报告交付、计时与验收
 
@@ -102,15 +102,15 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 
 | 观察到的结果 | harness 记录与解释 |
 | --- | --- |
-| 正常/错误退出，退出码获 profile 接受，完整 stdout 通过最终 JSON adapter | `report_delivered: true`，填入 `nativefinal`；另核对 config 是否匹配 policy。Incomplete 仍可交付，交付不代表闭合。 |
+| 正常/错误退出，退出码获 profile 接受，完整 stdout 通过最终 JSON adapter | `report_delivered: true`，填入 `nativefinal`；另核对执行 config、实际代数限制、模型和后处理上限是否匹配 policy。Incomplete 仍可交付，交付不代表闭合。 |
 | 进程退出获接受，但 stdout 超过 64 MiB Python 解析 guard | `phase: output_unvalidated_parse_guard`、`report_delivered: false`、`nativefinal: null`；保留原始 stdout/hash，分析 status 尚未由 harness 验证。 |
 | timeout、RSS/host guard、interrupt、monitor error、无效退出或无效 JSON | 保留失败和资源证据，`nativefinal: null`；即使外部停止时 stdout 恰有完整 JSON，也不视为交付。 |
 
 64 MiB guard 属于这个 Python consumer，与 `max_memory_bytes` 无关，也不是 native JSON 总大小限制。[原生 JSON 编码器](../../crates/evm-abstract/src/render/json.rs)不设置整份输出字节上限；表示导出仍有节点、深度、exact payload 与取消边界。超过解析 guard 不能推出分析 Incomplete 或 Converged；须校验保存的完整原报告及有效 config，才可给出分析状态或性能结论。未适配 schema、stdout 有字节或 progress 都不能替代最终 Report。
 
-交付后的统计包括 status、states/transfers/work、summary/procedure/reuse/propagation、summary stats、原始 frontiers/reasons、diagnostics、导出图大小、outcome kind、完整 outcome hash、entry/world/config hash、policy 是否匹配及 closure flags。无 Report 时 native 统计为 null，资源和实际退出证据仍保留。summary flags 为空时 `closure.all_closed` 为 null；全 true 也不能单独证明 root 的完整输出/效果覆盖。图计数是重复序列化观察，不是唯一 live DAG 节点数；opaque identity 可跨进程变化，raw/outcome hash 不证明语义等价。
+交付后的统计包括 status、states/transfers/work、summary/procedure/reuse/propagation、summary stats、原始 frontiers/reasons、diagnostics、导出图大小、outcome kind、完整 outcome hash、entry/world hash、执行/数值/后处理策略 hash、后处理实耗、policy 是否匹配及 closure flags。无 Report 时 native 统计为 null，资源和实际退出证据仍保留。summary flags 为空时 `closure.all_closed` 为 null；全 true 也不能单独证明 root 的完整输出/效果覆盖。图计数是重复序列化观察，不是唯一 live DAG 节点数；opaque identity 可跨进程变化，raw/outcome hash 不证明语义等价。
 
-**wall/RSS 必须伴随经校验的原报告、Converged/Incomplete、全部 frontier、summary closure 和完整 effects 一起审阅。** 早停、少交付效果或更早 Incomplete 不能称为提速；无已验证 Report 不给速度倍数。wall/RSS 比较须使用相同输入与交付边界，说明完整策略和精度差异；跨 cost 版本的 work 分列，不能按同单位换算。harness exit 0 只表示计划 sample 均交付了 config 匹配的有效 Report 且身份未变，允许 Report 为 Incomplete，不是语义验收结论。
+**wall/RSS 必须伴随经校验的原报告、Converged/Incomplete、全部 frontier、summary closure 和完整 effects 一起审阅。** 早停、少交付效果或更早 Incomplete 不能称为提速；无已验证 Report 不给速度倍数。wall/RSS 比较须使用相同输入与交付边界，说明完整策略和精度差异；跨 cost 版本的 work 分列，不能按同单位换算。harness exit 0 只表示计划 sample 均交付了完整策略匹配的有效 Report 且身份未变，允许 Report 为 Incomplete，不是语义验收结论。
 
 语义验收先于 scalability：
 

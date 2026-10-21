@@ -4,7 +4,7 @@ use crate::controls::{self, Density};
 
 use super::AnalysisForm;
 use egui::{RichText, Ui};
-use evm_abstract_protocol::DomainProfile;
+use evm_abstract_protocol::NumericModel;
 use std::{collections::BTreeMap, str::FromStr};
 
 use crate::{framework, palette};
@@ -89,22 +89,25 @@ impl AnalysisForm {
         });
         egui::CollapsingHeader::new("Precision").show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Numeric domain");
-                egui::ComboBox::from_id_salt("numeric_domain")
-                    .selected_text(format!("{:?}", self.limits.domain_profile))
+                ui.label("Numeric model");
+                egui::ComboBox::from_id_salt("numeric_model")
+                    .selected_text(match self.limits.numeric_model {
+                        NumericModel::Product => "Product",
+                        NumericModel::FiniteSet => "Finite set",
+                    })
                     .show_ui(ui, |ui| {
                         controls::tab_value(
                             ui,
-                            &mut self.limits.domain_profile,
-                            DomainProfile::Product,
+                            &mut self.limits.numeric_model,
+                            NumericModel::Product,
                             "Product",
                             Density::Regular,
                         );
                         controls::tab_value(
                             ui,
-                            &mut self.limits.domain_profile,
-                            DomainProfile::ConstantsOnly,
-                            "Constants only",
+                            &mut self.limits.numeric_model,
+                            NumericModel::FiniteSet,
+                            "Finite set",
                             Density::Regular,
                         );
                     });

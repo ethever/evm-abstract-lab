@@ -1,211 +1,304 @@
-//! 初始化的完整候选投影必须先经过同一工作预算。
+//! Native input projection shares the execution ledger and preserves its carrier.
+
+#[path = "support/native.rs"]
+mod native;
 
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{Config, ExecutionConfig, FrontierReason, Status, analyze_world},
-    domain::{
-        AbstractValue, Domain, DomainSpec, Profile,
-        facts::{UnaryPredicate, WordBounds},
+    analysis::{
+        AnalysisInput, EvmWorldAnalysis, ExecutionConfig, FrontierReason, Status, control::Control,
     },
-    render,
-    world::{Account, ByteArray, Entry, World},
+    domain::{
+        DomainSpec, EvmNumericAlgebra, EvmValue, FiniteConstantSet, FiniteSetAlgebra,
+        NumericReduction, ValueAlgebra,
+    },
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmEnvironmentValues, EvmWorld},
 };
-use std::num::NonZeroUsize;
 
-fn open_range(unknown_bits: usize) -> AbstractValue {
-    open_interval(U256::ZERO, (U256::from(1) << unknown_bits) - U256::from(1))
+fn finite_interval(lower: U256, count: usize) -> EvmValue<FiniteConstantSet> {
+    EvmValue::from_numeric(
+        FiniteConstantSet::try_from_values(
+            (0..count).map(|index| lower + U256::from(index)).collect(),
+        )
+        .unwrap(),
+    )
 }
 
-fn open_interval(lower: U256, upper: U256) -> AbstractValue {
-    let domain = Domain::from_spec(DomainSpec::new(
-        Profile::Product,
-        NonZeroUsize::new(1).unwrap(),
-        NonZeroUsize::new(4).unwrap(),
-        NonZeroUsize::new(256).unwrap(),
-    ));
-    let value = domain
-        .from_facts(&[UnaryPredicate::UnsignedBounds(
-            WordBounds::new(lower, upper).unwrap(),
-        )])
-        .unwrap();
-    assert!(value.constants().is_none());
-    value
-}
-
-fn fixture() -> (World, Entry) {
+fn fixture() -> (EvmWorld<FiniteConstantSet>, EvmEntry<FiniteConstantSet>) {
     let address = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "initial projection budget");
+    let mut world = EvmWorld::new(Fork::Osaka, "native initial projection budget");
     world
-        .insert(address, Account::from_hex("00", world.fork()).unwrap())
+        .insert(address, EvmAccount::from_hex("00", world.fork()).unwrap())
         .unwrap();
-    let entry = Entry {
+    let entry = EvmEntry {
         address,
-        environment: evm_abstract::world::EvmEnvironment {
-            to: (address).into(),
-            caller: (Address::ZERO).into(),
-            value: AbstractValue::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
-            is_static: false,
-            ..evm_abstract::world::EvmEnvironment::default()
+        environment: EvmEnvironmentValues {
+            to: address.into(),
+            caller: Address::ZERO.into(),
+            value: EvmValue::constant(U256::ZERO),
+            calldata: EvmByteArray::empty(),
+            ..EvmEnvironmentValues::default()
         },
     };
     (world, entry)
 }
 
-fn constants_config(capacity: usize, max_work: usize) -> ExecutionConfig {
+fn execution_policy(max_work: usize) -> ExecutionConfig {
     ExecutionConfig {
-        analysis: Config {
-            domain_profile: Profile::ConstantsOnly,
-            max_constants: capacity,
-            ..Config::default()
-        },
         max_work,
         ..ExecutionConfig::default()
     }
 }
 
-fn assert_initial_work_frontier(graph: &evm_abstract::analysis::WorldAnalysis) {
+fn assert_initial_work_frontier(graph: &EvmWorldAnalysis<FiniteConstantSet>) {
     assert_eq!(graph.status(), Status::Incomplete);
     assert!(graph.states().is_empty());
     assert!(graph.outcomes().is_empty());
-    assert_eq!(graph.frontiers().len(), 1);
-    let frontier = &graph.frontiers()[0];
+    let [frontier] = graph.frontiers() else {
+        panic!("one complete input admission must fail atomically");
+    };
     assert_eq!(frontier.from, None);
     assert_eq!(frontier.target, None);
     assert_eq!(frontier.pc, None);
     assert_eq!(frontier.reason, FrontierReason::Work);
-    assert_eq!(graph.work(), 0);
+    // Semantic blob-count validation is funded before the refused input
+    // projection. No entry construction or executable work has been admitted.
+    assert_eq!(
+        graph.work(),
+        graph
+            .entry()
+            .environment
+            .blob_hashes
+            .length
+            .singleton_work()
+    );
+    assert!(matches!(
+        evm_abstract::ssa::build_world(graph),
+        Err(evm_abstract::ssa::SsaError::IncompleteAnalysis)
+    ));
 }
 
 #[test]
-fn initial_projection_precharge_covers_open_entry_and_storage_values() {
+fn initial_projection_precharge_covers_entry_and_storage_payloads() {
+    // FiniteSetAlgebra receives a real complete set, rather than a product
+    // interval that an old profile flag would enumerate during conversion.
+    // The payload itself now supplies the work that the 100K ledger must admit.
+    let values = native::finite_with(native::spec(32_768, 4, 256));
     for storage in [false, true] {
         let (mut world, mut entry) = fixture();
-        if storage {
-            let mut account = world.account(entry.address).unwrap().clone();
-            account
-                .storage
-                .insert(U256::ZERO, AbstractValue::constant(U256::ZERO));
-            world = World::new(Fork::Osaka, "storage projection baseline");
-            world.insert(entry.address, account).unwrap();
-        }
-        let baseline =
-            analyze_world(world.clone(), entry.clone(), constants_config(512, 100_000)).unwrap();
+        let baseline = native::run(
+            &values,
+            AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+            execution_policy(100_000),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(
             baseline.status(),
             Status::Converged,
             "{:?}",
             baseline.frontiers()
         );
-        let value = open_range(9);
+        let value = finite_interval(U256::ZERO, 32_768);
         if storage {
             let mut account = world.account(entry.address).unwrap().clone();
             account.storage.insert(U256::ZERO, value);
-            world = World::new(Fork::Osaka, "open storage projection budget");
+            world = EvmWorld::new(Fork::Osaka, "native storage input projection");
             world.insert(entry.address, account).unwrap();
         } else {
             entry.environment.value = value;
         }
-        let graph = analyze_world(world, entry, constants_config(512, 100_000)).unwrap();
+        let graph = native::run(
+            &values,
+            AnalysisInput::new(world, entry).unwrap(),
+            execution_policy(100_000),
+            &Control::default(),
+        )
+        .unwrap();
         assert_initial_work_frontier(&graph);
     }
 }
 
 #[test]
-fn initial_projection_precharge_covers_unknown_calldata_bytes() {
+fn unknown_calldata_stays_lazy_under_the_native_input_projection_budget() {
+    let values = native::finite_with(native::spec(256, 4, 256));
     let (world, mut entry) = fixture();
-    let baseline =
-        analyze_world(world.clone(), entry.clone(), constants_config(256, 100_000)).unwrap();
-    assert_eq!(
-        baseline.status(),
-        Status::Converged,
-        "{:?}",
-        baseline.frontiers()
-    );
-    entry.environment.calldata = ByteArray::unknown();
-    let graph = analyze_world(world, entry, constants_config(256, 100_000)).unwrap();
-    assert_initial_work_frontier(&graph);
-}
-
-#[test]
-fn initial_projection_precharge_covers_interval_enumeration() {
-    let (world, mut entry) = fixture();
-    let baseline =
-        analyze_world(world.clone(), entry.clone(), constants_config(512, 100_000)).unwrap();
-    assert_eq!(
-        baseline.status(),
-        Status::Converged,
-        "{:?}",
-        baseline.frontiers()
-    );
-    let lower = (U256::from(1) << 200usize) - U256::from(1);
-    let upper = lower + U256::from(511);
-    entry.environment.value = open_interval(lower, upper);
-    let bits = entry.environment.value.known_bits();
-    assert!((!(bits.zero() | bits.one())).count_ones() >= usize::BITS as usize);
-    let graph =
-        analyze_world(world.clone(), entry.clone(), constants_config(512, 100_000)).unwrap();
-    assert_initial_work_frontier(&graph);
-    let graph = analyze_world(world, entry, constants_config(512, 1_000_000)).unwrap();
+    let baseline = native::run(
+        &values,
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        execution_policy(100_000),
+        &Control::default(),
+    )
+    .unwrap();
+    assert_eq!(baseline.status(), Status::Converged);
+    entry.environment.calldata = EvmByteArray::unknown();
+    let graph = native::run(
+        &values,
+        AnalysisInput::new(world, entry).unwrap(),
+        execution_policy(100_000),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
-    let candidates = graph.states()[0]
-        .entry
-        .active()
-        .call_value
-        .constants()
-        .unwrap();
-    assert_eq!(candidates.len(), 512);
-    assert_eq!(candidates.first(), Some(&lower));
-    assert_eq!(candidates.last(), Some(&upper));
+    assert!(graph.work() > 0 && graph.work() <= 100_000);
+    let data = &graph.states()[0].entry.active().calldata;
+    assert!(data.len().contains(U256::ZERO));
+    assert!(data.len().contains(U256::MAX));
+    let byte = data.byte_at(0, values.borrowed());
+    for candidate in 0_u64..=255 {
+        assert!(byte.contains(U256::from(candidate)));
+    }
+    // The finite carrier conservatively leaves an unenumerated byte as Top;
+    // its immutable byte source still supplies the contextual byte semantics.
+    assert!(byte.numeric().is_top());
 }
 
 #[test]
-fn maximum_capacity_open_projection_stops_even_with_maximum_work() {
+fn native_finite_projection_preserves_a_complete_range_across_a_wide_bit_boundary() {
+    let values = native::finite_with(native::spec(512, 4, 256));
+    let lower = (U256::ONE << 200usize) - U256::ONE;
+    let upper = lower + U256::from(511);
+    for max_work in [100_000, 1_000_000] {
+        let (world, mut entry) = fixture();
+        entry.environment.value = finite_interval(lower, 512);
+        let graph = native::run(
+            &values,
+            AnalysisInput::new(world, entry).unwrap(),
+            execution_policy(max_work),
+            &Control::default(),
+        )
+        .unwrap();
+        if max_work == 100_000 {
+            assert_eq!(graph.status(), Status::Incomplete);
+            assert!(
+                graph
+                    .frontiers()
+                    .iter()
+                    .any(|frontier| frontier.reason == FrontierReason::Work
+                        && frontier.pc == Some(0))
+            );
+        } else {
+            assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
+        }
+        let candidates = graph.states()[0]
+            .entry
+            .active()
+            .call_value
+            .constants()
+            .unwrap();
+        assert_eq!(candidates.len(), 512);
+        assert_eq!(candidates.first(), Some(&lower));
+        assert_eq!(candidates.last(), Some(&upper));
+        assert!(graph.work() <= max_work);
+    }
+}
+
+/// A genuine finite algebra that cannot quote its input projection. The native
+/// engine must refuse before calling project_numeric, even at a maximum ledger.
+#[derive(Debug)]
+struct UnquotedProjection(FiniteSetAlgebra);
+impl EvmNumericAlgebra for UnquotedProjection {
+    type Element = FiniteConstantSet;
+    fn spec(&self) -> DomainSpec {
+        self.0.spec()
+    }
+    fn project_numeric(&self, _value: &Self::Element) -> Self::Element {
+        panic!("unpaid input projection");
+    }
+    fn join_numeric(&self, left: &Self::Element, right: &Self::Element) -> Self::Element {
+        self.0.join_numeric(left, right)
+    }
+    fn widen_numeric(&self, old: &Self::Element, next: &Self::Element) -> Self::Element {
+        self.0.widen_numeric(old, next)
+    }
+    fn widen_procedure_numeric(&self, old: &Self::Element, next: &Self::Element) -> Self::Element {
+        self.0.widen_procedure_numeric(old, next)
+    }
+    fn reduce_numeric(&self, value: &Self::Element) -> NumericReduction<Self::Element> {
+        self.0.reduce_numeric(value)
+    }
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Self::Element>,
+    ) -> NumericReduction<Self::Element> {
+        self.0.apply_numeric(op, args)
+    }
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize {
+        self.0.operation_work(op, args)
+    }
+    fn projection_work(&self, _value: &Self::Element) -> usize {
+        usize::MAX
+    }
+    fn refinement_work(&self, value: &Self::Element, facts: usize) -> usize {
+        self.0.refinement_work(value, facts)
+    }
+}
+
+#[test]
+fn unquotable_projection_refuses_even_with_maximum_work() {
+    let values = ValueAlgebra::new(UnquotedProjection(FiniteSetAlgebra::from_spec(
+        native::spec(usize::MAX, 4, 256),
+    )));
     for max_work in [100_000, usize::MAX] {
         for storage in [false, true] {
             let (mut world, mut entry) = fixture();
-            let value = open_range(usize::BITS as usize - 1);
+            let value = finite_interval(U256::ZERO, 512);
             if storage {
                 let mut account = world.account(entry.address).unwrap().clone();
                 account.storage.insert(U256::ZERO, value);
-                world = World::new(Fork::Osaka, "maximum storage projection budget");
+                world = EvmWorld::new(Fork::Osaka, "unquotable native storage input");
                 world.insert(entry.address, account).unwrap();
             } else {
                 entry.environment.value = value;
             }
-            let graph =
-                analyze_world(world, entry, constants_config(usize::MAX, max_work)).unwrap();
+            let graph = native::run(
+                &values,
+                AnalysisInput::new(world, entry).unwrap(),
+                execution_policy(max_work),
+                &Control::default(),
+            )
+            .unwrap();
             assert_initial_work_frontier(&graph);
-            assert!(
-                render::world::explain(&graph)
-                    .unwrap()
-                    .contains("SSA unavailable")
-            );
         }
     }
 }
 
 #[test]
 fn maximum_capacity_top_and_small_finite_projection_remain_complete() {
-    let finite = Domain::new(NonZeroUsize::new(3).unwrap()).join(
-        &AbstractValue::constant(U256::ZERO),
-        &AbstractValue::constant(U256::from(2)),
+    let values = native::finite_with(native::spec(usize::MAX, 4, 256));
+    let finite = values.join(
+        &EvmValue::constant(U256::ZERO),
+        &EvmValue::constant(U256::from(2)),
     );
-    for value in [AbstractValue::top(), finite] {
+    for value in [EvmValue::top(), finite] {
         let (world, mut entry) = fixture();
         entry.environment.value = value;
-        let graph = analyze_world(world, entry, constants_config(usize::MAX, 100_000)).unwrap();
+        let graph = native::run(
+            &values,
+            AnalysisInput::new(world, entry).unwrap(),
+            execution_policy(100_000),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         assert!(!graph.states().is_empty());
     }
 }
 
 #[test]
-fn open_projection_keeps_every_candidate_when_work_fits() {
+fn finite_projection_keeps_every_native_candidate_when_work_fits() {
     for capacity in [512, usize::MAX] {
+        let values = native::finite_with(native::spec(capacity, 4, 256));
         let (world, mut entry) = fixture();
-        entry.environment.value = open_range(9);
-        let graph = analyze_world(world, entry, constants_config(capacity, 1_000_000)).unwrap();
+        entry.environment.value = finite_interval(U256::ZERO, 512);
+        let graph = native::run(
+            &values,
+            AnalysisInput::new(world, entry).unwrap(),
+            execution_policy(1_000_000),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         let candidates = graph.states()[0]
             .entry

@@ -1,8 +1,11 @@
 //! Evidence regressions for partial numerical procedure closure.
 
+use crate::domain::ProductAlgebra;
+
 use super::*;
 use crate::analysis::machine::fixtures::{address, fixture, word};
-use crate::world::{AbstractLog, LogKey};
+use crate::analysis::testing::AbstractLog;
+use crate::world::LogKey;
 use alloy_primitives::U256;
 use std::collections::VecDeque;
 
@@ -22,7 +25,7 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
     entry.environment.calldata = ByteArray::unknown();
     let mut world = World::new(empty.fork(), "recursive output partition regression");
     for (owner, value) in [(0x101, 5), (0x201, 9)] {
-        let mut account = crate::world::Account::from_hex(code, world.fork()).unwrap();
+        let mut account = crate::analysis::testing::Account::from_hex(code, world.fork()).unwrap();
         account.balance = word(1_000_000);
         account.storage.insert(U256::ZERO, word(value));
         world.insert(address(owner), account).unwrap();
@@ -31,7 +34,9 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
         max_work: 200_000_000,
         ..Default::default()
     };
-    let domain = config.domain().unwrap();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
     let mut queue = VecDeque::from([crate::analysis::transfer::procedure::testing::initial(
@@ -93,7 +98,7 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
         }
     }
     for use_summaries in [true, false] {
-        let result = crate::analysis::analyze_world(
+        let result = crate::analysis::testing::execute(
             world.clone(),
             entry.clone(),
             crate::analysis::ExecutionConfig {
@@ -104,6 +109,7 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
                 root_terminal_coverage: false,
                 ..Default::default()
             },
+            crate::domain::DomainSpec::default(),
         )
         .unwrap();
         assert_eq!(
@@ -157,7 +163,8 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
 
 #[test]
 fn parked_joined_summary_contains_the_current_bound() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let (world, entry) = fixture(&[(0x101, "00")]);
     let mut input =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
@@ -197,7 +204,8 @@ fn parked_joined_summary_contains_the_current_bound() {
 
 #[test]
 fn exhausted_ledger_does_not_replace_current_summary_with_an_old_input() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let (world, entry) = fixture(&[(0x101, "00")]);
     let input =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
@@ -223,7 +231,8 @@ fn exhausted_ledger_does_not_replace_current_summary_with_an_old_input() {
 
 #[test]
 fn symbolic_owner_namespace_is_never_used_for_storage_discovery() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let (world, entry) = fixture(&[(0x101, "5f5400")]);
     let mut payload =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
@@ -231,7 +240,7 @@ fn symbolic_owner_namespace_is_never_used_for_storage_discovery() {
     let frame = payload.active_mut();
     frame.key.address = namespace;
     frame.key.address_value = AddressInput::Concrete(namespace);
-    frame.address_operand = Some(AbstractValue::unknown_address());
+    frame.address_operand = Some(TestValue::unknown_address());
     let config = crate::analysis::ExecutionConfig::default();
     let mut budget = WorkBudget::new(config.max_work);
     let execution = execute_inner(
@@ -259,7 +268,9 @@ fn symbolic_owner_namespace_is_never_used_for_storage_discovery() {
 fn equal_exit_buffers_share_one_invocation_source_but_later_calls_are_fresh() {
     let (world, entry) = fixture(&[]);
     let config = crate::analysis::ExecutionConfig::default();
-    let domain = config.domain().unwrap();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let payload =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     assert_eq!(payload.active().code, FrameCode::Unknown);
@@ -318,7 +329,9 @@ fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
     let (world, mut entry) = fixture(&[(0x102, "5b5f56")]);
     entry.environment.is_static = true;
     let config = crate::analysis::ExecutionConfig::default();
-    let domain = config.domain().unwrap();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let mut payload =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     payload
@@ -417,7 +430,9 @@ fn static_environment_keeps_a_typed_frontier_when_envelope_work_is_unavailable()
     let (world, mut entry) = fixture(&[(0x102, "00")]);
     entry.environment.is_static = true;
     let config = crate::analysis::ExecutionConfig::default();
-    let domain = config.domain().unwrap();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let payload =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut table = Table::default();

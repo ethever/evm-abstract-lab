@@ -1,12 +1,13 @@
 //! A later World publication reopens an already-returned relative interpreter.
 use super::super::bridge::rule;
 use super::*;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput, ExecutionConfig};
 use evm_abstract::analysis::{
     FrontierReason, OutcomeKind,
     control::Control,
     cooperation::{
         PointKind, ProcedureRoute, Procedures, Summaries, SummaryClosureRoute, SummaryClosures,
-        SummaryRoute, analyze_world_cooperating_with_control, discover_closed_summary,
+        SummaryRoute, discover_closed_summary,
     },
     progress::Observer,
 };
@@ -255,18 +256,15 @@ fn later_world_fact_reenters_body_changes_native_output_and_preserves_failure_ca
                 Order(true),
             )
             .with_shared_stores(Factory);
-            let result = analyze_world_cooperating_with_control(
-                fixtures::world(&code),
-                fixtures::entry(),
-                ExecutionConfig {
-                    use_summaries,
-                    ..fixtures::config(5_000_000_000)
-                },
-                &algebra,
-                &EnginePolicies::default(),
-                &mut extension,
-                &control,
-            );
+            let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
+                .run(
+                    AnalysisInput::new(fixtures::world(&code), fixtures::entry()).unwrap(),
+                    ExecutionConfig {
+                        use_summaries,
+                        ..fixtures::config(5_000_000_000)
+                    },
+                    &control,
+                );
             assert!(
                 result.is_ok()
                     || (stop == Stop::Cancel
@@ -315,7 +313,7 @@ fn later_world_fact_reenters_body_changes_native_output_and_preserves_failure_ca
                 .any(|output| {
                     output
                         .data
-                        .read_word_with(&fixtures::word(0), algebra.borrowed())
+                        .read_word(&fixtures::word(0), algebra.borrowed())
                         .contains(U256::from(42))
                 });
             assert_eq!(

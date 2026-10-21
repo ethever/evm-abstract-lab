@@ -1,6 +1,7 @@
 //! Default-budget proofs and independent boundary checks for demanded reads.
 
-use super::super::{CheckResult, RelationLimits, RelationState, ValueQuery};
+use super::super::{CheckResult, EvmValueQuery, RelationLimits, RelationState};
+use super::product_algebra;
 use crate::domain::{identity::Symbol, numeric::NumericValue, symbolic::*};
 use alloy_primitives::{U256, keccak256};
 use revm_bytecode::opcode;
@@ -65,8 +66,8 @@ fn default_policy_forwards_symbolic_words_and_byte_overlays_with_history() {
             let path = RelationState::default();
 
             assert_eq!(
-                path.local_value(&equality, &limits),
-                ValueQuery::Exact(U256::from(1)),
+                path.local_value(&equality, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::from(1)),
                 "local, overlaid={overlaid}"
             );
         }
@@ -114,17 +115,22 @@ fn default_policy_forwarded_words_zero_pad_overflow_and_keep_wrapped_bytes_separ
             }
             let mut path = RelationState::default();
             assert_eq!(
-                path.add_equal(&p, &ExprId::constant(start), &limits),
+                path.add_equal(
+                    &p,
+                    &ExprId::constant(start),
+                    &limits,
+                    product_algebra().borrowed()
+                ),
                 CheckResult::MayBeFeasible
             );
             assert_eq!(
-                path.local_value(&historical, &limits),
-                ValueQuery::Exact(U256::from_be_bytes(old)),
+                path.local_value(&historical, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::from_be_bytes(old)),
                 "local at {start}"
             );
             assert_eq!(
-                path.local_value(&updated, &limits),
-                ValueQuery::Exact(U256::from_be_bytes(new)),
+                path.local_value(&updated, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::from_be_bytes(new)),
                 "local at {start}"
             );
         }
@@ -147,13 +153,13 @@ fn default_policy_concrete_read_after_symbolic_store_retains_both_alias_paths() 
         for (alias, expected) in [(true, 9), (false, 7)] {
             let mut path = RelationState::default();
             assert_eq!(
-                path.assume(&guard, alias, &limits),
+                path.assume(&guard, alias, &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible,
                 "local, alias={alias} assumption"
             );
             assert_eq!(
-                path.local_value(&value, &limits),
-                ValueQuery::Exact(U256::from(expected)),
+                path.local_value(&value, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::from(expected)),
                 "local"
             );
         }
@@ -217,7 +223,12 @@ fn input_word_prefix_padding_matches_observed_bytes_and_view_boundaries() {
             for boundary in lengths {
                 let mut path = RelationState::default();
                 assert_eq!(
-                    path.add_equal(&length, &ExprId::constant(boundary), &limits),
+                    path.add_equal(
+                        &length,
+                        &ExprId::constant(boundary),
+                        &limits,
+                        product_algebra().borrowed()
+                    ),
                     CheckResult::MayBeFeasible
                 );
                 for requested in [length.clone(), c(32), c(7)] {
@@ -240,8 +251,8 @@ fn input_word_prefix_padding_matches_observed_bytes_and_view_boundaries() {
                         }
                     });
                     assert_eq!(
-                        path.local_value(&word, &limits),
-                        ValueQuery::Exact(U256::from_be_bytes(expected)),
+                        path.local_value(&word, &limits, product_algebra().borrowed()),
+                        EvmValueQuery::Exact(U256::from_be_bytes(expected)),
                         "local, start={start}, source length={boundary}, view length={requested}"
                     );
                 }
@@ -296,31 +307,38 @@ fn default_policy_guarded_echo_hashes_keep_empty_data_and_disjoint_copy_relation
         let source_hash = ExprId::keccak(original, limits.expressions()).unwrap();
         let mut path = RelationState::default();
         assert_eq!(
-            path.add_unsigned_bounds(&length, U256::from(32), U256::from(512), &limits),
+            path.add_unsigned_bounds(
+                &length,
+                U256::from(32),
+                U256::from(512),
+                &limits,
+                product_algebra().borrowed()
+            ),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            path.assume(&guard, false, &limits),
+            path.assume(&guard, false, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         for (label, hash) in [("old_hash", old_hash), ("new_hash", new_hash.clone())] {
             assert_eq!(
                 path.local_value(
                     &op(opcode::EQ, &[hash, source_hash.clone()], limits),
-                    &limits
+                    &limits,
+                    product_algebra().borrowed()
                 ),
-                ValueQuery::Exact(U256::from(1)),
+                EvmValueQuery::Exact(U256::from(1)),
                 "local, hash={label}"
             );
         }
         let mut empty = RelationState::default();
         assert_eq!(
-            empty.assume(&guard, true, &limits),
+            empty.assume(&guard, true, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            empty.local_value(&new_hash, &limits),
-            ValueQuery::Exact(U256::from_be_bytes(keccak256([]).0)),
+            empty.local_value(&new_hash, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from_be_bytes(keccak256([]).0)),
             "local"
         );
     }
@@ -351,17 +369,17 @@ fn overlapping_copy_hashes_do_not_claim_preservation_from_wrapped_range_ends() {
             let equality = op(opcode::EQ, &[before.clone(), after.clone()], limits);
             let mut path = RelationState::default();
             assert_eq!(
-                path.add_equal(&length, &c(128), &limits),
+                path.add_equal(&length, &c(128), &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
             assert_eq!(
-                path.can_equal(&equality, U256::ZERO, &limits),
+                path.can_equal(&equality, U256::ZERO, &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible,
                 "local at {at}"
             );
             if at == U256::ZERO {
                 assert_eq!(
-                    path.can_equal(&equality, U256::ONE, &limits),
+                    path.can_equal(&equality, U256::ONE, &limits, product_algebra().borrowed()),
                     CheckResult::MayBeFeasible,
                     "unknown input does not prove that the hashes differ"
                 );
@@ -375,19 +393,19 @@ fn overlapping_copy_hashes_do_not_claim_preservation_from_wrapped_range_ends() {
                 let new_hash = U256::from_be_bytes(keccak256(changed).0);
                 assert_ne!(old_hash, new_hash);
                 assert_eq!(
-                    path.local_value(&before, &limits),
-                    ValueQuery::Exact(old_hash)
+                    path.local_value(&before, &limits, product_algebra().borrowed()),
+                    EvmValueQuery::Exact(old_hash)
                 );
                 assert_eq!(
-                    path.local_value(&after, &limits),
-                    ValueQuery::Exact(new_hash)
+                    path.local_value(&after, &limits, product_algebra().borrowed()),
+                    EvmValueQuery::Exact(new_hash)
                 );
                 assert_eq!(
-                    path.local_value(&equality, &limits),
-                    ValueQuery::Exact(U256::ZERO)
+                    path.local_value(&equality, &limits, product_algebra().borrowed()),
+                    EvmValueQuery::Exact(U256::ZERO)
                 );
                 assert_eq!(
-                    path.can_equal(&equality, U256::ONE, &limits),
+                    path.can_equal(&equality, U256::ONE, &limits, product_algebra().borrowed()),
                     CheckResult::ProvenImpossible,
                     "these concrete padded byte sequences have distinct hashes"
                 );

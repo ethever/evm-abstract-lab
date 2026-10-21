@@ -1,13 +1,13 @@
-//! Native comparison/copy metering, distinct from expanding the report's DAG.
-//! Entries, map lookups and fixed-size node data are metering primitives; set
-//! contents and recursive scalar comparisons record their retained cardinality.
+//! Informational export statistics for native comparisons and copies.
+//! The postprocessing ledger separately admits native SSA work. These counts
+//! record retained payload sizes and keep cancellation observable.
 use super::symbolic;
 use evm_abstract::{
     domain::{
-        AbstractValue,
+        EvmValue, WordElement,
         symbolic::{ExprId, ExprKind},
     },
-    world::ByteArray,
+    world::EvmByteArray,
 };
 use evm_abstract_protocol as api;
 
@@ -16,8 +16,8 @@ pub(super) struct BufferWork {
 }
 
 impl BufferWork {
-    pub(super) fn new(
-        source: &ByteArray,
+    pub(super) fn new<N: WordElement>(
+        source: &EvmByteArray<N>,
         export: &mut symbolic::Pool<'_>,
     ) -> Result<Self, api::ApiError> {
         // Count reads are O(1). Record the scan before inspecting entries.
@@ -43,10 +43,10 @@ impl BufferWork {
         Ok(Self { copy })
     }
 
-    pub(super) fn comparison(
+    pub(super) fn comparison<N: WordElement>(
         &self,
-        source: &ByteArray,
-        candidate: &ByteArray,
+        source: &EvmByteArray<N>,
+        candidate: &EvmByteArray<N>,
         export: &mut symbolic::Pool<'_>,
     ) -> Result<bool, api::ApiError> {
         export.charge(5)?;
@@ -95,20 +95,21 @@ impl BufferWork {
     }
 }
 
-fn scalar_copy_work(value: &AbstractValue) -> usize {
-    // NumericValue and OriginSet use cached set lengths. The counted elements
+fn scalar_copy_work<N: WordElement>(value: &EvmValue<N>) -> usize {
+    // The numeric carrier and OriginSet provide cached work bounds. The counted elements
     // estimate the later copy/compare; reading this estimate does not scan sets.
     value
         .numeric()
         .work_size()
+        .saturating_add(value.numeric().clone_work())
         .saturating_add(value.provenance().origins().work_size())
         // Code-address role, identity, symbolic-limit flag and optional handle.
         .saturating_add(4)
 }
 
-fn scalar_extra(
-    source: &AbstractValue,
-    candidate: &AbstractValue,
+fn scalar_extra<N: WordElement>(
+    source: &EvmValue<N>,
+    candidate: &EvmValue<N>,
     export: &mut symbolic::Pool<'_>,
 ) -> Result<usize, api::ApiError> {
     match (source.expression(), candidate.expression()) {

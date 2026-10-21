@@ -1,15 +1,14 @@
 //! A client shared table retains local snapshots only until their scope retires.
+
+#[cfg(test)]
+use crate::analysis::testing::{Account, ByteArray, Entry, TestValue, World};
 use crate::{
     Fork,
     analysis::{
         EnginePolicies, ExecutionConfig, MachineError, Status,
-        cooperation::{
-            Extension, ExtraStores, Input, InputRoute, Inputs, SharedRoute, Subject,
-            analyze_world_cooperating,
-        },
+        cooperation::{Extension, ExtraStores, Input, InputRoute, Inputs, SharedRoute, Subject},
     },
-    domain::{AbstractValue, Domain, NumericValue, ValueAlgebra},
-    world::{Account, ByteArray, Entry, World},
+    domain::{NumericValue, ProductAlgebra, ValueAlgebra},
 };
 use alloy_primitives::{Address, U256};
 use analysis_kernel::{
@@ -238,7 +237,7 @@ fn client_shared_scoped_payloads_are_reclaimed_across_generations_without_touchi
     let entry = Entry::concrete(
         owner,
         Address::ZERO,
-        AbstractValue::constant(U256::ZERO),
+        TestValue::constant(U256::ZERO),
         ByteArray::empty(),
     );
     let counts = Rc::new(Counts::default());
@@ -248,17 +247,19 @@ fn client_shared_scoped_payloads_are_reclaimed_across_generations_without_touchi
         dead_during_run: 0,
     })
     .with_shared_stores(Factory(Rc::clone(&counts)));
-    let result = analyze_world_cooperating(
-        world,
-        entry,
+    let result = crate::analysis::AnalysisEngine::new(
+        &ValueAlgebra::new(ProductAlgebra::default()),
+        &EnginePolicies::default(),
+        &mut extension,
+    )
+    .run(
+        crate::analysis::AnalysisInput::new(world, entry).unwrap(),
         ExecutionConfig {
             max_work: 1_000_000_000,
             root_terminal_coverage: false,
             ..ExecutionConfig::default()
         },
-        &ValueAlgebra::new(Domain::default()),
-        &EnginePolicies::default(),
-        &mut extension,
+        &crate::analysis::control::Control::default(),
     )
     .unwrap();
     assert_eq!(

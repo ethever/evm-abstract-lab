@@ -1,20 +1,28 @@
 //! LOG sites retain captured code identity across creation and runtime calls.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+
+#[path = "support/native.rs"]
+mod native;
 
 use alloy_primitives::{B256, hex, keccak256};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
-    domain::{AbstractValue, Domain},
+    analysis::{EvmWorldAnalysis, ExecutionConfig, OutcomeKind, Status},
+    domain::EvmValue,
     render,
-    world::{AbstractLog, Account, ByteArray, Entry, LogKey, LogSourceKind, Store, World},
+    world::{
+        EvmAccount, EvmByteArray, EvmEntry, EvmLog, EvmStore, EvmWorld, LogKey, LogSourceKind,
+    },
 };
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(number))
 }
 
 fn push2(bytes: &mut Vec<u8>, number: usize) {
@@ -54,25 +62,47 @@ fn factory(initcode: &[u8], repeated_call: bool) -> Vec<u8> {
     bytes
 }
 
-fn analyze_deploy_and_call(initcode: &[u8], owner: Address, repeated_call: bool) -> WorldAnalysis {
+fn analyze_deploy_and_call(
+    initcode: &[u8],
+    owner: Address,
+    repeated_call: bool,
+) -> EvmWorldAnalysis<NumericValue> {
+    let mut numeric_limits = native::product().spec().relations();
+
     let child = owner.create(0);
     let code = factory(initcode, repeated_call);
-    let mut world = World::new(Fork::Osaka, "issue134:log-source");
-    let mut account = Account::from_hex(&hex::encode(&code), world.fork()).unwrap();
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "issue134:log-source");
+    let mut account =
+        EvmAccount::<NumericValue>::from_hex(&hex::encode(&code), world.fork()).unwrap();
     account.balance = word(100);
     world.insert(owner, account).unwrap();
-    world.insert(child, Account::absent()).unwrap();
+    world
+        .insert(child, EvmAccount::<NumericValue>::absent())
+        .unwrap();
     // CREATE also covers an initcode-gas failure that returns zero.
     // A subsequent CALL(0) is empty in this finite fixture, rather than
     // an unrelated unknown contract that could reenter the factory.
-    world.insert(Address::ZERO, Account::absent()).unwrap();
-    let entry = Entry::concrete(owner, address(0x1000), word(0), ByteArray::empty());
-    let mut config = ExecutionConfig {
+    world
+        .insert(Address::ZERO, EvmAccount::<NumericValue>::absent())
+        .unwrap();
+    let entry = EvmEntry::<NumericValue>::concrete(
+        owner,
+        address(0x1000),
+        word(0),
+        EvmByteArray::<NumericValue>::empty(),
+    );
+    let config = ExecutionConfig {
         max_work: 100_000_000,
         ..ExecutionConfig::default()
     };
-    config.analysis.relations.enabled = false;
-    analyze_world(world, entry, config).unwrap()
+    numeric_limits.enabled = false;
+    native::run(
+        &native::product_with(native::spec(8, 4, 256).with_relations(numeric_limits)),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -134,15 +164,21 @@ fn actual_init_and_runtime_same_owner_same_pc_keep_distinct_log_arities() {
             assert!(init_log.topics.is_empty());
             assert_eq!(runtime_log.topics.len(), 1);
             assert_eq!(runtime_log.topics[0].singleton(), Some(U256::ZERO));
-            assert_eq!(init_log.data.exact_bytes(), Some(init_data.clone()));
-            assert_eq!(runtime_log.data.exact_bytes(), Some(runtime_data.clone()));
+            assert_eq!(
+                init_log.data.exact_bytes(native::product().borrowed()),
+                Some(init_data.clone())
+            );
+            assert_eq!(
+                runtime_log.data.exact_bytes(native::product().borrowed()),
+                Some(runtime_data.clone())
+            );
             assert_eq!(store.raw_account_code(child), Some(runtime.clone()));
             for replay in [
                 store.clone(),
                 store
-                    .summary_projection(Domain::default())
+                    .summary_projection(native::product().borrowed())
                     .unwrap()
-                    .instantiate(Domain::default())
+                    .instantiate(native::product().borrowed())
                     .unwrap(),
             ] {
                 assert!(replay.possible_logs().get(&init_key).is_some());
@@ -169,7 +205,8 @@ fn actual_init_and_runtime_same_owner_same_pc_keep_distinct_log_arities() {
                         && log["pc"] == expected["pc"]));
                 }
             }
-            let text = render::world::text(&analysis);
+            let text =
+                render::world::text(&analysis, &native::product_with(analysis.domain_spec()));
             assert!(text.contains("source=Init"));
             assert!(text.contains("source=Runtime"));
             assert!(text.contains(&keccak256(&initcode).to_string()));
@@ -228,9 +265,9 @@ fn assert_actual_pc3_log_control(prefix: &[u8], init_emits_log: bool) {
     for replay in [
         store.clone(),
         store
-            .summary_projection(Domain::default())
+            .summary_projection(native::product().borrowed())
             .unwrap()
-            .instantiate(Domain::default())
+            .instantiate(native::product().borrowed())
             .unwrap(),
     ] {
         assert_eq!(replay.possible_logs().len(), keys.len());
@@ -248,7 +285,10 @@ fn assert_actual_pc3_log_control(prefix: &[u8], init_emits_log: bool) {
             let log = &replay.possible_logs()[*key];
             assert_eq!(log.topics.len(), 1);
             assert_eq!(log.topics[0].singleton(), Some(U256::ZERO));
-            assert_eq!(log.data.exact_bytes(), Some(vec![]));
+            assert_eq!(
+                log.data.exact_bytes(native::product().borrowed()),
+                Some(vec![])
+            );
         }
     }
     let native = serde_json::to_value(store).unwrap();
@@ -270,7 +310,7 @@ fn assert_actual_pc3_log_control(prefix: &[u8], init_emits_log: bool) {
             assert!(logs.contains(&expected));
         }
     }
-    let text = render::world::text(&analysis);
+    let text = render::world::text(&analysis, &native::product_with(analysis.domain_spec()));
     assert_eq!(text.contains("source=Init"), init_emits_log);
     assert!(text.contains("source=Runtime"));
     assert!(text.contains(&keccak256(&runtime).to_string()));
@@ -291,9 +331,9 @@ fn actual_runtime_log_after_init_without_log_has_only_runtime_source() {
 
 #[test]
 fn mode_and_captured_code_versions_separate_sites_while_same_source_aggregates() {
-    let domain = Domain::default();
-    let world = World::new(Fork::Osaka, "issue134:log-identity");
-    let mut store = Store::new_checked(&world, domain).unwrap();
+    let domain = native::product();
+    let world = EvmWorld::<NumericValue>::new(Fork::Osaka, "issue134:log-identity");
+    let mut store = EvmStore::<NumericValue>::new_checked(&world, domain.borrowed()).unwrap();
     let init = LogKey {
         address: address(0x200),
         code_address: address(0x300),
@@ -318,11 +358,11 @@ fn mode_and_captured_code_versions_separate_sites_while_same_source_aggregates()
         store
             .emit_log(
                 key,
-                AbstractLog {
+                EvmLog {
                     topics,
-                    data: ByteArray::exact(&data),
+                    data: EvmByteArray::<NumericValue>::exact(&data),
                 },
-                domain,
+                domain.borrowed(),
             )
             .unwrap();
     }
@@ -336,33 +376,33 @@ fn mode_and_captured_code_versions_separate_sites_while_same_source_aggregates()
         assert!(
             combined
                 .data
-                .read_byte_checked(&word(0), domain)
+                .read_byte_checked(&word(0), domain.borrowed())
                 .unwrap()
                 .contains(marker)
         );
     }
     let replay = store
-        .summary_projection(domain)
+        .summary_projection(domain.borrowed())
         .unwrap()
-        .instantiate(domain)
+        .instantiate(domain.borrowed())
         .unwrap();
     assert_eq!(
         replay.possible_logs().keys().collect::<Vec<_>>(),
         store.possible_logs().keys().collect::<Vec<_>>()
     );
     let original = store.clone();
-    let mut other = Store::new_checked(&world, domain).unwrap();
+    let mut other = EvmStore::<NumericValue>::new_checked(&world, domain.borrowed()).unwrap();
     other
         .emit_log(
             other_version,
-            AbstractLog {
+            EvmLog {
                 topics: vec![word(5), word(6)],
-                data: ByteArray::exact(&[0xcc]),
+                data: EvmByteArray::<NumericValue>::exact(&[0xcc]),
             },
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
-    let joined = original.join(&other, domain);
+    let joined = original.join(&other, domain.borrowed());
     assert_eq!(joined.possible_logs().len(), 3);
     assert!(!joined.logs_unknown());
 }

@@ -2,19 +2,17 @@
 
 use super::{EvmByteArray, EvmValue, ExprError, ExprId, RangeError, restore_presentation, scalar};
 use crate::domain::AlgebraRef;
-#[cfg(test)]
-use crate::domain::{AbstractValue, Domain};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 #[cfg(test)]
-use crate::world::ByteArray;
-#[cfg(test)]
-use crate::world::bytes::zero;
+use crate::world::test_support::TestBytes;
 use crate::{
     domain::symbolic::{ByteStateId, ByteStateKind, ExprKind},
-    world::bytes::{numeric, zero_with},
+    world::bytes::{numeric, zero},
 };
 use alloy_primitives::U256;
 use std::collections::BTreeMap;
+#[cfg(test)]
+use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 #[cfg(test)]
 mod tests;
@@ -49,7 +47,7 @@ fn refresh_with<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     {
         // Use exactly the Reader's length lookup after the fresh operand was
         // installed, with relations disabled; do not project old summary facts.
-        let length = numeric::scalar(length, &out.operands, numeric::numeric_domain_with(domain));
+        let length = numeric::scalar(length, &out.operands, numeric::numeric_domain(domain));
         Some((bindings, crate::world::unsigned_bounds(&length)))
     } else {
         None
@@ -75,7 +73,7 @@ fn refresh_with<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                     return None;
                 }
                 if at >= upper {
-                    Some(zero_with())
+                    Some(zero())
                 } else {
                     // Q is the actual emitted carrier, including every numeric
                     // component. Final scalar below discards all read metadata.

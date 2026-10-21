@@ -4,9 +4,9 @@ use super::super::{
 };
 use crate::{
     Fork, U256,
-    analysis::{EnginePolicies, ExecutionConfig, FrontierReason, Status, analyze_world_with},
+    analysis::{EnginePolicies, ExecutionConfig, FrontierReason, Status},
     domain::{
-        Domain, EvmValue, ValueAlgebra, WordElement, identity::Symbol, provenance::Origin,
+        EvmValue, ProductAlgebra, ValueAlgebra, WordElement, identity::Symbol, provenance::Origin,
         relational::QueryReason, symbolic::ExprId,
     },
     world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
@@ -65,8 +65,17 @@ fn production_environment_queries_have_an_explicit_payer() {
             r.quotes = 0;
             r.queries = 0;
         });
-        let result =
-            analyze_world_with(world, entry, config, &algebra, &EnginePolicies::default()).unwrap();
+        let result = crate::analysis::AnalysisEngine::new(
+            &algebra,
+            &EnginePolicies::default(),
+            &mut crate::analysis::cooperation::NoExtension,
+        )
+        .run(
+            crate::analysis::AnalysisInput::new(world, entry).unwrap(),
+            config,
+            &crate::analysis::control::Control::default(),
+        )
+        .unwrap();
         let r = RECEIPT.get();
         eprintln!(
             "baseline {name}: status={:?} work={} quotes={} queries={} fee=MAX frontiers={:?}",
@@ -258,7 +267,7 @@ fn block_hash_prepays_each_opaque_input_once_and_refuses_atomically() {
             .environment
             .block_hashes
             .insert(U256::from(queried_index), U256::from(42).into());
-        let envelope = algebra.operation_work(&[]);
+        let envelope = algebra.operation_work(revm_bytecode::opcode::BLOCKHASH, &[]);
         for (fee, remaining, allowed) in [
             (61, 61, true),
             (61, 60, false),
@@ -310,7 +319,7 @@ fn block_hash_checks_current_and_captured_cancellation_at_each_query_boundary() 
                 EvmValue::constant(U256::from(6)).with_expression(ExprId::constant(U256::from(6)));
             let mut budget =
                 analysis_control::with_cancellation(&owner, || WorkBudget::new(1_000_000));
-            let envelope = algebra.operation_work(&[]);
+            let envelope = algebra.operation_work(revm_bytecode::opcode::BLOCKHASH, &[]);
             assert!(budget.charge(envelope));
             if stage == 0 {
                 if captured {
@@ -348,7 +357,7 @@ fn block_hash_cached_boundary_proofs_avoid_unnecessary_opaque_discovery() {
     entry.environment.number = tagged(7);
     let max_index = EvmValue::constant(U256::MAX).with_expression(ExprId::constant(U256::MAX));
     let mut budget = WorkBudget::new(100_000);
-    assert!(budget.charge(algebra.operation_work(&[])));
+    assert!(budget.charge(algebra.operation_work(revm_bytecode::opcode::BLOCKHASH, &[])));
     let out = super::block_hash(
         &entry.environment,
         &max_index,
@@ -378,10 +387,10 @@ fn block_hash_cached_boundary_proofs_avoid_unnecessary_opaque_discovery() {
 
 #[test]
 fn block_hash_keeps_recent_window_and_finite_or_unknown_index_semantics() {
-    let algebra = ValueAlgebra::new(Domain::default());
-    let mut env = crate::world::EvmEnvironment {
-        number: crate::domain::AbstractValue::constant(U256::from(300)),
-        ..crate::world::EvmEnvironment::default()
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let mut env = crate::analysis::testing::EvmEnvironment {
+        number: crate::analysis::testing::TestValue::constant(U256::from(300)),
+        ..crate::analysis::testing::EvmEnvironment::default()
     };
     for index in [0, 43, 44, 299, 300, 301] {
         env.block_hashes
@@ -389,10 +398,10 @@ fn block_hash_keeps_recent_window_and_finite_or_unknown_index_semantics() {
     }
     for (index, expected) in [(0, 0), (43, 0), (44, 42), (299, 42), (300, 0), (301, 0)] {
         let mut budget = WorkBudget::new(1_000_000);
-        assert!(budget.charge(algebra.operation_work(&[])));
+        assert!(budget.charge(algebra.operation_work(revm_bytecode::opcode::BLOCKHASH, &[])));
         let out = super::block_hash(
             &env,
-            &crate::domain::AbstractValue::constant(U256::from(index)),
+            &crate::analysis::testing::TestValue::constant(U256::from(index)),
             algebra.borrowed(),
             &mut budget,
         )
@@ -400,22 +409,22 @@ fn block_hash_keeps_recent_window_and_finite_or_unknown_index_semantics() {
         assert_eq!(out.singleton(), Some(U256::from(expected)), "index={index}");
     }
     let finite = algebra.join(
-        &crate::domain::AbstractValue::constant(U256::from(44)),
-        &crate::domain::AbstractValue::constant(U256::from(300)),
+        &crate::analysis::testing::TestValue::constant(U256::from(44)),
+        &crate::analysis::testing::TestValue::constant(U256::from(300)),
     );
     let mut budget = WorkBudget::new(1_000_000);
-    assert!(budget.charge(algebra.operation_work(&[]) * 2));
+    assert!(budget.charge(algebra.operation_work(revm_bytecode::opcode::BLOCKHASH, &[]) * 2));
     let out = super::block_hash(&env, &finite, algebra.borrowed(), &mut budget).unwrap();
     for word in 0..=50 {
         assert_eq!(out.contains(U256::from(word)), matches!(word, 0 | 42));
     }
-    let unknown = crate::domain::AbstractValue::top();
+    let unknown = crate::analysis::testing::TestValue::top();
     let out = super::block_hash(&env, &unknown, algebra.borrowed(), &mut budget).unwrap();
     assert!(out.numeric().is_top());
     env.number = unknown.clone();
     let out = super::block_hash(
         &env,
-        &crate::domain::AbstractValue::constant(U256::from(44)),
+        &crate::analysis::testing::TestValue::constant(U256::from(44)),
         algebra.borrowed(),
         &mut budget,
     )
@@ -450,7 +459,7 @@ fn blob_hash_pays_length_or_index_once_with_atomic_refusal_and_cancellation() {
                 U256::from(if watch_length { 6 } else { 7 }),
                 U256::from(42).into(),
             );
-            let envelope = algebra.operation_work(&[]);
+            let envelope = algebra.operation_work(revm_bytecode::opcode::BLOBHASH, &[]);
             let mut budget = WorkBudget::new(envelope + if mode == 2 { 60 } else { 61 });
             assert!(budget.charge(envelope));
             let token = analysis_control::Cancellation::new();
@@ -538,14 +547,14 @@ fn cancellation_during_environment_discovery_publishes_no_transfer_effect() {
 
 #[test]
 fn blob_hash_keeps_closed_open_and_partial_table_semantics() {
-    let algebra = ValueAlgebra::new(Domain::default());
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let mut env = crate::world::EvmBlobHashes::exact(&[U256::from(42).into()]);
     let mut budget = WorkBudget::new(1_000_000);
-    assert!(budget.charge(algebra.operation_work(&[]) * 8));
+    assert!(budget.charge(algebra.operation_work(revm_bytecode::opcode::BLOBHASH, &[]) * 8));
     for (index, expected) in [(U256::ZERO, 42), (U256::ONE, 0), (U256::MAX, 0)] {
         let out = super::blob_hash(
             &env,
-            &crate::domain::AbstractValue::constant(index),
+            &crate::analysis::testing::TestValue::constant(index),
             Some(4),
             algebra.borrowed(),
             &mut budget,
@@ -553,10 +562,10 @@ fn blob_hash_keeps_closed_open_and_partial_table_semantics() {
         .unwrap();
         assert_eq!(out.singleton(), Some(U256::from(expected)));
     }
-    env.length = crate::domain::AbstractValue::top();
+    env.length = crate::analysis::testing::TestValue::top();
     let out = super::blob_hash(
         &env,
-        &crate::domain::AbstractValue::constant(U256::ZERO),
+        &crate::analysis::testing::TestValue::constant(U256::ZERO),
         Some(4),
         algebra.borrowed(),
         &mut budget,
@@ -565,7 +574,7 @@ fn blob_hash_keeps_closed_open_and_partial_table_semantics() {
     assert_eq!(out.singleton(), Some(U256::from(42)));
     let out = super::blob_hash(
         &env,
-        &crate::domain::AbstractValue::constant(U256::ONE),
+        &crate::analysis::testing::TestValue::constant(U256::ONE),
         Some(4),
         algebra.borrowed(),
         &mut budget,
@@ -578,17 +587,17 @@ fn blob_hash_keeps_closed_open_and_partial_table_semantics() {
     );
     let out = super::blob_hash(
         &env,
-        &crate::domain::AbstractValue::top(),
+        &crate::analysis::testing::TestValue::top(),
         Some(4),
         algebra.borrowed(),
         &mut budget,
     )
     .unwrap();
     assert!(out.numeric().is_top());
-    env.length = crate::domain::AbstractValue::constant(U256::ZERO);
+    env.length = crate::analysis::testing::TestValue::constant(U256::ZERO);
     let out = super::blob_hash(
         &env,
-        &crate::domain::AbstractValue::top(),
+        &crate::analysis::testing::TestValue::top(),
         Some(4),
         algebra.borrowed(),
         &mut budget,
@@ -622,7 +631,14 @@ fn opaque_unknown_bound_reuses_its_paid_negative_answer() {
             EvmValue::constant(U256::from(6)).with_expression(ExprId::constant(U256::from(6)));
         watched_setup();
         RECEIPT.update(|r| r.watched = None);
-        let envelope = algebra.operation_work(&[]);
+        let envelope = algebra.operation_work(
+            if blob {
+                revm_bytecode::opcode::BLOBHASH
+            } else {
+                revm_bytecode::opcode::BLOCKHASH
+            },
+            &[],
+        );
         let mut budget = WorkBudget::new(envelope + 61);
         assert!(budget.charge(envelope));
         let out = if blob {

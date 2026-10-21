@@ -24,7 +24,7 @@ impl<N: WordElement> EvmByteArraySummary<N> {
 
     /// Keep length independently of content; omitted cells remain arbitrary
     /// bytes. Zero is retained only when the complete logical content is zero.
-    pub(crate) fn project_to_layout_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn project_to_layout<D: EvmNumericAlgebra<Element = N>>(
         &self,
         layout: &Self,
         _domain: AlgebraRef<'_, D>,
@@ -39,7 +39,7 @@ impl<N: WordElement> EvmByteArraySummary<N> {
                     .then_some((index, value))
             })
             .collect::<std::collections::BTreeMap<_, _>>();
-        let zero_with = matches!(self.content, Content::<N>::Zero)
+        let zero = matches!(self.content, Content::<N>::Zero)
             || usize::try_from(crate::world::unsigned_bounds(&self.length).1)
                 .ok()
                 .filter(|upper| *upper <= cells.len())
@@ -58,7 +58,7 @@ impl<N: WordElement> EvmByteArraySummary<N> {
                 .filter(|(index, _)| layout.words.contains_key(index))
                 .map(|(index, value)| (*index, value.clone()))
                 .collect(),
-            content: if zero_with {
+            content: if zero {
                 Content::<N>::Zero
             } else {
                 Content::<N>::Cells(cells)

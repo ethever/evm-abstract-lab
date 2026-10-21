@@ -1,15 +1,17 @@
 //! A public-API client defines its own routed capability and two components.
+
+#[cfg(test)]
+use crate::analysis::testing::{Account, ByteArray, Entry, TestValue, World};
 use crate::{
     Fork,
     analysis::{
         EnginePolicies, ExecutionConfig, FrontierReason, Status,
         cooperation::{
             Extension, ExtraStores, InputRoute, Inputs, PairedTasks, PerInput, RefinementRoute,
-            Refinements, StackFacts, Subject, analyze_world_cooperating,
+            Refinements, StackFacts, Subject,
         },
     },
-    domain::{AbstractValue, Domain, NumericValue, ValueAlgebra, WordObservation},
-    world::{Account, ByteArray, Entry, World},
+    domain::{NumericValue, ProductAlgebra, ValueAlgebra, WordObservation},
 };
 use alloy_primitives::{Address, U256};
 use analysis_kernel::{
@@ -157,12 +159,12 @@ fn run(exhaust: bool) -> (crate::analysis::WorldAnalysis, usize, usize, usize) {
     let owner = Address::from_word(U256::from(0x101).into());
     let mut world = World::new(Fork::Osaka, "public-extra-store-client");
     let mut account = Account::from_hex("5f5b00", Fork::Osaka).unwrap();
-    account.balance = AbstractValue::constant(U256::from(1_000_000));
+    account.balance = TestValue::constant(U256::from(1_000_000));
     world.insert(owner, account).unwrap();
     let entry = Entry::concrete(
         owner,
         Address::ZERO,
-        AbstractValue::constant(U256::ZERO),
+        TestValue::constant(U256::ZERO),
         ByteArray::empty(),
     );
     let factories = Rc::new(Cell::new(0));
@@ -182,20 +184,19 @@ fn run(exhaust: bool) -> (crate::analysis::WorldAnalysis, usize, usize, usize) {
         stores: Stores(Rc::clone(&factories)),
         shared: crate::analysis::cooperation::NoStores,
     };
-    let algebra = ValueAlgebra::new(Domain::default());
-    let result = analyze_world_cooperating(
-        world,
-        entry,
-        ExecutionConfig {
-            max_work: 10_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        },
-        &algebra,
-        &EnginePolicies::default(),
-        &mut extension,
-    )
-    .unwrap();
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let result =
+        crate::analysis::AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
+            .run(
+                crate::analysis::AnalysisInput::new(world, entry).unwrap(),
+                ExecutionConfig {
+                    max_work: 10_000_000,
+                    root_terminal_coverage: false,
+                    ..ExecutionConfig::default()
+                },
+                &crate::analysis::control::Control::default(),
+            )
+            .unwrap();
     (result, factories.get(), produced.get(), changed.get())
 }
 

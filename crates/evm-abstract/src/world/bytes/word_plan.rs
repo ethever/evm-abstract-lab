@@ -2,11 +2,9 @@
 
 use super::{EvmByteArray, RangeError, conditional, expr, limits, numeric, operands, reads};
 use crate::domain::AlgebraRef;
-#[cfg(test)]
-use crate::domain::{AbstractValue, Domain, ValueAlgebra};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 #[cfg(test)]
-use crate::world::ByteArray;
+use crate::world::test_support::TestBytes;
 use crate::{
     domain::{
         EvmValue,
@@ -19,6 +17,8 @@ use crate::{
 };
 use alloy_primitives::U256;
 use std::collections::BTreeMap;
+#[cfg(test)]
+use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 // This quantum bounds only the decision to use an optional cache. It is never
 // an expression policy or a boundary of the complete word-read algorithm.
@@ -30,34 +30,17 @@ const PLANNING_QUANTUM: usize = 4096;
 pub(crate) struct Plan<
     'a,
     N: WordElement = crate::domain::NumericValue,
-    D: EvmNumericAlgebra<Element = N> = crate::domain::Domain,
+    D: EvmNumericAlgebra<Element = N> = crate::domain::ProductAlgebra,
 > {
     root: ByteStateId,
     length: Option<EvmValue<N>>,
     facts: BTreeMap<ExprId, EvmValue<N>>,
     conditional: conditional::ConditionalFacts<N>,
     offset: EvmValue<N>,
-    policy: PlanPolicy<'a, D>,
+    policy: AlgebraRef<'a, D>,
     failure: Option<RangeError>,
     preparation: Option<conditional::Preparation>,
     fallback_work: usize,
-}
-
-// Production plans borrow the original D. Private default-carrier test helpers
-// own their small Domain policy for deferred reads.
-enum PlanPolicy<'a, D: EvmNumericAlgebra> {
-    Borrowed(AlgebraRef<'a, D>),
-    #[cfg(test)]
-    Owned(ValueAlgebra<D>),
-}
-impl<D: EvmNumericAlgebra> PlanPolicy<'_, D> {
-    fn view(&self) -> AlgebraRef<'_, D> {
-        match self {
-            Self::Borrowed(domain) => *domain,
-            #[cfg(test)]
-            Self::Owned(domain) => domain.borrowed(),
-        }
-    }
 }
 
 fn charge(budget: &mut WorkBudget, work: usize) -> Result<bool, RangeError> {
@@ -81,10 +64,10 @@ impl<N: WordElement> EvmByteArray<N> {
     fn prepare_word_read_policy<'a, D: EvmNumericAlgebra<Element = N>>(
         &self,
         offset: &EvmValue<N>,
-        policy: PlanPolicy<'a, D>,
+        policy: AlgebraRef<'a, D>,
         budget: &mut WorkBudget,
     ) -> Result<Option<Plan<'a, N, D>>, RangeError> {
-        let domain = policy.view();
+        let domain = policy;
         let length_work = if self.memory {
             0
         } else {
@@ -123,7 +106,7 @@ impl<N: WordElement> EvmByteArray<N> {
         } else {
             None
         };
-        let fallback_work = self.word_numeric_work_with(offset, domain);
+        let fallback_work = self.word_numeric_work(offset, domain);
         let full_work = preparation.as_ref().map_or(fallback_work, |_| {
             self.root
                 .work_size()
@@ -180,7 +163,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Plan<'a, N, D> {
         mut self,
         budget: &mut WorkBudget,
     ) -> Result<Option<EvmValue<N>>, RangeError> {
-        let domain = self.policy.view();
+        let domain = self.policy;
         if let Some(error) = self.failure {
             return Err(error);
         }
@@ -506,86 +489,77 @@ impl<'a> Census<'a> {
 }
 
 impl<N: WordElement> EvmByteArray<N> {
-    pub(crate) fn prepare_word_read_with<'a, D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn prepare_word_read<'a, D: EvmNumericAlgebra<Element = N>>(
         &self,
         offset: &EvmValue<N>,
         domain: AlgebraRef<'a, D>,
         budget: &mut WorkBudget,
     ) -> Result<Option<Plan<'a, N, D>>, RangeError> {
-        self.prepare_word_read_policy(offset, PlanPolicy::Borrowed(domain), budget)
-    }
-}
-#[cfg(test)]
-impl EvmByteArray<crate::domain::NumericValue> {
-    pub(crate) fn prepare_word_read(
-        &self,
-        offset: &crate::domain::AbstractValue,
-        domain: crate::domain::Domain,
-        budget: &mut WorkBudget,
-    ) -> Result<Option<Plan<'static>>, RangeError> {
-        self.prepare_word_read_policy(offset, PlanPolicy::Owned(ValueAlgebra::new(domain)), budget)
+        self.prepare_word_read_policy(offset, domain, budget)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        Fork,
-        analysis::{ExecutionConfig, OutcomeKind, Status, analyze_world},
-        domain::{provenance::Origin, symbolic::SourceId},
-        world::{
-            Account, Entry, World,
-            bytes::{constant, zero},
-        },
-    };
     use alloy_primitives::Address;
+    use {
+        crate::Fork, crate::analysis::ExecutionConfig, crate::analysis::OutcomeKind,
+        crate::analysis::Status, crate::domain::provenance::Origin,
+        crate::domain::symbolic::SourceId, crate::world::bytes::constant,
+        crate::world::bytes::zero, crate::world::test_support::TestAccount,
+        crate::world::test_support::TestEntry, crate::world::test_support::TestWorld,
+    };
 
-    fn guarded_tree(depth: usize, domain: Domain) -> ByteArray {
+    fn guarded_tree(depth: usize, domain: TestAlgebra) -> TestBytes {
         if depth == 0 {
-            let mut memory = ByteArray::memory();
+            let mut memory = TestBytes::memory();
             let value = constant(7)
                 .with_origin(Origin::Storage)
                 .with_expression(ExprId::fresh().unwrap());
-            memory.write_word(&zero(), &value, 4096, domain).unwrap();
+            memory
+                .write_word(&zero(), &value, domain.borrowed())
+                .unwrap();
             return memory;
         }
         guarded_tree(depth - 1, domain)
             .join_guarded(
                 &guarded_tree(depth - 1, domain),
-                domain,
+                domain.borrowed(),
                 ExprId::fresh().unwrap(),
-                limits(crate::domain::ValueAlgebra::new(&domain)),
+                limits(domain.borrowed()),
             )
             .unwrap()
     }
 
     #[test]
     fn three_retained_ites_complete_the_paid_plan_and_native_calldataload() {
-        let domain = Domain::default();
+        let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
         // Three retained state ITEs need seven actual contexts. The former
         // sequence bound rejected the third site as 1 + 6 + 36 > 32.
         let memory = guarded_tree(2, domain);
-        let expected = memory.read_word_checked(&zero(), domain).unwrap();
+        let expected = memory
+            .read_word_checked(&zero(), domain.borrowed())
+            .unwrap();
         let mut probe_budget = WorkBudget::new(100_000_000);
         let plan = memory
-            .prepare_word_read(&zero(), domain, &mut probe_budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut probe_budget)
             .unwrap()
             .unwrap();
         let preparation = plan.preparation.as_ref().unwrap();
         let context = conditional::Context::prepared(
             &plan.facts,
             &plan.conditional,
-            crate::domain::ValueAlgebra::new(&domain),
+            domain.borrowed(),
             preparation.nodes,
         );
         assert_eq!(
             evaluate(
                 &plan.root,
                 None,
-                &expr(&zero()).unwrap(),
+                &expr(&zero::<crate::domain::NumericValue>()).unwrap(),
                 &context,
-                crate::domain::ValueAlgebra::new(&domain)
+                domain.borrowed()
             )
             .unwrap(),
             Some(expected.clone())
@@ -597,7 +571,7 @@ mod tests {
         // The observation probe and the production read each own a paid plan.
         let mut budget = WorkBudget::new(100_000_000);
         let plan = memory
-            .prepare_word_read(&zero(), domain, &mut budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut budget)
             .unwrap()
             .unwrap();
         let before = budget.used();
@@ -613,20 +587,39 @@ mod tests {
             "a completed attempt owes no fallback"
         );
 
-        let calldata = memory.slice(&zero(), &constant(32), 4096, domain).unwrap();
-        let owner = Address::repeat_byte(0x11);
-        let mut world = World::new(Fork::Osaka, "word-plan:three-retained-ites");
-        world
-            .insert(owner, Account::from_hex("5f3500", Fork::Osaka).unwrap())
+        let calldata = memory
+            .slice(&zero(), &constant(32), domain.borrowed())
             .unwrap();
-        let analysis = analyze_world(
-            world,
-            Entry::concrete(owner, Address::repeat_byte(0x22), zero(), calldata),
-            ExecutionConfig {
-                max_work: 100_000_000,
-                ..ExecutionConfig::default()
-            },
-        )
+        let owner = Address::repeat_byte(0x11);
+        let mut world = TestWorld::new(Fork::Osaka, "word-plan:three-retained-ites");
+        world
+            .insert(owner, TestAccount::from_hex("5f3500", Fork::Osaka).unwrap())
+            .unwrap();
+        let analysis = {
+            let algebra =
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+            let policies = crate::analysis::EnginePolicies::new(
+                crate::analysis::ContextInsensitive,
+                crate::analysis::MergeResumeStatus,
+            );
+            let mut extension = crate::analysis::cooperation::NoExtension;
+            let control = crate::analysis::control::Control::default();
+            let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+            let input = crate::analysis::AnalysisInput::new(
+                world,
+                TestEntry::concrete(owner, Address::repeat_byte(0x22), zero(), calldata),
+            )
+            .unwrap();
+            let mut engine = engine;
+            engine.run(
+                input,
+                ExecutionConfig {
+                    max_work: 100_000_000,
+                    ..ExecutionConfig::default()
+                },
+                &control,
+            )
+        }
         .unwrap();
         assert_eq!(analysis.config().max_work, 100_000_000);
         assert_eq!(analysis.status(), Status::Converged);
@@ -647,29 +640,31 @@ mod tests {
 
     #[test]
     fn more_than_thirty_two_contexts_complete_with_bounded_retention() {
-        let domain = Domain::default();
+        let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
         // Five state-choice levels have 1+2+4+8+16+32 possible contexts.
         let memory = guarded_tree(5, domain);
-        let expected = memory.read_word_checked(&zero(), domain).unwrap();
+        let expected = memory
+            .read_word_checked(&zero(), domain.borrowed())
+            .unwrap();
         let mut probe_budget = WorkBudget::new(usize::MAX);
         let plan = memory
-            .prepare_word_read(&zero(), domain, &mut probe_budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut probe_budget)
             .unwrap()
             .unwrap();
         let preparation = plan.preparation.as_ref().unwrap();
         let context = conditional::Context::prepared(
             &plan.facts,
             &plan.conditional,
-            crate::domain::ValueAlgebra::new(&domain),
+            domain.borrowed(),
             preparation.nodes,
         );
         assert_eq!(
             evaluate(
                 &plan.root,
                 None,
-                &expr(&zero()).unwrap(),
+                &expr(&zero::<crate::domain::NumericValue>()).unwrap(),
                 &context,
-                crate::domain::ValueAlgebra::new(&domain)
+                domain.borrowed()
             )
             .unwrap(),
             Some(expected.clone())
@@ -685,11 +680,11 @@ mod tests {
         let trial_work = payer_tests::trial_work(plan, &mut probe_budget);
         let mut budget = WorkBudget::new(usize::MAX);
         let plan = memory
-            .prepare_word_read(&zero(), domain, &mut budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut budget)
             .unwrap()
             .unwrap();
         let before = budget.used();
-        let fallback = memory.word_numeric_work(&zero(), domain);
+        let fallback = memory.word_numeric_work(&zero(), domain.borrowed());
         assert_eq!(plan.fallback_work, fallback);
         let actual = plan.read_word_budgeted(&mut budget).unwrap().unwrap();
         assert!(trial_work > 0);
@@ -709,8 +704,8 @@ mod tests {
 
     #[test]
     fn a_small_guarded_word_admits_the_plan_and_scratch_refusal_pays_a_complete_retry() {
-        let domain = Domain::default();
-        let value = constant(7);
+        let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+        let value: TestValue = constant(7);
         let source = SlotStateId::observed(
             SourceId::fresh().unwrap(),
             (0usize..2)
@@ -720,47 +715,51 @@ mod tests {
                     numeric: value.numeric().observation(),
                 })
                 .collect(),
-            limits(crate::domain::ValueAlgebra::new(&domain)).into(),
+            limits(domain.borrowed()).into(),
         )
         .unwrap();
-        let mut branches = [ByteArray::memory(), ByteArray::memory()];
+        let mut branches = [TestBytes::memory(), TestBytes::memory()];
         for (index, memory) in branches.iter_mut().enumerate() {
             let value = value.clone().with_origin(Origin::Storage).with_expression(
                 ExprId::slot_read(
                     source.clone(),
                     ExprId::constant(U256::from(index)),
-                    limits(crate::domain::ValueAlgebra::new(&domain)),
+                    limits(domain.borrowed()),
                 )
                 .unwrap(),
             );
-            memory.write_word(&zero(), &value, 4096, domain).unwrap();
+            memory
+                .write_word(&zero(), &value, domain.borrowed())
+                .unwrap();
         }
         let mut memory = branches[0]
             .join_guarded(
                 &branches[1],
-                domain,
+                domain.borrowed(),
                 ExprId::fresh().unwrap(),
-                limits(crate::domain::ValueAlgebra::new(&domain)),
+                limits(domain.borrowed()),
             )
             .unwrap();
         assert!(
             memory.root.nodes() > conditional::CONTEXTS,
             "source definitions are not guard sites"
         );
-        let expected = memory.read_word_checked(&zero(), domain).unwrap();
+        let expected = memory
+            .read_word_checked(&zero(), domain.borrowed())
+            .unwrap();
         let mut budget = WorkBudget::new(usize::MAX);
         let plan = memory
-            .prepare_word_read(&zero(), domain, &mut budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut budget)
             .unwrap()
             .unwrap();
         assert!(plan.preparation.is_some());
         // The real MLOAD expansion changes allocation metadata after preflight.
         memory
-            .expand(&constant(96), &constant(32), 4096, domain)
+            .expand(&constant(96), &constant(32), domain.borrowed())
             .unwrap();
         let mut receipt_budget = WorkBudget::new(usize::MAX);
         let receipt_plan = memory
-            .prepare_word_read(&zero(), domain, &mut receipt_budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut receipt_budget)
             .unwrap()
             .unwrap();
         let trial_work = payer_tests::trial_work(receipt_plan, &mut receipt_budget);
@@ -777,12 +776,12 @@ mod tests {
         );
 
         let mut plan = memory
-            .prepare_word_read(&zero(), domain, &mut budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut budget)
             .unwrap()
             .unwrap();
         plan.preparation.as_mut().unwrap().nodes = 0;
         let mut receipt_plan = memory
-            .prepare_word_read(&zero(), domain, &mut receipt_budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut receipt_budget)
             .unwrap()
             .unwrap();
         receipt_plan.preparation.as_mut().unwrap().nodes = 0;
@@ -801,7 +800,7 @@ mod tests {
         );
 
         let mut plan = memory
-            .prepare_word_read(&zero(), domain, &mut budget)
+            .prepare_word_read(&zero(), domain.borrowed(), &mut budget)
             .unwrap()
             .unwrap();
         plan.preparation.as_mut().unwrap().nodes = 0;

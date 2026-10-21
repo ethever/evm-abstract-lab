@@ -19,7 +19,7 @@ impl<
     C: ContextPolicy,
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
-    X: Composition<D::Element, E>,
+    X: Composition<D::Element, Error = E>,
     E,
 > EvmSolver<'_, D, C, P, S, X, E>
 {

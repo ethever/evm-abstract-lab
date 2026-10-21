@@ -1,5 +1,8 @@
+use crate::domain::ProductAlgebra;
+
 use super::{InstructionProgress, InstructionValue};
-use crate::domain::ValueAlgebra;
+#[cfg(test)]
+use crate::analysis::testing::{Account, ByteArray, Entry, EvmEnvironment, TestValue, World};
 use crate::{
     Address, Fork, U256,
     analysis::{
@@ -7,9 +10,8 @@ use crate::{
         engine::policy::RecentDistinctJumps,
         transfer::{self, StorageReadPolicy, WorkBudget},
     },
-    domain::{AbstractValue, provenance::Origin},
+    domain::provenance::Origin,
     test_instrumentation::work_boundary,
-    world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
 
 fn address(value: u64) -> Address {
@@ -19,19 +21,24 @@ fn address(value: u64) -> Address {
 fn config() -> ExecutionConfig {
     let mut config = ExecutionConfig::default();
     config.analysis.context_depth = 0;
-    config.analysis.relations.enabled = false;
     config.use_summaries = false;
     config
+}
+
+fn numeric_spec() -> crate::domain::DomainSpec {
+    let mut limits = crate::analysis::testing::NumericLimits::default();
+    limits.relations.enabled = false;
+    limits.spec()
 }
 
 fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
     let mut world = World::new(Fork::Osaka, "instruction value receipt test");
     for (id, code) in accounts {
         let mut account = Account::from_hex(code, world.fork()).unwrap();
-        account.balance = AbstractValue::constant(U256::from(1_000_000));
+        account.balance = TestValue::constant(U256::from(1_000_000));
         account
             .storage
-            .insert(U256::ZERO, AbstractValue::constant(U256::from(7)));
+            .insert(U256::ZERO, TestValue::constant(U256::from(7)));
         world.insert(address(*id), account).unwrap();
     }
     let entry = Entry {
@@ -39,7 +46,7 @@ fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
         environment: EvmEnvironment {
             to: address(0x101).into(),
             caller: address(0x900).into(),
-            value: AbstractValue::constant(U256::from(37)),
+            value: TestValue::constant(U256::from(37)),
             calldata: ByteArray::empty(),
             ..EvmEnvironment::default()
         },
@@ -47,18 +54,19 @@ fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
     (world, entry)
 }
 
-fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {
+fn run(code: &str, config: ExecutionConfig, spec: crate::domain::DomainSpec) -> WorldAnalysis {
     let (world, entry) = fixture(&[(0x101, code)]);
-    analysis::analyze_world(world, entry, config).unwrap()
+    crate::analysis::testing::execute(world, entry, config, spec).unwrap()
 }
 
 fn pending_mload() -> WorldAnalysis {
     const CODE: &str = "602a60405100";
     let mut config = config();
+    let spec = numeric_spec();
     // Bisect the detailed MLOAD receipt without optional preparation fees.
     config.root_terminal_coverage = false;
     config.max_memory_bytes = 32;
-    let complete = run(CODE, config.clone());
+    let complete = run(CODE, config.clone(), spec);
     assert_eq!(complete.status(), Status::Converged);
     assert_eq!(complete.states()[0].executed_pcs, [0, 2, 4, 5]);
     // Locate the first budget that visits MLOAD in this acyclic prefix. Its
@@ -66,19 +74,19 @@ fn pending_mload() -> WorldAnalysis {
     // The upper bound is measured under the unchanged successful policy.
     let minimum = work_boundary::first_work_reaching(complete.work(), |allowance| {
         config.max_work = allowance;
-        let candidate = run(CODE, config.clone());
+        let candidate = run(CODE, config.clone(), spec);
         candidate
             .states()
             .iter()
             .any(|state| state.executed_pcs.contains(&4))
     });
     config.max_work = minimum;
-    run(CODE, config)
+    run(CODE, config, spec)
 }
 
 #[test]
 fn popped_intermediate_definitions_retain_numeric_constraints_and_sources() {
-    let analysis = run("600260030150345000", config());
+    let analysis = run("600260030150345000", config(), numeric_spec());
     assert_eq!(analysis.status(), Status::Converged);
     let state = &analysis.states()[0];
     assert!(state.exit_stack.is_empty());
@@ -122,7 +130,7 @@ fn popped_intermediate_definitions_retain_numeric_constraints_and_sources() {
 
 #[test]
 fn stack_aliases_do_not_allocate_definition_observations() {
-    let analysis = run("60028090505000", config());
+    let analysis = run("60028090505000", config(), numeric_spec());
     let evidence = analysis.states()[0].execution_evidence().unwrap();
     let values = evidence.instruction_values().unwrap();
     assert_eq!(values.len(), 1);
@@ -155,11 +163,15 @@ fn pending_memory_and_faulted_instructions_have_no_normal_result() {
     for (analysis, expected_phase, expected_indices) in [
         (pending, InstructionProgress::OperandsConsumed, vec![0, 1]),
         (
-            run("5f01600100", config()),
+            run("5f01600100", config(), numeric_spec()),
             InstructionProgress::Faulted,
             vec![0],
         ),
-        (run("fe", config()), InstructionProgress::Faulted, vec![]),
+        (
+            run("fe", config(), numeric_spec()),
+            InstructionProgress::Faulted,
+            vec![],
+        ),
     ] {
         let evidence = analysis.states()[0].execution_evidence().unwrap();
         assert_eq!(evidence.instructions().last(), Some(&expected_phase));
@@ -178,8 +190,9 @@ fn pending_memory_and_faulted_instructions_have_no_normal_result() {
 #[test]
 fn changed_joined_entry_hides_the_old_receipt_values() {
     let mut config = config();
+    let spec = numeric_spec();
     config.analysis.max_transfers = 2;
-    let analysis = run("5f5b600101600156", config);
+    let analysis = run("5f5b600101600156", config, spec);
     let stale = analysis
         .states()
         .iter()
@@ -196,7 +209,9 @@ fn changed_joined_entry_hides_the_old_receipt_values() {
 #[test]
 fn result_observations_preserve_small_work_budget_receipts() {
     let config = config();
-    let domain = config.domain().unwrap();
+    let spec = numeric_spec();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(spec));
+    let domain = domain.borrowed();
     let admission_work = |world: &World, entry: &Entry, input: &analysis::MachinePayload| {
         assert_eq!(input.store.touched_in_transaction(address(3)), Some(false));
         let probe = |maximum| {
@@ -206,7 +221,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
                 entry,
                 input.clone(),
                 &config,
-                ValueAlgebra::new(domain).borrowed(),
+                domain,
                 &RecentDistinctJumps,
                 &mut budget,
                 StorageReadPolicy::Abstract,
@@ -251,17 +266,17 @@ fn result_observations_preserve_small_work_budget_receipts() {
     };
 
     let (world, entry) = fixture(&[(0x101, "600200")]);
-    let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
+    let initial = transfer::initial(&world, &entry, domain).unwrap();
     let admission = admission_work(&world, &entry, &initial);
     let pushed = U256::from(2);
-    let push_setup_work = ValueAlgebra::new(domain)
+    let push_setup_work = domain
         .literal_quote_work(pushed)
-        .saturating_add(AbstractValue::constant(pushed).clone_work());
+        .saturating_add(TestValue::constant(pushed).clone_work());
     let mut stop_payload = initial.clone();
     stop_payload
         .active_mut()
         .stack
-        .push(AbstractValue::constant(pushed));
+        .push(TestValue::constant(pushed));
     // Price STOP's actual owned input independently of a successful transfer.
     // Its clone payer includes census work that stays paid on later refusal.
     let mut stop_copy_budget = WorkBudget::new(config.max_work);
@@ -331,7 +346,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &entry,
             initial.clone(),
             &config,
-            ValueAlgebra::new(domain).borrowed(),
+            domain,
             &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
@@ -375,7 +390,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
                 .active()
                 .stack
                 .iter()
-                .map(AbstractValue::singleton)
+                .map(TestValue::singleton)
                 .collect::<Vec<_>>(),
             if semantic_work == 0 {
                 vec![]
@@ -414,7 +429,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &entry,
             initial.clone(),
             &config,
-            ValueAlgebra::new(domain).borrowed(),
+            domain,
             &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
@@ -448,7 +463,10 @@ fn result_observations_preserve_small_work_budget_receipts() {
             assert!(execution.frontiers.is_empty());
             assert_eq!(execution.outcomes.len(), 1);
             assert_eq!(execution.outcomes[0].kind, OutcomeKind::Return);
-            assert_eq!(execution.outcomes[0].data.exact_bytes(), Some(Vec::new()));
+            assert_eq!(
+                execution.outcomes[0].data.exact_bytes(domain),
+                Some(Vec::new())
+            );
             assert_eq!(execution.outcomes[0].store, finalized_store);
         } else {
             assert_eq!(expected_store, initial.store);
@@ -467,12 +485,12 @@ fn result_observations_preserve_small_work_budget_receipts() {
     }
 
     let (world, entry) = fixture(&[(0x101, "6003565b00")]);
-    let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
+    let initial = transfer::initial(&world, &entry, domain).unwrap();
     let admission = admission_work(&world, &entry, &initial);
     let pushed = U256::from(3);
-    let push_setup_work = ValueAlgebra::new(domain)
+    let push_setup_work = domain
         .literal_quote_work(pushed)
-        .saturating_add(AbstractValue::constant(pushed).clone_work());
+        .saturating_add(TestValue::constant(pushed).clone_work());
     // JUMP pays its history-navigation work before dispatch, then reserves a
     // separate successor visit. Neither refusal may invent a completed edge.
     for semantic_work in [3, 4, 5] {
@@ -483,7 +501,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &entry,
             initial.clone(),
             &config,
-            ValueAlgebra::new(domain).borrowed(),
+            domain,
             &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
@@ -544,12 +562,12 @@ fn result_observations_preserve_small_work_budget_receipts() {
     }
 
     let (world, entry) = fixture(&[(0x101, "5f3500")]);
-    let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
+    let initial = transfer::initial(&world, &entry, domain).unwrap();
     let admission = admission_work(&world, &entry, &initial);
     let pushed = U256::from(0);
-    let push_setup_work = ValueAlgebra::new(domain)
+    let push_setup_work = domain
         .literal_quote_work(pushed)
-        .saturating_add(AbstractValue::constant(pushed).clone_work());
+        .saturating_add(TestValue::constant(pushed).clone_work());
     let initial_snapshots = serde_json::to_value((
         &initial.store,
         &initial.active().calldata,
@@ -568,7 +586,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &entry,
             initial.clone(),
             &config,
-            ValueAlgebra::new(domain).borrowed(),
+            domain,
             &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
@@ -646,8 +664,15 @@ fn summary_replay_shares_numeric_and_source_receipts_without_dispatch_results() 
     let (world, entry) = fixture(&[(0x101, &caller), (0x200, "5f545f5260205ff3")]);
     let mut enabled_config = config();
     enabled_config.use_summaries = true;
-    let enabled = analysis::analyze_world(world.clone(), entry.clone(), enabled_config).unwrap();
-    let disabled = analysis::analyze_world(world, entry, config()).unwrap();
+    let enabled = crate::analysis::testing::execute(
+        world.clone(),
+        entry.clone(),
+        enabled_config,
+        numeric_spec(),
+    )
+    .unwrap();
+    let disabled =
+        crate::analysis::testing::execute(world, entry, config(), numeric_spec()).unwrap();
     assert_eq!(enabled.status(), Status::Converged);
     assert_eq!(disabled.status(), Status::Converged);
     assert!(enabled.summary_stats().hits > 0);

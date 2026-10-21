@@ -212,7 +212,7 @@ pub(in crate::analysis::transfer) struct Policy;
 impl EvmNumericAlgebra for Policy {
     type Element = Word;
     fn spec(&self) -> DomainSpec {
-        crate::domain::Domain::default().spec()
+        crate::domain::ProductAlgebra::default().spec()
     }
     fn project_numeric(&self, value: &Word) -> Word {
         value.clone()
@@ -261,7 +261,12 @@ impl EvmNumericAlgebra for Policy {
             ..NumericReduction::stable(value.clone())
         }
     }
-    fn apply_numeric(&self, _op: u8, _args: &[Word]) -> NumericReduction<Word> {
+    fn apply_numeric<'a>(
+        &self,
+        _op: u8,
+        _args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
+        let _args: Vec<&Word> = _args.collect();
         RECEIPT.update(|receipt| {
             if receipt.cancel_on_apply {
                 analysis_control::current_cancellation().cancel();
@@ -269,9 +274,10 @@ impl EvmNumericAlgebra for Policy {
         });
         NumericReduction::stable(Word::top())
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
+    fn operation_work<'a>(&self, _op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
         // This test policy's whole-operation envelope covers its own internals;
         // it supplies no credit for the transfer's separate result queries.
+        // Every opcode follows the same native Top/cancellation path above.
         args.fold(1024usize, |work, word| {
             work.saturating_add(word.work_size() * 8)
         })

@@ -1,17 +1,15 @@
 use super::{Context, Facts, memo, preparation};
-use crate::domain::{
-    AbstractValue, Domain, ValueAlgebra,
-    identity::Symbol,
-    provenance::Origin,
-    relational::RelationLimits,
-    symbolic::{ExprError, ExprId},
-};
 use crate::world::bytes::conditional::{Branch, ConditionalFacts, Scope};
 use alloy_primitives::U256;
 use std::{rc::Rc, sync::Arc};
+use {
+    crate::domain::identity::Symbol, crate::domain::provenance::Origin,
+    crate::domain::relational::RelationLimits, crate::domain::symbolic::ExprError,
+    crate::domain::symbolic::ExprId, crate::world::test_support::TestValue,
+};
 
-pub(super) fn constant(value: usize) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+pub(super) fn constant(value: usize) -> TestValue {
+    TestValue::constant(U256::from(value))
 }
 
 pub(super) fn branches(guard: &ExprId, yes: Facts, no: Facts) -> ConditionalFacts {
@@ -30,11 +28,11 @@ pub(super) fn branches(guard: &ExprId, yes: Facts, no: Facts) -> ConditionalFact
 
 #[test]
 fn memo_keeps_complete_values_negative_results_and_exact_guard_environments() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let guard = ExprId::fresh().unwrap();
     let key = ExprId::fresh().unwrap();
-    let source = AbstractValue::top()
+    let source = TestValue::top()
         .with_origin(Origin::Storage)
         .with_symbol(Symbol::CalldataWord(U256::ZERO), Some(993_017))
         .with_numeric(constant(7).numeric().clone());
@@ -50,7 +48,7 @@ fn memo_keeps_complete_values_negative_results_and_exact_guard_environments() {
         context
             .memo
             .borrow()
-            .get_with(&key, algebra, context.demand.as_deref().unwrap(), &|_| true),
+            .get(&key, algebra, context.demand.as_deref().unwrap(), &|_| true),
         Some(None)
     );
     let yes = context.branch(&guard, true);
@@ -77,14 +75,14 @@ fn memo_keeps_complete_values_negative_results_and_exact_guard_environments() {
 
 #[test]
 fn intersections_and_metadata_joins_are_reused_without_changing_the_meet() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let guard = ExprId::fresh().unwrap();
     let key = ExprId::fresh().unwrap();
-    let left = AbstractValue::unsigned_range(U256::ZERO, U256::from(20))
+    let left = TestValue::unsigned_range(U256::ZERO, U256::from(20))
         .unwrap()
         .with_origin(Origin::Calldata);
-    let right = AbstractValue::unsigned_range(U256::from(5), U256::from(25))
+    let right = TestValue::unsigned_range(U256::from(5), U256::from(25))
         .unwrap()
         .with_origin(Origin::Storage);
     let facts = Facts::from([(key.clone(), left)]);
@@ -108,8 +106,8 @@ fn intersections_and_metadata_joins_are_reused_without_changing_the_meet() {
 
 #[test]
 fn inactive_contradictions_and_a_missing_key_are_not_impossibility_or_zero() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let guard = ExprId::fresh().unwrap();
     let key = ExprId::fresh().unwrap();
     let missing = ExprId::fresh().unwrap();
@@ -130,8 +128,8 @@ fn inactive_contradictions_and_a_missing_key_are_not_impossibility_or_zero() {
 
 #[test]
 fn guard_truth_intersection_is_cached_and_preserves_the_old_fallback() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let guard = ExprId::fresh().unwrap();
     let facts = Facts::from([(guard.clone(), constant(0))]);
     let conditional = ConditionalFacts::default();
@@ -143,27 +141,31 @@ fn guard_truth_intersection_is_cached_and_preserves_the_old_fallback() {
 
 #[test]
 fn cache_identity_includes_all_domain_limits_and_the_immutable_fact_owner() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let guard = ExprId::fresh().unwrap();
     let facts = Facts::from([(key.clone(), constant(7))]);
     let conditional = ConditionalFacts::default();
     let context = Context::prepared(&facts, &conditional, algebra, 1_000_000);
     assert_eq!(context.value(&key, algebra), Some(constant(7)));
-    let numeric = Domain::from_spec(domain.spec().with_relations(RelationLimits {
-        enabled: false,
-        ..domain.spec().relations()
-    }));
+    let numeric = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        domain.spec().with_relations(RelationLimits {
+            enabled: false,
+            ..domain.spec().relations()
+        }),
+    ));
     assert_eq!(
         context.value(&key, algebra.without_relations()),
         Some(constant(7))
     );
-    let changed = Domain::from_spec(domain.spec().with_relations(RelationLimits {
-        max_nodes: domain.spec().relations().max_nodes + 1,
-        ..domain.spec().relations()
-    }));
-    assert_eq!(context.value(&key, ValueAlgebra::new(&changed)), None);
+    let changed = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        domain.spec().with_relations(RelationLimits {
+            max_nodes: domain.spec().relations().max_nodes + 1,
+            ..domain.spec().relations()
+        }),
+    ));
+    assert_eq!(context.value(&key, changed.borrowed()), None);
     assert!(context.cache_refused());
     context.check().unwrap();
     let other = Facts::from([(key.clone(), constant(9))]);
@@ -175,16 +177,16 @@ fn cache_identity_includes_all_domain_limits_and_the_immutable_fact_owner() {
     let fallback = Context::new(&facts, None, algebra).branch(&guard, true);
     for policy in [domain, numeric, changed] {
         assert_eq!(
-            fallback.value(&key, ValueAlgebra::new(&policy)),
-            fallback.resolve(&key, ValueAlgebra::new(&policy))
+            fallback.value(&key, policy.borrowed()),
+            fallback.resolve(&key, policy.borrowed())
         );
     }
 }
 
 #[test]
 fn metadata_capacity_refuses_but_full_retention_keeps_complete_temporary_contexts() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let facts = Facts::from([(key.clone(), constant(7))]);
     let conditional = ConditionalFacts::default();
@@ -197,7 +199,7 @@ fn metadata_capacity_refuses_but_full_retention_keeps_complete_temporary_context
         short
             .memo
             .borrow()
-            .get_with(&key, algebra, short.demand.as_deref().unwrap(), &|_| true),
+            .get(&key, algebra, short.demand.as_deref().unwrap(), &|_| true),
         None
     );
     let root = Context::prepared(&facts, &conditional, algebra, 1_000_000);
@@ -223,8 +225,8 @@ fn metadata_capacity_refuses_but_full_retention_keeps_complete_temporary_context
 
 #[test]
 fn cancellation_is_observed_even_on_a_warm_memo_hit() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let key = ExprId::fresh().unwrap();
     let facts = Facts::from([(key.clone(), constant(7))]);
     let conditional = ConditionalFacts::default();
@@ -240,15 +242,15 @@ fn cancellation_is_observed_even_on_a_warm_memo_hit() {
         context
             .memo
             .borrow()
-            .get_with(&key, algebra, context.demand.as_deref().unwrap(), &|_| true),
+            .get(&key, algebra, context.demand.as_deref().unwrap(), &|_| true),
         Some(Some(constant(7)))
     );
 }
 
 #[test]
 fn guarded_word_preparation_bounds_metadata_separately_from_actual_payments() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     let guard = ExprId::fresh().unwrap();
     let facts = Facts::from([
         (ExprId::constant(U256::ZERO), constant(0)),
@@ -281,8 +283,8 @@ fn guarded_word_preparation_bounds_metadata_separately_from_actual_payments() {
 
 #[test]
 fn warm_key_lookups_do_not_rescan_the_frozen_source_map() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(&domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let algebra = domain.borrowed();
     for count in [40, 80] {
         let facts: Facts = (0..count)
             .map(|i| (ExprId::fresh().unwrap(), constant(i)))

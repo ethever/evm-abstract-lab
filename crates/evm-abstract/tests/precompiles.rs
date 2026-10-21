@@ -1,11 +1,17 @@
 //! Native results are checked through revm's independent transaction boundary.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{self, ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, Status},
-    domain::AbstractValue,
+    domain::EvmValue,
     ssa,
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use revm::{
     Context, ExecuteEvm, MainBuilder, MainContext, context::TxEnv, database::InMemoryDB,
@@ -17,31 +23,36 @@ fn address(number: u64) -> Address {
 }
 fn abstract_call(
     target: u64,
-    input: ByteArray,
+    input: EvmByteArray<NumericValue>,
     fork: Fork,
     config: ExecutionConfig,
-) -> analysis::WorldAnalysis {
-    analysis::analyze_world(
-        World::new(fork, "native oracle"),
-        Entry {
-            address: address(target),
-            environment: evm_abstract::world::EvmEnvironment {
-                to: (address(target)).into(),
-                caller: (address(0x900)).into(),
-                value: AbstractValue::constant(U256::ZERO),
-                calldata: input,
-                is_static: false,
-                ..evm_abstract::world::EvmEnvironment::default()
+) -> analysis::EvmWorldAnalysis<NumericValue> {
+    native::run(
+        &native::product(),
+        AnalysisInput::new(
+            EvmWorld::<NumericValue>::new(fork, "native oracle"),
+            EvmEntry {
+                address: address(target),
+                environment: evm_abstract::world::EvmEnvironmentValues {
+                    to: (address(target)).into(),
+                    caller: (address(0x900)).into(),
+                    value: EvmValue::<NumericValue>::constant(U256::ZERO),
+                    calldata: input,
+                    is_static: false,
+                    ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
+                },
             },
-        },
+        )
+        .unwrap(),
         config,
+        &Control::default(),
     )
     .unwrap()
 }
 fn compare(target: u64, input: &[u8], fork: Fork, success: bool) {
     let graph = abstract_call(
         target,
-        ByteArray::exact(input),
+        EvmByteArray::<NumericValue>::exact(input),
         fork,
         ExecutionConfig::default(),
     );
@@ -90,7 +101,8 @@ fn compare(target: u64, input: &[u8], fork: Fork, success: bool) {
                 .outcomes()
                 .iter()
                 .any(|o| o.kind == OutcomeKind::Return
-                    && o.data.exact_bytes().as_deref() == Some(data.as_ref()))
+                    && o.data.exact_bytes(native::product().borrowed()).as_deref()
+                        == Some(data.as_ref()))
         );
     } else {
         assert!(
@@ -125,27 +137,36 @@ fn native_successes_and_failure_cover_each_selected_fork() {
 }
 #[test]
 fn identity_output_is_copied_back_to_the_callers_requested_range() {
-    let mut world = World::new(Fork::Osaka, "identity CALL");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "identity CALL");
     world
         .insert(
             address(0x101),
-            Account::from_hex("602a5f5260205f60205f5f60045af15060205ff3", Fork::Osaka).unwrap(),
+            EvmAccount::<NumericValue>::from_hex(
+                "602a5f5260205f60205f5f60045af15060205ff3",
+                Fork::Osaka,
+            )
+            .unwrap(),
         )
         .unwrap();
-    let graph = analysis::analyze_world(
-        world,
-        Entry {
-            address: address(0x101),
-            environment: evm_abstract::world::EvmEnvironment {
-                to: (address(0x101)).into(),
-                caller: (address(0x900)).into(),
-                value: AbstractValue::constant(U256::ZERO),
-                calldata: ByteArray::empty(),
-                is_static: false,
-                ..evm_abstract::world::EvmEnvironment::default()
+    let graph = native::run(
+        &native::product(),
+        AnalysisInput::new(
+            world,
+            EvmEntry {
+                address: address(0x101),
+                environment: evm_abstract::world::EvmEnvironmentValues {
+                    to: (address(0x101)).into(),
+                    caller: (address(0x900)).into(),
+                    value: EvmValue::<NumericValue>::constant(U256::ZERO),
+                    calldata: EvmByteArray::<NumericValue>::empty(),
+                    is_static: false,
+                    ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
+                },
             },
-        },
+        )
+        .unwrap(),
         ExecutionConfig::default(),
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(graph.status(), Status::Converged);
@@ -153,8 +174,8 @@ fn identity_output_is_copied_back_to_the_callers_requested_range() {
         o.kind == OutcomeKind::Return
             && o.data
                 .read_word(
-                    &AbstractValue::constant(U256::ZERO),
-                    evm_abstract::domain::Domain::default(),
+                    &EvmValue::<NumericValue>::constant(U256::ZERO),
+                    native::product().borrowed(),
                 )
                 .contains(U256::from(42))
     }));
@@ -168,7 +189,7 @@ fn identity_output_is_copied_back_to_the_callers_requested_range() {
 }
 #[test]
 fn symbolic_native_inputs_continue_and_large_crypto_work_keeps_typed_frontiers() {
-    let input = ByteArray::unknown();
+    let input = EvmByteArray::<NumericValue>::unknown();
     let unknown = abstract_call(4, input.clone(), Fork::Osaka, ExecutionConfig::default());
     assert_eq!(unknown.status(), Status::Converged);
     assert!(unknown.frontiers().is_empty());
@@ -198,7 +219,7 @@ fn symbolic_native_inputs_continue_and_large_crypto_work_keeps_typed_frontiers()
     blake[212] = 1;
     let work = abstract_call(
         9,
-        ByteArray::exact(&blake),
+        EvmByteArray::<NumericValue>::exact(&blake),
         Fork::Osaka,
         ExecutionConfig {
             max_work: 2_000,

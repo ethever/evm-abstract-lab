@@ -1,11 +1,12 @@
 //! Finite concrete witnesses use revm's execution and journaling. This module
 //! compares complete returned data and account effects from one outcome.
 use super::support::{USER, address};
+use crate::native;
 use alloy_primitives::{Address, U256};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
-    analysis::{OutcomeKind, WorldAnalysis},
-    domain::Domain,
-    world::{Entry, Existence, World},
+    analysis::{EvmWorldAnalysis, OutcomeKind},
+    world::{EvmEntry, EvmWorld, Existence},
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
@@ -70,7 +71,7 @@ impl Observation {
         self.storage[&(address(owner), U256::from(slot))]
     }
 
-    pub(super) fn covers(&self, analysis: &WorldAnalysis) {
+    pub(super) fn covers(&self, analysis: &EvmWorldAnalysis<NumericValue>) {
         assert!(
             self.is_covered(analysis),
             "no single abstract outcome covers concrete {:?} data={} storage={:?} balances={:?}; status={:?} frontiers={:?}",
@@ -83,14 +84,14 @@ impl Observation {
         );
     }
 
-    pub(super) fn is_covered(&self, analysis: &WorldAnalysis) -> bool {
+    pub(super) fn is_covered(&self, analysis: &EvmWorldAnalysis<NumericValue>) -> bool {
         analysis.outcomes().iter().any(|outcome| {
             outcome.kind == self.kind
                 && outcome.data.len().contains(U256::from(self.data.len()))
                 && self.data.iter().enumerate().all(|(offset, byte)| {
                     outcome
                         .data
-                        .byte_at(offset, Domain::default())
+                        .byte_at(offset, native::product().borrowed())
                         .contains(U256::from(*byte))
                 })
                 && self.storage.iter().all(|((owner, slot), value)| {
@@ -98,8 +99,8 @@ impl Observation {
                         .store
                         .read(
                             *owner,
-                            &evm_abstract::domain::AbstractValue::constant(*slot),
-                            Domain::default(),
+                            &evm_abstract::domain::EvmValue::<NumericValue>::constant(*slot),
+                            native::product().borrowed(),
                         )
                         .contains(*value)
                 })
@@ -127,7 +128,7 @@ impl Observation {
                                 && log.data.len().contains(U256::from(data.len()))
                                 && data.iter().enumerate().all(|(offset, byte)| {
                                     log.data
-                                        .byte_at(offset, Domain::default())
+                                        .byte_at(offset, native::product().borrowed())
                                         .contains(U256::from(*byte))
                                 })
                         })
@@ -136,7 +137,10 @@ impl Observation {
     }
 }
 
-pub(super) fn execute(world: &World, entry: &Entry) -> Observation {
+pub(super) fn execute(
+    world: &EvmWorld<NumericValue>,
+    entry: &EvmEntry<NumericValue>,
+) -> Observation {
     let mut db = InMemoryDB::default();
     let mut initial_storage = BTreeMap::new();
     for (owner, account) in world.accounts() {
@@ -185,7 +189,7 @@ pub(super) fn execute(world: &World, entry: &Entry) -> Observation {
                     entry
                         .environment
                         .calldata
-                        .exact_bytes()
+                        .exact_bytes(native::product().borrowed())
                         .expect("exact oracle calldata")
                         .into(),
                 )
@@ -272,16 +276,20 @@ pub(super) fn execute(world: &World, entry: &Entry) -> Observation {
     }
 }
 
-pub(super) fn concrete_unknown(world: &World, owner: u64, code: &super::support::Fixture) -> World {
+pub(super) fn concrete_unknown(
+    world: &EvmWorld<NumericValue>,
+    owner: u64,
+    code: &super::support::Fixture,
+) -> EvmWorld<NumericValue> {
     // World observations are immutable. Build an independent refinement rather
     // than replacing an existing Unknown observation through World::insert.
-    let mut concrete = World::new(world.fork(), world.provenance());
+    let mut concrete = EvmWorld::<NumericValue>::new(world.fork(), world.provenance());
     for (address, account) in world.accounts() {
         if *address != super::support::address(owner) {
             concrete.insert(*address, account.clone()).unwrap();
         }
     }
-    let mut account = evm_abstract::world::Account::from_hex(
+    let mut account = evm_abstract::world::EvmAccount::<NumericValue>::from_hex(
         &alloy_primitives::hex::encode(&code.bytes),
         world.fork(),
     )
@@ -289,10 +297,10 @@ pub(super) fn concrete_unknown(world: &World, owner: u64, code: &super::support:
     account.balance = super::support::word(1_000_000);
     if let Some(observed) = world.account(super::support::address(owner)) {
         if let Some(balance) = observed.balance.singleton() {
-            account.balance = evm_abstract::domain::AbstractValue::constant(balance);
+            account.balance = evm_abstract::domain::EvmValue::<NumericValue>::constant(balance);
         }
         if let Some(nonce) = observed.nonce.singleton() {
-            account.nonce = evm_abstract::domain::AbstractValue::constant(nonce);
+            account.nonce = evm_abstract::domain::EvmValue::<NumericValue>::constant(nonce);
         }
         account.storage.clone_from(&observed.storage);
     }

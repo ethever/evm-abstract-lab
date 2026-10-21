@@ -1,5 +1,7 @@
 //! A late contributor is numerically covered but changes the declared universe.
 use super::*;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 
 struct Arrivals {
     source: usize,
@@ -166,7 +168,10 @@ fn covered_late_edge_and_backedge_reseed_old_must_facts_and_restore_a_feasible_b
         for reverse in [false, true] {
             let (code, source, late, target, restored) = fixture(backedge, reverse);
             let calls = Calls::default();
-            let algebra = fixtures::feedback_algebra(&calls);
+            let mut numeric = Policy::new(&calls);
+            numeric.exclusion_queries = false;
+            numeric.relations.enabled = false;
+            let algebra = evm_abstract::domain::ValueAlgebra::new(numeric);
             let mut extension = Extension::new(Registered::new(Arrivals {
                 source,
                 late,
@@ -175,18 +180,16 @@ fn covered_late_edge_and_backedge_reseed_old_must_facts_and_restore_a_feasible_b
             }));
             let mut config = fixtures::config(5_000_000_000);
             config.analysis.context_depth = 0;
-            config.analysis.relations.enabled = false;
+
             let mut entry = fixtures::entry();
             entry.environment.calldata = evm_abstract::world::EvmByteArray::unknown();
-            let result = analyze_world_cooperating(
-                fixtures::world(&code),
-                entry,
-                config,
-                &algebra,
-                &EnginePolicies::default(),
-                &mut extension,
-            )
-            .unwrap();
+            let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
+                .run(
+                    AnalysisInput::new(fixtures::world(&code), entry).unwrap(),
+                    config,
+                    &Control::default(),
+                )
+                .unwrap();
             fixtures::complete(&result);
             let trace = &extension.analyzer.rule().snapshots;
             let first = trace

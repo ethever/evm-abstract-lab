@@ -1,10 +1,12 @@
 //! Discover native procedure observations without implementation table indices.
 use super::*;
+use evm_abstract::analysis::control::Control;
 use evm_abstract::analysis::cooperation::{
     CalleeRoute, Callees, ContinuationRoute, Continuations, PointKind, ProcedureEntries,
     ProcedureEntryRoute, ProcedureId, ProcedureRoute, Procedures, SubscriptionRoute, Subscriptions,
     Summaries, SummaryClosureRoute, SummaryClosures, SummaryRoute,
 };
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput, ExecutionConfig};
 use std::collections::BTreeMap;
 
 #[derive(Default)]
@@ -169,18 +171,16 @@ fn check_procedure_reader<const REQUIRED: bool>(use_summaries: bool) {
     let calls = Calls::default();
     let algebra = evm_abstract::domain::ValueAlgebra::new(Policy::new(&calls));
     let mut extension = Extension::new(ProcedureReader::<REQUIRED>::default());
-    let result = analyze_world_cooperating(
-        fixtures::world(&fixture.code),
-        fixtures::entry(),
-        ExecutionConfig {
-            use_summaries,
-            ..fixtures::config(5_000_000_000)
-        },
-        &algebra,
-        &EnginePolicies::default(),
-        &mut extension,
-    )
-    .unwrap();
+    let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
+        .run(
+            AnalysisInput::new(fixtures::world(&fixture.code), fixtures::entry()).unwrap(),
+            ExecutionConfig {
+                use_summaries,
+                ..fixtures::config(5_000_000_000)
+            },
+            &Control::default(),
+        )
+        .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,

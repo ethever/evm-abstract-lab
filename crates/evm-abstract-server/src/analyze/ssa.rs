@@ -1,21 +1,26 @@
 pub(super) mod errors;
 mod values;
 use super::{checkpoint, symbolic::Pool};
-use evm_abstract::{analysis, ssa};
+use evm_abstract::{analysis, domain::WordElement, resource::WorkBudget, ssa};
 use evm_abstract_protocol::ApiError;
 use evm_abstract_protocol::{
     BlockCoverage, DeferredEdge, DeferredReason, EffectInput, InstructionProgress, Phi, PhiInput,
     SsaBlock, SsaInstruction, SsaReport, SsaTransition,
 };
 
-pub(super) fn report(
-    graph: &analysis::WorldAnalysis,
+pub(super) fn report<N: WordElement>(
+    graph: &analysis::EvmWorldAnalysis<N>,
     control: &analysis::control::Control,
+    budget: &mut WorkBudget,
     pool: &mut Pool<'_>,
 ) -> Result<SsaReport, ApiError> {
     // The builder validates original receipts first, then independently checks
     // value rewrites. Only the final normalized SSA is exported.
-    let ir = ssa::build_normalized_partial_world(graph).map_err(errors::convert)?;
+    // Build and verification share the caller's postprocessing ledger. Export
+    // counters record this stage's usage without admitting or funding any work.
+    let before = budget.used();
+    let ir = ssa::build_normalized_partial_world(graph, budget).map_err(errors::convert)?;
+    pool.charge(budget.used().saturating_sub(before))?;
     pool.charge(
         ir.blocks()
             .len()

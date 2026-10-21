@@ -1,13 +1,19 @@
 //! Whole-word and short-prefix regressions through real EVM continuations.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
+    analysis::{EvmWorldAnalysis, ExecutionConfig, OutcomeKind, Status},
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         provenance::{Origin, Provenance},
     },
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use revm_bytecode::opcode;
 
@@ -19,8 +25,8 @@ fn address(n: u64) -> Address {
     Address::from_word(U256::from(n).into())
 }
 
-fn word(n: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(n))
+fn word(n: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(n))
 }
 
 fn push(code: &mut Vec<u8>, n: U256) {
@@ -46,20 +52,25 @@ fn call(code: &mut Vec<u8>, at: u64, len: u64) {
     code.push(opcode::CALL);
 }
 
-fn account(code: &[u8]) -> Account {
-    Account::from_hex(&alloy_primitives::hex::encode(code), Fork::Osaka).unwrap()
+fn account(code: &[u8]) -> EvmAccount<NumericValue> {
+    EvmAccount::<NumericValue>::from_hex(&alloy_primitives::hex::encode(code), Fork::Osaka).unwrap()
 }
 
-fn run(world: World) -> WorldAnalysis {
-    let analysis = analyze_world(
-        world,
-        Entry::concrete(
-            address(PARENT),
-            address(CALLER),
-            word(0),
-            ByteArray::empty(),
-        ),
+fn run(world: EvmWorld<NumericValue>) -> EvmWorldAnalysis<NumericValue> {
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(
+            world,
+            EvmEntry::<NumericValue>::concrete(
+                address(PARENT),
+                address(CALLER),
+                word(0),
+                EvmByteArray::<NumericValue>::empty(),
+            ),
+        )
+        .unwrap(),
         ExecutionConfig::default(),
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(
@@ -82,7 +93,7 @@ fn run(world: World) -> WorldAnalysis {
     analysis
 }
 
-fn bounded(value: &AbstractValue) {
+fn bounded(value: &EvmValue<NumericValue>) {
     assert!(value.contains(U256::from(3)), "{value:?}");
     assert!(value.contains(U256::from(9)), "{value:?}");
     assert!(!value.contains(U256::from(2)), "{value:?}");
@@ -94,10 +105,11 @@ fn selfbalance_return_slice_preserves_the_original_three_to_nine_bound() {
     let mut code = vec![opcode::SELFBALANCE];
     mstore(&mut code, 64);
     finish(&mut code, 64, 32, opcode::RETURN);
-    let mut observed = Account::unknown();
+    let mut observed = EvmAccount::<NumericValue>::unknown();
     observed.code = account(&code).code;
-    observed.balance = AbstractValue::unsigned_range(U256::from(3), U256::from(9)).unwrap();
-    let mut world = World::new(Fork::Osaka, "byte-window:bounded-selfbalance");
+    observed.balance =
+        EvmValue::<NumericValue>::unsigned_range(U256::from(3), U256::from(9)).unwrap();
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "byte-window:bounded-selfbalance");
     world.insert(address(PARENT), observed).unwrap();
     let analysis = run(world);
     for outcome in analysis
@@ -108,7 +120,7 @@ fn selfbalance_return_slice_preserves_the_original_three_to_nine_bound() {
         bounded(
             &outcome
                 .data
-                .read_word_checked(&word(0), Domain::default())
+                .read_word_checked(&word(0), native::product().borrowed())
                 .unwrap(),
         );
     }
@@ -141,11 +153,13 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
         let mut child = vec![opcode::SELFBALANCE];
         mstore(&mut child, 0);
         finish(&mut child, 0, 32, completion);
-        let mut world = World::new(Fork::Osaka, "byte-window:bounded-call-continuation");
+        let mut world =
+            EvmWorld::<NumericValue>::new(Fork::Osaka, "byte-window:bounded-call-continuation");
         let mut caller = account(&parent);
         caller.balance = word(1_000_000);
         let mut callee = account(&child);
-        callee.balance = AbstractValue::unsigned_range(U256::from(3), U256::from(9)).unwrap();
+        callee.balance =
+            EvmValue::<NumericValue>::unsigned_range(U256::from(3), U256::from(9)).unwrap();
         let initial_balance = callee.balance.clone();
         world.insert(address(PARENT), caller).unwrap();
         world.insert(address(CHILD), callee).unwrap();
@@ -166,7 +180,7 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
             assert_eq!(
                 refusal
                     .data
-                    .read_word_checked(&word(0), Domain::default())
+                    .read_word_checked(&word(0), native::product().borrowed())
                     .unwrap()
                     .singleton(),
                 Some(U256::ZERO)
@@ -183,7 +197,7 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
             .map(|outcome| {
                 let value = outcome
                     .data
-                    .read_word_checked(&word(0), Domain::default())
+                    .read_word_checked(&word(0), native::product().borrowed())
                     .unwrap();
                 (outcome, value)
             })
@@ -222,7 +236,7 @@ fn return_and_revert_continue_through_call_copy_mcopy_mload_and_return() {
 }
 
 fn assert_instruction_provenance(
-    analysis: &WorldAnalysis,
+    analysis: &EvmWorldAnalysis<NumericValue>,
     account: u64,
     instruction: u8,
     origin: Origin,
@@ -295,7 +309,8 @@ fn unknown_one_byte_continuation_preserves_every_uncopied_suffix_byte() {
     code.push(opcode::STOP);
     label(&mut code, wrong_length);
     finish(&mut code, 0, 0, opcode::REVERT);
-    let mut world = World::new(Fork::Osaka, "byte-window:unknown-short-continuation");
+    let mut world =
+        EvmWorld::<NumericValue>::new(Fork::Osaka, "byte-window:unknown-short-continuation");
     let mut caller = account(&code);
     caller.balance = word(1_000_000);
     world.insert(address(PARENT), caller).unwrap();
@@ -315,21 +330,27 @@ fn unknown_one_byte_continuation_preserves_every_uncopied_suffix_byte() {
         assert_eq!(
             outcome
                 .data
-                .read_word_checked(&word(64), Domain::default())
+                .read_word_checked(&word(64), native::product().borrowed())
                 .unwrap()
                 .singleton(),
             Some(U256::ONE)
         );
         for at in 1..32 {
             assert_eq!(
-                outcome.data.byte_at(at, Domain::default()).singleton(),
+                outcome
+                    .data
+                    .byte_at(at, native::product().borrowed())
+                    .singleton(),
                 Some(U256::from(0xaa)),
                 "suffix byte {at}"
             );
         }
         for at in 32..64 {
             assert_eq!(
-                outcome.data.byte_at(at, Domain::default()).singleton(),
+                outcome
+                    .data
+                    .byte_at(at, native::product().borrowed())
+                    .singleton(),
                 Some(U256::from(0xbb)),
                 "neighbor byte {at}"
             );

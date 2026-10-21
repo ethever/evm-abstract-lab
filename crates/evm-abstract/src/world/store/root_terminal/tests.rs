@@ -1,37 +1,39 @@
 //! Focused witnesses for the checked all-account pre-finalization adapter.
 
-use super::super::{Store, StoreError};
-use crate::{
-    Fork,
-    bytecode::Program,
-    domain::{
-        AbstractValue, Domain,
-        relational::RelationLimits,
-        symbolic::{SlotStateKind, SourceId, StateError},
-    },
-    world::{AbstractLog, Account, ByteArray, Existence, LogKey, LogSourceKind, World},
-};
 use alloy_primitives::{Address, B256, U256};
-use std::collections::{BTreeMap, btree_map::Entry};
+use std::collections::BTreeMap;
+use {super::super::StoreError, crate::world::test_support::TestStore};
+use {
+    crate::Fork, crate::bytecode::Program, crate::domain::relational::RelationLimits,
+    crate::domain::symbolic::SlotStateKind, crate::domain::symbolic::SourceId,
+    crate::domain::symbolic::StateError, crate::world::Existence, crate::world::LogKey,
+    crate::world::LogSourceKind, crate::world::test_support::TestAccount,
+    crate::world::test_support::TestBytes, crate::world::test_support::TestLog,
+    crate::world::test_support::TestValue, crate::world::test_support::TestWorld,
+};
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> TestValue {
+    TestValue::constant(U256::from(number))
 }
 
-fn original() -> Store {
-    let mut world = World::new(Fork::Osaka, "root terminal independent effects");
+fn original() -> TestStore {
+    let mut world = TestWorld::new(Fork::Osaka, "root terminal independent effects");
     for owner in [address(0x101), address(0x202)] {
-        let mut account = Account::from_hex("00", Fork::Osaka).unwrap();
+        let mut account = TestAccount::from_hex("00", Fork::Osaka).unwrap();
         account.storage_unknown = true;
         account.balance = word(10);
         account.nonce = word(1);
         world.insert(owner, account).unwrap();
     }
-    Store::new_checked(&world, Domain::default()).unwrap()
+    TestStore::new_checked(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    )
+    .unwrap()
 }
 
 /// Only the adapter's unconstrained input roots are interpreted here. One map
@@ -40,7 +42,7 @@ fn original() -> Store {
 struct InputAssignment(BTreeMap<(SourceId, U256), U256>);
 
 impl InputAssignment {
-    fn cell(&mut self, store: &Store, owner: Address, transient: bool, value: u64) -> bool {
+    fn cell(&mut self, store: &TestStore, owner: Address, transient: bool, value: u64) -> bool {
         let root = store.slot_root(owner, transient).unwrap();
         let SlotStateKind::Input { source, bindings } = root.kind() else {
             return false;
@@ -50,19 +52,19 @@ impl InputAssignment {
         }
         let value = U256::from(value);
         match self.0.entry((source.clone(), U256::from(8))) {
-            Entry::Vacant(entry) => {
+            std::collections::btree_map::Entry::Vacant(entry) => {
                 entry.insert(value);
                 true
             }
-            Entry::Occupied(entry) => *entry.get() == value,
+            std::collections::btree_map::Entry::Occupied(entry) => *entry.get() == value,
         }
     }
 }
 
 #[test]
 fn omitted_and_future_owners_have_unconstrained_effects_and_lifecycle() {
-    let domain = Domain::default();
-    let effects = Store::root_terminal_all_effects_checked(domain).unwrap();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let effects = TestStore::root_terminal_all_effects_checked(domain.borrowed()).unwrap();
     assert!(effects.addresses().is_empty());
     assert!(effects.global_storage_default().numeric().is_top());
     assert!(effects.global_transient_default().numeric().is_top());
@@ -76,14 +78,14 @@ fn omitted_and_future_owners_have_unconstrained_effects_and_lifecycle() {
     for owner in [address(0x101), address(0x202), address(0xffff)] {
         assert!(
             effects
-                .read_checked(owner, &word(8), domain)
+                .read_checked(owner, &word(8), domain.borrowed())
                 .unwrap()
                 .numeric()
                 .is_top()
         );
         assert!(
             effects
-                .read_transient_checked(owner, &word(8), domain)
+                .read_transient_checked(owner, &word(8), domain.borrowed())
                 .unwrap()
                 .numeric()
                 .is_top()
@@ -119,21 +121,21 @@ fn omitted_and_future_owners_have_unconstrained_effects_and_lifecycle() {
 
 #[test]
 fn input_saved_history_owner_and_plane_identities_remain_jointly_independent() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let original = original();
     let saved = original.snapshot();
     let mut current = original.clone();
     let old_value = current
-        .read_checked(address(0x101), &word(8), domain)
+        .read_checked(address(0x101), &word(8), domain.borrowed())
         .unwrap();
     current
-        .write_checked(address(0x101), &word(9), &old_value, domain)
+        .write_checked(address(0x101), &word(9), &old_value, domain.borrowed())
         .unwrap();
     let unchanged = current.clone();
     assert!(current.symbolic_facts(false).count() > 0);
 
-    let effects = Store::root_terminal_all_effects_checked(domain).unwrap();
-    let later_effects = Store::root_terminal_all_effects_checked(domain).unwrap();
+    let effects = TestStore::root_terminal_all_effects_checked(domain.borrowed()).unwrap();
+    let later_effects = TestStore::root_terminal_all_effects_checked(domain.borrowed()).unwrap();
     let mut assignment = InputAssignment::default();
     assert!(assignment.cell(&original, address(0x101), false, 7));
     assert!(assignment.cell(saved.state(), address(0x101), false, 7));
@@ -156,8 +158,8 @@ fn input_saved_history_owner_and_plane_identities_remain_jointly_independent() {
 
 #[test]
 fn repeated_callback_effects_include_new_owners_and_complete_log_payloads() {
-    let domain = Domain::default();
-    let effects = Store::root_terminal_all_effects_checked(domain).unwrap();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let effects = TestStore::root_terminal_all_effects_checked(domain.borrowed()).unwrap();
     let mut concrete = original();
     let a = address(0x101);
     let b = address(0x202);
@@ -168,10 +170,10 @@ fn repeated_callback_effects_include_new_owners_and_complete_log_payloads() {
     // These Store operations are a witness, not a callback CFG/SSA simulation.
     for (owner, value) in [(a, 31), (b, 47), (a, 52), (new, 93)] {
         concrete
-            .write_checked(owner, &word(8), &word(value), domain)
+            .write_checked(owner, &word(8), &word(value), domain.borrowed())
             .unwrap();
         concrete
-            .write_transient_checked(owner, &word(8), &word(value + 1), domain)
+            .write_transient_checked(owner, &word(8), &word(value + 1), domain.borrowed())
             .unwrap();
         concrete.write_balance(owner, word(value + 2));
         concrete.write_nonce(owner, word(value + 3));
@@ -188,20 +190,28 @@ fn repeated_callback_effects_include_new_owners_and_complete_log_payloads() {
                     source_kind: LogSourceKind::Runtime,
                     pc,
                 },
-                AbstractLog {
+                TestLog {
                     topics: vec![word(19)],
-                    data: ByteArray::exact(&payload),
+                    data: TestBytes::exact(&payload),
                 },
-                domain,
+                domain.borrowed(),
             )
             .unwrap();
     }
-    concrete.selfdestruct(new, a, domain);
+    concrete.selfdestruct(new, a, domain.borrowed());
     assert_eq!(concrete.created_in_transaction(new), Some(true));
     assert_eq!(concrete.pending_destruction(new), Some(true));
     assert_eq!(concrete.possible_logs().len(), 2);
     for log in concrete.possible_logs().values() {
-        assert_eq!(log.data.exact_bytes().as_deref(), Some(payload.as_slice()));
+        assert_eq!(
+            log.data
+                .exact_bytes(
+                    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                        .borrowed()
+                )
+                .as_deref(),
+            Some(payload.as_slice())
+        );
     }
 
     let mut assignment = InputAssignment::default();
@@ -232,20 +242,27 @@ fn repeated_callback_effects_include_new_owners_and_complete_log_payloads() {
 
 #[test]
 fn checked_constructor_preserves_domain_refusal_and_cancellation() {
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_nodes: 1,
-        max_depth: 1,
-        ..RelationLimits::default()
-    }));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_nodes: 1,
+                max_depth: 1,
+                ..RelationLimits::default()
+            }),
+    ));
     assert!(matches!(
-        Store::root_terminal_all_effects_checked(domain),
+        TestStore::root_terminal_all_effects_checked(domain.borrowed()),
         Err(StoreError::State(StateError::Limit { .. }))
     ));
     let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
     analysis_control::with_cancellation(&cancellation, || {
         assert!(matches!(
-            Store::root_terminal_all_effects_checked(Domain::default()),
+            TestStore::root_terminal_all_effects_checked(
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed()
+            ),
             Err(StoreError::State(StateError::Cancelled))
         ));
     });

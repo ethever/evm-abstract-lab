@@ -2,14 +2,16 @@ use super::{
     fixtures::*,
     policy::{Calls, Policy},
 };
+use crate::native;
 use alloy_primitives::{U256, hex};
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
-    analysis::{
-        EnginePolicies, ExecutionConfig, OutcomeKind, Status, analyze_world, analyze_world_with,
-    },
-    domain::{AbstractValue, Domain, ValueAlgebra},
-    world::{Account, AddressInput, ByteArray, Entry, EvmAccount, World},
+    analysis::{EnginePolicies, ExecutionConfig, OutcomeKind, Status},
+    domain::{EvmValue, ValueAlgebra},
+    world::{AddressInput, EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 
 #[test]
@@ -23,17 +25,18 @@ fn semantic_singleton_without_finite_constants_resolves_call_and_keeps_code_owne
     world.insert(address(CALLEE), callee).unwrap();
     let calls = Calls::default();
     let algebra = ValueAlgebra::new(Policy::new(&calls));
-    let result = analyze_world_with(
-        world,
-        entry(),
-        ExecutionConfig {
-            max_work: 1_000_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        },
-        &algebra,
-        &EnginePolicies::default(),
-    )
+    let result = {
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension).run(
+            AnalysisInput::new(world, entry()).unwrap(),
+            ExecutionConfig {
+                max_work: 1_000_000_000,
+                root_terminal_coverage: false,
+                ..ExecutionConfig::default()
+            },
+            &Control::default(),
+        )
+    }
     .unwrap();
     assert_eq!(
         result.status(),
@@ -60,11 +63,11 @@ fn semantic_singleton_without_finite_constants_resolves_call_and_keeps_code_owne
     for outcome in &returns {
         let status = outcome
             .data
-            .read_word_with(&word(64), algebra.borrowed())
+            .read_word(&word(64), algebra.borrowed())
             .singleton();
         let data = outcome
             .data
-            .read_word_with(&word(0), algebra.borrowed())
+            .read_word(&word(0), algebra.borrowed())
             .singleton();
         eprintln!("CALL joint result: status={status:?}, output={data:?}");
         match status {
@@ -102,7 +105,7 @@ fn semantic_singleton_without_finite_constants_resolves_call_and_keeps_code_owne
         assert!(
             !outcome
                 .store
-                .read_with(address(OWNER), &word(0), algebra.borrowed())
+                .read(address(OWNER), &word(0), algebra.borrowed())
                 .contains(U256::from(42))
         );
     }
@@ -125,17 +128,18 @@ fn nonexact_private_call_output_size_keeps_both_concrete_results() {
     );
     let calls = Calls::default();
     let algebra = ValueAlgebra::new(Policy::new(&calls));
-    let result = analyze_world_with(
-        world,
-        entry,
-        ExecutionConfig {
-            max_work: 1_000_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        },
-        &algebra,
-        &EnginePolicies::default(),
-    )
+    let result = {
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension).run(
+            AnalysisInput::new(world, entry).unwrap(),
+            ExecutionConfig {
+                max_work: 1_000_000_000,
+                root_terminal_coverage: false,
+                ..ExecutionConfig::default()
+            },
+            &Control::default(),
+        )
+    }
     .unwrap();
     assert_eq!(
         result.status(),
@@ -151,9 +155,9 @@ fn nonexact_private_call_output_size_keeps_both_concrete_results() {
     {
         let status = outcome
             .data
-            .read_word_with(&word(64), algebra.borrowed())
+            .read_word(&word(64), algebra.borrowed())
             .singleton();
-        let data = outcome.data.read_word_with(&word(0), algebra.borrowed());
+        let data = outcome.data.read_word(&word(0), algebra.borrowed());
         if status == Some(U256::ONE) {
             success = true;
             assert!(
@@ -174,26 +178,27 @@ fn nonexact_private_call_output_size_keeps_both_concrete_results() {
 
 #[test]
 fn existing_default_entry_and_memory_wrapper_still_execute_the_same_code() {
-    let mut world = World::new(Fork::Osaka, "default wrapper comparison");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "default wrapper comparison");
     world
         .insert(
             address(OWNER),
-            Account::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap(),
+            EvmAccount::<NumericValue>::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    let entry = Entry::concrete(
+    let entry = EvmEntry::<NumericValue>::concrete(
         address(OWNER),
         address(0x900),
-        AbstractValue::constant(U256::ZERO),
-        ByteArray::empty(),
+        EvmValue::<NumericValue>::constant(U256::ZERO),
+        EvmByteArray::<NumericValue>::empty(),
     );
-    let result = analyze_world(
-        world,
-        entry,
+    let result = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
         ExecutionConfig {
             root_terminal_coverage: false,
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(
@@ -212,7 +217,10 @@ fn existing_default_entry_and_memory_wrapper_still_execute_the_same_code() {
         assert_eq!(
             outcome
                 .data
-                .read_word(&AbstractValue::constant(U256::ZERO), Domain::default())
+                .read_word(
+                    &EvmValue::<NumericValue>::constant(U256::ZERO),
+                    native::product().borrowed()
+                )
                 .singleton(),
             Some(U256::from(42))
         );
