@@ -262,7 +262,10 @@ fn explain_accepts_every_world_analysis_option_except_output_selection() {
 
 #[test]
 fn calldata_is_one_typed_input_and_empty_bytes_differ_from_omission() {
-    use evm_abstract::world::ByteArray;
+    use evm_abstract::{
+        domain::{AbstractValue, Domain, WordElement},
+        world::ByteArray,
+    };
     for input in [None, Some("0x"), Some("0x2a")] {
         let mut arguments = vec!["evm-abstract", "cfg", "--hex", "00"];
         if let Some(input) = input {
@@ -302,7 +305,30 @@ fn calldata_is_one_typed_input_and_empty_bytes_differ_from_omission() {
                     "independent unknown input must have its own source"
                 );
             }
-            Some("0x") => assert_eq!(environment.calldata, ByteArray::empty()),
+            Some("0x") => {
+                let calldata = environment.calldata;
+                let zero = AbstractValue::constant(U256::ZERO);
+                // Constructors may retain different optional length proofs;
+                // explicit empty input still has exact content and zero padding.
+                assert_eq!(
+                    calldata.len().numeric().observation().singleton(),
+                    Some(U256::ZERO)
+                );
+                assert_eq!(calldata.exact_bytes(), Some(Vec::new()));
+                assert_eq!(calldata.state_root(), ByteArray::empty().state_root());
+                assert_eq!(calldata.default_byte().singleton(), Some(U256::ZERO));
+                assert_eq!(calldata.len().provenance(), zero.provenance());
+                assert_eq!(calldata.default_byte().provenance(), zero.provenance());
+                for offset in [0, 1, usize::MAX] {
+                    assert_eq!(
+                        calldata.byte_at(offset, Domain::default()).singleton(),
+                        Some(U256::ZERO)
+                    );
+                }
+                let clone = calldata.clone();
+                assert_eq!(clone, calldata);
+                assert_eq!(clone.state_root(), calldata.state_root());
+            }
             Some(_) => assert_eq!(environment.calldata, ByteArray::exact(&[42])),
         }
     }
