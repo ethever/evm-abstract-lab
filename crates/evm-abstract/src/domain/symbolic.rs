@@ -393,34 +393,7 @@ impl Hash for ExprId {
     }
 }
 
-pub(crate) fn arity(op: u8) -> Option<usize> {
-    match op {
-        opcode::ISZERO | opcode::NOT | opcode::CLZ => Some(1),
-        opcode::ADDMOD | opcode::MULMOD => Some(3),
-        opcode::ADD
-        | opcode::MUL
-        | opcode::SUB
-        | opcode::DIV
-        | opcode::SDIV
-        | opcode::MOD
-        | opcode::SMOD
-        | opcode::EXP
-        | opcode::SIGNEXTEND
-        | opcode::LT
-        | opcode::GT
-        | opcode::SLT
-        | opcode::SGT
-        | opcode::EQ
-        | opcode::AND
-        | opcode::OR
-        | opcode::XOR
-        | opcode::BYTE
-        | opcode::SHL
-        | opcode::SHR
-        | opcode::SAR => Some(2),
-        _ => None,
-    }
-}
+pub(crate) use super::concrete::arity;
 
 impl Serialize for ExprId {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

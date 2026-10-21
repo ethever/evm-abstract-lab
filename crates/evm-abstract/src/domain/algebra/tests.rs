@@ -266,6 +266,42 @@ fn unsupported_observation_refinement_preserves_extra_constraints() {
 }
 
 #[test]
+fn shared_numeric_intersection_keeps_hidden_constraints_and_prepaid_custom_work() {
+    let domain = ValueAlgebra::new(Policy::new());
+    let left = Word {
+        odd: true,
+        payload: vec![7; 4096],
+        ..Word::top()
+    };
+    let right = Word::top();
+    let quote = domain.numeric_algebra().refinement_work(&left, 1) + 17;
+    let denied = domain
+        .borrowed()
+        .intersect_numeric_with_payment(&left, &right, 17, |work| {
+            assert_eq!(work, quote);
+            Err(WorkExhausted)
+        });
+    assert_eq!(denied.unwrap_err(), WorkExhausted);
+    assert_eq!(left.copies.get(), 0);
+    let mut payments = Vec::new();
+    let paid = domain
+        .borrowed()
+        .intersect_numeric_with_payment(&left, &right, 17, |work| {
+            payments.push(work);
+            Ok::<_, WorkExhausted>(())
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(payments, [quote]);
+    let pure =
+        crate::domain::relational::intersect_numeric(&left, &right, domain.borrowed()).unwrap();
+    assert_eq!(paid, pure);
+    assert!(paid.odd);
+    assert!(paid.contains(U256::from(3)));
+    assert!(!paid.contains(U256::from(2)));
+}
+
+#[test]
 fn relational_queries_dispatch_to_injected_policy_and_keep_singletons_without_finite_views() {
     let domain = ValueAlgebra::new(Policy::new());
     let limits = RelationLimits::default();

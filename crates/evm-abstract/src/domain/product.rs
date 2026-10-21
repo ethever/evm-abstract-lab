@@ -213,14 +213,9 @@ impl Domain {
         op: u8,
         mut args: impl ExactSizeIterator<Item = &'a NumericValue>,
     ) -> NumericReduction<NumericValue> {
-        let expected = match op {
-            opcode::ISZERO | opcode::NOT | opcode::CLZ => 1,
-            opcode::ADDMOD | opcode::MULMOD => 3,
-            _ => 2,
-        };
-        if !matches!(op,0x01..=0x0b|0x10..=0x1e) || args.len() != expected {
+        let Some(expected) = super::concrete::arity(op).filter(|count| *count == args.len()) else {
             return NumericReduction::stable(NumericValue::top());
-        }
+        };
         let first = args.next().expect("validated nonempty scalar operands");
         let operands = [
             first,
@@ -229,26 +224,10 @@ impl Domain {
         ];
         let operands = &operands[..expected];
         if self.numeric_borrowed_copy_work(operands.iter().copied()) == 0 {
-            if self.spec().profile() == Profile::Product {
-                if op == opcode::ISZERO && (!first.may_be_zero() || !first.may_be_nonzero()) {
-                    return NumericReduction::stable(NumericValue::constant(U256::from(u8::from(
-                        !first.may_be_nonzero(),
-                    ))));
-                }
-                // A raw finite cover can carry a stricter singleton in another
-                // component. Preserve transfer's exact-scalar check before using
-                // its otherwise equivalent complete finite enumeration shortcut.
-                let mut exact = [U256::ZERO; 3];
-                if operands.iter().enumerate().all(|(i, value)| {
-                    value.singleton().is_some_and(|word| {
-                        exact[i] = word;
-                        true
-                    })
-                }) {
-                    return NumericReduction::stable(NumericValue::constant(super::evaluate(
-                        op, exact[0], exact[1], exact[2],
-                    )));
-                }
+            if self.spec().profile() == Profile::Product
+                && let Some(exact) = super::transfer::exact(op, operands.iter().copied())
+            {
+                return NumericReduction::stable(exact);
             }
             return NumericReduction::stable(
                 self.numeric_finite_apply_borrowed(op, operands.iter().copied()),
@@ -286,12 +265,7 @@ impl Domain {
         args: &[NumericValue],
         reduce: impl FnOnce(NumericValue) -> NumericReduction<NumericValue>,
     ) -> NumericReduction<NumericValue> {
-        let expected = match op {
-            opcode::ISZERO | opcode::NOT | opcode::CLZ => 1,
-            opcode::ADDMOD | opcode::MULMOD => 3,
-            _ => 2,
-        };
-        if !matches!(op,0x01..=0x0b|0x10..=0x1e) || args.len() != expected {
+        if super::concrete::arity(op) != Some(args.len()) {
             return NumericReduction::stable(NumericValue::top());
         }
         if self.spec().profile() == Profile::ConstantsOnly {

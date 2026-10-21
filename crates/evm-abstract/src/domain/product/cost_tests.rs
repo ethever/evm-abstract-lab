@@ -40,6 +40,66 @@ fn finite(size: usize) -> NumericValue {
 }
 
 #[test]
+fn transfer_fact_admission_matches_the_fact_table_and_preserves_refusal_statuses() {
+    use crate::domain::{
+        NumericReduction,
+        facts::{Fact, FactLattice, OperationRelation, RelationalFact, Symbol, Term},
+    };
+    for (op, count) in [(opcode::NOT, 1), (opcode::ADD, 2), (opcode::ADDMOD, 3)] {
+        let args = vec![NumericValue::top(); count];
+        let relation = OperationRelation::new(
+            op,
+            Symbol::THIS,
+            (1..=count)
+                .map(|i| Term::Symbol(Symbol::new(i as u32)))
+                .collect(),
+        )
+        .unwrap();
+        for capacity in 1..=4 {
+            let domain = Domain::from_spec(DomainSpec::new(
+                Profile::Product,
+                NonZeroUsize::new(8).unwrap(),
+                NonZeroUsize::new(4).unwrap(),
+                NonZeroUsize::new(capacity).unwrap(),
+            ));
+            let admitted = FactLattice::new(capacity)
+                .insert(Fact::Relation(RelationalFact::Operation(relation.clone())))
+                .is_ok();
+            for status in [
+                ReductionStatus::Stable,
+                ReductionStatus::RoundLimit,
+                ReductionStatus::Empty,
+                ReductionStatus::OriginConflict,
+                ReductionStatus::SymbolicLimit,
+                ReductionStatus::WorkLimit,
+                ReductionStatus::Cancelled,
+                ReductionStatus::KernelFailure,
+            ] {
+                let result = domain.numeric_apply_with(op, &args, |value| NumericReduction {
+                    value,
+                    status,
+                    rounds: 7,
+                    strengthened: 11,
+                });
+                let expected = if admitted
+                    || matches!(
+                        status,
+                        ReductionStatus::WorkLimit
+                            | ReductionStatus::Cancelled
+                            | ReductionStatus::KernelFailure
+                    ) {
+                    status
+                } else {
+                    ReductionStatus::FactLimit
+                };
+                assert_eq!(result.status, expected, "op={op:#x}, capacity={capacity}");
+                assert_eq!((result.rounds, result.strengthened), (7, 11));
+            }
+        }
+    }
+}
+
+#[test]
 fn closure_quote_funds_rule_and_graph_reservations_across_capacity_and_step_limits() {
     let _counter = cooperation::PROTOCOL_WORK.scope();
     for capacity in [1, 8, 32, 512] {

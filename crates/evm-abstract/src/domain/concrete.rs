@@ -2,6 +2,16 @@
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
+/// Supported pure word operations and their EVM pop-order operand count.
+pub(crate) fn arity(op: u8) -> Option<usize> {
+    match op {
+        opcode::ISZERO | opcode::NOT | opcode::CLZ => Some(1),
+        opcode::ADDMOD | opcode::MULMOD => Some(3),
+        0x01..=0x0b | 0x10..=0x1e => Some(2),
+        _ => None,
+    }
+}
+
 fn signed_lt(a: U256, b: U256) -> bool {
     if a.bit(255) != b.bit(255) {
         a.bit(255)

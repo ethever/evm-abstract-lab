@@ -5,7 +5,7 @@
 //! A consistent local approximation is not a satisfiability proof.
 
 use super::{
-    AlgebraRef, EvmNumericAlgebra, EvmValue, NumericValue, WordElement, WordObservation,
+    AlgebraRef, EvmNumericAlgebra, NumericValue, WordElement, WordObservation,
     symbolic::{ExprError, ExprId, ExprKind, ExprLimits},
 };
 use alloy_primitives::U256;
@@ -109,6 +109,20 @@ pub(crate) fn intersect_numeric<D: EvmNumericAlgebra>(
     right: &D::Element,
     domain: AlgebraRef<'_, D>,
 ) -> Option<D::Element> {
+    intersect_numeric_with(left, right, domain, |_| {
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|never| match never {})
+}
+
+// Pure and staged callers share import/refusal semantics. The callback runs
+// only for a feasible imported element, before its reduction or projection.
+pub(super) fn intersect_numeric_with<D: EvmNumericAlgebra, E>(
+    left: &D::Element,
+    right: &D::Element,
+    domain: AlgebraRef<'_, D>,
+    pay_reduction: impl FnOnce(&D::Element) -> Result<(), E>,
+) -> Result<Option<D::Element>, E> {
     let numeric = match left.constrain(&right.observation()) {
         Ok(numeric) => numeric,
         Err(
@@ -116,21 +130,20 @@ pub(crate) fn intersect_numeric<D: EvmNumericAlgebra>(
             | super::facts::FactError::ConflictingBits
             | super::facts::FactError::InvalidBounds
             | super::facts::FactError::EmptyFiniteSet,
-        ) => return None,
+        ) => return Ok(None),
         // Optional import failure is not a contradiction of this universe.
-        Err(_) => return Some(left.clone()),
+        Err(_) => return Ok(Some(left.clone())),
     };
     if numeric
         .constants()
         .is_some_and(|values| !values.iter().any(|v| numeric.contains(*v)))
     {
-        return None;
+        return Ok(None);
     }
-    let reduced = domain.reduce(&EvmValue::from_numeric(numeric));
-    if reduced.status == super::ReductionStatus::Empty {
-        return None;
-    }
-    Some(domain.project(&reduced.value).numeric().clone())
+    pay_reduction(&numeric)?;
+    let reduced = domain.numeric_algebra().reduce_numeric(&numeric);
+    Ok((reduced.status != super::ReductionStatus::Empty)
+        .then(|| domain.numeric_algebra().project_numeric(&reduced.value)))
 }
 
 /// A retained guarantee over scoped Word256 expressions.
