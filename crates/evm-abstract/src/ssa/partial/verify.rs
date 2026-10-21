@@ -17,7 +17,8 @@ pub(super) fn verify<N: WordElement>(
     analysis: &EvmWorldAnalysis<N>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<(), SsaError> {
-    crate::ssa::checkpoint()?;
+    crate::ssa::pay(budget, 0)?;
+    crate::ssa::work::partial_verify(ir, analysis, budget)?;
     if ir.status != analysis.status() || ir.blocks.len() != analysis.states().len() {
         return Err(invariant(Kind::PartialStatusOrBlockCount));
     }
@@ -27,7 +28,7 @@ pub(super) fn verify<N: WordElement>(
     let mut known = BTreeMap::new();
     let mut previous = None;
     for transition in &ir.transitions {
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         if transition.edge >= analysis.edges().len()
             || previous.is_some_and(|index| index >= transition.edge)
             || known.insert(transition.edge, transition).is_some()
@@ -44,7 +45,7 @@ pub(super) fn verify<N: WordElement>(
                 .source_state(edge.from)
                 .target_state(edge.to)
         };
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         if edge.from >= ir.blocks.len() || edge.to >= ir.blocks.len() {
             return Err(invariant(Kind::EdgeStateMissing));
         }
@@ -74,7 +75,7 @@ pub(super) fn verify<N: WordElement>(
     let mut effects = BTreeSet::new();
     for (id, (block, state)) in ir.blocks.iter().zip(analysis.states()).enumerate() {
         let invariant = |kind| invariant(kind).state(id);
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         if block.state != id || state.id != id || block.coverage != coverage(state) {
             return Err(invariant(Kind::PartialStateIdentity));
         }
@@ -164,7 +165,7 @@ pub(super) fn verify<N: WordElement>(
                 .last_mut()
                 .ok_or_else(|| invariant(Kind::PartialActiveFrameMissing))?;
             for (order, step) in block.instructions.iter().enumerate() {
-                crate::ssa::checkpoint()?;
+                crate::ssa::pay(budget, 0)?;
                 let invariant = |kind| invariant(kind).pc(step.instruction.pc);
                 let source = original
                     .and_then(|b| b.instructions.get(order))
@@ -298,7 +299,7 @@ pub(super) fn verify<N: WordElement>(
         }
     }
     for transition in &ir.transitions {
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         verify_transition(ir, analysis, transition, &mut values, &mut effects)?;
     }
     if values.iter().copied().ne(0..ir.value_count)
@@ -306,6 +307,7 @@ pub(super) fn verify<N: WordElement>(
     {
         return Err(invariant(Kind::PartialContiguousNames));
     }
+    crate::ssa::pay(budget, 0)?;
     Ok(())
 }
 

@@ -56,6 +56,16 @@ fn render_with_mode<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element 
     algebra: &crate::domain::ValueAlgebra<D>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<String, SsaError> {
+    crate::ssa::work::explanation(analysis, budget)?;
+    // SSA admission/replay precedes report allocation. A rejected structural
+    // operation cannot first build a large code/reference report.
+    let normalized = if analysis.status() == Status::Converged {
+        Some(ssa::build_normalized_world(analysis, budget)?)
+    } else if allow_partial_ssa {
+        Some(ssa::build_normalized_partial_world(analysis, budget)?)
+    } else {
+        None
+    };
     let refs = References::new(analysis);
     let mut output = String::from("Cross-contract explanation\n");
     writeln!(
@@ -114,19 +124,12 @@ fn render_with_mode<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element 
     write_frontiers(&mut output, analysis, &refs);
     super::super::text::procedure_summaries::write(&mut output, analysis);
     output.push('\n');
-    if analysis.status() == Status::Converged {
-        output.push_str(&super::super::normalized_ssa(
-            analysis,
-            &ssa::build_normalized_world(analysis, budget)?,
-        ));
-    } else if allow_partial_ssa {
-        output.push_str(&super::super::normalized_ssa(
-            analysis,
-            &ssa::build_normalized_partial_world(analysis, budget)?,
-        ));
+    if let Some(ir) = &normalized {
+        output.push_str(&super::super::normalized_ssa(analysis, ir));
     } else {
         output.push_str("SSA unavailable: cross-contract frontiers remain\n");
     }
+    crate::ssa::pay(budget, 0)?;
     Ok(output)
 }
 

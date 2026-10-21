@@ -23,6 +23,7 @@ mod partial;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod verify;
+pub(crate) mod work;
 mod world;
 
 pub use partial::{

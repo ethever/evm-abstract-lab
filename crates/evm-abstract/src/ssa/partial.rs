@@ -134,7 +134,7 @@ pub fn build_partial_world<N: WordElement>(
     analysis: &EvmWorldAnalysis<N>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<PartialWorldSsa<N>, SsaError> {
-    crate::ssa::checkpoint()?;
+    super::pay(budget, 0)?;
     let ir = build::build(analysis, budget)?;
     ir.verify(analysis, budget)?;
     Ok(ir)
@@ -192,12 +192,11 @@ pub(crate) fn clone_frontiers<N: WordElement>(
     frontiers: &[EvmMachineFrontier<N>],
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<Vec<EvmMachineFrontier<N>>, SsaError> {
+    super::pay(budget, frontiers.len().saturating_add(1))?;
     let mut result = Vec::with_capacity(frontiers.len());
     for frontier in frontiers {
-        let mut work = frontier
-            .target
-            .as_ref()
-            .map_or(1, |key| key.frames.len().saturating_mul(8));
+        super::pay(budget, 0)?;
+        let mut work = super::work::frontier(frontier, budget)?;
         if let Some(range) = &frontier.range {
             for value in [
                 &range.request.offset,
@@ -212,6 +211,7 @@ pub(crate) fn clone_frontiers<N: WordElement>(
         result.push(frontier.clone());
         super::pay(budget, 0)?;
     }
+    super::pay(budget, 0)?;
     Ok(result)
 }
 
@@ -223,11 +223,21 @@ pub(crate) fn same_frontiers<N: WordElement>(
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<bool, SsaError> {
     use std::sync::Arc;
+    super::pay(
+        budget,
+        actual
+            .len()
+            .saturating_add(expected.len())
+            .saturating_add(1),
+    )?;
     if actual.len() != expected.len() {
         return Ok(false);
     }
     for (a, b) in actual.iter().zip(expected) {
         super::pay(budget, 0)?;
+        let a_structure = super::work::frontier(a, budget)?;
+        let b_structure = super::work::frontier(b, budget)?;
+        super::pay(budget, a_structure.saturating_add(b_structure))?;
         if a.from != b.from || a.target != b.target || a.pc != b.pc || a.reason != b.reason {
             return Ok(false);
         }
@@ -264,5 +274,6 @@ pub(crate) fn same_frontiers<N: WordElement>(
             _ => return Ok(false),
         }
     }
+    super::pay(budget, 0)?;
     Ok(true)
 }

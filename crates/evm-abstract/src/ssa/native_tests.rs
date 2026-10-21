@@ -12,14 +12,34 @@ use crate::{
     world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use serde::Serialize;
-use std::fmt;
+use std::{cell::Cell, fmt};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+thread_local! {
+    static LITERAL_FACTORIES: Cell<usize> = const { Cell::new(0) };
+    static NUMERIC_COPIES: Cell<usize> = const { Cell::new(0) };
+}
+
+fn reset_native_counters() {
+    LITERAL_FACTORIES.set(0);
+    NUMERIC_COPIES.set(0);
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum CustomWord {
     Open,
     Exact { word: U256 },
     ExceptTwo,
+}
+impl Clone for CustomWord {
+    fn clone(&self) -> Self {
+        NUMERIC_COPIES.set(NUMERIC_COPIES.get() + 1);
+        match self {
+            Self::Open => Self::Open,
+            Self::Exact { word } => Self::Exact { word: *word },
+            Self::ExceptTwo => Self::ExceptTwo,
+        }
+    }
 }
 impl fmt::Display for CustomWord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -35,6 +55,7 @@ impl WordElement for CustomWord {
         Self::Open
     }
     fn constant(word: U256) -> Self {
+        LITERAL_FACTORIES.set(LITERAL_FACTORIES.get() + 1);
         Self::Exact { word }
     }
     fn from_observation(value: &WordObservation) -> Self {
@@ -454,4 +475,205 @@ fn root_local_rejected_calls_keep_typed_edges_and_deferred_native_results() {
     local_rejected_call(&ValueAlgebra::new(ProductAlgebra::from_spec(spec())));
     local_rejected_call(&ValueAlgebra::new(FiniteSetAlgebra::from_spec(spec())));
     local_rejected_call(&ValueAlgebra::new(CustomAlgebra(spec())));
+}
+
+fn custom_execution(
+    code: &str,
+    config: ExecutionConfig,
+) -> crate::analysis::EvmWorldAnalysis<CustomWord> {
+    let root = Address::repeat_byte(0x11);
+    let mut world = EvmWorld::new(Fork::Osaka, "native SSA structural admission");
+    world
+        .insert(root, EvmAccount::from_hex(code, Fork::Osaka).unwrap())
+        .unwrap();
+    let entry = EvmEntry::concrete(
+        root,
+        root,
+        EvmValue::from_numeric(CustomWord::ExceptTwo),
+        EvmByteArray::empty(),
+    );
+    run_native(
+        &ValueAlgebra::new(CustomAlgebra(spec())),
+        world,
+        entry,
+        config,
+    )
+    .unwrap()
+}
+
+#[test]
+fn stop_only_structural_build_and_verifier_replay_require_positive_work() {
+    use crate::{resource::WorkBudget, ssa::SsaError};
+    let analysis = custom_execution("00", ExecutionConfig::default());
+    assert_eq!(analysis.status(), Status::Converged);
+    assert_eq!(analysis.states().len(), 1);
+    let partial = build_partial_world(&analysis, &mut postprocessing()).unwrap();
+    let ir = build_normalized_world(&analysis, &mut postprocessing()).unwrap();
+    assert!(ir.facts().is_empty());
+    assert!(ir.frontiers().is_empty());
+    reset_native_counters();
+    assert!(matches!(
+        build_partial_world(&analysis, &mut WorkBudget::new(0)),
+        Err(SsaError::Work)
+    ));
+    assert!(matches!(
+        build_normalized_world(&analysis, &mut WorkBudget::new(0)),
+        Err(SsaError::Work)
+    ));
+    assert!(matches!(
+        super::build_normalized_partial_world(&analysis, &mut WorkBudget::new(0)),
+        Err(SsaError::Work)
+    ));
+    assert!(matches!(
+        partial.verify(&analysis, &mut WorkBudget::new(0)),
+        Err(SsaError::Work)
+    ));
+    assert!(matches!(
+        ir.verify(&analysis, &mut WorkBudget::new(0)),
+        Err(SsaError::Work)
+    ));
+    let algebra = ValueAlgebra::new(CustomAlgebra(spec()));
+    assert!(matches!(
+        crate::render::world::explain(&analysis, &algebra, &mut WorkBudget::new(0)),
+        Err(SsaError::Work)
+    ));
+    assert!(matches!(
+        crate::render::world::explain_verbose(&analysis, &algebra, &mut WorkBudget::new(0)),
+        Err(SsaError::Work)
+    ));
+    assert_eq!(LITERAL_FACTORIES.get(), 0);
+    assert_eq!(NUMERIC_COPIES.get(), 0);
+}
+
+#[test]
+fn every_metered_ssa_path_checks_captured_and_ambient_owners_even_without_facts() {
+    use crate::{analysis::control::Control, ssa::SsaError};
+    let stop = custom_execution("00", ExecutionConfig::default());
+    let empty = custom_execution(
+        "00",
+        ExecutionConfig {
+            max_work: 1,
+            ..ExecutionConfig::default()
+        },
+    );
+    assert_eq!(empty.status(), Status::Incomplete);
+    assert!(empty.states().is_empty());
+    for analysis in [&stop, &empty] {
+        let partial = build_partial_world(analysis, &mut postprocessing()).unwrap();
+        let ir = super::build_normalized_partial_world(analysis, &mut postprocessing()).unwrap();
+        assert_eq!(ir.blocks().len(), analysis.states().len());
+        assert_eq!(ir.complete(), analysis.status() == Status::Converged);
+        for cancel_captured in [true, false] {
+            let captured = Control::new(Default::default());
+            let ambient = Control::new(Default::default());
+            assert!(captured.cancellation().is_enabled());
+            assert!(ambient.cancellation().is_enabled());
+            let mut budget = captured.scope(postprocessing);
+            if cancel_captured {
+                captured.cancellation().cancel();
+            } else {
+                ambient.cancellation().cancel();
+            }
+            reset_native_counters();
+            ambient.scope(|| {
+                assert!(matches!(
+                    build_partial_world(analysis, &mut budget),
+                    Err(SsaError::Cancelled)
+                ));
+                assert!(matches!(
+                    build_normalized_world(analysis, &mut budget),
+                    Err(SsaError::Cancelled)
+                ));
+                assert!(matches!(
+                    super::build_normalized_partial_world(analysis, &mut budget),
+                    Err(SsaError::Cancelled)
+                ));
+                assert!(matches!(
+                    partial.verify(analysis, &mut budget),
+                    Err(SsaError::Cancelled)
+                ));
+                assert!(matches!(
+                    ir.verify(analysis, &mut budget),
+                    Err(SsaError::Cancelled)
+                ));
+                let algebra = ValueAlgebra::new(CustomAlgebra(spec()));
+                assert!(matches!(
+                    crate::render::world::explain(analysis, &algebra, &mut budget),
+                    Err(SsaError::Cancelled)
+                ));
+                assert!(matches!(
+                    crate::render::world::explain_with_partial_ssa(analysis, &algebra, &mut budget),
+                    Err(SsaError::Cancelled)
+                ));
+            });
+            assert_eq!(budget.used(), 0);
+            assert_eq!(LITERAL_FACTORIES.get(), 0);
+            assert_eq!(NUMERIC_COPIES.get(), 0);
+        }
+    }
+}
+
+#[test]
+fn structural_refusal_precedes_native_copy_and_derived_proofs_never_construct_carriers() {
+    use crate::{
+        resource::WorkBudget,
+        ssa::{FactSource, SsaError},
+    };
+    let code = format!("{}600260030160000234801800", "600150".repeat(256));
+    let analysis = custom_execution(&code, ExecutionConfig::default());
+    assert_eq!(analysis.status(), Status::Converged);
+    assert!(
+        analysis
+            .states()
+            .iter()
+            .map(|state| state.executed_pcs.len())
+            .sum::<usize>()
+            > 384
+    );
+    reset_native_counters();
+    // Only the cached outer census fits; the instruction/frame census must be
+    // paid before walking it, before graph allocation or any native copy.
+    let mut small = WorkBudget::new(1 + analysis.states().len() + analysis.edges().len());
+    assert!(matches!(
+        build_normalized_world(&analysis, &mut small),
+        Err(SsaError::Work)
+    ));
+    assert_eq!(LITERAL_FACTORIES.get(), 0);
+    assert_eq!(NUMERIC_COPIES.get(), 0);
+    let mut shared = postprocessing();
+    let ir = build_normalized_world(&analysis, &mut shared).unwrap();
+    let after_build = shared.used();
+    ir.verify(&analysis, &mut shared).unwrap();
+    assert!(shared.used() > after_build);
+    assert_eq!(
+        LITERAL_FACTORIES.get(),
+        0,
+        "SSA proofs must not invoke opaque literal factories"
+    );
+    assert!(
+        NUMERIC_COPIES.get() > 0,
+        "retained actual observations still own their native payloads"
+    );
+    for source in [
+        FactSource::Literal,
+        FactSource::ConstantFold,
+        FactSource::AlgebraicIdentity,
+    ] {
+        let facts = ir
+            .facts()
+            .iter()
+            .filter(|fact| fact.source == source)
+            .collect::<Vec<_>>();
+        assert!(!facts.is_empty(), "missing independent proof {source:?}");
+        assert!(
+            facts
+                .iter()
+                .all(|fact| fact.constant.is_some() && fact.numeric.is_none())
+        );
+    }
+    assert!(
+        ir.facts()
+            .iter()
+            .any(|fact| fact.source == FactSource::Instruction && fact.numeric.is_some())
+    );
 }

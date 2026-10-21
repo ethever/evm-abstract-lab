@@ -17,13 +17,14 @@ pub(super) fn build<N: WordElement>(
     analysis: &EvmWorldAnalysis<N>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<PartialWorldSsa<N>, SsaError> {
-    crate::ssa::checkpoint()?;
+    crate::ssa::pay(budget, 0)?;
+    crate::ssa::work::partial_build(analysis, budget)?;
     let mut next = 0;
     let mut effect_next = 0;
     let mut blocks = Vec::new();
     for state in analysis.states() {
         let invariant = |kind| invariant(kind).state(state.id);
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         let mut phis = Vec::new();
         let mut stacks = Vec::new();
         for (frame, entry) in state.entry.call_stack.iter().enumerate() {
@@ -63,7 +64,7 @@ pub(super) fn build<N: WordElement>(
                 .ok_or_else(|| invariant(Kind::PartialFrameMissing))?;
             for (order, progress) in evidence.instructions().iter().copied().enumerate() {
                 let invariant = |kind| invariant(kind).pc(state.executed_pcs[order]);
-                crate::ssa::checkpoint()?;
+                crate::ssa::pay(budget, 0)?;
                 let source = original
                     .and_then(|b| b.instructions.get(order))
                     .ok_or_else(|| invariant(Kind::ReceiptOutsideRuntime))?;
@@ -168,7 +169,7 @@ pub(super) fn build<N: WordElement>(
                 .source_state(edge.from)
                 .target_state(edge.to)
         };
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         if let Some(reason) = deferred_reason(analysis, edge) {
             deferred_edges.push(DeferredSsaEdge {
                 edge: index,
@@ -234,7 +235,7 @@ pub(super) fn build<N: WordElement>(
                 .source_state(edge.from)
                 .target_state(edge.to)
         };
-        crate::ssa::checkpoint()?;
+        crate::ssa::pay(budget, 0)?;
         let Some(transition) = by_edge.get(&index) else {
             continue;
         };
