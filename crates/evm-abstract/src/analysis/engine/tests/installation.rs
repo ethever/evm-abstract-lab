@@ -186,7 +186,7 @@ fn admission_pays_preparation_and_actual_replacement_separately_and_atomically()
             }
             let spent = engine.budget.used();
             let outcome =
-                engine.install_join(0, incoming, Some(joined.clone()), alternatives, history);
+                engine.install_join(0, &incoming, Some(joined.clone()), alternatives, history);
             assert!(Arc::ptr_eq(
                 &definitions,
                 &engine.result.states[0]
@@ -273,7 +273,7 @@ fn covered_admission_is_free_and_changed_admission_advances_exactly_once() {
     let history = engine.alternatives[0].work_size();
     let spent = engine.budget.used();
     engine
-        .install_join(0, incoming.clone(), None, alternatives.clone(), history)
+        .install_join(0, &incoming, None, alternatives.clone(), history)
         .unwrap();
     assert_eq!(engine.budget.used(), spent);
     assert_eq!(version(&mut engine, 0), before);
@@ -285,7 +285,7 @@ fn covered_admission_is_free_and_changed_admission_advances_exactly_once() {
         .join(&incoming, engine.domain)
         .unwrap();
     engine
-        .install_join(0, incoming, Some(joined), alternatives, history)
+        .install_join(0, &incoming, Some(joined), alternatives, history)
         .unwrap();
     assert_eq!(version(&mut engine, 0).get(), before.get() + 1);
 }

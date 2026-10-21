@@ -1,7 +1,9 @@
 //! Stage a complete injected relative admission before touching live slots.
 
-use super::{EvmPayloadSummary, MachineError, semantic_eq};
-use crate::analysis::engine::{Acceleration, PolicyContext, PolicySite, ProcedureSummaryPolicy};
+use super::{EvmOutput, EvmPayloadSummary, MachineError, semantic_eq};
+use crate::analysis::engine::{
+    Acceleration, PolicyContext, PolicySite, ProcedureOutput, ProcedureSummaryPolicy,
+};
 use crate::domain::EvmNumericAlgebra;
 use analysis_kernel::{Change, algebra::Prepared};
 
@@ -40,4 +42,42 @@ pub(super) fn prepare<D: EvmNumericAlgebra, S: ProcedureSummaryPolicy<D>>(
         change,
         install_work,
     })
+}
+
+/// Feedback invalidates delivery even when the admitted bound stays equal.
+/// Semantic updates alone drive acceleration; generations also track that
+/// scheduling change. Neither counter escapes before the table publication.
+pub(super) fn prepare_output<D: EvmNumericAlgebra, S: ProcedureSummaryPolicy<D>>(
+    policy: &S,
+    current: Option<&EvmOutput<D::Element>>,
+    incoming: &ProcedureOutput<D::Element>,
+    acceleration: Acceleration,
+    invalidate: bool,
+    cx: &mut PolicyContext<'_, D>,
+) -> Result<Option<EvmOutput<D::Element>>, MachineError> {
+    let summary =
+        policy.admit_output(current.map(|old| &old.summary), incoming, acceleration, cx)?;
+    let work = summary.work_size();
+    cx.reserve(
+        work.saturating_add(current.map_or(0, |old| old.work))
+            .saturating_add(usize::from(invalidate)),
+    )?;
+    let changed = current.is_none_or(|old| old.summary != summary);
+    if !changed && !invalidate {
+        return Ok(None);
+    }
+    let generation = current
+        .map_or(0, |old| old.generation)
+        .checked_add(1)
+        .ok_or(MachineError::IdentityExhausted)?;
+    let updates = current
+        .map_or(0, |old| old.updates)
+        .checked_add(usize::from(current.is_some() && changed))
+        .ok_or(MachineError::IdentityExhausted)?;
+    Ok(Some(EvmOutput {
+        summary,
+        work,
+        generation,
+        updates,
+    }))
 }

@@ -63,25 +63,14 @@ pub(super) fn interruption(reason: &FrontierReason) -> bool {
     )
 }
 
-/// Publication uses one phase's receipts. A failed coarse transfer cannot
-/// invalidate legal alternatives or obligations from the precise attempt.
+/// The caller admits only executions whose every frontier is a raw retention
+/// refusal. A complete retry replaces that whole phase; a failed retry cannot
+/// invalidate its legal alternatives or receipts.
 pub(super) fn reconcile<N: WordElement>(
     mut first: EvmExecution<N>,
     mut retry: EvmExecution<N>,
 ) -> EvmExecution<N> {
     if retry.frontiers.is_empty() {
-        let superseded = first
-            .retention_failures
-            .iter()
-            .map(|(index, _)| *index)
-            .collect::<std::collections::BTreeSet<_>>();
-        retry.frontiers.extend(
-            first
-                .frontiers
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, frontier)| (!superseded.contains(&index)).then_some(frontier)),
-        );
         retry.diagnostics.extend(first.diagnostics);
         retry
     } else {

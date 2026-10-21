@@ -41,7 +41,7 @@ impl JoinWork {
         // publish_prepared_with) BEFORE the kernel's reservation. Prepay both
         // transports here; final destination moves belong to installation.
         // Arbitrary N may own large inline fields as well as deep allocations.
-        let bytes = size_of::<Option<EvmMachinePayload<N>>>()
+        let bytes = size_of::<EvmMachinePayload<N>>()
             .saturating_add(size_of::<M>())
             .saturating_add(size_of::<BTreeSet<ExprId>>());
         let transport = if bytes == usize::MAX {

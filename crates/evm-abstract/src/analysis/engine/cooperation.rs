@@ -411,22 +411,20 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
                 // Input was still Pending and therefore adopted no head.
                 self.structure_changed(runtime, consumer, budget)?;
             }
-            let (context, generation) = if let Some(binding) = self.bindings.get(&point) {
-                let key = binding.input.subject().scope.key();
-                (
-                    key.context,
-                    key.generation
-                        .checked_add(1)
-                        .ok_or(KernelError::VersionExhausted)?,
-                )
-            } else if let Some(dormant) = self.dormant.get(&point) {
-                (dormant.context, dormant.next_generation)
+            let previous = self
+                .bindings
+                .get(&point)
+                .map(|binding| binding.input.subject().scope);
+            let key = if previous.is_none()
+                && let Some(dormant) = self.dormant.get(&point)
+            {
+                ScopeKey {
+                    context: dormant.context,
+                    generation: dormant.next_generation,
+                    policy: 0,
+                }
             } else {
-                let context = self.next_context;
-                self.next_context = context
-                    .checked_add(1)
-                    .ok_or(KernelError::VersionExhausted)?;
-                (context, 1)
+                self.next_scope_key(previous)?
             };
             // The caller already paid the detached payload; retain/release and
             // route construction are reserved before installing the snapshot.
@@ -437,14 +435,7 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
                 .saturating_add(16);
             analysis_kernel::Meter::reserve(&mut MachineMeter(budget), work)
                 .map_err(KernelError::Stopped)?;
-            let scope = runtime.kernel().scope(
-                ScopeKey {
-                    context,
-                    generation,
-                    policy: 0,
-                },
-                &mut MachineMeter(budget),
-            )?;
+            let scope = runtime.kernel().scope(key, &mut MachineMeter(budget))?;
             let subject = Subject { point, scope };
             // A dependency-only reseed retains the exact native snapshot and
             // symbolic roots. It never carries old local guarantees forward.

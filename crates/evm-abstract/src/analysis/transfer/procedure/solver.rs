@@ -284,7 +284,6 @@ impl<
                 nodes: KeyIndex::new(),
                 outputs: BTreeMap::new(),
                 output,
-                subscribers: Vec::new(),
                 dependencies: BTreeSet::new(),
                 recursive: false,
                 local_cycle: false,
@@ -620,9 +619,7 @@ impl<
             TaskKind::Resume(subscriber) => match self.resume(*subscriber) {
                 Ok(complete) => complete,
                 Err(error) => {
-                    let reason = error.frontier_reason();
-                    self.frontier_subscriber(*subscriber, reason.clone(), 0);
-                    self.park_pending(reason);
+                    self.park_admitted(&task.0, error.frontier_reason());
                     false
                 }
             },
@@ -687,13 +684,7 @@ impl<
             && X::ENABLED
             && let Err(error) = self.runtime.schedule_observation(self.budget)
         {
-            let reason = error.frontier_reason();
-            match &task.0 {
-                TaskKind::Body(id) => self.frontier_node(*id, reason.clone(), 0),
-                TaskKind::Resume(id) => self.frontier_subscriber(*id, reason.clone(), 0),
-                _ => {}
-            }
-            self.park_pending(reason);
+            self.park_admitted(&task.0, error.frontier_reason());
             return false;
         }
         if let Some(token) = self.active.take()
@@ -717,15 +708,12 @@ impl<
             self.config.analysis.max_transfers,
             self.budget,
         ) {
-            self.frontier_node(id, reason.clone(), 0);
-            self.park_pending(reason);
+            self.park_admitted(&TaskKind::Body(id), reason);
             return false;
         }
         let work = self.table.nodes[id].payload.work_size().saturating_mul(4);
         if let Err(error) = self.reserve(work) {
-            let reason = error.frontier_reason();
-            self.frontier_node(id, reason.clone(), 0);
-            self.park_pending(reason);
+            self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
             return false;
         }
         let input = self.table.nodes[id].payload.clone();
@@ -734,7 +722,11 @@ impl<
                 let payload = match self.cooperative_input(id, payload, 0) {
                     Ok(Some(payload)) => payload,
                     Ok(None) => {
-                        return self.track_input(id).is_ok();
+                        if let Err(error) = self.track_input(id) {
+                            self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
+                            return false;
+                        }
+                        return true;
                     }
                     Err(error) => {
                         let reason = error.frontier_reason();
@@ -775,9 +767,7 @@ impl<
         let version = match self.track_input(id) {
             Ok(version) => version,
             Err(error) => {
-                let reason = error.frontier_reason();
-                self.frontier_node(id, reason.clone(), 0);
-                self.park_pending(reason);
+                self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
                 return false;
             }
         };
@@ -829,24 +819,20 @@ impl<
             return retry.and_then(Result::ok);
         }
         self.frontier_ref(original, error.frontier_reason(), 0);
-        let interruptions = match retry {
-            Some(Ok(execution)) => execution
-                .frontiers
-                .into_iter()
-                .map(|frontier| frontier.reason)
-                .collect::<Vec<_>>(),
+        match retry {
+            Some(Ok(execution)) => {
+                for frontier in execution.frontiers {
+                    if coarse_retry::interruption(&frontier.reason) {
+                        self.frontier_ref(original, frontier.reason, 0);
+                    }
+                }
+            }
             Some(Err(reason)) => {
                 // A summary-policy refusal is an unfinished obligation in its
                 // own right, even when the original failure was retention.
                 self.frontier_ref(original, reason, 0);
-                Vec::new()
             }
-            None => Vec::new(),
-        };
-        for reason in interruptions {
-            if super::coarse_retry::interruption(&reason) {
-                self.frontier_ref(original, reason, 0);
-            }
+            None => {}
         }
         None
     }
@@ -1120,7 +1106,8 @@ impl<
                     0,
                     &mut PolicyContext::new(self.domain, self.entry, self.budget),
                 )?;
-                self.reserve(prepared.value.work_size().saturating_add(3))?;
+                // Kernel dependencies replace the former callee-local append.
+                self.reserve(prepared.value.work_size().saturating_add(2))?;
                 let mut index = std::mem::take(&mut self.table.subscribers_by_key);
                 let admitted = index.insert_with(key, self.budget, |budget| {
                     let subscription = self.table.subscribers.len();
@@ -1141,7 +1128,6 @@ impl<
                         feedback,
                         delivered: BTreeMap::new(),
                     });
-                    self.table.procedures[callee].subscribers.push(subscription);
                     Ok(subscription)
                 });
                 self.table.subscribers_by_key = index;
@@ -1229,37 +1215,16 @@ impl<
             feedback,
             old.map_or(0, |old| old.updates),
         );
-        let summary = self.policies.state.admit_output(
-            old.map(|old| &old.summary),
+        let Some(output) = admission::prepare_output(
+            &self.policies.state,
+            old,
             &incoming,
             acceleration,
+            false,
             &mut PolicyContext::new(self.domain, self.entry, self.budget),
-        )?;
-        PolicyContext::new(self.domain, self.entry, self.budget).reserve(
-            summary
-                .work_size()
-                .saturating_add(old.map_or(0, |old| old.work)),
-        )?;
-        if old.is_some_and(|old| old.summary == summary) {
+        )?
+        else {
             return Ok(());
-        }
-        let generation = old
-            .map_or(0, |old| old.generation)
-            .checked_add(1)
-            .ok_or(MachineError::IdentityExhausted)?;
-        let updates = old
-            .map(|old| {
-                old.updates
-                    .checked_add(1)
-                    .ok_or(MachineError::IdentityExhausted)
-            })
-            .transpose()?
-            .unwrap_or(0);
-        let output = EvmOutput {
-            work: summary.work_size(),
-            summary,
-            generation,
-            updates,
         };
         let output_work = self.table.procedures[procedure]
             .outputs
@@ -1270,6 +1235,26 @@ impl<
         self.reserve(output_work)?;
         let mut outputs = self.table.procedures[procedure].outputs.clone();
         outputs.insert(kind, output);
+        let old = &self.table.procedures[procedure];
+        self.publish_outputs(
+            procedure,
+            outputs,
+            output_work,
+            old.recursive,
+            old.local_cycle,
+        )
+    }
+
+    /// Ordinary growth and feedback share one output-slot transaction. In
+    /// particular, failed feedback cannot install flags ahead of its outcomes.
+    pub(super) fn publish_outputs(
+        &mut self,
+        procedure: usize,
+        outputs: BTreeMap<OutcomeKind, EvmOutput<D::Element>>,
+        install_work: usize,
+        recursive: bool,
+        local_cycle: bool,
+    ) -> Result<(), MachineError> {
         let old = &mut self.table.procedures[procedure];
         let updates = old
             .output_updates
@@ -1282,15 +1267,12 @@ impl<
                 .ok_or(MachineError::Shape)?,
             self.budget,
             |run| {
-                run.publish_prepared_parts(
-                    &old.output,
-                    &mut old.outputs,
-                    outputs,
-                    &mut old.output_updates,
-                    updates,
-                    Change::Changed,
-                    output_work,
-                )
+                run.publish_prepared_with(&old.output, Change::Changed, install_work, || {
+                    old.outputs = outputs;
+                    old.output_updates = updates;
+                    old.recursive = recursive;
+                    old.local_cycle = local_cycle;
+                })
                 .map_err(kernel_failure)
             },
         )?;
