@@ -1,85 +1,114 @@
 //! Whole-word forwarding retains complete values only inside proved windows.
 
 use super::{Facts, Reader};
-use crate::{
-    domain::{
-        AbstractValue, Domain,
-        identity::Symbol,
-        provenance::Origin,
-        symbolic::{ByteStateId, ByteView, ExprError, ExprId, ExprLimits, StateLimits},
-    },
-    world::{ByteArray, RangeError},
-};
 use alloy_primitives::U256;
 use std::collections::BTreeMap;
+use {
+    crate::domain::identity::Symbol, crate::domain::provenance::Origin,
+    crate::domain::symbolic::ByteStateId, crate::domain::symbolic::ByteView,
+    crate::domain::symbolic::ExprError, crate::domain::symbolic::ExprId,
+    crate::domain::symbolic::ExprLimits, crate::domain::symbolic::StateLimits,
+    crate::world::RangeError, crate::world::test_support::TestAlgebra,
+    crate::world::test_support::TestBytes, crate::world::test_support::TestValue,
+};
 
-fn value(n: usize) -> AbstractValue {
-    AbstractValue::constant(U256::from(n))
+fn value(n: usize) -> TestValue {
+    TestValue::constant(U256::from(n))
 }
 
-fn bounded(scope: u64, lower: usize, upper: usize, origin: Origin) -> AbstractValue {
-    let mut out = AbstractValue::unsigned_range(U256::from(lower), U256::from(upper)).unwrap();
+fn bounded(scope: u64, lower: usize, upper: usize, origin: Origin) -> TestValue {
+    let mut out = TestValue::unsigned_range(U256::from(lower), U256::from(upper)).unwrap();
     out.set_origin(origin);
     out.with_symbol(Symbol::CalldataWord(U256::ZERO), Some(scope))
 }
 
-fn source(input: &AbstractValue, domain: Domain) -> ByteArray {
-    let mut out = ByteArray::memory();
-    out.write_word(&value(64), input, 256, domain).unwrap();
+fn source(input: &TestValue, domain: TestAlgebra) -> TestBytes {
+    let mut out = TestBytes::memory();
+    out.write_word(&value(64), input, domain.borrowed())
+        .unwrap();
     out
 }
 
 #[test]
 fn slice_copy_and_captured_self_copy_keep_the_full_bounded_word() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let input = bounded(7001, 3, 9, Origin::Returndata);
     let original = source(&input, domain);
-    let expected = original.read_word_checked(&value(64), domain).unwrap();
+    let expected = original
+        .read_word_checked(&value(64), domain.borrowed())
+        .unwrap();
     assert_eq!(expected, input);
-    let view = original.slice(&value(32), &value(96), 256, domain).unwrap();
+    let view = original
+        .slice(&value(32), &value(96), domain.borrowed())
+        .unwrap();
     assert_eq!(
-        view.read_word_checked(&value(32), domain).unwrap(),
+        view.read_word_checked(&value(32), domain.borrowed())
+            .unwrap(),
         expected
     );
-    let nested = view.slice(&value(16), &value(64), 256, domain).unwrap();
+    let nested = view
+        .slice(&value(16), &value(64), domain.borrowed())
+        .unwrap();
     assert_eq!(
-        nested.read_word_checked(&value(16), domain).unwrap(),
+        nested
+            .read_word_checked(&value(16), domain.borrowed())
+            .unwrap(),
         expected
     );
 
-    let mut copied = ByteArray::memory();
+    let mut copied = TestBytes::memory();
     copied
-        .copy_from(&value(96), &nested, &value(16), &value(48), 256, domain)
+        .copy_from(
+            &value(96),
+            &nested,
+            &value(16),
+            &value(48),
+            domain.borrowed(),
+        )
         .unwrap();
     assert_eq!(
-        copied.read_word_checked(&value(96), domain).unwrap(),
+        copied
+            .read_word_checked(&value(96), domain.borrowed())
+            .unwrap(),
         expected
     );
     let snapshot = copied.clone();
     copied
-        .copy_from(&value(0), &snapshot, &value(96), &value(32), 256, domain)
+        .copy_from(
+            &value(0),
+            &snapshot,
+            &value(96),
+            &value(32),
+            domain.borrowed(),
+        )
         .unwrap();
-    let read = copied.read_word_checked(&value(0), domain).unwrap();
+    let read = copied
+        .read_word_checked(&value(0), domain.borrowed())
+        .unwrap();
     assert_eq!(read, expected);
     assert!(read.same_identity(&input));
     assert!(read.contains(U256::from(3)) && read.contains(U256::from(9)));
     assert!(!read.contains(U256::from(2)) && !read.contains(U256::from(10)));
     copied
-        .write_word(&value(96), &value(10), 256, domain)
+        .write_word(&value(96), &value(10), domain.borrowed())
         .unwrap();
     assert_eq!(
-        copied.read_word_checked(&value(0), domain).unwrap(),
+        copied
+            .read_word_checked(&value(0), domain.borrowed())
+            .unwrap(),
         expected
     );
     assert_eq!(
-        snapshot.read_word_checked(&value(96), domain).unwrap(),
+        snapshot
+            .read_word_checked(&value(96), domain.borrowed())
+            .unwrap(),
         expected
     );
 }
 
 #[test]
 fn guard_selected_window_bounds_and_values_do_not_escape_their_context() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = ExprLimits::default();
     let guard = ExprId::fresh().unwrap();
     // The two snapshots share content terms but have distinct guarded bounds.
@@ -89,16 +118,18 @@ fn guard_selected_window_bounds_and_values_do_not_escape_their_context() {
         let input = bounded(7002, lower, upper, Origin::Calldata).with_expression(token.clone());
         let size = value(len).with_expression(length.clone());
         source(&input, domain)
-            .slice(&value(64), &size, 256, domain)
+            .slice(&value(64), &size, domain.borrowed())
             .unwrap()
     };
     let yes = make(3, 9, 32);
     let no = make(11, 17, 31);
     let joined = yes
-        .join_guarded(&no, domain, guard.clone(), limits)
+        .join_guarded(&no, domain.borrowed(), guard.clone(), limits)
         .unwrap();
     let frozen = joined.clone();
-    let unselected = joined.read_word_checked(&value(0), domain).unwrap();
+    let unselected = joined
+        .read_word_checked(&value(0), domain.borrowed())
+        .unwrap();
     for n in [0, 3, 9] {
         assert!(unselected.contains(U256::from(n)), "{unselected:?}");
     }
@@ -106,18 +137,20 @@ fn guard_selected_window_bounds_and_values_do_not_escape_their_context() {
         let mut selected = joined.clone();
         assert!(
             selected
-                .refine_guards(domain, limits, &mut |condition| {
+                .refine_guards(domain.borrowed(), limits, &mut |condition| {
                     Ok::<_, std::convert::Infallible>((condition == &guard).then_some(nonzero))
                 })
                 .unwrap()
         );
-        let read = selected.read_word_checked(&value(0), domain).unwrap();
+        let read = selected
+            .read_word_checked(&value(0), domain.borrowed())
+            .unwrap();
         if nonzero {
             assert!(read.contains(U256::from(3)) && read.contains(U256::from(9)));
             assert!(!read.contains(U256::from(2)) && !read.contains(U256::from(10)));
             assert_eq!(
                 read.provenance(),
-                yes.read_word_checked(&value(0), domain)
+                yes.read_word_checked(&value(0), domain.borrowed())
                     .unwrap()
                     .provenance()
             );
@@ -131,7 +164,9 @@ fn guard_selected_window_bounds_and_values_do_not_escape_their_context() {
         assert_eq!(selected.state_root(), joined.state_root());
         assert_eq!(joined, frozen);
         assert_eq!(
-            joined.read_word_checked(&value(0), domain).unwrap(),
+            joined
+                .read_word_checked(&value(0), domain.borrowed())
+                .unwrap(),
             unselected
         );
     }
@@ -139,30 +174,40 @@ fn guard_selected_window_bounds_and_values_do_not_escape_their_context() {
 
 #[test]
 fn copied_guarded_words_keep_whole_value_joins_and_separate_branch_readers() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = ExprLimits::default();
     let guard = ExprId::fresh().unwrap();
     let a = bounded(7010, 3, 9, Origin::Calldata);
     let b = bounded(7011, 11, 17, Origin::Returndata);
     let offset = bounded(7012, 64, 96, Origin::Calldata);
-    let make = |input: &AbstractValue| {
-        let mut memory = ByteArray::memory();
-        memory.write_word(&offset, input, 256, domain).unwrap();
+    let make = |input: &TestValue| {
+        let mut memory = TestBytes::memory();
+        memory
+            .write_word(&offset, input, domain.borrowed())
+            .unwrap();
         memory
     };
     let yes = make(&a);
     let no = make(&b);
     let joined = yes
-        .join_guarded(&no, domain, guard.clone(), limits)
+        .join_guarded(&no, domain.borrowed(), guard.clone(), limits)
         .unwrap()
-        .slice(&offset, &value(32), 256, domain)
+        .slice(&offset, &value(32), domain.borrowed())
         .unwrap();
-    let mut copied = ByteArray::memory();
+    let mut copied = TestBytes::memory();
     copied
-        .copy_from(&value(32), &joined, &value(0), &value(32), 256, domain)
+        .copy_from(
+            &value(32),
+            &joined,
+            &value(0),
+            &value(32),
+            domain.borrowed(),
+        )
         .unwrap();
     let expected = domain.join(&a, &b);
-    let unselected = copied.read_word_checked(&value(32), domain).unwrap();
+    let unselected = copied
+        .read_word_checked(&value(32), domain.borrowed())
+        .unwrap();
     assert_eq!(unselected.numeric(), expected.numeric());
     assert_eq!(unselected.provenance(), expected.provenance());
     assert!(!unselected.same_identity(&a) && !unselected.same_identity(&b));
@@ -171,12 +216,14 @@ fn copied_guarded_words_keep_whole_value_joins_and_separate_branch_readers() {
         let mut selected = copied.clone();
         assert!(
             selected
-                .refine_guards(domain, limits, &mut |condition| {
+                .refine_guards(domain.borrowed(), limits, &mut |condition| {
                     Ok::<_, std::convert::Infallible>((condition == &guard).then_some(nonzero))
                 })
                 .unwrap()
         );
-        let read = selected.read_word_checked(&value(32), domain).unwrap();
+        let read = selected
+            .read_word_checked(&value(32), domain.borrowed())
+            .unwrap();
         assert_eq!(read.numeric(), expected.numeric());
         assert_eq!(read.provenance(), expected.provenance());
         assert!(read.same_identity(expected));
@@ -184,70 +231,93 @@ fn copied_guarded_words_keep_whole_value_joins_and_separate_branch_readers() {
         assert_eq!(copied, frozen);
     }
     assert_eq!(
-        copied.read_word_checked(&value(32), domain).unwrap(),
+        copied
+            .read_word_checked(&value(32), domain.borrowed())
+            .unwrap(),
         unselected
     );
 }
 
 #[test]
 fn symbolic_nonwrapping_whole_windows_retain_source_identity() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let input = bounded(7003, 3, 9, Origin::Calldata);
     let offset = bounded(7004, 64, 96, Origin::Calldata);
     let length = bounded(7005, 32, 64, Origin::Calldata);
-    let mut memory = ByteArray::memory();
-    memory.write_word(&offset, &input, 256, domain).unwrap();
-    let sliced = memory.slice(&offset, &length, 256, domain).unwrap();
-    assert_eq!(sliced.read_word_checked(&value(0), domain).unwrap(), input);
-    let mut copied = ByteArray::memory();
-    copied
-        .copy_from(&offset, &sliced, &value(0), &length, 256, domain)
+    let mut memory = TestBytes::memory();
+    memory
+        .write_word(&offset, &input, domain.borrowed())
         .unwrap();
-    assert_eq!(copied.read_word_checked(&offset, domain).unwrap(), input);
+    let sliced = memory.slice(&offset, &length, domain.borrowed()).unwrap();
+    assert_eq!(
+        sliced
+            .read_word_checked(&value(0), domain.borrowed())
+            .unwrap(),
+        input
+    );
+    let mut copied = TestBytes::memory();
+    copied
+        .copy_from(&offset, &sliced, &value(0), &length, domain.borrowed())
+        .unwrap();
+    assert_eq!(
+        copied
+            .read_word_checked(&offset, domain.borrowed())
+            .unwrap(),
+        input
+    );
 }
 
 #[test]
 fn truncated_unaligned_and_short_return_windows_keep_padding_and_old_suffix() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let input = bounded(7006, 3, 9, Origin::Calldata).with_numeric(value(7).numeric().clone());
     let original = source(&input, domain);
-    let truncated = original.slice(&value(64), &value(31), 256, domain).unwrap();
-    let read = truncated.read_word_checked(&value(0), domain).unwrap();
+    let truncated = original
+        .slice(&value(64), &value(31), domain.borrowed())
+        .unwrap();
+    let read = truncated
+        .read_word_checked(&value(0), domain.borrowed())
+        .unwrap();
     assert_eq!(read.singleton(), Some(U256::ZERO));
     assert!(!read.same_identity(&input));
 
-    let unaligned = original.slice(&value(65), &value(32), 256, domain).unwrap();
-    let read = unaligned.read_word_checked(&value(0), domain).unwrap();
+    let unaligned = original
+        .slice(&value(65), &value(32), domain.borrowed())
+        .unwrap();
+    let read = unaligned
+        .read_word_checked(&value(0), domain.borrowed())
+        .unwrap();
     assert_eq!(read.singleton(), Some(U256::from(7) << 8));
     assert!(!read.same_identity(&input));
 
-    let mut memory = ByteArray::memory();
+    let mut memory = TestBytes::memory();
     memory
         .write_word(
             &value(32),
-            &AbstractValue::constant(U256::from_be_bytes([0xaa; 32])),
-            128,
-            domain,
+            &TestValue::constant(U256::from_be_bytes([0xaa; 32])),
+            domain.borrowed(),
         )
         .unwrap();
     memory
-        .copy_return_data(&value(32), &truncated, &value(32), 128, domain)
+        .copy_return_data(&value(32), &truncated, &value(32), domain.borrowed())
         .unwrap();
     assert_eq!(
         memory
-            .read_word_checked(&value(32), domain)
+            .read_word_checked(&value(32), domain.borrowed())
             .unwrap()
             .singleton(),
         Some(U256::from(0xaa))
     );
     assert_eq!(
-        memory.byte_at(63, domain).singleton(),
+        memory.byte_at(63, domain.borrowed()).singleton(),
         Some(U256::from(0xaa))
     );
-    let returned = memory.slice(&value(32), &value(32), 128, domain).unwrap();
+    let returned = memory
+        .slice(&value(32), &value(32), domain.borrowed())
+        .unwrap();
     assert_eq!(
         returned
-            .read_word_checked(&value(0), domain)
+            .read_word_checked(&value(0), domain.borrowed())
             .unwrap()
             .singleton(),
         Some(U256::from(0xaa))
@@ -255,11 +325,17 @@ fn truncated_unaligned_and_short_return_windows_keep_padding_and_old_suffix() {
     // Ordinary COPY writes the requested padding; CALL writes only the actual
     // returned prefix. The same short source must distinguish these effects.
     memory
-        .copy_from(&value(32), &truncated, &value(0), &value(32), 128, domain)
+        .copy_from(
+            &value(32),
+            &truncated,
+            &value(0),
+            &value(32),
+            domain.borrowed(),
+        )
         .unwrap();
     assert_eq!(
         memory
-            .read_word_checked(&value(32), domain)
+            .read_word_checked(&value(32), domain.borrowed())
             .unwrap()
             .singleton(),
         Some(U256::ZERO)
@@ -268,9 +344,9 @@ fn truncated_unaligned_and_short_return_windows_keep_padding_and_old_suffix() {
 
 #[test]
 fn checked_window_addition_never_forwards_a_truncated_or_wrapped_word() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let expression = ExprId::fresh().unwrap();
-    let mut input = AbstractValue::top().with_symbol(Symbol::CalldataWord(U256::ZERO), Some(7007));
+    let mut input = TestValue::top().with_symbol(Symbol::CalldataWord(U256::ZERO), Some(7007));
     input.set_origin(Origin::Calldata);
     let input = input
         .with_numeric(crate::domain::NumericValue::constant(U256::MAX))
@@ -284,7 +360,7 @@ fn checked_window_addition_never_forwards_a_truncated_or_wrapped_word() {
     let sliced = near_max
         .slice(term(U256::MAX), term(U256::from(32)), limits)
         .unwrap();
-    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
+    let mut reader = Reader::new(&facts, domain.borrowed());
     let complete = ByteStateId::zero()
         .write_word(term(U256::MAX - U256::from(31)), expression.clone(), limits)
         .unwrap()
@@ -328,20 +404,24 @@ fn checked_window_addition_never_forwards_a_truncated_or_wrapped_word() {
 
 #[test]
 fn a_later_proved_copy_minimum_preserves_the_uncopied_suffix_and_history() {
-    let domain = Domain::default();
-    let mut memory = ByteArray::memory();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut memory = TestBytes::memory();
     for (at, byte) in [(32, 0xaa), (64, 0xbb)] {
         memory
             .write_word(
                 &value(at),
-                &AbstractValue::constant(U256::from_be_bytes([byte; 32])),
-                128,
-                domain,
+                &TestValue::constant(U256::from_be_bytes([byte; 32])),
+                domain.borrowed(),
             )
             .unwrap();
     }
     memory
-        .copy_return_data(&value(32), &ByteArray::unknown(), &value(16), 128, domain)
+        .copy_return_data(
+            &value(32),
+            &TestBytes::unknown(),
+            &value(16),
+            domain.borrowed(),
+        )
         .unwrap();
     let snapshot = memory.clone();
     let crate::domain::symbolic::ByteStateKind::Copy { length, .. } = memory.state_root().kind()
@@ -350,7 +430,7 @@ fn a_later_proved_copy_minimum_preserves_the_uncopied_suffix_and_history() {
     };
     let length = length.clone();
     assert_eq!(
-        memory.byte_at(48, domain).singleton(),
+        memory.byte_at(48, domain.borrowed()).singleton(),
         Some(U256::from(0xaa))
     );
     // Import an externally proved min(16, returned_length) == 1, just as the
@@ -365,46 +445,54 @@ fn a_later_proved_copy_minimum_preserves_the_uncopied_suffix_and_history() {
     });
     assert!(imported);
     assert_eq!(memory.state_root(), snapshot.state_root());
-    let returned = memory.slice(&value(32), &value(64), 128, domain).unwrap();
+    let returned = memory
+        .slice(&value(32), &value(64), domain.borrowed())
+        .unwrap();
     for at in 1..32 {
         assert_eq!(
-            returned.byte_at(at, domain).singleton(),
+            returned.byte_at(at, domain.borrowed()).singleton(),
             Some(U256::from(0xaa))
         );
     }
     for at in 32..64 {
         assert_eq!(
-            returned.byte_at(at, domain).singleton(),
+            returned.byte_at(at, domain.borrowed()).singleton(),
             Some(U256::from(0xbb))
         );
     }
-    assert!(snapshot.byte_at(33, domain).contains(U256::ZERO));
-    assert!(snapshot.byte_at(33, domain).contains(U256::from(0xaa)));
+    assert!(snapshot.byte_at(33, domain.borrowed()).contains(U256::ZERO));
+    assert!(
+        snapshot
+            .byte_at(33, domain.borrowed())
+            .contains(U256::from(0xaa))
+    );
 }
 
 #[test]
 fn forwarded_reads_still_obey_typed_limits_and_cancellation() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let input = bounded(7008, 3, 9, Origin::Calldata);
     let sliced = source(&input, domain)
-        .slice(&value(64), &value(32), 256, domain)
+        .slice(&value(64), &value(32), domain.borrowed())
         .unwrap();
     let frozen = sliced.clone();
-    let low = Domain::from_spec(domain.spec().with_relations(
-        crate::domain::relational::RelationLimits {
-            max_nodes: 1,
-            ..domain.spec().relations()
-        },
+    let low = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        domain
+            .spec()
+            .with_relations(crate::domain::relational::RelationLimits {
+                max_nodes: 1,
+                ..domain.spec().relations()
+            }),
     ));
     assert!(matches!(
-        sliced.read_word_checked(&value(0), low),
+        sliced.read_word_checked(&value(0), low.borrowed()),
         Err(RangeError::Expression(ExprError::Limit { .. }))
     ));
     let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
     analysis_control::with_cancellation(&cancellation, || {
         assert_eq!(
-            sliced.read_word_checked(&value(0), domain),
+            sliced.read_word_checked(&value(0), domain.borrowed()),
             Err(RangeError::Expression(ExprError::Cancelled))
         );
     });

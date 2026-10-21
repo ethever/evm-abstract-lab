@@ -1,9 +1,7 @@
 use super::{fixtures, oracle, support::*};
+use crate::native;
 use alloy_primitives::U256;
-use evm_abstract::{
-    analysis::{ExecutionConfig, OutcomeKind},
-    domain::Domain,
-};
+use evm_abstract::analysis::{ExecutionConfig, OutcomeKind};
 use revm_bytecode::opcode;
 
 #[test]
@@ -63,7 +61,7 @@ fn child_rollback(exceptional: bool) {
         only(
             &outcome
                 .store
-                .read_transient(address(A), &word(0), Domain::default()),
+                .read_transient(address(A), &word(0), native::product().borrowed()),
             &[0],
         );
         only(&outcome.store.read_balance(address(A)), &[BALANCE]);
@@ -101,7 +99,7 @@ fn child_rollback(exceptional: bool) {
     only(
         &before_call
             .store
-            .read_transient(address(A), &word(0), Domain::default()),
+            .read_transient(address(A), &word(0), native::product().borrowed()),
         &[7],
     );
     assert!(!before_call.store.logs_unknown());
@@ -143,7 +141,7 @@ fn outer_revert_restores_all_parent_and_recursive_child_effects() {
         only(
             &outcome
                 .store
-                .read_transient(address(A), &word(0), Domain::default()),
+                .read_transient(address(A), &word(0), native::product().borrowed()),
             &[0],
         );
         only(&outcome.store.read_balance(address(A)), &[BALANCE]);

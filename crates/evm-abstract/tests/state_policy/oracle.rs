@@ -1,11 +1,13 @@
 //! revm owns concrete execution; one abstract outcome must cover the full tuple.
 
 use super::support::{USER, address, entry, input, word};
+use crate::native;
 use alloy_primitives::{Address, U256};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
-    analysis::{OutcomeKind, WorldAnalysis},
-    domain::{AbstractValue, Domain},
-    world::{Entry, World},
+    analysis::{EvmWorldAnalysis, OutcomeKind},
+    domain::EvmValue,
+    world::{EvmEntry, EvmWorld},
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
@@ -46,16 +48,17 @@ impl Witness {
         U256::from_be_slice(&self.data[offset..offset + 32])
     }
 
-    pub(super) fn covered_by(&self, graph: &WorldAnalysis) -> bool {
-        let domain = Domain::from_spec(graph.domain_spec());
+    pub(super) fn covered_by(&self, graph: &EvmWorldAnalysis<NumericValue>) -> bool {
+        let domain = native::product_with(graph.domain_spec());
         graph.outcomes().iter().any(|outcome| {
             outcome.kind == self.kind
                 && outcome.data.len().contains(U256::from(self.data.len()))
-                && self
-                    .data
-                    .iter()
-                    .enumerate()
-                    .all(|(i, byte)| outcome.data.byte_at(i, domain).contains(U256::from(*byte)))
+                && self.data.iter().enumerate().all(|(i, byte)| {
+                    outcome
+                        .data
+                        .byte_at(i, domain.borrowed())
+                        .contains(U256::from(*byte))
+                })
                 && self
                     .data
                     .as_chunks::<32>()
@@ -65,13 +68,17 @@ impl Witness {
                     .all(|(i, bytes)| {
                         outcome
                             .data
-                            .read_word(&word((i * 32) as u64), domain)
+                            .read_word(&word((i * 32) as u64), domain.borrowed())
                             .contains(U256::from_be_slice(bytes))
                     })
                 && self.storage.iter().all(|((owner, slot), n)| {
                     outcome
                         .store
-                        .read(*owner, &AbstractValue::constant(*slot), domain)
+                        .read(
+                            *owner,
+                            &EvmValue::<NumericValue>::constant(*slot),
+                            domain.borrowed(),
+                        )
                         .contains(*n)
                 })
                 && self
@@ -81,7 +88,7 @@ impl Witness {
         })
     }
 
-    pub(super) fn covers(&self, graph: &WorldAnalysis) {
+    pub(super) fn covers(&self, graph: &EvmWorldAnalysis<NumericValue>) {
         assert!(
             self.covered_by(graph),
             "no single terminal covers kind={:?}, data={}, store={:?}, balances={:?}; frontiers={:?}",
@@ -98,7 +105,7 @@ impl Witness {
 /// graph being checked. Validate each witness once, then reuse the complete
 /// tuple for every strategy/cache mode; `covers` still selects one terminal.
 pub(super) fn witnesses(
-    world: &World,
+    world: &EvmWorld<NumericValue>,
     inputs: &[u64],
     check: impl Fn(u64, &Witness),
 ) -> Vec<Witness> {
@@ -112,7 +119,7 @@ pub(super) fn witnesses(
         .collect()
 }
 
-pub(super) fn execute(world: &World, entry: &Entry) -> Witness {
+pub(super) fn execute(world: &EvmWorld<NumericValue>, entry: &EvmEntry<NumericValue>) -> Witness {
     let mut db = InMemoryDB::default();
     let mut storage = BTreeMap::new();
     for (owner, account) in world.accounts() {
@@ -151,7 +158,14 @@ pub(super) fn execute(world: &World, entry: &Entry) -> Witness {
                 .kind(TxKind::Call(entry.address))
                 .gas_limit(10_000_000)
                 .value(entry.environment.value.singleton().unwrap())
-                .data(entry.environment.calldata.exact_bytes().unwrap().into())
+                .data(
+                    entry
+                        .environment
+                        .calldata
+                        .exact_bytes(native::product().borrowed())
+                        .unwrap()
+                        .into(),
+                )
                 .build()
                 .unwrap(),
         )

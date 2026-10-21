@@ -1,10 +1,13 @@
 //! Common concrete assignments, rather than independent marginal membership.
 
+use crate::domain::ProductAlgebra;
+
+#[cfg(test)]
+use crate::analysis::testing::TestValue;
+use crate::domain::EvmNumericAlgebra as _;
+
 use super::*;
-use crate::domain::{
-    AbstractValue,
-    symbolic::{ByteStateKind, ExprId, ExprKind, SlotStateKind, SourceId},
-};
+use crate::domain::symbolic::{ByteStateKind, ExprId, ExprKind, SlotStateKind, SourceId};
 use std::collections::BTreeMap;
 
 #[derive(Default)]
@@ -62,7 +65,9 @@ impl Witness {
 #[test]
 fn coarse_entry_has_common_witnesses_for_all_original_joint_tuples_and_rolls_back_versions() {
     let config = fixtures::config();
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
     let owner = address(0x101);
     let mut input =
@@ -93,7 +98,7 @@ fn coarse_entry_has_common_witnesses_for_all_original_joint_tuples_and_rolls_bac
     input
         .active_mut()
         .memory
-        .write_byte(&word(0), &byte, 4096, domain)
+        .write_byte(&word(0), &byte, domain)
         .unwrap();
     input.active_mut().stack = vec![history.clone(), history];
     input.normalize();
@@ -162,9 +167,9 @@ fn coarse_entry_has_common_witnesses_for_all_original_joint_tuples_and_rolls_bac
         let result = transfer::resume_summary_inner(
             live.clone(),
             kind,
-            crate::world::ByteArray::empty(),
+            crate::analysis::testing::ByteArray::empty(),
             &config,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
+            domain,
             &mut budget,
             true,
         );
@@ -194,5 +199,5 @@ fn coarse_entry_has_common_witnesses_for_all_original_joint_tuples_and_rolls_bac
     assert!(input.active().stack[0].contains(U256::from(3)));
     assert!(input.active().stack[0].contains(U256::from(5)));
     assert_ne!(values[0].expression(), values[1].expression());
-    assert_eq!(AbstractValue::top().numeric(), values[0].numeric());
+    assert_eq!(TestValue::top().numeric(), values[0].numeric());
 }

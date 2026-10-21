@@ -4,8 +4,6 @@
 //! the separate identity module and are not changed by source metadata updates.
 
 use serde::Serialize;
-// Keep the input-name path compatible with existing environment callers.
-pub use super::identity::Symbol;
 use std::collections::BTreeSet;
 
 /// 来源集合的固定容量；超出后升到 Top，保留可能来源的覆盖性。

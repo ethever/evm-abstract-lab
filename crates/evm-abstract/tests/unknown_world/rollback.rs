@@ -1,9 +1,10 @@
 use super::{fixtures, oracle, support::*};
+use crate::native;
 use alloy_primitives::U256;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     analysis::OutcomeKind,
-    domain::Domain,
-    world::{Account, ByteArray, Existence, World},
+    world::{EvmAccount, EvmByteArray, EvmWorld, Existence},
 };
 use revm_bytecode::opcode;
 
@@ -85,10 +86,10 @@ fn finish_parent(a: &mut Assembly, outer_revert: bool) {
         });
 }
 
-fn world(outer_revert: bool) -> World {
+fn world(outer_revert: bool) -> EvmWorld<NumericValue> {
     let mut world = new_world();
     insert(&mut world, A, &parent(outer_revert), &[(0, 5), (1, 3)]);
-    let mut unknown = Account::unknown();
+    let mut unknown = EvmAccount::<NumericValue>::unknown();
     unknown.balance = word(1_000_000);
     unknown.existence = Existence::Present;
     world.insert(address(U), unknown).unwrap();
@@ -100,7 +101,7 @@ fn failed_callback_can_be_handled_by_unknown_u_that_later_succeeds() {
     let world = world(false);
     let analysis = run_config(
         world.clone(),
-        entry(ByteArray::empty()),
+        entry(EvmByteArray::<NumericValue>::empty()),
         callback_closure_config(),
     );
     complete_unknown(&analysis);
@@ -109,7 +110,7 @@ fn failed_callback_can_be_handled_by_unknown_u_that_later_succeeds() {
         // cover it: a failing callback must not become a whole-U failure.
         let concrete =
             oracle::concrete_unknown(&world, U, &fixtures::callback_sequence(&selectors, false));
-        let observation = oracle::execute(&concrete, &entry(ByteArray::empty()));
+        let observation = oracle::execute(&concrete, &entry(EvmByteArray::<NumericValue>::empty()));
         assert_eq!(observation.kind, OutcomeKind::Return);
         assert_eq!(observation.output_word(0), U256::ONE);
         assert_eq!(observation.output_word(32), U256::from(7));
@@ -132,12 +133,12 @@ fn successful_callback_is_rolled_back_when_unknown_u_reverts_without_losing_pare
     let world = world(false);
     let analysis = run_config(
         world.clone(),
-        entry(ByteArray::empty()),
+        entry(EvmByteArray::<NumericValue>::empty()),
         callback_closure_config(),
     );
     complete_unknown(&analysis);
     let concrete = oracle::concrete_unknown(&world, U, &fixtures::callback_sequence(&[1], true));
-    let observation = oracle::execute(&concrete, &entry(ByteArray::empty()));
+    let observation = oracle::execute(&concrete, &entry(EvmByteArray::<NumericValue>::empty()));
     assert_eq!(observation.output_word(0), U256::ZERO);
     assert_eq!(observation.output_word(32), U256::from(7));
     assert_eq!(observation.output_word(64), U256::from(3));
@@ -172,14 +173,14 @@ fn successful_callback_is_rolled_back_when_unknown_u_reverts_without_losing_pare
             &state
                 .entry
                 .store
-                .read_transient(address(A), &word(0), Domain::default()),
+                .read_transient(address(A), &word(0), native::product().borrowed()),
             &[7],
         );
         only(
             &state
                 .entry
                 .store
-                .read_transient(address(A), &word(1), Domain::default()),
+                .read_transient(address(A), &word(1), native::product().borrowed()),
             &[0],
         );
     }
@@ -197,13 +198,13 @@ fn successful_callback_is_rolled_back_when_unknown_u_reverts_without_losing_pare
         only(
             &outcome
                 .store
-                .read_transient(address(A), &word(0), Domain::default()),
+                .read_transient(address(A), &word(0), native::product().borrowed()),
             &[0],
         );
         only(
             &outcome
                 .store
-                .read_transient(address(A), &word(1), Domain::default()),
+                .read_transient(address(A), &word(1), native::product().borrowed()),
             &[0],
         );
         only(&outcome.store.read_balance(address(A)), &[1_000_000]);
@@ -237,14 +238,14 @@ fn exceptional_unknown_u_failure_also_restores_only_its_own_subtree() {
     let world = world(false);
     let analysis = run_config(
         world.clone(),
-        entry(ByteArray::empty()),
+        entry(EvmByteArray::<NumericValue>::empty()),
         callback_closure_config(),
     );
     complete_unknown(&analysis);
     let mut u = fixtures::callback_sequence(&[1], false);
     *u.bytes.last_mut().unwrap() = opcode::INVALID;
     let concrete = oracle::concrete_unknown(&world, U, &u);
-    let observation = oracle::execute(&concrete, &entry(ByteArray::empty()));
+    let observation = oracle::execute(&concrete, &entry(EvmByteArray::<NumericValue>::empty()));
     assert_eq!(observation.output_word(0), U256::ZERO);
     assert_eq!(observation.output_word(32), U256::from(7));
     assert_eq!(observation.output_word(64), U256::from(3));
@@ -256,12 +257,12 @@ fn successful_unknown_u_effects_remain_inside_outer_a_rollback_scope() {
     let world = world(true);
     let analysis = run_config(
         world.clone(),
-        entry(ByteArray::empty()),
+        entry(EvmByteArray::<NumericValue>::empty()),
         callback_closure_config(),
     );
     complete_unknown(&analysis);
     let concrete = oracle::concrete_unknown(&world, U, &fixtures::callback_sequence(&[1], false));
-    let observation = oracle::execute(&concrete, &entry(ByteArray::empty()));
+    let observation = oracle::execute(&concrete, &entry(EvmByteArray::<NumericValue>::empty()));
     assert_eq!(observation.kind, OutcomeKind::Revert);
     assert_eq!(observation.output_word(0), U256::ONE);
     assert_eq!(observation.output_word(32), U256::from(7));
@@ -285,6 +286,9 @@ fn successful_unknown_u_effects_remain_inside_outer_a_rollback_scope() {
 #[test]
 fn callback_rollback_keeps_default_ledger_root_coverage() {
     for outer_revert in [false, true] {
-        default_callback_coverage(world(outer_revert), entry(ByteArray::empty()));
+        default_callback_coverage(
+            world(outer_revert),
+            entry(EvmByteArray::<NumericValue>::empty()),
+        );
     }
 }

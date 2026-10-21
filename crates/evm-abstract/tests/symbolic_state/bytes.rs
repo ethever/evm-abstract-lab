@@ -3,8 +3,10 @@ use super::{
     oracle,
     support::{Assembly, ROOT, complete, config, construct_world, entry, no_bad_branch, run_world},
 };
+use crate::native;
 use alloy_primitives::U256;
-use evm_abstract::{Fork, analysis::OutcomeKind, world::ByteArray};
+use evm_abstract::domain::NumericValue;
+use evm_abstract::{Fork, analysis::OutcomeKind, world::EvmByteArray};
 use revm_bytecode::opcode;
 
 #[test]
@@ -43,7 +45,7 @@ fn big_endian_unaligned_overlays_preserve_each_historical_word() {
     expected.extend(&input[32..48]);
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         let world = construct_world(fork, &[(ROOT, &fixture.code)]);
-        let entry = entry(ByteArray::exact(&input));
+        let entry = entry(EvmByteArray::<NumericValue>::exact(&input));
         let analysis = run_world(world.clone(), entry.clone(), config());
         complete(&analysis);
         let concrete = oracle::compare(&world, &entry, &analysis);
@@ -53,7 +55,10 @@ fn big_endian_unaligned_overlays_preserve_each_historical_word() {
             .iter()
             .filter(|outcome| outcome.kind == OutcomeKind::Return)
         {
-            assert_eq!(outcome.data.exact_bytes(), Some(expected.clone()));
+            assert_eq!(
+                outcome.data.exact_bytes(native::product().borrowed()),
+                Some(expected.clone())
+            );
         }
     }
 }
@@ -80,7 +85,7 @@ fn mcopy_overlaps_read_the_source_before_either_direction_is_written() {
             .copy_from_slice(&input[usize::from(source)..usize::from(source) + 8]);
         for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
             let world = construct_world(fork, &[(ROOT, &fixture.code)]);
-            let entry = entry(ByteArray::exact(&input));
+            let entry = entry(EvmByteArray::<NumericValue>::exact(&input));
             let analysis = run_world(world.clone(), entry.clone(), config());
             complete(&analysis);
             let concrete = oracle::compare(&world, &entry, &analysis);
@@ -91,7 +96,11 @@ fn mcopy_overlaps_read_the_source_before_either_direction_is_written() {
                     .iter()
                     .filter(|outcome| outcome.kind == OutcomeKind::Return)
                     .all(|outcome| {
-                        outcome.data.exact_bytes().as_deref() == Some(expected.as_slice())
+                        outcome
+                            .data
+                            .exact_bytes(native::product().borrowed())
+                            .as_deref()
+                            == Some(expected.as_slice())
                     })
             );
         }
@@ -108,7 +117,7 @@ fn zero_length_mcopy_with_maximal_offsets_keeps_msize_zero() {
         .op(opcode::MSIZE)
         .return_top();
     let world = construct_world(Fork::Osaka, &[(ROOT, &code.finish().code)]);
-    let entry = entry(ByteArray::empty());
+    let entry = entry(EvmByteArray::<NumericValue>::empty());
     let analysis = run_world(world.clone(), entry.clone(), config());
     complete(&analysis);
     assert_eq!(oracle::compare(&world, &entry, &analysis).output, [0; 32]);
@@ -117,7 +126,13 @@ fn zero_length_mcopy_with_maximal_offsets_keeps_msize_zero() {
             .outcomes()
             .iter()
             .filter(|outcome| outcome.kind == OutcomeKind::Return)
-            .all(|outcome| { outcome.data.exact_bytes().as_deref() == Some(&[0; 32]) })
+            .all(|outcome| {
+                outcome
+                    .data
+                    .exact_bytes(native::product().borrowed())
+                    .as_deref()
+                    == Some(&[0; 32])
+            })
     );
 }
 
@@ -151,7 +166,7 @@ fn call_output_overwrites_only_the_actual_return_prefix() {
     let child = "62aabbcc5f526003601df3";
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         let world = construct_world(fork, &[(ROOT, &root.code), (0x200, child)]);
-        let entry = entry(ByteArray::empty());
+        let entry = entry(EvmByteArray::<NumericValue>::empty());
         let analysis = run_world(world.clone(), entry.clone(), config());
         complete(&analysis);
         let concrete = oracle::compare(&world, &entry, &analysis);
@@ -183,7 +198,7 @@ fn returndata_zero_length_at_end_is_valid_but_past_end_and_overflow_fault() {
         let root = root.finish();
         for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
             let world = construct_world(fork, &[(ROOT, &root.code), (0x200, "60095f5360015ff3")]);
-            let entry = entry(ByteArray::empty());
+            let entry = entry(EvmByteArray::<NumericValue>::empty());
             let analysis = run_world(world.clone(), entry.clone(), config());
             complete(&analysis);
             let concrete = oracle::compare(&world, &entry, &analysis);
@@ -203,7 +218,7 @@ fn nonempty_memory_access_does_not_wrap_a_maximal_offset_to_zero() {
     code.push_word(U256::MAX).op(opcode::MLOAD).return_top();
     let analysis = run_world(
         construct_world(Fork::Osaka, &[(ROOT, &code.finish().code)]),
-        entry(ByteArray::empty()),
+        entry(EvmByteArray::<NumericValue>::empty()),
         config(),
     );
     complete(&analysis);

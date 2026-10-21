@@ -14,7 +14,7 @@ use crate::{
             runtime::{Runtime, Task, TaskKind},
         },
     },
-    domain::{Domain, NumericValue},
+    domain::{NumericValue, ProductAlgebra},
     resource::WorkBudget,
 };
 use analysis_kernel::{
@@ -191,7 +191,8 @@ impl Harness {
         let extension = Extension::with_tasks(NoClient, Tasks(Rc::clone(&tasks)))
             .with_stores(Local(Rc::clone(&locals)))
             .with_shared_stores(Global(Rc::clone(&refuse)));
-        let mut payload = fixtures::payload(Domain::default());
+        let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+        let mut payload = fixtures::payload(algebra.borrowed());
         payload.active_mut().stack.push(fixtures::word(1));
         Self {
             cooperation: Cooperation::new(extension),

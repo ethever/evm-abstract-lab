@@ -1,5 +1,9 @@
 //! Quotation and executable dispatch with a carrier that has no finite view.
 
+#[cfg(test)]
+use crate::analysis::testing::TestValue;
+use crate::domain::EvmNumericAlgebra as _;
+
 use super::{arithmetic_work, byte_work, external_code_fee, operation_work_budgeted};
 use crate::{
     Fork, U256,
@@ -12,8 +16,7 @@ use crate::{
     },
     bytecode::Program,
     domain::{
-        AbstractValue, Domain, EvmValue, SingletonProof, ValueAlgebra, WordElement,
-        symbolic::ExprId,
+        EvmValue, ProductAlgebra, SingletonProof, ValueAlgebra, WordElement, symbolic::ExprId,
     },
     resource::WorkBudget,
     world::{AddressInput, EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
@@ -102,21 +105,20 @@ fn cached_counts_and_transitive_byte_quotes_need_no_singleton_discovery() {
     assert_eq!(arithmetic_work(std::slice::from_ref(&value)), 1);
     let byte_fee = byte_work(&[&value, &value], 32, 64, algebra.borrowed());
     assert!(byte_fee > 32);
-    assert!(source.slice_work_with(&value, &value, algebra.borrowed()) > 0);
-    assert!(memory.copy_work_with(&source, &value, &value, &value, algebra.borrowed()) > 0);
-    assert!(
-        memory.copy_code_work_with(CODE_BYTES, 1, &value, &value, &value, algebra.borrowed()) > 0
-    );
-    assert!(memory.copy_return_data_work_with(&source, &value, &value, algebra.borrowed()) > 0);
+    assert!(source.slice_work(&value, &value, algebra.borrowed()) > 0);
+    assert!(memory.copy_work(&source, &value, &value, &value, algebra.borrowed()) > 0);
+    assert!(memory.copy_code_work(CODE_BYTES, 1, &value, &value, &value, algebra.borrowed()) > 0);
+    assert!(memory.copy_return_data_work(&source, &value, &value, algebra.borrowed()) > 0);
     assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
 
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let finite = domain.join(
-        &AbstractValue::constant(U256::ONE),
-        &AbstractValue::constant(U256::from(2)),
+        &TestValue::constant(U256::ONE),
+        &TestValue::constant(U256::from(2)),
     );
     assert_eq!(
-        arithmetic_work(&[finite.clone(), AbstractValue::top(), finite]),
+        arithmetic_work(&[finite.clone(), TestValue::top(), finite]),
         4
     );
 }
@@ -235,7 +237,7 @@ fn literal_expression_extent_prices_real_hash_work_when_numeric_discovery_declin
         ExprId::constant(U256::ZERO),
         args[1].expression().unwrap().clone(),
     );
-    let hash = ExprId::keccak(view, fixture.config.analysis.relations.expressions()).unwrap();
+    let hash = ExprId::keccak(view, algebra.spec().relations().expressions()).unwrap();
     assert_eq!(
         hash.as_constant(),
         Some(U256::from_be_slice(keccak256(&source).as_slice()))
@@ -295,9 +297,9 @@ fn extent_and_target_discovery_refuse_max_or_insufficient_work_without_effects()
 fn hidden_external_target_prices_real_code_and_dispatch_reuses_the_cover() {
     let algebra = ValueAlgebra::new(Policy);
     let mut fixture = fixture(opcode::EXTCODEHASH);
-    // Entry identity preparation belongs to the state-policy lane. Isolate
-    // this operation's quote/dispatch boundary from that separate discovery.
-    fixture.config.analysis.relations.enabled = false;
+    // Native identification keeps opaque inputs query-free; dispatch must
+    // still reuse the one paid target answer with relations enabled.
+    assert!(algebra.spec().relations().enabled);
     let args = [EvmValue::constant(U256::from(TARGET))];
     fixture.execution.payload.active_mut().stack = args.to_vec();
     let _receipt = RECEIPT.scope();
@@ -474,7 +476,7 @@ fn result_proof_tracks_expression_folding_without_a_second_query_fee() {
         EvmValue::<Word>::top().with_expression(ExprId::constant(U256::from(31))),
         EvmValue::<Word>::top().with_expression(ExprId::constant(U256::ONE)),
     ];
-    let fee = algebra.operation_work_for(opcode::ADD, &args);
+    let fee = algebra.operation_work(opcode::ADD, &args);
     let mut budget = WorkBudget::new(fee);
     assert!(budget.charge(fee));
     let (result, proof) = algebra.apply_detailed_with_singleton(opcode::ADD, &args);

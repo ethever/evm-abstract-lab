@@ -1,6 +1,8 @@
 //! Dispatch witnesses use an independent interval carrier with private facts.
 
 use super::*;
+use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
     analysis::{
@@ -233,9 +235,18 @@ impl EvmNumericAlgebra for Policy {
     fn reduce_numeric(&self, value: &Opaque) -> NumericReduction<Opaque> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Opaque]) -> NumericReduction<Opaque> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Opaque>,
+    ) -> NumericReduction<Opaque> {
+        let args: Vec<&Opaque> = args.collect();
         // No calls to the instrumented singleton interface inside this algebra.
-        let words = args.iter().map(Opaque::exact).collect::<Option<Vec<_>>>();
+        let words = args
+            .iter()
+            .copied()
+            .map(Opaque::exact)
+            .collect::<Option<Vec<_>>>();
         let exact = words
             .as_ref()
             .and_then(|words| match (op, words.as_slice()) {
@@ -261,7 +272,7 @@ impl EvmNumericAlgebra for Policy {
         }
         NumericReduction::stable(out)
     }
-    fn operation_work<'a>(&self, _args: impl Iterator<Item = &'a Opaque>) -> usize {
+    fn operation_work<'a>(&self, op: u8, _args: impl Iterator<Item = &'a Opaque>) -> usize {
         4096
     }
     fn literal_quote_work(&self, literal: U256) -> usize {
@@ -311,9 +322,10 @@ fn fixture(code: &str, relations: bool) -> Fixture {
         max_work: 1_000_000_000,
         ..ExecutionConfig::default()
     };
-    config.analysis.relations.enabled = relations;
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.enabled = relations;
     let algebra = ValueAlgebra::new(Policy {
-        spec: config.domain().unwrap().spec(),
+        spec: ProductAlgebra::from_spec(config_numeric.spec()).spec(),
     });
     let mut world = EvmWorld::new(Fork::Osaka, "paid dispatch opaque carrier");
     let mut owner = EvmAccount::from_hex(code, world.fork()).unwrap();
@@ -1642,7 +1654,7 @@ fn runtime_prefix_fixture(
         .payload;
     let domain = fixture.algebra.borrowed();
     let mut data = EvmByteArray::unknown()
-        .slice_with(&word(0), &word(2), 2, domain)
+        .slice(&word(0), &word(2), domain)
         .unwrap();
     let prefix = EvmValue::from_numeric(Opaque {
         watched: true,
@@ -1650,8 +1662,8 @@ fn runtime_prefix_fixture(
         ..Opaque::constant(U256::from(0xef))
     })
     .with_expression(ExprId::fresh().unwrap());
-    data.write_byte_with(&word(0), &prefix, 2, domain).unwrap();
-    assert!(data.exact_bytes_bounded_with(2, domain).is_none());
+    data.write_byte(&word(0), &prefix, domain).unwrap();
+    assert!(data.exact_bytes_bounded(2, domain).is_none());
     (fixture, child, data)
 }
 

@@ -1,9 +1,7 @@
 //! Local conjunction consequences and guarded/overlap boundaries.
 
-fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
-    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-}
 use super::super::{CheckResult, Constraint, EvmValueQuery, RelationLimits, RelationState};
+use super::product_algebra;
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId, StateBinding};
 use crate::domain::{EvmValue, NumericValue, ProductAlgebra};
 use alloy_primitives::U256;

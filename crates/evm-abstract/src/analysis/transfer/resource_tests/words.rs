@@ -1,10 +1,13 @@
 //! Owned representation data for resource tests; this is not an alternate
 //! numerical semantics or an independent-analyzer cooperation witness.
 
+#[cfg(test)]
+use crate::domain::NumericValue;
+
 use crate::{
     U256,
     domain::{
-        Domain, DomainSpec, EvmNumericAlgebra, NumericReduction, NumericValue, WordElement,
+        DomainSpec, EvmNumericAlgebra, NumericReduction, ProductAlgebra, WordElement,
         WordObservation,
     },
 };
@@ -134,7 +137,7 @@ impl WordElement for Heavy {
 }
 
 #[derive(Debug)]
-pub(in crate::analysis::transfer) struct Policy(pub Domain);
+pub(in crate::analysis::transfer) struct Policy(pub ProductAlgebra);
 
 impl EvmNumericAlgebra for Policy {
     type Element = Heavy;
@@ -156,7 +159,12 @@ impl EvmNumericAlgebra for Policy {
     fn reduce_numeric(&self, value: &Heavy) -> NumericReduction<Heavy> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Heavy]) -> NumericReduction<Heavy> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Heavy>,
+    ) -> NumericReduction<Heavy> {
+        let args: Vec<&Heavy> = args.collect();
         if op == revm_bytecode::opcode::AND
             && args.len() == 2
             && args
@@ -165,11 +173,9 @@ impl EvmNumericAlgebra for Policy {
         {
             return NumericReduction::stable(Heavy::costly_byte_bound());
         }
-        let words = args
-            .iter()
-            .map(|value| value.word.clone())
-            .collect::<Vec<_>>();
-        let result = self.0.apply_numeric(op, &words);
+        let result = self
+            .0
+            .apply_numeric(op, args.iter().map(|value| &value.word));
         NumericReduction {
             value: Heavy::payload(result.value, 0),
             status: result.status,
@@ -177,7 +183,7 @@ impl EvmNumericAlgebra for Policy {
             strengthened: result.strengthened,
         }
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Heavy>) -> usize {
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Heavy>) -> usize {
         args.fold(100_000usize, |work, value| {
             work.saturating_add(value.work_size().saturating_mul(100))
         })

@@ -1,6 +1,7 @@
 use super::{fixtures, oracle, support::*};
 use alloy_primitives::U256;
-use evm_abstract::{analysis::OutcomeKind, world::ByteArray};
+use evm_abstract::domain::NumericValue;
+use evm_abstract::{analysis::OutcomeKind, world::EvmByteArray};
 use revm_bytecode::opcode;
 
 /// The abstract U stays absent. Each independent oracle world refines it
@@ -87,7 +88,7 @@ fn actual_unknown_to_known_c_write_and_readonly_guard_match_revm() {
         let mut world = new_world();
         insert(&mut world, A, &a, &[]);
         insert(&mut world, C, &c, &[(0, 5), (1, enabled)]);
-        let input = entry(ByteArray::empty());
+        let input = entry(EvmByteArray::<NumericValue>::empty());
         let analysis = run_config(
             world.clone(),
             input.clone(),
@@ -155,7 +156,7 @@ fn unknown_delegating_known_code_still_covers_its_guarded_cross_owner_call() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[(0, 5)]);
     insert(&mut world, C, &c, &[(0, 3)]);
-    let input = entry(ByteArray::empty());
+    let input = entry(EvmByteArray::<NumericValue>::empty());
     let concrete = oracle::concrete_unknown(&world, U, &u.finish());
     let observed = oracle::execute(&concrete, &input);
     assert_eq!(observed.output_word(0), U256::from(9));

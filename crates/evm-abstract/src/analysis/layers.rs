@@ -29,3 +29,6 @@ pub use session::{
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod refinement_tests;

@@ -1,34 +1,47 @@
 //! Typed frame roles and the call stack's root/child ownership boundary.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{
-        CallStack, ChildFrame, Continuation, ExecutionConfig, MachineEdgeKind, OutcomeKind,
-        RootFrame, Status, WorldAnalysis, analyze_world,
+        EvmCallStack, EvmChildFrame, EvmContinuation, EvmRootFrame, EvmWorldAnalysis,
+        ExecutionConfig, MachineEdgeKind, OutcomeKind, Status,
     },
-    domain::{AbstractValue, Domain},
+    domain::EvmValue,
     ssa,
-    world::{Account, ByteArray, Entry, Store, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmStore, EvmWorld},
 };
 
-fn root_frame() -> RootFrame {
+fn root_frame() -> EvmRootFrame<NumericValue> {
     let address = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "typed call stack fixture");
-    world.insert(address, Account::empty()).unwrap();
-    analyze_world(
-        world,
-        Entry {
-            address,
-            environment: evm_abstract::world::EvmEnvironment {
-                to: (address).into(),
-                caller: (Address::repeat_byte(0x22)).into(),
-                value: AbstractValue::constant(U256::ZERO),
-                calldata: ByteArray::empty(),
-                is_static: false,
-                ..evm_abstract::world::EvmEnvironment::default()
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "typed call stack fixture");
+    world
+        .insert(address, EvmAccount::<NumericValue>::empty())
+        .unwrap();
+    native::run(
+        &native::product(),
+        AnalysisInput::new(
+            world,
+            EvmEntry {
+                address,
+                environment: evm_abstract::world::EvmEnvironmentValues {
+                    to: (address).into(),
+                    caller: (Address::repeat_byte(0x22)).into(),
+                    value: EvmValue::<NumericValue>::constant(U256::ZERO),
+                    calldata: EvmByteArray::<NumericValue>::empty(),
+                    is_static: false,
+                    ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
+                },
             },
-        },
+        )
+        .unwrap(),
         ExecutionConfig::default(),
+        &Control::default(),
     )
     .unwrap()
     .states()[0]
@@ -38,11 +51,11 @@ fn root_frame() -> RootFrame {
         .clone()
 }
 
-fn continuation(block: usize) -> Continuation {
-    Continuation {
+fn continuation(block: usize) -> EvmContinuation<NumericValue> {
+    EvmContinuation {
         return_block: Some(block),
-        output_offset: AbstractValue::constant(U256::from(block)),
-        output_size: AbstractValue::constant(U256::from(32)),
+        output_offset: EvmValue::<NumericValue>::constant(U256::from(block)),
+        output_size: EvmValue::<NumericValue>::constant(U256::from(32)),
         creation: None,
     }
 }
@@ -50,7 +63,7 @@ fn continuation(block: usize) -> Continuation {
 #[test]
 fn nested_stack_keeps_the_root_and_resumes_each_parent() {
     let root = root_frame();
-    let mut stack = CallStack::new(root.clone());
+    let mut stack = EvmCallStack::<NumericValue>::new(root.clone());
     assert_eq!(stack.depth(), 1);
     assert!(stack.pop_child().is_none());
     assert!(stack.parent().is_none());
@@ -59,8 +72,8 @@ fn nested_stack_keeps_the_root_and_resumes_each_parent() {
     let mut first_state = root.state.clone();
     first_state
         .stack
-        .push(AbstractValue::constant(U256::from(1)));
-    let first = ChildFrame {
+        .push(EvmValue::<NumericValue>::constant(U256::from(1)));
+    let first = EvmChildFrame {
         state: first_state,
         continuation: continuation(1),
     };
@@ -70,8 +83,8 @@ fn nested_stack_keeps_the_root_and_resumes_each_parent() {
     let mut second_state = root.state.clone();
     second_state
         .stack
-        .push(AbstractValue::constant(U256::from(2)));
-    let second = ChildFrame {
+        .push(EvmValue::<NumericValue>::constant(U256::from(2)));
+    let second = EvmChildFrame {
         state: second_state,
         continuation: continuation(2),
     };
@@ -89,7 +102,7 @@ fn nested_stack_keeps_the_root_and_resumes_each_parent() {
     stack
         .active_mut()
         .stack
-        .push(AbstractValue::constant(U256::from(3)));
+        .push(EvmValue::<NumericValue>::constant(U256::from(3)));
     assert_eq!(stack.pop_child().unwrap().state.stack.len(), 2);
     assert_eq!(stack.active(), &first.state);
     assert_eq!(stack.pop_child(), Some(first));
@@ -116,41 +129,49 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn assert_equivalent_store(actual: &Store, expected: &Store) {
+fn assert_equivalent_store(actual: &EvmStore<NumericValue>, expected: &EvmStore<NumericValue>) {
     // Joins materialize default lifecycle flags. Normalize both stores so
     // omitted false flags and explicit false flags compare as the same state.
-    let domain = Domain::default();
-    assert_eq!(actual.join(actual, domain), expected.join(expected, domain));
+    let domain = native::product();
+    assert_eq!(
+        actual.join(actual, domain.borrowed()),
+        expected.join(expected, domain.borrowed())
+    );
 }
 
-fn nested_analysis(root_reverts: bool) -> WorldAnalysis {
+fn nested_analysis(root_reverts: bool) -> EvmWorldAnalysis<NumericValue> {
     let end = if root_reverts { "5f5ffd" } else { "00" };
     let root = format!("60035f555f5f5f5f5f6102006207a120f150{end}");
     let child = "60075f555f5f5f5f5f6103006207a120f1505f5ffd";
     let grandchild = "60095f55600b5f5d00";
-    let mut world = World::new(Fork::Osaka, "nested checkpoint fixture");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "nested checkpoint fixture");
     for (number, code) in [(0x101, root.as_str()), (0x200, child), (0x300, grandchild)] {
         world
             .insert(
                 address(number),
-                Account::from_hex(code, Fork::Osaka).unwrap(),
+                EvmAccount::<NumericValue>::from_hex(code, Fork::Osaka).unwrap(),
             )
             .unwrap();
     }
-    analyze_world(
-        world,
-        Entry {
-            address: address(0x101),
-            environment: evm_abstract::world::EvmEnvironment {
-                to: (address(0x101)).into(),
-                caller: (address(0x900)).into(),
-                value: AbstractValue::constant(U256::ZERO),
-                calldata: ByteArray::empty(),
-                is_static: false,
-                ..evm_abstract::world::EvmEnvironment::default()
+    native::run(
+        &native::product(),
+        AnalysisInput::new(
+            world,
+            EvmEntry {
+                address: address(0x101),
+                environment: evm_abstract::world::EvmEnvironmentValues {
+                    to: (address(0x101)).into(),
+                    caller: (address(0x900)).into(),
+                    value: EvmValue::<NumericValue>::constant(U256::ZERO),
+                    calldata: EvmByteArray::<NumericValue>::empty(),
+                    is_static: false,
+                    ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
+                },
             },
-        },
+        )
+        .unwrap(),
         ExecutionConfig::default(),
+        &Control::default(),
     )
     .unwrap()
 }
@@ -163,8 +184,8 @@ fn nested_calls_preserve_roles_and_restore_the_childs_checkpoint() {
         .unwrap()
         .verify(&analysis)
         .unwrap();
-    let zero = AbstractValue::constant(U256::ZERO);
-    let domain = Domain::default();
+    let zero = EvmValue::<NumericValue>::constant(U256::ZERO);
+    let domain = native::product();
     let root_checkpoint = &analysis.states()[0]
         .entry
         .call_stack
@@ -191,19 +212,25 @@ fn nested_calls_preserve_roles_and_restore_the_childs_checkpoint() {
             saw_grandchild = true;
             let child_checkpoint = stack.children()[0].state.saved_store.state();
             assert_eq!(
-                child_checkpoint.read(address(0x101), &zero, domain),
-                AbstractValue::constant(U256::from(3))
+                child_checkpoint.read(address(0x101), &zero, domain.borrowed()),
+                EvmValue::<NumericValue>::constant(U256::from(3))
             );
-            assert_eq!(child_checkpoint.read(address(0x200), &zero, domain), zero);
+            assert_eq!(
+                child_checkpoint.read(address(0x200), &zero, domain.borrowed()),
+                zero
+            );
             let grandchild = stack.active_child().unwrap();
             assert_eq!(grandchild.continuation.return_block, Some(1));
             assert_eq!(stack.parent(), Some(&stack.children()[0].state));
             let checkpoint = grandchild.state.saved_store.state();
             assert_eq!(
-                checkpoint.read(address(0x200), &zero, domain),
-                AbstractValue::constant(U256::from(7))
+                checkpoint.read(address(0x200), &zero, domain.borrowed()),
+                EvmValue::<NumericValue>::constant(U256::from(7))
             );
-            assert_eq!(checkpoint.read(address(0x300), &zero, domain), zero);
+            assert_eq!(
+                checkpoint.read(address(0x300), &zero, domain.borrowed()),
+                zero
+            );
         }
     }
     assert!(saw_grandchild);
@@ -229,13 +256,21 @@ fn nested_calls_preserve_roles_and_restore_the_childs_checkpoint() {
             .state();
         assert_equivalent_store(&resumed.store, checkpoint);
         assert_eq!(
-            resumed.store.read(address(0x101), &zero, domain),
-            AbstractValue::constant(U256::from(3))
+            resumed.store.read(address(0x101), &zero, domain.borrowed()),
+            EvmValue::<NumericValue>::constant(U256::from(3))
         );
-        assert_eq!(resumed.store.read(address(0x200), &zero, domain), zero);
-        assert_eq!(resumed.store.read(address(0x300), &zero, domain), zero);
         assert_eq!(
-            resumed.store.read_transient(address(0x300), &zero, domain),
+            resumed.store.read(address(0x200), &zero, domain.borrowed()),
+            zero
+        );
+        assert_eq!(
+            resumed.store.read(address(0x300), &zero, domain.borrowed()),
+            zero
+        );
+        assert_eq!(
+            resumed
+                .store
+                .read_transient(address(0x300), &zero, domain.borrowed()),
             zero
         );
     }
@@ -245,7 +280,7 @@ fn nested_calls_preserve_roles_and_restore_the_childs_checkpoint() {
             && state
                 .entry
                 .store
-                .read(address(0x300), &zero, domain)
+                .read(address(0x300), &zero, domain.borrowed())
                 .contains(U256::from(9))
     }));
 }

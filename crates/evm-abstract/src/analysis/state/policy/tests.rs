@@ -1,5 +1,9 @@
 //! Whole inputs, retained metadata and independently instantiated guarantees.
 
+#[cfg(test)]
+use crate::analysis::testing::{ByteArray, TestValue};
+use crate::domain::EvmNumericAlgebra as _;
+
 use super::{EvmPayloadSummary, ProcedureOutput};
 use crate::{
     analysis::{
@@ -12,23 +16,22 @@ use crate::{
         transfer,
     },
     domain::{
-        AbstractValue, Domain, ValueAlgebra,
+        ProductAlgebra, ValueAlgebra,
         relational::{QueryReason, RelationLimits},
         symbolic::ExprId,
     },
     resource::WorkBudget,
-    world::ByteArray,
 };
 use alloy_primitives::U256;
 use std::collections::BTreeSet;
 
-fn range(upper: u64) -> AbstractValue {
-    AbstractValue::unsigned_range(U256::ZERO, U256::from(upper)).unwrap()
+fn range(upper: u64) -> TestValue {
+    TestValue::unsigned_range(U256::ZERO, U256::from(upper)).unwrap()
 }
 
 #[test]
 fn scheduled_join_keeps_finite_bounds_before_and_after_promotion() {
-    let algebra = ValueAlgebra::new(Domain::default());
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
     let mut initial = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
     initial.active_mut().stack = vec![range(4)];
@@ -86,11 +89,16 @@ fn scheduled_join_keeps_finite_bounds_before_and_after_promotion() {
 
 #[test]
 fn capacity_promotion_covers_without_numeric_widening_and_is_a_change() {
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_constraints: 1,
-        ..Domain::default().spec().relations()
-    }));
-    let algebra = ValueAlgebra::new(domain);
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(
+        ProductAlgebra::default()
+            .spec()
+            .with_relations(RelationLimits {
+                max_constraints: 1,
+                ..ProductAlgebra::default().spec().relations()
+            }),
+    ));
+    let domain = domain.borrowed();
+    let algebra = domain;
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
     let mut initial = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
     initial.active_mut().stack = vec![range(4)];
@@ -128,7 +136,7 @@ fn capacity_promotion_covers_without_numeric_widening_and_is_a_change() {
 
 #[test]
 fn history_preparation_erases_suspended_and_active_frames_before_keying() {
-    let algebra = ValueAlgebra::new(Domain::default());
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
     let mut left = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
     left.active_mut().key.jump_history = vec![1, 2];
@@ -197,11 +205,12 @@ fn history_preparation_erases_suspended_and_active_frames_before_keying() {
 
 #[test]
 fn coarse_admission_erases_aliases_observations_and_first_output_content() {
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(domain);
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
+    let algebra = domain;
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
     let mut input = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
-    let key = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    let key = TestValue::top().with_expression(ExprId::fresh().unwrap());
     input.active_mut().stack = vec![key.clone(), key.clone()];
     let owner = input.active().key.address;
     input
@@ -245,8 +254,8 @@ fn coarse_admission_erases_aliases_observations_and_first_output_content() {
     let coarsened = CoarseSummaries
         .admit_output(None, &output, Acceleration::Join, &mut cx)
         .unwrap();
-    let retained_data = retained.data().instantiate_with(cx.domain).unwrap();
-    let coarse_data = coarsened.data().instantiate_with(cx.domain).unwrap();
+    let retained_data = retained.data().instantiate(cx.domain).unwrap();
+    let coarse_data = coarsened.data().instantiate(cx.domain).unwrap();
     assert_eq!(
         retained_data.byte_at(0, domain).singleton(),
         Some(U256::from(7))
@@ -258,7 +267,7 @@ fn coarse_admission_erases_aliases_observations_and_first_output_content() {
 
 #[test]
 fn helpers_refuse_before_mutation_when_work_or_retained_cancellation_stops_them() {
-    let algebra = ValueAlgebra::new(Domain::default());
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
     let input = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
     let before = input.clone();

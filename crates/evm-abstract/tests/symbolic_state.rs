@@ -4,6 +4,9 @@
 //! model and feed it back as a snapshot observation. Precision is checked by the
 //! program's later reads and branches, independently of state representation.
 
+#[path = "support/native.rs"]
+mod native;
+
 #[path = "symbolic_state/bytes.rs"]
 mod bytes;
 #[path = "symbolic_state/calls.rs"]

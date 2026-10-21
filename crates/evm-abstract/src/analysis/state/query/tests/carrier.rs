@@ -1,9 +1,11 @@
 //! A small carrier whose independent proof tariff exceeds its retained size.
 
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     U256,
     domain::{
-        Domain, DomainSpec, EvmNumericAlgebra, NumericReduction, WordElement, WordObservation,
+        DomainSpec, EvmNumericAlgebra, NumericReduction, ProductAlgebra, WordElement,
+        WordObservation,
     },
 };
 use analysis_control::Cancellation;
@@ -141,7 +143,7 @@ impl EvmNumericAlgebra for Algebra {
     type Element = Word;
 
     fn spec(&self) -> DomainSpec {
-        Domain::default().spec()
+        ProductAlgebra::default().spec()
     }
     fn project_numeric(&self, value: &Word) -> Word {
         value.clone()
@@ -171,10 +173,15 @@ impl EvmNumericAlgebra for Algebra {
     fn reduce_numeric(&self, value: &Word) -> NumericReduction<Word> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, _op: u8, _args: &[Word]) -> NumericReduction<Word> {
+    fn apply_numeric<'a>(
+        &self,
+        _op: u8,
+        _args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
+        let _args: Vec<&Word> = _args.collect();
         NumericReduction::stable(Word::top())
     }
-    fn operation_work<'a>(&self, _args: impl Iterator<Item = &'a Word>) -> usize {
+    fn operation_work<'a>(&self, op: u8, _args: impl Iterator<Item = &'a Word>) -> usize {
         // No test below requests a numeric operation; refuse rather than claim
         // that a small retained-size quote funds this opaque carrier's queries.
         usize::MAX

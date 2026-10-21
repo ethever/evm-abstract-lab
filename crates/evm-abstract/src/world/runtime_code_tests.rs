@@ -1,7 +1,9 @@
 //! Account JSON preserves captured code without repeating its decoded listing.
 
 use super::*;
-use crate::analysis::{FrameCode, FrameKey, FrameState};
+use crate::analysis::{EvmFrameState, FrameCode, FrameKey};
+use crate::world::test_support::{TestAccount, TestBytes, TestSnapshot, TestStore, TestWorld};
+type TestFrame = EvmFrameState<crate::domain::NumericValue>;
 use serde_json::{Value, json};
 
 #[test]
@@ -49,19 +51,19 @@ fn other_code_variants_and_direct_program_fields_keep_their_native_contract() {
     );
     let marker = format!("0xef0100{}", hex::encode(address.as_slice()));
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
-        assert_eq!(Account::from_hex("", fork).unwrap().code, Code::Empty);
+        assert_eq!(TestAccount::from_hex("", fork).unwrap().code, Code::Empty);
         assert!(matches!(
-            Account::from_hex("ef0001", fork),
+            TestAccount::from_hex("ef0001", fork),
             Err(DecodeError::UnsupportedEof)
         ));
         if fork == Fork::Cancun {
             assert!(matches!(
-                Account::from_hex(&marker, fork).unwrap().code,
+                TestAccount::from_hex(&marker, fork).unwrap().code,
                 Code::Runtime(_)
             ));
         } else {
             assert_eq!(
-                Account::from_hex(&marker, fork).unwrap().code,
+                TestAccount::from_hex(&marker, fork).unwrap().code,
                 Code::Delegation(address)
             );
             assert!(matches!(
@@ -69,7 +71,7 @@ fn other_code_variants_and_direct_program_fields_keep_their_native_contract() {
                 Err(DecodeError::DelegatedCode { address: target }) if target == address
             ));
             assert!(matches!(
-                Account::from_hex("ef01", fork),
+                TestAccount::from_hex("ef01", fork),
                 Err(DecodeError::InvalidDelegation(_))
             ));
         }
@@ -85,17 +87,17 @@ fn other_code_variants_and_direct_program_fields_keep_their_native_contract() {
     // The single-program envelope uses this same direct Program serializer.
     assert_eq!(json!({"program": &program})["program"], listing);
 
-    let mut world = World::new(program.fork(), "direct Program serialization");
+    let mut world = TestWorld::new(program.fork(), "direct Program serialization");
     world
         .insert(
             address,
-            Account {
+            TestAccount {
                 code: Code::Runtime(program.clone()),
-                ..Account::empty()
+                ..TestAccount::empty()
             },
         )
         .unwrap();
-    let frame = FrameState {
+    let frame = TestFrame {
         key: FrameKey {
             code_address: address,
             code_hash: keccak256(program.bytes()),
@@ -111,14 +113,18 @@ fn other_code_variants_and_direct_program_fields_keep_their_native_contract() {
         code: FrameCode::Runtime,
         program: Some(program),
         stack: Vec::new(),
-        memory: ByteArray::memory(),
-        calldata: ByteArray::exact(&[]),
+        memory: TestBytes::memory(),
+        calldata: TestBytes::exact(&[]),
         environment_calldata: true,
-        returndata: ByteArray::exact(&[]),
-        call_value: AbstractValue::constant(U256::ZERO),
+        returndata: TestBytes::exact(&[]),
+        call_value: TestValue::constant(U256::ZERO),
         address_operand: None,
         caller_operand: None,
-        saved_store: Store::new(&world).snapshot(),
+        saved_store: TestStore::new(
+            &world,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        )
+        .snapshot(),
     };
     let json = serde_json::to_value(frame).unwrap();
     assert_eq!(json["program"], listing);
@@ -132,27 +138,30 @@ fn other_code_variants_and_direct_program_fields_keep_their_native_contract() {
 fn store_history_keeps_every_code_version_with_raw_hex_sized_bodies() {
     #[derive(Serialize)]
     struct History<'a> {
-        world: &'a World,
-        saved_stores: [&'a Snapshot; 2],
-        store: &'a Store,
+        world: &'a TestWorld,
+        saved_stores: [&'a TestSnapshot; 2],
+        store: &'a TestStore,
     }
 
     let addresses = [0x31, 0x32, 0x33, 0x34].map(Address::repeat_byte);
     let bytes = [0x5b, 0x60, 0x01, 0x50].repeat(16);
     let original = Program::decode(&bytes).unwrap();
-    let mut world = World::new(original.fork(), "captured code versions");
+    let mut world = TestWorld::new(original.fork(), "captured code versions");
     for address in addresses {
         world
             .insert(
                 address,
-                Account {
+                TestAccount {
                     code: Code::Runtime(original.clone()),
-                    ..Account::empty()
+                    ..TestAccount::empty()
                 },
             )
             .unwrap();
     }
-    let mut store = Store::new(&world);
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let before = store.snapshot();
     let mut middle_bytes = bytes.clone();
     middle_bytes.extend([0x00, 0x61, 0xab]);

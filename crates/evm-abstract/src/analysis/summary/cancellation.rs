@@ -1,8 +1,11 @@
 //! Opaque metadata cancellation in the real certificate publication path.
 
+#[cfg(test)]
+use crate::domain::NumericValue;
+
 use super::*;
 use crate::{
-    analysis::{Status, analyze_world, machine::fixtures},
+    analysis::{Status, machine::fixtures},
     domain::relational::QueryReason,
 };
 use analysis_control::{Cancellation, with_cancellation};
@@ -55,7 +58,13 @@ fn actual_capture_retains_typed_current_and_captured_clone_cancellation() {
     for cancel_captured in [false, true] {
         let (world, entry) =
             fixtures::fixture(&[(0x101, "5f5f5f5f5f61020061fffff100"), (0x200, "00")]);
-        let mut graph = analyze_world(world, entry, fixtures::config()).unwrap();
+        let mut graph = crate::analysis::testing::execute(
+            world,
+            entry,
+            fixtures::config(),
+            crate::analysis::testing::NumericLimits::machine().spec(),
+        )
+        .unwrap();
         assert_eq!(graph.status(), Status::Converged);
         let child = graph
             .states()

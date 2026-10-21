@@ -5,7 +5,8 @@ use crate::{
     U256,
     analysis::state::query::tests::carrier::{Probe, Word},
     domain::{
-        Domain, EvmValue, FiniteConstantSet, NumericValue, WordElement, WordObservation,
+        EvmValue, FiniteConstantSet, NumericValue, ProductAlgebra, ValueAlgebra, WordElement,
+        WordObservation,
         facts::UnaryPredicate,
         identity::Symbol,
         interval::Interval,
@@ -168,7 +169,7 @@ fn exact_observations_inputs_roles_and_limits_do_not_become_syntactic_literals()
         .with_numeric(NumericValue::constant(U256::from(7)));
     input.forget_expression();
     assert!(input.identity().input().is_some());
-    let mut address = Domain::default()
+    let mut address = ValueAlgebra::new(ProductAlgebra::default())
         .from_facts(&[UnaryPredicate::IsCodeAddress])
         .unwrap()
         .with_numeric(NumericValue::constant(U256::from(7)))

@@ -75,7 +75,7 @@ pub(super) fn pay_input<N: WordElement>(
             work = work.saturating_add(program.byte_len().saturating_mul(4));
         }
     }
-    let facts = input.facts.observations().count();
+    let facts = input.facts.observation_count();
     work = work.saturating_add(facts.saturating_mul(128));
     pay(budget, work)
 }

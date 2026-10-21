@@ -2,48 +2,50 @@ use super::{
     FactScope, FactSource, NormalizationInvariantKind, NormalizedOperation, ValueOperand,
     ValueTransformation, build_normalized_partial_world, build_normalized_world,
 };
+use crate::ssa::test_support::{
+    TestAccount, TestBytes, TestEntry, TestEnvironment, TestNormalizedSsa, TestValue, TestWorld,
+    TestWorldAnalysis, postprocessing, product_without_relations, run_native, run_world,
+};
 use crate::{
     Address, Fork, U256,
-    analysis::{self, ExecutionConfig, FrontierReason, InstructionProgress, Status, WorldAnalysis},
-    domain::AbstractValue,
+    analysis::{ExecutionConfig, FrontierReason, InstructionProgress, Status},
     ssa::{PartialBlockCoverage, SsaError},
-    world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
 use revm_bytecode::opcode;
 
 fn config() -> ExecutionConfig {
     let mut config = ExecutionConfig::default();
     config.analysis.context_depth = 0;
-    config.analysis.relations.enabled = false;
     config.use_summaries = false;
     config
 }
 
-fn run(code: &str, config: ExecutionConfig, value: AbstractValue) -> WorldAnalysis {
-    run_with_calldata(code, config, value, ByteArray::empty())
+fn run(code: &str, config: ExecutionConfig, value: TestValue) -> TestWorldAnalysis {
+    run_with_calldata(code, config, value, TestBytes::empty())
 }
 
 fn run_with_calldata(
     code: &str,
     config: ExecutionConfig,
-    value: AbstractValue,
-    calldata: ByteArray,
-) -> WorldAnalysis {
+    value: TestValue,
+    calldata: TestBytes,
+) -> TestWorldAnalysis {
     let root = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "normalized SSA value semantics");
+    let mut world = TestWorld::new(Fork::Osaka, "normalized SSA value semantics");
     world
-        .insert(root, Account::from_hex(code, Fork::Osaka).unwrap())
+        .insert(root, TestAccount::from_hex(code, Fork::Osaka).unwrap())
         .unwrap();
-    analysis::analyze_world(
+    run_native(
+        &product_without_relations(),
         world,
-        Entry {
+        TestEntry {
             address: root,
-            environment: EvmEnvironment {
+            environment: TestEnvironment {
                 to: root.into(),
                 caller: Address::repeat_byte(0x33).into(),
                 value,
                 calldata,
-                ..EvmEnvironment::default()
+                ..TestEnvironment::default()
             },
         },
         config,
@@ -51,7 +53,7 @@ fn run_with_calldata(
     .unwrap()
 }
 
-fn pending_mload(code: &str, pc: usize, value: AbstractValue) -> WorldAnalysis {
+fn pending_mload(code: &str, pc: usize, value: TestValue) -> TestWorldAnalysis {
     let mut config = config();
     // Bisect the detailed MLOAD receipt without optional preparation fees.
     config.root_terminal_coverage = false;
@@ -109,9 +111,9 @@ fn pending_mload(code: &str, pc: usize, value: AbstractValue) -> WorldAnalysis {
 
 #[test]
 fn folding_propagates_constants_but_keeps_every_original_definition_and_effect() {
-    let analysis = run("600260030160040200", config(), AbstractValue::top());
+    let analysis = run("600260030160040200", config(), TestValue::top());
     let raw = crate::ssa::build_world(&analysis).unwrap();
-    let ir = build_normalized_world(&analysis).unwrap();
+    let ir = build_normalized_world(&analysis, &mut postprocessing()).unwrap();
     assert_eq!(ir.value_count(), raw.value_count());
     assert_eq!(ir.effect_count(), raw.effect_count());
     assert_eq!(
@@ -141,13 +143,13 @@ fn folding_propagates_constants_but_keeps_every_original_definition_and_effect()
         ir.mappings()[product].dependencies,
         ir.blocks()[0].instructions[4].origin.operands
     );
-    ir.verify(&analysis).unwrap();
+    ir.verify(&analysis, &mut postprocessing()).unwrap();
 }
 
 #[test]
 fn copies_and_identity_results_retain_unique_definitions_without_cse_or_dce() {
-    let analysis = run("345f0180811800", config(), AbstractValue::top());
-    let ir = build_normalized_world(&analysis).unwrap();
+    let analysis = run("345f0180811800", config(), TestValue::top());
+    let ir = build_normalized_world(&analysis, &mut postprocessing()).unwrap();
     let rows = &ir.blocks()[0].instructions;
     let input = rows[0].origin.results[0];
     let copy = rows[2].origin.results[0];
@@ -171,12 +173,8 @@ fn copies_and_identity_results_retain_unique_definitions_without_cse_or_dce() {
 
 #[test]
 fn complete_snapshot_results_fold_environment_reads_with_definition_scopes() {
-    let analysis = run(
-        "3460030100",
-        config(),
-        AbstractValue::constant(U256::from(7)),
-    );
-    let ir = build_normalized_world(&analysis).unwrap();
+    let analysis = run("3460030100", config(), TestValue::constant(U256::from(7)));
+    let ir = build_normalized_world(&analysis, &mut postprocessing()).unwrap();
     assert_eq!(
         ir.blocks()[0].instructions[0].operation,
         NormalizedOperation::Constant {
@@ -205,10 +203,10 @@ fn partial_snapshots_do_not_certify_definition_rewrites_but_literals_still_fold(
     let analysis = pending_mload(
         "34600301600260030160405100",
         11,
-        AbstractValue::constant(U256::from(7)),
+        TestValue::constant(U256::from(7)),
     );
     assert_eq!(analysis.status(), Status::Incomplete);
-    let ir = build_normalized_partial_world(&analysis).unwrap();
+    let ir = build_normalized_partial_world(&analysis, &mut postprocessing()).unwrap();
     assert!(!ir.complete());
     let rows = &ir.blocks()[0].instructions;
     assert!(matches!(
@@ -252,15 +250,17 @@ fn partial_snapshots_do_not_certify_definition_rewrites_but_literals_still_fold(
             ..
         }
     ));
-    ir.verify(&analysis).unwrap();
+    ir.verify(&analysis, &mut postprocessing()).unwrap();
 }
 
 #[test]
 fn verifier_rejects_origin_rewrites_and_unproved_constants_scopes_and_aliases() {
-    let analysis = run("345f0100", config(), AbstractValue::top());
-    let valid = build_normalized_world(&analysis).unwrap();
-    let kind = |ir: &super::NormalizedSsa| {
-        let SsaError::Normalization(error) = ir.verify(&analysis).unwrap_err() else {
+    let analysis = run("345f0100", config(), TestValue::top());
+    let valid = build_normalized_world(&analysis, &mut postprocessing()).unwrap();
+    let kind = |ir: &TestNormalizedSsa| {
+        let SsaError::Normalization(error) =
+            ir.verify(&analysis, &mut postprocessing()).unwrap_err()
+        else {
             panic!("expected normalization invariant")
         };
         error.kind
@@ -285,8 +285,8 @@ fn verifier_rejects_origin_rewrites_and_unproved_constants_scopes_and_aliases() 
 fn stale_and_unexecuted_coverage_keep_their_parameters_without_a_body() {
     let mut limited = config();
     limited.analysis.max_transfers = 2;
-    let analysis = run("5f5b600101600156", limited, AbstractValue::top());
-    let ir = build_normalized_partial_world(&analysis).unwrap();
+    let analysis = run("5f5b600101600156", limited, TestValue::top());
+    let ir = build_normalized_partial_world(&analysis, &mut postprocessing()).unwrap();
     let stale = ir
         .blocks()
         .iter()
@@ -354,8 +354,8 @@ fn exact_folding_uses_evm_wrap_signed_zero_modulus_and_shift_semantics() {
             .map(|value| format!("7f{value:064x}"))
             .collect::<String>();
         code.push_str(&format!("{op:02x}00"));
-        let analysis = run(&code, config(), AbstractValue::top());
-        let ir = build_normalized_world(&analysis).unwrap();
+        let analysis = run(&code, config(), TestValue::top());
+        let ir = build_normalized_world(&analysis, &mut postprocessing()).unwrap();
         let operation = ir.blocks()[0]
             .instructions
             .iter()
@@ -378,8 +378,8 @@ fn exact_folding_uses_evm_wrap_signed_zero_modulus_and_shift_semantics() {
 #[test]
 fn zero_division_and_zero_to_unknown_power_do_not_gain_unsafe_identities() {
     for (code, op) in [("34800400", opcode::DIV), ("345f0a00", opcode::EXP)] {
-        let analysis = run(code, config(), AbstractValue::top());
-        let ir = build_normalized_world(&analysis).unwrap();
+        let analysis = run(code, config(), TestValue::top());
+        let ir = build_normalized_world(&analysis, &mut postprocessing()).unwrap();
         let operation = ir.blocks()[0]
             .instructions
             .iter()
@@ -397,10 +397,10 @@ fn different_values_with_the_same_source_and_abstract_summary_are_not_aliases() 
     let analysis = run_with_calldata(
         "5f356020351800",
         config(),
-        AbstractValue::top(),
-        ByteArray::unknown(),
+        TestValue::top(),
+        TestBytes::unknown(),
     );
-    let ir = build_normalized_world(&analysis).unwrap();
+    let ir = build_normalized_world(&analysis, &mut postprocessing()).unwrap();
     let xor = ir.blocks()[0]
         .instructions
         .iter()
@@ -422,10 +422,10 @@ fn closed_join_facts_propagate_to_uses_without_replacing_or_simplifying_the_phi(
     let analysis = run(
         "34600a576007600d56005b60075b60030100",
         config(),
-        AbstractValue::top(),
+        TestValue::top(),
     );
     let raw = crate::ssa::build_world(&analysis).unwrap();
-    let ir = build_normalized_world(&analysis).unwrap();
+    let ir = build_normalized_world(&analysis, &mut postprocessing()).unwrap();
     let merge = ir
         .blocks()
         .iter()
@@ -464,10 +464,10 @@ fn open_phi_observation_cannot_fold_its_consumer_but_self_identity_can() {
     let analysis = pending_mload(
         "34600556005b600301801860405100",
         13,
-        AbstractValue::constant(U256::from(7)),
+        TestValue::constant(U256::from(7)),
     );
     assert_eq!(analysis.status(), Status::Incomplete);
-    let ir = build_normalized_partial_world(&analysis).unwrap();
+    let ir = build_normalized_partial_world(&analysis, &mut postprocessing()).unwrap();
     let body = ir
         .blocks()
         .iter()
@@ -523,7 +523,7 @@ fn open_phi_observation_cannot_fold_its_consumer_but_self_identity_can() {
     );
     assert_eq!(pending.progress, InstructionProgress::OperandsConsumed);
     assert!(pending.origin.results.is_empty());
-    ir.verify(&analysis).unwrap();
+    ir.verify(&analysis, &mut postprocessing()).unwrap();
     // Tampering with the observed scope cannot supply the missing proof.
     let mut wrong = ir.clone();
     let observation = wrong
@@ -533,17 +533,17 @@ fn open_phi_observation_cannot_fold_its_consumer_but_self_identity_can() {
         .unwrap();
     observation.scope = FactScope::Definition;
     assert!(
-        matches!(wrong.verify(&analysis), Err(SsaError::Normalization(error)) if error.kind == NormalizationInvariantKind::Facts)
+        matches!(wrong.verify(&analysis, &mut postprocessing()), Err(SsaError::Normalization(error)) if error.kind == NormalizationInvariantKind::Facts)
     );
 }
 
 #[test]
 fn singleton_from_an_interval_folds_even_when_the_finite_component_is_top() {
-    let input = AbstractValue::unsigned_range(U256::from(7), U256::from(7)).unwrap();
+    let input = TestValue::unsigned_range(U256::from(7), U256::from(7)).unwrap();
     assert!(input.constants().is_none());
     assert_eq!(input.singleton(), Some(U256::from(7)));
     let analysis = run("3460030100", config(), input);
-    let ir = build_normalized_world(&analysis).unwrap();
+    let ir = build_normalized_world(&analysis, &mut postprocessing()).unwrap();
     let value = ir.blocks()[0].instructions[0].origin.results[0];
     assert!(ir.facts().iter().any(|fact| {
         fact.value == value
@@ -564,44 +564,47 @@ fn singleton_from_an_interval_folds_even_when_the_finite_component_is_top() {
 #[test]
 fn unknown_call_preserves_every_supported_dispatch_deferred_edge_and_frontier() {
     let root = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "normalized unknown call");
+    let mut world = TestWorld::new(Fork::Osaka, "normalized unknown call");
     world
         .insert(
             Address::repeat_byte(0x44),
-            Account::from_hex("365f5ff000", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("365f5ff000", Fork::Osaka).unwrap(),
         )
         .unwrap();
     world
         .insert(
             root,
-            Account::from_hex("5f5f5f5f5f345af100", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("5f5f5f5f5f345af100", Fork::Osaka).unwrap(),
         )
         .unwrap();
     world
-        .insert(Address::repeat_byte(0x22), Account::empty())
+        .insert(Address::repeat_byte(0x22), TestAccount::empty())
         .unwrap();
     world
-        .insert(Address::from_word(U256::from(4).into()), Account::empty())
+        .insert(
+            Address::from_word(U256::from(4).into()),
+            TestAccount::empty(),
+        )
         .unwrap();
     let mut options = config();
     options.max_call_depth = 3;
-    let analysis = analysis::analyze_world(
+    let analysis = run_world(
         world,
-        Entry {
+        TestEntry {
             address: root,
-            environment: EvmEnvironment {
+            environment: TestEnvironment {
                 to: root.into(),
                 caller: Address::repeat_byte(0x33).into(),
-                value: AbstractValue::top(),
-                calldata: ByteArray::empty(),
-                ..EvmEnvironment::default()
+                value: TestValue::top(),
+                calldata: TestBytes::empty(),
+                ..TestEnvironment::default()
             },
         },
         options,
     )
     .unwrap();
-    let raw = crate::ssa::build_partial_world(&analysis).unwrap();
-    let ir = build_normalized_partial_world(&analysis).unwrap();
+    let raw = crate::ssa::build_partial_world(&analysis, &mut postprocessing()).unwrap();
+    let ir = build_normalized_partial_world(&analysis, &mut postprocessing()).unwrap();
     assert_eq!(ir.status(), Status::Incomplete);
     assert_eq!(ir.transitions(), raw.transitions());
     assert_eq!(ir.deferred_edges(), raw.deferred_edges());
@@ -622,5 +625,5 @@ fn unknown_call_preserves_every_supported_dispatch_deferred_edge_and_frontier() 
             }
         ));
     }
-    ir.verify(&analysis).unwrap();
+    ir.verify(&analysis, &mut postprocessing()).unwrap();
 }

@@ -13,7 +13,7 @@ fn live_store_prices_every_owned_numeric_container_and_preserves_saved_source() 
     let _scope = RECEIPT.scope();
     let (world, entry, _, policy) = fixture("00");
     let owner = entry.address;
-    let mut store = EvmStore::new_with(&world, policy.borrowed());
+    let mut store = EvmStore::new(&world, policy.borrowed());
     let mut count = 0;
     for plane in [&mut store.persistent, &mut store.transient] {
         plane

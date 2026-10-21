@@ -1,48 +1,83 @@
 //! Human identities use mathematical symbols while machine IDs and SSA values retain their meaning.
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisInput, EvmAnalysis};
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{self, Config, ExecutionConfig, WorldAnalysis},
+    analysis::{EvmWorldAnalysis, ExecutionConfig},
     bytecode::Program,
-    domain::AbstractValue,
+    domain::EvmValue,
     render, ssa,
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use evm_abstract_notation::Symbol;
 
-fn world(code: &str) -> WorldAnalysis {
+fn world(code: &str) -> EvmWorldAnalysis<NumericValue> {
     let address = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "notation fixture");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "notation fixture");
     world
-        .insert(address, Account::from_hex(code, Fork::Osaka).unwrap())
-        .unwrap();
-    analysis::analyze_world(
-        world,
-        Entry::concrete(
+        .insert(
             address,
-            Address::ZERO,
-            AbstractValue::constant(U256::ZERO),
-            ByteArray::empty(),
-        ),
+            EvmAccount::<NumericValue>::from_hex(code, Fork::Osaka).unwrap(),
+        )
+        .unwrap();
+    native::run(
+        &native::product(),
+        AnalysisInput::new(
+            world,
+            EvmEntry::<NumericValue>::concrete(
+                address,
+                Address::ZERO,
+                EvmValue::<NumericValue>::constant(U256::ZERO),
+                EvmByteArray::<NumericValue>::empty(),
+            ),
+        )
+        .unwrap(),
         ExecutionConfig::default(),
+        &Control::default(),
     )
     .unwrap()
 }
 
 #[test]
 fn projected_and_native_state_names_remain_distinct_without_renaming_values() {
-    let analysis =
-        analysis::analyze(Program::from_hex("60015f5500").unwrap(), Config::default()).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex("60015f5500").unwrap(),
+            Default::default(),
+        )
+        .unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
+    .unwrap();
     let ir = ssa::build(&analysis).unwrap();
-    let cfg = render::cfg(&analysis);
-    let listing = render::ssa(&analysis, &ir);
+    let cfg = render::cfg(
+        &analysis,
+        &native::product_with(analysis.execution().domain_spec()),
+    );
+    let listing = render::ssa(
+        &analysis,
+        &ir,
+        &native::product_with(analysis.execution().domain_spec()),
+    );
     assert!(cfg.contains("σᵖ₀ | B₀ @ 0x0000"), "{cfg}");
     assert!(listing.contains("σᵖ₀ | context="), "{listing}");
     assert!(listing.contains("%0 = PUSH1 0x1"), "{listing}");
     assert!(!listing.contains("%₀"));
-    let dot = render::dot(&analysis);
+    let dot = render::dot(
+        &analysis,
+        &native::product_with(analysis.execution().domain_spec()),
+    );
     assert!(dot.contains("σᵖ₀ pc=0x0"), "{dot}");
-    let partial = ssa::build_partial_world(analysis.execution()).unwrap();
+    let partial =
+        ssa::build_partial_world(analysis.execution(), &mut native::postprocessing()).unwrap();
     let mapping = render::partial_ssa(&analysis, &partial);
     assert!(mapping.contains("projected σᵖ₀ → machine σ₀"), "{mapping}");
     assert!(mapping.contains("σ₀\n"), "{mapping}");
@@ -72,7 +107,12 @@ fn world_text_ssa_and_dot_labels_share_symbols_but_dot_and_json_ids_are_stable()
             "{listing}"
         );
     }
-    let teaching = render::world::explain(&analysis).unwrap();
+    let teaching = render::world::explain(
+        &analysis,
+        &native::product_with(analysis.domain_spec()),
+        &mut native::postprocessing(),
+    )
+    .unwrap();
     assert!(
         teaching.contains("σ₀ | B₀ @ 0x0000 | f₀ active | code=C₀"),
         "{teaching}"
@@ -81,9 +121,9 @@ fn world_text_ssa_and_dot_labels_share_symbols_but_dot_and_json_ids_are_stable()
         teaching.contains("%0 = CONST 0x1 ; origin=PUSH1"),
         "{teaching}"
     );
-    let report = render::world::text(&analysis);
+    let report = render::world::text(&analysis, &native::product_with(analysis.domain_spec()));
     assert!(report.contains("σ₀") && report.contains("O₀"), "{report}");
-    let dot = render::world::dot(&analysis);
+    let dot = render::world::dot(&analysis, &native::product_with(analysis.domain_spec()));
     assert!(dot.contains("S0 [label=\"σ₀"), "{dot}");
     assert!(dot.contains("O0 [label=\"O₀"), "{dot}");
     assert!(dot.contains("S0 -> O0"), "{dot}");

@@ -35,21 +35,11 @@ impl analysis_kernel::Meter for MachineMeter<'_> {
     type Stop = MachineError;
 
     fn reserve(&mut self, cost: usize) -> Result<(), Self::Stop> {
-        MachineError::check_cancelled()?;
-        if cost == usize::MAX || !self.0.charge(cost) {
-            Err(MachineError::work_failure())
-        } else {
-            Ok(())
-        }
+        crate::resource::clone_payment::pay(self.0, cost).map_err(MachineError::from)
     }
 
     fn checkpoint(&self) -> Result<(), Self::Stop> {
-        MachineError::check_cancelled()?;
-        if self.0.exhausted() {
-            Err(MachineError::work_failure())
-        } else {
-            Ok(())
-        }
+        crate::resource::clone_payment::checkpoint(self.0).map_err(MachineError::from)
     }
 }
 
@@ -61,39 +51,6 @@ pub(super) fn kernel_failure(error: analysis_kernel::KernelError<MachineError>) 
         KernelError::CostOverflow => MachineError::work_failure(),
         KernelError::VersionExhausted => MachineError::IdentityExhausted,
         _ => MachineError::Shape,
-    }
-}
-
-/// EVM compatibility view of the kernel's single FIFO/pending implementation.
-#[cfg(test)]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct Worklist(analysis_kernel::worklist::Worklist<usize>);
-
-#[cfg(test)]
-impl Worklist {
-    pub(super) fn satisfy(&mut self, id: usize) {
-        self.0.satisfy(id);
-    }
-
-    pub(super) fn pending(&self) -> impl Iterator<Item = usize> + '_ {
-        self.0.pending()
-    }
-
-    pub(super) fn pop_deepest(
-        &mut self,
-        budget: &mut WorkBudget,
-        depth: impl Fn(usize) -> usize,
-    ) -> Result<Option<usize>, MachineError> {
-        self.0
-            .pop_deepest(&mut MachineMeter(budget), depth)
-            .map_err(kernel_failure)
-    }
-}
-
-#[cfg(test)]
-impl FromIterator<usize> for Worklist {
-    fn from_iter<T: IntoIterator<Item = usize>>(iter: T) -> Self {
-        Self(iter.into_iter().collect())
     }
 }
 

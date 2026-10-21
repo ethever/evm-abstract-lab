@@ -1,10 +1,14 @@
+use crate::domain::EvmNumericAlgebra as _;
+
 use super::{memory_condition, sequence_condition};
+#[cfg(test)]
+use crate::analysis::testing::{Account, Entry, TestValue, World};
+use crate::domain::ProductAlgebra;
 use crate::domain::ValueAlgebra;
-use crate::domain::{AbstractValue, Domain};
 use alloy_primitives::U256;
 
-fn value(value: U256) -> AbstractValue {
-    AbstractValue::constant(value)
+fn value(value: U256) -> TestValue {
+    TestValue::constant(value)
 }
 
 #[test]
@@ -25,7 +29,7 @@ fn sequence_guard_agrees_with_checked_math_including_empty_and_overflow() {
                     &value(offset),
                     &value(size),
                     &value(length),
-                    ValueAlgebra::new(&Domain::default()),
+                    ValueAlgebra::new(&ProductAlgebra::default()),
                 );
                 assert_eq!(actual.singleton(), Some(U256::from(u8::from(expected))));
             }
@@ -35,7 +39,8 @@ fn sequence_guard_agrees_with_checked_math_including_empty_and_overflow() {
 
 #[test]
 fn memory_guard_distinguishes_zero_size_and_word_rounded_u256_end() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let bound = super::logical::MAX_END;
     for (offset, size, expected) in [
         (U256::MAX, 0, true),
@@ -47,29 +52,17 @@ fn memory_guard_distinguishes_zero_size_and_word_rounded_u256_end() {
         (bound + U256::from(1), 0, true),
         (U256::MAX, 1, false),
     ] {
-        let actual = memory_condition(
-            &value(offset),
-            &value(U256::from(size)),
-            ValueAlgebra::new(&domain),
-        );
+        let actual = memory_condition(&value(offset), &value(U256::from(size)), domain);
         assert_eq!(actual.singleton(), Some(U256::from(u8::from(expected))));
     }
     assert_eq!(
-        memory_condition(
-            &value(U256::ZERO),
-            &value(bound),
-            ValueAlgebra::new(&domain)
-        )
-        .singleton(),
+        memory_condition(&value(U256::ZERO), &value(bound), domain).singleton(),
         Some(U256::from(1))
     );
 }
 
 fn execution() -> crate::analysis::transfer::Execution {
-    use crate::{
-        Fork,
-        world::{Account, Entry, World},
-    };
+    use crate::Fork;
     use alloy_primitives::Address;
     let address = Address::from([0x11; 20]);
     let mut world = World::new(Fork::Osaka, "range partition unit test");
@@ -78,7 +71,7 @@ fn execution() -> crate::analysis::transfer::Execution {
         payload: super::super::initial(
             &world,
             &Entry::new(address),
-            ValueAlgebra::new(&Domain::default()),
+            ValueAlgebra::new(&ProductAlgebra::default()),
         )
         .unwrap(),
         executed_pcs: Vec::new(),
@@ -105,15 +98,16 @@ fn symbolic_logical_partition_retains_success_and_pre_effect_failure() {
         max_memory_bytes: 64,
         ..ExecutionConfig::default()
     };
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let mut budget = super::super::WorkBudget::new(10_000_000);
-    let transfer_numeric = Domain::default();
+    let transfer_numeric = ProductAlgebra::from_spec(config_numeric.spec());
     let mut context = crate::analysis::transfer::testing::context(
         &config,
         &mut budget,
         ValueAlgebra::new(&transfer_numeric),
     );
     let source = ExprId::fresh().unwrap();
-    let size = AbstractValue::top().with_expression(source.clone());
+    let size = TestValue::top().with_expression(source.clone());
     assert!(super::memory(
         &mut result,
         &value(U256::ZERO),
@@ -135,7 +129,7 @@ fn symbolic_logical_partition_retains_success_and_pre_effect_failure() {
             super::memory_condition(
                 &value(U256::ZERO),
                 &value(word),
-                ValueAlgebra::new(&Domain::default()),
+                ValueAlgebra::new(&ProductAlgebra::default()),
             )
             .singleton(),
             Some(U256::from(u8::from(legal))),
@@ -144,10 +138,12 @@ fn symbolic_logical_partition_retains_success_and_pre_effect_failure() {
         // The retained OR/AND guard keeps both partitions. A candidate is not
         // imported into F to search its compound Boolean alternatives.
         assert_eq!(
-            result
-                .payload
-                .relations
-                .can_equal(&source, word, &config.analysis.relations),
+            result.payload.relations.can_equal(
+                &source,
+                word,
+                &config_numeric.relations,
+                context.domain
+            ),
             CheckResult::MayBeFeasible
         );
     }
@@ -164,25 +160,23 @@ fn assumption_capacity_failure_preserves_the_whole_unmodified_input() {
         max_memory_bytes: 64,
         ..ExecutionConfig::default()
     };
-    config.analysis.relations.max_constraints = 1;
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.max_constraints = 1;
+    let algebra = crate::analysis::testing::product(config_numeric.spec());
+    let domain = algebra.borrowed();
     let other = ExprId::fresh().unwrap();
     assert_eq!(
         result
             .payload
             .relations
-            .assume(&other, true, &config.analysis.relations),
+            .assume(&other, true, &config_numeric.relations, domain),
         CheckResult::MayBeFeasible
     );
     let before = result.payload.clone();
     let source = ExprId::fresh().unwrap();
-    let size = AbstractValue::top().with_expression(source);
+    let size = TestValue::top().with_expression(source);
     let mut budget = super::super::WorkBudget::new(10_000_000);
-    let transfer_numeric = Domain::default();
-    let mut context = crate::analysis::transfer::testing::context(
-        &config,
-        &mut budget,
-        ValueAlgebra::new(&transfer_numeric),
-    );
+    let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
     assert!(!super::memory(
         &mut result,
         &value(U256::ZERO),
@@ -226,7 +220,8 @@ fn encoder_limit_keeps_success_guard_and_gas_failure_coverage() {
         max_memory_bytes: 64,
         ..ExecutionConfig::default()
     };
-    config.analysis.relations.max_nodes = 64;
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.max_nodes = 64;
     let length = ExprId::constant(U256::from(64));
     let hash = ExprId::keccak(
         ByteView::new(
@@ -234,19 +229,19 @@ fn encoder_limit_keeps_success_guard_and_gas_failure_coverage() {
             ExprId::constant(U256::ZERO),
             length,
         ),
-        config.analysis.relations.expressions(),
+        config_numeric.relations.expressions(),
     )
     .unwrap();
-    let size = AbstractValue::top().with_expression(hash);
+    let size = TestValue::top().with_expression(hash);
     let condition = super::memory_condition(
         &value(U256::ZERO),
         &size,
-        ValueAlgebra::new(&Domain::default()),
+        ValueAlgebra::new(&ProductAlgebra::default()),
     );
     let expression = condition.symbolic_expression().unwrap();
-    assert!(expression.nodes() <= config.analysis.relations.max_nodes);
+    assert!(expression.nodes() <= config_numeric.relations.max_nodes);
     let mut budget = super::super::WorkBudget::new(10_000_000);
-    let transfer_numeric = Domain::default();
+    let transfer_numeric = ProductAlgebra::from_spec(config_numeric.spec());
     let mut context = crate::analysis::transfer::testing::context(
         &config,
         &mut budget,
@@ -285,7 +280,7 @@ fn encoder_limit_keeps_success_guard_and_gas_failure_coverage() {
 }
 
 mod literal_memory {
-    use super::{execution, value};
+    use super::{TestValue, execution, value};
     use crate::{
         U256,
         analysis::{
@@ -293,8 +288,7 @@ mod literal_memory {
             transfer::{Execution, WorkBudget},
         },
         domain::{
-            AbstractValue, Domain, DomainSpec, Profile, ReductionStatus, SingletonProof,
-            ValueAlgebra,
+            DomainSpec, ProductAlgebra, ReductionStatus, SingletonProof, ValueAlgebra,
             facts::{UnaryPredicate, WordBounds},
             relational::{Constraint, QueryReason},
             symbolic::ExprId,
@@ -308,14 +302,13 @@ mod literal_memory {
 
     // Construct operands with independent component facts still retained. This
     // does not change any execution policy, complete-analysis fixture or budget.
-    fn component_fixture_domain() -> Domain {
+    fn component_fixture_domain() -> ValueAlgebra<ProductAlgebra> {
         use std::num::NonZeroUsize;
-        Domain::from_spec(DomainSpec::new(
-            Profile::Product,
+        ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::new(
             NonZeroUsize::new(512).unwrap(),
             NonZeroUsize::new(4).unwrap(),
             NonZeroUsize::new(2).unwrap(),
-        ))
+        )))
     }
 
     use crate::analysis::transfer::testing::context;
@@ -334,8 +327,9 @@ mod literal_memory {
         for enabled in [false, true] {
             for capacity in [8, 512] {
                 let mut config = ExecutionConfig::default();
-                config.analysis.max_constants = capacity;
-                config.analysis.relations.enabled = enabled;
+                let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+                config_numeric.max_constants = capacity;
+                config_numeric.relations.enabled = enabled;
                 assert_eq!(config.max_work, 20_000_000);
                 for (offset, size, allowed) in [
                     (U256::ZERO, U256::ONE, true),
@@ -359,7 +353,9 @@ mod literal_memory {
                             &mut context(
                                 &config,
                                 &mut budget,
-                                ValueAlgebra::new(&config.domain().unwrap())
+                                ValueAlgebra::new(&ProductAlgebra::from_spec(
+                                    config_numeric.spec()
+                                ))
                             ),
                             7,
                         ),
@@ -379,8 +375,11 @@ mod literal_memory {
     #[test]
     fn numeric_zero_size_admits_unknown_symbolic_multivalue_and_max_offsets() {
         let config = ExecutionConfig::default();
-        let domain = config.domain().unwrap();
-        let numeric_zero = AbstractValue::unsigned_range(U256::ZERO, U256::ZERO).unwrap();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
+        let numeric_zero = TestValue::unsigned_range(U256::ZERO, U256::ZERO).unwrap();
         assert!(numeric_zero.constants().is_none());
         assert_eq!(numeric_zero.singleton(), Some(U256::ZERO));
         let exact_zero = component_fixture_domain()
@@ -414,8 +413,8 @@ mod literal_memory {
         assert!(!general_offset.congruence().is_top());
         assert!(literal_memory_singleton_work(&general_offset) > 4_096);
         for offset in [
-            AbstractValue::top(),
-            AbstractValue::top().with_expression(ExprId::fresh().unwrap()),
+            TestValue::top(),
+            TestValue::top().with_expression(ExprId::fresh().unwrap()),
             general_offset,
             value(U256::MAX),
         ] {
@@ -437,7 +436,7 @@ mod literal_memory {
                     &mut context(
                         &config,
                         &mut budget,
-                        ValueAlgebra::new(&config.domain().unwrap())
+                        ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                     ),
                     7,
                 ));
@@ -447,7 +446,7 @@ mod literal_memory {
                 assert_uninstalled(&result, &before);
             }
         }
-        let end = AbstractValue::unsigned_range(logical::MAX_END, logical::MAX_END).unwrap();
+        let end = TestValue::unsigned_range(logical::MAX_END, logical::MAX_END).unwrap();
         for (offset, fee) in [
             (&numeric_zero, 1_408),
             (&exact_zero, 1_408),
@@ -463,7 +462,7 @@ mod literal_memory {
                 &mut context(
                     &config,
                     &mut budget,
-                    ValueAlgebra::new(&config.domain().unwrap())
+                    ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                 ),
                 7,
             ));
@@ -477,8 +476,11 @@ mod literal_memory {
     #[test]
     fn finite_cardinality_prices_first_and_candidate_lookup_without_capacity_amplification() {
         let mut config = ExecutionConfig::default();
-        config.analysis.max_constants = 512;
-        let domain = config.domain().unwrap();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        config_numeric.max_constants = 512;
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
         for (len, query_work) in [
             (1, 608),
             (2, 608),
@@ -501,12 +503,12 @@ mod literal_memory {
             assert_eq!(
                 allow_memory(
                     &mut result,
-                    &AbstractValue::top(),
+                    &TestValue::top(),
                     &size,
                     &mut context(
                         &config,
                         &mut budget,
-                        ValueAlgebra::new(&config.domain().unwrap())
+                        ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                     ),
                     7,
                 ),
@@ -528,7 +530,7 @@ mod literal_memory {
     fn finite_candidate_excluded_by_other_components_cannot_be_treated_as_zero() {
         let summary = component_fixture_domain().apply_detailed(
             revm_bytecode::opcode::LT,
-            &[AbstractValue::unknown_byte(), value(U256::from(256))],
+            &[TestValue::unknown_byte(), value(U256::from(256))],
         );
         assert_eq!(summary.status, ReductionStatus::FactLimit);
         let size = summary.value;
@@ -541,6 +543,7 @@ mod literal_memory {
         assert_eq!(size.singleton(), Some(U256::ONE));
         assert_eq!(literal_memory_singleton_work(&size), 608);
         let config = ExecutionConfig::default();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
         let mut budget = WorkBudget::new(1_600);
         let mut result = execution();
         let before = result.payload.clone();
@@ -551,7 +554,7 @@ mod literal_memory {
             &mut context(
                 &config,
                 &mut budget,
-                ValueAlgebra::new(&config.domain().unwrap())
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
             ),
             7,
         ));
@@ -564,6 +567,7 @@ mod literal_memory {
     #[test]
     fn literal_preflight_refuses_work_cancellation_and_inherited_exhaustion_atomically() {
         let config = ExecutionConfig::default();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
         let prior = 7;
         for mode in 0..3 {
             let cancellation = analysis_control::Cancellation::new();
@@ -583,12 +587,12 @@ mod literal_memory {
                 }
                 assert!(!allow_memory(
                     &mut result,
-                    &AbstractValue::top(),
+                    &TestValue::top(),
                     &value(U256::ZERO),
                     &mut context(
                         &config,
                         &mut budget,
-                        ValueAlgebra::new(&config.domain().unwrap())
+                        ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                     ),
                     7,
                 ));
@@ -629,7 +633,7 @@ mod literal_memory {
                 &mut context(
                     &config,
                     &mut budget,
-                    ValueAlgebra::new(&config.domain().unwrap())
+                    ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                 ),
                 7,
             ));
@@ -649,7 +653,7 @@ mod literal_memory {
         use revm_bytecode::opcode;
 
         let quote = 128usize;
-        let copy_work = |value: &AbstractValue| {
+        let copy_work = |value: &TestValue| {
             value
                 .clone_work()
                 .saturating_add(value.work_size())
@@ -662,15 +666,18 @@ mod literal_memory {
                 max_work: 1_000_000_000,
                 ..ExecutionConfig::default()
             };
-            config.analysis.max_constants = capacity;
-            assert!(config.analysis.relations.enabled);
-            let domain = config.domain().unwrap();
+            let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+            config_numeric.max_constants = capacity;
+            assert!(config_numeric.relations.enabled);
+            let domain =
+                crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+            let domain = domain.borrowed();
             let source = ExprId::fresh().unwrap();
             for (offset, size) in [
-                (value(U256::ZERO), AbstractValue::top()),
+                (value(U256::ZERO), TestValue::top()),
                 (
                     value(U256::ZERO),
-                    AbstractValue::top().with_expression(source.clone()),
+                    TestValue::top().with_expression(source.clone()),
                 ),
                 (
                     value(U256::ZERO),
@@ -678,7 +685,7 @@ mod literal_memory {
                         .join(&value(U256::ZERO), &value(U256::MAX))
                         .with_expression(source.clone()),
                 ),
-                (AbstractValue::top(), value(U256::ONE)),
+                (TestValue::top(), value(U256::ONE)),
             ] {
                 let preflight = LITERAL_MEMORY_METADATA_WORK
                     + literal_memory_singleton_work(&size)
@@ -726,16 +733,16 @@ mod literal_memory {
                         if singleton.is_some() {
                             input.clone()
                         } else {
-                            identify(input.clone(), config.analysis.relations.enabled)
+                            identify(input.clone(), config_numeric.relations.enabled)
                         }
                     });
                 receipts.push(
-                    ValueAlgebra::new(&domain)
+                    domain
                         .literal_quote_work(logical::MAX_END)
                         .saturating_mul(2),
                 );
                 let mut operations = 0;
-                let mut apply = |op, args: &[AbstractValue], copied| {
+                let mut apply = |op, args: &[TestValue], copied| {
                     if copied {
                         receipts.push(quote);
                         receipts.push(
@@ -768,7 +775,7 @@ mod literal_memory {
                             .saturating_add(nodes)
                             .saturating_add(32),
                     );
-                    receipts.push(ValueAlgebra::new(&domain).operation_work_for(op, args));
+                    receipts.push(domain.operation_work(op, args));
                     operations += 1;
                     domain.apply_detailed(op, args).value
                 };
@@ -795,7 +802,7 @@ mod literal_memory {
                     &mut context(
                         &config,
                         &mut guard_budget,
-                        ValueAlgebra::new(&config.domain().unwrap()),
+                        ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
                     ),
                 )
                 .expect("the original 1B allowance funds the complete guard");
@@ -825,7 +832,7 @@ mod literal_memory {
                         &mut context(
                             &config,
                             &mut budget,
-                            ValueAlgebra::new(&config.domain().unwrap())
+                            ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                         ),
                         7,
                     ));
@@ -844,7 +851,7 @@ mod literal_memory {
                     &mut context(
                         &config,
                         &mut budget,
-                        ValueAlgebra::new(&config.domain().unwrap())
+                        ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                     ),
                     7,
                 ));
@@ -863,7 +870,7 @@ mod literal_memory {
                         .any(|atom| matches!(atom, Constraint::Truth { nonzero: true, .. }))
                 );
                 if size.expression().is_some() || offset.expression().is_some() {
-                    let expression = memory_condition(&offset, &size, ValueAlgebra::new(&domain))
+                    let expression = memory_condition(&offset, &size, domain)
                         .symbolic_expression()
                         .unwrap();
                     assert!(result.payload.relations.constraints().any(|atom| atom
@@ -879,7 +886,8 @@ mod literal_memory {
     #[test]
     fn inherited_symbolic_limits_and_invalid_operand_roots_do_not_take_the_fastpath() {
         let mut config = ExecutionConfig::default();
-        config.analysis.relations.max_nodes = 2;
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        config_numeric.relations.max_nodes = 2;
         let source = ExprId::fresh().unwrap();
         let expression = ExprId::operation(
             revm_bytecode::opcode::ADD,
@@ -887,7 +895,7 @@ mod literal_memory {
             Default::default(),
         )
         .unwrap();
-        assert!(expression.nodes() > config.analysis.relations.max_nodes);
+        assert!(expression.nodes() > config_numeric.relations.max_nodes);
         for (offset, size) in [
             (value(U256::ZERO).with_symbolic_limit(), value(U256::ZERO)),
             (value(U256::MAX), value(U256::ZERO).with_symbolic_limit()),
@@ -911,7 +919,7 @@ mod literal_memory {
                 &mut context(
                     &config,
                     &mut budget,
-                    ValueAlgebra::new(&config.domain().unwrap())
+                    ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                 ),
                 7,
             ));

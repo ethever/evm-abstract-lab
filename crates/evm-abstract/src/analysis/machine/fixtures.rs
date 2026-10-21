@@ -1,13 +1,16 @@
 //! Shared small machine fixtures for join and certificate regressions.
 
+#[cfg(test)]
+use crate::analysis::testing::{Account, ByteArray, Entry, EvmEnvironment, TestValue, World};
+use crate::domain::EvmNumericAlgebra as _;
+
 use crate::domain::ValueAlgebra;
 
 use super::{ExecutionConfig, MachinePayload};
 use crate::{
     Fork,
     analysis::{self, Config, WorldAnalysis, transfer},
-    domain::{AbstractValue, Domain, relational::RelationLimits},
-    world::{Account, ByteArray, Entry, EvmEnvironment, World},
+    domain::{ProductAlgebra, relational::RelationLimits},
 };
 use alloy_primitives::{Address, U256};
 
@@ -15,8 +18,8 @@ pub(in crate::analysis) fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-pub(in crate::analysis) fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+pub(in crate::analysis) fn word(number: u64) -> TestValue {
+    TestValue::constant(U256::from(number))
 }
 
 pub(in crate::analysis) fn config() -> ExecutionConfig {
@@ -25,12 +28,6 @@ pub(in crate::analysis) fn config() -> ExecutionConfig {
             context_depth: 0,
             max_states: 256,
             max_transfers: 1024,
-            relations: RelationLimits {
-                max_nodes: 8192,
-                max_depth: 128,
-                max_constraints: 128,
-                ..RelationLimits::default()
-            },
             ..Config::default()
         },
         max_work: 100_000_000,
@@ -60,12 +57,18 @@ pub(in crate::analysis) fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
     (world, entry)
 }
 
-pub(in crate::analysis) fn payload(domain: Domain) -> MachinePayload {
+pub(in crate::analysis) fn payload(
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+) -> MachinePayload {
     let (world, entry) = fixture(&[(0x101, "00")]);
-    transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap()
+    transfer::initial(&world, &entry, domain).unwrap()
 }
 
-pub(in crate::analysis) fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {
+pub(in crate::analysis) fn run(
+    code: &str,
+    config: ExecutionConfig,
+    spec: crate::domain::DomainSpec,
+) -> WorldAnalysis {
     let (world, entry) = fixture(&[(0x101, code)]);
-    analysis::analyze_world(world, entry, config).unwrap()
+    crate::analysis::testing::execute(world, entry, config, spec).unwrap()
 }

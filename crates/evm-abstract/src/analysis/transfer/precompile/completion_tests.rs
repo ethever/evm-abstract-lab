@@ -1,6 +1,9 @@
 //! Native CALL completion pays for each owned input, independently of retention.
 
+use crate::domain::ProductAlgebra;
+
 use super::*;
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{
         EvmMachinePayload, ExecutionConfig, FrameCode, MachineEdgeKind, RecentDistinctJumps,
@@ -58,8 +61,9 @@ fn child(
         },
     );
     let mut config = ExecutionConfig::default();
-    config.analysis.relations.enabled = false;
-    let policy = ValueAlgebra::new(Policy(config.domain().unwrap()));
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.enabled = false;
+    let policy = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(config_numeric.spec())));
     let input = initial(&world, &entry, policy.borrowed()).unwrap();
     let entered = super::super::execute(
         &world,
@@ -265,7 +269,7 @@ fn native_child_full_fee_tracks_actual_copies_and_one_short_publishes_no_partial
                             assert_eq!(completed.data, payload.active().calldata);
                         } else {
                             assert_eq!(
-                                completed.data.exact_bytes_with(policy.borrowed()),
+                                completed.data.exact_bytes(policy.borrowed()),
                                 Some(vec![0x2a])
                             );
                         }
@@ -276,7 +280,7 @@ fn native_child_full_fee_tracks_actual_copies_and_one_short_publishes_no_partial
                         );
                         if completed.kind == OutcomeKind::Failure {
                             assert_eq!(
-                                completed.data.exact_bytes_with(policy.borrowed()),
+                                completed.data.exact_bytes(policy.borrowed()),
                                 Some(Vec::new())
                             );
                         }
@@ -317,7 +321,7 @@ fn identity_success_buffer_pays_its_own_native_calldata_copy_before_completion_i
         // reaching the summary requires no expensive singleton discovery.
         payload.active_mut().calldata = Bytes::unknown_checked()
             .unwrap()
-            .slice_with(&value(0), &size, config.max_memory_bytes, policy.borrowed())
+            .slice(&value(0), &size, policy.borrowed())
             .unwrap();
         let expected = payload.clone();
         let mut budget = analysis_control::with_cancellation(&captured, || {
@@ -368,7 +372,9 @@ fn exact_native_relative_root_pays_only_an_actual_saved_store_rollback() {
             let entry =
                 EvmEntry::concrete(address(target), address(0x900), value(0), Bytes::empty());
             let config = ExecutionConfig::default();
-            let policy = ValueAlgebra::new(Policy(config.domain().unwrap()));
+            let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+            let policy =
+                ValueAlgebra::new(Policy(ProductAlgebra::from_spec(config_numeric.spec())));
             let mut payload = initial(&world, &entry, policy.borrowed()).unwrap();
             let mut saved = payload.store.clone();
             saved.write_balance(
@@ -418,9 +424,7 @@ fn exact_native_relative_root_pays_only_an_actual_saved_store_rollback() {
                     expected.active().saved_store.state()
                 );
                 assert_eq!(
-                    execution.outcomes[0]
-                        .data
-                        .exact_bytes_with(policy.borrowed()),
+                    execution.outcomes[0].data.exact_bytes(policy.borrowed()),
                     Some(Vec::new())
                 );
             }
@@ -437,7 +441,8 @@ fn symbolic_native_relative_root_restores_are_paid_only_by_the_common_owner() {
         world.insert(address(0x303), EvmAccount::empty()).unwrap();
         let entry = EvmEntry::concrete(address(6), address(0x900), value(0), Bytes::unknown());
         let config = ExecutionConfig::default();
-        let policy = ValueAlgebra::new(Policy(config.domain().unwrap()));
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let policy = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(config_numeric.spec())));
         let mut payload = initial(&world, &entry, policy.borrowed()).unwrap();
         let mut saved = payload.active().saved_store.state().clone();
         saved.write_balance(

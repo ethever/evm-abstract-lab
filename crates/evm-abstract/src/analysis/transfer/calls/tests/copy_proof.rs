@@ -1,6 +1,8 @@
 //! COPY's independent zero proofs must select the body bought by its quote.
 
 use super::*;
+use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::{
     analysis::{EvmContinuation, EvmMachinePayload},
     domain::{
@@ -66,13 +68,13 @@ struct Policy;
 impl EvmNumericAlgebra for Policy {
     type Element = Word;
     fn spec(&self) -> DomainSpec {
-        Domain::default().spec()
+        ProductAlgebra::default().spec()
     }
     fn project_numeric(&self, value: &Word) -> Word {
         value.clone()
     }
     fn join_numeric(&self, left: &Word, right: &Word) -> Word {
-        Word(Domain::default().join_numeric(&left.0, &right.0))
+        Word(ProductAlgebra::default().join_numeric(&left.0, &right.0))
     }
     fn widen_numeric(&self, old: &Word, next: &Word) -> Word {
         self.join_numeric(old, next)
@@ -83,18 +85,25 @@ impl EvmNumericAlgebra for Policy {
     fn reduce_numeric(&self, value: &Word) -> NumericReduction<Word> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Word]) -> NumericReduction<Word> {
-        let args: Vec<_> = args.iter().map(|arg| arg.0.clone()).collect();
-        NumericReduction::stable(Word(Domain::default().apply_numeric(op, &args).value))
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
+        NumericReduction::stable(Word(
+            ProductAlgebra::default()
+                .apply_numeric(op, args.map(|arg| &arg.0))
+                .value,
+        ))
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
-        EvmNumericAlgebra::operation_work(&Domain::default(), args.map(|arg| &arg.0))
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
+        EvmNumericAlgebra::operation_work(&ProductAlgebra::default(), op, args.map(|arg| &arg.0))
     }
     fn projection_work(&self, value: &Word) -> usize {
         value.work_size()
     }
     fn refinement_work(&self, value: &Word, facts: usize) -> usize {
-        EvmNumericAlgebra::refinement_work(&Domain::default(), &value.0, facts)
+        EvmNumericAlgebra::refinement_work(&ProductAlgebra::default(), &value.0, facts)
     }
 }
 
@@ -173,12 +182,11 @@ fn maybe_one() -> Value {
 fn memory() -> Bytes {
     let mut memory = Bytes::memory();
     memory
-        .copy_from_with(
+        .copy_from(
             &value(0),
             &Bytes::exact(&[0xaa, 0xbb]),
             &value(0),
             &value(2),
-            0,
             ValueAlgebra::new(Policy).borrowed(),
         )
         .unwrap();
@@ -192,15 +200,14 @@ fn empty_sources() -> [Bytes; 3] {
         Bytes::empty(),
         // The nonliteral length keeps the captured source and its numeric fact.
         history
-            .slice_with(
+            .slice(
                 &value(0),
                 &value(0).with_expression(ExprId::fresh().unwrap()),
-                0,
                 algebra.borrowed(),
             )
             .unwrap(),
         history
-            .slice_with(&value(0), &literal_zero(), 0, algebra.borrowed())
+            .slice(&value(0), &literal_zero(), algebra.borrowed())
             .unwrap(),
     ]
 }
@@ -227,7 +234,7 @@ fn zero_request_body_reuses_finite_and_literal_proofs_without_discovery() {
             Value::unknown_byte(),
             Value::top().with_expression(ExprId::fresh().unwrap()),
         ] {
-            let fee = original.copy_return_data_work_with(
+            let fee = original.copy_return_data_work(
                 &source,
                 &destination,
                 &requested,
@@ -235,7 +242,7 @@ fn zero_request_body_reuses_finite_and_literal_proofs_without_discovery() {
             );
             assert_eq!(
                 fee,
-                Bytes::memory().copy_return_data_work_with(
+                Bytes::memory().copy_return_data_work(
                     &Bytes::empty(),
                     &destination,
                     &requested,
@@ -244,7 +251,7 @@ fn zero_request_body_reuses_finite_and_literal_proofs_without_discovery() {
             );
             let mut actual = original.clone();
             actual
-                .copy_return_data_with(&destination, &source, &requested, 0, algebra.borrowed())
+                .copy_return_data(&destination, &source, &requested, algebra.borrowed())
                 .unwrap();
             assert_eq!(actual, original);
         }
@@ -261,13 +268,13 @@ fn empty_source_body_keeps_requested_expansion_and_original_bytes_without_discov
         for requested in [value(64), maybe_one()] {
             let mut expected = original.clone();
             expected
-                .expand_with(&value(32), &requested, 0, algebra.borrowed())
+                .expand(&value(32), &requested, algebra.borrowed())
                 .unwrap();
             let _queries = QUERIES.scope();
             let _quotes = QUERY_QUOTES.scope();
             let mut actual = original.clone();
             actual
-                .copy_return_data_with(&value(32), &source, &requested, 0, algebra.borrowed())
+                .copy_return_data(&value(32), &source, &requested, algebra.borrowed())
                 .unwrap();
             assert_eq!(actual.state_root(), original.state_root());
             if requested.constants().unwrap().len() == 1 {
@@ -297,7 +304,7 @@ fn literal_empty_source_keeps_its_zero_proof_through_minimum_without_a_finite_vi
         EvmValue::<OpaqueWord>::top().with_expression(ExprId::constant(U256::from(number)))
     };
     let source = EvmByteArray::<OpaqueWord>::exact(&[0x11; 128])
-        .slice_with(&literal(0), &literal(0), 0, algebra.borrowed())
+        .slice(&literal(0), &literal(0), algebra.borrowed())
         .unwrap();
     assert!(source.len().constants().is_none());
     assert!(
@@ -313,10 +320,10 @@ fn literal_empty_source_keeps_its_zero_proof_through_minimum_without_a_finite_vi
         receipt.fee = usize::MAX;
     });
     let quote =
-        memory.copy_return_data_work_with(&source, &literal(32), &literal(64), algebra.borrowed());
+        memory.copy_return_data_work(&source, &literal(32), &literal(64), algebra.borrowed());
     assert!(quote > 0 && quote < usize::MAX);
     memory
-        .copy_return_data_with(&literal(32), &source, &literal(64), 0, algebra.borrowed())
+        .copy_return_data(&literal(32), &source, &literal(64), algebra.borrowed())
         .unwrap();
     assert_eq!(memory.state_root(), &original);
     assert!(memory.len().contains(U256::from(96)));
@@ -328,7 +335,7 @@ fn nonzero_and_uncertain_ranges_keep_the_complete_copy_and_concrete_witnesses() 
     let algebra = ValueAlgebra::new(Policy);
     let source = Bytes::exact(&[0x11]);
     let uncertain = source
-        .slice_with(&value(0), &maybe_one(), 0, algebra.borrowed())
+        .slice(&value(0), &maybe_one(), algebra.borrowed())
         .unwrap();
     for (source, requested, exact) in [
         (&source, value(1), true),
@@ -339,14 +346,14 @@ fn nonzero_and_uncertain_ranges_keep_the_complete_copy_and_concrete_witnesses() 
         let mut actual = memory();
         let previous = actual.state_root().clone();
         actual
-            .copy_return_data_with(&value(0), source, &requested, 0, algebra.borrowed())
+            .copy_return_data(&value(0), source, &requested, algebra.borrowed())
             .unwrap();
         assert!(matches!(
             actual.state_root().kind(),
             ByteStateKind::Copy { previous: old, .. } if old == &previous
         ));
         let first = actual
-            .read_byte_checked_with(&value(0), algebra.borrowed())
+            .read_byte_checked(&value(0), algebra.borrowed())
             .unwrap();
         assert!(first.contains(U256::from(0x11)));
         if exact {
@@ -355,7 +362,7 @@ fn nonzero_and_uncertain_ranges_keep_the_complete_copy_and_concrete_witnesses() 
             assert!(first.contains(U256::from(0xaa)));
         }
         let suffix = actual
-            .read_byte_checked_with(&value(1), algebra.borrowed())
+            .read_byte_checked(&value(1), algebra.borrowed())
             .unwrap();
         assert!(suffix.contains(U256::from(0xbb)));
     }
@@ -403,7 +410,7 @@ fn production_finish_pays_the_full_quote_and_refuses_a_smaller_budget_atomically
         let mut expected = original.clone();
         if requested != value(0) && requested != literal_zero() {
             expected
-                .expand_with(&value(32), &requested, 0, algebra.borrowed())
+                .expand(&value(32), &requested, algebra.borrowed())
                 .unwrap();
         }
         let _queries = QUERIES.scope();

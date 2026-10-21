@@ -1,34 +1,40 @@
+use crate::domain::ProductAlgebra;
+use crate::domain::EvmNumericAlgebra as _;
+
 use super::{Failure, GuardRetention, RetentionCause};
+#[cfg(test)]
+use crate::analysis::testing::TestValue;
 use crate::{
     U256,
     analysis::{ExecutionConfig, FrontierReason},
     domain::{
-        AbstractValue,
         relational::QueryReason,
         symbolic::{ExprError, ExprId, ExprLimits, StateError},
     },
 };
 use revm_bytecode::opcode;
 
-fn symbolic() -> AbstractValue {
-    AbstractValue::top().with_expression(ExprId::fresh().unwrap())
+fn symbolic() -> TestValue {
+    TestValue::top().with_expression(ExprId::fresh().unwrap())
 }
 
 // Execute the original eight operations to obtain raw errors, including the
 // error-free suffix after a failed GT or AND. Numeric facts alone are not causes.
 fn guard_trace(
-    offset: &AbstractValue,
-    size: &AbstractValue,
+    offset: &TestValue,
+    size: &TestValue,
     max_nodes: usize,
-) -> (AbstractValue, GuardRetention, Vec<Option<ExprError>>) {
+) -> (TestValue, GuardRetention, Vec<Option<ExprError>>) {
     let mut config = ExecutionConfig::default();
-    config.analysis.relations.max_nodes = max_nodes;
-    config.analysis.relations.max_depth = 256;
-    let domain = config.domain().unwrap();
-    let limit = AbstractValue::constant(super::super::logical::MAX_END);
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.max_nodes = max_nodes;
+    config_numeric.relations.max_depth = 256;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
+    let limit = TestValue::constant(super::super::logical::MAX_END);
     let mut retention = GuardRetention::new(offset, size);
     let mut errors = Vec::new();
-    let mut apply = |op, args: &[AbstractValue]| {
+    let mut apply = |op, args: &[TestValue]| {
         let reduction = domain.apply_detailed(op, args);
         retention.record(reduction.symbolic_error.as_ref());
         errors.push(reduction.symbolic_error);
@@ -69,7 +75,7 @@ fn finite_guard_failures_survive_the_error_free_suffix() {
 #[test]
 fn finite_evidence_does_not_change_a_proven_constant_condition() {
     let (condition, retention, errors) =
-        guard_trace(&symbolic(), &AbstractValue::constant(U256::ZERO), 2);
+        guard_trace(&symbolic(), &TestValue::constant(U256::ZERO), 2);
     assert_eq!(errors[1], Some(ExprError::Limit { nodes: 3, depth: 2 }));
     assert_eq!(retention.cause(), Some(RetentionCause::Expression));
     // The caller can return before requesting a missing-expression Failure.
@@ -81,7 +87,7 @@ fn finite_evidence_does_not_change_a_proven_constant_condition() {
 fn retained_and_anonymous_guards_without_raw_errors_have_no_cause() {
     for (offset, size, retained) in [
         (symbolic(), symbolic(), true),
-        (AbstractValue::top(), AbstractValue::top(), false),
+        (TestValue::top(), TestValue::top(), false),
     ] {
         let (condition, retention, errors) = guard_trace(&offset, &size, 64);
         assert!(errors.iter().all(Option::is_none));

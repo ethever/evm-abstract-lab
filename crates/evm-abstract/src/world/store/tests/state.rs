@@ -1,31 +1,29 @@
 //! Storage-order, baseline, and rollback regressions for the world wrapper.
 use super::super::*;
-use crate::{
-    Fork,
-    domain::{
-        relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
-        symbolic::{ExprKind, ExprLimits, SlotStateKind},
-    },
-    world::Account,
-};
 use revm_bytecode::opcode;
+use {
+    crate::Fork, crate::domain::relational::CheckResult, crate::domain::relational::EvmValueQuery,
+    crate::domain::relational::RelationLimits, crate::domain::relational::RelationState,
+    crate::domain::symbolic::ExprKind, crate::domain::symbolic::ExprLimits,
+    crate::domain::symbolic::SlotStateKind, crate::world::test_support::TestAccount,
+};
 
-fn v(n: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(n))
+fn v(n: u64) -> TestValue {
+    TestValue::constant(U256::from(n))
 }
-fn sym() -> AbstractValue {
-    AbstractValue::top().with_expression(ExprId::fresh().unwrap())
+fn sym() -> TestValue {
+    TestValue::top().with_expression(ExprId::fresh().unwrap())
 }
-fn world(complete: bool) -> (World, Address) {
+fn world(complete: bool) -> (TestWorld, Address) {
     let address = Address::repeat_byte(0x31);
-    let mut world = World::offline(Fork::Osaka, "symbolic slots", "leaf");
+    let mut world = TestWorld::offline(Fork::Osaka, "symbolic slots", "leaf");
     world
         .insert(
             address,
             if complete {
-                Account::empty()
+                TestAccount::empty()
             } else {
-                Account::unknown()
+                TestAccount::unknown()
             },
         )
         .unwrap();
@@ -38,29 +36,36 @@ fn policy() -> RelationLimits {
         ..RelationLimits::default()
     }
 }
-fn assert_numeric(a: &AbstractValue, b: &AbstractValue) {
+fn assert_numeric(a: &TestValue, b: &TestValue) {
     assert_eq!(a.numeric(), b.numeric());
 }
 #[test]
 fn unknown_same_key_latest_write_and_historical_read() {
     let (world, address) = world(false);
-    let domain = Domain::default();
-    let mut store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let k = sym();
-    let initial = store.read(address, &k, domain);
+    let initial = store.read(address, &k, domain.borrowed());
     assert_eq!(
         initial.expression(),
-        store.read(address, &k, domain).expression()
+        store.read(address, &k, domain.borrowed()).expression()
     );
-    store.write_checked(address, &k, &v(7), domain).unwrap();
+    store
+        .write_checked(address, &k, &v(7), domain.borrowed())
+        .unwrap();
     assert_eq!(
-        store.read(address, &k, domain).singleton(),
+        store.read(address, &k, domain.borrowed()).singleton(),
         Some(U256::from(7))
     );
-    let old = store.read(address, &k, domain);
-    store.write_checked(address, &k, &v(9), domain).unwrap();
+    let old = store.read(address, &k, domain.borrowed());
+    store
+        .write_checked(address, &k, &v(9), domain.borrowed())
+        .unwrap();
     assert_eq!(
-        store.read(address, &k, domain).singleton(),
+        store.read(address, &k, domain.borrowed()).singleton(),
         Some(U256::from(9))
     );
     assert_eq!(old.singleton(), Some(U256::from(7)));
@@ -69,12 +74,19 @@ fn unknown_same_key_latest_write_and_historical_read() {
 #[test]
 fn mixed_concrete_symbolic_writes_keep_order_and_numeric_bounds() {
     let (world, address) = world(true);
-    let domain = Domain::default();
-    let mut store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let k = sym();
-    store.write_checked(address, &k, &v(7), domain).unwrap();
-    store.write_checked(address, &v(0), &v(9), domain).unwrap();
-    let value = store.read(address, &k, domain);
+    store
+        .write_checked(address, &k, &v(7), domain.borrowed())
+        .unwrap();
+    store
+        .write_checked(address, &v(0), &v(9), domain.borrowed())
+        .unwrap();
+    let value = store.read(address, &k, domain.borrowed());
     assert!(value.contains(U256::from(7)));
     assert!(value.contains(U256::from(9)));
     assert!(!value.contains(U256::from(11)));
@@ -83,26 +95,34 @@ fn mixed_concrete_symbolic_writes_keep_order_and_numeric_bounds() {
     eq.observe(k.expression().unwrap(), v(0).numeric(), &p)
         .unwrap();
     assert_eq!(
-        eq.local_value(value.expression().unwrap(), &p),
-        ValueQuery::Exact(U256::from(9))
+        eq.local_value(value.expression().unwrap(), &p, domain.borrowed()),
+        EvmValueQuery::Exact(U256::from(9))
     );
     let mut ne = RelationState::default();
     ne.observe(k.expression().unwrap(), v(1).numeric(), &p)
         .unwrap();
     assert_eq!(
-        ne.local_value(value.expression().unwrap(), &p),
-        ValueQuery::Exact(U256::from(7))
+        ne.local_value(value.expression().unwrap(), &p, domain.borrowed()),
+        EvmValueQuery::Exact(U256::from(7))
     );
 }
 #[test]
 fn fresh_bases_are_stable_and_accounts_planes_are_independent() {
     let (world, address) = world(false);
-    let domain = Domain::default();
-    let store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let other = Address::repeat_byte(0x32);
     assert_eq!(
         store.slot_root(address, false).unwrap(),
-        Store::new(&world).slot_root(address, false).unwrap()
+        TestStore::new(
+            &world,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        )
+        .slot_root(address, false)
+        .unwrap()
     );
     assert_ne!(
         store.slot_root(address, false).unwrap(),
@@ -113,20 +133,22 @@ fn fresh_bases_are_stable_and_accounts_planes_are_independent() {
         SlotStateKind::Input { .. }
     ));
     assert_eq!(
-        store.read_transient(address, &v(0), domain).singleton(),
+        store
+            .read_transient(address, &v(0), domain.borrowed())
+            .singleton(),
         Some(U256::ZERO)
     );
     assert_ne!(
-        store.read(address, &v(0), domain).expression(),
-        store.read(other, &v(0), domain).expression()
+        store.read(address, &v(0), domain.borrowed()).expression(),
+        store.read(other, &v(0), domain.borrowed()).expression()
     );
 }
 #[test]
 fn observed_initial_slots_bind_symbolic_and_numeric_facts() {
     let (mut world, address) = world(false);
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let token = ExprId::fresh().unwrap();
-    let observed = AbstractValue::unsigned_range(U256::from(7), U256::from(8))
+    let observed = TestValue::unsigned_range(U256::from(7), U256::from(8))
         .unwrap()
         .with_expression(token);
     world
@@ -135,9 +157,12 @@ fn observed_initial_slots_bind_symbolic_and_numeric_facts() {
         .unwrap()
         .storage
         .insert(U256::from(4), observed.clone());
-    let store = Store::new(&world);
-    assert_numeric(&store.read(address, &v(4), domain), &observed);
-    let read = store.read(address, &v(4), domain);
+    let store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
+    assert_numeric(&store.read(address, &v(4), domain.borrowed()), &observed);
+    let read = store.read(address, &v(4), domain.borrowed());
     let p = policy();
     let invalid = ExprId::operation(
         opcode::EQ,
@@ -149,13 +174,18 @@ fn observed_initial_slots_bind_symbolic_and_numeric_facts() {
     )
     .unwrap();
     assert_eq!(
-        RelationState::default().assume(&invalid, true, &p),
+        RelationState::default().assume(&invalid, true, &p, domain.borrowed()),
         CheckResult::ProvenImpossible
     );
-    assert!(store.read(address, &v(5), domain).numeric().is_top());
+    assert!(
+        store
+            .read(address, &v(5), domain.borrowed())
+            .numeric()
+            .is_top()
+    );
     assert!(matches!(
         store
-            .read(address, &v(5), domain)
+            .read(address, &v(5), domain.borrowed())
             .expression()
             .unwrap()
             .kind(),
@@ -165,9 +195,12 @@ fn observed_initial_slots_bind_symbolic_and_numeric_facts() {
 #[test]
 fn baseline_identity_survives_new_rpc_observations() {
     let (mut world, address) = world(false);
-    let before = Store::new(&world);
+    let before = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let key = v(1);
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let source = if let SlotStateKind::Input { source, .. } =
         before.slot_root(address, false).unwrap().kind()
     {
@@ -178,7 +211,10 @@ fn baseline_identity_survives_new_rpc_observations() {
     world
         .install_storage(address, BTreeMap::from([(U256::from(2), v(11))]))
         .unwrap();
-    let after = Store::new(&world);
+    let after = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     if let SlotStateKind::Input {
         source: next,
         bindings,
@@ -189,7 +225,12 @@ fn baseline_identity_survives_new_rpc_observations() {
     } else {
         panic!("observed base")
     }
-    assert!(after.read(address, &key, domain).numeric().is_top());
+    assert!(
+        after
+            .read(address, &key, domain.borrowed())
+            .numeric()
+            .is_top()
+    );
     assert_eq!(
         after.missing_initial_slots(&world, address, &v(1)),
         vec![U256::from(1)]
@@ -198,58 +239,85 @@ fn baseline_identity_survives_new_rpc_observations() {
 #[test]
 fn persistent_transient_snapshot_and_creation_reset() {
     let (world, address) = world(false);
-    let domain = Domain::default();
-    let mut store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let k = sym();
-    store.write_checked(address, &k, &v(7), domain).unwrap();
     store
-        .write_transient_checked(address, &k, &v(9), domain)
+        .write_checked(address, &k, &v(7), domain.borrowed())
+        .unwrap();
+    store
+        .write_transient_checked(address, &k, &v(9), domain.borrowed())
         .unwrap();
     let before = store.clone();
     let snapshot = store.snapshot();
     store.begin_creation(address);
     assert_eq!(
-        store.read(address, &k, domain).singleton(),
+        store.read(address, &k, domain.borrowed()).singleton(),
         Some(U256::ZERO)
     );
     assert_eq!(
-        store.read_transient(address, &k, domain).singleton(),
+        store
+            .read_transient(address, &k, domain.borrowed())
+            .singleton(),
         Some(U256::ZERO)
     );
     store.restore(snapshot);
     assert_eq!(store, before);
-    store.finalize_transaction(domain).unwrap();
+    store.finalize_transaction(domain.borrowed()).unwrap();
     assert_eq!(
-        store.read(address, &k, domain).singleton(),
+        store.read(address, &k, domain.borrowed()).singleton(),
         Some(U256::from(7))
     );
     assert_eq!(
-        store.read_transient(address, &k, domain).singleton(),
+        store
+            .read_transient(address, &k, domain.borrowed())
+            .singleton(),
         Some(U256::ZERO)
     );
 }
 #[test]
 fn guarded_store_join_retains_same_selector_as_key() {
     let (world, address) = world(true);
-    let domain = Domain::default();
-    let mut left = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut left = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut right = left.clone();
-    left.write_checked(address, &v(0), &v(7), domain).unwrap();
-    right.write_checked(address, &v(1), &v(7), domain).unwrap();
+    left.write_checked(address, &v(0), &v(7), domain.borrowed())
+        .unwrap();
+    right
+        .write_checked(address, &v(1), &v(7), domain.borrowed())
+        .unwrap();
     let guard = ExprId::fresh().unwrap();
     let joined = left
-        .join_guarded(&right, domain, guard.clone(), ExprLimits::default())
+        .join_guarded(
+            &right,
+            domain.borrowed(),
+            guard.clone(),
+            ExprLimits::default(),
+        )
         .unwrap();
     let key = v(0)
-        .join_guarded(&v(1), domain, guard.clone(), ExprLimits::default())
+        .join_guarded(
+            &v(1),
+            domain.borrowed(),
+            guard.clone(),
+            ExprLimits::default(),
+        )
         .unwrap();
-    let read = joined.read(address, &key, domain);
+    let read = joined.read(address, &key, domain.borrowed());
     assert!(read.contains(U256::from(7)));
     // An unknown selector is not enumerated. Independent local joins lose the
     // key/state correlation, while each explicitly selected branch stays exact.
-    let ValueQuery::Bounds(bounds) =
-        RelationState::default().local_value(read.expression().unwrap(), &policy())
-    else {
+    let EvmValueQuery::Bounds(bounds) = RelationState::default().local_value(
+        read.expression().unwrap(),
+        &policy(),
+        domain.borrowed(),
+    ) else {
         panic!("expected the documented key/state correlation precision gap");
     };
     assert!(bounds.contains(U256::from(7)));
@@ -260,22 +328,25 @@ fn guarded_store_join_retains_same_selector_as_key() {
     for nonzero in [false, true] {
         let mut relations = RelationState::default();
         assert_eq!(
-            relations.assume(&guard, nonzero, &policy()),
+            relations.assume(&guard, nonzero, &policy(), domain.borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            relations.local_value(read.expression().unwrap(), &policy()),
-            ValueQuery::Exact(U256::from(7))
+            relations.local_value(read.expression().unwrap(), &policy(), domain.borrowed()),
+            EvmValueQuery::Exact(U256::from(7))
         );
     }
 }
 #[test]
 fn full_source_fresh_rename_and_rollback_preserve_old_reads() {
     let (world, address) = world(false);
-    let domain = Domain::default();
-    let mut store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     store.havoc_account(address);
-    let old = store.read(address, &v(0), domain);
+    let old = store.read(address, &v(0), domain.borrowed());
     store.write_nonce(address, old.clone());
     let snapshot = store.snapshot();
     let map = store
@@ -293,6 +364,7 @@ fn full_source_fresh_rename_and_rollback_preserve_old_reads() {
                 max_depth: expression.depth() - 1,
                 ..ExprLimits::default()
             },
+            domain.borrowed()
         ),
         Err(StoreError::Expression(ExprError::Limit {
             nodes: expression.nodes(),
@@ -300,9 +372,11 @@ fn full_source_fresh_rename_and_rollback_preserve_old_reads() {
         }))
     );
     assert_eq!(&store, snapshot.state());
-    store.rename_fresh(&map, ExprLimits::default()).unwrap();
+    store
+        .rename_fresh(&map, ExprLimits::default(), domain.borrowed())
+        .unwrap();
     assert_ne!(
-        store.read(address, &v(0), domain).expression(),
+        store.read(address, &v(0), domain.borrowed()).expression(),
         old.expression()
     );
     assert_eq!(
@@ -311,46 +385,63 @@ fn full_source_fresh_rename_and_rollback_preserve_old_reads() {
     );
     store.restore(snapshot);
     assert_eq!(
-        store.read(address, &v(0), domain).expression(),
+        store.read(address, &v(0), domain.borrowed()).expression(),
         old.expression()
     );
 }
 #[test]
 fn stable_same_key_loop_and_self_join_are_idempotent() {
     let (world, address) = world(true);
-    let domain = Domain::default();
-    let mut store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let key = sym();
-    store.write_checked(address, &key, &v(7), domain).unwrap();
+    store
+        .write_checked(address, &key, &v(7), domain.borrowed())
+        .unwrap();
     let old = store.clone();
     for _ in 0..20 {
-        store.write_checked(address, &key, &v(7), domain).unwrap();
+        store
+            .write_checked(address, &key, &v(7), domain.borrowed())
+            .unwrap();
     }
     assert_eq!(store, old);
-    assert_eq!(store.join(&store, domain), store);
+    assert_eq!(store.join(&store, domain.borrowed()), store);
 }
 #[test]
 fn same_root_different_operand_facts_join_soundly() {
     let (world, address) = world(true);
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let expr = ExprId::fresh().unwrap();
-    let a = AbstractValue::unsigned_range(U256::from(7), U256::from(8))
+    let a = TestValue::unsigned_range(U256::from(7), U256::from(8))
         .unwrap()
         .with_expression(expr.clone());
-    let b = AbstractValue::unsigned_range(U256::from(9), U256::from(10))
+    let b = TestValue::unsigned_range(U256::from(9), U256::from(10))
         .unwrap()
         .with_expression(expr);
-    let mut left = Store::new(&world);
+    let mut left = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut right = left.clone();
-    left.write_checked(address, &v(0), &a, domain).unwrap();
-    right.write_checked(address, &v(0), &b, domain).unwrap();
+    left.write_checked(address, &v(0), &a, domain.borrowed())
+        .unwrap();
+    right
+        .write_checked(address, &v(0), &b, domain.borrowed())
+        .unwrap();
     assert_eq!(
         left.slot_root(address, false).unwrap(),
         right.slot_root(address, false).unwrap()
     );
-    let joined = left.join(&right, domain);
+    let joined = left.join(&right, domain.borrowed());
     for n in 7..=10 {
-        assert!(joined.read(address, &v(0), domain).contains(U256::from(n)));
+        assert!(
+            joined
+                .read(address, &v(0), domain.borrowed())
+                .contains(U256::from(n))
+        );
     }
 }
 #[test]
@@ -361,25 +452,56 @@ fn checked_failure_keeps_transaction_snapshot() {
         max_depth: 1,
         ..RelationLimits::default()
     };
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(limits));
-    let mut store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(limits),
+    ));
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let old = store.clone();
-    assert!(store.write_checked(address, &sym(), &v(7), domain).is_err());
+    assert!(
+        store
+            .write_checked(address, &sym(), &v(7), domain.borrowed())
+            .is_err()
+    );
     assert_eq!(store, old);
 }
 
 #[test]
 fn independent_offline_worlds_same_label_have_distinct_bases() {
     let address = Address::repeat_byte(0x77);
-    let a = World::new(Fork::Osaka, "same descriptive label");
-    let b = World::new(Fork::Osaka, "same descriptive label");
+    let a = TestWorld::new(Fork::Osaka, "same descriptive label");
+    let b = TestWorld::new(Fork::Osaka, "same descriptive label");
     assert_ne!(
-        Store::new(&a).slot_root(address, false).unwrap(),
-        Store::new(&b).slot_root(address, false).unwrap()
+        TestStore::new(
+            &a,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        )
+        .slot_root(address, false)
+        .unwrap(),
+        TestStore::new(
+            &b,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        )
+        .slot_root(address, false)
+        .unwrap()
     );
     assert_eq!(
-        Store::new(&a).slot_root(address, false).unwrap(),
-        Store::new(&a.clone()).slot_root(address, false).unwrap()
+        TestStore::new(
+            &a,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        )
+        .slot_root(address, false)
+        .unwrap(),
+        TestStore::new(
+            &a.clone(),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        )
+        .slot_root(address, false)
+        .unwrap()
     );
     assert!(
         serde_json::to_value(&a)
@@ -391,45 +513,62 @@ fn independent_offline_worlds_same_label_have_distinct_bases() {
 #[test]
 fn joined_default_base_read_cancellation_is_typed() {
     let (world, address) = world(false);
-    let domain = Domain::default();
-    let a = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let a = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut b = a.clone();
     b.havoc_all();
     let joined = a
-        .join_guarded(&b, domain, ExprId::fresh().unwrap(), ExprLimits::default())
+        .join_guarded(
+            &b,
+            domain.borrowed(),
+            ExprId::fresh().unwrap(),
+            ExprLimits::default(),
+        )
         .unwrap();
     let cancel = analysis_control::Cancellation::new();
     cancel.cancel();
     analysis_control::with_cancellation(&cancel, || {
-        let result = joined.read_checked(Address::repeat_byte(0x99), &v(0), domain);
+        let result = joined.read_checked(Address::repeat_byte(0x99), &v(0), domain.borrowed());
         assert!(matches!(
             result,
             Err(StoreError::State(StateError::Cancelled))
                 | Err(StoreError::Expression(ExprError::Cancelled))
         ));
     });
-    assert!(joined.read_checked(address, &v(0), domain).is_ok());
+    assert!(
+        joined
+            .read_checked(address, &v(0), domain.borrowed())
+            .is_ok()
+    );
 }
 #[test]
 fn ordinary_join_unites_numeric_key_facts_at_shared_root() {
     let (world, address) = world(true);
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let token = ExprId::fresh().unwrap();
-    let ka = AbstractValue::unsigned_range(U256::from(1), U256::from(2))
+    let ka = TestValue::unsigned_range(U256::from(1), U256::from(2))
         .unwrap()
         .with_expression(token.clone());
-    let kb = AbstractValue::unsigned_range(U256::from(3), U256::from(4))
+    let kb = TestValue::unsigned_range(U256::from(3), U256::from(4))
         .unwrap()
         .with_expression(token);
-    let mut a = Store::new(&world);
+    let mut a = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut b = a.clone();
-    a.write_checked(address, &ka, &v(7), domain).unwrap();
-    b.write_checked(address, &kb, &v(7), domain).unwrap();
-    let joined = a.join(&b, domain);
+    a.write_checked(address, &ka, &v(7), domain.borrowed())
+        .unwrap();
+    b.write_checked(address, &kb, &v(7), domain.borrowed())
+        .unwrap();
+    let joined = a.join(&b, domain.borrowed());
     for key in 1..=4 {
         assert!(
             joined
-                .read(address, &v(key), domain)
+                .read(address, &v(key), domain.borrowed())
                 .contains(U256::from(7))
         );
     }
@@ -438,7 +577,7 @@ fn ordinary_join_unites_numeric_key_facts_at_shared_root() {
 #[test]
 fn complete_symbolic_observation_has_local_bound_and_zero_unobserved_base() {
     let (mut world, address) = world(true);
-    let observed = AbstractValue::unsigned_range(U256::from(7), U256::from(8))
+    let observed = TestValue::unsigned_range(U256::from(7), U256::from(8))
         .unwrap()
         .with_expression(ExprId::fresh().unwrap());
     world
@@ -447,8 +586,15 @@ fn complete_symbolic_observation_has_local_bound_and_zero_unobserved_base() {
         .unwrap()
         .storage
         .insert(U256::from(4), observed);
-    let store = Store::new(&world);
-    let value = store.read(address, &v(4), Domain::default());
+    let store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
+    let value = store.read(
+        address,
+        &v(4),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let p = policy();
     let eq = ExprId::operation(
         opcode::EQ,
@@ -460,11 +606,23 @@ fn complete_symbolic_observation_has_local_bound_and_zero_unobserved_base() {
     )
     .unwrap();
     assert_eq!(
-        RelationState::default().assume(&eq, true, &p),
+        RelationState::default().assume(
+            &eq,
+            true,
+            &p,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        ),
         CheckResult::ProvenImpossible
     );
     assert_eq!(
-        store.read(address, &v(5), Domain::default()).singleton(),
+        store
+            .read(
+                address,
+                &v(5),
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed()
+            )
+            .singleton(),
         Some(U256::ZERO)
     );
 }
@@ -472,13 +630,17 @@ fn complete_symbolic_observation_has_local_bound_and_zero_unobserved_base() {
 #[test]
 fn checked_store_self_join_respects_budget_cancel_and_failure() {
     let (world, address) = world(true);
-    let store = Store::new(&world);
+    let store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let guard = ExprId::constant(U256::ZERO);
     assert!(
         store
             .join_guarded(
                 &store,
-                Domain::default(),
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed(),
                 guard.clone(),
                 ExprLimits {
                     max_nodes: 0,
@@ -493,7 +655,8 @@ fn checked_store_self_join_respects_budget_cancel_and_failure() {
         assert!(matches!(
             store.join_guarded(
                 &store,
-                Domain::default(),
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed(),
                 guard.clone(),
                 ExprLimits::default()
             ),
@@ -501,15 +664,25 @@ fn checked_store_self_join_respects_budget_cancel_and_failure() {
         ));
     });
     let mut failed = store.clone();
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_nodes: 1,
-        max_depth: 1,
-        ..RelationLimits::default()
-    }));
-    failed.write(address, &sym(), &v(7), domain);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_nodes: 1,
+                max_depth: 1,
+                ..RelationLimits::default()
+            }),
+    ));
+    failed.write(address, &sym(), &v(7), domain.borrowed());
     assert!(
         failed
-            .join_guarded(&failed, Domain::default(), guard, ExprLimits::default())
+            .join_guarded(
+                &failed,
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed(),
+                guard,
+                ExprLimits::default()
+            )
             .is_err()
     );
 }
@@ -517,21 +690,28 @@ fn checked_store_self_join_respects_budget_cancel_and_failure() {
 #[test]
 fn ordinary_store_union_retains_an_alternative_under_old_guard_false() {
     let (world, address) = world(true);
-    let domain = Domain::default();
-    let mut a = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut a = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut b = a.clone();
-    a.write_checked(address, &v(0), &v(7), domain).unwrap();
-    b.write_checked(address, &v(0), &v(9), domain).unwrap();
+    a.write_checked(address, &v(0), &v(7), domain.borrowed())
+        .unwrap();
+    b.write_checked(address, &v(0), &v(9), domain.borrowed())
+        .unwrap();
     let guard = ExprId::fresh().unwrap();
     let paired = a
-        .join_guarded(&b, domain, guard.clone(), ExprLimits::default())
+        .join_guarded(&b, domain.borrowed(), guard.clone(), ExprLimits::default())
         .unwrap();
-    let union = paired.join(&a, domain);
-    let value = union.read(address, &v(0), domain);
+    let union = paired.join(&a, domain.borrowed());
+    let value = union.read(address, &v(0), domain.borrowed());
     let p = policy();
     let mut relations = RelationState::default();
     relations.observe(&guard, v(0).numeric(), &p).unwrap();
-    let ValueQuery::Bounds(bounds) = relations.local_value(value.expression().unwrap(), &p) else {
+    let EvmValueQuery::Bounds(bounds) =
+        relations.local_value(value.expression().unwrap(), &p, domain.borrowed())
+    else {
         panic!("ordinary union must retain both alternatives under the old false guard");
     };
     for candidate in [7, 9] {
@@ -547,23 +727,33 @@ fn ordinary_store_union_retains_an_alternative_under_old_guard_false() {
         p.expressions(),
     )
     .unwrap();
-    assert_eq!(relations.assume(&eq, true, &p), CheckResult::MayBeFeasible);
+    assert_eq!(
+        relations.assume(&eq, true, &p, domain.borrowed()),
+        CheckResult::MayBeFeasible
+    );
 }
 
 #[test]
 fn numeric_only_slot_aliases_constrain_native_reads() {
     let (world, address) = world(true);
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let key = domain.join(&v(0), &v(1));
-    let mut store = Store::new(&world);
-    store.write_checked(address, &key, &v(7), domain).unwrap();
-    let read = store.read(address, &v(2), domain);
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
+    store
+        .write_checked(address, &key, &v(7), domain.borrowed())
+        .unwrap();
+    let read = store.read(address, &v(2), domain.borrowed());
     assert_eq!(read.singleton(), Some(U256::ZERO));
     // The scalar read excludes slot 2, but local alias comparison does not
     // exclude it from a nonsingleton synthesized key solely by its finite set.
-    let ValueQuery::Bounds(bounds) =
-        RelationState::default().local_value(read.expression().unwrap(), &policy())
-    else {
+    let EvmValueQuery::Bounds(bounds) = RelationState::default().local_value(
+        read.expression().unwrap(),
+        &policy(),
+        domain.borrowed(),
+    ) else {
         panic!("expected the documented finite-key alias precision gap");
     };
     assert!(bounds.contains(U256::ZERO));
@@ -581,8 +771,8 @@ fn numeric_only_slot_aliases_constrain_native_reads() {
             .observe(stored, v(candidate).numeric(), &policy())
             .unwrap();
         assert_eq!(
-            relations.local_value(read.expression().unwrap(), &policy()),
-            ValueQuery::Exact(U256::ZERO)
+            relations.local_value(read.expression().unwrap(), &policy(), domain.borrowed()),
+            EvmValueQuery::Exact(U256::ZERO)
         );
     }
 }
@@ -598,20 +788,28 @@ fn initialization_uses_the_callers_state_policy_and_reports_failure() {
             .storage
             .insert(U256::from(i), v(i + 1));
     }
-    let default = Domain::default();
+    let default = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     assert!(matches!(
-        Store::new_checked(&world, default),
+        TestStore::new_checked(&world, default.borrowed()),
         Err(StoreError::State(StateError::Limit { .. }))
     ));
-    assert!(Store::new(&world).symbolic_limit_reached());
-    let bigger = Domain::from_spec(default.spec().with_relations(RelationLimits {
-        max_depth: 128,
-        ..RelationLimits::default()
-    }));
-    let store = Store::new_checked(&world, bigger).unwrap();
+    assert!(
+        TestStore::new(
+            &world,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        )
+        .symbolic_limit_reached()
+    );
+    let bigger = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        default.spec().with_relations(RelationLimits {
+            max_depth: 128,
+            ..RelationLimits::default()
+        }),
+    ));
+    let store = TestStore::new_checked(&world, bigger.borrowed()).unwrap();
     assert!(!store.symbolic_limit_reached());
     assert_eq!(
-        store.read(address, &v(64), bigger).singleton(),
+        store.read(address, &v(64), bigger.borrowed()).singleton(),
         Some(U256::from(65))
     );
 }

@@ -5,18 +5,19 @@ use super::{
         starts_at, word, world,
     },
 };
+use crate::native;
 use alloy_primitives::{B256, U256, keccak256};
+use evm_abstract::domain::{NumericValue, ProductAlgebra};
 use evm_abstract::{
     analysis::{
-        CorrelatedJoin, EnginePolicies, FrameKey, MachineError, MachineKey, MachinePartition,
-        MachinePayload, MergeResumeStatus, NoAcceleration, Partitioned, PartitionedRelative,
+        CorrelatedJoin, EnginePolicies, EvmMachinePayload, FrameKey, MachineError, MachineKey,
+        MachinePartition, MergeResumeStatus, NoAcceleration, Partitioned, PartitionedRelative,
         PolicyContext, PolicyKey, PolicySite, ProjectedSummaries, RecentDistinctJumps,
         RelativeState, SemanticPolicies, StructuralPartition,
     },
     bytecode::Program,
-    domain::Domain,
     ssa,
-    world::{ByteArray, Code},
+    world::{Code, EvmByteArray},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -54,15 +55,15 @@ struct OperandPartition<'a> {
     pc: usize,
 }
 
-impl MachinePartition<Domain, ()> for OperandPartition<'_> {
+impl MachinePartition<ProductAlgebra, ()> for OperandPartition<'_> {
     type Key = OperandKey;
 
     fn prepare(
         &self,
-        input: &MachinePayload,
+        input: &EvmMachinePayload<NumericValue>,
         site: PolicySite,
         class: (),
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<Partitioned<Self::Key, evm_abstract::domain::NumericValue>, MachineError> {
         cx.reserve(input.policy_work_size().saturating_add(1))?;
         let frame = &input.active().key;
@@ -105,7 +106,7 @@ impl MachinePartition<Domain, ()> for OperandPartition<'_> {
         input: &RelativeState<evm_abstract::domain::NumericValue>,
         site: PolicySite,
         class: (),
-        cx: &mut PolicyContext<'_, Domain>,
+        cx: &mut PolicyContext<'_, ProductAlgebra>,
     ) -> Result<PartitionedRelative<Self::Key, evm_abstract::domain::NumericValue>, MachineError>
     {
         let prepared = StructuralPartition.prepare_relative(input, site, class, cx)?;
@@ -120,7 +121,7 @@ impl MachinePartition<Domain, ()> for OperandPartition<'_> {
 fn borrowed_operand_key_groups_different_histories_without_losing_concrete_tuples() {
     let fixture = branches(false);
     let world = world(&fixture);
-    let entry = entry(ByteArray::unknown());
+    let entry = entry(EvmByteArray::<NumericValue>::unknown());
     let pc = fixture.labels["join"];
     let Code::Runtime(program) = &world.account(address(ROOT)).unwrap().code else {
         panic!("captured program");
@@ -198,7 +199,7 @@ fn borrowed_operand_key_groups_different_histories_without_losing_concrete_tuple
     assert_eq!(
         zero.entry
             .store
-            .read(address(ROOT), &word(0), Domain::default())
+            .read(address(ROOT), &word(0), native::product().borrowed())
             .singleton(),
         Some(U256::ZERO)
     );
@@ -220,14 +221,14 @@ fn borrowed_operand_key_groups_different_histories_without_losing_concrete_tuple
                 .entry
                 .active()
                 .memory
-                .read_word(&word(0), Domain::default())
+                .read_word(&word(0), native::product().borrowed())
                 .contains(U256::from(n))
         );
         assert!(
             merged
                 .entry
                 .store
-                .read(address(ROOT), &word(0), Domain::default())
+                .read(address(ROOT), &word(0), native::product().borrowed())
                 .contains(U256::from(n))
         );
     }

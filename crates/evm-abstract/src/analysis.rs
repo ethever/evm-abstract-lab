@@ -293,7 +293,7 @@ pub struct EvmAnalysis<N: WordElement> {
 impl<N: WordElement> Serialize for EvmAnalysis<N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut report = serializer.serialize_map(Some(
-            12 + usize::from(self.root_terminal_coverage().is_some()),
+            15 + usize::from(self.root_terminal_coverage().is_some()),
         ))?;
         report.serialize_entry("program", &self.program)?;
         report.serialize_entry("config", &self.config)?;
@@ -303,6 +303,9 @@ impl<N: WordElement> Serialize for EvmAnalysis<N> {
         report.serialize_entry("states", &self.states)?;
         report.serialize_entry("edges", &self.edges)?;
         report.serialize_entry("boundary_edges", &self.boundary_edges)?;
+        report.serialize_entry("execution_state_ids", &self.execution_state_ids)?;
+        report.serialize_entry("edge_endpoint_namespace", "local")?;
+        report.serialize_entry("boundary_endpoint_namespace", "native")?;
         report.serialize_entry("diagnostics", &self.diagnostics)?;
         report.serialize_entry("frontiers", &self.frontiers)?;
         report.serialize_entry("status", &self.status)?;

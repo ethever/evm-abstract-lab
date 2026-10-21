@@ -1,4 +1,7 @@
 //! Production customization acceptance. All custom state is independent of the default numeric carrier.
+#[path = "support/native.rs"]
+mod native;
+
 #[path = "cooperation/boundaries.rs"]
 mod boundaries;
 #[path = "cooperation/bridge.rs"]

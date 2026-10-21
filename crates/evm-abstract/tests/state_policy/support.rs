@@ -1,15 +1,18 @@
+use crate::native;
 use alloy_primitives::{Address, U256, hex};
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
+use evm_abstract::domain::{NumericValue, ProductAlgebra};
 use evm_abstract::{
     Fork,
     analysis::{
         BoundedJoin, CoarseSummaries, ContextPolicy, CorrelatedJoin, EagerAcceleration,
-        EnginePolicies, ExecutionConfig, FeedbackAcceleration, FirstResumeStatus,
-        ForgetJumpHistory, MachineState, PartitionPolicy, ProjectedSummaries, RecentDistinctJumps,
-        SemanticPolicies, StatePolicy, Status, StructuralPartition, WorldAnalysis,
-        analyze_world_with,
+        EnginePolicies, EvmMachineState, EvmWorldAnalysis, ExecutionConfig, FeedbackAcceleration,
+        FirstResumeStatus, ForgetJumpHistory, PartitionPolicy, ProjectedSummaries,
+        RecentDistinctJumps, SemanticPolicies, StatePolicy, Status, StructuralPartition,
     },
-    domain::{AbstractValue, Domain, ValueAlgebra},
-    world::{Account, ByteArray, Entry, World},
+    domain::EvmValue,
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use revm_bytecode::opcode;
 use std::collections::BTreeMap;
@@ -23,16 +26,16 @@ pub(super) fn address(n: u64) -> Address {
     Address::from_word(U256::from(n).into())
 }
 
-pub(super) fn word(n: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(n))
+pub(super) fn word(n: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(n))
 }
 
-pub(super) fn input(n: u64) -> ByteArray {
-    ByteArray::exact(&U256::from(n).to_be_bytes::<32>())
+pub(super) fn input(n: u64) -> EvmByteArray<NumericValue> {
+    EvmByteArray::<NumericValue>::exact(&U256::from(n).to_be_bytes::<32>())
 }
 
-pub(super) fn entry(calldata: ByteArray) -> Entry {
-    Entry::concrete(address(ROOT), address(USER), word(0), calldata)
+pub(super) fn entry(calldata: EvmByteArray<NumericValue>) -> EvmEntry<NumericValue> {
+    EvmEntry::<NumericValue>::concrete(address(ROOT), address(USER), word(0), calldata)
 }
 
 pub(super) fn config() -> ExecutionConfig {
@@ -45,27 +48,32 @@ pub(super) fn config() -> ExecutionConfig {
 }
 
 pub(super) fn run<C, P, S>(
-    world: &World,
-    entry: &Entry,
+    world: &EvmWorld<NumericValue>,
+    entry: &EvmEntry<NumericValue>,
     config: ExecutionConfig,
     policies: &EnginePolicies<C, P, S>,
-) -> WorldAnalysis
+) -> EvmWorldAnalysis<NumericValue>
 where
     C: ContextPolicy,
     P: PartitionPolicy,
-    S: StatePolicy<Domain, P::Class>,
+    S: StatePolicy<ProductAlgebra, P::Class>,
 {
-    analyze_world_with(
-        world.clone(),
-        entry.clone(),
-        config,
-        &ValueAlgebra::new(Domain::default()),
-        policies,
-    )
+    {
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        AnalysisEngine::new(&native::product(), policies, &mut extension).run(
+            AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+            config,
+            &Control::default(),
+        )
+    }
     .unwrap()
 }
 
-pub(super) fn default_run(world: &World, entry: &Entry, config: ExecutionConfig) -> WorldAnalysis {
+pub(super) fn default_run(
+    world: &EvmWorld<NumericValue>,
+    entry: &EvmEntry<NumericValue>,
+    config: ExecutionConfig,
+) -> EvmWorldAnalysis<NumericValue> {
     run(
         world,
         entry,
@@ -82,10 +90,10 @@ pub(super) fn default_run(world: &World, entry: &Entry, config: ExecutionConfig)
 }
 
 pub(super) fn alternate_run(
-    world: &World,
-    entry: &Entry,
+    world: &EvmWorld<NumericValue>,
+    entry: &EvmEntry<NumericValue>,
     config: ExecutionConfig,
-) -> WorldAnalysis {
+) -> EvmWorldAnalysis<NumericValue> {
     run(
         world,
         entry,
@@ -101,7 +109,7 @@ pub(super) fn alternate_run(
     )
 }
 
-pub(super) fn complete(graph: &WorldAnalysis) {
+pub(super) fn complete(graph: &EvmWorldAnalysis<NumericValue>) {
     assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
     assert!(graph.frontiers().is_empty());
     for record in graph.procedure_summaries() {
@@ -114,7 +122,7 @@ pub(super) fn complete(graph: &WorldAnalysis) {
     }
 }
 
-pub(super) fn starts_at(state: &MachineState, pc: usize) -> bool {
+pub(super) fn starts_at(state: &EvmMachineState<NumericValue>, pc: usize) -> bool {
     state.program().is_some_and(|program| {
         program
             .blocks()
@@ -203,8 +211,14 @@ impl Assembly {
     }
 }
 
-pub(super) fn insert(world: &mut World, owner: u64, fixture: &Fixture, slots: &[(u64, u64)]) {
-    let mut account = Account::from_hex(&hex::encode(&fixture.bytes), world.fork()).unwrap();
+pub(super) fn insert(
+    world: &mut EvmWorld<NumericValue>,
+    owner: u64,
+    fixture: &Fixture,
+    slots: &[(u64, u64)],
+) {
+    let mut account =
+        EvmAccount::<NumericValue>::from_hex(&hex::encode(&fixture.bytes), world.fork()).unwrap();
     account.balance = word(BALANCE);
     for &(slot, n) in slots {
         account.storage.insert(U256::from(slot), word(n));
@@ -212,8 +226,8 @@ pub(super) fn insert(world: &mut World, owner: u64, fixture: &Fixture, slots: &[
     world.insert(address(owner), account).unwrap();
 }
 
-pub(super) fn world(fixture: &Fixture) -> World {
-    let mut world = World::new(Fork::Osaka, "public state-policy witnesses");
+pub(super) fn world(fixture: &Fixture) -> EvmWorld<NumericValue> {
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "public state-policy witnesses");
     insert(&mut world, ROOT, fixture, &[(0, 0), (1, 77)]);
     world
 }

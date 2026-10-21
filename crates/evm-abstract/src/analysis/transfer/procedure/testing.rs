@@ -3,22 +3,22 @@
 use super::*;
 use crate::{
     analysis::MachinePayload,
-    domain::{Domain, ValueAlgebra},
-    world::{Entry, World},
+    analysis::testing::{Entry, World},
+    domain::{AlgebraRef, ProductAlgebra, ValueAlgebra},
 };
 use std::ops::{Deref, DerefMut};
 
-pub(super) type Solver<'a, D = Domain> = EvmSolver<
+pub(super) type Solver<'a, D = ProductAlgebra> = EvmSolver<
     'a,
     D,
     crate::analysis::engine::RecentDistinctJumps,
     crate::analysis::engine::FirstResumeStatus,
     crate::analysis::engine::SemanticPolicies,
-    crate::analysis::engine::cooperation::Empty,
+    crate::analysis::cooperation::NoExtension,
     std::convert::Infallible,
 >;
 
-pub(super) struct Table<D: EvmNumericAlgebra = Domain> {
+pub(super) struct Table<D: EvmNumericAlgebra = ProductAlgebra> {
     inner: EvmTable<D::Element>,
     pub runtime: Runtime,
     caller: RunningJob,
@@ -26,18 +26,22 @@ pub(super) struct Table<D: EvmNumericAlgebra = Domain> {
     policies: EnginePolicies,
     cooperation: Cooperation<
         D::Element,
-        crate::analysis::engine::cooperation::Empty,
+        crate::analysis::cooperation::NoExtension,
         std::convert::Infallible,
     >,
 }
 
 impl Default for Table {
     fn default() -> Self {
-        Self::with_algebra(ValueAlgebra::new(Domain::default()))
+        Self::with_algebra(ValueAlgebra::new(ProductAlgebra::default()))
     }
 }
 
 impl<D: EvmNumericAlgebra> Table<D> {
+    pub(super) fn algebra(&self) -> AlgebraRef<'_, D> {
+        self.domain.borrowed()
+    }
+
     pub(super) fn with_algebra(domain: ValueAlgebra<D>) -> Self {
         let mut setup = WorkBudget::new(usize::MAX);
         let mut runtime = Runtime::new(&mut setup).unwrap();
@@ -54,7 +58,7 @@ impl<D: EvmNumericAlgebra> Table<D> {
     }
 
     /// Keep the supplied algebra, including its private carrier behavior.
-    pub(super) fn solver_with<'a>(
+    pub(super) fn solver<'a>(
         &'a mut self,
         world: &'a EvmWorld<D::Element>,
         entry: &'a EvmEntry<D::Element>,
@@ -98,17 +102,8 @@ impl<D: EvmNumericAlgebra> DerefMut for Table<D> {
 }
 
 impl Table {
-    pub(super) fn solver<'a>(
-        &'a mut self,
-        world: &'a World,
-        entry: &'a Entry,
-        config: &'a crate::analysis::ExecutionConfig,
-        budget: &'a mut WorkBudget,
-        counters: &'a mut Counters,
-        storage_reads: StorageReadPolicy,
-    ) -> Solver<'a> {
-        self.domain = ValueAlgebra::new(config.domain().unwrap());
-        self.solver_with(world, entry, config, budget, counters, storage_reads)
+    pub(super) fn configure(&mut self, spec: crate::domain::DomainSpec) {
+        self.domain = crate::analysis::testing::product(spec);
     }
 
     #[expect(
@@ -122,7 +117,7 @@ impl Table {
         entry: &Entry,
         payload: MachinePayload,
         config: &crate::analysis::ExecutionConfig,
-        domain: Domain,
+        domain: AlgebraRef<'_, ProductAlgebra>,
         budget: &mut WorkBudget,
         counters: &mut Counters,
         storage_reads: StorageReadPolicy,
@@ -130,14 +125,13 @@ impl Table {
         super::super::Execution,
         crate::analysis::ProcedureSummaryRecord,
     ) {
-        let domain = ValueAlgebra::new(domain);
         self.inner.execute_with(
             source,
             world,
             entry,
             payload,
             config,
-            domain.borrowed(),
+            domain,
             &self.policies,
             budget,
             counters,
@@ -149,37 +143,8 @@ impl Table {
     }
 }
 
-pub(in crate::analysis) fn initial(
-    world: &World,
-    entry: &Entry,
-    domain: Domain,
-) -> Result<MachinePayload, FrontierReason> {
-    super::super::initial(world, entry, ValueAlgebra::new(domain).borrowed())
-}
-
-pub(super) fn form(
-    payload: &MachinePayload,
-    entry: &Entry,
-    domain: Domain,
-) -> Result<crate::analysis::state::PayloadSummary, MachineError> {
-    payload::form(payload, entry, ValueAlgebra::new(domain).borrowed())
-}
-
-pub(super) fn instantiate(
-    payload: &crate::analysis::state::PayloadSummary,
-    domain: Domain,
-) -> Result<MachinePayload, MachineError> {
-    instantiate_with(payload, ValueAlgebra::new(domain).borrowed())
-}
-
-pub(super) fn join(
-    old: &crate::analysis::state::PayloadSummary,
-    next: &crate::analysis::state::PayloadSummary,
-    domain: Domain,
-    widen: bool,
-) -> Result<crate::analysis::state::PayloadSummary, MachineError> {
-    join_with(old, next, ValueAlgebra::new(domain).borrowed(), widen)
-}
+pub(in crate::analysis) use super::super::initial;
+pub(super) use payload::{form, instantiate, join};
 
 #[expect(
     clippy::too_many_arguments,
@@ -190,7 +155,7 @@ pub(super) fn execute_inner(
     entry: &Entry,
     payload: MachinePayload,
     config: &crate::analysis::ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, ProductAlgebra>,
     budget: &mut WorkBudget,
     storage_reads: StorageReadPolicy,
     procedure: bool,
@@ -200,7 +165,7 @@ pub(super) fn execute_inner(
         entry,
         payload,
         config,
-        ValueAlgebra::new(domain).borrowed(),
+        domain,
         &crate::analysis::engine::RecentDistinctJumps,
         budget,
         storage_reads,
@@ -213,7 +178,7 @@ pub(in crate::analysis) fn execute(
     entry: &Entry,
     payload: MachinePayload,
     config: &crate::analysis::ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, ProductAlgebra>,
     budget: &mut WorkBudget,
     storage_reads: StorageReadPolicy,
 ) -> super::super::Execution {
@@ -222,7 +187,7 @@ pub(in crate::analysis) fn execute(
         entry,
         payload,
         config,
-        ValueAlgebra::new(domain).borrowed(),
+        domain,
         &crate::analysis::engine::RecentDistinctJumps,
         budget,
         storage_reads,

@@ -1,12 +1,11 @@
 use super::support::*;
+use crate::native;
 use alloy_primitives::U256;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     analysis::{Config, ExecutionConfig, FrontierReason, MachineEdgeKind, Status},
-    domain::{
-        Domain,
-        relational::{CheckResult, RelationLimits},
-    },
-    world::{Account, ByteArray, World},
+    domain::relational::{CheckResult, RelationLimits},
+    world::{EvmAccount, EvmByteArray, EvmWorld},
 };
 use revm_bytecode::opcode;
 
@@ -16,20 +15,38 @@ fn wide_symbolic_policy() -> ExecutionConfig {
     // resource-boundary test below keeps the same complete address space.
     ExecutionConfig {
         max_work: 1_000_000_000,
-        analysis: Config {
-            relations: RelationLimits {
-                max_constraints: 2048,
-                max_nodes: 65_536,
-                max_depth: 512,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        analysis: Config::default(),
         ..Default::default()
     }
 }
 
-fn symbolic_with_native_input_gaps(analysis: &evm_abstract::analysis::WorldAnalysis) {
+fn wide_symbolic_values() -> evm_abstract::domain::ValueAlgebra<evm_abstract::domain::ProductAlgebra>
+{
+    native::product_with(native::spec(8, 4, 256).with_relations(RelationLimits {
+        max_constraints: 2048,
+        max_nodes: 65_536,
+        max_depth: 512,
+        ..Default::default()
+    }))
+}
+
+fn run_wide(
+    world: EvmWorld<NumericValue>,
+    entry: evm_abstract::world::EvmEntry<NumericValue>,
+    config: ExecutionConfig,
+) -> evm_abstract::analysis::EvmWorldAnalysis<NumericValue> {
+    native::run(
+        &wide_symbolic_values(),
+        evm_abstract::analysis::AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &evm_abstract::analysis::control::Control::default(),
+    )
+    .unwrap()
+}
+
+fn symbolic_with_native_input_gaps(
+    analysis: &evm_abstract::analysis::EvmWorldAnalysis<NumericValue>,
+) {
     assert!(!analysis.procedure_summaries().is_empty());
     if analysis.frontiers().is_empty() {
         complete_unknown(analysis);
@@ -130,7 +147,11 @@ fn symbolic_target_covers_current_owner_other_known_and_remaining_addresses_with
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[]);
-    let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
+    let analysis = run_wide(
+        world,
+        entry(EvmByteArray::<NumericValue>::unknown()),
+        wide_symbolic_policy(),
+    );
     complete_unknown(&analysis);
     let call_pc = a.labels["call"] + 1;
     for candidate in [A, C] {
@@ -158,7 +179,7 @@ fn symbolic_target_covers_current_owner_other_known_and_remaining_addresses_with
                 .root()
                 .state
                 .calldata
-                .read_word(&word(0), Domain::default());
+                .read_word(&word(0), native::product().borrowed());
             let expression = target
                 .expression()
                 .expect("same symbolic target survives caller suspension");
@@ -167,7 +188,12 @@ fn symbolic_target_covers_current_owner_other_known_and_remaining_addresses_with
                     child.entry.relations.can_equal(
                         expression,
                         U256::from(other),
-                        &analysis.config().analysis.relations
+                        &analysis.domain_spec().relations(),
+                        native::product_with(
+                            native::spec(8, 4, 256)
+                                .with_relations(analysis.domain_spec().relations())
+                        )
+                        .borrowed()
                     ),
                     CheckResult::ProvenImpossible,
                     "known {candidate:#x} branch lacks the target equality guard excluding {other:#x}"
@@ -192,7 +218,11 @@ fn existing_target_path_condition_excludes_known_c_candidate() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[]);
-    let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
+    let analysis = run_wide(
+        world,
+        entry(EvmByteArray::<NumericValue>::unknown()),
+        wide_symbolic_policy(),
+    );
     complete_unknown(&analysis);
     let call_pc = a.labels["call"] + 1;
     assert!(
@@ -232,7 +262,11 @@ fn repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards
     let mut world = new_world();
     insert(&mut world, A, &code, &[]);
     insert(&mut world, C, &known_c(), &[]);
-    let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
+    let analysis = run_wide(
+        world,
+        entry(EvmByteArray::<NumericValue>::unknown()),
+        wide_symbolic_policy(),
+    );
     complete_unknown(&analysis);
     let original = analysis.states()[0]
         .entry
@@ -240,7 +274,7 @@ fn repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards
         .root()
         .state
         .calldata
-        .read_word(&word(0), Domain::default())
+        .read_word(&word(0), native::product().borrowed())
         .expression()
         .unwrap()
         .clone();
@@ -269,7 +303,7 @@ fn repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards
                     .root()
                     .state
                     .calldata
-                    .read_word(&word(0), Domain::default());
+                    .read_word(&word(0), native::product().borrowed());
                 assert_eq!(
                     target.expression(),
                     Some(&original),
@@ -280,7 +314,12 @@ fn repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards
                         child.entry.relations.can_equal(
                             target.expression().unwrap(),
                             U256::from(other),
-                            &analysis.config().analysis.relations,
+                            &analysis.domain_spec().relations(),
+                            native::product_with(
+                                native::spec(8, 4, 256)
+                                    .with_relations(analysis.domain_spec().relations())
+                            )
+                            .borrowed()
                         ),
                         CheckResult::ProvenImpossible,
                         "{label} lacks its target guard"
@@ -293,7 +332,7 @@ fn repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards
     assert!(!returns(&analysis).is_empty());
 }
 
-fn symbolic_alias_world() -> World {
+fn symbolic_alias_world() -> EvmWorld<NumericValue> {
     let mut a = Assembly::default();
     a.op(opcode::CALLER)
         .push(USER as u16)
@@ -336,7 +375,10 @@ fn different_symbolic_targets_can_alias_the_same_known_storage_owner() {
     let mut concrete_input = Vec::new();
     concrete_input.extend(U256::from(C).to_be_bytes::<32>());
     concrete_input.extend(U256::from(C).to_be_bytes::<32>());
-    let observed = super::oracle::execute(&world, &entry(ByteArray::exact(&concrete_input)));
+    let observed = super::oracle::execute(
+        &world,
+        &entry(EvmByteArray::<NumericValue>::exact(&concrete_input)),
+    );
     assert_eq!(observed.output_word(0), U256::from(9));
     assert_eq!(observed.output_word(32), U256::from(9));
     // The paid finite target/outcome closure consumes about 1.82B work; retain
@@ -345,11 +387,19 @@ fn different_symbolic_targets_can_alias_the_same_known_storage_owner() {
         max_work: 2_000_000_000,
         ..wide_symbolic_policy()
     };
-    let analysis = run_config(world, entry(ByteArray::unknown()), policy);
+    let analysis = run_wide(
+        world,
+        entry(EvmByteArray::<NumericValue>::unknown()),
+        policy,
+    );
     symbolic_with_native_input_gaps(&analysis);
     let root = &analysis.states()[0].entry.call_stack.root().state;
-    let first = root.calldata.read_word(&word(0), Domain::default());
-    let second = root.calldata.read_word(&word(32), Domain::default());
+    let first = root
+        .calldata
+        .read_word(&word(0), native::product().borrowed());
+    let second = root
+        .calldata
+        .read_word(&word(32), native::product().borrowed());
     assert_ne!(first.expression(), second.expression());
     observed.covers(&analysis);
 }
@@ -360,13 +410,20 @@ fn symbolic_alias_original_ledger_keeps_input_bound_coverage_or_complete_detail(
     let mut concrete_input = Vec::new();
     concrete_input.extend(U256::from(C).to_be_bytes::<32>());
     concrete_input.extend(U256::from(C).to_be_bytes::<32>());
-    let observed = super::oracle::execute(&world, &entry(ByteArray::exact(&concrete_input)));
+    let observed = super::oracle::execute(
+        &world,
+        &entry(EvmByteArray::<NumericValue>::exact(&concrete_input)),
+    );
     assert_eq!(observed.output_word(0), U256::from(9));
     assert_eq!(observed.output_word(32), U256::from(9));
     let config = wide_symbolic_policy();
     assert_eq!(config.max_work, 1_000_000_000);
     assert!(config.root_terminal_coverage);
-    let analysis = run_config(world, entry(ByteArray::unknown()), config.clone());
+    let analysis = run_wide(
+        world,
+        entry(EvmByteArray::<NumericValue>::unknown()),
+        config.clone(),
+    );
     assert!(analysis.work() <= config.max_work);
     let qualified_native = !analysis.frontiers().is_empty()
         && analysis
@@ -378,8 +435,8 @@ fn symbolic_alias_original_ledger_keeps_input_bound_coverage_or_complete_detail(
         // contract, including the joint concrete return pair.
         symbolic_with_native_input_gaps(&analysis);
         let calldata = &analysis.states()[0].entry.call_stack.root().state.calldata;
-        let first = calldata.read_word(&word(0), Domain::default());
-        let second = calldata.read_word(&word(32), Domain::default());
+        let first = calldata.read_word(&word(0), native::product().borrowed());
+        let second = calldata.read_word(&word(32), native::product().borrowed());
         assert_ne!(first.expression(), second.expression());
         observed.covers(&analysis);
         return;
@@ -392,7 +449,7 @@ fn full_symbolic_target_default_budget_retains_explicit_typed_frontiers() {
     let mut world = new_world();
     insert(&mut world, A, &symbolic_caller(false), &[]);
     insert(&mut world, C, &known_c(), &[]);
-    let analysis = run(world, entry(ByteArray::unknown()));
+    let analysis = run(world, entry(EvmByteArray::<NumericValue>::unknown()));
     assert_eq!(analysis.config().max_work, 20_000_000);
     assert_eq!(analysis.status(), Status::Incomplete);
     assert!(
@@ -414,7 +471,12 @@ fn evm_address_projection_keeps_high_word_bits_in_parent_and_calls_known_c() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[]);
-    let analysis = run(world, entry(ByteArray::exact(&target.to_be_bytes::<32>())));
+    let analysis = run(
+        world,
+        entry(EvmByteArray::<NumericValue>::exact(
+            &target.to_be_bytes::<32>(),
+        )),
+    );
     complete(&analysis);
     for outcome in returns(&analysis) {
         assert_eq!(output_word(outcome, 0).singleton(), Some(U256::from(23)));
@@ -437,8 +499,10 @@ fn explicitly_empty_code_preserves_storage_and_returns_success_with_empty_data()
     a.label("failed").push(0).push(0).op(opcode::REVERT);
     let mut world = new_world();
     insert(&mut world, A, &a.finish(), &[]);
-    world.insert(address(U), Account::empty()).unwrap();
-    let analysis = run(world, entry(ByteArray::empty()));
+    world
+        .insert(address(U), EvmAccount::<NumericValue>::empty())
+        .unwrap();
+    let analysis = run(world, entry(EvmByteArray::<NumericValue>::empty()));
     complete(&analysis);
     for outcome in returns(&analysis) {
         only(&output_word(outcome, 0), &[1]);
@@ -453,7 +517,7 @@ fn no_external_execution_retains_original_concrete_result() {
     a.store(0, 7).push(0).op(opcode::SLOAD).return_top();
     let mut world = new_world();
     insert(&mut world, A, &a.finish(), &[]);
-    let analysis = run(world, entry(ByteArray::empty()));
+    let analysis = run(world, entry(EvmByteArray::<NumericValue>::empty()));
     complete(&analysis);
     for outcome in returns(&analysis) {
         only(&output_word(outcome, 0), &[7]);
@@ -473,7 +537,7 @@ fn native_identity_precompile_remains_a_concrete_call() {
     a.label("failed").push(0).push(0).op(opcode::REVERT);
     let mut world = new_world();
     insert(&mut world, A, &a.finish(), &[]);
-    let analysis = run(world, entry(ByteArray::empty()));
+    let analysis = run(world, entry(EvmByteArray::<NumericValue>::empty()));
     complete(&analysis);
     for outcome in returns(&analysis) {
         only(&output_word(outcome, 0), &[42]);

@@ -1,19 +1,25 @@
 //! Real HTTP discovery must preserve the complete fixed-snapshot transaction relation.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+
+#[path = "support/native.rs"]
+mod native;
 
 use alloy_primitives::{Address, B256, U256, hex};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
     analysis::{
-        self, ExecutionConfig, FrontierReason, Limit, MachineEdgeKind, OutcomeKind, Status,
-        WorldAnalysis,
+        self, EvmWorldAnalysis, ExecutionConfig, FrontierReason, Limit, MachineEdgeKind,
+        OutcomeKind, Status,
     },
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         symbolic::{ExprKind, SlotStateKind},
     },
     ssa,
     world::{
-        Account, ByteArray, Entry, SnapshotIdentity,
+        EvmAccount, EvmByteArray, EvmEntry, SnapshotIdentity,
         rpc::{self, AccountRequest, RpcBlock, RpcError, RpcFailureKind, RpcInput},
     },
 };
@@ -34,35 +40,35 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(number))
 }
 
-fn account(code: &str) -> Account {
-    let mut account = Account::from_hex(code, Fork::Osaka).unwrap();
+fn account(code: &str) -> EvmAccount<NumericValue> {
+    let mut account = EvmAccount::<NumericValue>::from_hex(code, Fork::Osaka).unwrap();
     account.balance = word(100);
     account.nonce = word(1);
     account.storage.insert(U256::ZERO, word(7));
     account
 }
 
-fn accounts(entries: &[(u64, &str)]) -> BTreeMap<Address, Account> {
+fn accounts(entries: &[(u64, &str)]) -> BTreeMap<Address, EvmAccount<NumericValue>> {
     entries
         .iter()
         .map(|(number, code)| (address(*number), account(code)))
         .collect()
 }
 
-fn entry() -> Entry {
-    Entry {
+fn entry() -> EvmEntry<NumericValue> {
+    EvmEntry {
         address: address(0x101),
-        environment: evm_abstract::world::EvmEnvironment {
+        environment: evm_abstract::world::EvmEnvironmentValues {
             to: (address(0x101)).into(),
             caller: (address(0x1000)).into(),
             value: word(0),
-            calldata: ByteArray::empty(),
+            calldata: EvmByteArray::<NumericValue>::empty(),
             is_static: false,
-            ..evm_abstract::world::EvmEnvironment::default()
+            ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
         },
     }
 }
@@ -92,14 +98,14 @@ struct Server {
 impl Server {
     fn new<'scope, 'env>(
         scope: &'scope thread::Scope<'scope, 'env>,
-        accounts: BTreeMap<Address, Account>,
+        accounts: BTreeMap<Address, EvmAccount<NumericValue>>,
     ) -> Self {
         Self::with_code_failures(scope, accounts, BTreeSet::new())
     }
 
     fn with_code_failures<'scope, 'env>(
         scope: &'scope thread::Scope<'scope, 'env>,
-        accounts: BTreeMap<Address, Account>,
+        accounts: BTreeMap<Address, EvmAccount<NumericValue>>,
         failed: BTreeSet<Address>,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -199,7 +205,7 @@ impl Drop for Server {
     }
 }
 
-fn response(accounts: &BTreeMap<Address, Account>, request: &Json) -> Json {
+fn response(accounts: &BTreeMap<Address, EvmAccount<NumericValue>>, request: &Json) -> Json {
     let method = request["method"].as_str().unwrap();
     let result = match method {
         "eth_chainId" => json!("0x1"),
@@ -244,7 +250,7 @@ fn response(accounts: &BTreeMap<Address, Account>, request: &Json) -> Json {
                     let value = account
                         .storage
                         .get(&slot)
-                        .and_then(AbstractValue::singleton)
+                        .and_then(EvmValue::<NumericValue>::singleton)
                         .unwrap_or(U256::ZERO);
                     json!(format!("0x{value:064x}"))
                 }
@@ -255,7 +261,7 @@ fn response(accounts: &BTreeMap<Address, Account>, request: &Json) -> Json {
     json!({"jsonrpc":"2.0","id":request["id"],"result":result})
 }
 
-fn relations(analysis: &WorldAnalysis) -> BTreeSet<String> {
+fn relations(analysis: &EvmWorldAnalysis<NumericValue>) -> BTreeSet<String> {
     // Independent executions allocate new private join selectors. Rename only
     // Fresh leaves, using one bijection across the complete outcome relation.
     // Preserve all graph edges, Input scopes, source namespaces and products.
@@ -304,11 +310,25 @@ fn relations(analysis: &WorldAnalysis) -> BTreeSet<String> {
 
 fn compare(
     input: &RpcInput,
-    entry: Entry,
+    entry: EvmEntry<NumericValue>,
     config: ExecutionConfig,
     acquired: &[Address],
-) -> WorldAnalysis {
-    let discovered = analysis::analyze_rpc(input, entry.clone(), config.clone()).unwrap();
+) -> EvmWorldAnalysis<NumericValue> {
+    let discovered = {
+        let values = native::product();
+        let policies = evm_abstract::analysis::EnginePolicies::default();
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        let engine =
+            evm_abstract::analysis::AnalysisEngine::new(&values, &policies, &mut extension);
+        analysis::analyze_rpc(
+            engine,
+            input,
+            entry.clone(),
+            config.clone(),
+            &Control::default(),
+        )
+    }
+    .unwrap();
     assert!(discovered.failures().is_empty());
     let discovered = discovered.into_analysis();
     assert_eq!(
@@ -333,15 +353,22 @@ fn compare(
         full_world.fingerprint().unwrap()
     );
     assert_eq!(discovered.world().identity(), full_world.identity());
-    let full = analysis::analyze_world(full_world, entry.clone(), config.clone()).unwrap();
+    let full = native::run(
+        &native::product(),
+        AnalysisInput::new(full_world, entry.clone()).unwrap(),
+        config.clone(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(relations(&discovered), relations(&full));
-    let uncached = analysis::analyze_world(
-        full.world().clone(),
-        entry,
+    let uncached = native::run(
+        &native::product(),
+        AnalysisInput::new(full.world().clone(), entry).unwrap(),
         ExecutionConfig {
             use_summaries: false,
             ..config
         },
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(relations(&discovered), relations(&uncached));
@@ -402,7 +429,7 @@ fn discovery_replays_unknown_slot_alias_writes_before_delegatecall() {
             accounts(&[(0x101, &caller), (0x200, "5f5460015500")]),
         );
         let mut entry = entry();
-        entry.environment.calldata = ByteArray::unknown();
+        entry.environment.calldata = EvmByteArray::<NumericValue>::unknown();
         let result = compare(&server.input(), entry, config(), &[address(0x200)]);
         assert_eq!(result.rpc_acquisition().unwrap().rounds, 2);
         for outcome in result
@@ -412,7 +439,7 @@ fn discovery_replays_unknown_slot_alias_writes_before_delegatecall() {
         {
             let value = outcome
                 .store
-                .read(address(0x101), &word(0), Domain::default());
+                .read(address(0x101), &word(0), native::product().borrowed());
             assert!(value.contains(U256::from(7)));
             assert!(value.contains(U256::from(9)));
         }
@@ -491,7 +518,7 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
                     block_hash: B256::repeat_byte(0x11),
                 }
             );
-            let domain = Domain::default();
+            let domain = native::product();
             let checkpoint = result.states()[0]
                 .entry
                 .call_stack
@@ -499,11 +526,11 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
                 .state
                 .saved_store
                 .state();
-            let initial_read = checkpoint.read(address(0x101), &word(0), domain);
+            let initial_read = checkpoint.read(address(0x101), &word(0), domain.borrowed());
             assert_eq!(initial_read.numeric(), word(7).numeric());
             assert_eq!(initial_read.provenance(), word(7).provenance());
             assert_eq!(
-                checkpoint.read(address(0x101), &word(0), domain),
+                checkpoint.read(address(0x101), &word(0), domain.borrowed()),
                 initial_read
             );
             let ExprKind::SlotRead { state, key } = initial_read.expression().unwrap().kind()
@@ -537,13 +564,15 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
                 let resumed = &result.states()[edge.to].entry;
                 assert_eq!(&resumed.store, saved);
                 assert_eq!(
-                    resumed.store.read(address(0x101), &word(0), domain),
+                    resumed
+                        .store
+                        .read(address(0x101), &word(0), domain.borrowed()),
                     word(3)
                 );
                 assert_eq!(
                     resumed
                         .store
-                        .read_transient(address(0x101), &word(0), domain),
+                        .read_transient(address(0x101), &word(0), domain.borrowed()),
                     word(9)
                 );
                 for owner in [address(0x200), address(0x300)] {
@@ -552,7 +581,9 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
                         checkpoint.slot_root(owner, false)
                     );
                     assert_eq!(
-                        resumed.store.read_transient(owner, &word(0), domain),
+                        resumed
+                            .store
+                            .read_transient(owner, &word(0), domain.borrowed()),
                         word(0)
                     );
                     assert_eq!(resumed.store.read_balance(owner), word(100));
@@ -579,22 +610,24 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
             for edge in deeper_returns {
                 let grandchild = &result.states()[edge.from];
                 let saved = grandchild.entry.active().saved_store.state();
-                assert_eq!(saved.read(address(0x200), &word(0), domain), word(4));
                 assert_eq!(
-                    saved.read_transient(address(0x200), &word(0), domain),
+                    saved.read(address(0x200), &word(0), domain.borrowed()),
+                    word(4)
+                );
+                assert_eq!(
+                    saved.read_transient(address(0x200), &word(0), domain.borrowed()),
                     word(8)
                 );
                 assert_eq!(
-                    saved.read_transient(address(0x101), &word(0), domain),
+                    saved.read_transient(address(0x101), &word(0), domain.borrowed()),
                     word(9)
                 );
                 assert_eq!(
-                    grandchild
-                        .exit
-                        .as_ref()
-                        .unwrap()
-                        .store
-                        .read(address(0x300), &word(0), domain),
+                    grandchild.exit.as_ref().unwrap().store.read(
+                        address(0x300),
+                        &word(0),
+                        domain.borrowed()
+                    ),
                     word(5)
                 );
             }
@@ -613,7 +646,9 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
                 assert_eq!(outcome.store.read_balance(address(0x101)), word(100));
                 assert_eq!(outcome.store.read_balance(address(0x200)), word(100));
                 assert_eq!(outcome.store.read_balance(address(0x300)), word(100));
-                let actual = outcome.store.read(address(0x101), &word(0), domain);
+                let actual = outcome
+                    .store
+                    .read(address(0x101), &word(0), domain.borrowed());
                 let expected = if root_reverts {
                     &initial_read
                 } else {
@@ -623,9 +658,11 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
                 assert_eq!(actual.provenance(), expected.provenance());
                 assert_eq!(&actual, expected);
                 assert_eq!(
-                    outcome
-                        .store
-                        .read_transient(address(0x200), &word(0), Domain::default()),
+                    outcome.store.read_transient(
+                        address(0x200),
+                        &word(0),
+                        native::product().borrowed()
+                    ),
                     word(0)
                 );
                 assert!(outcome.store.transient_slots().is_empty());
@@ -645,7 +682,7 @@ fn nested_discovery_rebuilds_ancestor_and_root_rollback_checkpoints() {
                 .state();
             assert_eq!(checkpoint.read_balance(address(0x300)), word(100));
             assert_eq!(
-                checkpoint.read(address(0x101), &word(0), domain),
+                checkpoint.read(address(0x101), &word(0), domain.borrowed()),
                 initial_read
             );
         }
@@ -688,8 +725,8 @@ fn replay_keeps_create_runtime_overlay_and_never_refetches_its_initial_code() {
         let factory = hex::encode(deploy_then_call(&runtime, 0x200));
         let created = address(0x101).create(1);
         let mut fixtures = accounts(&[(0x101, &factory), (0x200, "00")]);
-        fixtures.insert(created, Account::absent());
-        fixtures.insert(Address::ZERO, Account::absent());
+        fixtures.insert(created, EvmAccount::<NumericValue>::absent());
+        fixtures.insert(Address::ZERO, EvmAccount::<NumericValue>::absent());
         let server = Server::new(scope, fixtures);
         let mut input = server.input();
         for address in [created, Address::ZERO] {
@@ -698,7 +735,15 @@ fn replay_keeps_create_runtime_overlay_and_never_refetches_its_initial_code() {
                 slots: BTreeSet::new(),
             });
         }
-        let result = analysis::analyze_rpc(&input, entry(), config()).unwrap();
+        let result = {
+            let values = native::product();
+            let policies = evm_abstract::analysis::EnginePolicies::default();
+            let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+            let engine =
+                evm_abstract::analysis::AnalysisEngine::new(&values, &policies, &mut extension);
+            analysis::analyze_rpc(engine, &input, entry(), config(), &Control::default())
+        }
+        .unwrap();
         let result = result.into_analysis();
         assert_eq!(
             result.status(),
@@ -716,11 +761,17 @@ fn replay_keeps_create_runtime_overlay_and_never_refetches_its_initial_code() {
                 && outcome.store.raw_account_code(created).as_deref() == Some(runtime.as_slice())
                 && outcome
                     .store
-                    .read(created, &word(0), Domain::default())
+                    .read(created, &word(0), native::product().borrowed())
                     .contains(U256::from(9))
         }));
         let full_world = result.world().clone();
-        let full = analysis::analyze_world(full_world, entry(), config()).unwrap();
+        let full = native::run(
+            &native::product(),
+            AnalysisInput::new(full_world, entry()).unwrap(),
+            config(),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(relations(&result), relations(&full));
         ssa::build_world(&result).unwrap().verify(&result).unwrap();
     });
@@ -741,9 +792,22 @@ fn discovery_follows_exactly_one_7702_pointer_without_loading_a_second_marker_ta
                 (0x400, "00"),
             ]),
         );
-        let result = analysis::analyze_rpc(&server.input(), entry(), config())
-            .unwrap()
-            .into_analysis();
+        let result = {
+            let values = native::product();
+            let policies = evm_abstract::analysis::EnginePolicies::default();
+            let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+            let engine =
+                evm_abstract::analysis::AnalysisEngine::new(&values, &policies, &mut extension);
+            analysis::analyze_rpc(
+                engine,
+                &server.input(),
+                entry(),
+                config(),
+                &Control::default(),
+            )
+        }
+        .unwrap()
+        .into_analysis();
         assert_eq!(
             result.status(),
             Status::Converged,
@@ -771,13 +835,26 @@ fn finite_targets_are_projected_to_low160_and_acquired_once() {
         let mut entry = entry();
         let low = U256::from(0x200);
         let high = low | (U256::from(1) << 200);
-        entry.environment.value = Domain::default().join(
-            &AbstractValue::constant(low),
-            &AbstractValue::constant(high),
+        entry.environment.value = native::product().join(
+            &EvmValue::<NumericValue>::constant(low),
+            &EvmValue::<NumericValue>::constant(high),
         );
-        let result = analysis::analyze_rpc(&server.input(), entry.clone(), config())
-            .unwrap()
-            .into_analysis();
+        let result = {
+            let values = native::product();
+            let policies = evm_abstract::analysis::EnginePolicies::default();
+            let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+            let engine =
+                evm_abstract::analysis::AnalysisEngine::new(&values, &policies, &mut extension);
+            analysis::analyze_rpc(
+                engine,
+                &server.input(),
+                entry.clone(),
+                config(),
+                &Control::default(),
+            )
+        }
+        .unwrap()
+        .into_analysis();
         assert_eq!(
             result.status(),
             Status::Converged,
@@ -790,7 +867,13 @@ fn finite_targets_are_projected_to_low160_and_acquired_once() {
         );
         assert_eq!(server.code_requests(address(0x200)), 1);
         assert_eq!(result.rpc_acquisition().unwrap().rounds, 2);
-        let full = analysis::analyze_world(result.world().clone(), entry, config()).unwrap();
+        let full = native::run(
+            &native::product(),
+            AnalysisInput::new(result.world().clone(), entry).unwrap(),
+            config(),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(relations(&result), relations(&full));
     });
 }
@@ -835,7 +918,21 @@ fn call_depth_frontier_does_not_acquire_an_unenterable_callee() {
             max_call_depth: 1,
             ..config()
         };
-        let result = analysis::analyze_rpc(&server.input(), entry(), bounded).unwrap();
+        let result = {
+            let values = native::product();
+            let policies = evm_abstract::analysis::EnginePolicies::default();
+            let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+            let engine =
+                evm_abstract::analysis::AnalysisEngine::new(&values, &policies, &mut extension);
+            analysis::analyze_rpc(
+                engine,
+                &server.input(),
+                entry(),
+                bounded,
+                &Control::default(),
+            )
+        }
+        .unwrap();
         assert!(result.failures().is_empty());
         let result = result.into_analysis();
         assert_eq!(result.status(), Status::Incomplete);
@@ -870,7 +967,21 @@ fn known_insufficient_balance_does_not_acquire_a_failing_value_call() {
         for op in [0xf1, 0xf2] {
             let caller = format!("{}5000", call(op, 0x200, 101));
             let server = Server::new(scope, accounts(&[(0x101, &caller), (0x200, "00")]));
-            let result = analysis::analyze_rpc(&server.input(), entry(), config()).unwrap();
+            let result = {
+                let values = native::product();
+                let policies = evm_abstract::analysis::EnginePolicies::default();
+                let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+                let engine =
+                    evm_abstract::analysis::AnalysisEngine::new(&values, &policies, &mut extension);
+                analysis::analyze_rpc(
+                    engine,
+                    &server.input(),
+                    entry(),
+                    config(),
+                    &Control::default(),
+                )
+            }
+            .unwrap();
             assert!(result.failures().is_empty());
             let result = result.into_analysis();
             assert_eq!(result.status(), Status::Converged);
@@ -919,9 +1030,22 @@ fn failed_and_acquired_accounts_remain_paired_when_the_next_round_stops_early() 
         // through abstract interactions and is a different execution policy.
         let mut first_input = input.clone();
         first_input.max_accounts = 1;
-        let first_round = analysis::analyze_rpc(&first_input, entry(), detail_config.clone())
-            .unwrap()
-            .into_analysis();
+        let first_round = {
+            let values = native::product();
+            let policies = evm_abstract::analysis::EnginePolicies::default();
+            let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+            let engine =
+                evm_abstract::analysis::AnalysisEngine::new(&values, &policies, &mut extension);
+            analysis::analyze_rpc(
+                engine,
+                &first_input,
+                entry(),
+                detail_config.clone(),
+                &Control::default(),
+            )
+        }
+        .unwrap()
+        .into_analysis();
         assert_eq!(first_round.status(), Status::Incomplete);
         for limit in [Limit::States, Limit::Work] {
             let mut bounded = detail_config.clone();
@@ -931,7 +1055,21 @@ fn failed_and_acquired_accounts_remain_paired_when_the_next_round_stops_early() 
                 _ => unreachable!(),
             }
             server.clear_requests();
-            let result = analysis::analyze_rpc(&input, entry(), bounded.clone()).unwrap();
+            let result = {
+                let values = native::product();
+                let policies = evm_abstract::analysis::EnginePolicies::default();
+                let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+                let engine =
+                    evm_abstract::analysis::AnalysisEngine::new(&values, &policies, &mut extension);
+                analysis::analyze_rpc(
+                    engine,
+                    &input,
+                    entry(),
+                    bounded.clone(),
+                    &Control::default(),
+                )
+            }
+            .unwrap();
             assert_eq!(result.failures().len(), 1);
             let original = &result.failures()[0];
             assert!(matches!(original, RpcError::Remote { code: -32001, .. }));
@@ -968,7 +1106,7 @@ fn failed_and_acquired_accounts_remain_paired_when_the_next_round_stops_early() 
             assert!(result.world().account(address(0x300)).is_some());
             assert!(!result.frontiers().iter().any(|frontier| {
                 matches!(frontier.reason, FrontierReason::RpcAcquisition { address: failed, .. } if failed == address(0x200))
-            }), "failed CALL was unexpectedly reached: {:?}", result.frontiers());
+            }) , "failed CALL was unexpectedly reached: {:?}", result.frontiers());
             match limit {
                 Limit::States => {
                     assert_eq!(result.states().len(), 1);
@@ -1010,9 +1148,16 @@ fn discovery_rounds_share_work_transfer_and_state_limits_without_rewriting_confi
             accounts(&[(0x101, &caller), (0x200, &child), (0x300, "00")]),
         );
         let input = server.input();
-        let full = analysis::analyze_rpc(&input, entry(), config())
-            .unwrap()
-            .into_analysis();
+        let full = {
+            let values = native::product();
+            let policies = evm_abstract::analysis::EnginePolicies::default();
+            let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+            let engine =
+                evm_abstract::analysis::AnalysisEngine::new(&values, &policies, &mut extension);
+            analysis::analyze_rpc(engine, &input, entry(), config(), &Control::default())
+        }
+        .unwrap()
+        .into_analysis();
         assert_eq!(full.status(), Status::Converged);
         let cumulative_states = full.rpc_acquisition().unwrap().states_created;
         assert!(cumulative_states > full.states().len());
@@ -1021,7 +1166,13 @@ fn discovery_rounds_share_work_transfer_and_state_limits_without_rewriting_confi
             full.rpc_acquisition().unwrap().fetched_accounts,
             [address(0x200), address(0x300)]
         );
-        let final_only = analysis::analyze_world(full.world().clone(), entry(), config()).unwrap();
+        let final_only = native::run(
+            &native::product(),
+            AnalysisInput::new(full.world().clone(), entry()).unwrap(),
+            config(),
+            &Control::default(),
+        )
+        .unwrap();
         assert!(full.transfers() > final_only.transfers());
         assert!(full.work() > final_only.work());
         for limit in [Limit::Work, Limit::Transfers, Limit::States] {
@@ -1033,9 +1184,22 @@ fn discovery_rounds_share_work_transfer_and_state_limits_without_rewriting_confi
                 _ => unreachable!(),
             }
             server.clear_requests();
-            let mut result = analysis::analyze_rpc(&input, entry(), bounded.clone())
-                .unwrap()
-                .into_analysis();
+            let mut result = {
+                let values = native::product();
+                let policies = evm_abstract::analysis::EnginePolicies::default();
+                let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+                let engine =
+                    evm_abstract::analysis::AnalysisEngine::new(&values, &policies, &mut extension);
+                analysis::analyze_rpc(
+                    engine,
+                    &input,
+                    entry(),
+                    bounded.clone(),
+                    &Control::default(),
+                )
+            }
+            .unwrap()
+            .into_analysis();
             if limit == Limit::Work && result.status() == Status::Converged {
                 // A final optional memo fee can be declined without stopping
                 // execution. Preserve that complete multi-round control, then
@@ -1058,9 +1222,25 @@ fn discovery_rounds_share_work_transfer_and_state_limits_without_rewriting_confi
                 assert!(work > 0 && work < bounded.max_work);
                 bounded.max_work = work;
                 server.clear_requests();
-                result = analysis::analyze_rpc(&input, entry(), bounded.clone())
-                    .unwrap()
-                    .into_analysis();
+                result = {
+                    let values = native::product();
+                    let policies = evm_abstract::analysis::EnginePolicies::default();
+                    let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+                    let engine = evm_abstract::analysis::AnalysisEngine::new(
+                        &values,
+                        &policies,
+                        &mut extension,
+                    );
+                    analysis::analyze_rpc(
+                        engine,
+                        &input,
+                        entry(),
+                        bounded.clone(),
+                        &Control::default(),
+                    )
+                }
+                .unwrap()
+                .into_analysis();
             }
             if limit == Limit::Work {
                 // The refusal must follow acquisition, not replace this test

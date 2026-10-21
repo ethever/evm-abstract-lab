@@ -1,5 +1,7 @@
 //! Two independent proof components exchange inequalities through a real cycle.
 use super::*;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 use std::collections::BTreeMap;
 
 struct Inequality {
@@ -207,7 +209,10 @@ fn peer_feedback_strengthens_source_then_returns_a_new_branch_consequence_withou
         for (forward, backward) in [(true, true), (false, true), (true, false)] {
             let (code, a, b, c, impossible) = fixture();
             let calls = Calls::default();
-            let algebra = fixtures::feedback_algebra(&calls);
+            let mut numeric = Policy::new(&calls);
+            numeric.exclusion_queries = false;
+            numeric.relations.enabled = false;
+            let algebra = evm_abstract::domain::ValueAlgebra::new(numeric);
             let rule = |upper, enabled| Inequality {
                 upper,
                 enabled,
@@ -225,19 +230,17 @@ fn peer_feedback_strengthens_source_then_returns_a_new_branch_consequence_withou
                 ),
                 Order(upper_first),
             );
-            let mut config = fixtures::config(5_000_000_000);
+            let config = fixtures::config(5_000_000_000);
             // Preserve the coarse native EQ carrier; neither ordinary relation
             // inference nor one local inequality supplies the peer's guarantee.
-            config.analysis.relations.enabled = false;
-            let result = analyze_world_cooperating(
-                fixtures::world(&code),
-                fixtures::entry(),
-                config,
-                &algebra,
-                &EnginePolicies::default(),
-                &mut extension,
-            )
-            .unwrap();
+
+            let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
+                .run(
+                    AnalysisInput::new(fixtures::world(&code), fixtures::entry()).unwrap(),
+                    config,
+                    &Control::default(),
+                )
+                .unwrap();
             fixtures::complete(&result);
             let complete = forward && backward;
             assert_eq!(

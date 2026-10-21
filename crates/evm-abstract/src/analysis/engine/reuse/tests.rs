@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use crate::analysis::testing::{Account, ByteArray, Entry, World};
 use crate::{
     Fork,
     analysis::{
@@ -6,8 +8,8 @@ use crate::{
         control::Control, progress::Observer, transfer,
     },
     bytecode::Program,
-    domain::{Domain, provenance::Origin, relational::QueryReason, symbolic::ExprId},
-    world::{Account, ByteArray, Code, Entry, Existence, World},
+    domain::{ProductAlgebra, provenance::Origin, relational::QueryReason, symbolic::ExprId},
+    world::{Code, Existence},
 };
 use alloy_primitives::Address;
 
@@ -26,7 +28,7 @@ fn fixture_with_code(code: &str, value: Option<u64>) -> (World, Entry, Arc<CodeC
     if let Some(value) = value {
         account
             .storage
-            .insert(U256::ZERO, AbstractValue::constant(U256::from(value)));
+            .insert(U256::ZERO, TestValue::constant(U256::from(value)));
     }
     let mut world = World::offline(Fork::Osaka, "memo state", "test");
     world.insert(address, account).unwrap();
@@ -53,7 +55,8 @@ fn numeric_constant_form(
 fn hit_keeps_new_store_and_all_saved_checkpoints() {
     let (old_world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let input =
         crate::analysis::transfer::procedure::testing::initial(&old_world, &entry, domain).unwrap();
     let mut ledger = WorkBudget::new(config.max_work);
@@ -79,7 +82,7 @@ fn hit_keeps_new_store_and_all_saved_checkpoints() {
     let mut other_account = Account::empty();
     other_account
         .storage
-        .insert(U256::ZERO, AbstractValue::constant(U256::from(7)));
+        .insert(U256::ZERO, TestValue::constant(U256::from(7)));
     new_world.insert(other, other_account).unwrap();
     let new =
         crate::analysis::transfer::procedure::testing::initial(&new_world, &entry, domain).unwrap();
@@ -134,8 +137,8 @@ fn hit_keeps_new_store_and_all_saved_checkpoints() {
         state: input.active().clone(),
         continuation: Continuation {
             return_block: Some(1),
-            output_offset: AbstractValue::constant(U256::ZERO),
-            output_size: AbstractValue::constant(U256::from(32)),
+            output_offset: TestValue::constant(U256::ZERO),
+            output_size: TestValue::constant(U256::from(32)),
             creation: None,
         },
     });
@@ -170,14 +173,15 @@ fn touched_ripemd_inputs_fall_back_to_fresh_failure_and_normal_execution() {
         world.insert(address, Account::empty()).unwrap();
     }
     let config = ExecutionConfig::default();
-    let domain = Domain::default();
-    let zero = AbstractValue::constant(U256::ZERO);
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
+    let zero = TestValue::constant(U256::ZERO);
     let mut input =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     input
         .active_mut()
         .stack
-        .push(AbstractValue::constant(U256::from(7)));
+        .push(TestValue::constant(U256::from(7)));
     input.active_mut().key.stack_height = 1;
     assert_eq!(input.store.touched_in_transaction(ripemd), Some(false));
     let original = input.clone();
@@ -211,12 +215,9 @@ fn touched_ripemd_inputs_fall_back_to_fresh_failure_and_normal_execution() {
         assert_eq!(current.store.touched_in_transaction(ripemd), touch);
         // Distinguish live effects from the real root checkpoint on Failure.
         current.store.touch_account(other);
-        current.store.write(
-            other,
-            &zero,
-            &AbstractValue::constant(U256::from(9)),
-            domain,
-        );
+        current
+            .store
+            .write(other, &zero, &TestValue::constant(U256::from(9)), domain);
         assert_eq!(current.call_stack, input.call_stack);
         assert_eq!(reuse.key(&current), reuse.key(&input));
         let before = current.clone();
@@ -316,11 +317,12 @@ fn touched_ripemd_inputs_fall_back_to_fresh_failure_and_normal_execution() {
 
 #[test]
 fn budget_and_current_cancellation_refuse_reuse_without_partial_effects() {
+    let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = algebra.borrowed();
     let (world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
     let input =
-        crate::analysis::transfer::procedure::testing::initial(&world, &entry, Domain::default())
-            .unwrap();
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let before = input.clone();
     let mut reuse = ExecutionReuse::new(catalog, 4, config.max_work, config.max_memory_bytes);
     let mut preparation = WorkBudget::new(config.max_work);
@@ -329,7 +331,7 @@ fn budget_and_current_cancellation_refuse_reuse_without_partial_effects() {
         &entry,
         input.clone(),
         &config,
-        Domain::default(),
+        domain,
         &mut preparation,
         transfer::StorageReadPolicy::Abstract,
     );
@@ -396,7 +398,8 @@ fn budget_and_current_cancellation_refuse_reuse_without_partial_effects() {
 #[test]
 fn ineligible_inputs_pay_only_metadata_before_lookup_or_remember() {
     let config = ExecutionConfig::default();
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let (world, entry, _) = fixture(None);
     let input =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
@@ -425,9 +428,12 @@ fn ineligible_inputs_pay_only_metadata_before_lookup_or_remember() {
             initcode.active_mut().key.mode = FrameCode::InitCode;
             candidates.push(initcode);
             let mut related = input.clone();
-            related
-                .relations
-                .assume(&ExprId::fresh().unwrap(), true, &domain.spec().relations());
+            related.relations.assume(
+                &ExprId::fresh().unwrap(),
+                true,
+                &domain.spec().relations(),
+                domain,
+            );
             assert!(!related.relations.is_empty());
             candidates.push(related);
             let mut absent = input.clone();
@@ -452,7 +458,8 @@ fn ineligible_inputs_pay_only_metadata_before_lookup_or_remember() {
 fn disqualified_results_return_before_full_signature_or_key() {
     let (world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let input =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut reuse = ExecutionReuse::new(catalog, 4, config.max_work, config.max_memory_bytes);
@@ -528,13 +535,14 @@ fn disqualified_results_return_before_full_signature_or_key() {
 fn eligible_paths_keep_full_signature_program_stack_and_policy_guards() {
     let (world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let mut input =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     input
         .active_mut()
         .stack
-        .push(AbstractValue::constant(U256::from(7)));
+        .push(TestValue::constant(U256::from(7)));
     input.active_mut().key.stack_height = 1;
     let mut reuse = ExecutionReuse::new(
         Arc::clone(&catalog),
@@ -574,7 +582,7 @@ fn eligible_paths_keep_full_signature_program_stack_and_policy_guards() {
     );
 
     let mut stack = input.clone();
-    stack.active_mut().stack[0] = AbstractValue::constant(U256::from(8));
+    stack.active_mut().stack[0] = TestValue::constant(U256::from(8));
     let mut policy = input.clone();
     policy.active_mut().key.is_static = true;
     for changed in [stack, policy] {
@@ -633,18 +641,19 @@ fn eligible_paths_keep_full_signature_program_stack_and_policy_guards() {
 
 #[test]
 fn optional_retention_cap_refuses_entry_without_changing_execution() {
+    let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = algebra.borrowed();
     let (world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
     let input =
-        crate::analysis::transfer::procedure::testing::initial(&world, &entry, Domain::default())
-            .unwrap();
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut ledger = WorkBudget::new(config.max_work);
     let execution = crate::analysis::transfer::procedure::testing::execute(
         &world,
         &entry,
         input.clone(),
         &config,
-        Domain::default(),
+        domain,
         &mut ledger,
         transfer::StorageReadPolicy::Abstract,
     );

@@ -1,17 +1,18 @@
 //! Public composition checks across the engine boundary.
 
 use super::{
-    Arrival, ContextPolicy, ControlledAnalysisError, EnginePolicies, ExecutionConfig, OutcomeKind,
-    PartitionPolicy, Status, analyze_world_with, analyze_world_with_components_control,
+    AnalysisEngine, AnalysisInput, Arrival, ContextPolicy, EnginePolicies, ExecutionConfig,
+    OutcomeKind, PartitionPolicy, Status,
     control::{CancelToken, Control},
+    cooperation::{CooperationError, NoExtension},
 };
 use crate::{
     Address, Fork, U256,
     domain::{
-        AbstractValue, Domain, DomainSpec, EvmNumericAlgebra, NumericReduction, NumericValue,
+        DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue, ProductAlgebra,
         ValueAlgebra,
     },
-    world::{Account, Entry, World},
+    world::{EvmAccount, EvmEntry, EvmWorld},
 };
 use std::cell::Cell;
 
@@ -59,7 +60,7 @@ impl PartitionPolicy for PartitionProbe<'_> {
 // catches an entrypoint silently substituting its default numeric algebra.
 #[derive(Debug)]
 struct NumericProbe<'a> {
-    domain: Domain,
+    domain: ProductAlgebra,
     operations: &'a Cell<usize>,
     coarse_add: bool,
     empty_reduce: bool,
@@ -100,7 +101,11 @@ impl EvmNumericAlgebra for NumericProbe<'_> {
         EvmNumericAlgebra::reduce_numeric(&self.domain, value)
     }
 
-    fn apply_numeric(&self, op: u8, args: &[NumericValue]) -> NumericReduction<NumericValue> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a NumericValue>,
+    ) -> NumericReduction<NumericValue> {
         self.operations.set(self.operations.get() + 1);
         if self.coarse_add && op == revm_bytecode::opcode::ADD {
             return NumericReduction::stable(NumericValue::top());
@@ -108,11 +113,11 @@ impl EvmNumericAlgebra for NumericProbe<'_> {
         EvmNumericAlgebra::apply_numeric(&self.domain, op, args)
     }
 
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize
     where
         Self::Element: 'a,
     {
-        EvmNumericAlgebra::operation_work(&self.domain, args)
+        EvmNumericAlgebra::operation_work(&self.domain, op, args)
     }
 
     fn literal_quote_work(&self, literal: U256) -> usize {
@@ -127,22 +132,26 @@ impl EvmNumericAlgebra for NumericProbe<'_> {
         EvmNumericAlgebra::refinement_work(&self.domain, value, facts)
     }
 
-    fn observe_byte_numeric(&self, op: u8, args: &[NumericValue]) -> NumericValue {
+    fn observe_byte_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a NumericValue>,
+    ) -> NumericValue {
         EvmNumericAlgebra::observe_byte_numeric(&self.domain, op, args)
     }
 }
 
-fn fixture() -> (World, Entry) {
+fn fixture() -> (EvmWorld<NumericValue>, EvmEntry<NumericValue>) {
     let address = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "borrowed composition policies");
+    let mut world = EvmWorld::new(Fork::Osaka, "borrowed composition policies");
     // Push 42, jump, add 1 and return the result through memory.
     world
         .insert(
             address,
-            Account::from_hex("602a600656005b6001015f5260205ff3", Fork::Osaka).unwrap(),
+            EvmAccount::from_hex("602a600656005b6001015f5260205ff3", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    (world, Entry::new(address))
+    (world, EvmEntry::new(address))
 }
 
 #[test]
@@ -152,7 +161,7 @@ fn borrowed_numeric_context_and_partition_policies_drive_production_execution() 
     let partition_calls = Cell::new(0);
     let graph = {
         let algebra = ValueAlgebra::new(NumericProbe {
-            domain: Domain::default(),
+            domain: ProductAlgebra::default(),
             operations: &numeric_calls,
             coarse_add: false,
             empty_reduce: false,
@@ -165,14 +174,13 @@ fn borrowed_numeric_context_and_partition_policies_drive_production_execution() 
             PartitionProbe(&partition_calls),
         );
         let (world, entry) = fixture();
-        analyze_world_with(
-            world,
-            entry,
-            ExecutionConfig::default(),
-            &algebra,
-            &policies,
-        )
-        .unwrap()
+        AnalysisEngine::new(&algebra, &policies, &mut NoExtension)
+            .run(
+                AnalysisInput::new(world, entry).unwrap(),
+                ExecutionConfig::default(),
+                &Control::default(),
+            )
+            .unwrap()
     };
     // Native results outlive the borrowed policy handles used for execution.
     assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
@@ -202,55 +210,46 @@ fn borrowed_numeric_context_and_partition_policies_drive_production_execution() 
         assert_eq!(
             outcome
                 .data
-                .read_word(&AbstractValue::constant(U256::ZERO), Domain::default())
+                .read_word(
+                    &EvmValue::constant(U256::ZERO),
+                    ValueAlgebra::new(ProductAlgebra::default()).borrowed()
+                )
                 .singleton(),
             Some(U256::from(43))
         );
     }
-    // Both report adapters must preserve every existing default field. The
-    // generic path serializes N directly, so custom domains use the same native
-    // evidence augmentation without an execution conversion.
-    assert_eq!(
-        crate::render::world::json(&graph).unwrap(),
-        crate::render::world::json_with(&graph).unwrap()
-    );
 }
 
 #[test]
 fn equal_domain_specs_do_not_share_results_between_numeric_instances() {
     // Disable expression constant recovery so the deliberately coarser ADD
     // implementation remains observable at this numeric injection boundary.
-    let config = ExecutionConfig {
-        analysis: super::Config {
-            relations: crate::domain::relational::RelationLimits {
-                enabled: false,
-                ..Default::default()
-            },
+    let config = ExecutionConfig::default();
+    let domain = ProductAlgebra::from_spec(DomainSpec::default().with_relations(
+        crate::domain::relational::RelationLimits {
+            enabled: false,
             ..Default::default()
         },
-        ..Default::default()
-    };
-    let domain = Domain::from_spec(config.analysis.validated_spec().unwrap());
+    ));
     let policies: EnginePolicies = EnginePolicies::default();
     let (world, entry) = fixture();
     let mut observations = Vec::new();
     for coarse_add in [false, true, false] {
         let operations = Cell::new(0);
         let algebra = ValueAlgebra::new(NumericProbe {
-            domain,
+            domain: domain.clone(),
             operations: &operations,
             coarse_add,
             empty_reduce: false,
         });
         assert_eq!(algebra.spec(), domain.spec());
-        let graph = analyze_world_with(
-            world.clone(),
-            entry.clone(),
-            config.clone(),
-            &algebra,
-            &policies,
-        )
-        .unwrap();
+        let graph = AnalysisEngine::new(&algebra, &policies, &mut NoExtension)
+            .run(
+                AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+                config.clone(),
+                &Control::default(),
+            )
+            .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         assert!(operations.get() > 0);
         let values = graph
@@ -260,7 +259,7 @@ fn equal_domain_specs_do_not_share_results_between_numeric_instances() {
             .map(|outcome| {
                 outcome
                     .data
-                    .read_word(&AbstractValue::constant(U256::ZERO), domain)
+                    .read_word(&EvmValue::constant(U256::ZERO), algebra.borrowed())
                     .singleton()
             })
             .collect::<Vec<_>>();
@@ -292,20 +291,17 @@ fn custom_composition_cancellation_prevents_start_and_report_publication() {
             },
             PartitionProbe(&partition_calls),
         );
-        let algebra = ValueAlgebra::new(Domain::default());
+        let algebra = ValueAlgebra::new(ProductAlgebra::default());
         let (world, entry) = fixture();
         if cancel_before_start {
             control.cancellation().cancel();
         }
-        let result = analyze_world_with_components_control(
-            world,
-            entry,
+        let result = AnalysisEngine::new(&algebra, &policies, &mut NoExtension).run(
+            AnalysisInput::new(world, entry).unwrap(),
             ExecutionConfig::default(),
-            &algebra,
-            &policies,
             &control,
         );
-        assert!(matches!(result, Err(ControlledAnalysisError::Cancelled)));
+        assert!(matches!(result, Err(CooperationError::Cancelled)));
         if cancel_before_start {
             assert_eq!(context_calls.get(), 0);
             assert_eq!(partition_calls.get(), 0);
@@ -325,13 +321,14 @@ fn refused_optional_feedback_keeps_the_input_reachable_and_unmodified() {
 
     let operations = Cell::new(0);
     let algebra = ValueAlgebra::new(NumericProbe {
-        domain: Domain::default(),
+        domain: ProductAlgebra::default(),
         operations: &operations,
         coarse_add: false,
         empty_reduce: true,
     });
-    let mut payload = super::machine::fixtures::payload(Domain::default());
-    payload.active_mut().stack.push(AbstractValue::top());
+    let mut payload =
+        super::machine::fixtures::payload(ValueAlgebra::new(ProductAlgebra::default()).borrowed());
+    payload.active_mut().stack.push(EvmValue::top());
     let facts = StackFacts::at(0, WordObservation::constant(U256::from(7)));
     let result = apply_refinements(
         payload,
@@ -375,7 +372,7 @@ impl<Cx> analysis_kernel::Analyzer<Cx> for FailingComponent<'_> {
 
 #[test]
 fn independent_component_errors_and_cancellation_publish_no_native_result() {
-    use super::cooperation::{CooperationError, Extension, analyze_world_cooperating_with_control};
+    use super::cooperation::Extension;
 
     for (cancel_before, cancel_during) in [(false, false), (true, false), (false, true)] {
         let calls = Cell::new(0);
@@ -387,15 +384,11 @@ fn independent_component_errors_and_cancellation_publish_no_native_result() {
         if cancel_before {
             control.cancellation().cancel();
         }
-        let algebra = ValueAlgebra::new(Domain::default());
+        let algebra = ValueAlgebra::new(ProductAlgebra::default());
         let (world, entry) = fixture();
-        let result = analyze_world_cooperating_with_control(
-            world,
-            entry,
+        let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension).run(
+            AnalysisInput::new(world, entry).unwrap(),
             ExecutionConfig::default(),
-            &algebra,
-            &EnginePolicies::default(),
-            &mut extension,
             &control,
         );
         if cancel_before {

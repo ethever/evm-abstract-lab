@@ -3,9 +3,10 @@
 
 use super::{fixtures, oracle, support::*};
 use alloy_primitives::U256;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     analysis::{ExecutionConfig, FrontierReason, OutcomeKind, Status},
-    world::ByteArray,
+    world::EvmByteArray,
 };
 use revm_bytecode::opcode;
 
@@ -73,7 +74,7 @@ fn repeated_sequential_self_leaf_calls_do_not_enter_recursive_summaries() {
     let code = sequential_self_leaves();
     let mut world = new_world();
     insert(&mut world, A, &code, &[(0, 5)]);
-    let mut input = entry(ByteArray::empty());
+    let mut input = entry(EvmByteArray::<NumericValue>::empty());
     input.environment.chain_id = Some(word(1));
     let observed = oracle::execute(&world, &input);
     assert_eq!(observed.kind, OutcomeKind::Return);

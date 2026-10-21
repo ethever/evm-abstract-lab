@@ -1,9 +1,7 @@
 //! Captured call-word history, read boundaries and conservative alias regressions.
 
-fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
-    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-}
 use super::super::{CheckResult, EvmValueQuery, QueryReason, RelationLimits, RelationState};
+use super::product_algebra;
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;

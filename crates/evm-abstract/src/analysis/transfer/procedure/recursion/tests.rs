@@ -1,13 +1,15 @@
 //! Known bytecode retains its semantics when a repeated entry becomes relative.
 
+#[cfg(test)]
+use crate::analysis::testing::{Account, Entry, World};
+use crate::domain::EvmNumericAlgebra as _;
+
 use crate::{
     analysis::{
         ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, ProcedureSummaryKind, Status,
-        analyze_world,
         machine::fixtures::{address, fixture, word},
     },
-    domain::Domain,
-    world::{Account, Entry, World},
+    domain::ProductAlgebra,
 };
 use alloy_primitives::U256;
 
@@ -58,9 +60,8 @@ fn check_entry_gas_failure(
         // cleanup. These fixtures never touch RIPEMD, so no sticky exception
         // may distinguish their rollback from the finalized root checkpoint.
         let mut expected = checkpoint.state().clone();
-        expected
-            .finalize_transaction(Domain::from_spec(result.domain_spec()))
-            .unwrap();
+        let algebra = crate::analysis::testing::product(result.domain_spec());
+        expected.finalize_transaction(algebra.borrowed()).unwrap();
         assert_eq!(outcome.store, expected);
     }
 }
@@ -78,7 +79,11 @@ fn direct_known_recursion_closes_with_default_depth_and_without_unknown_effects(
             use_summaries,
             ..ExecutionConfig::default()
         };
-        let result = analyze_world(world, entry, config).unwrap();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let result =
+            crate::analysis::testing::execute(world, entry, config, config_numeric.spec()).unwrap();
+        let algebra = crate::analysis::testing::product(result.domain_spec());
+        let domain = algebra.borrowed();
         assert_eq!(
             result.status(),
             Status::Converged,
@@ -129,23 +134,20 @@ fn direct_known_recursion_closes_with_default_depth_and_without_unknown_effects(
                 result.diagnostics()
             );
             assert_eq!(
-                outcome
-                    .data
-                    .read_word(&word(0), Domain::default())
-                    .singleton(),
+                outcome.data.read_word(&word(0), domain).singleton(),
                 Some(U256::from(42))
             );
             assert_eq!(
                 outcome
                     .store
-                    .read(address(0x101), &word(0), Domain::default())
+                    .read(address(0x101), &word(0), domain)
                     .singleton(),
                 Some(U256::from(11))
             );
             assert_eq!(
                 outcome
                     .store
-                    .read(address(0x102), &word(0), Domain::default())
+                    .read(address(0x102), &word(0), domain)
                     .singleton(),
                 Some(U256::from(5))
             );
@@ -157,7 +159,15 @@ fn direct_known_recursion_closes_with_default_depth_and_without_unknown_effects(
 fn no_base_return_recursion_derives_revert_and_rollback_from_call_rejection() {
     let code = "600b5f555f5f5f5f5f6101016207a120f15060635f5260205ffd";
     let (world, entry) = observed_fixture(&[(0x101, code)], 0x101, 7);
-    let result = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    let result = crate::analysis::testing::execute(
+        world,
+        entry,
+        ExecutionConfig::default(),
+        crate::domain::DomainSpec::default(),
+    )
+    .unwrap();
+    let algebra = crate::analysis::testing::product(result.domain_spec());
+    let domain = algebra.borrowed();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -191,16 +201,13 @@ fn no_base_return_recursion_derives_revert_and_rollback_from_call_rejection() {
             result.diagnostics()
         );
         assert_eq!(
-            outcome
-                .data
-                .read_word(&word(0), Domain::default())
-                .singleton(),
+            outcome.data.read_word(&word(0), domain).singleton(),
             Some(U256::from(99))
         );
         assert_eq!(
             outcome
                 .store
-                .read(address(0x101), &word(0), Domain::default())
+                .read(address(0x101), &word(0), domain)
                 .singleton(),
             Some(U256::from(7))
         );
@@ -213,7 +220,13 @@ fn recursive_component_with_call_memory_failures_closes_without_a_return() {
     // its continuation loops. Those real failures can close this procedure.
     let code = "5f5f5f5f5f6101016207a120f15b600d56";
     let (world, entry) = fixture(&[(0x101, code)]);
-    let result = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    let result = crate::analysis::testing::execute(
+        world,
+        entry,
+        ExecutionConfig::default(),
+        crate::domain::DomainSpec::default(),
+    )
+    .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -271,7 +284,9 @@ fn procedure_table_without_any_terminal_retains_an_explicit_frontier() {
     // it deliberately does not claim admission by a repeated recursive CALL.
     let (world, entry) = fixture(&[(0x101, "5b5f56")]);
     let config = ExecutionConfig::default();
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let input =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     assert!(!super::is_recursive_entry(&input));
@@ -322,7 +337,13 @@ fn repeated_outer_calls_keep_procedure_provenance_out_of_exact_graph_replay() {
     let a = "5f5f5f5f5f6101026207a120f1505f5f5f5f5f6101026207a120f150602a5f5260205ff3";
     let b = "5f5f5f5f5f6101026207a120f150602a5f5260205ff3";
     let (world, entry) = fixture(&[(0x101, a), (0x102, b)]);
-    let result = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    let result = crate::analysis::testing::execute(
+        world,
+        entry,
+        ExecutionConfig::default(),
+        crate::domain::DomainSpec::default(),
+    )
+    .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -378,7 +399,7 @@ fn recursive_procedure_keeps_private_return_pcs_finite_at_an_acyclic_helper() {
     code.push_str(&"00".repeat(336 - code.len() / 2));
     code.push_str("5b60635f5260205ff3");
     let (world, mut entry) = fixture(&[(0x101, &code)]);
-    entry.environment.calldata = crate::world::ByteArray::unknown();
+    entry.environment.calldata = crate::analysis::testing::ByteArray::unknown();
     let program = crate::bytecode::Program::from_hex_with_fork(&code, world.fork()).unwrap();
     let marker = program.jumpdest_blocks()[&336];
     for use_summaries in [true, false] {
@@ -387,10 +408,19 @@ fn recursive_procedure_keeps_private_return_pcs_finite_at_an_acyclic_helper() {
             use_summaries,
             ..ExecutionConfig::default()
         };
-        config.analysis.max_constants = 512;
-        config.analysis.relations.enabled = false;
-        let domain = config.domain().unwrap();
-        let result = analyze_world(world.clone(), entry.clone(), config).unwrap();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        config_numeric.max_constants = 512;
+        config_numeric.relations.enabled = false;
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
+        let result = crate::analysis::testing::execute(
+            world.clone(),
+            entry.clone(),
+            config,
+            config_numeric.spec(),
+        )
+        .unwrap();
         assert_eq!(
             result.status(),
             Status::Converged,
@@ -464,7 +494,7 @@ fn sequential_helpers(nested: bool) -> String {
 fn check_sequential_helpers(nested: bool) {
     let code = sequential_helpers(nested);
     let (world, mut entry) = fixture(&[(0x101, &code)]);
-    entry.environment.calldata = crate::world::ByteArray::unknown();
+    entry.environment.calldata = crate::analysis::testing::ByteArray::unknown();
     let program = crate::bytecode::Program::from_hex_with_fork(&code, world.fork()).unwrap();
     let marker = program.jumpdest_blocks()[&336];
     for use_summaries in [true, false] {
@@ -473,11 +503,20 @@ fn check_sequential_helpers(nested: bool) {
             use_summaries,
             ..ExecutionConfig::default()
         };
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
         config.analysis.context_depth = 128;
-        config.analysis.max_constants = 512;
-        config.analysis.relations.enabled = false;
-        let domain = config.domain().unwrap();
-        let result = analyze_world(world.clone(), entry.clone(), config).unwrap();
+        config_numeric.max_constants = 512;
+        config_numeric.relations.enabled = false;
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
+        let result = crate::analysis::testing::execute(
+            world.clone(),
+            entry.clone(),
+            config,
+            config_numeric.spec(),
+        )
+        .unwrap();
         assert_eq!(
             result.status(),
             Status::Converged,

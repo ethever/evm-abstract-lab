@@ -3,7 +3,8 @@ use super::support::{
     no_bad_branch, reachable, return_words, run, run_world,
 };
 use alloy_primitives::U256;
-use evm_abstract::{Fork, world::ByteArray};
+use evm_abstract::domain::NumericValue;
+use evm_abstract::{Fork, world::EvmByteArray};
 use revm_bytecode::opcode;
 
 fn store_input_key(code: &mut Assembly, input_offset: u16, value: u16) {
@@ -106,7 +107,9 @@ fn distinct_arithmetic_slot_keeps_the_ordered_write_witness() {
     conservative_guarded_returns_include(&analysis, &[7]);
     let world = construct_world(Fork::Osaka, &[(ROOT, &fixture.code)]);
     for key in [U256::ZERO, U256::ONE, U256::MAX] {
-        let input = entry(ByteArray::exact(&key.to_be_bytes::<32>()));
+        let input = entry(EvmByteArray::<NumericValue>::exact(
+            &key.to_be_bytes::<32>(),
+        ));
         let exact = run_world(world.clone(), input.clone(), config());
         no_bad_branch(&exact, &fixture, ROOT);
         return_words(&exact, &[7]);

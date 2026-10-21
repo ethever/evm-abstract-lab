@@ -8,14 +8,15 @@ use crate::{
         machine::fixtures,
         transfer::{Execution, ExecutionFrontier, RetentionCause},
     },
-    domain::{Domain, relational::QueryReason, symbolic::ExprError},
+    domain::{ProductAlgebra, relational::QueryReason, symbolic::ExprError},
     resource::WorkBudget,
     world::rpc::{Failure, RpcContext, RpcFailureKind},
 };
 
 fn retention(cause: Option<RetentionCause>) -> Execution {
+    let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     Execution {
-        payload: fixtures::payload(Domain::default()),
+        payload: fixtures::payload(algebra.borrowed()),
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
         instruction_values: Vec::new(),

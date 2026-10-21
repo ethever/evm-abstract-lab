@@ -7,7 +7,7 @@
 use super::{EvmByteArray, SnapshotIdentity};
 use crate::domain::AlgebraRef;
 use crate::domain::EvmValue;
-pub use crate::domain::provenance::Symbol;
+pub use crate::domain::identity::Symbol;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use alloy_primitives::{Address, B256, U256};
 use serde::Serialize;

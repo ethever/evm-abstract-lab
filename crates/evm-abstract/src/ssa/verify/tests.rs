@@ -1,7 +1,8 @@
-//! 故意损坏 IR，验证 verifier 真的拦截不变量，而不只对构建器返回 Ok。
+use crate::ssa::test_support::{TestAnalysis, run_program};
+// 故意损坏 IR，验证 verifier 真的拦截不变量，而不只对构建器返回 Ok。
 
 use crate::{
-    analysis::{self, Analysis, Config},
+    analysis::Config,
     bytecode::Program,
     ssa::{self, Ssa, SsaError, SsaInvariant, SsaInvariantKind as Kind},
 };
@@ -13,8 +14,8 @@ fn invariant(error: SsaError) -> SsaInvariant {
     *detail
 }
 
-fn diamond() -> (Analysis, Ssa) {
-    let analysis = analysis::analyze(
+fn diamond() -> (TestAnalysis, Ssa) {
+    let analysis = run_program(
         Program::from_hex("600035600b576002600e565b60015b600a0100").unwrap(),
         // 这些损坏 IR 的测试需要两条路径汇合到同一个节点，显式关闭上下文区分。
         Config {
@@ -27,7 +28,7 @@ fn diamond() -> (Analysis, Ssa) {
     (analysis, ssa)
 }
 
-fn state_at(analysis: &Analysis, pc: usize) -> usize {
+fn state_at(analysis: &TestAnalysis, pc: usize) -> usize {
     analysis
         .states()
         .iter()

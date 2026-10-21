@@ -1,7 +1,10 @@
 //! Production subscriptions depend on caller templates and callee outputs.
 
+use crate::domain::ProductAlgebra;
+
 use super::*;
 use crate::analysis::worklist::runtime::TaskKind;
+use crate::domain::EvmNumericAlgebra as _;
 
 #[test]
 fn tracking_a_native_body_uses_no_carrier_copy_or_query_and_honors_cancellation() {
@@ -18,7 +21,7 @@ fn tracking_a_native_body_uses_no_carrier_copy_or_query_and_honors_cancellation(
     let mut budget = WorkBudget::new(config.max_work);
     let mut table = Table::with_algebra(algebra);
     let mut counters = Counters::default();
-    let mut solver = table.solver_with(
+    let mut solver = table.solver(
         &world,
         &entry,
         &config,
@@ -52,12 +55,14 @@ fn tracking_a_native_body_uses_no_carrier_copy_or_query_and_honors_cancellation(
 fn output_growth_wakes_the_retained_outer_world_consumer() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let mut config = crate::analysis::machine::fixtures::config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config.use_summaries = true;
-    let domain = config.domain().unwrap();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let payload = super::super::testing::initial(&world, &entry, domain).unwrap();
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
-    let mut table = Table::default();
+    let mut table = Table::with_algebra(crate::analysis::testing::product(config_numeric.spec()));
     let (_, record) = table.execute(
         0,
         &world,
@@ -73,8 +78,7 @@ fn output_growth_wakes_the_retained_outer_world_consumer() {
     assert!(!table.runtime.contains_world(&0));
     let root = record.root_procedure.unwrap();
     let mut data = ByteArray::memory();
-    data.write_word(&word(0), &word(37), config.max_memory_bytes, domain)
-        .unwrap();
+    data.write_word(&word(0), &word(37), domain).unwrap();
     table
         .solver(
             &world,
@@ -93,13 +97,15 @@ fn output_growth_wakes_the_retained_outer_world_consumer() {
 fn caller_growth_redelivers_an_unchanged_callee_generation() {
     let (world, entry) = fixture(&[(0x101, "005b00")]);
     let mut config = crate::analysis::machine::fixtures::config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config.use_summaries = true;
-    config.analysis.relations.enabled = false;
-    let domain = config.domain().unwrap();
+    config_numeric.relations.enabled = false;
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let mut payload = super::super::testing::initial(&world, &entry, domain).unwrap();
     payload.active_mut().stack = vec![word(7)];
     payload.normalize();
-    let mut table = Table::default();
+    let mut table = Table::with_algebra(crate::analysis::testing::product(config_numeric.spec()));
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
     let mut solver = table.solver(
@@ -186,11 +192,13 @@ fn caller_growth_redelivers_an_unchanged_callee_generation() {
 fn late_feedback_redelivers_an_unchanged_template_and_callee_output() {
     let (world, entry) = fixture(&[(0x101, "005b00")]);
     let config = crate::analysis::machine::fixtures::config();
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let mut payload = super::super::testing::initial(&world, &entry, domain).unwrap();
     payload.active_mut().stack = vec![word(7)];
     payload.normalize();
-    let mut table = Table::default();
+    let mut table = Table::with_algebra(crate::analysis::testing::product(config_numeric.spec()));
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
     let mut solver = table.solver(

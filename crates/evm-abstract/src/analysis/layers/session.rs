@@ -13,7 +13,7 @@ use crate::{
         engine::{Counters, EvmExecutionReuse},
         transfer::StorageReadPolicy,
     },
-    domain::{EvmNumericAlgebra, EvmValue, WordElement},
+    domain::{AlgebraRef, EvmNumericAlgebra, EvmValue, WordElement},
     resource::WorkBudget,
     world::{Code, EvmAccount, EvmWorld, Existence, WorldError},
 };
@@ -160,6 +160,15 @@ pub enum SessionError<E> {
     /// Rejected atomic initial-fact batch.
     #[error("{0}")]
     Facts(FactError),
+    /// A native carrier refused refinement without proving a contradiction.
+    #[error("cannot refine initial fact {key:?}: {source}")]
+    Refinement {
+        /// Initial-state location whose native refinement was refused.
+        key: FactKey,
+        /// Actual domain failure; refusal is not an inconsistent input proof.
+        #[source]
+        source: crate::domain::facts::FactError,
+    },
     /// A fact references bytes that were not supplied to this offline catalog.
     #[error("compiled code {0:?} is missing from the catalog")]
     MissingCode(CodeId),
@@ -243,20 +252,43 @@ where
         input: AnalysisInput<D::Element>,
         config: ExecutionConfig,
     ) -> Result<Self, SessionError<<X as Composition<D::Element>>::Error>> {
+        let catalog = Arc::new(CodeCatalog::new(input.world.fork()));
+        Self::with_catalog(engine, input, config, catalog)
+    }
+
+    /// Share compiled code across independent snapshots without sharing facts,
+    /// runtime state, budgets or semantic cache entries. All executions still
+    /// consume this session's canonical input and actual frozen engine.
+    pub fn with_catalog(
+        engine: AnalysisEngine<'a, D, C, P, S, X>,
+        input: AnalysisInput<D::Element>,
+        config: ExecutionConfig,
+        mut catalog: Arc<CodeCatalog>,
+    ) -> Result<Self, SessionError<<X as Composition<D::Element>>::Error>> {
         config.validate()?;
         engine
             .algebra
             .spec()
             .validate()
             .map_err(ConfigError::from)?;
-        let mut catalog = CodeCatalog::new(input.world.fork());
+        if catalog.fork() != input.world.fork() {
+            return Err(CatalogError::MixedFork {
+                catalog: catalog.fork(),
+                program: input.world.fork(),
+            }
+            .into());
+        }
         for account in input.world.accounts().values() {
             if let Code::Runtime(program) = &account.code {
-                let (next, _) = catalog.with_runtime(program.clone())?;
-                catalog = next;
+                // with_runtime compares actual bytes on an identity hit. Keep
+                // the caller's Arc when nothing was added, without swallowing
+                // a hash collision or manufacturing another compilation cache.
+                let (next, id) = catalog.with_runtime(program.clone())?;
+                if catalog.get(id).is_none() {
+                    catalog = Arc::new(next);
+                }
             }
         }
-        let catalog = Arc::new(catalog);
         Ok(Self {
             reuse: EvmExecutionReuse::new(
                 Arc::clone(&catalog),
@@ -386,6 +418,7 @@ where
             &self.input.world,
             entry_code,
             self.input.entry.address,
+            self.engine.algebra.borrowed(),
             budget,
         )?;
         let input = AnalysisInput {
@@ -401,6 +434,11 @@ where
             policy,
             Some(&mut self.reuse),
         )?;
+        if budget.cancellation().is_cancelled()
+            || analysis_control::current_cancellation().is_cancelled()
+        {
+            return Err(SessionError::Cancelled(Cancelled));
+        }
         self.has_executed = true;
         self.executed_revision = Some(self.input.revision());
         self.pending_changes.clear();
@@ -466,19 +504,25 @@ where
                 .budget
                 .get_or_insert_with(|| WorkBudget::new(self.config.max_work));
             crate::resource::clone_payment::checkpoint(budget).map_err(session_clone_error)?;
-            let result = self.refine_scoped(snapshot, observations)?;
-            control.checkpoint()?;
-            Ok(result)
+            self.refine_scoped(snapshot, observations, control)
         })
     }
     fn refine_scoped(
         &mut self,
         snapshot: &SnapshotId,
         observations: impl IntoIterator<Item = Observation>,
+        control: &Control,
     ) -> Result<RefinementEffect, SessionError<<X as Composition<D::Element>>::Error>> {
         let previous = self.input.facts.revision();
         let refinement = self.input.facts.refine(snapshot, observations)?;
         if refinement.added().is_empty() {
+            control.checkpoint()?;
+            crate::resource::clone_payment::checkpoint(
+                self.budget
+                    .as_ref()
+                    .expect("refine establishes the retained ledger"),
+            )
+            .map_err(session_clone_error)?;
             return Ok(RefinementEffect::Unchanged { revision: previous });
         }
         validate_entry(
@@ -490,39 +534,62 @@ where
         let budget = self
             .budget
             .get_or_insert_with(|| WorkBudget::new(self.config.max_work));
-        validate_refinement(&self.catalog, &self.input.world, refinement.facts(), budget)?;
+        validate_refinement(
+            &self.catalog,
+            &self.input.world,
+            refinement.facts(),
+            refinement.added(),
+            budget,
+        )?;
         let current = refinement.facts().revision();
         let added = refinement.added().to_vec();
+        let (effect, pending_changes) = if self.has_executed {
+            let dependencies = self.reuse.dependencies.clone();
+            let mut pending = self.pending_changes.clone();
+            pending.extend(added.iter().copied());
+            let affected_states =
+                dependencies.affected_states(&pending.iter().copied().collect::<Vec<_>>());
+            (
+                RefinementEffect::RestartRequired {
+                    previous,
+                    executed_revision: self
+                        .executed_revision
+                        .expect("executed sessions retain their revision"),
+                    current,
+                    added,
+                    dependencies,
+                    affected_states,
+                },
+                Some(pending),
+            )
+        } else {
+            (
+                RefinementEffect::InitialFacts {
+                    previous,
+                    current,
+                    added,
+                },
+                None,
+            )
+        };
+        let facts = refinement.into_facts();
+        // Everything above is detached. These are the final fallible checks of
+        // both the current operation and the retained payer before publication.
+        control.checkpoint()?;
         crate::resource::clone_payment::checkpoint(
             self.budget
                 .as_ref()
                 .expect("refine establishes the retained ledger"),
         )
         .map_err(session_clone_error)?;
-        self.input.facts = refinement.into_facts();
+        // Publication is the linearization point. Cancellation after this move
+        // cannot turn a committed fact revision into a reported rejection.
+        self.input.facts = facts;
         self.latest = None;
-        if self.has_executed {
-            let dependencies = self.reuse.dependencies.clone();
-            self.pending_changes.extend(added.iter().copied());
-            let affected_states = dependencies
-                .affected_states(&self.pending_changes.iter().copied().collect::<Vec<_>>());
-            Ok(RefinementEffect::RestartRequired {
-                previous,
-                executed_revision: self
-                    .executed_revision
-                    .expect("executed sessions retain their revision"),
-                current,
-                added,
-                dependencies,
-                affected_states,
-            })
-        } else {
-            Ok(RefinementEffect::InitialFacts {
-                previous,
-                current,
-                added,
-            })
+        if let Some(pending) = pending_changes {
+            self.pending_changes = pending;
         }
+        Ok(effect)
     }
 }
 
@@ -560,14 +627,15 @@ fn validate_entry<E>(
     Ok(())
 }
 
-fn project_world<N: WordElement, E>(
+fn project_world<D: EvmNumericAlgebra, E>(
     catalog: &CodeCatalog,
     facts: &StateFacts,
-    seed: &EvmWorld<N>,
+    seed: &EvmWorld<D::Element>,
     entry_code: Option<CodeId>,
     entry_address: crate::Address,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
-) -> Result<EvmWorld<N>, SessionError<E>> {
+) -> Result<EvmWorld<D::Element>, SessionError<E>> {
     let mut addresses: BTreeSet<_> = facts.observations().map(|(key, _)| key.address()).collect();
     addresses.extend(seed.accounts().keys().copied());
     addresses.insert(entry_address);
@@ -588,16 +656,18 @@ fn project_world<N: WordElement, E>(
             }
             account.existence = observed;
         }
-        account.balance = intersect(
-            &account.balance,
+        account.balance = initial_value(
+            seed.account(address).map(|base| &base.balance),
             facts.balance(address),
             FactKey::Balance(address),
+            domain,
             budget,
         )?;
-        account.nonce = intersect(
-            &account.nonce,
+        account.nonce = initial_value(
+            seed.account(address).map(|base| &base.nonce),
             facts.nonce(address),
             FactKey::Nonce(address),
+            domain,
             budget,
         )?;
         if facts.storage_complete(address) {
@@ -654,26 +724,28 @@ fn project_world<N: WordElement, E>(
                 .get_mut(address)
                 .expect("each observed address was collected");
             let base = seed.account(*address);
-            let initial = base
-                .and_then(|a| a.storage.get(slot))
-                .cloned()
-                .unwrap_or_else(|| {
-                    if base.is_some_and(|a| !a.storage_unknown || a.existence == Existence::Absent)
-                    {
-                        EvmValue::constant(crate::U256::ZERO)
-                    } else {
-                        EvmValue::top()
-                    }
-                });
+            let initial = base.and_then(|account| account.storage.get(slot));
+            if initial.is_none()
+                && base.is_some_and(|account| {
+                    !account.storage_unknown || account.existence == Existence::Absent
+                })
+                && *value != crate::U256::ZERO
+            {
+                return Err(conflict(FactKey::Storage {
+                    address: *address,
+                    slot: *slot,
+                }));
+            }
             account.storage.insert(
                 *slot,
-                intersect(
-                    &initial,
+                initial_value(
+                    initial,
                     Observed::Known(*value),
                     FactKey::Storage {
                         address: *address,
                         slot: *slot,
                     },
+                    domain,
                     budget,
                 )?,
             );
@@ -684,6 +756,28 @@ fn project_world<N: WordElement, E>(
 
 fn conflict<E>(key: FactKey) -> SessionError<E> {
     FactError::Conflict { key }.into()
+}
+
+/// A newly observed location has no prior scalar metadata to preserve. Its
+/// actual native literal is different from narrowing an existing abstract input.
+fn initial_value<D: EvmNumericAlgebra, E>(
+    base: Option<&EvmValue<D::Element>>,
+    observed: Observed<crate::U256>,
+    key: FactKey,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<EvmValue<D::Element>, SessionError<E>> {
+    if let Some(base) = base {
+        return intersect(base, observed, key, budget);
+    }
+    let Observed::Known(value) = observed else {
+        return Ok(EvmValue::top());
+    };
+    crate::resource::clone_payment::pay(budget, domain.literal_quote_work(value))
+        .map_err(session_clone_error)?;
+    let literal = EvmValue::constant(value);
+    crate::resource::clone_payment::checkpoint(budget).map_err(session_clone_error)?;
+    Ok(literal)
 }
 
 fn intersect<N: WordElement, E>(
@@ -704,15 +798,18 @@ fn intersect<N: WordElement, E>(
         crate::resource::CloneError::Cancelled => SessionError::Cancelled(Cancelled),
         crate::resource::CloneError::Work => SessionError::Work,
     })?;
-    if !base.contains(value) {
+    let contains = base.contains(value);
+    crate::resource::clone_payment::checkpoint(budget).map_err(session_clone_error)?;
+    if !contains {
         return Err(conflict(key));
     }
-    let numeric = base
-        .numeric()
-        .constrain(&observation)
-        .map_err(|_| conflict(key))?;
-    crate::resource::clone_payment::checkpoint(budget)
-        .map_err(|_| SessionError::Cancelled(Cancelled))?;
+    let constrained = base.numeric().constrain(&observation);
+    crate::resource::clone_payment::checkpoint(budget).map_err(session_clone_error)?;
+    let numeric = constrained.map_err(|source| match source {
+        crate::domain::facts::FactError::Contradiction { .. } => conflict(key),
+        source => SessionError::Refinement { key, source },
+    })?;
+    crate::resource::clone_payment::checkpoint(budget).map_err(session_clone_error)?;
     Ok(base.clone().with_numeric(numeric))
 }
 
@@ -723,49 +820,120 @@ fn validate_refinement<N: WordElement, E>(
     catalog: &CodeCatalog,
     seed: &EvmWorld<N>,
     facts: &StateFacts,
+    added: &[FactKey],
     budget: &mut WorkBudget,
 ) -> Result<(), SessionError<E>> {
-    for (key, observation) in facts.observations() {
-        if let Some(account) = seed.account(key.address()) {
-            match observation {
-                Observation::Code { address, code } => {
-                    let observed = match code {
-                        CodeObservation::Empty => Code::Empty,
-                        CodeObservation::Delegation(target) => Code::Delegation(*target),
-                        CodeObservation::Runtime(id) => runtime(catalog, *id)?,
-                    };
-                    let empty = |code: &Code| {
-                        matches!(code, Code::Empty)
-                            || matches!(code, Code::Runtime(program) if program.byte_len() == 0)
-                    };
-                    if account.code != Code::Unknown
-                        && account.code != observed
-                        && !(empty(&account.code) && empty(&observed))
-                    {
-                        return Err(conflict(FactKey::Code(*address)));
-                    }
+    use crate::resource::clone_payment::pay;
+    let levels = (usize::BITS as usize).saturating_add(1);
+    pay(
+        budget,
+        added.len().saturating_mul(levels).saturating_mul(64),
+    )
+    .map_err(session_clone_error)?;
+    let affected: BTreeSet<_> = added.iter().map(|key| key.address()).collect();
+    for address in &affected {
+        // Cover bounded map lookups before querying effective candidate facts.
+        pay(budget, levels.saturating_mul(128)).map_err(session_clone_error)?;
+        let base = seed.account(*address);
+        let code = facts.code(*address);
+        if let Observed::Known(observed) = code {
+            let observed_bytes = match observed {
+                CodeObservation::Runtime(id) => catalog
+                    .program(id)
+                    .map_or(0, crate::bytecode::Program::byte_len),
+                _ => 0,
+            };
+            let base_bytes = base.map_or(0, |account| match &account.code {
+                Code::Runtime(program) => program.byte_len(),
+                _ => 0,
+            });
+            // Program clones share their backing. A full byte comparison is
+            // needed only when an existing code assumption must be checked.
+            let comparison = if base.is_some_and(|account| account.code != Code::Unknown) {
+                observed_bytes.saturating_add(base_bytes).saturating_mul(32)
+            } else {
+                0
+            };
+            pay(budget, comparison.saturating_add(16)).map_err(session_clone_error)?;
+            let observed = match observed {
+                CodeObservation::Empty => Code::Empty,
+                CodeObservation::Delegation(target) => Code::Delegation(target),
+                CodeObservation::Runtime(id) => runtime(catalog, id)?,
+            };
+            if let Some(base) = base {
+                let empty = |code: &Code| {
+                    matches!(code, Code::Empty)
+                        || matches!(code, Code::Runtime(program) if program.byte_len() == 0)
+                };
+                if base.code != Code::Unknown
+                    && base.code != observed
+                    && !(empty(&base.code) && empty(&observed))
+                {
+                    return Err(conflict(FactKey::Code(*address)));
                 }
-                Observation::Balance { value, .. } => {
-                    intersect(&account.balance, Observed::Known(*value), *key, budget)?;
-                }
-                Observation::Nonce { value, .. } => {
-                    intersect(&account.nonce, Observed::Known(*value), *key, budget)?;
-                }
-                Observation::Storage { slot, value, .. } => {
-                    if let Some(base) = account.storage.get(slot) {
-                        intersect(base, Observed::Known(*value), *key, budget)?;
-                    } else if !account.storage_unknown && *value != crate::U256::ZERO {
-                        return Err(conflict(*key));
-                    }
-                }
-                Observation::Existence { exists, .. } => {
-                    if account.existence != Existence::Unknown
-                        && (*exists != (account.existence == Existence::Present))
-                    {
-                        return Err(conflict(*key));
-                    }
-                }
-                _ => {}
+            }
+        }
+        let Some(base) = base else {
+            continue;
+        };
+        if let Observed::Known(exists) = facts.existence(*address)
+            && base.existence != Existence::Unknown
+            && exists != (base.existence == Existence::Present)
+        {
+            return Err(conflict(FactKey::Existence(*address)));
+        }
+        if let balance @ Observed::Known(_) = facts.balance(*address) {
+            intersect(&base.balance, balance, FactKey::Balance(*address), budget)?;
+        }
+        if let nonce @ Observed::Known(_) = facts.nonce(*address) {
+            intersect(&base.nonce, nonce, FactKey::Nonce(*address), budget)?;
+        }
+        // Absence/completeness constrain retained slots too. Looking only at
+        // explicit observations would publish an incompatible implicit zero.
+        pay(
+            budget,
+            base.storage.len().saturating_mul(64).saturating_add(1),
+        )
+        .map_err(session_clone_error)?;
+        for (slot, value) in &base.storage {
+            if let observed @ Observed::Known(_) = facts.storage(*address, *slot) {
+                intersect(
+                    value,
+                    observed,
+                    FactKey::Storage {
+                        address: *address,
+                        slot: *slot,
+                    },
+                    budget,
+                )?;
+            }
+        }
+    }
+    if !seed.accounts().is_empty() {
+        pay(
+            budget,
+            facts
+                .observation_count()
+                .saturating_mul(levels)
+                .saturating_mul(64),
+        )
+        .map_err(session_clone_error)?;
+        for (_, observation) in facts.observations() {
+            if let Observation::Storage {
+                address,
+                slot,
+                value,
+            } = observation
+                && affected.contains(address)
+                && let Some(base) = seed.account(*address)
+                && !base.storage.contains_key(slot)
+                && (!base.storage_unknown || base.existence == Existence::Absent)
+                && *value != crate::U256::ZERO
+            {
+                return Err(conflict(FactKey::Storage {
+                    address: *address,
+                    slot: *slot,
+                }));
             }
         }
     }

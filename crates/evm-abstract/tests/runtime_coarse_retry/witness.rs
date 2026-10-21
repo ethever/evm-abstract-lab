@@ -1,15 +1,17 @@
 //! One typed snapshot assignment, shared across current/rollback roots and
 //! owners. Unsupported expression forms fail instead of using field membership
 //! as a substitute for a common valuation. These summaries have no path formula.
+use crate::native;
 
 use super::support::{B, BALANCE, U, address, word};
 use alloy_primitives::U256;
+use evm_abstract::domain::{NumericValue, ProductAlgebra};
 use evm_abstract::{
     domain::{
-        Domain, WordObservation,
+        ValueAlgebra, WordObservation,
         symbolic::{ByteStateKind, ExprId, ExprKind, SlotStateId, SlotStateKind, SourceId},
     },
-    world::{ByteArray, Store},
+    world::{EvmByteArray, EvmStore},
 };
 use std::collections::BTreeMap;
 
@@ -132,18 +134,27 @@ impl Assignment {
         }
     }
 
-    pub(super) fn exact_bytes(&mut self, data: &ByteArray, expected: &[u8]) {
+    pub(super) fn exact_bytes(&mut self, data: &EvmByteArray<NumericValue>, expected: &[u8]) {
         assert_eq!(data.len().singleton(), Some(U256::from(expected.len())));
         let ByteStateKind::Exact(bytes) = data.state_root().kind() else {
             panic!("expected one immutable exact returned buffer");
         };
         assert_eq!(bytes.as_ref(), expected);
-        assert_eq!(data.exact_bytes().as_deref(), Some(expected));
+        assert_eq!(
+            data.exact_bytes(native::product().borrowed()).as_deref(),
+            Some(expected)
+        );
     }
 
     /// Complete these two fixture planes with zero at all unlisted keys.
     /// SourceId includes its namespace; equal tokens never merge owners/planes.
-    pub(super) fn store(&mut self, store: &Store, persistent: u64, transient: u64, domain: Domain) {
+    pub(super) fn store(
+        &mut self,
+        store: &EvmStore<NumericValue>,
+        persistent: u64,
+        transient: u64,
+        domain: &ValueAlgebra<ProductAlgebra>,
+    ) {
         for (owner, slot0, slot1) in [(B, persistent, 5), (U, 0, 0)] {
             for (transient_plane, values) in [
                 (false, [slot0, slot1]),
@@ -153,9 +164,9 @@ impl Assignment {
                 for (key, expected) in values.into_iter().enumerate() {
                     self.slots(&root, U256::from(key), U256::from(expected));
                     let value = if transient_plane {
-                        store.read_transient(address(owner), &word(key as u64), domain)
+                        store.read_transient(address(owner), &word(key as u64), domain.borrowed())
                     } else {
-                        store.read(address(owner), &word(key as u64), domain)
+                        store.read(address(owner), &word(key as u64), domain.borrowed())
                     };
                     assert!(value.contains(U256::from(expected)));
                 }

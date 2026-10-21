@@ -1,4 +1,5 @@
 //! A covered arrival may still establish a new acceleration obligation.
+use crate::domain::ProductAlgebra;
 
 use super::{Counters, engine, fixtures};
 use crate::{
@@ -11,8 +12,12 @@ use crate::{
 fn first_feedback_wakes_a_covered_input_and_invalidates_its_receipt_once() {
     let mut config = fixtures::config();
     config.root_terminal_coverage = false;
-    let result = fixtures::run("00", config);
-    let algebra = ValueAlgebra::new(result.config.domain().unwrap());
+    let result = fixtures::run(
+        "00",
+        config,
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    );
+    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
     let policies = Default::default();
     let mut budget = WorkBudget::new(100_000_000);
     let mut counters = Counters::default();

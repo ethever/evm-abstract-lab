@@ -1,4 +1,10 @@
 //! Independent issue-13 acceptance regressions across call/store/SSA boundaries.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 #[path = "issue13_review/joint.rs"]
 mod joint;
 #[path = "summaries/oracle.rs"]
@@ -6,28 +12,28 @@ mod oracle;
 
 use evm_abstract::{
     Fork, U256,
-    analysis::{ExecutionConfig, MachineEdgeKind, OutcomeKind, Status, analyze_world},
+    analysis::{ExecutionConfig, MachineEdgeKind, OutcomeKind, Status},
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         provenance::{Origin, OriginSet, Provenance},
         symbolic::{ExprId, ExprKind, SlotStateId, SlotStateKind},
     },
     ssa,
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use oracle::address;
 use revm_bytecode::opcode;
 
-fn entry() -> Entry {
-    Entry {
+fn entry() -> EvmEntry<NumericValue> {
+    EvmEntry {
         address: address(0x101),
-        environment: evm_abstract::world::EvmEnvironment {
+        environment: evm_abstract::world::EvmEnvironmentValues {
             to: (address(0x101)).into(),
             caller: (address(0x1000)).into(),
-            value: AbstractValue::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
+            value: EvmValue::<NumericValue>::constant(U256::ZERO),
+            calldata: EvmByteArray::<NumericValue>::empty(),
             is_static: false,
-            ..evm_abstract::world::EvmEnvironment::default()
+            ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
         },
     }
 }
@@ -258,7 +264,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
         false
     }
 
-    let proof_limits = Domain::default().spec().relations().expressions();
+    let proof_limits = native::product().spec().relations().expressions();
     let first_guard = ExprId::fresh().unwrap();
     let second_guard = ExprId::fresh().unwrap();
     let nested = |yes, no| {
@@ -324,8 +330,8 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
         (input.clone(), other_input),
         (source_read(1), source_read(2)),
     ] {
-        let left = AbstractValue::unknown_byte().with_expression(left);
-        let right = AbstractValue::unknown_byte().with_expression(right);
+        let left = EvmValue::<NumericValue>::unknown_byte().with_expression(left);
+        let right = EvmValue::<NumericValue>::unknown_byte().with_expression(right);
         assert_eq!(left.numeric(), right.numeric());
         assert_ne!(
             specialize_ites(left.expression().unwrap(), &true_guard, proof_limits).unwrap(),
@@ -456,7 +462,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
     let proxy = "60205f5f5f610300620f4240f45060205ff3";
     let implementation = "5f5c600101805f5d5f5260205ff3";
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
-        let mut world = World::new(fork, "review:two-proxy-transient");
+        let mut world = EvmWorld::<NumericValue>::new(fork, "review:two-proxy-transient");
         for (number, code) in [
             (0x101, root.as_str()),
             (0x201, proxy),
@@ -464,16 +470,20 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             (0x300, implementation),
         ] {
             world
-                .insert(address(number), Account::from_hex(code, fork).unwrap())
+                .insert(
+                    address(number),
+                    EvmAccount::<NumericValue>::from_hex(code, fork).unwrap(),
+                )
                 .unwrap();
         }
-        let graph = analyze_world(
-            world.clone(),
-            entry(),
+        let graph = native::run(
+            &native::product(),
+            AnalysisInput::new(world.clone(), entry()).unwrap(),
             ExecutionConfig {
                 root_terminal_coverage: false,
                 ..ExecutionConfig::default()
             },
+            &Control::default(),
         )
         .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
@@ -482,15 +492,15 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             OutcomeKind::Return
         );
         ssa::build_world(&graph).unwrap().verify(&graph).unwrap();
-        let zero = AbstractValue::constant(U256::ZERO);
-        let domain = Domain::default();
+        let zero = EvmValue::<NumericValue>::constant(U256::ZERO);
+        let domain = native::product();
         for outcome in graph.outcomes() {
             assert!(outcome.store.transient_slots().is_empty());
             for owner in [0x101, 0x201, 0x202, 0x300] {
                 assert_eq!(
                     outcome
                         .store
-                        .read_transient_checked(address(owner), &zero, domain)
+                        .read_transient_checked(address(owner), &zero, domain.borrowed())
                         .unwrap(),
                     zero
                 );
@@ -510,7 +520,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
         assert_eq!(graph.domain_spec().relations(), limits);
         let union = |maximum: u64| {
             (1..=maximum).fold(zero.clone(), |value, n| {
-                domain.join(&value, &AbstractValue::constant(U256::from(n)))
+                domain.join(&value, &EvmValue::<NumericValue>::constant(U256::from(n)))
             })
         };
         let counter_source = Provenance::from_origins(
@@ -557,7 +567,10 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                         && receipt.successors().contains(&(state.id, expected_edge))
                 })
             }));
-            assert_eq!(status.numeric(), AbstractValue::constant(success).numeric());
+            assert_eq!(
+                status.numeric(),
+                EvmValue::<NumericValue>::constant(success).numeric()
+            );
             assert_eq!(status.provenance(), &Provenance::constant());
             assert!(!status.symbolic_limit_reached());
         }
@@ -573,7 +586,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             .as_ref()
             .unwrap()
             .store
-            .read_checked(address(0x101), &zero, domain)
+            .read_checked(address(0x101), &zero, domain.borrowed())
             .unwrap();
         assert_eq!(rejected_zero.numeric(), zero.numeric());
         assert!(!rejected_zero.symbolic_limit_reached());
@@ -617,13 +630,15 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                     evm_abstract::analysis::InstructionProgress::Completed
                 );
             }
-            let slot = AbstractValue::constant(U256::from(state.active().basic_block_index - 1));
+            let slot = EvmValue::<NumericValue>::constant(U256::from(
+                state.active().basic_block_index - 1,
+            ));
             let stored = state
                 .exit
                 .as_ref()
                 .unwrap()
                 .store
-                .read_checked(address(0x101), &slot, domain)
+                .read_checked(address(0x101), &slot, domain.borrowed())
                 .unwrap();
             assert_eq!(stored.numeric(), load.numeric());
             assert_memory_source(stored.provenance());
@@ -634,7 +649,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
         let initial_zero = graph.states()[0]
             .entry
             .store
-            .read_checked(address(0x101), &zero, domain)
+            .read_checked(address(0x101), &zero, domain.borrowed())
             .unwrap();
         assert_eq!(initial_zero, zero);
         assert_memory_source(rejected_zero.provenance());
@@ -653,7 +668,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 );
                 assert_eq!(
                     store
-                        .read_transient_checked(address(owner), &zero, domain)
+                        .read_transient_checked(address(owner), &zero, domain.borrowed())
                         .unwrap(),
                     zero
                 );
@@ -700,8 +715,8 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                             .store
                             .read_checked(
                                 address(0x101),
-                                &AbstractValue::constant(U256::from(slot)),
-                                domain
+                                &EvmValue::<NumericValue>::constant(U256::from(slot)),
+                                domain.borrowed()
                             )
                             .unwrap()
                             .numeric(),
@@ -712,7 +727,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                     assert_eq!(
                         payload
                             .store
-                            .read_transient_checked(address(owner), &zero, domain)
+                            .read_transient_checked(address(owner), &zero, domain.borrowed())
                             .unwrap()
                             .numeric(),
                         union(bound).numeric()
@@ -752,10 +767,10 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             );
             let payload = terminal.exit.as_ref().unwrap();
             let persistent = [(0, 1), (1, 1), (2, 2)].map(|(slot, expected)| {
-                let key = AbstractValue::constant(U256::from(slot));
+                let key = EvmValue::<NumericValue>::constant(U256::from(slot));
                 let read = outcome
                     .store
-                    .read_checked(address(0x101), &key, domain)
+                    .read_checked(address(0x101), &key, domain.borrowed())
                     .unwrap();
                 // Preserve the original finite/expected checks, plus every
                 // numeric component and the complete memory-source provenance.
@@ -773,7 +788,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                     read,
                     payload
                         .store
-                        .read_checked(address(0x101), &key, domain)
+                        .read_checked(address(0x101), &key, domain.borrowed())
                         .unwrap()
                 );
                 read
@@ -979,7 +994,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             let counters = owners.map(|owner| {
                 payload
                     .store
-                    .read_transient_checked(address(owner), &zero, domain)
+                    .read_transient_checked(address(owner), &zero, domain.borrowed())
                     .unwrap()
             });
             let histories =
@@ -1065,7 +1080,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 .unwrap();
             let before_third = &third_implementation.entry.store;
             let old_count = before_third
-                .read_transient_checked(address(0x201), &zero, domain)
+                .read_transient_checked(address(0x201), &zero, domain.borrowed())
                 .unwrap();
             assert_eq!(old_count.numeric(), union(1).numeric());
             assert_eq!(old_count.provenance(), &counter_source);
@@ -1161,7 +1176,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                     implementation
                         .entry
                         .store
-                        .read_transient_checked(address(owner), &zero, domain)
+                        .read_transient_checked(address(owner), &zero, domain.borrowed())
                         .unwrap()
                         .numeric(),
                     zero.numeric()
@@ -1213,7 +1228,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 assert_eq!(
                     payload
                         .store
-                        .read_transient_checked(address(owner), &zero, domain)
+                        .read_transient_checked(address(owner), &zero, domain.borrowed())
                         .unwrap(),
                     counters[index]
                 );
@@ -1226,12 +1241,20 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
 fn value_call_to_confirmed_empty_account_creates_present_state() {
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         let root = format!("{}506102003f5f5260205ff3", call(0x200, 5));
-        let mut world = World::new(fork, "review:empty-value-call");
-        let mut root_account = Account::from_hex(&root, fork).unwrap();
-        root_account.balance = AbstractValue::constant(U256::from(100));
+        let mut world = EvmWorld::<NumericValue>::new(fork, "review:empty-value-call");
+        let mut root_account = EvmAccount::<NumericValue>::from_hex(&root, fork).unwrap();
+        root_account.balance = EvmValue::<NumericValue>::constant(U256::from(100));
         world.insert(address(0x101), root_account).unwrap();
-        world.insert(address(0x200), Account::absent()).unwrap();
-        let graph = analyze_world(world.clone(), entry(), ExecutionConfig::default()).unwrap();
+        world
+            .insert(address(0x200), EvmAccount::<NumericValue>::absent())
+            .unwrap();
+        let graph = native::run(
+            &native::product(),
+            AnalysisInput::new(world.clone(), entry()).unwrap(),
+            ExecutionConfig::default(),
+            &Control::default(),
+        )
+        .unwrap();
         assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
         assert_eq!(
             oracle::compare(&world, &entry(), &graph),
@@ -1244,12 +1267,15 @@ fn value_call_to_confirmed_empty_account_creates_present_state() {
                 .iter()
                 .any(|outcome| outcome.kind == OutcomeKind::Return
                     && outcome.store.read_balance(address(0x200)).singleton()
-                        == AbstractValue::constant(U256::from(5)).singleton()
+                        == EvmValue::<NumericValue>::constant(U256::from(5)).singleton()
                     && outcome.store.existence(address(0x200))
                         == evm_abstract::world::Existence::Present
                     && outcome
                         .data
-                        .read_word(&AbstractValue::constant(U256::ZERO), Domain::default())
+                        .read_word(
+                            &EvmValue::<NumericValue>::constant(U256::ZERO),
+                            native::product().borrowed()
+                        )
                         .contains(U256::from_be_slice(
                             alloy_primitives::keccak256([]).as_slice()
                         ))),
@@ -1261,28 +1287,40 @@ fn value_call_to_confirmed_empty_account_creates_present_state() {
 
 #[test]
 fn balance_updates_preserve_sound_account_presence_for_mixed_values() {
-    let mut world = World::new(Fork::Osaka, "review:balance-presence");
-    world.insert(address(0x200), Account::absent()).unwrap();
-    world.insert(address(0x201), Account::empty()).unwrap();
-    let mut exact = evm_abstract::world::Store::new(&world);
-    exact.write_balance(address(0x200), AbstractValue::constant(U256::from(5)));
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "review:balance-presence");
+    world
+        .insert(address(0x200), EvmAccount::<NumericValue>::absent())
+        .unwrap();
+    world
+        .insert(address(0x201), EvmAccount::<NumericValue>::empty())
+        .unwrap();
+    let mut exact =
+        evm_abstract::world::EvmStore::<NumericValue>::new(&world, native::product().borrowed());
+    exact.write_balance(
+        address(0x200),
+        EvmValue::<NumericValue>::constant(U256::from(5)),
+    );
     assert_eq!(
         exact.existence(address(0x200)),
         evm_abstract::world::Existence::Present
     );
-    let mut mixed = evm_abstract::world::Store::new(&world);
+    let mut mixed =
+        evm_abstract::world::EvmStore::<NumericValue>::new(&world, native::product().borrowed());
     mixed.write_balance(
         address(0x200),
-        Domain::default().join(
-            &AbstractValue::constant(U256::ZERO),
-            &AbstractValue::constant(U256::from(5)),
+        native::product().join(
+            &EvmValue::<NumericValue>::constant(U256::ZERO),
+            &EvmValue::<NumericValue>::constant(U256::from(5)),
         ),
     );
     assert_eq!(
         mixed.existence(address(0x200)),
         evm_abstract::world::Existence::Unknown
     );
-    mixed.write_balance(address(0x201), AbstractValue::constant(U256::ZERO));
+    mixed.write_balance(
+        address(0x201),
+        EvmValue::<NumericValue>::constant(U256::ZERO),
+    );
     assert_eq!(
         mixed.existence(address(0x201)),
         evm_abstract::world::Existence::Present
@@ -1304,18 +1342,19 @@ fn prague_and_osaka_bls_native_operations_cover_valid_and_invalid_inputs() {
             (0x10, 64, 128),
             (0x11, 128, 256),
         ] {
-            let world = World::new(fork, "review:bls-native");
+            let world = EvmWorld::<NumericValue>::new(fork, "review:bls-native");
             let mut input = entry();
             input.address = address(number);
             input.environment.to = address(number).into();
-            input.environment.calldata = ByteArray::exact(&vec![0; input_size]);
-            let graph = analyze_world(
-                world.clone(),
-                input.clone(),
+            input.environment.calldata = EvmByteArray::<NumericValue>::exact(&vec![0; input_size]);
+            let graph = native::run(
+                &native::product(),
+                AnalysisInput::new(world.clone(), input.clone()).unwrap(),
                 ExecutionConfig {
                     max_work: 10_000_000,
                     ..ExecutionConfig::default()
                 },
+                &Control::default(),
             )
             .unwrap();
             assert_eq!(
@@ -1329,13 +1368,19 @@ fn prague_and_osaka_bls_native_operations_cover_valid_and_invalid_inputs() {
                     .outcomes()
                     .iter()
                     .any(|outcome| outcome.kind == OutcomeKind::Return
-                        && outcome.data.len() == &AbstractValue::constant(U256::from(output_size)))
+                        && outcome.data.len()
+                            == &EvmValue::<NumericValue>::constant(U256::from(output_size)))
             );
             assert_eq!(oracle::compare(&world, &input, &graph), OutcomeKind::Return);
             ssa::build_world(&graph).unwrap().verify(&graph).unwrap();
-            input.environment.calldata = ByteArray::empty();
-            let invalid =
-                analyze_world(world.clone(), input.clone(), ExecutionConfig::default()).unwrap();
+            input.environment.calldata = EvmByteArray::<NumericValue>::empty();
+            let invalid = native::run(
+                &native::product(),
+                AnalysisInput::new(world.clone(), input.clone()).unwrap(),
+                ExecutionConfig::default(),
+                &Control::default(),
+            )
+            .unwrap();
             assert_eq!(invalid.status(), Status::Converged);
             assert!(
                 !invalid

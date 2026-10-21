@@ -258,6 +258,11 @@ impl StateFacts {
         self.revision
     }
 
+    /// Cached table length for prepaying fact iteration without traversing it.
+    pub(super) fn observation_count(&self) -> usize {
+        self.observations.len()
+    }
+
     /// Explicit observations, without materializing consequences of absence.
     pub fn observations(&self) -> impl Iterator<Item = (&FactKey, &Observation)> {
         self.observations.iter()

@@ -1,12 +1,13 @@
+use crate::ssa::test_support::{
+    TestAccount, TestBytes, TestEntry, TestValue, TestWorld, TestWorldAnalysis, run_world,
+};
 use evm_abstract_notation::Symbol;
 
 use super::render;
 use crate::{
     Address, Fork, U256,
-    analysis::{self, ExecutionConfig, MachineEdgeKind, Status, WorldAnalysis},
-    domain::AbstractValue,
+    analysis::{self, ExecutionConfig, MachineEdgeKind, Status},
     ssa,
-    world::{Account, ByteArray, Entry, World},
 };
 use serde_json::Value as Json;
 use std::collections::BTreeSet;
@@ -15,13 +16,13 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn run(world: World, entry: Address, calldata: ByteArray) -> WorldAnalysis {
-    let graph = analysis::analyze_world(
+fn run(world: TestWorld, entry: Address, calldata: TestBytes) -> TestWorldAnalysis {
+    let graph = run_world(
         world,
-        Entry::concrete(
+        TestEntry::concrete(
             entry,
             address(0x900),
-            AbstractValue::constant(U256::ZERO),
+            TestValue::constant(U256::ZERO),
             calldata,
         ),
         ExecutionConfig {
@@ -38,26 +39,26 @@ fn run(world: World, entry: Address, calldata: ByteArray) -> WorldAnalysis {
     graph
 }
 
-fn fixture(code: &str, child: Option<&str>, calldata: ByteArray) -> WorldAnalysis {
-    let mut world = World::new(Fork::Osaka, "SSA renderer fixture");
+fn fixture(code: &str, child: Option<&str>, calldata: TestBytes) -> TestWorldAnalysis {
+    let mut world = TestWorld::new(Fork::Osaka, "SSA renderer fixture");
     world
         .insert(
             address(0x101),
-            Account::from_hex(code, Fork::Osaka).unwrap(),
+            TestAccount::from_hex(code, Fork::Osaka).unwrap(),
         )
         .unwrap();
     if let Some(child) = child {
         world
             .insert(
                 address(0x200),
-                Account::from_hex(child, Fork::Osaka).unwrap(),
+                TestAccount::from_hex(child, Fork::Osaka).unwrap(),
             )
             .unwrap();
     }
     run(world, address(0x101), calldata)
 }
 
-fn rendered(graph: &WorldAnalysis) -> (ssa::WorldSsa, String) {
+fn rendered(graph: &TestWorldAnalysis) -> (ssa::WorldSsa, String) {
     let ir = ssa::build_world(graph).unwrap();
     ir.verify(graph).unwrap();
     let text = render(graph, &ir);
@@ -105,7 +106,7 @@ fn section<'a>(text: &'a str, start: &str, next: &str) -> &'a str {
 
 #[test]
 fn shared_layout_keeps_real_block_titles_and_bare_instruction_effect_pcs() {
-    let graph = fixture("60015f5500", None, ByteArray::empty());
+    let graph = fixture("60015f5500", None, TestBytes::empty());
     let (ir, text) = rendered(&graph);
     let block = &ir.blocks()[0];
     contains(&text, "\nB₀ @ 0x0000:\n");
@@ -153,7 +154,7 @@ fn shared_layout_keeps_real_block_titles_and_bare_instruction_effect_pcs() {
 fn shared_layout_grows_for_multi_digit_block_ids_and_wide_pcs() {
     let mut code = "5b5f50".repeat(12);
     code.push_str("00");
-    let graph = fixture(&code, None, ByteArray::empty());
+    let graph = fixture(&code, None, TestBytes::empty());
     let (ir, text) = rendered(&graph);
     for block in ir.blocks() {
         let state = &graph.states()[block.state];
@@ -183,7 +184,7 @@ fn shared_layout_grows_for_multi_digit_block_ids_and_wide_pcs() {
     let mut code = String::from("6201000056");
     code.push_str(&"58".repeat(0x10000 - 5));
     code.push_str("5b5f5000");
-    let graph = fixture(&code, None, ByteArray::empty());
+    let graph = fixture(&code, None, TestBytes::empty());
     let (_, text) = rendered(&graph);
     contains(&text, "\nB₂ @ 0x10000:\n       10000: JUMPDEST");
     contains(&text, "       10003: STOP");
@@ -194,7 +195,7 @@ fn readable_text_covers_every_serialized_ssa_field_and_frame_context() {
     let graph = fixture(
         "602a5f5f5f5f5f61020061fffff100",
         Some("60075f55600b5f52600360095f5ffd"),
-        ByteArray::empty(),
+        TestBytes::empty(),
     );
     let (ir, text) = rendered(&graph);
     let json = serde_json::to_value(&ir).unwrap();
@@ -432,7 +433,7 @@ fn call_revert_and_immediate_failure_keep_dispatch_and_deferred_results_explicit
     let graph = fixture(
         "602a5f5f5f5f5f61020061fffff100",
         Some("60075f555f5ffd"),
-        ByteArray::empty(),
+        TestBytes::empty(),
     );
     let (ir, text) = rendered(&graph);
     for kind in [
@@ -463,15 +464,17 @@ fn call_revert_and_immediate_failure_keep_dispatch_and_deferred_results_explicit
 #[test]
 fn creation_results_are_addresses_for_success_and_same_frame_failure() {
     let creator = address(0x101);
-    let mut world = World::new(Fork::Osaka, "CREATE renderer fixture");
+    let mut world = TestWorld::new(Fork::Osaka, "CREATE renderer fixture");
     world
         .insert(
             creator,
-            Account::from_hex("5f5f5360015f5ff000", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("5f5f5360015f5ff000", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    world.insert(creator.create(0), Account::absent()).unwrap();
-    let graph = run(world, creator, ByteArray::empty());
+    world
+        .insert(creator.create(0), TestAccount::absent())
+        .unwrap();
+    let graph = run(world, creator, TestBytes::empty());
     let (ir, text) = rendered(&graph);
     assert!(
         ir.transitions()
@@ -512,7 +515,7 @@ fn creation_results_are_addresses_for_success_and_same_frame_failure() {
 
 #[test]
 fn empty_native_and_faulted_blocks_do_not_invent_bytecode_steps() {
-    let empty = fixture("", None, ByteArray::empty());
+    let empty = fixture("", None, TestBytes::empty());
     let (ir, text) = rendered(&empty);
     assert!(ir.blocks()[0].instructions.is_empty());
     contains(&text, "mode=Empty");
@@ -525,9 +528,9 @@ fn empty_native_and_faulted_blocks_do_not_invent_bytecode_steps() {
             .any(|line| line.starts_with('B') && line.contains(" @ 0x"))
     );
     let native = run(
-        World::new(Fork::Osaka, "native renderer fixture"),
+        TestWorld::new(Fork::Osaka, "native renderer fixture"),
         address(4),
-        ByteArray::exact(b"hello"),
+        TestBytes::exact(b"hello"),
     );
     let (ir, text) = rendered(&native);
     assert!(ir.blocks()[0].instructions.is_empty());
@@ -539,7 +542,7 @@ fn empty_native_and_faulted_blocks_do_not_invent_bytecode_steps() {
             .lines()
             .any(|line| line.starts_with('B') && line.contains(" @ 0x"))
     );
-    let fault = fixture("01", None, ByteArray::empty());
+    let fault = fixture("01", None, TestBytes::empty());
     let (_, text) = rendered(&fault);
     contains(
         &text,
@@ -549,7 +552,7 @@ fn empty_native_and_faulted_blocks_do_not_invent_bytecode_steps() {
 
 #[test]
 fn parallel_edges_have_distinct_transition_and_effect_phi_inputs() {
-    let graph = fixture("602a5f356007575b00", None, ByteArray::unknown());
+    let graph = fixture("602a5f356007575b00", None, TestBytes::unknown());
     let (ir, text) = rendered(&graph);
     let edges = graph.edges();
     let parallel = edges
@@ -607,16 +610,16 @@ fn parallel_edges_have_distinct_transition_and_effect_phi_inputs() {
 
 #[test]
 fn invalid_delegation_is_an_exceptional_halt_without_an_instruction_list() {
-    let mut world = World::new(Fork::Osaka, "nested delegation renderer");
+    let mut world = TestWorld::new(Fork::Osaka, "nested delegation renderer");
     let root = address(0x101);
     let implementation = address(0x200);
-    let mut authority = Account::empty();
+    let mut authority = TestAccount::empty();
     authority.code = crate::world::Code::Delegation(implementation);
-    let mut nested = Account::empty();
+    let mut nested = TestAccount::empty();
     nested.code = crate::world::Code::Delegation(root);
     world.insert(root, authority).unwrap();
     world.insert(implementation, nested).unwrap();
-    let graph = run(world, root, ByteArray::empty());
+    let graph = run(world, root, TestBytes::empty());
     let (ir, text) = rendered(&graph);
     assert!(ir.blocks()[0].instructions.is_empty());
     assert!(
@@ -637,19 +640,22 @@ fn invalid_delegation_is_an_exceptional_halt_without_an_instruction_list() {
 
 #[test]
 fn execution_failure_is_distinct_from_an_invalid_opcode_or_stack_fault() {
-    let mut world = World::new(Fork::Osaka, "static write renderer");
+    let mut world = TestWorld::new(Fork::Osaka, "static write renderer");
     let root = address(0x101);
     world
-        .insert(root, Account::from_hex("60015f5500", Fork::Osaka).unwrap())
+        .insert(
+            root,
+            TestAccount::from_hex("60015f5500", Fork::Osaka).unwrap(),
+        )
         .unwrap();
-    let graph = analysis::analyze_world(
+    let graph = run_world(
         world,
         {
-            let mut entry = Entry::concrete(
+            let mut entry = TestEntry::concrete(
                 root,
                 address(0x900),
-                AbstractValue::constant(U256::ZERO),
-                ByteArray::empty(),
+                TestValue::constant(U256::ZERO),
+                TestBytes::empty(),
             );
             entry.environment.is_static = true;
             entry

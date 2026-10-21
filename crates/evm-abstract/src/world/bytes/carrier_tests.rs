@@ -1,21 +1,18 @@
 //! A numeric carrier whose parity guarantee is deliberately absent from exports.
 
 use super::{EvmByteArray, conditional};
-use crate::{
-    Fork,
-    domain::{
-        Domain, DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, ValueAlgebra,
-        WordElement, WordObservation,
-        facts::{FactError, Symbol},
-        symbolic::ExprId,
-    },
-    resource::WorkBudget,
-    world::{EvmAccount, EvmLog, EvmStore, EvmWorld, LogKey, LogSourceKind},
-};
 use alloy_primitives::{Address, B256, U256};
 use revm_bytecode::opcode;
 use serde::Serialize;
 use std::{cell::Cell, collections::BTreeMap, fmt};
+use {
+    crate::Fork, crate::domain::DomainSpec, crate::domain::EvmNumericAlgebra,
+    crate::domain::EvmValue, crate::domain::NumericReduction, crate::domain::ValueAlgebra,
+    crate::domain::WordElement, crate::domain::WordObservation, crate::domain::facts::FactError,
+    crate::domain::facts::Symbol, crate::domain::symbolic::ExprId, crate::resource::WorkBudget,
+    crate::world::EvmAccount, crate::world::EvmLog, crate::world::EvmStore, crate::world::EvmWorld,
+    crate::world::LogKey, crate::world::LogSourceKind, crate::world::test_support::TestAlgebra,
+};
 
 static BINDING_IMPORTS: crate::test_instrumentation::Counter<usize> =
     crate::test_instrumentation::Counter::new(0);
@@ -148,7 +145,7 @@ impl Words {
 impl EvmNumericAlgebra for Words {
     type Element = Word;
     fn spec(&self) -> DomainSpec {
-        Domain::default().spec()
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).spec()
     }
     fn project_numeric(&self, value: &Word) -> Word {
         value.clone()
@@ -170,9 +167,17 @@ impl EvmNumericAlgebra for Words {
     fn reduce_numeric(&self, value: &Word) -> NumericReduction<Word> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Word]) -> NumericReduction<Word> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
+        let args: Vec<_> = args.collect();
         self.applies.set(self.applies.get() + 1);
-        let exact = args.iter().map(Word::singleton).collect::<Option<Vec<_>>>();
+        let exact = args
+            .iter()
+            .map(|arg| arg.singleton())
+            .collect::<Option<Vec<_>>>();
         let value = if let Some(words) = exact {
             let word = match (op, words.as_slice()) {
                 (opcode::ADD, [a, b]) => a.overflowing_add(*b).0,
@@ -198,35 +203,35 @@ impl EvmNumericAlgebra for Words {
             };
             Word::constant(word)
         } else {
-            match (op, args) {
+            match (op, args.as_slice()) {
                 (opcode::AND, [value, mask])
                     if mask.singleton() == Some(U256::from(255))
                         && value.upper <= U256::from(255) =>
                 {
-                    value.clone()
+                    (*value).clone()
                 }
                 (opcode::BYTE, [index, value]) if value.upper <= U256::from(255) => {
                     match index.singleton() {
-                        Some(index) if index == U256::from(31) => value.clone(),
+                        Some(index) if index == U256::from(31) => (*value).clone(),
                         Some(_) => Word::constant(U256::ZERO),
                         None => Word::unknown_byte(),
                     }
                 }
                 (opcode::SHL, [shift, value]) if shift.singleton() == Some(U256::ZERO) => {
-                    value.clone()
+                    (*value).clone()
                 }
                 (opcode::OR, [zero, value]) if zero.singleton() == Some(U256::ZERO) => {
-                    value.clone()
+                    (*value).clone()
                 }
                 (opcode::OR, [value, zero]) if zero.singleton() == Some(U256::ZERO) => {
-                    value.clone()
+                    (*value).clone()
                 }
                 _ => Word::top(),
             }
         };
         NumericReduction::stable(value)
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Word>) -> usize {
+    fn operation_work<'a>(&self, _op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
         args.fold(1024usize, |work, value| {
             work.saturating_add(value.work_size())
         })
@@ -258,8 +263,8 @@ fn assert_odd(value: &EvmValue<Word>) {
 #[test]
 fn custom_word_survives_memory_history_and_summary_instantiation() {
     let numeric = Words::new("memory");
-    let policy = ValueAlgebra::new(numeric);
-    let domain = policy.borrowed();
+    let policy = ValueAlgebra::new(&numeric);
+    let domain = policy;
     assert_eq!(literal(0).constants(), None);
     assert_eq!(literal(0).singleton(), Some(U256::ZERO));
     assert_ne!(
@@ -268,26 +273,24 @@ fn custom_word_survives_memory_history_and_summary_instantiation() {
     );
 
     let mut memory = EvmByteArray::memory();
-    memory
-        .write_word_with(&literal(0), &odd(), 4096, domain)
-        .unwrap();
-    assert_odd(&memory.read_word_with(&literal(0), domain));
+    memory.write_word(&literal(0), &odd(), domain).unwrap();
+    assert_odd(&memory.read_word(&literal(0), domain));
     let original = memory.clone();
     memory
-        .write_byte_with(&literal(31), &literal(2), 4096, domain)
+        .write_byte(&literal(31), &literal(2), domain)
         .unwrap();
     assert_eq!(
-        memory.read_word_with(&literal(0), domain).singleton(),
+        memory.read_word(&literal(0), domain).singleton(),
         Some(U256::from(2))
     );
-    assert_odd(&original.read_word_with(&literal(0), domain));
-    let summary = original.summary_projection_with(domain).unwrap();
-    let first = summary.instantiate_with(domain).unwrap();
-    let second = summary.instantiate_with(domain).unwrap();
-    assert_odd(&first.read_word_with(&literal(0), domain));
-    assert_odd(&second.read_word_with(&literal(0), domain));
+    assert_odd(&original.read_word(&literal(0), domain));
+    let summary = original.summary_projection(domain).unwrap();
+    let first = summary.instantiate(domain).unwrap();
+    let second = summary.instantiate(domain).unwrap();
+    assert_odd(&first.read_word(&literal(0), domain));
+    assert_odd(&second.read_word(&literal(0), domain));
     assert_ne!(first.state_root(), second.state_root());
-    assert_eq!(summary, first.summary_projection_with(domain).unwrap());
+    assert_eq!(summary, first.summary_projection(domain).unwrap());
     assert!(policy.numeric_algebra().applies.get() > 0);
 }
 
@@ -305,20 +308,18 @@ fn full_hull_custom_word_keeps_identity_without_complete_standard_views() {
     assert_eq!(original.constants(), None);
     assert!(!original.numeric().is_top());
     let mut memory = EvmByteArray::memory();
-    memory
-        .write_word_with(&literal(0), &original, 4096, domain)
-        .unwrap();
-    assert_odd(&memory.read_word_with(&literal(0), domain));
-    let summary = memory.summary_projection_with(domain).unwrap();
-    let first = summary.instantiate_with(domain).unwrap();
-    let second = summary.instantiate_with(domain).unwrap();
-    assert_odd(&first.read_word_with(&literal(0), domain));
-    assert_odd(&second.read_word_with(&literal(0), domain));
+    memory.write_word(&literal(0), &original, domain).unwrap();
+    assert_odd(&memory.read_word(&literal(0), domain));
+    let summary = memory.summary_projection(domain).unwrap();
+    let first = summary.instantiate(domain).unwrap();
+    let second = summary.instantiate(domain).unwrap();
+    assert_odd(&first.read_word(&literal(0), domain));
+    assert_odd(&second.read_word(&literal(0), domain));
     assert_ne!(first.state_root(), second.state_root());
-    assert_eq!(summary, first.summary_projection_with(domain).unwrap());
+    assert_eq!(summary, first.summary_projection(domain).unwrap());
     assert!(summary.work_size() >= first.work_size());
     let combined = first
-        .join_guarded_with(
+        .join_guarded(
             &second,
             domain,
             ExprId::fresh().unwrap(),
@@ -341,62 +342,60 @@ fn full_hull_custom_word_keeps_identity_without_complete_standard_views() {
         scoped_predicate,
         "the only extra guarantees belong to the guarded scopes"
     );
-    assert_odd(&combined.read_word_with(&literal(0), domain));
+    assert_odd(&combined.read_word(&literal(0), domain));
     assert_odd(
         &combined
-            .summary_projection_with(domain)
+            .summary_projection(domain)
             .unwrap()
-            .instantiate_with(domain)
+            .instantiate(domain)
             .unwrap()
-            .read_word_with(&literal(0), domain),
+            .read_word(&literal(0), domain),
     );
     assert!(combined.retained_word_projection_work_with(domain, 0) > 0);
     assert_eq!(
         EvmByteArray::<Word>::memory().retained_word_projection_work_with(domain, 0),
         0
     );
-    let joined = summary.join_with(&summary, domain, false);
+    let joined = summary.join(&summary, domain, false);
     assert_eq!(joined, summary);
     assert_odd(
         &joined
-            .instantiate_with(domain)
+            .instantiate(domain)
             .unwrap()
-            .read_word_with(&literal(0), domain),
+            .read_word(&literal(0), domain),
     );
     let mut unaligned = EvmByteArray::memory();
     unaligned
-        .write_word_with(&literal(7), &original, 4096, domain)
+        .write_word(&literal(7), &original, domain)
         .unwrap();
     assert_odd(
         &unaligned
-            .summary_projection_with(domain)
+            .summary_projection(domain)
             .unwrap()
-            .instantiate_with(domain)
+            .instantiate(domain)
             .unwrap()
-            .read_word_with(&literal(7), domain),
+            .read_word(&literal(7), domain),
     );
-    let complete = unaligned
-        .slice_with(&literal(7), &literal(32), 4096, domain)
-        .unwrap();
-    assert_odd(&complete.read_word_with(&literal(0), domain));
+    let complete = unaligned.slice(&literal(7), &literal(32), domain).unwrap();
+    assert_odd(&complete.read_word(&literal(0), domain));
     assert_odd(
         &complete
-            .summary_projection_with(domain)
+            .summary_projection(domain)
             .unwrap()
-            .instantiate_with(domain)
+            .instantiate(domain)
             .unwrap()
-            .read_word_with(&literal(0), domain),
+            .read_word(&literal(0), domain),
     );
 
     // A whole-word predicate cannot survive a real partial overwrite: word 1
     // is allowed before the write, and word 2 is allowed afterwards.
     let mut changed = first.clone();
     changed
-        .write_byte_with(&literal(31), &literal(2), 4096, domain)
+        .write_byte(&literal(31), &literal(2), domain)
         .unwrap();
     assert!(
         changed
-            .read_word_with(&literal(0), domain)
+            .read_word(&literal(0), domain)
             .contains(U256::from(2))
     );
     let mut aliased = first.clone();
@@ -415,44 +414,38 @@ fn full_hull_custom_word_keeps_identity_without_complete_standard_views() {
     );
     assert!(
         aliased
-            .read_word_with(&literal(0), domain)
+            .read_word(&literal(0), domain)
             .contains(U256::from(2))
     );
     assert!(
         aliased
-            .summary_projection_with(domain)
+            .summary_projection(domain)
             .unwrap()
-            .instantiate_with(domain)
+            .instantiate(domain)
             .unwrap()
-            .read_word_with(&literal(0), domain)
+            .read_word(&literal(0), domain)
             .contains(U256::from(2))
     );
     let changed = changed
-        .summary_projection_with(domain)
+        .summary_projection(domain)
         .unwrap()
-        .instantiate_with(domain)
+        .instantiate(domain)
         .unwrap();
     assert!(
         changed
-            .read_word_with(&literal(0), domain)
+            .read_word(&literal(0), domain)
             .contains(U256::from(2))
     );
     // Truncating the low byte of allowed word 1, then padding, can yield zero.
-    let padded = first
-        .slice_with(&literal(0), &literal(31), 4096, domain)
-        .unwrap();
+    let padded = first.slice(&literal(0), &literal(31), domain).unwrap();
+    assert!(padded.read_word(&literal(0), domain).contains(U256::ZERO));
     assert!(
         padded
-            .read_word_with(&literal(0), domain)
-            .contains(U256::ZERO)
-    );
-    assert!(
-        padded
-            .summary_projection_with(domain)
+            .summary_projection(domain)
             .unwrap()
-            .instantiate_with(domain)
+            .instantiate(domain)
             .unwrap()
-            .read_word_with(&literal(0), domain)
+            .read_word(&literal(0), domain)
             .contains(U256::ZERO)
     );
 }
@@ -510,16 +503,16 @@ fn tightened_custom_source_keeps_extra_guarantees_beyond_its_binding_observation
         expression.clone(),
         EvmValue::from_numeric(narrowed).with_expression(expression),
     );
-    let read = input.byte_at_with(0, domain);
+    let read = input.byte_at(0, domain);
     assert!(
         read.numeric().odd,
         "binding import erased the custom guarantee"
     );
     assert!(!read.contains(U256::from(3)));
     assert!(read.contains(U256::from(9)));
-    let summary = input.summary_projection_with(domain).unwrap();
-    let replay = summary.instantiate_with(domain).unwrap();
-    let read = replay.byte_at_with(0, domain);
+    let summary = input.summary_projection(domain).unwrap();
+    let replay = summary.instantiate(domain).unwrap();
+    let read = replay.byte_at(0, domain);
     assert!(read.numeric().odd);
     assert!(!read.contains(U256::from(3)));
     assert!(read.contains(U256::from(9)));
@@ -615,7 +608,7 @@ fn binding_import_is_prepaid_on_prepared_and_unprepared_reader_paths() {
     let frozen = input.clone();
     let mut pilot = WorkBudget::new(usize::MAX);
     let plan = input
-        .prepare_word_read_with(&literal(0), domain, &mut pilot)
+        .prepare_word_read(&literal(0), domain, &mut pilot)
         .unwrap()
         .unwrap();
     let prefix = pilot.used();
@@ -625,7 +618,7 @@ fn binding_import_is_prepaid_on_prepared_and_unprepared_reader_paths() {
     assert_eq!(BINDING_IMPORTS.replace(0), 1);
     let mut refused = WorkBudget::new(prefix + fee - 1);
     let plan = input
-        .prepare_word_read_with(&literal(0), domain, &mut refused)
+        .prepare_word_read(&literal(0), domain, &mut refused)
         .unwrap()
         .unwrap();
     assert!(plan.read_word_budgeted(&mut refused).unwrap().is_none());
@@ -655,11 +648,9 @@ fn native_world_byte_and_store_exports_keep_the_actual_custom_element() {
     account.balance = odd();
     account.storage.insert(U256::from(9), odd());
     world.insert(owner, account).unwrap();
-    let store = EvmStore::new_checked_with(&world, domain).unwrap();
+    let store = EvmStore::new_checked(&world, domain).unwrap();
     let mut memory = EvmByteArray::memory();
-    memory
-        .write_byte_with(&literal(0), &odd(), 4096, domain)
-        .unwrap();
+    memory.write_byte(&literal(0), &odd(), domain).unwrap();
 
     // The interner's WordObservation intentionally has no odd field. These
     // exports must also serialize their real retained executable N.
@@ -684,10 +675,10 @@ fn custom_store_checkpoints_and_summaries_keep_values_effects_and_owners() {
     account.storage.insert(U256::from(7), odd());
     world.insert(address, account).unwrap();
     world.insert(other, EvmAccount::empty()).unwrap();
-    let mut store = EvmStore::new_checked_with(&world, domain).unwrap();
-    assert_odd(&store.read_with(address, &literal(7), domain));
-    store.write_with(address, &literal(9), &odd(), domain);
-    store.write_transient_with(address, &literal(10), &odd(), domain);
+    let mut store = EvmStore::new_checked(&world, domain).unwrap();
+    assert_odd(&store.read(address, &literal(7), domain));
+    store.write(address, &literal(9), &odd(), domain);
+    store.write_transient(address, &literal(10), &odd(), domain);
     store.write_nonce(address, odd());
     let log = LogKey {
         address,
@@ -697,10 +688,9 @@ fn custom_store_checkpoints_and_summaries_keep_values_effects_and_owners() {
         pc: 1,
     };
     let mut data = EvmByteArray::memory();
-    data.write_byte_with(&literal(0), &odd(), 4096, domain)
-        .unwrap();
+    data.write_byte(&literal(0), &odd(), domain).unwrap();
     store
-        .emit_log_with(
+        .emit_log(
             log.clone(),
             EvmLog {
                 topics: vec![odd()],
@@ -712,23 +702,23 @@ fn custom_store_checkpoints_and_summaries_keep_values_effects_and_owners() {
     let checkpoint = store.snapshot();
     store.havoc_all();
     store.restore(checkpoint);
-    assert_odd(&store.read_with(address, &literal(9), domain));
-    assert_odd(&store.read_transient_with(address, &literal(10), domain));
+    assert_odd(&store.read(address, &literal(9), domain));
+    assert_odd(&store.read_transient(address, &literal(10), domain));
     assert_eq!(
-        store.read_with(other, &literal(9), domain).singleton(),
+        store.read(other, &literal(9), domain).singleton(),
         Some(U256::ZERO)
     );
-    let summary = store.summary_projection_with(domain).unwrap();
-    let fresh = summary.instantiate_with(domain).unwrap();
-    assert_odd(&fresh.read_with(address, &literal(7), domain));
-    assert_odd(&fresh.read_with(address, &literal(9), domain));
-    assert_odd(&fresh.read_transient_with(address, &literal(10), domain));
+    let summary = store.summary_projection(domain).unwrap();
+    let fresh = summary.instantiate(domain).unwrap();
+    assert_odd(&fresh.read(address, &literal(7), domain));
+    assert_odd(&fresh.read(address, &literal(9), domain));
+    assert_odd(&fresh.read_transient(address, &literal(10), domain));
     assert_odd(&fresh.read_balance(address));
     assert_odd(&fresh.nonce(address));
     let event = fresh.possible_logs().get(&log).unwrap();
     assert_odd(&event.topics[0]);
-    assert_odd(&event.data.byte_at_with(0, domain));
-    assert_eq!(summary, fresh.summary_projection_with(domain).unwrap());
+    assert_odd(&event.data.byte_at(0, domain));
+    assert_eq!(summary, fresh.summary_projection(domain).unwrap());
 }
 
 #[test]
@@ -747,14 +737,14 @@ fn independently_instantiated_stores_keep_native_facts_under_their_shared_guard(
     account.storage.insert(U256::ZERO, original.clone());
     world.insert(owner, account).unwrap();
     world.insert(other, EvmAccount::empty()).unwrap();
-    let mut store = EvmStore::new_checked_with(&world, domain).unwrap();
-    store.write_transient_with(owner, &literal(7), &original, domain);
-    let summary = store.summary_projection_with(domain).unwrap();
-    let left = summary.instantiate_with(domain).unwrap();
-    let right = summary.instantiate_with(domain).unwrap();
+    let mut store = EvmStore::new_checked(&world, domain).unwrap();
+    store.write_transient(owner, &literal(7), &original, domain);
+    let summary = store.summary_projection(domain).unwrap();
+    let left = summary.instantiate(domain).unwrap();
+    let right = summary.instantiate(domain).unwrap();
     let selector = ExprId::fresh().unwrap();
     let joined = left
-        .join_guarded_with(&right, domain, selector.clone(), super::limits(domain))
+        .join_guarded(&right, domain, selector.clone(), super::limits(domain))
         .unwrap();
     for transient in [false, true] {
         for (key, _) in left.symbolic_facts(transient) {
@@ -771,19 +761,19 @@ fn independently_instantiated_stores_keep_native_facts_under_their_shared_guard(
             }
         }
     }
-    assert_odd(&joined.read_with(owner, &literal(0), domain));
-    assert_odd(&joined.read_transient_with(owner, &literal(7), domain));
+    assert_odd(&joined.read(owner, &literal(0), domain));
+    assert_odd(&joined.read_transient(owner, &literal(7), domain));
     assert_eq!(
-        joined.read_with(other, &literal(0), domain).singleton(),
+        joined.read(other, &literal(0), domain).singleton(),
         Some(U256::ZERO)
     );
     let replay = joined
-        .summary_projection_with(domain)
+        .summary_projection(domain)
         .unwrap()
-        .instantiate_with(domain)
+        .instantiate(domain)
         .unwrap();
-    assert_odd(&replay.read_with(owner, &literal(0), domain));
-    assert_odd(&replay.read_transient_with(owner, &literal(7), domain));
+    assert_odd(&replay.read(owner, &literal(0), domain));
+    assert_odd(&replay.read_transient(owner, &literal(7), domain));
 
     let mut renamed = joined.clone();
     let names = renamed
@@ -792,53 +782,53 @@ fn independently_instantiated_stores_keep_native_facts_under_their_shared_guard(
         .map(|old| (old, ExprId::fresh().unwrap()))
         .collect();
     renamed
-        .rename_fresh_with(&names, super::limits(domain), domain)
+        .rename_fresh(&names, super::limits(domain), domain)
         .unwrap();
-    assert_odd(&renamed.read_with(owner, &literal(0), domain));
-    assert_odd(&renamed.read_transient_with(owner, &literal(7), domain));
+    assert_odd(&renamed.read(owner, &literal(0), domain));
+    assert_odd(&renamed.read_transient(owner, &literal(7), domain));
     let saved = renamed.snapshot();
-    renamed.write_with(owner, &literal(0), &literal(2), domain);
+    renamed.write(owner, &literal(0), &literal(2), domain);
     renamed.restore(saved);
-    assert_odd(&renamed.read_with(owner, &literal(0), domain));
+    assert_odd(&renamed.read(owner, &literal(0), domain));
 
     let mut broad = right;
-    broad.write_with(owner, &literal(0), &EvmValue::top(), domain);
-    broad.write_transient_with(owner, &literal(7), &literal(2), domain);
+    broad.write(owner, &literal(0), &EvmValue::top(), domain);
+    broad.write_transient(owner, &literal(7), &literal(2), domain);
     let selector = ExprId::fresh().unwrap();
     let mixed = left
-        .join_guarded_with(&broad, domain, selector.clone(), super::limits(domain))
+        .join_guarded(&broad, domain, selector.clone(), super::limits(domain))
         .unwrap();
     assert!(
         mixed
-            .read_with(owner, &literal(0), domain)
+            .read(owner, &literal(0), domain)
             .contains(U256::from(2))
     );
     assert!(
         mixed
-            .read_transient_with(owner, &literal(7), domain)
+            .read_transient(owner, &literal(7), domain)
             .contains(U256::from(2))
     );
     for nonzero in [true, false] {
         let mut selected = mixed.clone();
         assert!(
             selected
-                .refine_guards_with(domain, super::limits(domain), &mut |condition| {
+                .refine_guards(domain, super::limits(domain), &mut |condition| {
                     Ok::<_, ()>((condition == &selector).then_some(nonzero))
                 })
                 .unwrap()
         );
         if nonzero {
-            assert_odd(&selected.read_with(owner, &literal(0), domain));
-            assert_odd(&selected.read_transient_with(owner, &literal(7), domain));
+            assert_odd(&selected.read(owner, &literal(0), domain));
+            assert_odd(&selected.read_transient(owner, &literal(7), domain));
         } else {
             assert!(
                 selected
-                    .read_with(owner, &literal(0), domain)
+                    .read(owner, &literal(0), domain)
                     .contains(U256::from(2))
             );
             assert_eq!(
                 selected
-                    .read_transient_with(owner, &literal(7), domain)
+                    .read_transient(owner, &literal(7), domain)
                     .singleton(),
                 Some(U256::from(2))
             );
@@ -869,11 +859,11 @@ fn prepared_read_cache_rejects_another_policy_instance_with_the_same_spec() {
 
     let mut memory = EvmByteArray::memory();
     memory
-        .write_word_with(&literal(0), &odd(), 4096, first.borrowed())
+        .write_word(&literal(0), &odd(), first.borrowed())
         .unwrap();
     let mut budget = WorkBudget::new(usize::MAX);
     let plan = memory
-        .prepare_word_read_with(&literal(0), first.borrowed(), &mut budget)
+        .prepare_word_read(&literal(0), first.borrowed(), &mut budget)
         .unwrap()
         .unwrap();
     assert_odd(&plan.read_word_budgeted(&mut budget).unwrap().unwrap());
@@ -962,7 +952,7 @@ pub(super) struct HeavyWords {
 impl EvmNumericAlgebra for HeavyWords {
     type Element = Heavy;
     fn spec(&self) -> DomainSpec {
-        Domain::default().spec()
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).spec()
     }
     fn project_numeric(&self, value: &Heavy) -> Heavy {
         value.clone()
@@ -979,10 +969,14 @@ impl EvmNumericAlgebra for HeavyWords {
     fn reduce_numeric(&self, value: &Heavy) -> NumericReduction<Heavy> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, _op: u8, _args: &[Heavy]) -> NumericReduction<Heavy> {
+    fn apply_numeric<'a>(
+        &self,
+        _op: u8,
+        _args: impl ExactSizeIterator<Item = &'a Heavy>,
+    ) -> NumericReduction<Heavy> {
         NumericReduction::stable(Heavy::top())
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Heavy>) -> usize {
+    fn operation_work<'a>(&self, _op: u8, args: impl Iterator<Item = &'a Heavy>) -> usize {
         args.fold(1024usize, |work, value| {
             work.saturating_add(value.work_size())
         })
@@ -1010,12 +1004,12 @@ fn word_plan_reserves_the_heavy_offset_snapshot_before_cloning_it() {
     let domain = algebra.borrowed();
     let memory = EvmByteArray::memory();
     let offset = heavy_value(64 * 1024);
-    let work = 4096 * 8 + memory.word_numeric_work_with(&offset, domain);
+    let work = 4096 * 8 + memory.word_numeric_work(&offset, domain);
     let mut budget = WorkBudget::new(work);
     HEAVY_CLONES.replace(0);
     assert!(
         memory
-            .prepare_word_read_with(&offset, domain, &mut budget)
+            .prepare_word_read(&offset, domain, &mut budget)
             .unwrap()
             .is_none()
     );
@@ -1028,7 +1022,7 @@ fn word_plan_reserves_the_heavy_offset_snapshot_before_cloning_it() {
     let mut budget = WorkBudget::new(usize::MAX);
     assert!(
         memory
-            .prepare_word_read_with(&offset, domain, &mut budget)
+            .prepare_word_read(&offset, domain, &mut budget)
             .unwrap()
             .is_some()
     );
