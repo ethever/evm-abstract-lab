@@ -17,6 +17,7 @@ pub mod capability;
 pub mod cooperation;
 pub mod error;
 pub mod kernel;
+pub mod reclaim;
 pub mod scope;
 pub mod status;
 pub mod worklist;
@@ -34,6 +35,7 @@ pub use kernel::{
     GenerationEntry, JobId, Kernel, KernelFork, Meter, ObligationId, Run, RunningJob, SlotMeta,
     Statistics,
 };
+pub use reclaim::ReclaimScope;
 pub use scope::{Epoch, Scope, ScopeKey, Scoped, Version};
 pub use status::{Closure, LocalClosure, Open, SolveReport};
 pub use worklist::Worklist;
