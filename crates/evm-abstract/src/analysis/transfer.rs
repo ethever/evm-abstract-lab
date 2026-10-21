@@ -811,7 +811,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                             for target in targets.iter() {
                                 if !context.budget.charge(1) {
                                     boundary(&mut result, pc, FrontierReason::Work);
-                                    break;
+                                    // This visit owns the stop. Returning preserves
+                                    // completed alternatives and avoids reporting
+                                    // it again at the post-dispatch checkpoint.
+                                    return result;
                                 }
                                 let valid = usize::try_from(*target).ok().and_then(|target| {
                                     program.jumpdest_blocks().get(&target).copied()
@@ -844,7 +847,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                                 }
                                 if !context.budget.charge(1) {
                                     boundary(&mut result, pc, FrontierReason::Work);
-                                    break;
+                                    // This visit owns the stop. Returning preserves
+                                    // completed alternatives and avoids reporting
+                                    // it again at the post-dispatch checkpoint.
+                                    return result;
                                 }
                                 successor(&mut result, constrained.clone(), *target, kind);
                             }

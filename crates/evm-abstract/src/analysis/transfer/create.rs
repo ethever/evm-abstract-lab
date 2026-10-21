@@ -63,6 +63,71 @@ fn write_balance_literal<N: WordElement>(
     );
 }
 
+/// Range admission already owns discovery. Allocation consumes the retained
+/// terms, literal certificates and finite views, including a negative answer,
+/// without asking the unchanged operands for another singleton.
+pub(super) fn expand_prepared<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
+) -> Result<(), FrontierReason> {
+    query::checkpoint(context.budget)?;
+    if size.expression().and_then(ExprId::as_constant) != Some(U256::ZERO) {
+        let length = result.payload.active().memory.len();
+        let (lower, upper) = length.interval().unsigned_bounds();
+        let independently_known = length.expression().and_then(ExprId::as_constant).is_some()
+            || length.constants().is_some_and(|values| values.len() == 1)
+            || length.known_bits().singleton().is_some()
+            || lower == upper;
+        if !independently_known
+            && let Some(word) = query::singleton(length.numeric(), context.budget)?
+        {
+            // Independent allocation also needs the unchanged old MSIZE.
+            // Retain its exact opaque answer without copying N. One constant
+            // leaf plus release of the previous term have their own owner.
+            let work = length
+                .expression()
+                .map_or(0, ExprId::work_size)
+                .saturating_add(2);
+            query::checkpoint(context.budget)?;
+            if work == usize::MAX || !context.budget.charge(work) {
+                return Err(FrontierReason::Work);
+            }
+            let expression = ExprId::constant(word);
+            query::checkpoint(context.budget)?;
+            result
+                .payload
+                .active_mut()
+                .memory
+                .retain_length_literal(expression);
+            query::checkpoint(context.budget)?;
+        }
+    }
+    let work = byte_work(
+        &[offset, size],
+        0,
+        result.payload.active().memory.work_size(),
+        context.domain,
+    );
+    if work == usize::MAX || !context.budget.charge(work) {
+        return Err(FrontierReason::Work);
+    }
+    query::checkpoint(context.budget)?;
+    result
+        .payload
+        .active_mut()
+        .memory
+        .expand_independent_with(
+            offset,
+            size,
+            context.config.max_memory_bytes,
+            context.domain,
+        )
+        .map_err(super::errors::bytes)?;
+    query::checkpoint(context.budget)
+}
+
 fn immediate_failure<N: WordElement>(
     result: &mut EvmExecution<N>,
     mut payload: EvmMachinePayload<N>,
@@ -209,7 +274,7 @@ fn create_prepared<D: EvmNumericAlgebra>(
         .filter(|size| **size <= U256::from(49_152))
         .copied()
         .collect();
-    let Some(memory_size) = sizes
+    let Some(mut memory_size) = sizes
         .iter()
         .copied()
         .map(EvmValue::<D::Element>::constant)
@@ -228,23 +293,45 @@ fn create_prepared<D: EvmNumericAlgebra>(
         (offsets.iter().copied().collect(), proof)
     };
     let size_proof = if sizes.len() == 1 {
-        // memory_size was constructed from this independent host literal.
+        // Carry the host literal into allocation too, rather than making the
+        // opaque element rediscover the word after range admission.
+        memory_size = memory_size.with_expression(ExprId::constant(sizes[0]));
         SingletonProof::Answer(Some(sizes[0]))
     } else {
         SingletonProof::NotQueried
     };
+    let proved_offset = if let SingletonProof::Answer(Some(word)) = offset_proof
+        && args[1].expression().and_then(ExprId::as_constant) != Some(word)
+    {
+        // Allocation's value API cannot consume SingletonProof directly. Keep
+        // the exact paid word on the same N as a literal term, with the copy
+        // reserved before construction rather than another numeric query.
+        query::checkpoint(context.budget)?;
+        let work = args[1].clone_work();
+        query::checkpoint(context.budget)?;
+        if work == usize::MAX || !context.budget.charge(work) {
+            return Err(FrontierReason::Work);
+        }
+        query::checkpoint(context.budget)?;
+        let value = args[1].clone().with_expression(ExprId::constant(word));
+        query::checkpoint(context.budget)?;
+        Some(value)
+    } else {
+        None
+    };
+    let memory_offset = proved_offset.as_ref().unwrap_or(&args[1]);
     if !super::ranges::memory_after_queries(
         result,
-        &args[1],
+        memory_offset,
         &memory_size,
         offset_proof,
         size_proof,
         context,
         pc,
-    ) || !super::expand_memory(result, &args[1], &memory_size, context, pc)
-    {
+    ) {
         return Ok(());
     }
+    expand_prepared(result, memory_offset, &memory_size, context)?;
     // revm/Yellow-Paper depth starts at zero for the transaction entry. Child
     // depth equals the current frame count and must not exceed 1024.
     if result.payload.call_stack.depth() > 1024 {
