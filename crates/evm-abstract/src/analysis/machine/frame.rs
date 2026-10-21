@@ -192,6 +192,43 @@ impl<N: WordElement, Bytes, Checkpoint, Operand> EvmFrame<N, Bytes, Checkpoint, 
 }
 
 impl<N: WordElement> EvmFrameState<N> {
+    fn scalar_clone_work_with(
+        &self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<usize, crate::resource::CloneError> {
+        use crate::resource::clone_payment::{finish_quote, pay, value_work};
+        pay(budget, self.stack.len().saturating_add(4))?;
+        // FrameKey owns jump_history. Program and saved_store clone handles,
+        // including snapshots containing arbitrarily expensive private N.
+        let mut work = 32usize.saturating_add(self.key.jump_history.len().saturating_mul(2));
+        for value in self.values() {
+            work = work.saturating_add(value_work(value, budget)?);
+        }
+        finish_quote(work, budget)
+    }
+
+    pub(crate) fn clone_work_with(
+        &self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<usize, crate::resource::CloneError> {
+        let mut work = self.scalar_clone_work_with(budget)?;
+        for array in self.byte_arrays() {
+            work = work.saturating_add(array.clone_work_with(budget)?);
+        }
+        crate::resource::clone_payment::finish_quote(work, budget)
+    }
+
+    pub(crate) fn pay_clone_with(
+        &self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<(), crate::resource::CloneError> {
+        let work = self.scalar_clone_work_with(budget)?;
+        for array in self.byte_arrays() {
+            array.pay_clone_with(budget)?;
+        }
+        crate::resource::clone_payment::pay(budget, work)
+    }
+
     pub(crate) fn work_size(&self) -> usize {
         self.values()
             .map(EvmValue::work_size)

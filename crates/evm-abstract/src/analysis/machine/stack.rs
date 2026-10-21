@@ -30,6 +30,43 @@ pub struct EvmCallStack<N: WordElement> {
 }
 
 impl<N: WordElement> EvmCallStack<N> {
+    fn continuation_clone_work_with(
+        &self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<usize, crate::resource::CloneError> {
+        use crate::resource::clone_payment::{finish_quote, pay, value_work};
+        pay(budget, self.depth().saturating_mul(4))?;
+        let mut work = 8usize;
+        for child in &self.children {
+            work = work.saturating_add(8);
+            work = work.saturating_add(value_work(&child.continuation.output_offset, budget)?);
+            work = work.saturating_add(value_work(&child.continuation.output_size, budget)?);
+        }
+        finish_quote(work, budget)
+    }
+
+    pub(crate) fn clone_work_with(
+        &self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<usize, crate::resource::CloneError> {
+        let mut work = self.continuation_clone_work_with(budget)?;
+        for frame in self.iter() {
+            work = work.saturating_add(frame.clone_work_with(budget)?);
+        }
+        crate::resource::clone_payment::finish_quote(work, budget)
+    }
+
+    pub(crate) fn pay_clone_with(
+        &self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<(), crate::resource::CloneError> {
+        let work = self.continuation_clone_work_with(budget)?;
+        for frame in self.iter() {
+            frame.pay_clone_with(budget)?;
+        }
+        crate::resource::clone_payment::pay(budget, work)
+    }
+
     /// Start a call stack at its entry frame.
     pub fn new(root: EvmRootFrame<N>) -> Self {
         Self {

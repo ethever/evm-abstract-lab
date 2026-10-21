@@ -393,6 +393,7 @@ impl<N: WordElement> WholeStateMetadata<N> {
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
         cx.reserve(input.policy_work_size().saturating_add(1))?;
+        input.pay_clone_with(cx.budget)?;
         let metadata = Self(EvmEntryAlternatives::new(input));
         cx.reserve(0)?;
         Ok(metadata)
