@@ -5,7 +5,7 @@
 //! Typed channels group cells by scope so deep payload reclamation also visits
 //! only the selected retired scope, after paying its possible last-owner drops.
 
-use super::{JobState, Kernel, Meter, reserve, tree_work};
+use super::{JobState, Kernel, Meter, changes::Changes, reserve, tree_work};
 use crate::{Availability, Capability, Channel, KernelError, Scope, algebra::PublicationPolicy};
 
 impl<J> Kernel<J> {
@@ -68,7 +68,9 @@ impl<J> Kernel<J> {
         Ok(cost)
     }
 
-    pub(super) fn install_retirement(&mut self, scope: Scope) {
+    // Remove outgoing job edges first, notify surviving consumers while the old
+    // facts still retain their reverse edges, then release those fact edges.
+    pub(super) fn retire_generation(&mut self, scope: Scope, changes: Changes) {
         self.scopes[scope.index].active = false;
         self.scopes[scope.index].open_obligations.clear();
         for id in std::mem::take(&mut self.scopes[scope.index].jobs) {
@@ -76,7 +78,7 @@ impl<J> Kernel<J> {
             job.state = JobState::Retired;
             job.task = None;
             self.worklist.satisfy(id);
-            for (fact, _) in std::mem::take(&mut job.reads) {
+            for fact in std::mem::take(&mut job.reads) {
                 self.facts[fact.index].readers.remove(&id);
                 self.facts[fact.index].demands.remove(&id);
             }
@@ -85,10 +87,7 @@ impl<J> Kernel<J> {
                 self.facts[fact.index].providers.remove(&id);
             }
         }
-        self.touch();
-    }
-
-    pub(super) fn release_generation(&mut self, scope: Scope) {
+        self.install_changes(changes);
         for id in std::mem::take(&mut self.scopes[scope.index].assumptions) {
             self.facts[id.index].assumptions.remove(&scope);
         }

@@ -33,10 +33,7 @@ impl<J> Kernel<J> {
                 .saturating_add(2);
         }
         reserve(meter, cost)?;
-        let new = self.jobs[job.index]
-            .reads
-            .insert(id, self.facts[id.index].version)
-            .is_none();
+        let new = self.jobs[job.index].reads.insert(id);
         if new {
             self.facts[id.index].readers.insert(job);
         }

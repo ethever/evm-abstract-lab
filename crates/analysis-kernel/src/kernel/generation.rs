@@ -164,31 +164,7 @@ impl<J, M: Meter> Run<'_, J, M> {
         if !self.kernel.scopes[next.index].sealed {
             return Err(KernelError::UnsealedScope);
         }
-        let changes = if active {
-            let head = self.kernel.scopes[old.index].head;
-            let work = self.kernel.retirement_work(old, self.meter)?;
-            self.kernel.prepare_changes(
-                &[entry.slot.id, head],
-                &[head],
-                None,
-                self.meter,
-                work.saturating_add(3),
-            )?
-        } else {
-            self.kernel
-                .prepare_changes(&[entry.slot.id], &[entry.slot.id], None, self.meter, 3)?
-        };
-        self.kernel.facts[entry.slot.id.index].selected = Some(Selection::Active(next));
-        self.kernel.scopes[next.index].entry = Some(entry.slot.id);
-        if active {
-            self.kernel.scopes[old.index].entry = None;
-            self.kernel.install_retirement(old);
-        }
-        self.kernel.install_changes(changes);
-        if active {
-            self.kernel.release_generation(old);
-        }
-        Ok(Change::Changed)
+        self.select_generation(entry, selection, Selection::Active(next))
     }
 
     /// Confirm that a COMPLETE source evaluation proves no current contribution
@@ -203,25 +179,46 @@ impl<J, M: Meter> Run<'_, J, M> {
     ) -> Result<Change, KernelError<M::Stop>> {
         reserve(self.meter, 1)?;
         self.live()?;
-        let Selection::Active(old) = self.kernel.selection(entry)? else {
+        let selection = self.kernel.selection(entry)?;
+        let Selection::Active(old) = selection else {
             return Ok(Change::Unchanged);
         };
-        let head = self.kernel.scopes[old.index].head;
-        let work = self.kernel.retirement_work(old, self.meter)?;
-        let changes = self.kernel.prepare_changes(
-            &[entry.slot.id, head],
-            &[head],
-            None,
-            self.meter,
-            work.saturating_add(3),
-        )?;
-        let retiring_self = self.scope() == old;
-        self.kernel.facts[entry.slot.id.index].selected = Some(Selection::Absent { last: old });
-        self.kernel.scopes[old.index].entry = None;
-        self.kernel.install_retirement(old);
-        self.kernel.install_changes(changes);
-        self.kernel.release_generation(old);
-        self.finished |= retiring_self;
+        self.select_generation(entry, selection, Selection::Absent { last: old })
+    }
+
+    // Active routing changes invalidate old validity; reactivation invalidates
+    // the stable absence premise. Both preflights precede ownership updates.
+    fn select_generation(
+        &mut self,
+        entry: &GenerationEntry,
+        old: Selection,
+        next: Selection,
+    ) -> Result<Change, KernelError<M::Stop>> {
+        let changes = if let Selection::Active(scope) = old {
+            let head = self.kernel.scopes[scope.index].head;
+            let work = self.kernel.retirement_work(scope, self.meter)?;
+            self.kernel.prepare_changes(
+                &[entry.slot.id, head],
+                &[head],
+                None,
+                self.meter,
+                work.saturating_add(3),
+            )?
+        } else {
+            self.kernel
+                .prepare_changes(&[entry.slot.id], &[entry.slot.id], None, self.meter, 3)?
+        };
+        self.kernel.facts[entry.slot.id.index].selected = Some(next);
+        if let Selection::Active(scope) = next {
+            self.kernel.scopes[scope.index].entry = Some(entry.slot.id);
+        }
+        if let Selection::Active(scope) = old {
+            self.kernel.scopes[scope.index].entry = None;
+            self.kernel.retire_generation(scope, changes);
+            self.finished |= self.scope() == scope;
+        } else {
+            self.kernel.install_changes(changes);
+        }
         Ok(Change::Changed)
     }
 }
