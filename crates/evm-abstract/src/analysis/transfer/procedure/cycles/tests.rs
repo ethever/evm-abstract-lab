@@ -175,7 +175,12 @@ fn discovering_feedback_after_execution_wakes_body_and_output_readers_once() {
         let outputs = solver.table.procedures[procedure]
             .outputs
             .iter()
-            .map(|(kind, output)| (*kind, (output.summary.clone(), output.generation)))
+            .map(|(kind, output)| {
+                (
+                    *kind,
+                    (output.summary.clone(), output.generation, output.updates),
+                )
+            })
             .collect::<Vec<_>>();
         assert!(!outputs.is_empty());
 
@@ -191,10 +196,11 @@ fn discovering_feedback_after_execution_wakes_body_and_output_readers_once() {
                 .pending_relative()
                 .any(|task| task == TaskKind::Body(entry))
         );
-        for (kind, (summary, generation)) in &outputs {
+        for (kind, (summary, generation, updates)) in &outputs {
             let output = &solver.table.procedures[procedure].outputs[kind];
             assert_eq!(output.summary, *summary);
             assert!(output.generation > *generation);
+            assert_eq!(output.updates, *updates);
         }
 
         solver.run();
@@ -214,6 +220,42 @@ fn discovering_feedback_after_execution_wakes_body_and_output_readers_once() {
                 .values()
                 .map(|output| output.generation)
                 .collect::<Vec<_>>()
+        );
+        assert!(solver.runtime.relative_closed(solver.budget).unwrap());
+
+        // A late recursion transition stages every output before publishing
+        // either its flags or generations. Overflow at the last outcome must
+        // retain all earlier successfully published local-cycle evidence.
+        let last = *solver.table.procedures[procedure]
+            .outputs
+            .keys()
+            .last()
+            .unwrap();
+        solver.table.procedures[procedure]
+            .outputs
+            .get_mut(&last)
+            .unwrap()
+            .generation = usize::MAX;
+        let before = solver.table.procedures[procedure]
+            .outputs
+            .values()
+            .map(|output| (output.summary.clone(), output.generation, output.updates))
+            .collect::<Vec<_>>();
+        let updates = solver.table.procedures[procedure].output_updates;
+        assert_eq!(
+            solver.feedback_outputs(procedure, true, false),
+            Err(MachineError::IdentityExhausted)
+        );
+        let retained = &solver.table.procedures[procedure];
+        assert!(!retained.recursive && retained.local_cycle);
+        assert_eq!(retained.output_updates, updates);
+        assert_eq!(
+            retained
+                .outputs
+                .values()
+                .map(|output| (output.summary.clone(), output.generation, output.updates))
+                .collect::<Vec<_>>(),
+            before
         );
         assert!(solver.runtime.relative_closed(solver.budget).unwrap());
     });

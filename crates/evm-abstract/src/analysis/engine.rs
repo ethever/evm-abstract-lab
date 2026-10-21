@@ -1340,6 +1340,24 @@ impl<
         }
     }
 
+    /// Preserve the owned arrival when admission fails. Only plain work refusal
+    /// takes the caller's ordinary/replay label; cancellation keeps its cause.
+    fn refuse_successor(
+        &mut self,
+        from: usize,
+        payload: EvmMachinePayload<D::Element>,
+        error: MachineError,
+        work_reason: FrontierReason,
+    ) -> Option<usize> {
+        let reason = if error == MachineError::Work {
+            work_reason
+        } else {
+            error.frontier_reason()
+        };
+        self.frontier_payload(Some(from), reason, payload);
+        None
+    }
+
     /// 将一个后继输入汇入按结构键区分的节点，并记录从 `from` 到该节点的边。
     ///
     /// 已有节点只通过 join 扩大入口；输入确实变化才重新排队。新键创建节点并
@@ -1367,13 +1385,7 @@ impl<
         let (class, prepared_class) = match classes {
             Ok(classes) => classes,
             Err(error) => {
-                let reason = if error == MachineError::Work {
-                    work_reason
-                } else {
-                    error.frontier_reason()
-                };
-                self.frontier_payload(Some(from), reason, successor.payload);
-                return None;
+                return self.refuse_successor(from, successor.payload, error, work_reason);
             }
         };
         let prepared = self.policies.state.prepare_owned(
@@ -1389,13 +1401,7 @@ impl<
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(PartitionRefusal { input, error }) => {
-                let reason = if error == MachineError::Work {
-                    work_reason
-                } else {
-                    error.frontier_reason()
-                };
-                self.frontier_payload(Some(from), reason, input);
-                return None;
+                return self.refuse_successor(from, input, error, work_reason);
             }
         };
         let entry_key = prepared.key;
@@ -1403,32 +1409,22 @@ impl<
         let existing = match self.ids.get(&entry_key, self.budget) {
             Ok(existing) => existing,
             Err(error) => {
-                let reason = if error == MachineError::Work {
-                    work_reason
-                } else {
-                    error.frontier_reason()
-                };
-                self.frontier_payload(Some(from), reason, successor.payload);
-                return None;
+                return self.refuse_successor(from, successor.payload, error, work_reason);
             }
         };
         let to = if let Some(existing) = existing {
             let cyclic = match self.joins_cycle(existing, from) {
                 Ok(cyclic) => cyclic,
                 Err(error) => {
-                    let reason = if error == MachineError::Work {
-                        work_reason
-                    } else {
-                        error.frontier_reason()
-                    };
-                    self.frontier_payload(Some(from), reason, successor.payload);
-                    return None;
+                    return self.refuse_successor(from, successor.payload, error, work_reason);
                 }
             };
             if cyclic
                 && !self.feedback[existing]
                 && let Err(error) = self.mark_feedback(existing)
             {
+                // Feedback publishes its own scheduling premise, independently
+                // of whether this arrival changes the numerical input.
                 self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
                 return None;
             }
@@ -1436,58 +1432,16 @@ impl<
                 .policies
                 .state
                 .metadata_work(&self.alternatives[existing]);
-            if !self
-                .budget
-                .charge(old_alternatives_work.saturating_add(successor.payload.work_size()))
-            {
+            // Admission clones its metadata; a changed installation alone
+            // copies the incoming payload after reserving JoinWork below.
+            if !self.budget.charge(old_alternatives_work) {
                 self.frontier_payload(Some(from), work_reason, successor.payload);
                 return None;
             }
-            let mut alternatives = self.alternatives[existing].clone();
-            let acceleration = self.policies.state.decide(AccelerationInput {
-                site: PolicySite::World,
-                feedback: self.feedback[existing],
-                updates: self.updates[existing],
-                default_delay: self.domain.spec().widening_after_updates(),
-            });
-            let joined = self.policies.state.admit(
-                &self.result.states[existing].entry,
-                &successor.payload,
-                &mut alternatives,
-                acceleration,
-                &self.selectors,
-                &mut PolicyContext {
-                    domain: self.domain,
-                    environment: &self.result.entry,
-                    budget: self.budget,
-                },
-            );
-            let joined = match joined {
-                Ok(joined) => joined,
-                Err(error) => {
-                    let reason = if error == MachineError::Work {
-                        work_reason
-                    } else {
-                        error.frontier_reason()
-                    };
-                    self.frontier_payload(Some(from), reason, successor.payload);
-                    return None;
-                }
-            };
-            if let Err(error) = self.install_join(
-                existing,
-                successor.payload.clone(),
-                joined,
-                alternatives,
-                old_alternatives_work,
-            ) {
-                let reason = if error == MachineError::Work {
-                    work_reason
-                } else {
-                    error.frontier_reason()
-                };
-                self.frontier_payload(Some(from), reason, successor.payload);
-                return None;
+            if let Err(error) =
+                self.admit_existing(existing, &successor.payload, old_alternatives_work)
+            {
+                return self.refuse_successor(from, successor.payload, error, work_reason);
             }
             existing
         } else {
@@ -1517,13 +1471,7 @@ impl<
             ) {
                 Ok(metadata) => metadata,
                 Err(error) => {
-                    let reason = if error == MachineError::Work {
-                        work_reason
-                    } else {
-                        error.frontier_reason()
-                    };
-                    self.frontier_payload(Some(from), reason, successor.payload);
-                    return None;
+                    return self.refuse_successor(from, successor.payload, error, work_reason);
                 }
             };
             let key = successor.payload.key();
@@ -1568,17 +1516,12 @@ impl<
             match admitted {
                 Ok(id) => id,
                 Err(error) => {
-                    let reason = if error == MachineError::Work {
-                        work_reason
-                    } else {
-                        error.frontier_reason()
-                    };
-                    self.frontier_payload(
-                        Some(from),
-                        reason,
+                    return self.refuse_successor(
+                        from,
                         payload.take().expect("refused input remains owned"),
+                        error,
+                        work_reason,
                     );
-                    return None;
                 }
             }
         };
@@ -1618,13 +1561,44 @@ impl<
         Some(to)
     }
 
+    /// Admission and acceleration are shared by ordinary propagation and staged
+    /// replay. The caller prepays the metadata copy (or includes it in replay's
+    /// copy envelope) before entering this lifecycle.
+    fn admit_existing(
+        &mut self,
+        id: usize,
+        incoming: &EvmMachinePayload<D::Element>,
+        old_alternatives_work: usize,
+    ) -> Result<(), MachineError> {
+        let mut alternatives = self.alternatives[id].clone();
+        let acceleration = self.policies.state.decide(AccelerationInput {
+            site: PolicySite::World,
+            feedback: self.feedback[id],
+            updates: self.updates[id],
+            default_delay: self.domain.spec().widening_after_updates(),
+        });
+        let joined = self.policies.state.admit(
+            &self.result.states[id].entry,
+            incoming,
+            &mut alternatives,
+            acceleration,
+            &self.selectors,
+            &mut PolicyContext {
+                domain: self.domain,
+                environment: &self.result.entry,
+                budget: self.budget,
+            },
+        )?;
+        self.install_join(id, incoming, joined, alternatives, old_alternatives_work)
+    }
+
     /// Ordinary propagation and replay install the same changed input and
     /// invalidate its old execution. `EvmReplay<D::Element>` separately decides whether its
     /// certificate satisfies the new obligation or execution must be scheduled.
     fn install_join(
         &mut self,
         id: usize,
-        incoming: EvmMachinePayload<D::Element>,
+        incoming: &EvmMachinePayload<D::Element>,
         joined: Option<EvmMachinePayload<D::Element>>,
         mut alternatives: S::Metadata,
         old_alternatives_work: usize,
@@ -1632,13 +1606,13 @@ impl<
         // None is the state adapter's whole-input coverage proof. It has not
         // changed admission metadata; retaining that covered contribution again
         // would grow the historical alternatives without semantic growth.
-        if joined.is_none() {
+        let Some(joined) = joined else {
             return Ok(());
-        }
+        };
         let work = installation::JoinWork::quote_for::<D::Element, S::Metadata>(
             self.result.states[id].entry.work_size(),
             incoming.work_size(),
-            joined.as_ref().map_or(0, EvmMachinePayload::work_size),
+            joined.work_size(),
             self.policies.state.metadata_work(&alternatives),
             old_alternatives_work,
             self.selectors.len(),
@@ -1647,24 +1621,19 @@ impl<
             return Err(MachineError::work_failure());
         }
         let mut selectors = self.selectors.clone();
-        if let Some(joined) = &joined
-            && !self.policies.state.has_bound(&alternatives)
-        {
+        if !self.policies.state.has_bound(&alternatives) {
             let mut previous = self.result.states[id].entry.fresh_leaves();
             previous.extend(incoming.fresh_leaves());
             selectors.extend(joined.fresh_leaves().difference(&previous).cloned());
         }
-        self.policies.state.retain(&mut alternatives, incoming);
-        let changed = if joined.is_some() {
-            Change::Changed
-        } else {
-            Change::Unchanged
-        };
+        self.policies
+            .state
+            .retain(&mut alternatives, incoming.clone());
         let bounded = self.policies.state.has_bound(&alternatives);
         let updates = self.updates[id]
             .checked_add(1)
             .ok_or(MachineError::IdentityExhausted)?;
-        let public_key = joined.as_ref().map(EvmMachinePayload::key);
+        let public_key = joined.key();
         let state = &mut self.result.states[id];
         let current_updates = &mut self.updates[id];
         let current_alternatives = &mut self.alternatives[id];
@@ -1675,16 +1644,19 @@ impl<
             self.active.as_mut().ok_or(MachineError::Shape)?,
             self.budget,
             |run| {
-                run.publish_prepared_with(&self.inputs[id], changed, work.installation, || {
-                    *current_alternatives = alternatives;
-                    *current_selectors = selectors;
-                    *current_updates = updates;
-                    if let Some(joined) = joined {
+                run.publish_prepared_with(
+                    &self.inputs[id],
+                    Change::Changed,
+                    work.installation,
+                    || {
+                        *current_alternatives = alternatives;
+                        *current_selectors = selectors;
+                        *current_updates = updates;
                         state.entry = joined;
-                        state.key = public_key.expect("changed entry has a structural projection");
+                        state.key = public_key;
                         state.invalidate_execution();
-                    }
-                })
+                    },
+                )
                 .map_err(kernel_failure)
             },
         )?;
@@ -2141,37 +2113,8 @@ impl<
                     .policies
                     .state
                     .metadata_work(&self.alternatives[existing]);
-                let mut alternatives = self.alternatives[existing].clone();
-                let acceleration = self.policies.state.decide(AccelerationInput {
-                    site: PolicySite::World,
-                    feedback: self.feedback[existing],
-                    updates: self.updates[existing],
-                    default_delay: self.domain.spec().widening_after_updates(),
-                });
-                let joined = self
-                    .policies
-                    .state
-                    .admit(
-                        &self.result.states[existing].entry,
-                        &node.entry,
-                        &mut alternatives,
-                        acceleration,
-                        &self.selectors,
-                        &mut PolicyContext {
-                            domain: self.domain,
-                            environment: &self.result.entry,
-                            budget: self.budget,
-                        },
-                    )
+                self.admit_existing(existing, &node.entry, old_alternatives_work)
                     .map_err(MachineError::frontier_reason)?;
-                self.install_join(
-                    existing,
-                    node.entry.clone(),
-                    joined,
-                    alternatives,
-                    old_alternatives_work,
-                )
-                .map_err(MachineError::frontier_reason)?;
                 // Check the installed state: acceleration may have changed its
                 // representation even if the old input equalled the certificate.
                 let compatible = certificate_covers_prepared

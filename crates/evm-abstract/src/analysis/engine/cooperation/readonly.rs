@@ -16,8 +16,7 @@ use crate::{
     resource::WorkBudget,
 };
 use analysis_kernel::{
-    GenerationEntry, JobId, KernelError, LocalClosure, Meter, RunningJob, ScopeKey, SlotMeta,
-    Version,
+    GenerationEntry, JobId, KernelError, LocalClosure, Meter, RunningJob, SlotMeta, Version,
 };
 
 pub(super) struct Binding<N: WordElement> {
@@ -92,34 +91,17 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             MachineMeter(budget)
                 .reserve(payload.work_size().saturating_mul(2).saturating_add(64))
                 .map_err(KernelError::Stopped)?;
-            let (context, generation) = if let Some(binding) = self.readonly.get(&id) {
-                let key = binding.input.subject().scope.key();
-                (
-                    key.context,
-                    key.generation
-                        .checked_add(1)
-                        .ok_or(KernelError::VersionExhausted)?,
-                )
-            } else {
-                let context = self.next_context;
-                self.next_context = context
-                    .checked_add(1)
-                    .ok_or(KernelError::VersionExhausted)?;
-                (context, 1)
-            };
+            let previous = self
+                .readonly
+                .get(&id)
+                .map(|binding| binding.input.subject().scope);
+            let key = self.next_scope_key(previous)?;
             let point = Point {
                 namespace: id.namespace,
                 kind: PointKind::ProcedureEntry,
                 index: id.index,
             };
-            let scope = runtime.kernel().scope(
-                ScopeKey {
-                    context,
-                    generation,
-                    policy: 0,
-                },
-                &mut MachineMeter(budget),
-            )?;
+            let scope = runtime.kernel().scope(key, &mut MachineMeter(budget))?;
             let subject = Subject { point, scope };
             let input = Input::new(subject, payload).in_universe(runtime.world);
             // Only this native seed exists here. In particular, do not invoke

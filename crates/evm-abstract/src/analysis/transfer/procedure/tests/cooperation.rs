@@ -4,6 +4,51 @@ use super::*;
 use crate::analysis::worklist::runtime::TaskKind;
 
 #[test]
+fn tracking_a_native_body_uses_no_carrier_copy_or_query_and_honors_cancellation() {
+    use crate::resource::clone_payment::tests::{RECEIPT, Word, assert_unobserved, fixture, reset};
+
+    let _scope = RECEIPT.scope();
+    let (world, entry, config, algebra) = fixture("00");
+    let mut input = super::super::super::initial(&world, &entry, algebra.borrowed()).unwrap();
+    input
+        .active_mut()
+        .stack
+        .push(EvmValue::from_numeric(Word::expensive(64)));
+    input.normalize();
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut table = Table::with_algebra(algebra);
+    let mut counters = Counters::default();
+    let mut solver = table.solver_with(
+        &world,
+        &entry,
+        &config,
+        &mut budget,
+        &mut counters,
+        StorageReadPolicy::Abstract,
+    );
+    let procedure = solver.procedure(input).unwrap();
+    let body = solver.table.procedures[procedure].first_body();
+    reset();
+    let before = solver.budget.used();
+    solver.track_input(body).unwrap();
+    assert_unobserved();
+    assert!(solver.budget.used() > before);
+    let before = solver.budget.used();
+    let cancellation = analysis_control::Cancellation::new();
+    cancellation.cancel();
+    analysis_control::with_cancellation(&cancellation, || {
+        assert_eq!(
+            solver.track_input(body),
+            Err(MachineError::Relations(
+                crate::domain::relational::QueryReason::Cancelled
+            ))
+        );
+    });
+    assert_eq!(solver.budget.used(), before);
+    assert_unobserved();
+}
+
+#[test]
 fn output_growth_wakes_the_retained_outer_world_consumer() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let mut config = crate::analysis::machine::fixtures::config();

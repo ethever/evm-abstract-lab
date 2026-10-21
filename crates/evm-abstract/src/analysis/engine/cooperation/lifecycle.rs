@@ -8,9 +8,37 @@ use crate::{
     domain::WordElement,
     resource::WorkBudget,
 };
-use analysis_kernel::{JobId, KernelError, Meter, ReclaimScope, RunningJob, Scope};
+use analysis_kernel::{JobId, KernelError, Meter, ReclaimScope, RunningJob, Scope, ScopeKey};
 
 impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
+    /// Share only allocation lineage; each producer still owns its distinct
+    /// scope inventory, seeding, selector publication and retirement protocol.
+    pub(super) fn next_scope_key(
+        &mut self,
+        previous: Option<Scope>,
+    ) -> Result<ScopeKey, CooperationError<E>> {
+        let (context, generation) = if let Some(previous) = previous {
+            let key = previous.key();
+            (
+                key.context,
+                key.generation
+                    .checked_add(1)
+                    .ok_or(KernelError::VersionExhausted)?,
+            )
+        } else {
+            let context = self.next_context;
+            self.next_context = context
+                .checked_add(1)
+                .ok_or(KernelError::VersionExhausted)?;
+            (context, 1)
+        };
+        Ok(ScopeKey {
+            context,
+            generation,
+            policy: 0,
+        })
+    }
+
     /// Validate the receipt actually consumed, rather than a replacement scope
     /// selected since execution. Required reads installed its semantic premises.
     pub(super) fn receipt_valid(

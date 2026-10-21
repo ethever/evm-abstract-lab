@@ -1,4 +1,4 @@
-//! Default-only fixture adapters; production always uses the injected view.
+//! Shared procedure fixtures with fixed engine policies and a numeric algebra.
 
 use super::*;
 use crate::{
@@ -8,9 +8,9 @@ use crate::{
 };
 use std::ops::{Deref, DerefMut};
 
-pub(super) type Solver<'a> = EvmSolver<
+pub(super) type Solver<'a, D = Domain> = EvmSolver<
     'a,
-    Domain,
+    D,
     crate::analysis::engine::RecentDistinctJumps,
     crate::analysis::engine::FirstResumeStatus,
     crate::analysis::engine::SemanticPolicies,
@@ -18,14 +18,14 @@ pub(super) type Solver<'a> = EvmSolver<
     std::convert::Infallible,
 >;
 
-pub(super) struct Table {
-    inner: EvmTable<NumericValue>,
+pub(super) struct Table<D: EvmNumericAlgebra = Domain> {
+    inner: EvmTable<D::Element>,
     pub runtime: Runtime,
     caller: RunningJob,
-    domain: ValueAlgebra<Domain>,
+    domain: ValueAlgebra<D>,
     policies: EnginePolicies,
     cooperation: Cooperation<
-        NumericValue,
+        D::Element,
         crate::analysis::engine::cooperation::Empty,
         std::convert::Infallible,
     >,
@@ -33,6 +33,12 @@ pub(super) struct Table {
 
 impl Default for Table {
     fn default() -> Self {
+        Self::with_algebra(ValueAlgebra::new(Domain::default()))
+    }
+}
+
+impl<D: EvmNumericAlgebra> Table<D> {
+    pub(super) fn with_algebra(domain: ValueAlgebra<D>) -> Self {
         let mut setup = WorkBudget::new(usize::MAX);
         let mut runtime = Runtime::new(&mut setup).unwrap();
         runtime.register_world(0, 1, &mut setup).unwrap();
@@ -41,36 +47,22 @@ impl Default for Table {
             inner: EvmTable::default(),
             runtime,
             caller,
-            domain: ValueAlgebra::new(Domain::default()),
+            domain,
             policies: EnginePolicies::default(),
             cooperation: Cooperation::new(Default::default()),
         }
     }
-}
 
-impl Deref for Table {
-    type Target = EvmTable<NumericValue>;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-impl DerefMut for Table {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
-}
-
-impl Table {
-    pub(super) fn solver<'a>(
+    /// Keep the supplied algebra, including its private carrier behavior.
+    pub(super) fn solver_with<'a>(
         &'a mut self,
-        world: &'a World,
-        entry: &'a Entry,
+        world: &'a EvmWorld<D::Element>,
+        entry: &'a EvmEntry<D::Element>,
         config: &'a crate::analysis::ExecutionConfig,
         budget: &'a mut WorkBudget,
         counters: &'a mut Counters,
         storage_reads: StorageReadPolicy,
-    ) -> Solver<'a> {
-        self.domain = ValueAlgebra::new(config.domain().unwrap());
+    ) -> Solver<'a, D> {
         Solver {
             table: &mut self.inner,
             world,
@@ -90,6 +82,33 @@ impl Table {
             deferred: false,
             consumed: None,
         }
+    }
+}
+
+impl<D: EvmNumericAlgebra> Deref for Table<D> {
+    type Target = EvmTable<D::Element>;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+impl<D: EvmNumericAlgebra> DerefMut for Table<D> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl Table {
+    pub(super) fn solver<'a>(
+        &'a mut self,
+        world: &'a World,
+        entry: &'a Entry,
+        config: &'a crate::analysis::ExecutionConfig,
+        budget: &'a mut WorkBudget,
+        counters: &'a mut Counters,
+        storage_reads: StorageReadPolicy,
+    ) -> Solver<'a> {
+        self.domain = ValueAlgebra::new(config.domain().unwrap());
+        self.solver_with(world, entry, config, budget, counters, storage_reads)
     }
 
     #[expect(

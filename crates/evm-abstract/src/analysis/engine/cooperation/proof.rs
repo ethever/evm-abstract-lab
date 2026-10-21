@@ -17,7 +17,7 @@ use crate::{
 };
 use analysis_kernel::{
     Availability, Change, GenerationEntry, JobId, KernelError, LocalClosure, Meter, Run,
-    RunningJob, Scope, ScopeKey, Scoped,
+    RunningJob, Scope, Scoped,
 };
 use std::sync::Arc;
 
@@ -80,30 +80,9 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             None => true,
         };
         if refresh {
-            let (context, generation) = if let Some(proof) = &self.proof {
-                let key = proof.scope.key();
-                (
-                    key.context,
-                    key.generation
-                        .checked_add(1)
-                        .ok_or(KernelError::VersionExhausted)?,
-                )
-            } else {
-                let context = self.next_context;
-                self.next_context = context
-                    .checked_add(1)
-                    .ok_or(KernelError::VersionExhausted)?;
-                (context, 1)
-            };
+            let key = self.next_scope_key(self.proof.as_ref().map(|proof| proof.scope))?;
             let mut meter = MachineMeter(budget);
-            let scope = runtime.kernel().scope(
-                ScopeKey {
-                    context,
-                    generation,
-                    policy: 0,
-                },
-                &mut meter,
-            )?;
+            let scope = runtime.kernel().scope(key, &mut meter)?;
             let job = runtime
                 .kernel()
                 .register(scope, Task(TaskKind::SummaryProof), &mut meter)?;

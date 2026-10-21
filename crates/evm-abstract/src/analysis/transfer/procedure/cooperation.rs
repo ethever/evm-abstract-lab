@@ -146,19 +146,19 @@ impl<
     }
 
     pub(super) fn track_input(&mut self, id: usize) -> Result<Version, MachineError> {
-        let node = &self.table.nodes[id];
-        let answer = self.runtime.with_run(
+        // The body already owns its immutable executable snapshot. Observe its
+        // retained source and assumptions without copying the numerical bound.
+        self.runtime.with_run(
             self.active
                 .as_mut()
                 .or(self.caller.as_deref_mut())
                 .ok_or(MachineError::Shape)?,
             self.budget,
             |run| {
-                run.read_slot(&node.input, &node.payload, node.payload.work_size())
+                run.observe_slot(&self.table.nodes[id].input)
                     .map_err(kernel_failure)
             },
-        )?;
-        Ok(answer.version)
+        )
     }
 
     pub(super) fn incoming(

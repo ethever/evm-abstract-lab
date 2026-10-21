@@ -9,7 +9,7 @@ use crate::analysis::engine::{
     cooperation::{Cooperation, Empty},
 };
 use crate::analysis::worklist::runtime::Runtime;
-use crate::domain::{NumericValue, ValueAlgebra};
+use crate::domain::ValueAlgebra;
 use crate::world::Entry;
 use std::convert::Infallible;
 

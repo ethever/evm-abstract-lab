@@ -1,9 +1,7 @@
 //! Public tracked point routing followed by actual immutable input adoption.
 use super::{GenerationRoute, Generations, Input, InputRoute, Inputs, Point};
 use crate::domain::WordElement;
-use analysis_kernel::{
-    Answer, Availability, Discover, GenerationEntry, Read, ReadGeneration, Scope, Scoped,
-};
+use analysis_kernel::{Answer, Discover, GenerationEntry, Read, ReadGeneration, Scope, Scoped};
 
 /// Require another point's actual current native input on the shared routes.
 /// Unknown points and stale known producers remain mandatory Pending answers.
@@ -53,39 +51,11 @@ where
     N: WordElement,
     Cx: ReadGeneration + Read<Inputs<N>, InputRoute, Error = <Cx as ReadGeneration>::Error>,
 {
-    let generation = match entry.state {
-        Availability::Value(generation) => generation,
-        Availability::Pending => {
-            return Ok(Answer {
-                state: Availability::Pending,
-                version: entry.version,
-                scope: entry.scope,
-            });
-        }
-        Availability::Absent => {
-            return Ok(Answer {
-                state: Availability::Absent,
-                version: entry.version,
-                scope: entry.scope,
-            });
-        }
-    };
-    let selected = cx.current_generation(&generation)?;
-    match selected.state {
-        Availability::Value(scope) => {
+    entry.try_then(|generation| {
+        cx.current_generation(&generation)?.try_then(|scope| {
             <Cx as Read<Inputs<N>, InputRoute>>::query(cx, Scoped::new(scope, ()))
-        }
-        Availability::Pending => Ok(Answer {
-            state: Availability::Pending,
-            version: selected.version,
-            scope: selected.scope,
-        }),
-        Availability::Absent => Ok(Answer {
-            state: Availability::Absent,
-            version: selected.version,
-            scope: selected.scope,
-        }),
-    }
+        })
+    })
 }
 
 /// Failure of the native snapshot/certificate protocol. A mismatched ready
@@ -143,28 +113,16 @@ where
         cx,
         Scoped::new(universe, procedure),
     )?;
-    Ok(match proof.state {
-        Availability::Value(proof) => {
-            if let Some(snapshot) = snapshot.value()
-                && snapshot.generation != proof.generation
-            {
-                return Err(SummaryReadError::GenerationMismatch {
-                    snapshot: snapshot.generation,
-                    certificate: proof.generation,
-                });
-            }
-            snapshot
+    proof.try_then(|proof| {
+        if let Some(snapshot) = snapshot.value()
+            && snapshot.generation != proof.generation
+        {
+            return Err(SummaryReadError::GenerationMismatch {
+                snapshot: snapshot.generation,
+                certificate: proof.generation,
+            });
         }
-        Availability::Absent => Answer {
-            state: Availability::Absent,
-            version: proof.version,
-            scope: proof.scope,
-        },
-        _ => Answer {
-            state: Availability::Pending,
-            version: proof.version,
-            scope: proof.scope,
-        },
+        Ok(snapshot)
     })
 }
 
@@ -194,17 +152,5 @@ where
         cx,
         Scoped::new(universe, procedure),
     )?;
-    match proof.state {
-        Availability::Value(_) => closed_summary(cx, universe, procedure),
-        Availability::Pending => Ok(Answer {
-            state: Availability::Pending,
-            version: proof.version,
-            scope: proof.scope,
-        }),
-        Availability::Absent => Ok(Answer {
-            state: Availability::Absent,
-            version: proof.version,
-            scope: proof.scope,
-        }),
-    }
+    proof.try_then(|_| closed_summary(cx, universe, procedure))
 }

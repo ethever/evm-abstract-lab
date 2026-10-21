@@ -7,11 +7,9 @@ use super::Composition;
 use crate::analysis::engine::{
     ContextPolicy, PartitionPolicy, PolicyContext, PolicySite, StatePolicy,
 };
-use crate::analysis::worklist::kernel_failure;
 use crate::domain::EvmNumericAlgebra;
-use analysis_kernel::Change;
 
-use super::{BTreeMap, BTreeSet, EvmOutput, EvmSolver, MachineError};
+use super::{BTreeMap, BTreeSet, EvmSolver, MachineError, admission};
 
 #[cfg(test)]
 mod tests;
@@ -181,62 +179,20 @@ impl<
         for (kind, output) in &old.outputs {
             let acceleration =
                 self.acceleration(PolicySite::Output, recursive || local_cycle, output.updates);
-            let summary = self.policies.state.admit_output(
-                Some(&output.summary),
+            let prepared = admission::prepare_output(
+                &self.policies.state,
+                Some(output),
                 &output.summary,
                 acceleration,
+                true,
                 &mut PolicyContext::new(self.domain, self.entry, self.budget),
-            )?;
-            let work = summary.work_size();
-            PolicyContext::new(self.domain, self.entry, self.budget)
-                .reserve(work.saturating_add(output.work).saturating_add(1))?;
-            let updates = if summary == output.summary {
-                output.updates
-            } else {
-                output
-                    .updates
-                    .checked_add(1)
-                    .ok_or(MachineError::IdentityExhausted)?
-            };
+            )?
+            .expect("feedback invalidates even an unchanged output");
             install_work = install_work
-                .saturating_add(work)
+                .saturating_add(prepared.work)
                 .saturating_add(output.work);
-            let generation = output
-                .generation
-                .checked_add(1)
-                .ok_or(MachineError::IdentityExhausted)?;
-            outputs.insert(
-                *kind,
-                EvmOutput {
-                    summary,
-                    work,
-                    generation,
-                    updates,
-                },
-            );
+            outputs.insert(*kind, prepared);
         }
-        let updates = old
-            .output_updates
-            .checked_add(1)
-            .ok_or(MachineError::IdentityExhausted)?;
-        let old = &mut self.table.procedures[procedure];
-        self.runtime.with_run(
-            self.active
-                .as_mut()
-                .or(self.caller.as_deref_mut())
-                .ok_or(MachineError::Shape)?,
-            self.budget,
-            |run| {
-                run.publish_prepared_with(&old.output, Change::Changed, install_work, || {
-                    old.outputs = outputs;
-                    old.output_updates = updates;
-                    old.recursive = recursive;
-                    old.local_cycle = local_cycle;
-                })
-                .map_err(kernel_failure)
-            },
-        )?;
-        self.observe_summary(procedure, false)?;
-        Ok(())
+        self.publish_outputs(procedure, outputs, install_work, recursive, local_cycle)
     }
 }

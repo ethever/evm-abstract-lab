@@ -127,7 +127,6 @@ struct EvmProcedure<N: WordElement, Key: PolicyKey> {
     nodes: KeyIndex<Key>,
     outputs: BTreeMap<OutcomeKind, EvmOutput<N>>,
     output: SlotMeta<BTreeMap<OutcomeKind, EvmOutput<N>>>,
-    subscribers: Vec<usize>,
     dependencies: BTreeSet<usize>,
     recursive: bool,
     local_cycle: bool,
