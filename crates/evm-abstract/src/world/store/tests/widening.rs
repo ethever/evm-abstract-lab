@@ -1,31 +1,34 @@
 //! Root-backed canonicalization cannot strengthen RPC independence.
 
 use super::super::*;
-use crate::{Fork, domain::symbolic::ExprLimits, world::Account};
+use {crate::Fork, crate::domain::symbolic::ExprLimits, crate::world::test_support::TestAccount};
 
-fn value(n: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(n))
+fn value(n: u64) -> TestValue {
+    TestValue::constant(U256::from(n))
 }
 
 #[test]
 fn widening_form_preserves_roots_facts_accounts_logs_and_conservative_rpc_dependencies() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = domain.spec().relations().expressions();
     let address = Address::repeat_byte(0x47);
-    let mut world = World::new(Fork::Osaka, "widening leaf");
-    let mut account = Account::unknown();
+    let mut world = TestWorld::new(Fork::Osaka, "widening leaf");
+    let mut account = TestAccount::unknown();
     account.storage.insert(U256::from(3), value(23));
     world.insert(address, account).unwrap();
-    let mut store = Store::new(&world);
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let token = ExprId::fresh().unwrap();
-    let gas = AbstractValue::unsigned_range(U256::ZERO, U256::from(u64::MAX))
+    let gas = TestValue::unsigned_range(U256::ZERO, U256::from(u64::MAX))
         .unwrap()
         .with_expression(token.clone());
     store
-        .write_checked(address, &value(7), &gas, domain)
+        .write_checked(address, &value(7), &gas, domain.borrowed())
         .unwrap();
     store
-        .write_transient_checked(address, &value(8), &value(19), domain)
+        .write_transient_checked(address, &value(8), &value(19), domain.borrowed())
         .unwrap();
     store.write_balance(address, value(11));
     store.write_nonce(address, value(9));
@@ -41,11 +44,11 @@ fn widening_form_preserves_roots_facts_accounts_logs_and_conservative_rpc_depend
     store
         .emit_log(
             site,
-            AbstractLog {
+            TestLog {
                 topics: vec![gas.clone()],
-                data: ByteArray::exact(&[2, 3]),
+                data: TestBytes::exact(&[2, 3]),
             },
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     assert!(
@@ -54,7 +57,7 @@ fn widening_form_preserves_roots_facts_accounts_logs_and_conservative_rpc_depend
             .is_empty()
     );
     let original = store.clone();
-    let widened = store.widening_form(domain, limits).unwrap();
+    let widened = store.widening_form(domain.borrowed(), limits).unwrap();
     assert_eq!(widened.persistent.roots, store.persistent.roots);
     assert_eq!(widened.transient.roots, store.transient.roots);
     assert_eq!(widened.persistent.base, store.persistent.base);
@@ -77,21 +80,28 @@ fn widening_form_preserves_roots_facts_accounts_logs_and_conservative_rpc_depend
             .next()
             .unwrap()
             .data
-            .exact_bytes(),
+            .exact_bytes(
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed()
+            ),
         Some(vec![2, 3])
     );
     assert_eq!(widened.persistent.operands.get(&token), Some(&gas));
     assert_eq!(
-        widened.read(address, &value(7), domain).numeric(),
+        widened
+            .read(address, &value(7), domain.borrowed())
+            .numeric(),
         gas.numeric()
     );
     assert_eq!(
-        widened.read(address, &value(3), domain).singleton(),
+        widened
+            .read(address, &value(3), domain.borrowed())
+            .singleton(),
         Some(U256::from(23))
     );
     assert_eq!(
         widened
-            .read_transient(address, &value(8), domain)
+            .read_transient(address, &value(8), domain.borrowed())
             .singleton(),
         Some(U256::from(19))
     );
@@ -104,27 +114,33 @@ fn widening_form_preserves_roots_facts_accounts_logs_and_conservative_rpc_depend
             .missing_initial_slots(&world, address, &value(3))
             .is_empty()
     );
-    assert_eq!(widened, widened.widening_form(domain, limits).unwrap());
+    assert_eq!(
+        widened,
+        widened.widening_form(domain.borrowed(), limits).unwrap()
+    );
     assert_eq!(store, original);
 }
 
 #[test]
 fn widening_form_refreshes_redundant_slot_cache_and_rejects_errors_atomically() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = domain.spec().relations().expressions();
     let address = Address::repeat_byte(0x48);
-    let mut world = World::new(Fork::Osaka, "cache leaf");
-    world.insert(address, Account::empty()).unwrap();
-    let mut store = Store::new(&world);
+    let mut world = TestWorld::new(Fork::Osaka, "cache leaf");
+    world.insert(address, TestAccount::empty()).unwrap();
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     store
-        .write_checked(address, &value(7), &value(9), domain)
+        .write_checked(address, &value(7), &value(9), domain.borrowed())
         .unwrap();
     store
         .persistent
         .slots
         .insert((address, U256::from(7)), value(99));
     let original = store.clone();
-    let widened = store.widening_form(domain, limits).unwrap();
+    let widened = store.widening_form(domain.borrowed(), limits).unwrap();
     assert_eq!(
         widened
             .persistent
@@ -144,7 +160,7 @@ fn widening_form_refreshes_redundant_slot_cache_and_rejects_errors_atomically() 
     assert!(
         store
             .widening_form(
-                domain,
+                domain.borrowed(),
                 ExprLimits {
                     max_nodes: 1,
                     max_depth: 1
@@ -157,7 +173,7 @@ fn widening_form_refreshes_redundant_slot_cache_and_rejects_errors_atomically() 
     cancellation.cancel();
     analysis_control::with_cancellation(&cancellation, || {
         assert!(matches!(
-            store.widening_form(domain, limits),
+            store.widening_form(domain.borrowed(), limits),
             Err(StoreError::Expression(ExprError::Cancelled)
                 | StoreError::State(StateError::Cancelled))
         ));
@@ -169,15 +185,15 @@ fn widening_form_refreshes_redundant_slot_cache_and_rejects_errors_atomically() 
     });
     store.persistent.failure = Some(failure.clone());
     let failed = store.clone();
-    assert_eq!(store.widening_form(domain, limits), Err(failure));
+    assert_eq!(store.widening_form(domain.borrowed(), limits), Err(failure));
     assert_eq!(store, failed);
 }
 
 #[test]
 fn widening_form_refreshes_projected_account_and_log_scalar_constants() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = domain.spec().relations().expressions();
-    let world = World::new(Fork::Osaka, "projected scalar leaf");
+    let world = TestWorld::new(Fork::Osaka, "projected scalar leaf");
     let address = Address::repeat_byte(0x53);
     let site = LogKey {
         address,
@@ -186,7 +202,10 @@ fn widening_form_refreshes_projected_account_and_log_scalar_constants() {
         source_kind: crate::world::LogSourceKind::Runtime,
         pc: 5,
     };
-    let mut left = Store::new(&world);
+    let mut left = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut right = left.clone();
     for (store, number) in [(&mut left, 7u64), (&mut right, 9u64)] {
         store.write_balance(address, value(number));
@@ -195,27 +214,28 @@ fn widening_form_refreshes_projected_account_and_log_scalar_constants() {
         store
             .emit_log(
                 site.clone(),
-                AbstractLog {
+                TestLog {
                     topics: vec![value(number)],
-                    data: ByteArray::exact(&[1]),
+                    data: TestBytes::exact(&[1]),
                 },
-                domain,
+                domain.borrowed(),
             )
             .unwrap();
     }
     let selector = ExprId::fresh().unwrap();
     let mut projected = left
-        .join_guarded(&right, domain, selector.clone(), limits)
+        .join_guarded(&right, domain.borrowed(), selector.clone(), limits)
         .unwrap();
     projected
         .rename_fresh(
             &BTreeMap::from([(selector, ExprId::constant(U256::ZERO))]),
             limits,
+            domain.borrowed(),
         )
         .unwrap();
     let original = projected.clone();
-    let widened = projected.widening_form(domain, limits).unwrap();
-    let direct = right.widening_form(domain, limits).unwrap();
+    let widened = projected.widening_form(domain.borrowed(), limits).unwrap();
+    let direct = right.widening_form(domain.borrowed(), limits).unwrap();
     for (actual, expected, before) in [
         (
             &widened.balances[&address],
@@ -245,6 +265,9 @@ fn widening_form_refreshes_projected_account_and_log_scalar_constants() {
     }
     assert_eq!(widened.persistent.roots, original.persistent.roots);
     assert_eq!(widened.transient.roots, original.transient.roots);
-    assert_eq!(widened, widened.widening_form(domain, limits).unwrap());
+    assert_eq!(
+        widened,
+        widened.widening_form(domain.borrowed(), limits).unwrap()
+    );
     assert_eq!(projected, original);
 }

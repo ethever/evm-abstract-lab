@@ -1,14 +1,19 @@
 //! Frame, byte transport, rollback and shared-budget regression tests.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+
+#[path = "support/native.rs"]
+mod native;
 
 use alloy_primitives::{Address, U256};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
     analysis::{
-        ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status, WorldAnalysis,
-        analyze_world,
+        EvmWorldAnalysis, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status,
     },
-    domain::{AbstractValue, Domain, provenance::Origin, symbolic::ExprId},
-    world::{Account, ByteArray, Code, Entry, World},
+    domain::{EvmValue, provenance::Origin, symbolic::ExprId},
+    world::{Code, EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 
 fn addr(value: u64) -> Address {
@@ -16,7 +21,7 @@ fn addr(value: u64) -> Address {
 }
 
 // 上下文数值来自地址/CALLVALUE，不能要求它带有直接字面常量的来源。
-fn assert_numeric_eq(actual: &AbstractValue, expected: &AbstractValue) {
+fn assert_numeric_eq(actual: &EvmValue<NumericValue>, expected: &EvmValue<NumericValue>) {
     assert_eq!(actual.constants(), expected.constants());
     assert_eq!(actual.known_bits(), expected.known_bits());
     assert_eq!(actual.interval(), expected.interval());
@@ -24,30 +29,36 @@ fn assert_numeric_eq(actual: &AbstractValue, expected: &AbstractValue) {
     assert_eq!(actual.may_be_zero(), expected.may_be_zero());
     assert_eq!(actual.may_be_nonzero(), expected.may_be_nonzero());
 }
-fn entry() -> Entry {
-    Entry {
+fn entry() -> EvmEntry<NumericValue> {
+    EvmEntry {
         address: addr(0x101),
-        environment: evm_abstract::world::EvmEnvironment {
+        environment: evm_abstract::world::EvmEnvironmentValues {
             to: (addr(0x101)).into(),
             caller: (addr(0x900)).into(),
-            value: AbstractValue::constant(U256::from(42)),
-            calldata: ByteArray::empty(),
+            value: EvmValue::<NumericValue>::constant(U256::from(42)),
+            calldata: EvmByteArray::<NumericValue>::empty(),
             is_static: false,
-            ..evm_abstract::world::EvmEnvironment::default()
+            ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
         },
     }
 }
-fn world(accounts: &[(u64, &str)]) -> World {
-    let mut world = World::new(Fork::Osaka, "test:fixed-world");
+fn world(accounts: &[(u64, &str)]) -> EvmWorld<NumericValue> {
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "test:fixed-world");
     for (address, code) in accounts {
-        let mut account = Account::from_hex(code, world.fork()).unwrap();
-        account.balance = AbstractValue::constant(U256::from(1_000_000));
+        let mut account = EvmAccount::<NumericValue>::from_hex(code, world.fork()).unwrap();
+        account.balance = EvmValue::<NumericValue>::constant(U256::from(1_000_000));
         world.insert(addr(*address), account).unwrap();
     }
     world
 }
-fn run(accounts: &[(u64, &str)]) -> WorldAnalysis {
-    analyze_world(world(accounts), entry(), ExecutionConfig::default()).unwrap()
+fn run(accounts: &[(u64, &str)]) -> EvmWorldAnalysis<NumericValue> {
+    native::run(
+        &native::product(),
+        AnalysisInput::new(world(accounts), entry()).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap()
 }
 fn call(op: u8, target: u16, value: u8, input: u8, output: u8) -> String {
     let value = if matches!(op, 0xf1 | 0xf2) {
@@ -64,7 +75,13 @@ fn static_value_call_faults_before_an_unrepresentable_memory_access() {
     let world = world(&[(0x101, &code), (0x200, "00")]);
     let mut entry = entry();
     entry.environment.is_static = true;
-    let analysis = analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -118,7 +135,7 @@ fn call_context_is_intrinsic_and_retained_across_each_call_kind() {
         assert_eq!(frame.key.is_static, op == 0xfa);
         assert_numeric_eq(
             &frame.call_value,
-            &AbstractValue::constant(U256::from(if op == 0xf4 {
+            &EvmValue::<NumericValue>::constant(U256::from(if op == 0xf4 {
                 42
             } else if op == 0xfa {
                 0
@@ -128,11 +145,11 @@ fn call_context_is_intrinsic_and_retained_across_each_call_kind() {
         );
         assert_numeric_eq(
             &child.exit_stack[0],
-            &AbstractValue::constant(U256::from_be_slice(frame.key.address.as_slice())),
+            &EvmValue::<NumericValue>::constant(U256::from_be_slice(frame.key.address.as_slice())),
         );
         assert_numeric_eq(
             &child.exit_stack[1],
-            &AbstractValue::constant(U256::from_be_slice(
+            &EvmValue::<NumericValue>::constant(U256::from_be_slice(
                 frame.key.caller.as_concrete().unwrap().as_slice(),
             )),
         );
@@ -182,18 +199,17 @@ fn calldata_is_copied_from_callers_memory_and_returned_bytes_feed_parent() {
         .iter()
         .find(|s| s.key.frames.len() == 2)
         .unwrap();
-    let loaded = child
-        .entry
-        .active()
-        .calldata
-        .read_word(&AbstractValue::constant(U256::ZERO), Domain::default());
-    assert_numeric_eq(&loaded, &AbstractValue::constant(U256::from(7)));
+    let loaded = child.entry.active().calldata.read_word(
+        &EvmValue::<NumericValue>::constant(U256::ZERO),
+        native::product().borrowed(),
+    );
+    assert_numeric_eq(&loaded, &EvmValue::<NumericValue>::constant(U256::from(7)));
     // read_word forwards this complete Slice/WriteWord window to the caller's
     // PUSH constant without arithmetic reconstruction. MLOAD and CALLDATALOAD
     // assign their own origins only during opcode transfer.
     assert_eq!(
         loaded.provenance().origins(),
-        AbstractValue::constant(U256::from(7))
+        EvmValue::<NumericValue>::constant(U256::from(7))
             .provenance()
             .origins()
     );
@@ -214,7 +230,7 @@ fn calldata_is_copied_from_callers_memory_and_returned_bytes_feed_parent() {
         for state in states {
             assert_numeric_eq(
                 &state.exit_stack[0],
-                &AbstractValue::constant(U256::from(7)),
+                &EvmValue::<NumericValue>::constant(U256::from(7)),
             );
             assert_eq!(
                 state.entry.active().returndata.len().singleton(),
@@ -243,7 +259,8 @@ fn another_call_clears_the_suspended_callers_previous_return_buffer() {
         // Clearing constructs an empty buffer with its exact zero-length proof.
         assert_eq!(
             *child.entry.call_stack.root().state.returndata.len(),
-            AbstractValue::constant(U256::ZERO).with_expression(ExprId::constant(U256::ZERO))
+            EvmValue::<NumericValue>::constant(U256::ZERO)
+                .with_expression(ExprId::constant(U256::ZERO))
         );
     }
 }
@@ -279,7 +296,7 @@ fn output_copy_preserves_uncopied_suffix_and_full_returndata_size() {
             );
             assert_numeric_eq(
                 &state.exit_stack[1],
-                &AbstractValue::constant(U256::from_be_bytes(expected)),
+                &EvmValue::<NumericValue>::constant(U256::from_be_bytes(expected)),
             );
         }
     }
@@ -297,8 +314,8 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
             .iter()
             .any(|e| e.kind == MachineEdgeKind::Revert)
     );
-    let domain = Domain::default();
-    let zero = AbstractValue::constant(U256::ZERO);
+    let domain = native::product();
+    let zero = EvmValue::<NumericValue>::constant(U256::ZERO);
     let revert_edges: Vec<_> = analysis
         .edges()
         .iter()
@@ -314,12 +331,12 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
         let checkpoint = child.entry.active().saved_store.state();
         let effects = &child.exit.as_ref().unwrap().store;
         assert_eq!(
-            effects.read(addr(0x200), &zero, domain),
-            AbstractValue::constant(U256::from(7))
+            effects.read(addr(0x200), &zero, domain.borrowed()),
+            EvmValue::<NumericValue>::constant(U256::from(7))
         );
         assert_eq!(
-            effects.read_transient(addr(0x200), &zero, domain),
-            AbstractValue::constant(U256::from(8))
+            effects.read_transient(addr(0x200), &zero, domain.borrowed()),
+            EvmValue::<NumericValue>::constant(U256::from(8))
         );
         assert_eq!(effects.possible_logs().len(), 1);
         let receipt = child.execution_evidence().unwrap();
@@ -334,22 +351,29 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
         // Compare the complete state before transaction finalization clears TSTORE.
         assert_eq!(&resumed.store, checkpoint);
         assert_eq!(
-            resumed.store.read(addr(0x101), &zero, domain),
-            AbstractValue::constant(U256::from(3))
+            resumed.store.read(addr(0x101), &zero, domain.borrowed()),
+            EvmValue::<NumericValue>::constant(U256::from(3))
         );
         assert_eq!(
-            resumed.store.read_transient(addr(0x101), &zero, domain),
-            AbstractValue::constant(U256::from(9))
+            resumed
+                .store
+                .read_transient(addr(0x101), &zero, domain.borrowed()),
+            EvmValue::<NumericValue>::constant(U256::from(9))
         );
-        assert_eq!(resumed.store.read(addr(0x200), &zero, domain), zero);
         assert_eq!(
-            resumed.store.read_transient(addr(0x200), &zero, domain),
+            resumed.store.read(addr(0x200), &zero, domain.borrowed()),
+            zero
+        );
+        assert_eq!(
+            resumed
+                .store
+                .read_transient(addr(0x200), &zero, domain.borrowed()),
             zero
         );
         assert_eq!(resumed.active().stack.last().unwrap(), &zero);
         // The same resumption also receives exceptional CALL failures with an
         // empty buffer. Preserve the exact joined product for both alternatives.
-        let length = domain.join(&zero, &AbstractValue::constant(U256::from(32)));
+        let length = domain.join(&zero, &EvmValue::<NumericValue>::constant(U256::from(32)));
         assert_eq!(
             resumed.active().returndata.len().numeric(),
             length.numeric()
@@ -366,25 +390,28 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
                 .unwrap()
                 .active()
                 .memory
-                .read_word(&zero, domain),
-            AbstractValue::constant(U256::from(42))
+                .read_word(&zero, domain.borrowed()),
+            EvmValue::<NumericValue>::constant(U256::from(42))
                 .with_expression(ExprId::constant(U256::from(42)))
         );
-        let copied = resumed.active().memory.read_word(&zero, domain);
+        let copied = resumed.active().memory.read_word(&zero, domain.borrowed());
         let expected_copy = domain
-            .join(&zero, &AbstractValue::constant(U256::from(42)))
+            .join(&zero, &EvmValue::<NumericValue>::constant(U256::from(42)))
             .with_origin(Origin::Arithmetic);
         assert_eq!(copied.numeric(), expected_copy.numeric());
         assert_eq!(copied.provenance(), expected_copy.provenance());
         assert!(copied.expression().is_some());
-        assert_eq!(resumed.active().memory.read_word(&zero, domain), copied);
+        assert_eq!(
+            resumed.active().memory.read_word(&zero, domain.borrowed()),
+            copied
+        );
         assert_eq!(
             resumed.store.read_balance(addr(0x101)),
-            AbstractValue::constant(U256::from(1_000_000))
+            EvmValue::<NumericValue>::constant(U256::from(1_000_000))
         );
         assert_eq!(
             resumed.store.read_balance(addr(0x200)),
-            AbstractValue::constant(U256::from(1_000_000))
+            EvmValue::<NumericValue>::constant(U256::from(1_000_000))
         );
         assert!(resumed.store.possible_logs().is_empty());
     }
@@ -398,43 +425,43 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
         assert_eq!(
             outcome.store.read(
                 addr(0x101),
-                &AbstractValue::constant(U256::ZERO),
-                Domain::default()
+                &EvmValue::<NumericValue>::constant(U256::ZERO),
+                native::product().borrowed()
             ),
-            AbstractValue::constant(U256::from(3))
+            EvmValue::<NumericValue>::constant(U256::from(3))
         );
         assert_eq!(
             outcome.store.read(
                 addr(0x200),
-                &AbstractValue::constant(U256::ZERO),
-                Domain::default()
+                &EvmValue::<NumericValue>::constant(U256::ZERO),
+                native::product().borrowed()
             ),
-            AbstractValue::constant(U256::ZERO)
+            EvmValue::<NumericValue>::constant(U256::ZERO)
         );
         assert_eq!(
             outcome.store.read_transient(
                 addr(0x200),
-                &AbstractValue::constant(U256::ZERO),
-                Domain::default()
+                &EvmValue::<NumericValue>::constant(U256::ZERO),
+                native::product().borrowed()
             ),
-            AbstractValue::constant(U256::ZERO)
+            EvmValue::<NumericValue>::constant(U256::ZERO)
         );
         assert_eq!(
             outcome.store.read_transient(
                 addr(0x101),
-                &AbstractValue::constant(U256::ZERO),
-                Domain::default()
+                &EvmValue::<NumericValue>::constant(U256::ZERO),
+                native::product().borrowed()
             ),
             zero
         );
         assert!(outcome.store.transient_slots().is_empty());
         assert_eq!(
             outcome.store.read_balance(addr(0x101)),
-            AbstractValue::constant(U256::from(1_000_000))
+            EvmValue::<NumericValue>::constant(U256::from(1_000_000))
         );
         assert_eq!(
             outcome.store.read_balance(addr(0x200)),
-            AbstractValue::constant(U256::from(1_000_000))
+            EvmValue::<NumericValue>::constant(U256::from(1_000_000))
         );
         assert!(outcome.store.possible_logs().is_empty());
     }
@@ -461,10 +488,11 @@ fn static_child_write_fails_and_callcode_value_does_not_violate_static_mode() {
     let code = format!("{}00", call(0xf2, 0x200, 9, 0, 0));
     let mut entry = entry();
     entry.environment.is_static = true;
-    let analysis = analyze_world(
-        world(&[(0x101, &code), (0x200, "3400")]),
-        entry,
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world(&[(0x101, &code), (0x200, "3400")]), entry).unwrap(),
         ExecutionConfig::default(),
+        &Control::default(),
     )
     .unwrap();
     assert!(
@@ -489,10 +517,10 @@ fn callbacks_observe_parent_writes_before_call_entry() {
     assert_eq!(
         callback.entry.store.read(
             addr(0x101),
-            &AbstractValue::constant(U256::ZERO),
-            Domain::default()
+            &EvmValue::<NumericValue>::constant(U256::ZERO),
+            native::product().borrowed()
         ),
-        AbstractValue::constant(U256::from(1))
+        EvmValue::<NumericValue>::constant(U256::from(1))
     );
     assert!(
         analysis
@@ -503,8 +531,8 @@ fn callbacks_observe_parent_writes_before_call_entry() {
                 .store
                 .read(
                     addr(0x101),
-                    &AbstractValue::constant(U256::from(1)),
-                    Domain::default()
+                    &EvmValue::<NumericValue>::constant(U256::from(1)),
+                    native::product().borrowed()
                 )
                 .contains(U256::from(1)))
     );
@@ -517,13 +545,13 @@ fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
             FrameCode, Limit, RootTerminalScope, RootTerminalTrigger, layers::AnalysisSession,
         },
         domain::symbolic::{ByteStateKind, ExprKind, SlotStateId, SlotStateKind},
-        world::{Existence, Store},
+        world::{EvmStore, Existence},
     };
 
     let caller = "5f5f5f5f5f345af100";
     let world = world(&[(0x101, caller), (0x200, "00")]);
     let mut entry = entry();
-    entry.environment.value = AbstractValue::top();
+    entry.environment.value = EvmValue::<NumericValue>::top();
     let config = ExecutionConfig {
         max_call_depth: 3,
         ..ExecutionConfig::default()
@@ -535,7 +563,13 @@ fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
     // reentry. Default-ledger terminal coverage is exercised separately below.
     detailed_config.max_work = 100_000_000;
     detailed_config.root_terminal_coverage = false;
-    let analysis = analyze_world(world.clone(), entry.clone(), detailed_config).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        detailed_config,
+        &Control::default(),
+    )
+    .unwrap();
     // The known self target now closes through a relative procedure instead
     // of exhausting the physical depth limit while the unknown remainder runs.
     assert_eq!(analysis.status(), Status::Converged);
@@ -563,11 +597,23 @@ fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
 
     // The coverage run keeps the original default 20M ledger. Its preparation
     // shares that ledger, so detailed exhaustion must remain visible.
-    let mut session =
-        AnalysisSession::from_world(world.clone(), entry.clone(), config.clone()).unwrap();
+    let session_values = native::product();
+    let session_policies = evm_abstract::analysis::EnginePolicies::default();
+    let mut session_extension = evm_abstract::analysis::cooperation::NoExtension;
+    let session_engine = evm_abstract::analysis::AnalysisEngine::new(
+        &session_values,
+        &session_policies,
+        &mut session_extension,
+    );
+    let mut session = AnalysisSession::new(
+        session_engine,
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+    )
+    .unwrap();
     let snapshot = session.facts().snapshot().clone();
     let revision = session.facts().revision();
-    let report = session.analyze().unwrap();
+    let report = session.run(&Control::default()).unwrap();
     let covered = report.analysis();
     assert!(covered.config().root_terminal_coverage);
     assert_eq!(covered.config().max_call_depth, 3);
@@ -609,7 +655,7 @@ fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
     assert_eq!(input.entry(), covered.entry());
     assert_eq!(input.fork(), world.fork());
     assert_eq!(input.domain_spec(), covered.domain_spec());
-    assert_eq!(input.domain_spec(), Domain::default().spec());
+    assert_eq!(input.domain_spec(), native::product().spec());
     assert_eq!(
         serde_json::to_value(input.config()).unwrap(),
         serde_json::to_value(&config).unwrap()
@@ -630,8 +676,8 @@ fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
     assert_eq!(input.input_scope(), Some(value.scope));
     assert_eq!(input.saved_store(), &frame.saved_store);
     assert_eq!(input.initial_store(), &original.store);
-    let domain = Domain::from_spec(input.domain_spec());
-    let request_store = Store::new_checked(&world, domain).unwrap();
+    let domain = native::product_with(input.domain_spec());
+    let request_store = EvmStore::<NumericValue>::new_checked(&world, domain.borrowed()).unwrap();
     let saved = input.saved_store().state();
     assert_eq!(saved, &request_store);
     let SlotStateKind::Input { source, .. } = saved.global_storage_state().kind() else {
@@ -645,7 +691,7 @@ fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
     );
 
     let [returned, reverted, failed] = coverage.outcomes();
-    assert_eq!(failed.data(), &ByteArray::empty());
+    assert_eq!(failed.data(), &EvmByteArray::<NumericValue>::empty());
     // Complete immutable roots bind every slot, including omitted owners;
     // checking only a few numeric reads would lose this rollback relation.
     for outcome in [reverted, failed] {
@@ -800,16 +846,22 @@ fn delegation_retains_authority_storage_and_resolves_only_once() {
     world
         .insert(
             addr(0x200),
-            Account {
+            EvmAccount {
                 code: Code::Delegation(addr(0x101)),
-                ..Account::empty()
+                ..EvmAccount::<NumericValue>::empty()
             },
         )
         .unwrap();
     let mut entry = entry();
     entry.address = addr(0x200);
     entry.environment.to = addr(0x200).into();
-    let analysis = analyze_world(world.clone(), entry.clone(), ExecutionConfig::default()).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(analysis.states()[0].active().code_address, addr(0x101));
     assert_eq!(analysis.states()[0].active().address, addr(0x200));
     assert!(analysis.outcomes().iter().any(|o| {
@@ -817,31 +869,37 @@ fn delegation_retains_authority_storage_and_resolves_only_once() {
             && o.store
                 .read(
                     addr(0x200),
-                    &AbstractValue::constant(U256::ZERO),
-                    Domain::default(),
+                    &EvmValue::<NumericValue>::constant(U256::ZERO),
+                    native::product().borrowed(),
                 )
                 .contains(U256::from(7))
     }));
-    let mut nested = World::new(Fork::Osaka, "nested delegation");
+    let mut nested = EvmWorld::<NumericValue>::new(Fork::Osaka, "nested delegation");
     nested
         .insert(
             addr(0x101),
-            Account {
+            EvmAccount {
                 code: Code::Delegation(addr(0x300)),
-                ..Account::empty()
+                ..EvmAccount::<NumericValue>::empty()
             },
         )
         .unwrap();
     nested
         .insert(
             addr(0x200),
-            Account {
+            EvmAccount {
                 code: Code::Delegation(addr(0x101)),
-                ..Account::empty()
+                ..EvmAccount::<NumericValue>::empty()
             },
         )
         .unwrap();
-    let analysis = analyze_world(nested, entry, ExecutionConfig::default()).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(nested, entry).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(analysis.status(), Status::Converged);
     assert!(
         !analysis
@@ -853,17 +911,23 @@ fn delegation_retains_authority_storage_and_resolves_only_once() {
 
 #[test]
 fn delegated_precompile_is_empty_while_direct_calls_use_native_execution() {
-    let mut world = World::new(Fork::Osaka, "delegated native address");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "delegated native address");
     world
         .insert(
             addr(0x101),
-            Account {
+            EvmAccount {
                 code: Code::Delegation(addr(1)),
-                ..Account::empty()
+                ..EvmAccount::<NumericValue>::empty()
             },
         )
         .unwrap();
-    let analysis = analyze_world(world, entry(), ExecutionConfig::default()).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry()).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(analysis.status(), Status::Converged);
     assert!(
         analysis
@@ -889,13 +953,18 @@ fn zero_size_returndatacopy_still_checks_source_offset() {
 fn shared_depth_and_work_limits_keep_typed_frontiers() {
     let first = format!("{}00", call(0xf1, 0x200, 0, 0, 0));
     let second = format!("{}00", call(0xf1, 0x300, 0, 0, 0));
-    let depth = analyze_world(
-        world(&[(0x101, &first), (0x200, &second), (0x300, "00")]),
-        entry(),
+    let depth = native::run(
+        &native::product(),
+        AnalysisInput::new(
+            world(&[(0x101, &first), (0x200, &second), (0x300, "00")]),
+            entry(),
+        )
+        .unwrap(),
         ExecutionConfig {
             max_call_depth: 2,
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(depth.status(), Status::Incomplete);
@@ -905,13 +974,14 @@ fn shared_depth_and_work_limits_keep_typed_frontiers() {
             .iter()
             .any(|f| f.reason == FrontierReason::CallDepth)
     );
-    let work = analyze_world(
-        world(&[(0x101, "600160020100")]),
-        entry(),
+    let work = native::run(
+        &native::product(),
+        AnalysisInput::new(world(&[(0x101, "600160020100")]), entry()).unwrap(),
         ExecutionConfig {
             max_work: 2,
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(work.status(), Status::Incomplete);
@@ -921,13 +991,14 @@ fn shared_depth_and_work_limits_keep_typed_frontiers() {
             .iter()
             .any(|f| f.reason == FrontierReason::Work)
     );
-    let memory = analyze_world(
-        world(&[(0x101, "600160405200")]),
-        entry(),
+    let memory = native::run(
+        &native::product(),
+        AnalysisInput::new(world(&[(0x101, "600160405200")]), entry()).unwrap(),
         ExecutionConfig {
             max_memory_bytes: 32,
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(memory.status(), Status::Converged);

@@ -1,13 +1,19 @@
 //! Diagnostics retain execution evidence from the active captured code frame.
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisInput, EvmAnalysis};
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{
-        self, Config, DiagnosticKind, ExecutionConfig, FrameCode, InstructionProgress,
+        Config, DiagnosticKind, ExecutionConfig, FrameCode, InstructionProgress,
         InvalidOpcodeDiagnostic, InvalidOpcodeReason, OutcomeKind, Status,
     },
     bytecode::Program,
-    world::{Account, Code, Entry, World},
+    world::{Code, EvmAccount, EvmEntry, EvmWorld},
 };
 use std::collections::BTreeSet;
 
@@ -54,10 +60,17 @@ fn invalid_bytes_and_fork_rules_have_distinct_native_payloads() {
             InvalidOpcodeReason::UnavailableInFork(Fork::Cancun),
         ),
     ] {
-        let view = analysis::analyze(
-            Program::from_hex_with_fork(hex, fork).unwrap(),
-            Config::default(),
+        let view = native::run(
+            &native::product(),
+            AnalysisInput::<NumericValue>::from_program(
+                Program::from_hex_with_fork(hex, fork).unwrap(),
+                Default::default(),
+            )
+            .unwrap(),
+            ExecutionConfig::default(),
+            &Control::default(),
         )
+        .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
         .unwrap();
         assert_eq!(view.status(), Status::Converged);
         assert!(view.frontiers().is_empty());
@@ -105,10 +118,17 @@ fn invalid_bytes_and_fork_rules_have_distinct_native_payloads() {
                 .all(|o| o.kind == OutcomeKind::Failure)
         );
     }
-    let view = analysis::analyze(
-        Program::from_hex_with_fork("5f1e00", Fork::Osaka).unwrap(),
-        Config::default(),
+    let view = native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex_with_fork("5f1e00", Fork::Osaka).unwrap(),
+            Default::default(),
+        )
+        .unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap();
     assert_eq!(view.status(), Status::Converged);
     assert!(view.diagnostics().is_empty());
@@ -124,10 +144,17 @@ fn future_defined_instructions_retain_their_mnemonic_and_fork_reason() {
             (0xe7, "SWAPN"),
             (0xe8, "EXCHANGE"),
         ] {
-            let view = analysis::analyze(
-                Program::decode_with_fork(&[byte], fork).unwrap(),
-                Config::default(),
+            let view = native::run(
+                &native::product(),
+                AnalysisInput::<NumericValue>::from_program(
+                    Program::decode_with_fork(&[byte], fork).unwrap(),
+                    Default::default(),
+                )
+                .unwrap(),
+                ExecutionConfig::default(),
+                &Control::default(),
             )
+            .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
             .unwrap();
             assert_eq!(view.status(), Status::Converged);
             assert_eq!(view.diagnostics().len(), 1);
@@ -145,7 +172,18 @@ fn future_defined_instructions_retain_their_mnemonic_and_fork_reason() {
 
 #[test]
 fn unreachable_invalid_bytes_are_disassembled_without_execution_diagnostics() {
-    let view = analysis::analyze(Program::from_hex("00feef").unwrap(), Config::default()).unwrap();
+    let view = native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex("00feef").unwrap(),
+            Default::default(),
+        )
+        .unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
+    .unwrap();
     assert_eq!(view.program().blocks().len(), 3);
     assert_eq!(view.program().blocks()[1].instructions[0].opcode, 0xfe);
     assert_eq!(view.program().blocks()[2].instructions[0].opcode, 0xef);
@@ -157,13 +195,23 @@ fn unreachable_invalid_bytes_are_disassembled_without_execution_diagnostics() {
 #[test]
 fn one_invalid_instruction_retains_each_abstract_state_identity() {
     // An unknown branch reaches the same INVALID with stack heights zero and one.
-    let view = analysis::analyze(
-        Program::from_hex("5f35600a576001600a565bfe").unwrap(),
-        Config {
-            context_depth: 0,
-            ..Config::default()
+    let view = native::run(
+        &native::product(),
+        AnalysisInput::<NumericValue>::from_program(
+            Program::from_hex("5f35600a576001600a565bfe").unwrap(),
+            Default::default(),
+        )
+        .unwrap(),
+        ExecutionConfig {
+            analysis: Config {
+                context_depth: 0,
+                ..Config::default()
+            },
+            ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
+    .map(|graph| EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap())
     .unwrap();
     assert_eq!(view.status(), Status::Converged);
     assert_eq!(view.diagnostics().len(), 2);
@@ -191,22 +239,23 @@ fn one_invalid_instruction_retains_each_abstract_state_identity() {
 fn callees_at_the_same_pc_use_their_own_captured_programs() {
     let caller = "5f5f5f5f5f61020061fffff1505f5f5f5f5f61030061fffff100";
     for use_summaries in [false, true] {
-        let mut world = World::new(Fork::Osaka, "invalid callee provenance");
+        let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "invalid callee provenance");
         for (owner, code) in [(0x101, caller), (0x200, "fe"), (0x300, "ef")] {
             world
                 .insert(
                     address(owner),
-                    Account::from_hex(code, world.fork()).unwrap(),
+                    EvmAccount::<NumericValue>::from_hex(code, world.fork()).unwrap(),
                 )
                 .unwrap();
         }
-        let report = analysis::analyze_world(
-            world,
-            Entry::new(address(0x101)),
+        let report = native::run(
+            &native::product(),
+            AnalysisInput::new(world, EvmEntry::<NumericValue>::new(address(0x101))).unwrap(),
             ExecutionConfig {
                 use_summaries,
                 ..ExecutionConfig::default()
             },
+            &Control::default(),
         )
         .unwrap();
         assert_eq!(report.status(), Status::Converged);
@@ -236,17 +285,24 @@ fn callees_at_the_same_pc_use_their_own_captured_programs() {
 fn initcode_fault_uses_initcode_byte_at_pc_zero() {
     let creator = address(0x101);
     let destination = creator.create(0);
-    let mut world = World::new(Fork::Osaka, "invalid initcode provenance");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "invalid initcode provenance");
     // Put 0xfe into memory[0], then CREATE with this one-byte initcode.
     world
         .insert(
             creator,
-            Account::from_hex("60fe5f5360015f5ff000", world.fork()).unwrap(),
+            EvmAccount::<NumericValue>::from_hex("60fe5f5360015f5ff000", world.fork()).unwrap(),
         )
         .unwrap();
-    world.insert(destination, Account::absent()).unwrap();
-    let report =
-        analysis::analyze_world(world, Entry::new(creator), ExecutionConfig::default()).unwrap();
+    world
+        .insert(destination, EvmAccount::<NumericValue>::absent())
+        .unwrap();
+    let report = native::run(
+        &native::product(),
+        AnalysisInput::new(world, EvmEntry::<NumericValue>::new(creator)).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(report.status(), Status::Converged);
     assert_eq!(report.diagnostics().len(), 1);
     let diagnostic = &report.diagnostics()[0];
@@ -268,22 +324,23 @@ fn initcode_fault_uses_initcode_byte_at_pc_zero() {
 
 #[test]
 fn nested_delegation_entry_has_a_verified_byte_and_no_instruction_receipt() {
-    let mut world = World::new(Fork::Osaka, "nested delegation evidence");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "nested delegation evidence");
     for (owner, implementation) in [(0x101, 0x200), (0x200, 0x300)] {
         world
             .insert(
                 address(owner),
-                Account {
+                EvmAccount {
                     code: Code::Delegation(address(implementation)),
-                    ..Account::empty()
+                    ..EvmAccount::<NumericValue>::empty()
                 },
             )
             .unwrap();
     }
-    let report = analysis::analyze_world(
-        world,
-        Entry::new(address(0x101)),
+    let report = native::run(
+        &native::product(),
+        AnalysisInput::new(world, EvmEntry::<NumericValue>::new(address(0x101))).unwrap(),
         ExecutionConfig::default(),
+        &Control::default(),
     )
     .unwrap();
     assert_eq!(report.status(), Status::Converged);

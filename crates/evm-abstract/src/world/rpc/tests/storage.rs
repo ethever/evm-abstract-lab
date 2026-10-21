@@ -1,17 +1,14 @@
 //! Incremental storage acquisition exercises the checked initial-state cache.
 
 use super::{Reply, Server, healthy};
-use crate::{
-    Address, U256,
-    domain::AbstractValue,
-    world::{
-        Existence,
-        rpc::{AcquisitionLimit, RpcBlock, RpcError, RpcFailureKind, Session},
-    },
-};
 use alloy_primitives::B256;
 use serde_json::{Value as Json, json};
 use std::{collections::BTreeSet, thread, time::Duration};
+use {
+    crate::Address, crate::U256, crate::world::Existence, crate::world::rpc::AcquisitionLimit,
+    crate::world::rpc::RpcBlock, crate::world::rpc::RpcError, crate::world::rpc::RpcFailureKind,
+    crate::world::rpc::Session, crate::world::test_support::TestValue,
+};
 
 fn storage_reply(request: &Json) -> Json {
     let mut reply = healthy(request);
@@ -39,7 +36,7 @@ fn incremental_storage_reuses_observations_and_pins_only_missing_slots() {
             let server = Server::new(scope, |request| Reply::Json(storage_reply(request)));
             let mut input = server.input();
             input.block = block;
-            let mut session = Session::load(&input).unwrap();
+            let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
             let address = Address::repeat_byte(0x22);
             let initial = session.world().account(address).unwrap().clone();
             let slots = BTreeSet::from([U256::ZERO, U256::from(1), U256::from(2)]);
@@ -58,11 +55,11 @@ fn incremental_storage_reuses_observations_and_pins_only_missing_slots() {
             assert_eq!(account.storage[&U256::ZERO], initial.storage[&U256::ZERO]);
             assert_eq!(
                 account.storage[&U256::from(1)],
-                AbstractValue::constant(U256::ZERO)
+                TestValue::constant(U256::ZERO)
             );
             assert_eq!(
                 account.storage[&U256::from(2)],
-                AbstractValue::constant(U256::from(13))
+                TestValue::constant(U256::from(13))
             );
             assert!(account.storage_unknown);
             let observed = server.requests();
@@ -149,7 +146,7 @@ fn incremental_storage_failures_retain_slot_provenance_without_partial_installat
             if case == "timeout" {
                 input.timeout = request_timeout;
             }
-            let mut session = Session::load(&input).unwrap();
+            let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
             let address = Address::repeat_byte(0x22);
             let initial = session.world().account(address).unwrap().clone();
             let error = session
@@ -215,7 +212,8 @@ fn incremental_storage_final_identity_failures_discard_acquired_slots() {
                 }
                 Reply::Json(response)
             });
-            let mut session = Session::load(&server.input()).unwrap();
+            let mut session =
+                Session::<crate::domain::NumericValue>::load(&server.input()).unwrap();
             let address = Address::repeat_byte(0x22);
             let initial = session.world().account(address).unwrap().clone();
             let error = session
@@ -255,7 +253,7 @@ fn incremental_storage_reorg_after_state_read_keeps_orphan_facts_out_of_cache() 
             }
             Reply::Json(response)
         });
-        let mut session = Session::load(&server.input()).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&server.input()).unwrap();
         let address = Address::repeat_byte(0x22);
         let initial = session.world().account(address).unwrap().clone();
         let error = session
@@ -301,7 +299,7 @@ fn all_rpc_acquisition_requires_a_valid_pinned_height() {
                 let mut input = server.input();
                 input.block = block;
                 input.accounts[0].slots.clear();
-                let error = Session::load(&input).unwrap_err();
+                let error = Session::<crate::domain::NumericValue>::load(&input).unwrap_err();
                 assert_eq!(error.kind(), RpcFailureKind::Response);
                 assert_eq!(
                     error.context().method,
@@ -348,7 +346,8 @@ fn canonical_storage_check_rejects_a_wrong_or_missing_returned_height() {
                 }
                 Reply::Json(response)
             });
-            let mut session = Session::load(&server.input()).unwrap();
+            let mut session =
+                Session::<crate::domain::NumericValue>::load(&server.input()).unwrap();
             let address = Address::repeat_byte(0x22);
             let initial = session.world().account(address).unwrap().clone();
             let error = session
@@ -374,7 +373,7 @@ fn incremental_storage_retry_reacquires_the_entire_failed_batch() {
             }
             Reply::Json(storage_reply(request))
         });
-        let mut session = Session::load(&server.input()).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&server.input()).unwrap();
         let address = Address::repeat_byte(0x22);
         let slots = BTreeSet::from([U256::ZERO, U256::from(1), U256::from(2)]);
         assert!(session.fetch_storage(address, &slots).is_err());
@@ -397,7 +396,7 @@ fn incremental_storage_retry_reacquires_the_entire_failed_batch() {
         }
         assert_eq!(
             session.world().account(address).unwrap().storage[&U256::from(1)],
-            AbstractValue::constant(U256::ZERO)
+            TestValue::constant(U256::ZERO)
         );
     });
 }
@@ -409,7 +408,7 @@ fn incremental_storage_request_budget_covers_slots_and_final_checks() {
             let server = Server::new(scope, |request| Reply::Json(storage_reply(request)));
             let mut input = server.input();
             input.max_requests = max_requests;
-            let mut session = Session::load(&input).unwrap();
+            let mut session = Session::<crate::domain::NumericValue>::load(&input).unwrap();
             let address = Address::repeat_byte(0x22);
             let initial = session.world().account(address).unwrap().clone();
             let error = session
@@ -447,7 +446,7 @@ fn incremental_storage_request_budget_covers_slots_and_final_checks() {
 fn incremental_storage_requires_an_observed_account_without_networking() {
     thread::scope(|scope| {
         let server = Server::new(scope, |request| Reply::Json(storage_reply(request)));
-        let mut session = Session::load(&server.input()).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&server.input()).unwrap();
         let requests = session.requests();
         let address = Address::repeat_byte(0x44);
         let error = session
@@ -477,7 +476,7 @@ fn incremental_storage_nonzero_observation_establishes_account_presence() {
             }
             Reply::Json(reply)
         });
-        let mut session = Session::load(&server.input()).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&server.input()).unwrap();
         let address = Address::repeat_byte(0x22);
         assert_eq!(
             session.world().account(address).unwrap().existence,
@@ -504,7 +503,7 @@ fn incremental_storage_nonzero_observation_establishes_account_presence() {
 fn incremental_storage_discovery_is_bounded_by_requests_beyond_initial_slot_admission() {
     thread::scope(|scope| {
         let server = Server::new(scope, |request| Reply::Json(storage_reply(request)));
-        let mut session = Session::load(&server.input()).unwrap();
+        let mut session = Session::<crate::domain::NumericValue>::load(&server.input()).unwrap();
         let slots: BTreeSet<_> = (1u64..=1025).map(U256::from).collect();
         let installed = session
             .fetch_storage(Address::repeat_byte(0x22), &slots)

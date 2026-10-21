@@ -1,20 +1,18 @@
 use super::super::{Branch, ConditionalFacts, Context, Facts, Scope};
 use super::{Actions, shared_branches};
-use crate::{
-    domain::{
-        AbstractValue, Domain,
-        identity::Symbol,
-        provenance::Origin,
-        symbolic::{ByteView, ExprError, ExprId, ExprKind, ExprLimits},
-    },
-    world::ByteArray,
-};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::{collections::BTreeMap, convert::Infallible, sync::Arc};
+use {
+    crate::domain::identity::Symbol, crate::domain::provenance::Origin,
+    crate::domain::symbolic::ByteView, crate::domain::symbolic::ExprError,
+    crate::domain::symbolic::ExprId, crate::domain::symbolic::ExprKind,
+    crate::domain::symbolic::ExprLimits, crate::world::test_support::TestAlgebra,
+    crate::world::test_support::TestBytes, crate::world::test_support::TestValue,
+};
 
-fn word(value: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+fn word(value: u64) -> TestValue {
+    TestValue::constant(U256::from(value))
 }
 
 fn constant(value: u64) -> ExprId {
@@ -22,7 +20,10 @@ fn constant(value: u64) -> ExprId {
 }
 
 fn limits() -> ExprLimits {
-    Domain::default().spec().relations().expressions()
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+        .spec()
+        .relations()
+        .expressions()
 }
 
 fn empty() -> Scope {
@@ -32,7 +33,7 @@ fn empty() -> Scope {
     }
 }
 
-fn fact(key: &ExprId, value: AbstractValue) -> Scope {
+fn fact(key: &ExprId, value: TestValue) -> Scope {
     Scope {
         facts: Facts::from([(key.clone(), value)]),
         ..empty()
@@ -61,8 +62,8 @@ fn joined(original: &Scope, policy: ExprLimits) -> Result<ConditionalFacts, Expr
     )
 }
 
-fn observed(number: u64, input: u64, origin: Origin) -> AbstractValue {
-    let mut value = AbstractValue::top()
+fn observed(number: u64, input: u64, origin: Origin) -> TestValue {
+    let mut value = TestValue::top()
         .with_symbol(Symbol::CalldataWord(U256::ZERO), Some(input))
         .with_numeric(word(number).numeric().clone());
     value.set_origin(origin);
@@ -94,7 +95,7 @@ fn evaluate(expression: &ExprId, guards: &BTreeMap<ExprId, U256>) -> U256 {
 // A Scope means its whole fact prefix AND every conditional branch. Compare
 // complete selected values as well as this predicate; numeric-only equality
 // would miss input, source, expression and nested-scope regressions.
-fn holds(scope: &Scope, guards: &BTreeMap<ExprId, U256>, rejected: &AbstractValue) -> bool {
+fn holds(scope: &Scope, guards: &BTreeMap<ExprId, U256>, rejected: &TestValue) -> bool {
     scope.facts.values().all(|value| value != rejected)
         && scope.conditional.branches.iter().all(|branch| {
             holds(
@@ -109,7 +110,7 @@ fn holds(scope: &Scope, guards: &BTreeMap<ExprId, U256>, rejected: &AbstractValu
         })
 }
 
-fn selected(scope: &Scope, guards: &BTreeMap<ExprId, U256>) -> Vec<(ExprId, AbstractValue)> {
+fn selected(scope: &Scope, guards: &BTreeMap<ExprId, U256>) -> Vec<(ExprId, TestValue)> {
     let mut out = scope.facts.clone().into_iter().collect::<Vec<_>>();
     for branch in &scope.conditional.branches {
         out.extend(selected(
@@ -189,8 +190,8 @@ fn all_five_rules_preserve_complete_scoped_predicates_for_independent_word_guard
 
 #[test]
 fn same_content_root_cannot_alias_different_numeric_input_provenance_or_nested_scopes() {
-    let source = ByteArray::unknown();
-    let read = |array: &ByteArray| {
+    let source = TestBytes::unknown();
+    let read = |array: &TestBytes| {
         ExprId::word_read(
             ByteView::new(array.state_root().clone(), constant(0), constant(32)),
             constant(0),
@@ -212,7 +213,7 @@ fn same_content_root_cannot_alias_different_numeric_input_provenance_or_nested_s
         &empty(),
     )
     .conditional;
-    let another_source = ByteArray::unknown();
+    let another_source = TestBytes::unknown();
     assert_ne!(source.state_root(), another_source.state_root());
     let variants = [
         fact(&key, value.clone().with_numeric(word(9).numeric().clone())),
@@ -260,7 +261,7 @@ fn prefixes_conjunctions_and_reversed_pairs_stay_opaque() {
 
 #[test]
 fn unknown_selector_and_inactive_contradiction_never_promote_global_facts() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let [s, t] = std::array::from_fn::<_, 2, _>(|_| ExprId::fresh().unwrap());
     let key = ExprId::fresh().unwrap();
     let inactive = ExprId::fresh().unwrap();
@@ -273,40 +274,28 @@ fn unknown_selector_and_inactive_contradiction_never_promote_global_facts() {
     let out = joined(&original, limits()).unwrap();
     let guard = &out.branches[0].condition;
     let global = Facts::new();
-    let context = Context::new(
-        &global,
-        Some(&out),
-        crate::domain::ValueAlgebra::new(&domain),
-    );
+    let context = Context::new(&global, Some(&out), domain.borrowed());
+    assert_eq!(context.value(&key, domain.borrowed()), None);
     assert_eq!(
-        context.value(&key, crate::domain::ValueAlgebra::new(&domain)),
-        None
-    );
-    assert_eq!(
-        context
-            .branch(guard, true)
-            .value(&key, crate::domain::ValueAlgebra::new(&domain)),
+        context.branch(guard, true).value(&key, domain.borrowed()),
         Some(word(7))
     );
     assert!(global.is_empty());
     let mapped = out
-        .map(
-            crate::domain::ValueAlgebra::new(&domain),
-            &mut |term, value| {
-                assert_ne!(
-                    term, &inactive,
-                    "inactive scopes cannot invoke the callback"
-                );
-                Ok((
-                    if term == guard {
-                        constant(1)
-                    } else {
-                        term.clone()
-                    },
-                    value.cloned(),
-                ))
-            },
-        )
+        .map(domain.borrowed(), &mut |term, value| {
+            assert_ne!(
+                term, &inactive,
+                "inactive scopes cannot invoke the callback"
+            );
+            Ok((
+                if term == guard {
+                    constant(1)
+                } else {
+                    term.clone()
+                },
+                value.cloned(),
+            ))
+        })
         .unwrap();
     // The selected fact prefix keeps its true stamp rather than becoming a
     // separate unconditional fact; the original contradictory scope is intact.
@@ -368,7 +357,7 @@ fn independent_native_metadata_work_admission_retains_the_original_snapshot() {
         max_nodes: native.max_nodes + 2,
         max_depth: native.max_depth,
     };
-    let value = AbstractValue::top();
+    let value = TestValue::top();
     let expression_nodes = native.max_nodes - value.work_size() - 3;
     assert_eq!(expression_nodes % 2, 1);
     let expression = expanded(expression_nodes.div_ceil(2), policy);
@@ -458,9 +447,9 @@ fn repeated_rules_borrow_a_large_tail_once_and_decline_overlong_optional_work() 
     assert_eq!(long, snapshot);
 }
 
-fn candidates(array: &ByteArray, domain: Domain) -> Vec<U256> {
+fn candidates(array: &TestBytes, domain: TestAlgebra) -> Vec<U256> {
     array
-        .read_word_checked(&word(0), domain)
+        .read_word_checked(&word(0), domain.borrowed())
         .unwrap()
         .constants()
         .expect("retain the complete finite scoped word candidates")
@@ -471,18 +460,20 @@ fn candidates(array: &ByteArray, domain: Domain) -> Vec<U256> {
 
 #[test]
 fn public_byte_array_repeated_root_factor_keeps_exact_scoped_precision() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let [q, s, t] = std::array::from_fn::<_, 3, _>(|_| ExprId::fresh().unwrap());
     let value = domain
         .join(&word(7), &word(9))
         .with_expression(ExprId::ite(q.clone(), constant(7), constant(9), limits()).unwrap());
-    let mut source = ByteArray::memory();
-    source.write_word(&word(0), &value, 4096, domain).unwrap();
+    let mut source = TestBytes::memory();
+    source
+        .write_word(&word(0), &value, domain.borrowed())
+        .unwrap();
     let original = source.clone();
     let refine = |truth| {
         let mut out = source.clone();
         assert!(
-            out.refine_guards::<Infallible>(domain, limits(), &mut |condition| {
+            out.refine_guards::<Infallible, _>(domain.borrowed(), limits(), &mut |condition| {
                 Ok((condition == &q).then_some(truth))
             })
             .unwrap()
@@ -492,20 +483,20 @@ fn public_byte_array_repeated_root_factor_keeps_exact_scoped_precision() {
     };
     let yes = refine(true);
     let no = refine(false);
-    let mut b = ByteArray::memory();
-    b.write_word(&word(0), &word(2), 4096, domain).unwrap();
+    let mut b = TestBytes::memory();
+    b.write_word(&word(0), &word(2), domain.borrowed()).unwrap();
     let scoped_snapshots = (yes.clone(), no.clone(), b.clone());
     for (scoped, expected) in [(&yes, 7u64), (&no, 9u64)] {
         assert_eq!(candidates(scoped, domain), vec![U256::from(expected)]);
         let left = scoped
-            .join_guarded(&b, domain, s.clone(), limits())
+            .join_guarded(&b, domain.borrowed(), s.clone(), limits())
             .unwrap();
         assert_eq!(
             candidates(&left, domain),
             vec![U256::from(2), U256::from(expected)]
         );
         let joined = left
-            .join_guarded(scoped, domain, t.clone(), limits())
+            .join_guarded(scoped, domain.borrowed(), t.clone(), limits())
             .unwrap();
         assert_eq!(
             candidates(&joined, domain),
@@ -516,8 +507,12 @@ fn public_byte_array_repeated_root_factor_keeps_exact_scoped_precision() {
     }
     assert_eq!(yes.state_root(), no.state_root());
     assert_ne!(yes, no);
-    let left = yes.join_guarded(&b, domain, s, limits()).unwrap();
-    let changed_scope = left.join_guarded(&no, domain, t, limits()).unwrap();
+    let left = yes
+        .join_guarded(&b, domain.borrowed(), s, limits())
+        .unwrap();
+    let changed_scope = left
+        .join_guarded(&no, domain.borrowed(), t, limits())
+        .unwrap();
     assert_eq!(
         candidates(&changed_scope, domain),
         vec![U256::from(2), U256::from(7), U256::from(9)],

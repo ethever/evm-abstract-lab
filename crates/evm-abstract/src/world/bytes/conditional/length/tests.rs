@@ -1,46 +1,45 @@
 //! Exact immutable handles and contradictory implications stay scoped.
 
 use super::super::{Branch, ConditionalFacts, Facts, Scope};
-use crate::{
-    domain::{
-        AbstractValue, Domain,
-        relational::{QueryReason, RelationLimits, RelationState, ValueQuery},
-        symbolic::{ByteStateKind, ExprId},
-    },
-    resource::WorkBudget,
-    world::ByteArray,
-};
 use alloy_primitives::U256;
 use std::sync::Arc;
+use {
+    crate::domain::relational::EvmValueQuery, crate::domain::relational::QueryReason,
+    crate::domain::relational::RelationLimits, crate::domain::relational::RelationState,
+    crate::domain::symbolic::ByteStateKind, crate::domain::symbolic::ExprId,
+    crate::resource::WorkBudget, crate::world::test_support::TestAlgebra,
+    crate::world::test_support::TestBytes, crate::world::test_support::TestValue,
+};
 
-fn v(n: usize) -> AbstractValue {
-    AbstractValue::constant(U256::from(n))
+fn v(n: usize) -> TestValue {
+    TestValue::constant(U256::from(n))
 }
 
 #[test]
 fn a_stale_source_cannot_narrow_a_new_copy_and_a_contradictory_arm_keeps_its_sibling() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = RelationLimits::default().expressions();
-    let stale = ByteArray::unknown();
-    let current = ByteArray::unknown();
+    let stale = TestBytes::unknown();
+    let current = TestBytes::unknown();
     let current_root = current.state_root().clone();
-    let mut before = ByteArray::memory();
+    let mut before = TestBytes::memory();
     before
         .copy_from(
             &v(32),
-            &ByteArray::exact(&[0xaa; 32]),
+            &TestBytes::exact(&[0xaa; 32]),
             &v(0),
             &v(32),
-            128,
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     let mut memory = before.clone();
     memory
-        .copy_return_data(&v(32), &current, &v(16), 128, domain)
+        .copy_return_data(&v(32), &current, &v(16), domain.borrowed())
         .unwrap();
     let history = memory.clone();
-    let frozen = history.read_byte_checked(&v(33), domain).unwrap();
+    let frozen = history
+        .read_byte_checked(&v(33), domain.borrowed())
+        .unwrap();
     let mut budget = WorkBudget::new(1_000_000);
     let proof = v(1).with_expression(stale.len().expression().unwrap().clone());
     assert_eq!(
@@ -57,10 +56,15 @@ fn a_stale_source_cannot_narrow_a_new_copy_and_a_contradictory_arm_keeps_its_sib
         panic!("original immutable source");
     };
     assert_eq!(Some(length), current.len().expression());
-    let byte = memory.byte_at(33, domain);
+    let byte = memory.byte_at(33, domain.borrowed());
     assert!(byte.contains(U256::ZERO));
     assert!(byte.contains(U256::from(0xaa)));
-    assert_eq!(history.read_byte_checked(&v(33), domain).unwrap(), frozen);
+    assert_eq!(
+        history
+            .read_byte_checked(&v(33), domain.borrowed())
+            .unwrap(),
+        frozen
+    );
     // Even after a proof really applied to one source, a newly captured source
     // at the same numeric offsets has a different immutable length identity.
     let current_proof = v(1).with_expression(current.len().expression().unwrap().clone());
@@ -69,40 +73,45 @@ fn a_stale_source_cannot_narrow_a_new_copy_and_a_contradictory_arm_keeps_its_sib
         Ok(true)
     );
     assert_eq!(
-        memory.byte_at(33, domain).singleton(),
+        memory.byte_at(33, domain.borrowed()).singleton(),
         Some(U256::from(0xaa))
     );
-    let replacement = ByteArray::unknown();
+    let replacement = TestBytes::unknown();
     memory
-        .copy_return_data(&v(32), &replacement, &v(16), 128, domain)
+        .copy_return_data(&v(32), &replacement, &v(16), domain.borrowed())
         .unwrap();
-    assert!(memory.byte_at(33, domain).contains(U256::ZERO));
+    assert!(memory.byte_at(33, domain.borrowed()).contains(U256::ZERO));
     assert_eq!(current.state_root(), &current_root);
 
     let selector = ExprId::fresh().unwrap();
-    let mut impossible_return = ByteArray::unknown();
+    let mut impossible_return = TestBytes::unknown();
     impossible_return.length = impossible_return.length.clone().with_numeric(
-        AbstractValue::unsigned_range(U256::from(2), U256::MAX)
+        TestValue::unsigned_range(U256::from(2), U256::MAX)
             .unwrap()
             .numeric()
             .clone(),
     );
-    let possible_revert = ByteArray::unknown();
+    let possible_revert = TestBytes::unknown();
     let mut yes = before.clone();
     let mut no = before;
-    yes.copy_return_data(&v(32), &impossible_return, &v(16), 128, domain)
+    yes.copy_return_data(&v(32), &impossible_return, &v(16), domain.borrowed())
         .unwrap();
     let ByteStateKind::Copy { length, .. } = yes.state_root().kind() else {
         panic!("return arm copy");
     };
     let yes_minimum = length.clone();
-    no.copy_return_data(&v(32), &possible_revert, &v(16), 128, domain)
+    no.copy_return_data(&v(32), &possible_revert, &v(16), domain.borrowed())
         .unwrap();
     let returned = impossible_return
-        .join_guarded(&possible_revert, domain, selector.clone(), limits)
+        .join_guarded(
+            &possible_revert,
+            domain.borrowed(),
+            selector.clone(),
+            limits,
+        )
         .unwrap();
     let mut joined = yes
-        .join_guarded(&no, domain, selector.clone(), limits)
+        .join_guarded(&no, domain.borrowed(), selector.clone(), limits)
         .unwrap();
     let proof = returned.len().clone().with_numeric(v(1).numeric().clone());
     // A pre-existing unconditional whole-R fact is not evidence that its
@@ -123,22 +132,18 @@ fn a_stale_source_cannot_narrow_a_new_copy_and_a_contradictory_arm_keeps_its_sib
     let context = super::super::Context::new(
         &joined.operands,
         Some(&joined.conditional),
-        crate::domain::ValueAlgebra::new(&domain),
+        domain.borrowed(),
     );
     let yes = context.branch(&selector, true);
     let no = context.branch(&selector, false);
     assert!(
-        !super::super::super::numeric::scalar_in(
-            &yes_minimum,
-            &yes,
-            crate::domain::ValueAlgebra::new(&domain)
-        )
-        .contains(U256::ONE)
+        !super::super::super::numeric::scalar_in(&yes_minimum, &yes, domain.borrowed())
+            .contains(U256::ONE)
     );
     assert_eq!(
         no.value(
             possible_revert.len().expression().unwrap(),
-            crate::domain::ValueAlgebra::new(&domain)
+            domain.borrowed()
         )
         .unwrap()
         .singleton(),
@@ -146,41 +151,40 @@ fn a_stale_source_cannot_narrow_a_new_copy_and_a_contradictory_arm_keeps_its_sib
     );
     assert!(
         joined
-            .refine_guards(domain, limits, &mut |condition| Ok::<_, ()>(
+            .refine_guards(domain.borrowed(), limits, &mut |condition| Ok::<_, ()>(
                 (condition == &selector).then_some(false)
             ))
             .unwrap()
     );
     assert_eq!(
-        joined.byte_at(33, domain).singleton(),
+        joined.byte_at(33, domain.borrowed()).singleton(),
         Some(U256::from(0xaa))
     );
     assert!(!budget.exhausted());
 }
 
-fn nested_length_case() -> (ByteArray, AbstractValue, ByteArray, ExprId) {
-    let domain = Domain::default();
+fn nested_length_case() -> (TestBytes, TestValue, TestBytes, ExprId) {
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = RelationLimits::default().expressions();
     let [s, t] = std::array::from_fn::<_, 2, _>(|_| ExprId::fresh().unwrap());
-    let source = ByteArray::unknown();
-    let mut old = ByteArray::memory();
+    let source = TestBytes::unknown();
+    let mut old = TestBytes::memory();
     for (offset, byte) in [(32, 0xaa), (64, 0xbb)] {
         old.write_word(
             &v(offset),
-            &AbstractValue::constant(U256::from_be_bytes([byte; 32])),
-            128,
-            domain,
+            &TestValue::constant(U256::from_be_bytes([byte; 32])),
+            domain.borrowed(),
         )
         .unwrap();
     }
     let mut copied = old.clone();
     copied
-        .copy_return_data(&v(32), &source, &v(16), 128, domain)
+        .copy_return_data(&v(32), &source, &v(16), domain.borrowed())
         .unwrap();
     let mut memory = old
-        .join_guarded(&copied, domain, t.clone(), limits)
+        .join_guarded(&copied, domain.borrowed(), t.clone(), limits)
         .unwrap()
-        .join_guarded(&old, domain, s.clone(), limits)
+        .join_guarded(&old, domain.borrowed(), s.clone(), limits)
         .unwrap();
     let q = ExprId::ite(s.clone(), t.clone(), ExprId::constant(U256::ONE), limits).unwrap();
     let ByteStateKind::Ite { condition, .. } = memory.state_root().kind() else {
@@ -189,23 +193,25 @@ fn nested_length_case() -> (ByteArray, AbstractValue, ByteArray, ExprId) {
     assert_eq!(condition, &q);
     // The scalar length retains its original two selectors: R=I(s,I(t,0,L),0).
     let returned = v(0)
-        .join_guarded(source.len(), domain, t, limits)
+        .join_guarded(source.len(), domain.borrowed(), t, limits)
         .unwrap()
-        .join_guarded(&v(0), domain, s, limits)
+        .join_guarded(&v(0), domain.borrowed(), s, limits)
         .unwrap();
-    memory.write_word(&v(96), &returned, 128, domain).unwrap();
-    let output = memory.slice(&v(32), &v(96), 128, domain).unwrap();
+    memory
+        .write_word(&v(96), &returned, domain.borrowed())
+        .unwrap();
+    let output = memory.slice(&v(32), &v(96), domain.borrowed()).unwrap();
     (output, returned, source, q)
 }
 
 #[test]
 fn nested_length_proof_follows_the_derived_content_selector_without_changing_history() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = RelationLimits::default();
     let (mut output, returned, source, q) = nested_length_case();
     let source_snapshot = source.clone();
     let history = output.clone();
-    let frozen = history.read_byte_checked(&v(1), domain).unwrap();
+    let frozen = history.read_byte_checked(&v(1), domain.borrowed()).unwrap();
     assert!(frozen.contains(U256::ZERO));
     assert!(frozen.contains(U256::from(0xaa)));
     let expression = returned.expression().unwrap();
@@ -213,11 +219,13 @@ fn nested_length_proof_follows_the_derived_content_selector_without_changing_his
     relations
         .observe(expression, v(1).numeric(), &limits)
         .unwrap();
-    let ValueQuery::Exact(length) = relations.local_value(expression, &limits) else {
+    let EvmValueQuery::Exact(length) =
+        relations.local_value(expression, &limits, domain.borrowed())
+    else {
         panic!("the caller proves the whole returned length");
     };
     assert_eq!(length, U256::ONE);
-    let proof = returned.with_numeric(AbstractValue::constant(length).numeric().clone());
+    let proof = returned.with_numeric(TestValue::constant(length).numeric().clone());
     let mut budget = WorkBudget::new(1_000_000);
     assert_eq!(
         output.import_length_bound(&proof, limits.expressions(), &mut budget),
@@ -229,43 +237,39 @@ fn nested_length_proof_follows_the_derived_content_selector_without_changing_his
     let context = super::super::Context::new(
         &output.operands,
         Some(&output.conditional),
-        crate::domain::ValueAlgebra::new(&domain),
+        domain.borrowed(),
     );
     let source_length = source.len().expression().unwrap();
     assert_eq!(
         context
             .branch(&q, false)
-            .value(source_length, crate::domain::ValueAlgebra::new(&domain))
+            .value(source_length, domain.borrowed())
             .unwrap()
             .singleton(),
         Some(U256::ONE)
     );
-    assert!(
-        context
-            .value(source_length, crate::domain::ValueAlgebra::new(&domain))
-            .is_none()
-    );
+    assert!(context.value(source_length, domain.borrowed()).is_none());
     assert!(
         context
             .branch(&q, true)
-            .value(source_length, crate::domain::ValueAlgebra::new(&domain))
+            .value(source_length, domain.borrowed())
             .is_none()
     );
     for at in 1..32 {
         assert_eq!(
-            output.byte_at(at, domain).singleton(),
+            output.byte_at(at, domain.borrowed()).singleton(),
             Some(U256::from(0xaa))
         );
     }
     for at in 32..64 {
         assert_eq!(
-            output.byte_at(at, domain).singleton(),
+            output.byte_at(at, domain.borrowed()).singleton(),
             Some(U256::from(0xbb))
         );
     }
     assert_eq!(
         output
-            .read_word_checked(&v(64), domain)
+            .read_word_checked(&v(64), domain.borrowed())
             .unwrap()
             .singleton(),
         Some(U256::ONE)
@@ -276,17 +280,20 @@ fn nested_length_proof_follows_the_derived_content_selector_without_changing_his
         Ok(true)
     );
     assert_eq!(output, once);
-    assert_eq!(history.read_byte_checked(&v(1), domain).unwrap(), frozen);
+    assert_eq!(
+        history.read_byte_checked(&v(1), domain.borrowed()).unwrap(),
+        frozen
+    );
     assert_eq!(source, source_snapshot);
 
     // The whole-R prefix and its selected old-source leaf prove nothing about
     // a newly captured source, even at the same numeric copy coordinates.
-    let replacement = ByteArray::unknown();
+    let replacement = TestBytes::unknown();
     assert_ne!(replacement.len().expression(), source.len().expression());
     output
-        .copy_return_data(&v(0), &replacement, &v(16), 128, domain)
+        .copy_return_data(&v(0), &replacement, &v(16), domain.borrowed())
         .unwrap();
-    let byte = output.read_byte_checked(&v(1), domain).unwrap();
+    let byte = output.read_byte_checked(&v(1), domain.borrowed()).unwrap();
     assert!(byte.contains(U256::ZERO));
     assert!(byte.contains(U256::from(0xaa)));
     let ByteStateKind::Copy { source: view, .. } = output.state_root().kind() else {
@@ -302,7 +309,7 @@ fn optional_length_normalization_preserves_admission_stamps_and_cancellation() {
     let limits = RelationLimits::default().expressions();
     let (_, returned, _, _) = nested_length_case();
     let proof = returned.with_numeric(v(1).numeric().clone());
-    let original = ByteArray::memory();
+    let original = TestBytes::memory();
     let mut imported = original.clone();
     let mut paid = WorkBudget::new(super::IMPORT_WORK);
     assert_eq!(

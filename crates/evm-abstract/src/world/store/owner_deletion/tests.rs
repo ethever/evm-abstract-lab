@@ -1,33 +1,39 @@
 use super::*;
-use crate::{
-    Fork,
-    domain::provenance::Origin,
-    world::{AbstractLog, Account, ByteArray, LogKey, LogSourceKind, World},
-};
 use alloy_primitives::B256;
+use {
+    crate::Fork, crate::domain::provenance::Origin, crate::world::LogKey,
+    crate::world::LogSourceKind, crate::world::test_support::TestAccount,
+    crate::world::test_support::TestBytes, crate::world::test_support::TestLog,
+    crate::world::test_support::TestWorld,
+};
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> TestValue {
+    TestValue::constant(U256::from(number))
 }
 
-fn reference(store: &Store, owner: Address, domain: Domain, selector: ExprId) -> Store {
+fn reference(
+    store: &TestStore,
+    owner: Address,
+    domain: TestAlgebra,
+    selector: ExprId,
+) -> TestStore {
     let mut deleted = store.clone();
     deleted.delete_account(owner);
     store
         .join_guarded(
             &deleted,
-            domain,
+            domain.borrowed(),
             selector,
             domain.spec().relations().expressions(),
         )
         .unwrap()
 }
 
-fn assert_owner(left: &Store, right: &Store, owner: Address, domain: Domain) {
+fn assert_owner(left: &TestStore, right: &TestStore, owner: Address, domain: TestAlgebra) {
     for (a, b) in [
         (&left.persistent, &right.persistent),
         (&left.transient, &right.transient),
@@ -44,8 +50,8 @@ fn assert_owner(left: &Store, right: &Store, owner: Address, domain: Domain) {
         );
         for key in [word(1), word(2), word(5), word(99)] {
             assert_eq!(
-                a.read_checked_with(owner, &key, crate::domain::ValueAlgebra::new(&domain)),
-                b.read_checked_with(owner, &key, crate::domain::ValueAlgebra::new(&domain))
+                a.read_checked(owner, &key, domain.borrowed()),
+                b.read_checked(owner, &key, domain.borrowed())
             );
         }
     }
@@ -57,39 +63,42 @@ fn assert_owner(left: &Store, right: &Store, owner: Address, domain: Domain) {
 
 #[test]
 fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let limits = domain.spec().relations().expressions();
     let owner = address(0x101);
     let other = address(0x201);
     let unlisted = address(0x301);
-    let mut world = World::new(Fork::Osaka, "owner deletion reference");
-    let mut account = Account::unknown();
+    let mut world = TestWorld::new(Fork::Osaka, "owner deletion reference");
+    let mut account = TestAccount::unknown();
     account.balance = word(7);
     account.nonce = word(2);
     account.storage.insert(
         U256::from(5),
-        AbstractValue::unsigned_range(U256::from(7), U256::from(8))
+        TestValue::unsigned_range(U256::from(7), U256::from(8))
             .unwrap()
             .with_expression(ExprId::fresh().unwrap())
             .with_origin(Origin::Calldata),
     );
     world.insert(owner, account).unwrap();
-    world.insert(other, Account::empty()).unwrap();
-    let mut old = Store::new(&world);
+    world.insert(other, TestAccount::empty()).unwrap();
+    let mut old = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let historical = old
-        .read_checked_with(owner, &word(5), crate::domain::ValueAlgebra::new(&domain))
+        .read_checked(owner, &word(5), domain.borrowed())
         .unwrap();
     // This write retains an old read variable in the unchanged operand facts.
-    old.write_checked(other, &word(5), &historical, domain)
+    old.write_checked(other, &word(5), &historical, domain.borrowed())
         .unwrap();
-    old.write_transient_checked(other, &word(5), &historical, domain)
+    old.write_transient_checked(other, &word(5), &historical, domain.borrowed())
         .unwrap();
     let saved = old.snapshot();
     let saved_state = saved.state().clone();
     let finite = domain
         .join(&word(1), &word(2))
         .with_expression(ExprId::fresh().unwrap());
-    let open = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    let open = TestValue::top().with_expression(ExprId::fresh().unwrap());
     for transient in [false, true] {
         for (key, value) in [
             (word(1), word(11)),
@@ -97,10 +106,11 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
             (open.clone(), word(17)),
         ] {
             if transient {
-                old.write_transient_checked(owner, &key, &value, domain)
+                old.write_transient_checked(owner, &key, &value, domain.borrowed())
                     .unwrap();
             } else {
-                old.write_checked(owner, &key, &value, domain).unwrap();
+                old.write_checked(owner, &key, &value, domain.borrowed())
+                    .unwrap();
             }
         }
     }
@@ -116,11 +126,11 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
     };
     old.emit_log(
         site.clone(),
-        AbstractLog {
+        TestLog {
             topics: vec![historical.clone()],
-            data: ByteArray::exact(&[1, 2, 3]),
+            data: TestBytes::exact(&[1, 2, 3]),
         },
-        domain,
+        domain.borrowed(),
     )
     .unwrap();
     old.check_existing(limits).unwrap();
@@ -129,11 +139,7 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
     let expected = reference(&old, owner, domain, selector.clone());
     let mut local = old.clone();
     local
-        .join_deleted_guarded(
-            owner,
-            crate::domain::ValueAlgebra::new(&domain),
-            selector.clone(),
-        )
+        .join_deleted_guarded(owner, domain.borrowed(), selector.clone())
         .unwrap();
     local.check_existing(limits).unwrap();
 
@@ -154,12 +160,8 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
         assert!(a.operands.contains_key(historical.expression().unwrap()));
         for key in [&finite, &open] {
             assert_eq!(
-                a.read_checked_with(owner, key, crate::domain::ValueAlgebra::new(&domain)),
-                reference_plane.read_checked_with(
-                    owner,
-                    key,
-                    crate::domain::ValueAlgebra::new(&domain)
-                )
+                a.read_checked(owner, key, domain.borrowed()),
+                reference_plane.read_checked(owner, key, domain.borrowed())
             );
         }
     }
@@ -178,7 +180,7 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
     assert_eq!(
         saved
             .state()
-            .read_checked_with(owner, &word(5), crate::domain::ValueAlgebra::new(&domain))
+            .read_checked(owner, &word(5), domain.borrowed())
             .unwrap(),
         historical
     );
@@ -188,7 +190,7 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
         let mut projected = local.clone();
         assert!(
             projected
-                .refine_guards(domain, limits, &mut |condition| {
+                .refine_guards(domain.borrowed(), limits, &mut |condition| {
                     Ok::<_, ()>((condition == &selector).then_some(retain))
                 })
                 .unwrap()
@@ -205,18 +207,12 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
                 &old.persistent
             };
             for key in [word(1), word(2), word(99), finite.clone(), open.clone()] {
-                let actual = plane
-                    .read_checked_with(owner, &key, crate::domain::ValueAlgebra::new(&domain))
-                    .unwrap();
+                let actual = plane.read_checked(owner, &key, domain.borrowed()).unwrap();
                 if retain {
                     assert_eq!(
                         actual.numeric(),
                         before
-                            .read_checked_with(
-                                owner,
-                                &key,
-                                crate::domain::ValueAlgebra::new(&domain)
-                            )
+                            .read_checked(owner, &key, domain.borrowed())
                             .unwrap()
                             .numeric()
                     );
@@ -247,8 +243,11 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
 
 #[test]
 fn implicit_owner_keeps_global_defaults_other_sources_and_prior_must_facts() {
-    let domain = Domain::default();
-    let mut old = Store::new(&World::new(Fork::Osaka, "implicit owner deletion"));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut old = TestStore::new(
+        &TestWorld::new(Fork::Osaka, "implicit owner deletion"),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     // Make both planes unobserved, with explicit strong and finite weak effects.
     old.havoc_all();
     let owner = address(3);
@@ -256,15 +255,15 @@ fn implicit_owner_keeps_global_defaults_other_sources_and_prior_must_facts() {
     let key = domain
         .join(&word(1), &word(2))
         .with_expression(ExprId::fresh().unwrap());
-    old.write_checked(other, &word(1), &word(7), domain)
+    old.write_checked(other, &word(1), &word(7), domain.borrowed())
         .unwrap();
-    old.write_transient_checked(other, &key, &word(9), domain)
+    old.write_transient_checked(other, &key, &word(9), domain.borrowed())
         .unwrap();
     let selector = ExprId::fresh().unwrap();
     let expected = reference(&old, owner, domain, selector.clone());
     let mut local = old.clone();
     local
-        .join_deleted_guarded(owner, crate::domain::ValueAlgebra::new(&domain), selector)
+        .join_deleted_guarded(owner, domain.borrowed(), selector)
         .unwrap();
     for address in [owner, other, address(0x999)] {
         assert_owner(&local, &expected, address, domain);
@@ -289,26 +288,30 @@ fn implicit_owner_keeps_global_defaults_other_sources_and_prior_must_facts() {
 
 #[test]
 fn code_presence_and_lifecycle_flags_match_full_reference_before_cleanup() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let owner = address(0x101);
     for code in [
         Code::Empty,
         Code::Unknown,
-        Account::from_hex("00", Fork::Osaka).unwrap().code,
+        TestAccount::from_hex("00", Fork::Osaka).unwrap().code,
     ] {
         for pending in [Some(true), None] {
             for touch in [Some(false), None, Some(true)] {
-                let mut world = World::new(Fork::Osaka, "owner deletion flags");
+                let mut world = TestWorld::new(Fork::Osaka, "owner deletion flags");
                 world
                     .insert(
                         owner,
-                        Account {
+                        TestAccount {
                             code: code.clone(),
-                            ..Account::empty()
+                            ..TestAccount::empty()
                         },
                     )
                     .unwrap();
-                let mut old = Store::new(&world);
+                let mut old = TestStore::new(
+                    &world,
+                    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                        .borrowed(),
+                );
                 old.pending_destruction.insert(owner, pending);
                 old.touched.insert(owner, touch);
                 old.created.insert(owner, Some(true));
@@ -316,11 +319,7 @@ fn code_presence_and_lifecycle_flags_match_full_reference_before_cleanup() {
                 let expected = reference(&old, owner, domain, selector.clone());
                 let mut local = old.clone();
                 local
-                    .join_deleted_guarded(
-                        owner,
-                        crate::domain::ValueAlgebra::new(&domain),
-                        selector,
-                    )
+                    .join_deleted_guarded(owner, domain.borrowed(), selector)
                     .unwrap();
                 assert_owner(&local, &expected, owner, domain);
                 assert_eq!(local.pending_destruction, old.pending_destruction);

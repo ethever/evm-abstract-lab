@@ -18,12 +18,12 @@ fn fixture(
     saved_only: bool,
     word: Word,
 ) -> (ValueAlgebra<Policy>, EvmStore<Word>, EvmSnapshot<Word>) {
-    let policy = ValueAlgebra::new(Policy(crate::domain::Domain::default()));
+    let policy = ValueAlgebra::new(Policy(crate::domain::ProductAlgebra::default()));
     let mut world = EvmWorld::new(Fork::Osaka, "ordinary finalizer declared copy price");
     world
         .insert(owner(), EvmAccount::from_hex("00", Fork::Osaka).unwrap())
         .unwrap();
-    let mut current = EvmStore::new_checked_with(&world, policy.borrowed()).unwrap();
+    let mut current = EvmStore::new_checked(&world, policy.borrowed()).unwrap();
     let mut saved = current.clone();
     let value = EvmValue::constant(U256::ZERO)
         .with_numeric(word)
@@ -53,7 +53,7 @@ fn assert_invoice(saved_only: bool, delta: usize) {
         assert!(budget.charge(37));
         reset();
         current
-            .finalize_transaction_checked_with(
+            .finalize_transaction_checked(
                 policy.borrowed(),
                 saved_only.then_some(&saved),
                 &mut budget,
@@ -118,8 +118,7 @@ fn ordinary_staging_and_restore_refuse_unfunded_copies_after_paid_retention() {
         let mut budget = WorkBudget::new(prefix + H - 1);
         assert!(budget.charge(37));
         reset();
-        let result =
-            current.finalize_transaction_checked_with(policy.borrowed(), rollback, &mut budget);
+        let result = current.finalize_transaction_checked(policy.borrowed(), rollback, &mut budget);
         let receipt = RECEIPT.get();
         assert_eq!(receipt.bytes, 0);
         assert_eq!(receipt.private_quotes, 1);
@@ -153,7 +152,7 @@ fn ordinary_copy_prices_check_both_cancellation_owners_before_private_copy() {
                 ..Receipt::default()
             });
             let result = analysis_control::with_cancellation(&current_cancel, || {
-                current.finalize_transaction_checked_with(
+                current.finalize_transaction_checked(
                     policy.borrowed(),
                     saved_only.then_some(&saved),
                     &mut budget,
@@ -178,7 +177,7 @@ fn ordinary_full_fee_minus_one_and_max_prices_keep_the_live_store_atomic() {
         let mut pilot = input.clone();
         let mut full = WorkBudget::new(usize::MAX);
         pilot
-            .finalize_transaction_checked_with(policy.borrowed(), rollback, &mut full)
+            .finalize_transaction_checked(policy.borrowed(), rollback, &mut full)
             .unwrap();
         let fee = full.used();
         for available in [fee - 1, fee] {
@@ -187,7 +186,7 @@ fn ordinary_full_fee_minus_one_and_max_prices_keep_the_live_store_atomic() {
             assert!(budget.charge(37));
             reset();
             let result =
-                current.finalize_transaction_checked_with(policy.borrowed(), rollback, &mut budget);
+                current.finalize_transaction_checked(policy.borrowed(), rollback, &mut budget);
             if available == fee {
                 assert_eq!(result, Ok(()));
                 assert_eq!(current, pilot);
@@ -201,7 +200,7 @@ fn ordinary_full_fee_minus_one_and_max_prices_keep_the_live_store_atomic() {
         let (policy, input, saved) = fixture(saved_only, Word::expensive(usize::MAX));
         let mut current = input.clone();
         reset();
-        let result = current.finalize_transaction_checked_with(
+        let result = current.finalize_transaction_checked(
             policy.borrowed(),
             saved_only.then_some(&saved),
             &mut WorkBudget::new(usize::MAX),

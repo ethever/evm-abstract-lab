@@ -21,7 +21,7 @@ fn literal(value: u64) -> Value {
 fn array(value: &Value, policy: &ValueAlgebra<Policy>) -> Bytes {
     let mut bytes = Bytes::memory();
     bytes
-        .write_word_with(&literal(0), value, 0, policy.borrowed())
+        .write_word(&literal(0), value, policy.borrowed())
         .unwrap();
     bytes
 }
@@ -214,7 +214,7 @@ fn finite_declared_snapshot_price_preserves_raw_completed_payload_output_and_ato
         .parent()
         .unwrap()
         .memory
-        .copy_return_data_work_with(
+        .copy_return_data_work(
             &data,
             &continuation.output_offset,
             &continuation.output_size,

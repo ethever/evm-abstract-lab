@@ -1,8 +1,12 @@
+use crate::domain::EvmNumericAlgebra as _;
+
 use super::*;
 use crate::analysis::MachinePayload;
+use crate::analysis::testing::ByteArray;
+#[cfg(test)]
+use crate::analysis::testing::{Account, Entry, TestValue, World};
 use crate::analysis::transfer::Execution;
 use crate::domain::ValueAlgebra;
-use crate::world::ByteArray;
 use crate::{
     Fork,
     analysis::{
@@ -11,12 +15,13 @@ use crate::{
     },
     bytecode::Program,
     domain::{
-        AbstractValue, Domain,
+        ProductAlgebra,
         provenance::Origin,
         relational::{Constraint, QueryReason, RelationLimits, RelationState},
         symbolic::ExprId,
     },
-    world::{AbstractLog, Account, Entry, Existence, LogKey, LogSourceKind, World},
+    analysis::testing::AbstractLog,
+world::{ Existence, LogKey, LogSourceKind},
 };
 use std::num::NonZeroUsize;
 
@@ -27,11 +32,17 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> TestValue {
+    TestValue::constant(U256::from(number))
 }
 
-fn fixture() -> (World, Entry, ExecutionConfig, Domain, MachinePayload) {
+fn fixture() -> (
+    World,
+    Entry,
+    ExecutionConfig,
+    crate::domain::ValueAlgebra<ProductAlgebra>,
+    MachinePayload,
+) {
     let mut world = World::new(Fork::Osaka, "late RIPEMD Failure");
     world
         .insert(
@@ -44,16 +55,19 @@ fn fixture() -> (World, Entry, ExecutionConfig, Domain, MachinePayload) {
     }
     let entry = Entry::concrete(address(0x101), address(0x1000), word(0), ByteArray::empty());
     let mut config = ExecutionConfig::default();
-    config.analysis.relations.enabled = false;
-    let domain = config.domain().unwrap();
-    let payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
-    (world, entry, config, domain, payload)
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.enabled = false;
+    let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = algebra.borrowed();
+    let payload = initial(&world, &entry, domain).unwrap();
+    (world, entry, config, algebra, payload)
 }
 
 #[test]
 fn relative_failure_restores_effects_without_finalizing_and_normal_execution_continues() {
     for may_touch in [false, true] {
-        let (world, entry, config, domain, mut input) = fixture();
+        let (world, entry, config, algebra, mut input) = fixture();
+let domain = algebra.borrowed();
         if may_touch {
             input.store.may_touch_all();
         } else {
@@ -71,7 +85,7 @@ fn relative_failure_restores_effects_without_finalizing_and_normal_execution_con
             &entry,
             input.clone(),
             &config,
-            ValueAlgebra::new(&domain),
+            domain,
             &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
@@ -109,16 +123,17 @@ fn relative_failure_restores_effects_without_finalizing_and_normal_execution_con
 
 #[test]
 fn precompile_root_has_a_post_touch_failure_before_native_dispatch() {
-    let (world, _, config, domain, _) = fixture();
+    let (world, _, config, algebra, _) = fixture();
+let domain = algebra.borrowed();
     let entry = Entry::concrete(address(3), address(0x1000), word(0), ByteArray::empty());
-    let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+    let input = initial(&world, &entry, domain).unwrap();
     assert_eq!(input.store.touched_in_transaction(address(3)), Some(true));
     let result = execute_inner(
         &world,
         &entry,
         input,
         &config,
-        ValueAlgebra::new(&domain),
+        domain,
         &crate::analysis::RecentDistinctJumps,
         &mut WorkBudget::new(config.max_work),
         StorageReadPolicy::Abstract,
@@ -145,7 +160,8 @@ fn assert_refused(result: &Execution, input: &MachinePayload, reason: FrontierRe
 
 #[test]
 fn metered_inspection_refusal_and_sticky_exhaustion_leave_input_unchanged() {
-    let (world, entry, config, domain, mut input) = fixture();
+    let (world, entry, config, algebra, mut input) = fixture();
+let domain = algebra.borrowed();
     input.store.touch_account(address(3));
     input.active_mut().stack.push(word(9).with_identity(7, 11));
     for (maximum, already_exhausted) in [
@@ -163,7 +179,7 @@ fn metered_inspection_refusal_and_sticky_exhaustion_leave_input_unchanged() {
             &entry,
             input.clone(),
             &config,
-            ValueAlgebra::new(&domain),
+            domain,
             &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
@@ -179,7 +195,8 @@ fn metered_inspection_refusal_and_sticky_exhaustion_leave_input_unchanged() {
 
 #[test]
 fn checked_completion_refusal_cannot_install_the_extra_failure() {
-    let (world, entry, config, domain, mut input) = fixture();
+    let (world, entry, config, algebra, mut input) = fixture();
+let domain = algebra.borrowed();
     input.store.touch_account(address(3));
     // Allow inspection and all extra clone/drop work, but no completion work.
     // This exercises refusal inside the existing checked finalization path.
@@ -193,7 +210,7 @@ fn checked_completion_refusal_cannot_install_the_extra_failure() {
         &entry,
         input.clone(),
         &config,
-        ValueAlgebra::new(&domain),
+        domain,
         &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
@@ -205,7 +222,8 @@ fn checked_completion_refusal_cannot_install_the_extra_failure() {
 
 #[test]
 fn cancellation_stays_typed_and_never_becomes_an_evm_failure() {
-    let (world, entry, config, domain, mut input) = fixture();
+    let (world, entry, config, algebra, mut input) = fixture();
+let domain = algebra.borrowed();
     input.store.touch_account(address(3));
     let cancellation = analysis_control::Cancellation::new();
     analysis_control::with_cancellation(&cancellation, || {
@@ -216,7 +234,7 @@ fn cancellation_stays_typed_and_never_becomes_an_evm_failure() {
             &entry,
             input.clone(),
             &config,
-            ValueAlgebra::new(&domain),
+            domain,
             &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
@@ -248,8 +266,10 @@ fn reserved_work(payload: &MachinePayload, procedure: bool) -> usize {
     budget.used()
 }
 
-fn finite_words(count: u64) -> AbstractValue {
-    let domain = Domain::new(NonZeroUsize::new(16).unwrap());
+fn finite_words(count: u64) -> TestValue {
+    let domain =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::new(NonZeroUsize::new(16).unwrap()));
+    let domain = domain.borrowed();
     (1..count).fold(word(0), |value, next| domain.join(&value, &word(next)))
 }
 
@@ -294,7 +314,8 @@ fn push_child(payload: &mut MachinePayload) {
 
 #[test]
 fn shared_retention_is_not_clone_work_and_error_keys_still_pay_raw_code_hashing() {
-    let (_, _, _, domain, mut small) = fixture();
+    let (_, _, _, algebra, mut small) = fixture();
+let domain = algebra.borrowed();
     push_child(&mut small);
     let leaf = ExprId::fresh().unwrap();
     small.active_mut().stack = vec![finite_words(2).with_expression(leaf.clone())];
@@ -352,15 +373,15 @@ fn shared_retention_is_not_clone_work_and_error_keys_still_pay_raw_code_hashing(
     assert!(reserved_work(&long_input, false) > reserved_work(&short_input, false));
 }
 
-fn guarded_array(domain: Domain) -> ByteArray {
+fn guarded_array(domain: crate::domain::AlgebraRef<'_, ProductAlgebra>) -> ByteArray {
     let expression = ExprId::fresh().unwrap();
     let mut left = ByteArray::memory();
     let mut right = left.clone();
     for (array, lower) in [(&mut left, 2u64), (&mut right, 4u64)] {
-        let value = AbstractValue::unsigned_range(U256::from(lower), U256::from(lower + 1))
+        let value = TestValue::unsigned_range(U256::from(lower), U256::from(lower + 1))
             .unwrap()
             .with_expression(expression.clone());
-        array.write_byte(&word(0), &value, 4096, domain).unwrap();
+        array.write_byte(&word(0), &value, domain).unwrap();
     }
     left.join_guarded(
         &right,
@@ -373,7 +394,8 @@ fn guarded_array(domain: Domain) -> ByteArray {
 
 #[test]
 fn owned_metadata_members_origins_and_top_level_branches_increase_the_fee() {
-    let (_, _, _, domain, mut input) = fixture();
+    let (_, _, _, algebra, mut input) = fixture();
+let domain = algebra.borrowed();
     let before = reserved_work(&input, true);
     input.active_mut().stack.push(word(9));
     assert!(reserved_work(&input, true) > before);
@@ -405,7 +427,7 @@ fn owned_metadata_members_origins_and_top_level_branches_increase_the_fee() {
     input
         .active_mut()
         .memory
-        .expand(&word(64), &word(32), 4096, domain)
+        .expand(&word(64), &word(32), domain)
         .unwrap();
     assert!(
         reserved_work(&input, true) > before,
@@ -449,7 +471,6 @@ fn owned_metadata_members_origins_and_top_level_branches_increase_the_fee() {
         &guarded_array(domain),
         &word(0),
         &word(1),
-        4096,
         domain,
     )
     .unwrap();
@@ -518,7 +539,8 @@ fn owned_metadata_members_origins_and_top_level_branches_increase_the_fee() {
 
 #[test]
 fn exact_reservation_admits_failure_and_one_short_keeps_input_and_prior_debits() {
-    let (_, _, config, domain, mut input) = fixture();
+    let (_, _, config, algebra, mut input) = fixture();
+let domain = algebra.borrowed();
     input.store.touch_account(address(3));
     input.active_mut().stack.push(word(9).with_identity(7, 11));
     input
@@ -530,11 +552,8 @@ fn exact_reservation_admits_failure_and_one_short_keeps_input_and_prior_debits()
         let mut budget = WorkBudget::new(maximum);
         assert!(budget.charge(prior));
         let mut result = super::super::empty_execution(input.clone());
-        let mut context = crate::analysis::transfer::testing::procedure_context(
-            &config,
-            &mut budget,
-            ValueAlgebra::new(&domain),
-        );
+        let mut context =
+            crate::analysis::transfer::testing::procedure_context(&config, &mut budget, domain);
         assert_eq!(at_block_entry(&mut result, &mut context), accepted);
         assert_eq!(
             result.payload, input,

@@ -1,16 +1,21 @@
 //! Detailed static-call completion must cover cleanup outside the observed world.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
     analysis::{
-        self, ExecutionConfig, FrameCode, MachineEdgeKind, OutcomeKind, ProcedureSummaryKind,
-        Status,
+        ExecutionConfig, FrameCode, MachineEdgeKind, OutcomeKind, ProcedureSummaryKind, Status,
     },
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         symbolic::{ExprId, ExprKind, SlotStateId, SlotStateKind, SourceId},
     },
-    world::{Account, ByteArray, Code, Entry, Existence, Store, World},
+    world::{Code, EvmAccount, EvmByteArray, EvmEntry, EvmStore, EvmWorld, Existence},
 };
 use std::collections::BTreeMap;
 
@@ -24,8 +29,8 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(number))
 }
 
 /// A partial assignment extends by zero to every unassigned source cell.
@@ -85,7 +90,7 @@ impl JointWitness {
         }
     }
 
-    fn scalar(&mut self, value: &AbstractValue, expected: u64) -> bool {
+    fn scalar(&mut self, value: &EvmValue<NumericValue>, expected: u64) -> bool {
         let expected = U256::from(expected);
         value.contains(expected)
             && !value.symbolic_limit_reached()
@@ -95,9 +100,9 @@ impl JointWitness {
             }
     }
 
-    fn storage(&mut self, store: &Store, owner: Address, expected: u64) -> bool {
+    fn storage(&mut self, store: &EvmStore<NumericValue>, owner: Address, expected: u64) -> bool {
         let value = store
-            .read_checked(owner, &word(8), Domain::default())
+            .read_checked(owner, &word(8), native::product().borrowed())
             .unwrap();
         (value.expression().is_some() || value.singleton().is_some())
             && self.scalar(&value, expected)
@@ -105,7 +110,7 @@ impl JointWitness {
 
     fn account(
         &mut self,
-        store: &Store,
+        store: &EvmStore<NumericValue>,
         owner: Address,
         code: &Code,
         presence: Existence,
@@ -124,8 +129,8 @@ impl JointWitness {
 fn completed_static_unknown_call_covers_unlisted_cleanup_under_one_original_input() {
     let fork = Fork::Osaka;
     let [a, u, c] = [A, U, C].map(address);
-    let mut world = World::new(fork, "detailed static unlisted cleanup");
-    let mut root = Account::from_hex(ROOT_CODE, fork).unwrap();
+    let mut world = EvmWorld::<NumericValue>::new(fork, "detailed static unlisted cleanup");
+    let mut root = EvmAccount::<NumericValue>::from_hex(ROOT_CODE, fork).unwrap();
     root.balance = word(10);
     root.nonce = word(1);
     world.insert(a, root).unwrap();
@@ -135,15 +140,28 @@ fn completed_static_unknown_call_covers_unlisted_cleanup_under_one_original_inpu
     // This is one allowed unknown initial implementation, never a World fact.
     // It STATICCALLs C, POPs the success flag, then STOPs. C may be empty with
     // nonzero storage: storage is not part of the empty-account predicate.
-    let unknown_code = Account::from_hex(UNKNOWN_CODE_WITNESS, fork).unwrap().code;
-    let entry = Entry::concrete(a, address(0x900), word(0), ByteArray::empty());
+    let unknown_code = EvmAccount::<NumericValue>::from_hex(UNKNOWN_CODE_WITNESS, fork)
+        .unwrap()
+        .code;
+    let entry = EvmEntry::<NumericValue>::concrete(
+        a,
+        address(0x900),
+        word(0),
+        EvmByteArray::<NumericValue>::empty(),
+    );
     let config = ExecutionConfig {
         root_terminal_coverage: false,
         ..ExecutionConfig::default()
     };
     assert!(!config.root_terminal_coverage);
     assert_eq!(config.max_work, 20_000_000);
-    let report = analysis::analyze_world(world, entry, config).unwrap();
+    let report = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(
         report.status(),
         Status::Converged,
@@ -159,7 +177,10 @@ fn completed_static_unknown_call_covers_unlisted_cleanup_under_one_original_inpu
     assert_eq!(original.active().key.code_address, a);
     assert!(!original.active().key.is_static);
     assert_eq!(original.active().call_value.singleton(), Some(U256::ZERO));
-    assert_eq!(original.active().calldata, ByteArray::empty());
+    assert_eq!(
+        original.active().calldata,
+        EvmByteArray::<NumericValue>::empty()
+    );
     assert!(report.states()[0].executed_pcs.contains(&11));
     assert!(
         report.states()[0]
@@ -196,7 +217,7 @@ fn completed_static_unknown_call_covers_unlisted_cleanup_under_one_original_inpu
     let initial = &original.store;
     let saved = original.active().saved_store.state();
     let history = initial
-        .read_checked(c, &word(8), Domain::default())
+        .read_checked(c, &word(8), native::product().borrowed())
         .unwrap();
     assert!(history.expression().is_some());
     let root_history = initial.slot_root(a, false).unwrap();
@@ -205,7 +226,9 @@ fn completed_static_unknown_call_covers_unlisted_cleanup_under_one_original_inpu
         // Search the union of actual Return tuples. Separate outcomes may
         // cover deletion and retention; each uses its own complete assignment.
         let covered = report.outcomes().iter().any(|outcome| {
-            if outcome.kind != OutcomeKind::Return || outcome.data != ByteArray::empty() {
+            if outcome.kind != OutcomeKind::Return
+                || outcome.data != EvmByteArray::<NumericValue>::empty()
+            {
                 return false;
             }
             let state = &report.states()[outcome.state];

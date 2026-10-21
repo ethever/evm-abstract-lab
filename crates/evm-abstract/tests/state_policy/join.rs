@@ -2,6 +2,7 @@ use super::{
     oracle,
     support::{ROOT, address, branches, complete, config, entry, run, starts_at, word, world},
 };
+use crate::native;
 use alloy_primitives::U256;
 use evm_abstract::{
     Fork,
@@ -11,9 +12,9 @@ use evm_abstract::{
         OutcomeKind, PolicyContext, ProjectedSummaries, SemanticPolicies, Status,
         StructuralPartition, WholeStateMetadata,
     },
-    domain::{AbstractValue, Domain, NumericValue, ValueAlgebra},
+    domain::{EvmValue, NumericValue},
     resource::WorkBudget,
-    world::{Account, ByteArray, World},
+    world::{EvmAccount, EvmByteArray, EvmWorld},
 };
 use revm_bytecode::opcode;
 
@@ -21,7 +22,7 @@ use revm_bytecode::opcode;
 fn changing_whole_state_join_changes_real_cross_memory_precision() {
     let fixture = branches(true);
     let world = world(&fixture);
-    let entry = entry(ByteArray::unknown());
+    let entry = entry(EvmByteArray::<NumericValue>::unknown());
     let correlated = run(
         &world,
         &entry,
@@ -68,9 +69,11 @@ fn changing_whole_state_join_changes_real_cross_memory_precision() {
         .collect();
     assert!(!returns.is_empty());
     assert!(
-        returns.iter().all(
-            |o| o.data.read_word(&word(32), Domain::default()).singleton() == Some(U256::ZERO)
-        ),
+        returns.iter().all(|o| o
+            .data
+            .read_word(&word(32), native::product().borrowed())
+            .singleton()
+            == Some(U256::ZERO)),
         "whole-input choices must preserve the stack/memory equality"
     );
     assert!(
@@ -79,18 +82,18 @@ fn changing_whole_state_join_changes_real_cross_memory_precision() {
             .iter()
             .any(|o| o.kind == OutcomeKind::Return
                 && o.data
-                    .read_word(&word(32), Domain::default())
+                    .read_word(&word(32), native::product().borrowed())
                     .contains(U256::from(11 ^ 22))),
         "bounded admission must actually replace the correlated representation"
     );
 }
 
-fn counter_world() -> World {
-    let mut world = World::new(Fork::Osaka, "state-policy counter feedback");
+fn counter_world() -> EvmWorld<NumericValue> {
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "state-policy counter feedback");
     world
         .insert(
             address(ROOT),
-            Account::from_hex("5f5b600101600156", Fork::Osaka).unwrap(),
+            EvmAccount::<NumericValue>::from_hex("5f5b600101600156", Fork::Osaka).unwrap(),
         )
         .unwrap();
     world
@@ -99,7 +102,7 @@ fn counter_world() -> World {
 #[test]
 fn feedback_widens_a_real_counter_while_join_only_preserves_an_unfinished_obligation() {
     let world = counter_world();
-    let entry = entry(ByteArray::empty());
+    let entry = entry(EvmByteArray::<NumericValue>::empty());
     let mut config = config();
     config.analysis = Config {
         context_depth: 0,
@@ -139,12 +142,12 @@ fn feedback_widens_a_real_counter_while_join_only_preserves_an_unfinished_obliga
         .find(|s| starts_at(s, 1))
         .unwrap();
     let value = &header.entry.active().stack[0];
-    let successor = Domain::default().apply(opcode::ADD, &[word(1), value.clone()]);
-    let numeric = |v: &evm_abstract::domain::AbstractValue| {
-        evm_abstract::domain::AbstractValue::from_numeric(v.numeric().clone())
+    let successor = native::product().apply(opcode::ADD, &[word(1), value.clone()]);
+    let numeric = |v: &evm_abstract::domain::EvmValue<NumericValue>| {
+        evm_abstract::domain::EvmValue::<NumericValue>::from_numeric(v.numeric().clone())
     };
     assert_eq!(
-        Domain::default()
+        native::product()
             .join(&numeric(value), &numeric(&successor))
             .numeric(),
         value.numeric(),
@@ -173,7 +176,7 @@ fn feedback_widens_a_real_counter_while_join_only_preserves_an_unfinished_obliga
 #[test]
 fn public_admission_helpers_separate_covering_join_from_widening() {
     let world = counter_world();
-    let entry = entry(ByteArray::empty());
+    let entry = entry(EvmByteArray::<NumericValue>::empty());
     let graph = run(
         &world,
         &entry,
@@ -197,15 +200,15 @@ fn public_admission_helpers_separate_covering_join_from_widening() {
         .clone();
     // Intervals avoid the numeric algebra's deliberately retained small finite
     // sets: permission to widen is not a promise to discard two constants.
-    first.call_stack.active_mut().stack = vec![AbstractValue::from_numeric(
+    first.call_stack.active_mut().stack = vec![EvmValue::<NumericValue>::from_numeric(
         NumericValue::unsigned_range(U256::ZERO, U256::from(4)).unwrap(),
     )];
     first.relations.forget();
     let mut next = first.clone();
-    next.call_stack.active_mut().stack = vec![AbstractValue::from_numeric(
+    next.call_stack.active_mut().stack = vec![EvmValue::<NumericValue>::from_numeric(
         NumericValue::unsigned_range(U256::ZERO, U256::from(5)).unwrap(),
     )];
-    let algebra = ValueAlgebra::new(Domain::default());
+    let algebra = native::product();
     let mut budget = WorkBudget::new(20_000_000);
     let mut cx = PolicyContext::new(algebra.borrowed(), &entry, &mut budget);
     let mut exact_metadata = WholeStateMetadata::initialize(&first, &mut cx).unwrap();

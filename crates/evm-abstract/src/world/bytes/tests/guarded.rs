@@ -4,7 +4,7 @@ use super::super::*;
 use crate::domain::{
     identity::Symbol,
     provenance::Origin,
-    relational::{CheckResult, RelationLimits, RelationState, ValueQuery},
+    relational::{CheckResult, EvmValueQuery, RelationLimits, RelationState},
     symbolic::ExprKind,
 };
 
@@ -17,25 +17,29 @@ fn policy() -> RelationLimits {
     }
 }
 
-fn observed(scope: u64, value: usize, origin: Origin) -> AbstractValue {
-    let mut input = AbstractValue::top();
+fn observed(scope: u64, value: usize, origin: Origin) -> TestValue {
+    let mut input = TestValue::top();
     input.set_origin(origin);
     input
         .with_symbol(Symbol::CalldataWord(U256::ZERO), Some(scope))
-        .with_numeric(constant(value).numeric().clone())
+        .with_numeric(
+            constant::<crate::domain::NumericValue>(value)
+                .numeric()
+                .clone(),
+        )
 }
 
 fn joined(
-    a: &AbstractValue,
-    b: &AbstractValue,
-    domain: Domain,
+    a: &TestValue,
+    b: &TestValue,
+    domain: TestAlgebra,
     limits: RelationLimits,
-) -> (ByteArray, ExprId) {
-    let source = ByteArray::exact(&[0xab]);
-    let mut yes = ByteArray::memory();
-    let mut no = ByteArray::memory();
-    yes.write_word(&constant(64), a, 4096, domain).unwrap();
-    no.write_word(&constant(64), b, 4096, domain).unwrap();
+) -> (TestBytes, ExprId) {
+    let source = TestBytes::exact(&[0xab]);
+    let mut yes = TestBytes::memory();
+    let mut no = TestBytes::memory();
+    yes.write_word(&constant(64), a, domain.borrowed()).unwrap();
+    no.write_word(&constant(64), b, domain.borrowed()).unwrap();
     for iteration in 0..24 {
         for branch in [&mut yes, &mut no] {
             branch
@@ -44,8 +48,7 @@ fn joined(
                     &source,
                     &zero(),
                     &constant(1),
-                    4096,
-                    domain,
+                    domain.borrowed(),
                 )
                 .unwrap();
         }
@@ -57,15 +60,14 @@ fn joined(
         &source,
         &zero(),
         &constant(1),
-        4096,
-        domain,
+        domain.borrowed(),
     )
     .unwrap();
-    no.write_byte(&constant(3010), &constant(7), 4096, domain)
+    no.write_byte(&constant(3010), &constant(7), domain.borrowed())
         .unwrap();
     let guard = ExprId::fresh().unwrap();
     let joined = yes
-        .join_guarded(&no, domain, guard.clone(), limits.expressions())
+        .join_guarded(&no, domain.borrowed(), guard.clone(), limits.expressions())
         .unwrap();
     assert!(matches!(
         joined.state_root().kind(),
@@ -77,12 +79,18 @@ fn joined(
 #[test]
 fn guarded_word_reads_keep_whole_word_correlation_and_scoped_sources() {
     let limits = policy();
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(limits));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(limits),
+    ));
     let a = observed(991, 0x0100, Origin::Calldata);
     let b = observed(992, 0xff01, Origin::Returndata);
     let (mut memory, guard) = joined(&a, &b, domain, limits);
     let snapshot = memory.clone();
-    let read = memory.read_word_checked(&constant(64), domain).unwrap();
+    let read = memory
+        .read_word_checked(&constant(64), domain.borrowed())
+        .unwrap();
     // Before normalization this read retains311 nodes and adds the false
     // numeric combinations0x0101/0xff00 by joining individual bytes.
     assert!(read.expression().unwrap().nodes() <= 16);
@@ -97,35 +105,42 @@ fn guarded_word_reads_keep_whole_word_correlation_and_scoped_sources() {
     for (yes, expected) in [(true, 0x0100), (false, 0xff01)] {
         let mut relations = facts.clone();
         assert_eq!(
-            relations.assume(&guard, yes, &limits),
+            relations.assume(&guard, yes, &limits, domain.borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            relations.local_value(&expr(&read).unwrap(), &limits),
-            ValueQuery::Exact(U256::from(expected))
+            relations.local_value(&expr(&read).unwrap(), &limits, domain.borrowed()),
+            EvmValueQuery::Exact(U256::from(expected))
         );
         assert_eq!(
-            relations.can_equal(&expr(&read).unwrap(), U256::from(0x0101), &limits),
+            relations.can_equal(
+                &expr(&read).unwrap(),
+                U256::from(0x0101),
+                &limits,
+                domain.borrowed()
+            ),
             CheckResult::ProvenImpossible
         );
     }
     memory
-        .write_word(&constant(64), &constant(11), 4096, domain)
+        .write_word(&constant(64), &constant(11), domain.borrowed())
         .unwrap();
     assert_eq!(
-        memory.read_word(&constant(64), domain).singleton(),
+        memory
+            .read_word(&constant(64), domain.borrowed())
+            .singleton(),
         Some(U256::from(11))
     );
-    assert_eq!(snapshot.read_word(&constant(64), domain), read);
+    assert_eq!(snapshot.read_word(&constant(64), domain.borrowed()), read);
     for (yes, expected) in [(true, 0x0100), (false, 0xff01)] {
         let mut relations = facts.clone();
         assert_eq!(
-            relations.assume(&guard, yes, &limits),
+            relations.assume(&guard, yes, &limits, domain.borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            relations.local_value(&expr(&read).unwrap(), &limits),
-            ValueQuery::Exact(U256::from(expected))
+            relations.local_value(&expr(&read).unwrap(), &limits, domain.borrowed()),
+            EvmValueQuery::Exact(U256::from(expected))
         );
     }
 }
@@ -133,11 +148,17 @@ fn guarded_word_reads_keep_whole_word_correlation_and_scoped_sources() {
 #[test]
 fn guarded_equal_numbers_keep_independent_sources_and_identity_meet() {
     let limits = policy();
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(limits));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(limits),
+    ));
     let a = observed(993, 7, Origin::Calldata);
     let b = observed(994, 7, Origin::Returndata);
     let (memory, guard) = joined(&a, &b, domain, limits);
-    let read = memory.read_word_checked(&constant(64), domain).unwrap();
+    let read = memory
+        .read_word_checked(&constant(64), domain.borrowed())
+        .unwrap();
     assert_eq!(read.singleton(), Some(U256::from(7)));
     assert!(matches!(
         read.expression().unwrap().kind(),
@@ -157,7 +178,9 @@ fn guarded_equal_numbers_keep_independent_sources_and_identity_meet() {
     }
     for current in [
         &memory,
-        &memory.widening_form(domain, limits.expressions()).unwrap(),
+        &memory
+            .widening_form(domain.borrowed(), limits.expressions())
+            .unwrap(),
     ] {
         let mut relations = current.symbolic_relations(&limits).unwrap();
         for (nonzero, original) in [(true, &a), (false, &b)] {
@@ -171,37 +194,33 @@ fn guarded_equal_numbers_keep_independent_sources_and_identity_meet() {
             let context = conditional::Context::new(
                 &current.operands,
                 Some(&current.conditional),
-                crate::domain::ValueAlgebra::new(&domain),
+                domain.borrowed(),
             )
             .branch(&guard, nonzero);
             assert_eq!(
-                context.value(
-                    original.expression().unwrap(),
-                    crate::domain::ValueAlgebra::new(&domain)
-                ),
+                context.value(original.expression().unwrap(), domain.borrowed()),
                 Some(original.clone())
             );
             assert_eq!(
                 conditional::Context::new(
                     &current.operands,
                     Some(&current.conditional),
-                    crate::domain::ValueAlgebra::new(&domain)
+                    domain.borrowed()
                 )
                 .branch(&guard, !nonzero)
-                .value(
-                    original.expression().unwrap(),
-                    crate::domain::ValueAlgebra::new(&domain)
-                ),
+                .value(original.expression().unwrap(), domain.borrowed()),
                 None
             );
             let mut selected = relations.clone();
-            selected.assume(&guard, nonzero, &limits);
+            selected.assume(&guard, nonzero, &limits, domain.borrowed());
             assert_eq!(
-                selected.local_value(original.expression().unwrap(), &limits),
-                ValueQuery::Exact(U256::from(7))
+                selected.local_value(original.expression().unwrap(), &limits, domain.borrowed()),
+                EvmValueQuery::Exact(U256::from(7))
             );
         }
-        let read = current.read_word_checked(&constant(64), domain).unwrap();
+        let read = current
+            .read_word_checked(&constant(64), domain.borrowed())
+            .unwrap();
         // The World evaluator proves this whole read without splitting byte
         // choices. Retain its numeric consequence for the scalar consumer,
         // whose unknown-guard rule keeps only common syntactic atoms.
@@ -209,8 +228,8 @@ fn guarded_equal_numbers_keep_independent_sources_and_identity_meet() {
             .observe(&expr(&read).unwrap(), read.numeric(), &limits)
             .unwrap();
         assert_eq!(
-            relations.local_value(&expr(&read).unwrap(), &limits),
-            ValueQuery::Exact(U256::from(7))
+            relations.local_value(&expr(&read).unwrap(), &limits, domain.borrowed()),
+            EvmValueQuery::Exact(U256::from(7))
         );
     }
 }
@@ -218,18 +237,24 @@ fn guarded_equal_numbers_keep_independent_sources_and_identity_meet() {
 #[test]
 fn conditional_sources_survive_copy_slice_rename_and_atomic_limits() {
     let limits = policy();
-    let domain = Domain::from_spec(Domain::default().spec().with_relations(limits));
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(limits),
+    ));
     let a = observed(995, 7, Origin::Calldata).with_expression(ExprId::fresh().unwrap());
     let b = observed(996, 7, Origin::Returndata).with_expression(ExprId::fresh().unwrap());
     let (memory, guard) = joined(&a, &b, domain, limits);
     let snapshot = memory.clone();
-    let old = memory.read_word_checked(&constant(64), domain).unwrap();
-    let slice = memory
-        .slice(&constant(64), &constant(32), 4096, domain)
+    let old = memory
+        .read_word_checked(&constant(64), domain.borrowed())
         .unwrap();
-    let mut copied = ByteArray::memory();
+    let slice = memory
+        .slice(&constant(64), &constant(32), domain.borrowed())
+        .unwrap();
+    let mut copied = TestBytes::memory();
     copied
-        .copy_from(&zero(), &slice, &zero(), &constant(32), 4096, domain)
+        .copy_from(&zero(), &slice, &zero(), &constant(32), domain.borrowed())
         .unwrap();
     let new_guard = ExprId::fresh().unwrap();
     let new_a = ExprId::fresh().unwrap();
@@ -240,9 +265,12 @@ fn conditional_sources_survive_copy_slice_rename_and_atomic_limits() {
                 (a.expression().unwrap().clone(), new_a.clone()),
             ]),
             limits.expressions(),
+            domain.borrowed(),
         )
         .unwrap();
-    let read = copied.read_word_checked(&zero(), domain).unwrap();
+    let read = copied
+        .read_word_checked(&zero(), domain.borrowed())
+        .unwrap();
     assert_eq!(read.singleton(), Some(U256::from(7)));
     assert!(!read.same_identity(&a));
     assert!(!read.same_identity(&b));
@@ -263,16 +291,16 @@ fn conditional_sources_survive_copy_slice_rename_and_atomic_limits() {
     for (nonzero, source) in [(true, &new_a), (false, b.expression().unwrap())] {
         let mut facts = copied.symbolic_relations(&limits).unwrap();
         assert_eq!(
-            facts.assume(&new_guard, nonzero, &limits),
+            facts.assume(&new_guard, nonzero, &limits, domain.borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            facts.local_value(source, &limits),
-            ValueQuery::Exact(U256::from(7))
+            facts.local_value(source, &limits, domain.borrowed()),
+            EvmValueQuery::Exact(U256::from(7))
         );
         assert_eq!(
-            facts.local_value(read.expression().unwrap(), &limits),
-            ValueQuery::Exact(U256::from(7))
+            facts.local_value(read.expression().unwrap(), &limits, domain.borrowed()),
+            EvmValueQuery::Exact(U256::from(7))
         );
     }
     let before_error = copied.clone();
@@ -283,7 +311,8 @@ fn conditional_sources_survive_copy_slice_rename_and_atomic_limits() {
                 ExprLimits {
                     max_nodes: 1,
                     ..limits.expressions()
-                }
+                },
+                domain.borrowed()
             )
             .is_err()
     );
@@ -299,7 +328,9 @@ fn conditional_sources_survive_copy_slice_rename_and_atomic_limits() {
     assert_eq!(copied, before_error);
     assert_eq!(memory, snapshot);
     assert_eq!(
-        memory.read_word_checked(&constant(64), domain).unwrap(),
+        memory
+            .read_word_checked(&constant(64), domain.borrowed())
+            .unwrap(),
         old
     );
 }
@@ -332,20 +363,35 @@ fn guarded_word_views_preserve_padding_symbolic_offset_limits_and_cancellation()
     for (yes, expected) in [(true, 0xab), (false, 0xff)] {
         let mut relations = RelationState::default();
         assert_eq!(
-            relations.assume(&guard, yes, &limits),
+            relations.assume(
+                &guard,
+                yes,
+                &limits,
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed()
+            ),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            relations.local_value(&read, &limits),
-            ValueQuery::Exact(U256::from(expected) << 248)
+            relations.local_value(
+                &read,
+                &limits,
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                    .borrowed()
+            ),
+            EvmValueQuery::Exact(U256::from(expected) << 248)
         );
     }
     let padded = ByteView::new(state.clone(), term(U256::ZERO), term(U256::from(31)));
     let padded_read =
         ExprId::word_read(padded.clone(), term(U256::ZERO), limits.expressions()).unwrap();
     assert_eq!(
-        RelationState::default().local_value(&padded_read, &limits),
-        ValueQuery::Exact(U256::ZERO)
+        RelationState::default().local_value(
+            &padded_read,
+            &limits,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+        ),
+        EvmValueQuery::Exact(U256::ZERO)
     );
     let symbolic = ExprId::word_read(
         ByteView::new(

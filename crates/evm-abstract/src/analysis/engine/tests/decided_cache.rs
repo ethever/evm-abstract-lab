@@ -1,10 +1,11 @@
 use super::super::{Counters, run_metered};
+#[cfg(test)]
+use crate::analysis::testing::ByteArray;
 use crate::{
     analysis::{
         ExecutionConfig, OutcomeKind, Status, machine::fixtures, transfer::StorageReadPolicy,
     },
     resource::WorkBudget,
-    world::ByteArray,
 };
 
 #[test]

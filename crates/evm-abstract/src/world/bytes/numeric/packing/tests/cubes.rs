@@ -6,10 +6,9 @@ use crate::domain::{
 };
 use crate::world::bytes::numeric::{Facts, Reader};
 
-fn policy(capacity: usize, rounds: usize, facts: usize) -> Domain {
-    Domain::from_spec(
+fn policy(capacity: usize, rounds: usize, facts: usize) -> TestAlgebra {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
         DomainSpec::new(
-            Profile::Product,
             NonZeroUsize::new(capacity).unwrap(),
             NonZeroUsize::new(rounds).unwrap(),
             NonZeroUsize::new(facts).unwrap(),
@@ -18,7 +17,7 @@ fn policy(capacity: usize, rounds: usize, facts: usize) -> Domain {
             enabled: false,
             ..Default::default()
         }),
-    )
+    ))
 }
 
 fn cube(free: u8, one: u8, finite: bool) -> NumericValue {
@@ -48,7 +47,7 @@ fn cube(free: u8, one: u8, finite: bool) -> NumericValue {
     }
 }
 
-fn complete(actual: &AbstractValue, expected: &AbstractValue, bytes: &[AbstractValue]) {
+fn complete(actual: &TestValue, expected: &TestValue, bytes: &[TestValue]) {
     assert_eq!(actual, expected);
     assert_eq!(actual.numeric(), expected.numeric());
     assert_eq!(actual.provenance(), expected.provenance());
@@ -62,8 +61,8 @@ fn complete(actual: &AbstractValue, expected: &AbstractValue, bytes: &[AbstractV
     assert!(!actual.same_identity(&bytes[0]));
 }
 
-fn equivalent(bytes: &[AbstractValue], domain: Domain) -> AbstractValue {
-    let packed = pack(bytes, crate::domain::ValueAlgebra::new(&domain)).expect("exact byte cubes");
+fn equivalent(bytes: &[TestValue], domain: TestAlgebra) -> TestValue {
+    let packed = pack(bytes, domain.borrowed()).expect("exact byte cubes");
     complete(&packed, &original(bytes, domain), bytes);
     packed
 }
@@ -94,7 +93,7 @@ fn captured_and_unknown_words_keep_full_balanced_fold_at_injected_default_contro
     assert_sources(&packed);
 
     // An early unknown source absorbs origins but must not hide a later limit.
-    bytes[0] = AbstractValue::unknown_byte();
+    bytes[0] = TestValue::unknown_byte();
     let packed = equivalent(&bytes, domain);
     assert!(packed.provenance().is_top());
     assert!(packed.symbolic_limit_reached());
@@ -163,7 +162,7 @@ fn sparse_range_nonzero_and_signed_constraints_decline_then_keep_original_fold()
             .map(|i| operand(NumericValue::unknown_byte(), i))
             .collect();
         bytes[17] = special.with_symbolic_limit();
-        assert!(pack(&bytes, crate::domain::ValueAlgebra::new(&domain)).is_none());
+        assert!(pack(&bytes, domain.borrowed()).is_none());
         let expected = original(&bytes, domain);
         assert!(expected.symbolic_limit_reached());
         assert!(expected.expression().is_none());
@@ -178,7 +177,7 @@ fn sparse_range_nonzero_and_signed_constraints_decline_then_keep_original_fold()
                     StateLimits::default(),
                 )
                 .unwrap();
-        let algebra = crate::domain::ValueAlgebra::new(&domain);
+        let algebra = domain.borrowed();
         let mut reader = Reader::new(&facts, algebra);
         let projected: Vec<_> = (0..32)
             .map(|i| reader.read(&state, &ExprId::constant(U256::from(i))))
@@ -207,7 +206,7 @@ fn actual_reader_keeps_captured_and_unknown_state_values_and_metadata() {
         )
         .unwrap();
     for state in [&root, &captured] {
-        let algebra = crate::domain::ValueAlgebra::new(&domain);
+        let algebra = domain.borrowed();
         let mut reader = Reader::new(&facts, algebra);
         let bytes: Vec<_> = (0..32)
             .map(|i| reader.read(state, &ExprId::constant(U256::from(i))))
@@ -240,6 +239,6 @@ fn insufficient_cooperation_declines_without_relaxing_the_injected_controls() {
         })
         .collect();
     for domain in [policy(512, 1, 4096), policy(512, 16, 512)] {
-        assert!(pack(&bytes, crate::domain::ValueAlgebra::new(&domain)).is_none());
+        assert!(pack(&bytes, domain.borrowed()).is_none());
     }
 }

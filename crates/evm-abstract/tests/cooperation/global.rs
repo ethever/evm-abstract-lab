@@ -10,13 +10,15 @@ use analysis_kernel::{
     JoinPolicy, Kernel, KernelError, LocalClosure, Meter, Nil, Pair, PublishError, Read,
     ReadGeneration, Reduction, Registered, Scoped,
 };
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 use evm_abstract::{
     analysis::{
-        EnginePolicies, ExecutionConfig, MachineError, Status,
+        EnginePolicies, MachineError, Status,
         cooperation::{
             Direction, Extension, ExtraStores, GenerationRoute, Generations, InputRoute,
             InputTasks, Inputs, Neighbors, Point, RefinementRoute, Refinements, SharedRoute,
-            StackFacts, Subject, Topology, TopologyRoute, analyze_world_cooperating, current_input,
+            StackFacts, Subject, Topology, TopologyRoute, current_input,
         },
     },
     domain::{
@@ -299,15 +301,13 @@ fn independent_global_components_read_foreign_inputs_and_change_the_real_cfg_in_
                 Order(provider_first),
             )
             .with_shared_stores(SharedFactory(Rc::clone(&factories)));
-            let result = analyze_world_cooperating(
-                fixtures::world(&code),
-                fixtures::entry(),
-                fixtures::config(5_000_000_000),
-                &algebra,
-                &EnginePolicies::default(),
-                &mut extension,
-            )
-            .unwrap();
+            let result = AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension)
+                .run(
+                    AnalysisInput::new(fixtures::world(&code), fixtures::entry()).unwrap(),
+                    fixtures::config(5_000_000_000),
+                    &Control::default(),
+                )
+                .unwrap();
             fixtures::complete(&result);
             assert_eq!(factories.get(), 1, "custom global channel is created once");
             assert_eq!(

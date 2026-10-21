@@ -4,13 +4,15 @@ use super::{
     policy::{Calls, Policy},
 };
 use alloy_primitives::U256;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 use evm_abstract::{
     analysis::{
         Arrival, ContextPolicy, EnginePolicies, ExecutionConfig, OutcomeKind, PartitionPolicy,
-        ProcedureSummaryKind, Status, analyze_world_with,
+        ProcedureSummaryKind, Status,
     },
     domain::ValueAlgebra,
-    render::world::evidence_with,
+    render::world::evidence,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -27,8 +29,15 @@ fn semantic_exclusion_survives_delegate_checkpoint_and_controls_the_actual_cfg()
     let world = rollback_world(&fixture);
     let calls = Calls::default();
     let algebra = ValueAlgebra::new(Policy::new(&calls));
-    let result =
-        analyze_world_with(world.clone(), entry(), config(), &algebra, &policies()).unwrap();
+    let result = {
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        AnalysisEngine::new(&algebra, &policies(), &mut extension).run(
+            AnalysisInput::new(world.clone(), entry()).unwrap(),
+            config(),
+            &Control::default(),
+        )
+    }
+    .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -52,7 +61,7 @@ fn semantic_exclusion_survives_delegate_checkpoint_and_controls_the_actual_cfg()
         assert_eq!(
             outcome
                 .data
-                .read_word_with(&word(0), algebra.borrowed())
+                .read_word(&word(0), algebra.borrowed())
                 .singleton(),
             Some(U256::ONE)
         );
@@ -60,7 +69,7 @@ fn semantic_exclusion_survives_delegate_checkpoint_and_controls_the_actual_cfg()
             assert!(
                 !outcome
                     .store
-                    .read_with(address(OWNER), &word(slot), algebra.borrowed())
+                    .read(address(OWNER), &word(slot), algebra.borrowed())
                     .contains(U256::from(42))
             );
         }
@@ -75,13 +84,13 @@ fn semantic_exclusion_survives_delegate_checkpoint_and_controls_the_actual_cfg()
                 .state
                 .saved_store
                 .state()
-                .read_transient_with(address(OWNER), &word(0), algebra.borrowed())
+                .read_transient(address(OWNER), &word(0), algebra.borrowed())
                 .contains(U256::from(42)))
         ),
         "a real delegated child must retain the parent checkpoint's transient custom value"
     );
     assert!(calls.arithmetic.load(Ordering::Relaxed) > 0);
-    let json = serde_json::to_value(evidence_with(&result).unwrap()).unwrap();
+    let json = serde_json::to_value(evidence(&result).unwrap()).unwrap();
     assert_eq!(json["status"], "Converged");
     let expected = serde_json::to_value(ExcludingWord::except(U256::from(42))).unwrap();
     fn contains_numeric(json: &serde_json::Value, expected: &serde_json::Value) -> bool {
@@ -111,7 +120,15 @@ fn semantic_exclusion_survives_delegate_checkpoint_and_controls_the_actual_cfg()
     coarse.retain_exclusions = false;
     let coarse = ValueAlgebra::new(coarse);
     assert_eq!(algebra.spec(), coarse.spec());
-    let control = analyze_world_with(world, entry(), config(), &coarse, &policies()).unwrap();
+    let control = {
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        AnalysisEngine::new(&coarse, &policies(), &mut extension).run(
+            AnalysisInput::new(world, entry()).unwrap(),
+            config(),
+            &Control::default(),
+        )
+    }
+    .unwrap();
     assert_eq!(
         control.status(),
         Status::Converged,
@@ -135,7 +152,15 @@ fn singleton_without_constants_resolves_self_call_and_preserves_custom_recursive
     assert_eq!(word(OWNER).singleton(), Some(U256::from(OWNER)));
     let calls = Calls::default();
     let algebra = ValueAlgebra::new(Policy::new(&calls));
-    let result = analyze_world_with(world, entry(), config(), &algebra, &policies()).unwrap();
+    let result = {
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        AnalysisEngine::new(&algebra, &policies(), &mut extension).run(
+            AnalysisInput::new(world, entry()).unwrap(),
+            config(),
+            &Control::default(),
+        )
+    }
+    .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -163,7 +188,7 @@ fn singleton_without_constants_resolves_self_call_and_preserves_custom_recursive
         let value = state
             .entry
             .store
-            .read_with(address(OWNER), &word(0), algebra.borrowed());
+            .read(address(OWNER), &word(0), algebra.borrowed());
         eprintln!(
             "recursive carrier state code={:?} pcs={:?}: {}",
             state.active().code_address,
@@ -181,13 +206,13 @@ fn singleton_without_constants_resolves_self_call_and_preserves_custom_recursive
                     output.kind,
                     output
                         .store
-                        .read_with(address(OWNER), &word(0), algebra.borrowed())
+                        .read(address(OWNER), &word(0), algebra.borrowed())
                         .numeric()
                 );
                 assert!(
                     !output
                         .store
-                        .read_with(address(OWNER), &word(0), algebra.borrowed())
+                        .read(address(OWNER), &word(0), algebra.borrowed())
                         .contains(U256::from(42))
                 );
             }
@@ -210,20 +235,20 @@ fn singleton_without_constants_resolves_self_call_and_preserves_custom_recursive
             outcome.kind,
             outcome
                 .store
-                .read_with(address(OWNER), &word(0), algebra.borrowed())
+                .read(address(OWNER), &word(0), algebra.borrowed())
                 .numeric()
         );
         assert_eq!(
             outcome
                 .data
-                .read_word_with(&word(0), algebra.borrowed())
+                .read_word(&word(0), algebra.borrowed())
                 .singleton(),
             Some(U256::from(42))
         );
         assert!(
             !outcome
                 .store
-                .read_with(address(OWNER), &word(0), algebra.borrowed())
+                .read(address(OWNER), &word(0), algebra.borrowed())
                 .contains(U256::from(42))
         );
     }
@@ -273,13 +298,14 @@ fn alternate_context_partition_and_borrowed_noncopy_policy_reach_the_same_engine
     let calls = Calls::default();
     let algebra = ValueAlgebra::new(Policy::new(&calls));
     let fixture = rollback();
-    let result = analyze_world_with(
-        rollback_world(&fixture),
-        entry(),
-        config(),
-        &algebra,
-        &policies,
-    )
+    let result = {
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        AnalysisEngine::new(&algebra, &policies, &mut extension).run(
+            AnalysisInput::new(rollback_world(&fixture), entry()).unwrap(),
+            config(),
+            &Control::default(),
+        )
+    }
     .unwrap();
     assert_eq!(
         result.status(),
@@ -302,7 +328,19 @@ fn alternate_context_partition_and_borrowed_noncopy_policy_reach_the_same_engine
             .filter(|outcome| outcome.kind == OutcomeKind::Return)
             .all(|outcome| !outcome
                 .store
-                .read_with(address(OWNER), &word(0), algebra.borrowed())
+                .read(address(OWNER), &word(0), algebra.borrowed())
                 .contains(U256::from(42)))
     );
+}
+
+#[path = "../support/root_input.rs"]
+mod root_input;
+
+#[test]
+fn borrowed_nonclone_custom_algebra_retains_native_root_coverage() {
+    let calls = Calls::default();
+    let numeric = Policy::new(&calls);
+    let values = evm_abstract::domain::ValueAlgebra::new(&numeric);
+    root_input::assert_native_input_coverage(&values);
+    assert!(calls.projections.load(std::sync::atomic::Ordering::Relaxed) > 0);
 }

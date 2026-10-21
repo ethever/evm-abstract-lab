@@ -1,8 +1,9 @@
 use super::{oracle, support::*};
 use alloy_primitives::{U256, hex};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     analysis::{FrameCode, FrontierReason, Status},
-    world::{Account, ByteArray},
+    world::{EvmAccount, EvmByteArray},
 };
 use revm_bytecode::opcode;
 
@@ -70,11 +71,13 @@ fn created_owner_unknown_delegate_selfdestruct_is_covered_or_has_explicit_creati
     factory.data("initcode", &init.bytes);
     let mut world = new_world();
     insert(&mut world, A, &factory.finish(), &[]);
-    world.insert(destination, Account::absent()).unwrap();
+    world
+        .insert(destination, EvmAccount::<NumericValue>::absent())
+        .unwrap();
     let mut u = Assembly::default();
     u.push(V as u16).op(opcode::SELFDESTRUCT);
     let concrete = oracle::concrete_unknown(&world, U, &u.finish());
-    let input = entry(ByteArray::empty());
+    let input = entry(EvmByteArray::<NumericValue>::empty());
     let observed = oracle::execute(&concrete, &input);
     assert_eq!(observed.output_word(0), U256::from(runtime_size));
     assert_eq!(observed.output_word(32), U256::from(7));

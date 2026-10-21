@@ -1,6 +1,8 @@
+use crate::domain::ProductAlgebra;
 //! Executable carrier substitution through transfer, checkpoints and completion.
 
 use super::*;
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork,
     analysis::engine::policy::{ContextInsensitive, RecentDistinctJumps},
@@ -99,12 +101,17 @@ impl EvmNumericAlgebra for BitsAlgebra {
     fn reduce_numeric(&self, value: &Bits) -> NumericReduction<Bits> {
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Bits]) -> NumericReduction<Bits> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Bits>,
+    ) -> NumericReduction<Bits> {
+        let args: Vec<&Bits> = args.collect();
         self.operations.set(self.operations.get() + 1);
         let args = args.iter().map(|value| value.0).collect::<Vec<_>>();
         NumericReduction::stable(Bits(KnownBits::transfer(op, &args), Vec::new()))
     }
-    fn operation_work<'a>(&self, _args: impl Iterator<Item = &'a Bits>) -> usize
+    fn operation_work<'a>(&self, op: u8, _args: impl Iterator<Item = &'a Bits>) -> usize
     where
         Bits: 'a,
     {
@@ -124,10 +131,11 @@ impl EvmNumericAlgebra for BitsAlgebra {
 
 fn setup() -> (ExecutionConfig, ValueAlgebra<BitsAlgebra>) {
     let mut config = crate::analysis::machine::fixtures::config();
-    config.analysis.relations.enabled = false;
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.enabled = false;
     config.max_work = 1_000_000_000;
     let algebra = ValueAlgebra::new(BitsAlgebra {
-        spec: config.domain().unwrap().spec(),
+        spec: ProductAlgebra::from_spec(config_numeric.spec()).spec(),
         operations: Cell::new(0),
     });
     (config, algebra)
@@ -202,7 +210,7 @@ fn independent_carrier_survives_delegatecall_revert_memory_and_saved_store() {
         .active()
         .saved_store
         .state()
-        .read_with(owner(), &key, algebra.borrowed());
+        .read(owner(), &key, algebra.borrowed());
     let _: &Bits = saved.numeric();
     assert_eq!(saved.singleton(), Some(U256::from(7)));
     assert_eq!(child.active().key.address, owner());
@@ -229,7 +237,7 @@ fn independent_carrier_survives_delegatecall_revert_memory_and_saved_store() {
     assert_eq!(
         resumed
             .store
-            .read_with(owner(), &key, algebra.borrowed())
+            .read(owner(), &key, algebra.borrowed())
             .singleton(),
         Some(U256::from(7))
     );
@@ -237,7 +245,7 @@ fn independent_carrier_survives_delegatecall_revert_memory_and_saved_store() {
         resumed
             .active()
             .returndata
-            .read_word_checked_with(&key, algebra.borrowed())
+            .read_word_checked(&key, algebra.borrowed())
             .unwrap()
             .singleton(),
         Some(U256::from(99))
@@ -423,7 +431,7 @@ fn native_identity_keeps_the_injected_byte_carrier() {
     assert_eq!(data.len().singleton(), Some(U256::from(3)));
     for (offset, expected) in [0x12u8, 0x34, 0x56].into_iter().enumerate() {
         assert_eq!(
-            data.byte_at_with(offset, algebra.borrowed()).singleton(),
+            data.byte_at(offset, algebra.borrowed()).singleton(),
             Some(U256::from(expected))
         );
     }

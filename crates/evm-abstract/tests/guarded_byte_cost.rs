@@ -1,13 +1,19 @@
 //! End-to-end probe for guarded operand facts at the unchanged 20M work policy.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{Config, ExecutionConfig, OutcomeKind, Status, WorldAnalysis, analyze_world},
+    analysis::{Config, EvmWorldAnalysis, ExecutionConfig, OutcomeKind, Status},
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         symbolic::{ByteStateKind, ExprId},
     },
-    world::{Account, ByteArray, Entry, World},
+    world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use serde_json::json;
 
@@ -18,31 +24,32 @@ const MLOAD_PC: usize = 23;
 // its own source to memory[0], then jumps to one shared MLOAD/RETURN block.
 const CODE: &str = "5f35600c575f545f526015565b6001545f526015565b5f515f5260205ff3";
 
-fn word(value: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+fn word(value: u64) -> EvmValue<NumericValue> {
+    EvmValue::<NumericValue>::constant(U256::from(value))
 }
 
-fn analyze(max_work: usize) -> WorldAnalysis {
+fn guarded_source_fixture(max_work: usize) -> EvmWorldAnalysis<NumericValue> {
     let owner = Address::repeat_byte(0x11);
-    let mut account = Account::from_hex(CODE, Fork::Osaka).unwrap();
+    let mut account = EvmAccount::<NumericValue>::from_hex(CODE, Fork::Osaka).unwrap();
     // These two observations are the only initial storage guarantees. Other
     // slots and account balances remain unknown; calldata is wholly unknown.
     account.storage_unknown = true;
     account.storage.insert(U256::ZERO, word(7));
     account.storage.insert(U256::ONE, word(7));
-    account.balance = AbstractValue::top();
-    account.nonce = AbstractValue::top();
-    let mut world = World::new(Fork::Osaka, "guarded-byte-cost:two-observed-slots");
+    account.balance = EvmValue::<NumericValue>::top();
+    account.nonce = EvmValue::<NumericValue>::top();
+    let mut world =
+        EvmWorld::<NumericValue>::new(Fork::Osaka, "guarded-byte-cost:two-observed-slots");
     world.insert(owner, account).unwrap();
-    let entry = Entry::concrete(
+    let entry = EvmEntry::<NumericValue>::concrete(
         owner,
         Address::repeat_byte(0x22),
         word(0),
-        ByteArray::unknown(),
+        EvmByteArray::<NumericValue>::unknown(),
     );
-    analyze_world(
-        world,
-        entry,
+    native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
         ExecutionConfig {
             analysis: Config {
                 // Force both branch edges into the same structural state.
@@ -52,6 +59,7 @@ fn analyze(max_work: usize) -> WorldAnalysis {
             max_work,
             ..ExecutionConfig::default()
         },
+        &Control::default(),
     )
     .unwrap()
 }
@@ -65,7 +73,7 @@ fn written_source(state: &evm_abstract::domain::symbolic::ByteStateId) -> &ExprI
     value
 }
 
-fn evidence_and_outputs(analysis: &WorldAnalysis) {
+fn evidence_and_outputs(analysis: &EvmWorldAnalysis<NumericValue>) {
     eprintln!(
         "guarded-byte-cost {}",
         json!({
@@ -105,7 +113,7 @@ fn evidence_and_outputs(analysis: &WorldAnalysis) {
             // This public serialization exposes the actual retained scopes.
             // word_numeric_work itself is crate-private; no accessor is added.
             "memory": &serialized,
-            "top_value_work": AbstractValue::top().work_size(),
+            "top_value_work": EvmValue::<NumericValue>::top().work_size(),
         })
     );
     assert!(!conditional.is_empty(), "probe missed conditional metadata");
@@ -155,7 +163,7 @@ fn evidence_and_outputs(analysis: &WorldAnalysis) {
         analysis.frontiers()
     );
     assert!(analysis.frontiers().is_empty());
-    let domain = Domain::from_spec(analysis.domain_spec());
+    let domain = native::product_with(analysis.domain_spec());
     let returns: Vec<_> = analysis
         .outcomes()
         .iter()
@@ -167,7 +175,7 @@ fn evidence_and_outputs(analysis: &WorldAnalysis) {
         assert_eq!(
             outcome
                 .data
-                .read_word_checked(&word(0), domain)
+                .read_word_checked(&word(0), domain.borrowed())
                 .unwrap()
                 .singleton(),
             Some(U256::from(7)),
@@ -178,7 +186,7 @@ fn evidence_and_outputs(analysis: &WorldAnalysis) {
 
 #[test]
 fn guarded_evm_word_sources_converge_at_twenty_million_work() {
-    let analysis = analyze(WORK_LIMIT);
+    let analysis = guarded_source_fixture(WORK_LIMIT);
     assert_eq!(analysis.config().max_work, WORK_LIMIT);
     evidence_and_outputs(&analysis);
 }
@@ -186,5 +194,5 @@ fn guarded_evm_word_sources_converge_at_twenty_million_work() {
 #[test]
 #[ignore = "root-only diagnostic control; does not satisfy the 20M regression"]
 fn guarded_evm_word_sources_larger_budget_semantic_control() {
-    evidence_and_outputs(&analyze(200_000_000));
+    evidence_and_outputs(&guarded_source_fixture(200_000_000));
 }

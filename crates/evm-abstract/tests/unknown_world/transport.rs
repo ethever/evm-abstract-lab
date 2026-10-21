@@ -1,6 +1,8 @@
 use super::{oracle, support::*};
+use crate::native;
 use alloy_primitives::U256;
-use evm_abstract::{domain::Domain, world::ByteArray};
+use evm_abstract::domain::NumericValue;
+use evm_abstract::world::EvmByteArray;
 use revm_bytecode::opcode;
 
 pub(super) fn parent(require_one_byte: bool) -> Fixture {
@@ -53,7 +55,7 @@ fn unknown_output_copy_preserves_parent_memory_outside_requested_prefix() {
     let a = parent(false);
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
-    let analysis = run(world.clone(), entry(ByteArray::empty()));
+    let analysis = run(world.clone(), entry(EvmByteArray::<NumericValue>::empty()));
     complete_unknown(&analysis);
     let outcomes = returns(&analysis);
     assert!(
@@ -64,15 +66,21 @@ fn unknown_output_copy_preserves_parent_memory_outside_requested_prefix() {
     );
     for outcome in outcomes {
         for offset in 48..64 {
-            only(&outcome.data.byte_at(offset, Domain::default()), &[0xaa]);
+            only(
+                &outcome.data.byte_at(offset, native::product().borrowed()),
+                &[0xaa],
+            );
         }
         for offset in 64..96 {
-            only(&outcome.data.byte_at(offset, Domain::default()), &[0xbb]);
+            only(
+                &outcome.data.byte_at(offset, native::product().borrowed()),
+                &[0xbb],
+            );
         }
     }
     for (size, revert) in [(1, false), (1, true), (64, false), (64, true)] {
         let concrete = oracle::concrete_unknown(&world, U, &child(size, revert));
-        let observed = oracle::execute(&concrete, &entry(ByteArray::empty()));
+        let observed = oracle::execute(&concrete, &entry(EvmByteArray::<NumericValue>::empty()));
         assert_eq!(observed.output_word(0), U256::from(u64::from(!revert)));
         assert_eq!(observed.output_word(96), U256::from(size));
         observed.covers(&analysis);
@@ -84,21 +92,27 @@ fn one_byte_unknown_return_or_revert_keeps_the_uncopied_requested_suffix() {
     let a = parent(true);
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
-    let analysis = run(world.clone(), entry(ByteArray::empty()));
+    let analysis = run(world.clone(), entry(EvmByteArray::<NumericValue>::empty()));
     complete_unknown(&analysis);
     let outcomes = returns(&analysis);
     for outcome in outcomes {
         only(&output_word(outcome, 96), &[1]);
         for offset in 33..64 {
-            only(&outcome.data.byte_at(offset, Domain::default()), &[0xaa]);
+            only(
+                &outcome.data.byte_at(offset, native::product().borrowed()),
+                &[0xaa],
+            );
         }
         for offset in 64..96 {
-            only(&outcome.data.byte_at(offset, Domain::default()), &[0xbb]);
+            only(
+                &outcome.data.byte_at(offset, native::product().borrowed()),
+                &[0xbb],
+            );
         }
     }
     for revert in [false, true] {
         let concrete = oracle::concrete_unknown(&world, U, &child(1, revert));
-        let observed = oracle::execute(&concrete, &entry(ByteArray::empty()));
+        let observed = oracle::execute(&concrete, &entry(EvmByteArray::<NumericValue>::empty()));
         assert_eq!(observed.data[32], 0x7b);
         assert!(observed.data[33..64].iter().all(|byte| *byte == 0xaa));
         assert_eq!(observed.output_word(96), U256::ONE);

@@ -1,6 +1,7 @@
 use super::{
     InputTasks, NoTasks, PairedTasks, PerInput, Point, PointKind, StackFacts, StackMeet, Subject,
 };
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{U256, domain::WordObservation};
 use analysis_kernel::{Either, Kernel, Meter, RefinePolicy, ScopeKey};
 use std::convert::Infallible;
@@ -44,12 +45,13 @@ fn reachable_view_allocation_is_prepaid_and_keeps_the_anchor_detached() {
     use super::{LocalInput, RefinementError, apply_refinements};
     use crate::{
         analysis::{MachineError, machine::fixtures},
-        domain::{Domain, NumericValue, ValueAlgebra},
+        domain::{NumericValue, ProductAlgebra, ValueAlgebra},
         resource::WorkBudget,
     };
 
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(domain);
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
+    let algebra = domain;
     let anchor = fixtures::payload(domain);
     let mut budget = WorkBudget::new(usize::MAX);
     let result = apply_refinements(
@@ -90,12 +92,13 @@ fn unreachable_needs_no_view_allocation_and_cancelled_reachable_stays_an_error()
     use super::{LocalInput, RefinementError, apply_refinements};
     use crate::{
         analysis::{MachineError, control::Control, machine::fixtures},
-        domain::{Domain, ValueAlgebra, relational::QueryReason},
+        domain::{ProductAlgebra, ValueAlgebra, relational::QueryReason},
         resource::WorkBudget,
     };
 
-    let domain = Domain::default();
-    let algebra = ValueAlgebra::new(domain);
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
+    let algebra = domain;
     let mut budget = WorkBudget::new(0);
     assert!(matches!(
         apply_refinements(
@@ -178,7 +181,7 @@ fn shared_inputs_route_foreign_subjects_and_keep_unknown_providers_pending() {
     use super::{Input, Ports, Shared, initialize};
     use crate::{
         analysis::machine::fixtures,
-        domain::{Domain, NumericValue},
+        domain::{NumericValue, ProductAlgebra},
     };
     use analysis_kernel::{Availability, LocalClosure, Nil, Scoped};
 
@@ -217,7 +220,7 @@ fn shared_inputs_route_foreign_subjects_and_keep_unknown_providers_pending() {
         initialize(
             &mut run,
             &mut ports,
-            Input::new(subject, fixtures::payload(Domain::default())),
+            Input::new(subject, fixtures::payload(ProductAlgebra::default())),
         )
         .unwrap();
         run.finish(LocalClosure::Stable).unwrap();

@@ -3,19 +3,21 @@
 use super::super::super::{Context, full_image, scalar_in};
 use super::super::{Facts, Reader, constant, expression, original_union};
 use super::{counted_union, original_in_context, product};
-use crate::domain::{
-    AbstractValue, Domain, DomainSpec, Profile,
-    facts::{BitConstraints, UnaryPredicate, WordBounds},
-    identity::Symbol,
-    provenance::{Origin, OriginSet},
-    relational::RelationLimits,
-    symbolic::{ByteStateId, ByteView, ExprId, ExprKind, ExprLimits, SourceId},
-};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::{collections::BTreeSet, num::NonZeroUsize};
+use {
+    crate::domain::DomainSpec, crate::domain::facts::BitConstraints,
+    crate::domain::facts::UnaryPredicate, crate::domain::facts::WordBounds,
+    crate::domain::identity::Symbol, crate::domain::provenance::Origin,
+    crate::domain::provenance::OriginSet, crate::domain::relational::RelationLimits,
+    crate::domain::symbolic::ByteStateId, crate::domain::symbolic::ByteView,
+    crate::domain::symbolic::ExprId, crate::domain::symbolic::ExprKind,
+    crate::domain::symbolic::ExprLimits, crate::domain::symbolic::SourceId,
+    crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue,
+};
 
-fn cube(zero: U256, one: U256, nonzero: bool) -> AbstractValue {
+fn cube(zero: U256, one: U256, nonzero: bool) -> TestValue {
     let mut facts = vec![UnaryPredicate::KnownBits(
         BitConstraints::new(zero, one).unwrap(),
     )];
@@ -38,11 +40,11 @@ fn word_read() -> ExprId {
     .unwrap()
 }
 
-fn check(value: &AbstractValue, key: &ExprId, domain: Domain, calls: (usize, usize)) {
+fn check(value: &TestValue, key: &ExprId, domain: TestAlgebra, calls: (usize, usize)) {
     let facts = Facts::from([(key.clone(), value.clone())]);
     let frozen = facts.clone();
     let expected = original_union(key, &facts, domain);
-    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
+    let mut reader = Reader::new(&facts, domain.borrowed());
     let actual = counted_union(&mut reader, key, &expected, calls);
     // Spell out independent layers so a future equality implementation cannot
     // silently weaken this oracle's complete representation requirement.
@@ -110,7 +112,7 @@ fn observed_sign_clear_word_read_preserves_full_av_at_normal_and_fact_edges() {
         ] {
             let domain = product(capacity, rounds, fact_limit);
             for value in [&observed, &metadata] {
-                assert!(full_image::candidate(value.numeric(), domain));
+                assert!(full_image::candidate(value.numeric(), domain.borrowed()));
                 assert!(full_image::proves(value.numeric()));
                 check(value, &key, domain, (1, 0));
             }
@@ -139,7 +141,7 @@ fn general_free_lanes_known_ones_and_nonzero_keep_the_full_union() {
     assert!(!zero_witness.may_be_zero());
     assert_eq!(zero_witness.known_bits().one(), U256::ZERO);
     let values = [
-        AbstractValue::unknown_address(),
+        TestValue::unknown_address(),
         cube(U256::ZERO, sign, false),
         cube((U256::from(1) << 200) | (U256::from(1) << 100), sign, true),
         zero_witness,
@@ -153,13 +155,12 @@ fn general_free_lanes_known_ones_and_nonzero_keep_the_full_union() {
             assert!(value.finite_constants().is_top());
             assert!(value.congruence().is_top());
             assert!(!value.numeric().is_top());
-            assert!(full_image::candidate(value.numeric(), domain));
+            assert!(full_image::candidate(value.numeric(), domain.borrowed()));
             assert!(full_image::proves(value.numeric()));
             let key = expression();
             check(value, &key, domain, (1, 0));
             let facts = Facts::from([(key.clone(), value.clone())]);
-            let actual = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain))
-                .word_byte_union(&key);
+            let actual = Reader::new(&facts, domain.borrowed()).word_byte_union(&key);
             assert!(actual.contains(U256::ZERO));
             assert!(actual.contains(U256::from(255)));
         }
@@ -213,20 +214,20 @@ fn noncertificates_keep_all_32_byte_transfers_and_31_joins() {
     let values = [
         repeated,
         signed,
-        AbstractValue::unsigned_range(U256::ZERO, U256::from(127)).unwrap(),
+        TestValue::unsigned_range(U256::ZERO, U256::from(127)).unwrap(),
         constructor.join(&constant(0), &constant(32)),
         cube(U256::from_be_bytes([0x80; 32]), U256::ZERO, false),
         constructor
             .from_facts(&[UnaryPredicate::congruent(U256::from(3), U256::ONE).unwrap()])
             .unwrap(),
         exact_congruence,
-        AbstractValue::constant(U256::from_be_bytes([0xaa; 32])),
+        TestValue::constant(U256::from_be_bytes([0xaa; 32])),
     ];
     for capacity in [8, 512] {
         let domain = product(capacity, 16, 4096);
         for (index, value) in values.iter().enumerate() {
             assert!(
-                !full_image::candidate(value.numeric(), domain)
+                !full_image::candidate(value.numeric(), domain.borrowed())
                     || !full_image::proves(value.numeric())
             );
             let key = if index == 0 {
@@ -253,10 +254,9 @@ fn certificate_does_not_change_constants_only_or_relations_on() {
         .with_symbol(Symbol::CalldataWord(U256::ZERO), Some(811_202))
         .with_symbolic_limit();
     let facts = Facts::from([(key.clone(), input)]);
-    for (profile, enabled) in [(Profile::ConstantsOnly, false), (Profile::Product, true)] {
-        let domain = Domain::from_spec(
+    for enabled in [true] {
+        let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
             DomainSpec::new(
-                profile,
                 NonZeroUsize::new(8).unwrap(),
                 NonZeroUsize::new(16).unwrap(),
                 NonZeroUsize::new(4096).unwrap(),
@@ -265,18 +265,14 @@ fn certificate_does_not_change_constants_only_or_relations_on() {
                 enabled,
                 ..Default::default()
             }),
-        );
+        ));
         let mut reader = Reader::with_context(
-            Context::new(&facts, None, crate::domain::ValueAlgebra::new(&domain)),
-            crate::domain::ValueAlgebra::new(&domain),
+            Context::new(&facts, None, domain.borrowed()),
+            domain.borrowed(),
         );
-        reader.domain = crate::domain::ValueAlgebra::new(&domain);
-        let scalar = scalar_in(
-            &key,
-            &reader.context,
-            crate::domain::ValueAlgebra::new(&domain),
-        );
-        assert!(!full_image::candidate(scalar.numeric(), domain));
+        reader.domain = domain.borrowed();
+        let scalar = scalar_in(&key, &reader.context, domain.borrowed());
+        assert!(!full_image::candidate(scalar.numeric(), domain.borrowed()));
         let expected = original_in_context(&key, &reader.context, domain);
         counted_union(&mut reader, &key, &expected, (32, 31));
         counted_union(&mut reader, &key, &expected, (0, 0));

@@ -1,6 +1,8 @@
+use crate::domain::ProductAlgebra;
 //! Each exceptional completion has one owner for every actual native copy.
 
 use super::super::*;
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork,
     analysis::{
@@ -33,7 +35,8 @@ fn child(word: Word) -> (ExecutionConfig, ValueAlgebra<Policy>, Payload) {
             .unwrap();
     }
     let config = ExecutionConfig::default();
-    let policy = ValueAlgebra::new(Policy(config.domain().unwrap()));
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let policy = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(config_numeric.spec())));
     let mut payload = initial(
         &world,
         &EvmEntry::concrete(
@@ -140,11 +143,11 @@ fn assert_single_copy_invoice(selfdestruct: bool) {
             Some(U256::ZERO)
         );
         assert_eq!(
-            completed.data.exact_bytes_with(policy.borrowed()),
+            completed.data.exact_bytes(policy.borrowed()),
             Some(Vec::new())
         );
         assert_eq!(
-            completed.output_data.exact_bytes_with(policy.borrowed()),
+            completed.output_data.exact_bytes(policy.borrowed()),
             Some(Vec::new())
         );
         let successor = &result.successors[0];

@@ -1,16 +1,22 @@
 //! Offline multi-account revm differentials. The oracle loads the same bytes
 //! and initial state, but does not reuse the abstract interpreter's transfers.
 //! Finite fixtures establish regression evidence, not an EVM-wide proof.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork, U256,
     analysis::{
-        self, ExecutionConfig, FrameCode, MachineEdgeKind, OutcomeKind, ProcedureSummaryKind,
-        Status, WorldAnalysis,
+        EvmWorldAnalysis, ExecutionConfig, FrameCode, MachineEdgeKind, OutcomeKind,
+        ProcedureSummaryKind, Status,
     },
-    domain::{AbstractValue, Domain},
+    domain::EvmValue,
     ssa,
-    world::{Account, ByteArray, Code, Entry, World},
+    world::{Code, EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use revm::{
     Context, InspectEvm, Inspector, MainBuilder, MainContext,
@@ -54,21 +60,21 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn fixture(name: &str, fork: Fork) -> (World, InMemoryDB) {
+fn fixture(name: &str, fork: Fork) -> (EvmWorld<NumericValue>, InMemoryDB) {
     let text = std::fs::read_to_string(format!(
         "{}/../../examples/worlds/{name}.json",
         env!("CARGO_MANIFEST_DIR")
     ))
     .unwrap();
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
-    let mut world = World::new(fork, json["provenance"].as_str().unwrap());
+    let mut world = EvmWorld::<NumericValue>::new(fork, json["provenance"].as_str().unwrap());
     let mut db = InMemoryDB::default();
     for input in json["accounts"].as_array().unwrap() {
         let address = input["address"].as_str().unwrap().parse().unwrap();
         let code = input["code"].as_str().unwrap();
         let balance: U256 = input["balance"].as_str().unwrap().parse().unwrap();
-        let mut account = Account::from_hex(code, fork).unwrap();
-        account.balance = AbstractValue::constant(balance);
+        let mut account = EvmAccount::<NumericValue>::from_hex(code, fork).unwrap();
+        account.balance = EvmValue::<NumericValue>::constant(balance);
         assert_eq!(input["storage_unknown"], false);
         let raw = hex::decode(code.trim_start_matches("0x")).unwrap();
         let bytecode = Bytecode::new_raw(Bytes::from(raw));
@@ -79,7 +85,9 @@ fn fixture(name: &str, fork: Fork) -> (World, InMemoryDB) {
         for (slot, value) in input["storage"].as_object().unwrap() {
             let slot: U256 = slot.parse().unwrap();
             let value: U256 = value.as_str().unwrap().parse().unwrap();
-            account.storage.insert(slot, AbstractValue::constant(value));
+            account
+                .storage
+                .insert(slot, EvmValue::<NumericValue>::constant(value));
             db.insert_account_storage(address, slot, value).unwrap();
         }
         world.insert(address, account).unwrap();
@@ -94,7 +102,7 @@ fn fixture(name: &str, fork: Fork) -> (World, InMemoryDB) {
     (world, db)
 }
 
-fn covers_steps(analysis: &WorldAnalysis, trace: Trace) {
+fn covers_steps(analysis: &EvmWorldAnalysis<NumericValue>, trace: Trace) {
     for step in trace.steps {
         let matching: Vec<_> = analysis
             .states()
@@ -164,20 +172,26 @@ fn covers_steps(analysis: &WorldAnalysis, trace: Trace) {
     }
 }
 
-fn compare(name: &str, fork: Fork) -> WorldAnalysis {
+fn compare(name: &str, fork: Fork) -> EvmWorldAnalysis<NumericValue> {
     let (world, db) = fixture(name, fork);
-    let entry = Entry {
+    let entry = EvmEntry {
         address: address(0x101),
-        environment: evm_abstract::world::EvmEnvironment {
+        environment: evm_abstract::world::EvmEnvironmentValues {
             to: (address(0x101)).into(),
             caller: (address(0x1000)).into(),
-            value: AbstractValue::constant(U256::ZERO),
-            calldata: ByteArray::empty(),
+            value: EvmValue::<NumericValue>::constant(U256::ZERO),
+            calldata: EvmByteArray::<NumericValue>::empty(),
             is_static: false,
-            ..evm_abstract::world::EvmEnvironment::default()
+            ..evm_abstract::world::EvmEnvironmentValues::<NumericValue>::default()
         },
     };
-    let analysis = analysis::analyze_world(world, entry, ExecutionConfig::default()).unwrap();
+    let analysis = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        ExecutionConfig::default(),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(analysis.status(), Status::Converged, "{name} {fork}");
     ssa::build_world(&analysis)
         .unwrap()
@@ -224,7 +238,7 @@ fn compare(name: &str, fork: Fork) -> WorldAnalysis {
                 && concrete_output.iter().enumerate().all(|(offset, byte)| {
                     outcome
                         .data
-                        .byte_at(offset, Domain::default())
+                        .byte_at(offset, native::product().borrowed())
                         .contains(U256::from(*byte))
                 })
                 && result.state.iter().all(|(owner, account)| {
@@ -234,7 +248,11 @@ fn compare(name: &str, fork: Fork) -> WorldAnalysis {
                     account.storage.iter().all(|(slot, value)| {
                         outcome
                             .store
-                            .read(*owner, &AbstractValue::constant(*slot), Domain::default())
+                            .read(
+                                *owner,
+                                &EvmValue::<NumericValue>::constant(*slot),
+                                native::product().borrowed(),
+                            )
                             .contains(value.present_value())
                     }) && outcome
                         .store
@@ -263,7 +281,7 @@ fn compare(name: &str, fork: Fork) -> WorldAnalysis {
                                     && log.data.data.iter().enumerate().all(|(offset, byte)| {
                                         possible
                                             .data
-                                            .byte_at(offset, Domain::default())
+                                            .byte_at(offset, native::product().borrowed())
                                             .contains(U256::from(*byte))
                                     })
                             })
@@ -283,7 +301,9 @@ fn compare(name: &str, fork: Fork) -> WorldAnalysis {
     analysis
 }
 
-fn outcome_slots(analysis: &WorldAnalysis) -> BTreeMap<(Address, U256), AbstractValue> {
+fn outcome_slots(
+    analysis: &EvmWorldAnalysis<NumericValue>,
+) -> BTreeMap<(Address, U256), EvmValue<NumericValue>> {
     let mut stores = analysis
         .outcomes()
         .iter()
@@ -291,14 +311,16 @@ fn outcome_slots(analysis: &WorldAnalysis) -> BTreeMap<(Address, U256), Abstract
         .map(|outcome| &outcome.store);
     let first = stores.next().unwrap().clone();
     stores
-        .fold(first, |joined, store| joined.join(store, Domain::default()))
+        .fold(first, |joined, store| {
+            joined.join(store, native::product().borrowed())
+        })
         .slots()
         .iter()
         .map(|(key, value)| (*key, value.clone()))
         .collect()
 }
 
-fn finite_contains(value: &AbstractValue, expected: u64) {
+fn finite_contains(value: &EvmValue<NumericValue>, expected: u64) {
     assert!(
         value.constants().is_some(),
         "expected a finite effect, got {value}"
@@ -344,7 +366,7 @@ fn shared_implementation_preserves_proxy_storage_caller_and_callvalue() {
     }
     assert_eq!(
         slots[&(address(0x300), U256::ZERO)],
-        AbstractValue::constant(U256::from(99))
+        EvmValue::<NumericValue>::constant(U256::from(99))
     );
 }
 
@@ -364,16 +386,16 @@ fn revert_and_static_failure_restore_callee_state() {
     let slots = outcome_slots(&analysis);
     assert_eq!(
         slots[&(address(0x101), U256::ZERO)],
-        AbstractValue::constant(U256::from(3))
+        EvmValue::<NumericValue>::constant(U256::from(3))
     );
     finite_contains(&slots[&(address(0x101), U256::from(1))], 42);
     assert_eq!(
         slots[&(address(0x101), U256::from(2))],
-        AbstractValue::constant(U256::ZERO)
+        EvmValue::<NumericValue>::constant(U256::ZERO)
     );
     assert_eq!(
         slots[&(address(0x200), U256::ZERO)],
-        AbstractValue::constant(U256::from(4))
+        EvmValue::<NumericValue>::constant(U256::from(4))
     );
     assert!(
         analysis
@@ -385,11 +407,11 @@ fn revert_and_static_failure_restore_callee_state() {
     let slots = outcome_slots(&analysis);
     assert_eq!(
         slots[&(address(0x101), U256::ZERO)],
-        AbstractValue::constant(U256::ZERO)
+        EvmValue::<NumericValue>::constant(U256::ZERO)
     );
     assert_eq!(
         slots[&(address(0x200), U256::ZERO)],
-        AbstractValue::constant(U256::from(4))
+        EvmValue::<NumericValue>::constant(U256::from(4))
     );
     assert!(
         analysis
@@ -405,7 +427,7 @@ fn reentrant_read_observes_the_current_transaction_store() {
     let slots = outcome_slots(&analysis);
     assert_eq!(
         slots[&(address(0x101), U256::ZERO)],
-        AbstractValue::constant(U256::from(2))
+        EvmValue::<NumericValue>::constant(U256::from(2))
     );
     finite_contains(&slots[&(address(0x101), U256::from(1))], 1);
     assert!(

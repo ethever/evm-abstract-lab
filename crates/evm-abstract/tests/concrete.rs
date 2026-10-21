@@ -1,11 +1,17 @@
 //! 用现成的 revm 作为独立的具体执行 oracle，避免测试与抽象实现共享同一错误。
 //! 有限样本能发现反例，不能代替全部 256 bit 状态空间上的正确性证明。
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisInput, ExecutionConfig};
 
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork, U256,
-    analysis::{self, Analysis, Config, EdgeKind, Status},
+    analysis::{self, Config, EdgeKind, EvmAnalysis, Status},
     bytecode::Program,
-    domain::{AbstractValue, Domain, provenance::Origin},
+    domain::{EvmValue, provenance::Origin},
     ssa,
 };
 use proptest::{arbitrary::any, prop_assert_eq, proptest};
@@ -88,8 +94,8 @@ fn arithmetic(op: u8, args: &[U256], fork: Fork) -> U256 {
 }
 
 // 具体 oracle 判断数值；运算来源与直接常量来源应当保持可区分。
-fn assert_exact_numeric(actual: &AbstractValue, expected: U256) {
-    let literal = AbstractValue::constant(expected);
+fn assert_exact_numeric(actual: &EvmValue<NumericValue>, expected: U256) {
+    let literal = EvmValue::<NumericValue>::constant(expected);
     assert_eq!(actual.singleton(), Some(expected));
     assert_eq!(actual.constants(), literal.constants());
     assert_eq!(actual.known_bits(), literal.known_bits());
@@ -131,9 +137,12 @@ fn all_pure_operators_match_revm_at_word_boundaries() {
                 let args: Vec<_> = (0..count)
                     .map(|offset| values[(index + offset) % values.len()])
                     .collect();
-                let abstract_args: Vec<_> =
-                    args.iter().copied().map(AbstractValue::constant).collect();
-                let result = Domain::default().apply(op, &abstract_args);
+                let abstract_args: Vec<_> = args
+                    .iter()
+                    .copied()
+                    .map(EvmValue::<NumericValue>::constant)
+                    .collect();
+                let result = native::product().apply(op, &abstract_args);
                 let expected = arithmetic(op, &args, fork);
                 assert_eq!(
                     result.singleton(),
@@ -154,10 +163,10 @@ proptest! {
         let op = operators[op_index];
         let count = match op { 0x15 | 0x19 | 0x1e => 1, 0x08 | 0x09 => 3, _ => 2 };
         let args = [U256::from_limbs(a), U256::from_limbs(b), U256::from_limbs(c)];
-        let abstract_args: Vec<_> = args[..count].iter().copied().map(AbstractValue::constant).collect();
+        let abstract_args: Vec<_> = args[..count].iter().copied().map(EvmValue::<NumericValue>::constant).collect();
         for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
             if op != 0x1e || fork == Fork::Osaka {
-                let result = Domain::default().apply(op, &abstract_args);
+                let result = native::product().apply(op, &abstract_args);
                 let expected = arithmetic(op, &args[..count], fork);
                 prop_assert_eq!(result.singleton(), Some(expected));
                 assert_exact_numeric(&result, expected);
@@ -166,7 +175,7 @@ proptest! {
     }
 }
 
-fn covers_trace(analysis: &Analysis, ir: &ssa::Ssa, trace: &Trace) {
+fn covers_trace(analysis: &EvmAnalysis<NumericValue>, ir: &ssa::Ssa, trace: &Trace) {
     let mut context = Vec::new();
     let mut jump_sources = Vec::new();
     let mut current: Option<usize> = None;
@@ -224,10 +233,9 @@ fn covers_trace(analysis: &Analysis, ir: &ssa::Ssa, trace: &Trace) {
             );
             if let Some(from) = current {
                 assert!(
-                    analysis
-                        .edges()
-                        .iter()
-                        .any(|e| e.from == from && e.to == state.id && e.kind == incoming_kind),
+                    analysis.edges().iter().any(|e| e.from == from
+                        && e.to == state.id
+                        && e.kind == analysis::MachineEdgeKind::Intraprocedural(incoming_kind)),
                     "missing concrete edge S{from} -> S{} {incoming_kind:?}",
                     state.id
                 );
@@ -339,13 +347,25 @@ fn example_cfgs_cover_revm_block_entries_edges_and_outputs() {
                 continue;
             }
             for depth in [0, 1, 2, 8, 10] {
-                let analysis = analysis::analyze(
-                    Program::decode_with_fork(&code, fork).unwrap(),
-                    Config {
-                        context_depth: depth,
-                        ..Config::default()
+                let analysis = native::run(
+                    &native::product(),
+                    AnalysisInput::<NumericValue>::from_program(
+                        Program::decode_with_fork(&code, fork).unwrap(),
+                        Default::default(),
+                    )
+                    .unwrap(),
+                    ExecutionConfig {
+                        analysis: Config {
+                            context_depth: depth,
+                            ..Config::default()
+                        },
+                        ..ExecutionConfig::default()
                     },
+                    &Control::default(),
                 )
+                .map(|graph| {
+                    EvmAnalysis::from_execution(graph, &mut native::postprocessing()).unwrap()
+                })
                 .unwrap();
                 assert_eq!(
                     analysis.status(),
@@ -373,7 +393,7 @@ fn example_cfgs_cover_revm_block_entries_edges_and_outputs() {
 fn clz_matches_revm_for_zero_and_every_single_set_bit() {
     for value in std::iter::once(U256::ZERO).chain((0..256).map(|bit| U256::from(1) << bit)) {
         assert_exact_numeric(
-            &Domain::default().apply(0x1e, &[AbstractValue::constant(value)]),
+            &native::product().apply(0x1e, &[EvmValue::<NumericValue>::constant(value)]),
             arithmetic(0x1e, &[value], Fork::Osaka),
         );
     }

@@ -1,38 +1,33 @@
 //! Slot state retains source observations even when their numeric value is exact.
 
 use super::super::*;
-use crate::{
-    Fork,
-    domain::{
-        NumericValue,
-        identity::Symbol,
-        provenance::Origin,
-        symbolic::{ExprId, ExprLimits},
-    },
-    world::Account,
+use {
+    crate::Fork, crate::domain::NumericValue, crate::domain::identity::Symbol,
+    crate::domain::provenance::Origin, crate::domain::symbolic::ExprId,
+    crate::domain::symbolic::ExprLimits, crate::world::test_support::TestAccount,
 };
 
-fn v(n: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(n))
+fn v(n: u64) -> TestValue {
+    TestValue::constant(U256::from(n))
 }
 
-fn world(complete: bool) -> (World, Address) {
+fn world(complete: bool) -> (TestWorld, Address) {
     let address = Address::repeat_byte(0x39);
-    let mut world = World::offline(Fork::Osaka, "singleton sources", "leaf");
+    let mut world = TestWorld::offline(Fork::Osaka, "singleton sources", "leaf");
     world
         .insert(
             address,
             if complete {
-                Account::empty()
+                TestAccount::empty()
             } else {
-                Account::unknown()
+                TestAccount::unknown()
             },
         )
         .unwrap();
     (world, address)
 }
 
-fn assert_calldata_seven(value: AbstractValue) {
+fn assert_calldata_seven(value: TestValue) {
     assert_eq!(value.singleton(), Some(U256::from(7)));
     assert!(
         value
@@ -45,7 +40,7 @@ fn assert_calldata_seven(value: AbstractValue) {
     );
 }
 
-fn assert_sources(value: &AbstractValue, number: u64, origins: &[Origin]) {
+fn assert_sources(value: &TestValue, number: u64, origins: &[Origin]) {
     assert_eq!(value.numeric(), &NumericValue::constant(U256::from(number)));
     for origin in origins {
         assert!(
@@ -60,8 +55,8 @@ fn assert_sources(value: &AbstractValue, number: u64, origins: &[Origin]) {
     }
 }
 
-fn input(scope: u64) -> AbstractValue {
-    let mut value = AbstractValue::top();
+fn input(scope: u64) -> TestValue {
+    let mut value = TestValue::top();
     value.set_origin(Origin::Calldata);
     value
         .with_symbol(Symbol::CalldataWord(U256::ZERO), Some(scope))
@@ -71,23 +66,39 @@ fn input(scope: u64) -> AbstractValue {
 #[test]
 fn singleton_source_persistent_slot_roundtrip() {
     let (world, address) = world(true);
-    let domain = Domain::default();
-    let mut store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     store
-        .write_checked(address, &v(4), &v(7).with_origin(Origin::Calldata), domain)
+        .write_checked(
+            address,
+            &v(4),
+            &v(7).with_origin(Origin::Calldata),
+            domain.borrowed(),
+        )
         .unwrap();
-    assert_calldata_seven(store.read(address, &v(4), domain));
+    assert_calldata_seven(store.read(address, &v(4), domain.borrowed()));
 }
 
 #[test]
 fn singleton_source_transient_slot_roundtrip() {
     let (world, address) = world(true);
-    let domain = Domain::default();
-    let mut store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     store
-        .write_transient_checked(address, &v(4), &v(7).with_origin(Origin::Calldata), domain)
+        .write_transient_checked(
+            address,
+            &v(4),
+            &v(7).with_origin(Origin::Calldata),
+            domain.borrowed(),
+        )
         .unwrap();
-    assert_calldata_seven(store.read_transient(address, &v(4), domain));
+    assert_calldata_seven(store.read_transient(address, &v(4), domain.borrowed()));
 }
 
 #[test]
@@ -99,7 +110,17 @@ fn singleton_source_complete_initial_observation() {
         .unwrap()
         .storage
         .insert(U256::from(4), v(7).with_origin(Origin::Calldata));
-    assert_calldata_seven(Store::new(&world).read(address, &v(4), Domain::default()));
+    assert_calldata_seven(
+        TestStore::new(
+            &world,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        )
+        .read(
+            address,
+            &v(4),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        ),
+    );
 }
 
 #[test]
@@ -111,25 +132,43 @@ fn singleton_source_unknown_initial_observation() {
         .unwrap()
         .storage
         .insert(U256::from(4), v(7).with_origin(Origin::Calldata));
-    assert_calldata_seven(Store::new(&world).read(address, &v(4), Domain::default()));
+    assert_calldata_seven(
+        TestStore::new(
+            &world,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        )
+        .read(
+            address,
+            &v(4),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        ),
+    );
 }
 
 #[test]
 fn equal_numeric_writes_keep_origins_without_overwriting_constant_key_facts() {
     let (world, address) = world(true);
-    let domain = Domain::default();
-    let mut store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     store
-        .write_checked(address, &v(7), &v(7).with_origin(Origin::Calldata), domain)
+        .write_checked(
+            address,
+            &v(7),
+            &v(7).with_origin(Origin::Calldata),
+            domain.borrowed(),
+        )
         .unwrap();
-    let old = store.read(address, &v(7), domain);
+    let old = store.read(address, &v(7), domain.borrowed());
     let snapshot = store.snapshot();
     store
         .write_checked(
             address,
             &v(8),
             &v(7).with_origin(Origin::Returndata),
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     store
@@ -137,18 +176,18 @@ fn equal_numeric_writes_keep_origins_without_overwriting_constant_key_facts() {
             address,
             &v(7),
             &v(7).with_origin(Origin::Environment),
-            domain,
+            domain.borrowed(),
         )
         .unwrap();
     for key in [7, 8] {
         assert_sources(
-            &store.read(address, &v(key), domain),
+            &store.read(address, &v(key), domain.borrowed()),
             7,
             &[Origin::Calldata, Origin::Returndata],
         );
     }
     assert_sources(
-        &store.read_transient(address, &v(7), domain),
+        &store.read_transient(address, &v(7), domain.borrowed()),
         7,
         &[Origin::Environment],
     );
@@ -160,21 +199,23 @@ fn equal_numeric_writes_keep_origins_without_overwriting_constant_key_facts() {
             .unwrap()
             .contains(&Origin::Returndata)
     );
-    assert_eq!(store.join(&store, domain), store);
+    assert_eq!(store.join(&store, domain.borrowed()), store);
     store.restore(snapshot);
     assert_eq!(
-        store.read(address, &v(7), domain).provenance(),
+        store.read(address, &v(7), domain.borrowed()).provenance(),
         old.provenance()
     );
     assert_eq!(
-        store.read_transient(address, &v(7), domain).singleton(),
+        store
+            .read_transient(address, &v(7), domain.borrowed())
+            .singleton(),
         Some(U256::ZERO)
     );
 }
 
 #[test]
 fn colliding_initial_singletons_and_normalized_zero_keep_sources_in_widening() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     for complete in [true, false] {
         let (mut world, address) = world(complete);
         for (key, number, origin) in [
@@ -189,18 +230,23 @@ fn colliding_initial_singletons_and_normalized_zero_keep_sources_in_widening() {
                 .storage
                 .insert(U256::from(key), v(number).with_origin(origin));
         }
-        let store = Store::new(&world);
-        let form = store.widening_form(domain, ExprLimits::default()).unwrap();
+        let store = TestStore::new(
+            &world,
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        );
+        let form = store
+            .widening_form(domain.borrowed(), ExprLimits::default())
+            .unwrap();
         for current in [&store, &form] {
             for key in [7, 8] {
                 assert_sources(
-                    &current.read(address, &v(key), domain),
+                    &current.read(address, &v(key), domain.borrowed()),
                     7,
                     &[Origin::Calldata, Origin::Environment],
                 );
             }
             assert_sources(
-                &current.read(address, &v(9), domain),
+                &current.read(address, &v(9), domain.borrowed()),
                 0,
                 &[Origin::Returndata],
             );
@@ -211,7 +257,8 @@ fn colliding_initial_singletons_and_normalized_zero_keep_sources_in_widening() {
         );
         assert_eq!(
             form,
-            form.widening_form(domain, ExprLimits::default()).unwrap()
+            form.widening_form(domain.borrowed(), ExprLimits::default())
+                .unwrap()
         );
     }
 }
@@ -219,25 +266,30 @@ fn colliding_initial_singletons_and_normalized_zero_keep_sources_in_widening() {
 #[test]
 fn independent_singleton_inputs_remain_separate_in_source_metadata() {
     let (world, address) = world(true);
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let a = input(721);
     let b = input(722);
     assert!(!a.same_identity(&b));
-    let mut store = Store::new(&world);
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     for transient in [false, true] {
         for (key, value) in [(7, &a), (8, &b)] {
             if transient {
                 store
-                    .write_transient_checked(address, &v(key), value, domain)
+                    .write_transient_checked(address, &v(key), value, domain.borrowed())
                     .unwrap();
             } else {
                 store
-                    .write_checked(address, &v(key), value, domain)
+                    .write_checked(address, &v(key), value, domain.borrowed())
                     .unwrap();
             }
         }
     }
-    let form = store.widening_form(domain, ExprLimits::default()).unwrap();
+    let form = store
+        .widening_form(domain.borrowed(), ExprLimits::default())
+        .unwrap();
     for current in [&store, &form] {
         for transient in [false, true] {
             let facts = current
@@ -248,9 +300,9 @@ fn independent_singleton_inputs_remain_separate_in_source_metadata() {
             }
             for (key, original) in [(7, &a), (8, &b)] {
                 let read = if transient {
-                    current.read_transient(address, &v(key), domain)
+                    current.read_transient(address, &v(key), domain.borrowed())
                 } else {
-                    current.read(address, &v(key), domain)
+                    current.read(address, &v(key), domain.borrowed())
                 };
                 assert_sources(&read, 7, &[Origin::Calldata]);
                 assert!(read.same_identity(original));
@@ -262,21 +314,24 @@ fn independent_singleton_inputs_remain_separate_in_source_metadata() {
 #[test]
 fn guard_projection_keeps_input_identity_when_the_slot_cache_has_joined_it_away() {
     let (world, address) = world(true);
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let left = input(731);
     let right = input(732).with_origin(Origin::Returndata);
-    let mut a = Store::new(&world);
+    let mut a = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut b = a.clone();
     for transient in [false, true] {
         for (store, first, second) in [(&mut a, &left, &right), (&mut b, &right, &left)] {
             for (key, value) in [(0, first), (1, second)] {
                 if transient {
                     store
-                        .write_transient_checked(address, &v(key), value, domain)
+                        .write_transient_checked(address, &v(key), value, domain.borrowed())
                         .unwrap();
                 } else {
                     store
-                        .write_checked(address, &v(key), value, domain)
+                        .write_checked(address, &v(key), value, domain.borrowed())
                         .unwrap();
                 }
             }
@@ -284,7 +339,12 @@ fn guard_projection_keeps_input_identity_when_the_slot_cache_has_joined_it_away(
     }
     let selector = ExprId::fresh().unwrap();
     let joined = a
-        .join_guarded(&b, domain, selector.clone(), ExprLimits::default())
+        .join_guarded(
+            &b,
+            domain.borrowed(),
+            selector.clone(),
+            ExprLimits::default(),
+        )
         .unwrap();
     for (truth, original) in [(U256::ONE, &left), (U256::ZERO, &right)] {
         let mut projected = joined.clone();
@@ -292,17 +352,18 @@ fn guard_projection_keeps_input_identity_when_the_slot_cache_has_joined_it_away(
             .rename_fresh(
                 &BTreeMap::from([(selector.clone(), ExprId::constant(truth))]),
                 ExprLimits::default(),
+                domain.borrowed(),
             )
             .unwrap();
         let form = projected
-            .widening_form(domain, ExprLimits::default())
+            .widening_form(domain.borrowed(), ExprLimits::default())
             .unwrap();
         for transient in [false, true] {
             for current in [&projected, &form] {
                 let read = if transient {
-                    current.read_transient_checked(address, &v(0), domain)
+                    current.read_transient_checked(address, &v(0), domain.borrowed())
                 } else {
-                    current.read_checked(address, &v(0), domain)
+                    current.read_checked(address, &v(0), domain.borrowed())
                 }
                 .unwrap();
                 assert_sources(&read, 7, &[Origin::Calldata]);
@@ -316,25 +377,35 @@ fn guard_projection_keeps_input_identity_when_the_slot_cache_has_joined_it_away(
 #[test]
 fn singleton_guard_projection_retains_whole_case_numbers_sources_and_roots() {
     let (world, address) = world(true);
-    let domain = Domain::default();
-    let mut a = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut a = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     let mut b = a.clone();
     for transient in [false, true] {
         let left = v(7).with_origin(Origin::Calldata);
         let right = v(9).with_origin(Origin::Returndata);
         if transient {
-            a.write_transient_checked(address, &v(0), &left, domain)
+            a.write_transient_checked(address, &v(0), &left, domain.borrowed())
                 .unwrap();
-            b.write_transient_checked(address, &v(0), &right, domain)
+            b.write_transient_checked(address, &v(0), &right, domain.borrowed())
                 .unwrap();
         } else {
-            a.write_checked(address, &v(0), &left, domain).unwrap();
-            b.write_checked(address, &v(0), &right, domain).unwrap();
+            a.write_checked(address, &v(0), &left, domain.borrowed())
+                .unwrap();
+            b.write_checked(address, &v(0), &right, domain.borrowed())
+                .unwrap();
         }
     }
     let selector = ExprId::fresh().unwrap();
     let joined = a
-        .join_guarded(&b, domain, selector.clone(), ExprLimits::default())
+        .join_guarded(
+            &b,
+            domain.borrowed(),
+            selector.clone(),
+            ExprLimits::default(),
+        )
         .unwrap();
     for (truth, direct, number, origin) in [
         (U256::ONE, &a, 7, Origin::Calldata),
@@ -345,10 +416,11 @@ fn singleton_guard_projection_retains_whole_case_numbers_sources_and_roots() {
             .rename_fresh(
                 &BTreeMap::from([(selector.clone(), ExprId::constant(truth))]),
                 ExprLimits::default(),
+                domain.borrowed(),
             )
             .unwrap();
         let form = projected
-            .widening_form(domain, ExprLimits::default())
+            .widening_form(domain.borrowed(), ExprLimits::default())
             .unwrap();
         for transient in [false, true] {
             assert_eq!(
@@ -357,9 +429,9 @@ fn singleton_guard_projection_retains_whole_case_numbers_sources_and_roots() {
             );
             for current in [&projected, &form] {
                 let read = if transient {
-                    current.read_transient_checked(address, &v(0), domain)
+                    current.read_transient_checked(address, &v(0), domain.borrowed())
                 } else {
-                    current.read_checked(address, &v(0), domain)
+                    current.read_checked(address, &v(0), domain.borrowed())
                 }
                 .unwrap();
                 assert_sources(&read, number, &[origin]);
@@ -377,9 +449,9 @@ fn singleton_guard_projection_retains_whole_case_numbers_sources_and_roots() {
             );
         }
         let read = if transient {
-            joined.read_transient_checked(address, &v(0), domain)
+            joined.read_transient_checked(address, &v(0), domain.borrowed())
         } else {
-            joined.read_checked(address, &v(0), domain)
+            joined.read_checked(address, &v(0), domain.borrowed())
         }
         .unwrap();
         assert!(read.contains(U256::from(7)));
@@ -399,23 +471,26 @@ fn singleton_guard_projection_retains_whole_case_numbers_sources_and_roots() {
 #[test]
 fn renamed_slot_fact_collisions_keep_both_origins_without_input_aliases() {
     let (world, address) = world(true);
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let a = ExprId::fresh().unwrap();
     let b = ExprId::fresh().unwrap();
     let first = input(741).with_expression(a.clone());
     let second = input(742)
         .with_origin(Origin::Returndata)
         .with_expression(b.clone());
-    let mut store = Store::new(&world);
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     for transient in [false, true] {
         for (key, value) in [(7, &first), (8, &second)] {
             if transient {
                 store
-                    .write_transient_checked(address, &v(key), value, domain)
+                    .write_transient_checked(address, &v(key), value, domain.borrowed())
                     .unwrap();
             } else {
                 store
-                    .write_checked(address, &v(key), value, domain)
+                    .write_checked(address, &v(key), value, domain.borrowed())
                     .unwrap();
             }
         }
@@ -428,9 +503,12 @@ fn renamed_slot_fact_collisions_keep_both_origins_without_input_aliases() {
                 (b, ExprId::constant(U256::from(7))),
             ]),
             ExprLimits::default(),
+            domain.borrowed(),
         )
         .unwrap();
-    let form = store.widening_form(domain, ExprLimits::default()).unwrap();
+    let form = store
+        .widening_form(domain.borrowed(), ExprLimits::default())
+        .unwrap();
     for current in [&store, &form] {
         for transient in [false, true] {
             let facts = current
@@ -441,9 +519,9 @@ fn renamed_slot_fact_collisions_keep_both_origins_without_input_aliases() {
             assert!(fact.identity().input().is_none());
             for key in [7, 8] {
                 let read = if transient {
-                    current.read_transient(address, &v(key), domain)
+                    current.read_transient(address, &v(key), domain.borrowed())
                 } else {
-                    current.read(address, &v(key), domain)
+                    current.read(address, &v(key), domain.borrowed())
                 };
                 assert_sources(&read, 7, &[Origin::Calldata, Origin::Returndata]);
                 assert!(read.identity().input().is_none());
@@ -451,10 +529,14 @@ fn renamed_slot_fact_collisions_keep_both_origins_without_input_aliases() {
         }
     }
     store.restore(snapshot);
-    assert!(store.read(address, &v(7), domain).same_identity(&first));
     assert!(
         store
-            .read_transient(address, &v(8), domain)
+            .read(address, &v(7), domain.borrowed())
+            .same_identity(&first)
+    );
+    assert!(
+        store
+            .read_transient(address, &v(8), domain.borrowed())
             .same_identity(&second)
     );
 }
@@ -462,24 +544,44 @@ fn renamed_slot_fact_collisions_keep_both_origins_without_input_aliases() {
 #[test]
 fn singleton_metadata_bound_and_cancellation_reject_slot_writes_atomically() {
     let (world, address) = world(true);
-    let domain = Domain::default();
-    let mut store = Store::new(&world);
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let mut store = TestStore::new(
+        &world,
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+    );
     store
-        .write_checked(address, &v(0), &v(0).with_origin(Origin::Calldata), domain)
+        .write_checked(
+            address,
+            &v(0),
+            &v(0).with_origin(Origin::Calldata),
+            domain.borrowed(),
+        )
         .unwrap();
-    let small = Domain::from_spec(domain.spec().with_relations(
-        crate::domain::relational::RelationLimits {
-            max_nodes: 2,
-            max_depth: 2,
-            ..domain.spec().relations()
-        },
+    let small = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        domain
+            .spec()
+            .with_relations(crate::domain::relational::RelationLimits {
+                max_nodes: 2,
+                max_depth: 2,
+                ..domain.spec().relations()
+            }),
     ));
     store
-        .write_checked(address, &v(13).with_origin(Origin::Address), &v(0), small)
+        .write_checked(
+            address,
+            &v(13).with_origin(Origin::Address),
+            &v(0),
+            small.borrowed(),
+        )
         .unwrap();
     let snapshot = store.clone();
     assert!(matches!(
-        store.write_checked(address, &v(14).with_origin(Origin::Address), &v(0), small),
+        store.write_checked(
+            address,
+            &v(14).with_origin(Origin::Address),
+            &v(0),
+            small.borrowed()
+        ),
         Err(StoreError::Expression(
             crate::domain::symbolic::ExprError::Limit { .. }
         ))
@@ -494,11 +596,15 @@ fn singleton_metadata_bound_and_cancellation_reject_slot_writes_atomically() {
                     address,
                     &v(0),
                     &v(7).with_origin(Origin::Returndata),
-                    domain
+                    domain.borrowed()
                 )
                 .is_err()
         );
     });
     assert_eq!(store, snapshot);
-    assert_sources(&store.read(address, &v(0), domain), 0, &[Origin::Calldata]);
+    assert_sources(
+        &store.read(address, &v(0), domain.borrowed()),
+        0,
+        &[Origin::Calldata],
+    );
 }

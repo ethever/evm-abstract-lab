@@ -1,10 +1,14 @@
 //! Compare the Store-only path with ordinary completion, preserving captured symbols.
 
+#[cfg(test)]
+use crate::analysis::testing::{Account, Entry, TestValue, World};
+use crate::domain::EvmNumericAlgebra as _;
+
 use crate::analysis::MachinePayload;
+use crate::analysis::testing::ByteArray;
 use crate::analysis::transfer::Execution;
-use crate::domain::AbstractValue;
+use crate::domain;
 use crate::domain::ValueAlgebra;
-use crate::world::ByteArray;
 
 use super::*;
 use crate::{
@@ -15,8 +19,9 @@ use crate::{
         machine::fixtures,
         transfer::{StorageReadPolicy, empty_execution, initial},
     },
-    domain::{Domain, relational::QueryReason, symbolic::ExprId},
-    world::{AbstractLog, Account, Code, Entry, Existence, LogKey, LogSourceKind, Symbol, World},
+    domain::{ProductAlgebra, relational::QueryReason, symbolic::ExprId},
+    analysis::testing::AbstractLog,
+world::{ Code, Existence, LogKey, LogSourceKind, Symbol},
 };
 use alloy_primitives::{Address, U256, keccak256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,7 +34,8 @@ const KINDS: [OutcomeKind; 3] = [
 
 fn config() -> ExecutionConfig {
     let mut config = fixtures::config();
-    config.analysis.relations.enabled = false;
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    config_numeric.relations.enabled = false;
     config
 }
 
@@ -37,7 +43,7 @@ fn address(number: u64) -> Address {
     fixtures::address(number)
 }
 
-fn word(number: u64) -> AbstractValue {
+fn word(number: u64) -> TestValue {
     fixtures::word(number)
 }
 
@@ -45,8 +51,8 @@ fn context<'a>(
     config: &'a ExecutionConfig,
     budget: &'a mut WorkBudget,
     procedure: bool,
-    algebra: crate::domain::AlgebraRef<'a, Domain>,
-) -> TransferContext<'a, Domain> {
+    algebra: crate::domain::AlgebraRef<'a, ProductAlgebra>,
+) -> TransferContext<'a, ProductAlgebra> {
     TransferContext {
         config,
         domain: algebra,
@@ -67,7 +73,12 @@ fn native_input_payload(target: u64, input: ByteArray, config: &ExecutionConfig)
     let mut world = World::new(Fork::Osaka, "native root completion");
     world.insert(address(target), Account::empty()).unwrap();
     let entry = Entry::concrete(address(target), address(0x900), word(0), input);
-    initial(&world, &entry, ValueAlgebra::new(&config.domain().unwrap())).unwrap()
+    initial(
+        &world,
+        &entry,
+        ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
+    )
+    .unwrap()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -99,7 +110,7 @@ pub(in crate::analysis::transfer::precompile) fn admission_receipts(
             config,
             &mut budget,
             false,
-            ValueAlgebra::new(&config.domain().unwrap()),
+            ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
         ),
     )
     .unwrap();
@@ -110,7 +121,7 @@ pub(in crate::analysis::transfer::precompile) fn admission_receipts(
         success_data(
             &payload.active().calldata,
             id,
-            ValueAlgebra::new(&config.domain().unwrap()),
+            ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
         )
         .unwrap(),
         ByteArray::unknown_checked().unwrap(),
@@ -135,11 +146,12 @@ pub(in crate::analysis::transfer::precompile) fn admission_receipts(
 }
 
 fn joined_payload(target: u64, config: &ExecutionConfig) -> MachinePayload {
-    let domain = config.domain().unwrap();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let owner = address(0x201);
     let maybe_empty = address(0x202);
-    let input = AbstractValue::top().with_expression(ExprId::input(0x513, Symbol::CallValue));
-    let fresh = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    let input = TestValue::top().with_expression(ExprId::input(0x513, Symbol::CallValue));
+    let fresh = TestValue::top().with_expression(ExprId::fresh().unwrap());
     let mut world = World::new(Fork::Osaka, "joint native root Store");
     let mut account = Account::from_hex("00", world.fork()).unwrap();
     account.balance = word(1);
@@ -162,7 +174,7 @@ fn joined_payload(target: u64, config: &ExecutionConfig) -> MachinePayload {
         word(0),
         ByteArray::unknown(),
     );
-    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+    let mut payload = initial(&world, &entry, domain).unwrap();
     let log_key = LogKey {
         address: owner,
         code_address: owner,
@@ -225,7 +237,12 @@ fn assert_refusal(
     assert_eq!(result.frontiers[0].payload, None);
 }
 
-fn assert_shapes(result: &Execution, original: &MachinePayload, target: u64, domain: Domain) {
+fn assert_shapes(
+    result: &Execution,
+    original: &MachinePayload,
+    target: u64,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+) {
     assert_eq!(
         result.outcomes.iter().map(|o| o.kind).collect::<Vec<_>>(),
         KINDS
@@ -279,14 +296,17 @@ fn assert_ordinary_root_reference(
                 config,
                 &mut budget,
                 procedure,
-                ValueAlgebra::new(&config.domain().unwrap()),
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
             ),
             0,
         );
     }
     assert!(expected.frontiers.is_empty());
     assert_eq!(expected.outcomes.len(), observed.outcomes.len());
-    let limits = config.domain().unwrap().spec().relations().expressions();
+    let limits = ProductAlgebra::from_spec(config_numeric.spec())
+        .spec()
+        .relations()
+        .expressions();
     let mut bound = original.fresh_leaves();
     for outcome in &observed.outcomes {
         bound.extend(outcome.data.fresh_leaves());
@@ -351,6 +371,7 @@ fn assert_ordinary_root_reference(
 #[test]
 fn native_root_shapes_match_ordinary_completion_for_true_and_relative_roots() {
     let config = config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     for procedure in [false, true] {
         for target in [4, 1, 6, 5] {
             // Both transaction and procedure roots use the same root role;
@@ -369,10 +390,15 @@ fn native_root_shapes_match_ordinary_completion_for_true_and_relative_roots() {
                     &config,
                     &mut budget,
                     procedure,
-                    ValueAlgebra::new(&config.domain().unwrap()),
+                    ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
                 ),
             );
-            assert_shapes(&result, &payload, target, config.domain().unwrap());
+            assert_shapes(
+                &result,
+                &payload,
+                target,
+                ProductAlgebra::from_spec(config_numeric.spec()),
+            );
             assert_ordinary_root_reference(&result, &payload, &config, procedure);
             for outcome in &result.outcomes {
                 assert_eq!(
@@ -407,6 +433,7 @@ fn native_root_shapes_match_ordinary_completion_for_true_and_relative_roots() {
 #[test]
 fn root_refusals_distinguish_key_admission_and_keep_exact_phase_receipts() {
     let config = config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     let payload = native_payload(6, &config);
     let receipts = admission_receipts(&payload, &PrecompileId::Bn254Add, &config);
     for (limit, used, target) in [
@@ -448,7 +475,7 @@ fn root_refusals_distinguish_key_admission_and_keep_exact_phase_receipts() {
                 &config,
                 &mut budget,
                 false,
-                ValueAlgebra::new(&config.domain().unwrap()),
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
             ),
         );
         assert_refusal(&result, &payload, FrontierReason::Work, target);
@@ -461,21 +488,21 @@ fn root_refusals_distinguish_key_admission_and_keep_exact_phase_receipts() {
 #[test]
 fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
     let config = config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     let payload = native_payload(6, &config);
     let mut limited = config.clone();
-    limited.analysis.relations.max_nodes = payload.active().calldata.state_root().nodes();
-    let domain = limited.domain().unwrap();
+    let mut limited_numeric = config_numeric.clone();
+    limited_numeric.relations.max_nodes = payload.active().calldata.state_root().nodes();
+    let domain =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(limited_numeric.spec()));
+    let domain = domain.borrowed();
     payload
         .active()
         .calldata
         .check_existing(domain.spec().relations().expressions())
         .unwrap();
-    let error = success_data(
-        &payload.active().calldata,
-        &PrecompileId::Bn254Add,
-        ValueAlgebra::new(&domain),
-    )
-    .unwrap_err();
+    let error =
+        success_data(&payload.active().calldata, &PrecompileId::Bn254Add, domain).unwrap_err();
     let reason = super::super::super::errors::bytes(error);
     assert_eq!(
         reason,
@@ -490,7 +517,7 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
             &limited,
             &mut budget,
             false,
-            ValueAlgebra::new(&limited.domain().unwrap()),
+            ValueAlgebra::new(&ProductAlgebra::from_spec(limited_numeric.spec())),
         ),
     );
     assert_refusal(&result, &payload, reason, Some(payload.key()));
@@ -503,16 +530,14 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
     // Return fits the tighter policy. The later Revert buffer must be checked
     // before even this valid first outcome can be published.
     let payload = native_input_payload(4, ByteArray::empty(), &config);
-    limited.analysis.relations.max_nodes = 1;
-    let domain = limited.domain().unwrap();
-    success_data(
-        &payload.active().calldata,
-        &PrecompileId::Identity,
-        ValueAlgebra::new(&domain),
-    )
-    .unwrap()
-    .check_existing(domain.spec().relations().expressions())
-    .unwrap();
+    limited_numeric.relations.max_nodes = 1;
+    let domain =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(limited_numeric.spec()));
+    let domain = domain.borrowed();
+    success_data(&payload.active().calldata, &PrecompileId::Identity, domain)
+        .unwrap()
+        .check_existing(domain.spec().relations().expressions())
+        .unwrap();
     assert!(
         ByteArray::unknown()
             .check_existing(domain.spec().relations().expressions())
@@ -527,7 +552,7 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
             &limited,
             &mut budget,
             false,
-            ValueAlgebra::new(&limited.domain().unwrap()),
+            ValueAlgebra::new(&ProductAlgebra::from_spec(limited_numeric.spec())),
         ),
     );
     assert_refusal(
@@ -550,12 +575,14 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
                 address(0x201),
                 &word(index),
                 &word(7),
-                config.domain().unwrap(),
+                ProductAlgebra::from_spec(config_numeric.spec()),
             )
             .unwrap();
     }
-    limited.analysis.relations.max_nodes = payload.active().calldata.state_root().nodes();
-    let domain = limited.domain().unwrap();
+    limited_numeric.relations.max_nodes = payload.active().calldata.state_root().nodes();
+    let domain =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(limited_numeric.spec()));
+    let domain = domain.borrowed();
     for data in [
         payload.active().calldata.clone(),
         ByteArray::unknown(),
@@ -580,7 +607,7 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
             &limited,
             &mut finish_budget,
             false,
-            ValueAlgebra::new(&limited.domain().unwrap()),
+            ValueAlgebra::new(&ProductAlgebra::from_spec(limited_numeric.spec())),
         ),
         0,
     );
@@ -594,7 +621,7 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
             &limited,
             &mut budget,
             false,
-            ValueAlgebra::new(&limited.domain().unwrap()),
+            ValueAlgebra::new(&ProductAlgebra::from_spec(limited_numeric.spec())),
         ),
     );
     assert_refusal(&result, &payload, expected, Some(payload.key()));
@@ -609,6 +636,7 @@ fn root_reports_typed_buffer_construction_validation_and_store_refusals() {
 #[test]
 fn cancelled_root_has_a_typed_no_key_frontier_before_its_first_receipt() {
     let config = config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     let payload = native_payload(4, &config);
     let control = Control::new(Default::default());
     control.cancellation().cancel();
@@ -622,7 +650,7 @@ fn cancelled_root_has_a_typed_no_key_frontier_before_its_first_receipt() {
                 &config,
                 &mut budget,
                 false,
-                ValueAlgebra::new(&config.domain().unwrap()),
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
             ),
         );
         assert_refusal(
@@ -638,6 +666,7 @@ fn cancelled_root_has_a_typed_no_key_frontier_before_its_first_receipt() {
 #[test]
 fn cancellation_after_key_admission_uses_the_original_key_and_paid_receipt() {
     let config = config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     let payload = native_payload(4, &config);
     let original_key = payload.key();
     let control = Control::new(Default::default());
@@ -657,7 +686,7 @@ fn cancellation_after_key_admission_uses_the_original_key_and_paid_receipt() {
                     &config,
                     &mut budget,
                     false,
-                    ValueAlgebra::new(&config.domain().unwrap())
+                    ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
                 ),
             )
             .is_none()
@@ -684,13 +713,18 @@ fn entered_child(code: &str, native: bool, config: &ExecutionConfig) -> MachineP
             .insert(address(0x101).create(0), Account::absent())
             .unwrap();
     }
-    let payload = initial(&world, &entry, ValueAlgebra::new(&config.domain().unwrap())).unwrap();
+    let payload = initial(
+        &world,
+        &entry,
+        ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
+    )
+    .unwrap();
     let result = super::super::super::execute(
         &world,
         &entry,
         payload,
         config,
-        ValueAlgebra::new(&config.domain().unwrap()),
+        ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
         &crate::analysis::RecentDistinctJumps,
         &mut WorkBudget::new(config.max_work),
         StorageReadPolicy::Abstract,
@@ -707,9 +741,10 @@ fn entered_child(code: &str, native: bool, config: &ExecutionConfig) -> MachineP
 #[test]
 fn child_and_runtime_fallback_pay_retention_and_each_native_input_copy() {
     let config = config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     let child = entered_child("5f355f526020602060205f5f60065af100", true, &config);
     assert_eq!(child.active().code, FrameCode::Precompile(address(6)));
-    let runtime = fixtures::payload(config.domain().unwrap());
+    let runtime = fixtures::payload(ProductAlgebra::from_spec(config_numeric.spec()));
     assert_eq!(runtime.active().code, FrameCode::Runtime);
     for payload in [child, runtime] {
         assert!(!applicable(&payload));
@@ -727,7 +762,7 @@ fn child_and_runtime_fallback_pay_retention_and_each_native_input_copy() {
                 &config,
                 &mut budget,
                 true,
-                ValueAlgebra::new(&config.domain().unwrap()),
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
             ),
         );
         assert_refusal(&result, &payload, FrontierReason::Work, Some(payload.key()));
@@ -742,7 +777,7 @@ fn child_and_runtime_fallback_pay_retention_and_each_native_input_copy() {
                 &config,
                 &mut at_price_budget,
                 true,
-                ValueAlgebra::new(&config.domain().unwrap()),
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
             ),
         );
         assert_eq!(at_price_budget.used(), work);
@@ -766,7 +801,7 @@ fn child_and_runtime_fallback_pay_retention_and_each_native_input_copy() {
                 &config,
                 &mut budget,
                 true,
-                ValueAlgebra::new(&config.domain().unwrap()),
+                ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
             ),
         );
         assert!(result.frontiers.is_empty());
@@ -802,7 +837,7 @@ fn child_and_runtime_fallback_pay_retention_and_each_native_input_copy() {
                     &config,
                     &mut finish_budget,
                     true,
-                    ValueAlgebra::new(&config.domain().unwrap()),
+                    ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
                 ),
                 0,
             );
@@ -832,6 +867,7 @@ fn child_and_runtime_fallback_pay_retention_and_each_native_input_copy() {
 #[test]
 fn creation_child_still_deploys_code_before_ordinary_completion() {
     let config = config();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     // Copy initcode `PUSH1 1; PUSH0; RETURN`, whose runtime is one STOP byte.
     let child = entered_child("6004600c5f3960045f5ff00060015ff3", false, &config);
     assert_eq!(child.active().code, FrameCode::InitCode);
@@ -854,7 +890,7 @@ fn creation_child_still_deploys_code_before_ordinary_completion() {
             &config,
             &mut budget,
             false,
-            ValueAlgebra::new(&config.domain().unwrap()),
+            ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec())),
         ),
         0,
     );

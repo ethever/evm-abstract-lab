@@ -1,25 +1,26 @@
 use super::*;
-use crate::{
-    domain::{identity::Symbol, provenance::Origin},
-    world::bytes::{ByteArray, constant, expr, limits},
-};
 use alloy_primitives::U256;
 use std::num::NonZeroUsize;
+use {
+    crate::domain::identity::Symbol, crate::domain::provenance::Origin,
+    crate::world::bytes::constant, crate::world::bytes::expr, crate::world::bytes::limits,
+    crate::world::test_support::TestBytes,
+};
 
 // The oracle retains the original ordered public-to-this-module operation;
 // it does not duplicate value cleanup or a metadata encoding.
 fn reference(
-    source: &BTreeMap<ExprId, AbstractValue>,
-    domain: Domain,
+    source: &BTreeMap<ExprId, TestValue>,
+    domain: TestAlgebra,
     limits: ExprLimits,
-) -> Result<BTreeMap<ExprId, AbstractValue>, ExprError> {
+) -> Result<BTreeMap<ExprId, TestValue>, ExprError> {
     let mut facts = BTreeMap::new();
     for (expression, value) in source {
         remember(
             &mut facts,
             expression.clone(),
             value,
-            crate::domain::ValueAlgebra::new(&domain),
+            domain.borrowed(),
             limits,
         )?;
     }
@@ -27,12 +28,12 @@ fn reference(
 }
 
 fn compare(
-    source: &BTreeMap<ExprId, AbstractValue>,
-    domain: Domain,
+    source: &BTreeMap<ExprId, TestValue>,
+    domain: TestAlgebra,
     limits: ExprLimits,
-) -> Result<BTreeMap<ExprId, AbstractValue>, ExprError> {
+) -> Result<BTreeMap<ExprId, TestValue>, ExprError> {
     let before = source.clone();
-    let actual = import_empty(source, crate::domain::ValueAlgebra::new(&domain), limits);
+    let actual = import_empty(source, domain.borrowed(), limits);
     assert_eq!(actual, reference(source, domain, limits));
     assert_eq!(*source, before);
     actual
@@ -40,7 +41,7 @@ fn compare(
 
 #[test]
 fn empty_import_cleans_literals_and_retains_nonliteral_guarantees() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let input = ExprId::input(17, Symbol::CalldataLength);
     let observed = domain
         .join(&constant(7), &constant(8))
@@ -62,21 +63,24 @@ fn empty_import_cleans_literals_and_retains_nonliteral_guarantees() {
     ]);
     for current in [
         domain,
-        Domain::new(NonZeroUsize::new(1).unwrap()),
-        Domain::from_spec(domain.spec().with_relations(
-            crate::domain::relational::RelationLimits {
-                max_nodes: 64,
-                max_depth: 16,
-                ..domain.spec().relations()
-            },
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+            crate::domain::DomainSpec::new(
+                NonZeroUsize::new(1).unwrap(),
+                std::num::NonZeroUsize::new(8).unwrap(),
+                std::num::NonZeroUsize::new(256).unwrap(),
+            ),
+        )),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+            domain
+                .spec()
+                .with_relations(crate::domain::relational::RelationLimits {
+                    max_nodes: 64,
+                    max_depth: 16,
+                    ..domain.spec().relations()
+                }),
         )),
     ] {
-        let imported = compare(
-            &source,
-            current,
-            limits(crate::domain::ValueAlgebra::new(&current)),
-        )
-        .unwrap();
+        let imported = compare(&source, current, limits(current.borrowed())).unwrap();
         assert!(!imported.contains_key(&ExprId::constant(U256::ZERO)));
         let mut expected = observed.clone();
         expected.forget_identity();
@@ -100,7 +104,7 @@ fn empty_import_cleans_literals_and_retains_nonliteral_guarantees() {
 
 #[test]
 fn empty_import_counts_only_retained_processed_entries() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let mut source: BTreeMap<_, _> = (0..16)
         .map(|n| (ExprId::constant(U256::from(n)), constant(n)))
         .collect();
@@ -108,7 +112,7 @@ fn empty_import_counts_only_retained_processed_entries() {
     source.insert(retained.clone(), constant(9));
     let policy = ExprLimits {
         max_nodes: 1,
-        ..limits(crate::domain::ValueAlgebra::new(&domain))
+        ..limits(domain.borrowed())
     };
     assert_eq!(
         compare(&source, domain, policy).unwrap(),
@@ -137,8 +141,8 @@ fn empty_import_counts_only_retained_processed_entries() {
 
 #[test]
 fn empty_import_preserves_current_value_key_and_cancellation_priority() {
-    let domain = Domain::default();
-    let complex = expr(&AbstractValue::unknown_byte()).unwrap();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let complex = expr(&TestValue::unknown_byte()).unwrap();
     assert!(complex.nodes() > 1);
     let sentinel = ExprError::Limit {
         nodes: usize::MAX,
@@ -160,7 +164,7 @@ fn empty_import_preserves_current_value_key_and_cancellation_priority() {
         small,
         ExprLimits {
             max_depth: 1,
-            ..limits(crate::domain::ValueAlgebra::new(&domain))
+            ..limits(domain.borrowed())
         },
     ] {
         let expected = Err(ExprError::Limit {
@@ -184,16 +188,16 @@ fn empty_import_preserves_current_value_key_and_cancellation_priority() {
 
 #[test]
 fn copy_import_preserves_nonempty_merges_and_atomic_failures() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let key = ExprId::fresh().unwrap();
-    let mut source = ByteArray::exact(&[0x11]);
+    let mut source = TestBytes::exact(&[0x11]);
     source.operands.insert(key.clone(), constant(2));
     source
         .operands
         .insert(ExprId::constant(U256::ZERO), constant(0));
     let source_before = source.clone();
     for occupied in [false, true] {
-        let mut target = ByteArray::memory();
+        let mut target = TestBytes::memory();
         if occupied {
             target.operands.insert(key.clone(), constant(1));
             // A logically preexisting neutral key follows the original merge
@@ -208,8 +212,8 @@ fn copy_import_preserves_nonempty_merges_and_atomic_failures() {
                 &mut expected,
                 expression.clone(),
                 value,
-                crate::domain::ValueAlgebra::new(&domain),
-                limits(crate::domain::ValueAlgebra::new(&domain)),
+                domain.borrowed(),
+                limits(domain.borrowed()),
             )
             .unwrap();
         }
@@ -218,8 +222,8 @@ fn copy_import_preserves_nonempty_merges_and_atomic_failures() {
                 &mut expected,
                 expr(&value).unwrap(),
                 &value,
-                crate::domain::ValueAlgebra::new(&domain),
-                limits(crate::domain::ValueAlgebra::new(&domain)),
+                domain.borrowed(),
+                limits(domain.borrowed()),
             )
             .unwrap();
         }
@@ -229,8 +233,7 @@ fn copy_import_preserves_nonempty_merges_and_atomic_failures() {
                 &source,
                 &constant(0),
                 &constant(1),
-                64,
-                domain,
+                domain.borrowed(),
             )
             .unwrap();
         assert_eq!(target.operands, expected);
@@ -248,7 +251,7 @@ fn copy_import_preserves_nonempty_merges_and_atomic_failures() {
         let mut target = if occupied {
             target
         } else {
-            ByteArray::memory()
+            TestBytes::memory()
         };
         let before = target.clone();
         assert_eq!(
@@ -257,8 +260,7 @@ fn copy_import_preserves_nonempty_merges_and_atomic_failures() {
                 &rejected,
                 &constant(0),
                 &constant(1),
-                64,
-                domain
+                domain.borrowed()
             ),
             Err(crate::world::bytes::RangeError::Expression(
                 ExprError::Limit {

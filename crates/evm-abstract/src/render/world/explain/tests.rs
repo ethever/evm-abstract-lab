@@ -1,12 +1,11 @@
 use super::render;
+use crate::ssa::test_support::{
+    TestAccount, TestBytes, TestEntry, TestValue, TestWorld, TestWorldAnalysis, postprocessing,
+    product, run_world,
+};
 use crate::{
     Fork,
-    analysis::{
-        ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, Status, WorldAnalysis,
-        analyze_world,
-    },
-    domain::AbstractValue,
-    world::{Account, ByteArray, Entry, World},
+    analysis::{ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, Status},
 };
 use alloy_primitives::{Address, U256, hex, keccak256};
 
@@ -14,17 +13,17 @@ fn address(value: u64) -> Address {
     Address::from_word(U256::from(value).into())
 }
 
-fn entry(owner: Address, calldata: ByteArray) -> Entry {
-    Entry::concrete(
+fn entry(owner: Address, calldata: TestBytes) -> TestEntry {
+    TestEntry::concrete(
         owner,
         address(0x900),
-        AbstractValue::constant(U256::ZERO),
+        TestValue::constant(U256::ZERO),
         calldata,
     )
 }
 
-fn run(world: World, owner: Address, calldata: ByteArray) -> WorldAnalysis {
-    analyze_world(world, entry(owner, calldata), ExecutionConfig::default()).unwrap()
+fn run(world: TestWorld, owner: Address, calldata: TestBytes) -> TestWorldAnalysis {
+    run_world(world, entry(owner, calldata), ExecutionConfig::default()).unwrap()
 }
 
 fn code_section(output: &str) -> &str {
@@ -70,17 +69,17 @@ fn created_initcode_and_overlay_runtime_are_disassembled_from_captured_frames() 
             .unwrap();
     assert_eq!(factory.len(), 38);
     factory.extend(&initcode);
-    let mut world = World::new(Fork::Osaka, "captured creation code");
+    let mut world = TestWorld::new(Fork::Osaka, "captured creation code");
     world
         .insert(
             creator,
-            Account::from_hex(&hex::encode(&factory), Fork::Osaka).unwrap(),
+            TestAccount::from_hex(&hex::encode(&factory), Fork::Osaka).unwrap(),
         )
         .unwrap();
-    world.insert(deployed, Account::absent()).unwrap();
+    world.insert(deployed, TestAccount::absent()).unwrap();
     // CREATE 的保守失败分支会以零地址调用，固定快照也明确该账户为空。
-    world.insert(Address::ZERO, Account::absent()).unwrap();
-    let analysis = run(world, creator, ByteArray::empty());
+    world.insert(Address::ZERO, TestAccount::absent()).unwrap();
+    let analysis = run(world, creator, TestBytes::empty());
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -95,7 +94,7 @@ fn created_initcode_and_overlay_runtime_are_disassembled_from_captured_frames() 
         state.active().mode == FrameCode::Runtime && state.active().code_address == deployed
     }));
 
-    let output = render(&analysis).unwrap();
+    let output = render(&analysis, &product(), &mut postprocessing()).unwrap();
     let codes = code_section(&output);
     let init = captured_variant(codes, deployed, &keccak256(&initcode).to_string());
     let deployed_runtime = captured_variant(codes, deployed, &keccak256(&runtime).to_string());
@@ -115,22 +114,23 @@ fn created_initcode_and_overlay_runtime_are_disassembled_from_captured_frames() 
 fn shared_delegate_code_is_deduplicated_but_preserves_distinct_state_owners() {
     let creator = address(0x101);
     let implementation = address(0x200);
-    let mut world = World::new(Fork::Osaka, "shared code owners");
+    let mut world = TestWorld::new(Fork::Osaka, "shared code owners");
     world
         .insert(
             creator,
-            Account::from_hex("5f5f5f5f6102005af4505f5f5f5f5f6102005af15000", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("5f5f5f5f6102005af4505f5f5f5f5f6102005af15000", Fork::Osaka)
+                .unwrap(),
         )
         .unwrap();
     world
         .insert(
             implementation,
-            Account::from_hex("5f00", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("5f00", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    let analysis = run(world, creator, ByteArray::empty());
+    let analysis = run(world, creator, TestBytes::empty());
     assert_eq!(analysis.status(), Status::Converged);
-    let output = render(&analysis).unwrap();
+    let output = render(&analysis, &product(), &mut postprocessing()).unwrap();
     let codes = code_section(&output);
     let implementation_code =
         captured_variant(codes, implementation, &keccak256([0x5f, 0x00]).to_string());
@@ -138,15 +138,18 @@ fn shared_delegate_code_is_deduplicated_but_preserves_distinct_state_owners() {
     assert_eq!(codes.matches("Captured instruction list").count(), 2);
     assert!(codes.contains("frame=f₀ entry suspended"));
     assert!(implementation_code.contains("frame=f₁ entry active"));
-    assert_eq!(render(&analysis).unwrap(), output);
+    assert_eq!(
+        render(&analysis, &product(), &mut postprocessing()).unwrap(),
+        output
+    );
 }
 
 #[test]
 fn partial_native_frame_has_frontiers_without_invented_bytecode_or_ssa() {
-    let world = World::new(Fork::Osaka, "unknown identity input");
-    let native_entry = entry(address(4), ByteArray::unknown());
+    let world = TestWorld::new(Fork::Osaka, "unknown identity input");
+    let native_entry = entry(address(4), TestBytes::unknown());
     let config = ExecutionConfig::default();
-    let closed = analyze_world(world.clone(), native_entry.clone(), config.clone()).unwrap();
+    let closed = run_world(world.clone(), native_entry.clone(), config.clone()).unwrap();
     assert_eq!(closed.status(), Status::Converged);
     assert!(closed.frontiers().is_empty());
     // Measure logical execution work on this exact input, not wall time or an
@@ -156,8 +159,7 @@ fn partial_native_frame_has_frontiers_without_invented_bytecode_or_ssa() {
         .checked_sub(1)
         .expect("native work was charged");
     assert!(max_work > 0, "the bounded configuration must stay valid");
-    let analysis =
-        analyze_world(world, native_entry, ExecutionConfig { max_work, ..config }).unwrap();
+    let analysis = run_world(world, native_entry, ExecutionConfig { max_work, ..config }).unwrap();
     assert_eq!(analysis.status(), Status::Incomplete);
     assert!(!analysis.frontiers().is_empty());
     assert!(
@@ -173,7 +175,7 @@ fn partial_native_frame_has_frontiers_without_invented_bytecode_or_ssa() {
             .any(|state| state.active().mode == FrameCode::Precompile(address(4)))
     );
     assert!(analysis.states()[0].program().is_none());
-    let output = render(&analysis).unwrap();
+    let output = render(&analysis, &product(), &mut postprocessing()).unwrap();
     let codes = code_section(&output);
     assert!(codes.contains("Native precompile"));
     assert!(codes.contains("no bytecode instruction list"));
@@ -196,14 +198,14 @@ fn partial_native_frame_has_frontiers_without_invented_bytecode_or_ssa() {
     ] {
         assert!(closed.outcomes().iter().any(|outcome| outcome.kind == kind));
     }
-    let ssa = crate::ssa::build_normalized_world(&closed).unwrap();
+    let ssa = crate::ssa::build_normalized_world(&closed, &mut postprocessing()).unwrap();
     assert!(ssa.complete());
     assert!(
         ssa.blocks()
             .iter()
             .all(|block| block.instructions.is_empty())
     );
-    let closed_output = render(&closed).unwrap();
+    let closed_output = render(&closed, &product(), &mut postprocessing()).unwrap();
     let codes = code_section(&closed_output);
     assert!(codes.contains("Native precompile"));
     assert!(!codes.contains("B₀ @") && !codes.contains("Captured instruction list"));
@@ -213,19 +215,19 @@ fn partial_native_frame_has_frontiers_without_invented_bytecode_or_ssa() {
 #[test]
 fn empty_code_and_missing_entry_remain_distinct_without_fake_disassembly() {
     let owner = address(0x101);
-    let mut world = World::new(Fork::Osaka, "empty observed entry");
-    world.insert(owner, Account::empty()).unwrap();
-    let empty = run(world, owner, ByteArray::empty());
+    let mut world = TestWorld::new(Fork::Osaka, "empty observed entry");
+    world.insert(owner, TestAccount::empty()).unwrap();
+    let empty = run(world, owner, TestBytes::empty());
     assert_eq!(empty.status(), Status::Converged);
-    let empty_output = render(&empty).unwrap();
+    let empty_output = render(&empty, &product(), &mut postprocessing()).unwrap();
     assert!(code_section(&empty_output).contains("Empty executable code"));
     assert!(!code_section(&empty_output).contains("B₀ @"));
     assert!(!empty_output.contains("SSA unavailable"));
 
     let missing = run(
-        World::new(Fork::Osaka, "missing entry"),
+        TestWorld::new(Fork::Osaka, "missing entry"),
         owner,
-        ByteArray::empty(),
+        TestBytes::empty(),
     );
     assert_eq!(missing.status(), Status::Converged);
     assert!(missing.frontiers().is_empty());
@@ -236,12 +238,12 @@ fn empty_code_and_missing_entry_remain_distinct_without_fake_disassembly() {
             .iter()
             .all(|record| record.closed)
     );
-    let missing_output = render(&missing).unwrap();
+    let missing_output = render(&missing, &product(), &mut postprocessing()).unwrap();
     assert!(code_section(&missing_output).contains("Abstract environment"));
     assert!(!code_section(&missing_output).contains("B₀ @"));
     assert!(!code_section(&missing_output).contains("Captured instruction list"));
     assert!(!missing_output.contains("SSA unavailable"));
-    let dot = crate::render::world::dot(&missing);
+    let dot = crate::render::world::dot(&missing, &product());
     assert!(dot.contains("abstract environment"));
     assert!(dot.contains("code_hash=unobserved"));
     assert!(dot.contains("summary coverage"));
@@ -251,13 +253,13 @@ fn empty_code_and_missing_entry_remain_distinct_without_fake_disassembly() {
 #[test]
 fn initial_budget_boundary_preserves_observed_code_with_no_execution_claim() {
     let owner = address(0x101);
-    let mut world = World::new(Fork::Osaka, "initial work boundary");
+    let mut world = TestWorld::new(Fork::Osaka, "initial work boundary");
     world
-        .insert(owner, Account::from_hex("602a00", Fork::Osaka).unwrap())
+        .insert(owner, TestAccount::from_hex("602a00", Fork::Osaka).unwrap())
         .unwrap();
-    let analysis = analyze_world(
+    let analysis = run_world(
         world,
-        entry(owner, ByteArray::empty()),
+        entry(owner, TestBytes::empty()),
         ExecutionConfig {
             max_work: 1,
             ..ExecutionConfig::default()
@@ -266,7 +268,7 @@ fn initial_budget_boundary_preserves_observed_code_with_no_execution_claim() {
     .unwrap();
     assert_eq!(analysis.status(), Status::Incomplete);
     assert!(analysis.states().is_empty());
-    let output = render(&analysis).unwrap();
+    let output = render(&analysis, &product(), &mut postprocessing()).unwrap();
     assert!(code_section(&output).contains("Input code observations (not execution evidence)"));
     assert!(
         code_section(&output).contains("Observed instruction list (execution not established)")
@@ -279,17 +281,17 @@ fn initial_budget_boundary_preserves_observed_code_with_no_execution_claim() {
 #[test]
 fn end_of_code_after_call_is_a_synthetic_continuation_without_an_instruction() {
     let owner = address(0x101);
-    let mut world = World::new(Fork::Osaka, "call at end of code");
+    let mut world = TestWorld::new(Fork::Osaka, "call at end of code");
     world
         .insert(
             owner,
-            Account::from_hex("5f5f5f5f5f6102005af1", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("5f5f5f5f5f6102005af1", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    world.insert(address(0x200), Account::empty()).unwrap();
-    let analysis = run(world, owner, ByteArray::empty());
+    world.insert(address(0x200), TestAccount::empty()).unwrap();
+    let analysis = run(world, owner, TestBytes::empty());
     assert_eq!(analysis.status(), Status::Converged);
-    let output = render(&analysis).unwrap();
+    let output = render(&analysis, &product(), &mut postprocessing()).unwrap();
     assert!(
         code_section(&output)
             .contains("synthetic end-of-code continuation (no instruction) | executed_pcs=[]")

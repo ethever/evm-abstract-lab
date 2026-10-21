@@ -1,10 +1,15 @@
+use crate::domain::ProductAlgebra;
 //! Optional scalar terms may be forgotten only after their numeric transfer.
 
-use crate::domain::AbstractValue;
+#[cfg(test)]
+use crate::analysis::testing::{Account, TestValue};
+use crate::domain::EvmNumericAlgebra as _;
+
+use crate::analysis::testing::ByteArray;
+use crate::analysis::testing::Entry;
+use crate::analysis::testing::World;
+use crate::domain;
 use crate::domain::ValueAlgebra;
-use crate::world::ByteArray;
-use crate::world::Entry;
-use crate::world::World;
 
 use super::*;
 use crate::{
@@ -15,7 +20,6 @@ use crate::{
         relational::QueryReason,
         symbolic::{ExprError, ExprId, ExprKind},
     },
-    world::Account,
 };
 
 fn fixture(code: &str, max_nodes: usize, max_depth: usize) -> (World, Entry, ExecutionConfig) {
@@ -27,8 +31,9 @@ fn fixture(code: &str, max_nodes: usize, max_depth: usize) -> (World, Entry, Exe
     let mut entry = Entry::new(owner);
     entry.environment.calldata = ByteArray::empty();
     let mut config = ExecutionConfig::default();
-    config.analysis.relations.max_nodes = max_nodes;
-    config.analysis.relations.max_depth = max_depth;
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.max_nodes = max_nodes;
+    config_numeric.relations.max_depth = max_depth;
     (world, entry, config)
 }
 
@@ -36,8 +41,9 @@ fn fixture(code: &str, max_nodes: usize, max_depth: usize) -> (World, Entry, Exe
 fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
     // A following block lets us inspect the result before transaction finalization.
     let (world, entry, config) = fixture("015b00", 2, 64);
-    let domain = config.domain().unwrap();
-    let mut input = AbstractValue::unsigned_range(U256::from(2), U256::from(3))
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
+    let mut input = TestValue::unsigned_range(U256::from(2), U256::from(3))
         .unwrap()
         .with_symbol(Symbol::CallValue, Some(7));
     input.set_origin(Origin::CallValue);
@@ -51,7 +57,7 @@ fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
         reduction.status,
         ReductionStatus::RoundLimit | ReductionStatus::FactLimit | ReductionStatus::SymbolicLimit
     ));
-    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+    let mut payload = initial(&world, &entry, domain).unwrap();
     payload.active_mut().stack = vec![input, constant(5)];
     let mut budget = WorkBudget::new(config.max_work);
     let result = execute(
@@ -59,7 +65,7 @@ fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
         &entry,
         payload,
         &config,
-        ValueAlgebra::new(&domain),
+        domain,
         &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
@@ -93,7 +99,7 @@ fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
     assert!(!budget.exhausted());
 
     for concrete in [2, 3] {
-        let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+        let mut payload = initial(&world, &entry, domain).unwrap();
         payload.active_mut().stack = vec![constant(concrete), constant(5)];
         let mut budget = WorkBudget::new(config.max_work);
         let control = execute(
@@ -101,7 +107,7 @@ fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
             &entry,
             payload,
             &config,
-            ValueAlgebra::new(&domain),
+            domain,
             &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
@@ -119,14 +125,15 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
     // First block: a+1, DUP. Second: (a+1)+1, b+1, compare the saved a+1
     // with a copy of b+1, then branch. Only the two deep-input ADDs exceed depth 2.
     let (world, entry, config) = fixture("600101805b60010191600101808214601357005b00", 1024, 2);
-    let domain = config.domain().unwrap();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let deep = || {
-        AbstractValue::top().with_expression(
+        TestValue::top().with_expression(
             ExprId::operation(opcode::NOT, &[ExprId::fresh().unwrap()], Default::default())
                 .unwrap(),
         )
     };
-    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+    let mut payload = initial(&world, &entry, domain).unwrap();
     payload.active_mut().stack = vec![deep(), deep()];
     let mut budget = WorkBudget::new(config.max_work);
     let prefix = execute(
@@ -134,7 +141,7 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
         &entry,
         payload,
         &config,
-        ValueAlgebra::new(&domain),
+        domain,
         &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
@@ -157,7 +164,7 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
         &entry,
         prefix.successors.into_iter().next().unwrap().payload,
         &config,
-        ValueAlgebra::new(&domain),
+        domain,
         &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
@@ -198,7 +205,7 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
 
     // Equal and unequal independent concrete inputs witness the two edges.
     for (b, edge) in [(0, EdgeKind::BranchTrue), (1, EdgeKind::BranchFalse)] {
-        let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+        let mut payload = initial(&world, &entry, domain).unwrap();
         payload.active_mut().stack = vec![constant(b), zero()];
         let mut budget = WorkBudget::new(config.max_work);
         let prefix = execute(
@@ -206,7 +213,7 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
             &entry,
             payload,
             &config,
-            ValueAlgebra::new(&domain),
+            domain,
             &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
@@ -217,7 +224,7 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
             &entry,
             prefix.successors.into_iter().next().unwrap().payload,
             &config,
-            ValueAlgebra::new(&domain),
+            domain,
             &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
@@ -234,12 +241,13 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
 #[test]
 fn inherited_scalar_limit_still_records_a_frontier_and_keeps_its_marker() {
     let (world, entry, config) = fixture("015b00", 2, 64);
-    let domain = config.domain().unwrap();
-    let input = AbstractValue::unsigned_range(U256::from(2), U256::from(3))
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
+    let input = TestValue::unsigned_range(U256::from(2), U256::from(3))
         .unwrap()
         .with_symbol(Symbol::CallValue, Some(7))
         .with_symbolic_limit();
-    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+    let mut payload = initial(&world, &entry, domain).unwrap();
     payload.active_mut().stack = vec![input, constant(5)];
     let mut budget = WorkBudget::new(config.max_work);
     let result = execute(
@@ -247,7 +255,7 @@ fn inherited_scalar_limit_still_records_a_frontier_and_keeps_its_marker() {
         &entry,
         payload,
         &config,
-        ValueAlgebra::new(&domain),
+        domain,
         &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,

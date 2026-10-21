@@ -1,12 +1,14 @@
 //! A concrete subset of issue123's original Unknown input. Unobserved initial
 //! slots remain unknown in the abstract world; revm chooses zero for one witness.
 use super::{oracle, support::*};
+use crate::native;
 use alloy_primitives::{Address, B256, U256, hex};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
     analysis::{Config, ExecutionConfig, OutcomeKind},
-    domain::{AbstractValue, Domain, Profile, relational::RelationLimits},
-    world::{Account, AddressInput, ByteArray, Entry, World},
+    domain::{EvmValue, relational::RelationLimits},
+    world::{AddressInput, EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use revm_bytecode::opcode;
 use serde_json::Value;
@@ -24,10 +26,10 @@ fn scalar(value: &Value) -> U256 {
     U256::from_str(value.as_str().unwrap()).unwrap()
 }
 
-pub(super) fn observed_world() -> World {
+pub(super) fn observed_world() -> EvmWorld<NumericValue> {
     let data: Value = serde_json::from_str(OBSERVATIONS).unwrap();
     assert_eq!(data["fork"], "osaka");
-    let mut world = World::anchored(
+    let mut world = EvmWorld::<NumericValue>::anchored(
         Fork::Osaka,
         scalar(&data["identity"]["chain_id"]),
         B256::from_str(data["identity"]["block_hash"].as_str().unwrap()).unwrap(),
@@ -35,9 +37,11 @@ pub(super) fn observed_world() -> World {
     );
     for item in data["accounts"].as_array().unwrap() {
         let owner = Address::from_str(item["address"].as_str().unwrap()).unwrap();
-        let mut account = Account::from_hex(item["code"].as_str().unwrap(), world.fork()).unwrap();
-        account.balance = AbstractValue::constant(scalar(&item["balance"]));
-        account.nonce = AbstractValue::constant(scalar(&item["nonce"]));
+        let mut account =
+            EvmAccount::<NumericValue>::from_hex(item["code"].as_str().unwrap(), world.fork())
+                .unwrap();
+        account.balance = EvmValue::<NumericValue>::constant(scalar(&item["balance"]));
+        account.nonce = EvmValue::<NumericValue>::constant(scalar(&item["nonce"]));
         assert_eq!(item["existence"], "present");
         account.storage_unknown = item["storage_unknown"].as_bool().unwrap();
         assert!(
@@ -47,7 +51,7 @@ pub(super) fn observed_world() -> World {
         for (slot, value) in item["storage"].as_object().unwrap() {
             account.storage.insert(
                 U256::from_str(slot).unwrap(),
-                AbstractValue::constant(scalar(value)),
+                EvmValue::<NumericValue>::constant(scalar(value)),
             );
         }
         world
@@ -61,29 +65,35 @@ pub(super) fn observed_world() -> World {
     world
 }
 
-pub(super) fn witness_entry() -> Entry {
+pub(super) fn witness_entry() -> EvmEntry<NumericValue> {
     let witness: Value = serde_json::from_str(WITNESS).unwrap();
     let owner = Address::from_str(witness["to"].as_str().unwrap()).unwrap();
     let caller = Address::from_str(witness["caller"].as_str().unwrap()).unwrap();
     let calldata = hex::decode(witness["calldata"].as_str().unwrap()).unwrap();
     assert_eq!(calldata.len(), 100);
-    let mut input = Entry::concrete(
+    let mut input = EvmEntry::<NumericValue>::concrete(
         owner,
         caller,
-        AbstractValue::constant(scalar(&witness["value"])),
-        ByteArray::exact(&calldata),
+        EvmValue::<NumericValue>::constant(scalar(&witness["value"])),
+        EvmByteArray::<NumericValue>::exact(&calldata),
     );
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
     let snapshot = &manifest["cases"]["usdc"]["captured_snapshot"];
     input.environment.coinbase =
         AddressInput::Concrete(Address::from_str(snapshot["coinbase"].as_str().unwrap()).unwrap());
-    input.environment.timestamp = AbstractValue::constant(scalar(&snapshot["timestamp"]));
-    input.environment.number = AbstractValue::constant(scalar(&snapshot["number"]));
-    input.environment.prevrandao = AbstractValue::constant(scalar(&snapshot["prevrandao"]));
-    input.environment.gas_limit = AbstractValue::constant(scalar(&snapshot["gas_limit"]));
-    input.environment.base_fee = AbstractValue::constant(scalar(&snapshot["base_fee"]));
-    input.environment.blob_base_fee = AbstractValue::constant(scalar(&snapshot["blob_base_fee"]));
-    input.environment.chain_id = Some(AbstractValue::constant(scalar(&snapshot["chain_id"])));
+    input.environment.timestamp =
+        EvmValue::<NumericValue>::constant(scalar(&snapshot["timestamp"]));
+    input.environment.number = EvmValue::<NumericValue>::constant(scalar(&snapshot["number"]));
+    input.environment.prevrandao =
+        EvmValue::<NumericValue>::constant(scalar(&snapshot["prevrandao"]));
+    input.environment.gas_limit =
+        EvmValue::<NumericValue>::constant(scalar(&snapshot["gas_limit"]));
+    input.environment.base_fee = EvmValue::<NumericValue>::constant(scalar(&snapshot["base_fee"]));
+    input.environment.blob_base_fee =
+        EvmValue::<NumericValue>::constant(scalar(&snapshot["blob_base_fee"]));
+    input.environment.chain_id = Some(EvmValue::<NumericValue>::constant(scalar(
+        &snapshot["chain_id"],
+    )));
     input.environment.block_hashes.insert(
         scalar(&snapshot["number"]) - U256::from(1),
         B256::from_str(snapshot["parent_hash"].as_str().unwrap()).unwrap(),
@@ -109,21 +119,28 @@ fn original_policy() -> ExecutionConfig {
         use_summaries: limits["use_summaries"].as_bool().unwrap(),
         root_terminal_coverage: false,
         analysis: Config {
-            domain_profile: Profile::Product,
             max_states: limit("max_states"),
             max_transfers: limit("max_transfers"),
             context_depth: limit("context_depth"),
-            max_constants: limit("max_constants"),
-            reduction_rounds: limit("reduction_rounds"),
-            max_facts: limit("max_facts"),
-            relations: RelationLimits {
-                enabled: limits["relations_enabled"].as_bool().unwrap(),
-                max_constraints: limit("max_constraints"),
-                max_nodes: limit("max_expression_nodes"),
-                max_depth: limit("max_expression_depth"),
-            },
         },
     }
+}
+
+fn original_spec() -> evm_abstract::domain::DomainSpec {
+    let request: Value = serde_json::from_str(ORIGINAL_REQUEST).unwrap();
+    let limits = &request["limits"];
+    let limit = |name: &str| usize::try_from(limits[name].as_u64().unwrap()).unwrap();
+    native::spec(
+        limit("max_constants"),
+        limit("reduction_rounds"),
+        limit("max_facts"),
+    )
+    .with_relations(RelationLimits {
+        enabled: limits["relations_enabled"].as_bool().unwrap(),
+        max_constraints: limit("max_constraints"),
+        max_nodes: limit("max_expression_nodes"),
+        max_depth: limit("max_expression_depth"),
+    })
 }
 
 #[test]
@@ -177,7 +194,14 @@ fn captured_usdc_self_delegate_reverts_and_restores_observed_initial_state() {
         && s.pc == 2119
         && s.storage_write == Some((implementation_slot, U256::from_be_slice(owner.as_slice())))));
 
-    let analysis = run_config(world, input, original_policy());
+    let values = native::product_with(original_spec());
+    let analysis = native::run(
+        &values,
+        evm_abstract::analysis::AnalysisInput::new(world, input).unwrap(),
+        original_policy(),
+        &evm_abstract::analysis::control::Control::default(),
+    )
+    .unwrap();
     complete_recursion(&analysis);
     for procedure in analysis
         .procedure_summaries()
@@ -193,8 +217,8 @@ fn captured_usdc_self_delegate_reverts_and_restores_observed_initial_state() {
                 .input
                 .read(
                     owner,
-                    &AbstractValue::constant(implementation_slot),
-                    Domain::default()
+                    &EvmValue::<NumericValue>::constant(implementation_slot),
+                    native::product().borrowed()
                 )
                 .singleton(),
             Some(U256::from_be_slice(owner.as_slice()))
@@ -206,8 +230,8 @@ fn captured_usdc_self_delegate_reverts_and_restores_observed_initial_state() {
                 .store
                 .read(
                     owner,
-                    &AbstractValue::constant(implementation_slot),
-                    Domain::default()
+                    &EvmValue::<NumericValue>::constant(implementation_slot),
+                    native::product().borrowed()
                 )
                 .singleton(),
             Some(initial)
@@ -239,22 +263,25 @@ fn captured_usdc_self_delegate_reverts_and_restores_observed_initial_state() {
                         .store
                         .read(
                             *account_address,
-                            &AbstractValue::constant(*slot),
-                            Domain::default()
+                            &EvmValue::<NumericValue>::constant(*slot),
+                            native::product().borrowed()
                         )
                         .singleton(),
                     value.singleton()
                 );
             }
             // This unobserved slot must not acquire an invented zero baseline.
-            let unobserved = outcome
-                .store
-                .read(*account_address, &word(0), Domain::default());
+            let unobserved =
+                outcome
+                    .store
+                    .read(*account_address, &word(0), native::product().borrowed());
             assert!(unobserved.numeric().is_top());
             only(
-                &outcome
-                    .store
-                    .read_transient(*account_address, &word(0), Domain::default()),
+                &outcome.store.read_transient(
+                    *account_address,
+                    &word(0),
+                    native::product().borrowed(),
+                ),
                 &[0],
             );
         }

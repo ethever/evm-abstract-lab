@@ -1,10 +1,14 @@
+use crate::domain::EvmNumericAlgebra as _;
+
 use super::*;
 use crate::analysis::MachinePayload;
-use crate::domain::AbstractValue;
-use crate::domain::Domain;
+use crate::analysis::testing::Entry;
+use crate::analysis::testing::World;
+#[cfg(test)]
+use crate::analysis::testing::{Account, TestValue};
+use crate::domain;
+use crate::domain::ProductAlgebra;
 use crate::domain::ValueAlgebra;
-use crate::world::Entry;
-use crate::world::World;
 use crate::{
     Fork,
     analysis::{
@@ -12,7 +16,6 @@ use crate::{
         transfer::{StorageReadPolicy, WorkBudget, execute},
     },
     domain::symbolic::ExprId,
-    world::Account,
 };
 
 mod copy_proof;
@@ -23,14 +26,14 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> TestValue {
+    TestValue::constant(U256::from(number))
 }
 
 fn entered_call(
     value_code: &str,
-    value: AbstractValue,
-    balance: AbstractValue,
+    value: TestValue,
+    balance: TestValue,
 ) -> (MachinePayload, MachinePayload) {
     let owner = address(0x101);
     let target = address(0x200);
@@ -45,14 +48,16 @@ fn entered_call(
     let mut entry = Entry::new(owner);
     entry.environment.value = value;
     let config = ExecutionConfig::default();
-    let domain = config.domain().unwrap();
-    let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
+    let input = initial(&world, &entry, domain).unwrap();
     let result = execute(
         &world,
         &entry,
         input.clone(),
         &config,
-        ValueAlgebra::new(&domain),
+        domain,
         &crate::analysis::RecentDistinctJumps,
         &mut WorkBudget::new(config.max_work),
         StorageReadPolicy::Abstract,
@@ -73,7 +78,7 @@ fn entered_call(
 
 #[test]
 fn zero_call_preserves_complete_balances_and_the_rollback_store() {
-    let symbolic_balance = AbstractValue::unsigned_range(U256::from(100), U256::from(200))
+    let symbolic_balance = TestValue::unsigned_range(U256::from(100), U256::from(200))
         .unwrap()
         .with_expression(ExprId::fresh().unwrap());
     for balance in [word(100), symbolic_balance] {
@@ -106,7 +111,8 @@ fn positive_and_uncertain_call_values_still_move_balances() {
         child.store.read_balance(address(0x200)).singleton(),
         Some(U256::from(53))
     );
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let amount = domain.join(&word(0), &word(3));
     let (_, child) = entered_call("34", amount, word(100));
     assert_eq!(
@@ -137,9 +143,12 @@ fn call_family_touches_only_entered_transfer_recipients_inside_their_checkpoint(
         let mut entry = Entry::new(owner);
         entry.environment.value = word(0);
         let mut config = ExecutionConfig::default();
-        config.analysis.relations.enabled = false;
-        let domain = config.domain().unwrap();
-        let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        config_numeric.relations.enabled = false;
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
+        let input = initial(&world, &entry, domain).unwrap();
         let mut before_call = input.store.clone();
         before_call.touch_account(owner);
         let result = execute(
@@ -147,7 +156,7 @@ fn call_family_touches_only_entered_transfer_recipients_inside_their_checkpoint(
             &entry,
             input,
             &config,
-            ValueAlgebra::new(&domain),
+            domain,
             &crate::analysis::RecentDistinctJumps,
             &mut WorkBudget::new(config.max_work),
             StorageReadPolicy::Abstract,
@@ -183,18 +192,16 @@ fn call_family_touches_only_entered_transfer_recipients_inside_their_checkpoint(
 fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query() {
     let (world, entry) = crate::analysis::machine::fixtures::fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
-    let domain = config.domain().unwrap();
-    let payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
+    let payload = initial(&world, &entry, domain).unwrap();
     let expression = ExprId::fresh().unwrap();
-    let projected = AbstractValue::unknown_address().with_expression(expression.clone());
+    let projected = TestValue::unknown_address().with_expression(expression.clone());
     let candidate = word(0x301);
     let mut result = super::super::empty_execution(payload.clone());
     let mut budget = WorkBudget::new(config.max_work);
-    let mut context = crate::analysis::transfer::testing::context(
-        &config,
-        &mut budget,
-        ValueAlgebra::new(&domain),
-    );
+    let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
     let remainder = target_guard(
         &mut result,
         &payload,
@@ -211,13 +218,13 @@ fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query()
     assert_eq!(
         remainder
             .relations
-            .can_equal(&expression, U256::from(0x301), &config.analysis.relations),
+            .can_equal(&expression, U256::from(0x301), &config_numeric.relations),
         crate::domain::relational::CheckResult::ProvenImpossible
     );
     assert_eq!(
         remainder
             .relations
-            .can_equal(&expression, U256::from(0x302), &config.analysis.relations),
+            .can_equal(&expression, U256::from(0x302), &config_numeric.relations),
         crate::domain::relational::CheckResult::MayBeFeasible
     );
 }

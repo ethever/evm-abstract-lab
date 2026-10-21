@@ -1,21 +1,16 @@
 //! RPC headers must reach execution, and fee observations share the same pin.
 
 use super::{Reply, Server, healthy};
-use crate::{
-    Address, Fork, U256,
-    analysis::{
-        self, ExecutionConfig, Status,
-        progress::{Event, Observer, Phase},
-    },
-    domain::AbstractValue,
-    world::{
-        Entry, EvmEnvironment,
-        rpc::{self, RpcError},
-    },
-};
 use alloy_primitives::B256;
 use serde_json::{Value as Json, json};
 use std::{sync::mpsc, thread};
+use {
+    crate::Address, crate::Fork, crate::U256, crate::analysis, crate::analysis::ExecutionConfig,
+    crate::analysis::Status, crate::analysis::progress::Event, crate::analysis::progress::Observer,
+    crate::analysis::progress::Phase, crate::world::rpc, crate::world::rpc::RpcError,
+    crate::world::test_support::TestEntry, crate::world::test_support::TestEnvironment,
+    crate::world::test_support::TestValue,
+};
 
 fn block_reply(request: &Json) -> Json {
     if request["method"] == "eth_feeHistory" {
@@ -35,13 +30,13 @@ fn block_reply(request: &Json) -> Json {
     reply
 }
 
-fn entry() -> Entry {
+fn entry() -> TestEntry {
     let address = Address::repeat_byte(0x22);
-    Entry {
+    TestEntry {
         address,
-        environment: EvmEnvironment {
+        environment: TestEnvironment {
             to: address.into(),
-            ..EvmEnvironment::default()
+            ..TestEnvironment::default()
         },
     }
 }
@@ -64,16 +59,48 @@ fn pinned_header_values_reach_both_library_entrypoints_under_each_supported_fork
                 U256::from(1),
                 U256::from_be_slice(B256::repeat_byte(0x10).as_slice()),
             ];
-            let world = rpc::load(&input).unwrap();
+            let world = rpc::load::<crate::domain::NumericValue>(&input).unwrap();
             let snapshot = world.snapshot_environment().unwrap();
             assert_eq!(snapshot.number, U256::from(42));
             assert_eq!(snapshot.blob_base_fee, Some(U256::from(0x123)));
             // Arbitrary observed fee intentionally differs from a fork-only formula.
-            let direct =
-                analysis::analyze_world(world, entry(), ExecutionConfig::default()).unwrap();
-            let acquired = analysis::analyze_rpc(&input, entry(), ExecutionConfig::default())
-                .unwrap()
-                .into_analysis();
+            let direct = {
+                let algebra =
+                    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+                let policies = crate::analysis::EnginePolicies::new(
+                    crate::analysis::ContextInsensitive,
+                    crate::analysis::MergeResumeStatus,
+                );
+                let mut extension = crate::analysis::cooperation::NoExtension;
+                let control = crate::analysis::control::Control::default();
+                let engine =
+                    crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+                let input = crate::analysis::AnalysisInput::new(world, entry()).unwrap();
+                let mut engine = engine;
+                engine.run(input, ExecutionConfig::default(), &control)
+            }
+            .unwrap();
+            let acquired = {
+                let algebra =
+                    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+                let policies = crate::analysis::EnginePolicies::new(
+                    crate::analysis::ContextInsensitive,
+                    crate::analysis::MergeResumeStatus,
+                );
+                let mut extension = crate::analysis::cooperation::NoExtension;
+                let control = crate::analysis::control::Control::default();
+                let engine =
+                    crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+                crate::analysis::analyze_rpc(
+                    engine,
+                    &input,
+                    entry(),
+                    ExecutionConfig::default(),
+                    &control,
+                )
+            }
+            .unwrap()
+            .into_analysis();
             for analysis in [direct, acquired] {
                 assert_eq!(analysis.status(), Status::Converged);
                 assert_eq!(
@@ -88,7 +115,7 @@ fn pinned_header_values_reach_both_library_entrypoints_under_each_supported_fork
                     analysis.entry().environment.number.singleton(),
                     Some(U256::from(42))
                 );
-                assert_eq!(analysis.entry().environment.value, AbstractValue::top());
+                assert_eq!(analysis.entry().environment.value, TestValue::top());
                 assert_eq!(
                     analysis.entry().environment.caller,
                     entry().environment.caller
@@ -104,21 +131,37 @@ fn explicit_environment_overrides_survive_rpc_defaults_and_snapshot_stays_observ
         let server = Server::new(scope, |request| Reply::Json(block_reply(request)));
         let mut entry = entry();
         let environment = &mut entry.environment;
-        environment.number = AbstractValue::constant(U256::from(99));
-        environment.timestamp = AbstractValue::constant(U256::from(88));
+        environment.number = TestValue::constant(U256::from(99));
+        environment.timestamp = TestValue::constant(U256::from(88));
         environment.coinbase = Address::repeat_byte(0x55).into();
-        environment.prevrandao = AbstractValue::constant(U256::from(77));
-        environment.gas_limit = AbstractValue::constant(U256::from(66));
-        environment.base_fee = AbstractValue::constant(U256::from(55));
-        environment.blob_base_fee = AbstractValue::constant(U256::from(44));
-        environment.chain_id = Some(AbstractValue::constant(U256::from(33)));
+        environment.prevrandao = TestValue::constant(U256::from(77));
+        environment.gas_limit = TestValue::constant(U256::from(66));
+        environment.base_fee = TestValue::constant(U256::from(55));
+        environment.blob_base_fee = TestValue::constant(U256::from(44));
+        environment.chain_id = Some(TestValue::constant(U256::from(33)));
         environment
             .block_hashes
             .insert(U256::from(41), B256::repeat_byte(0x66));
-        let result =
-            analysis::analyze_rpc(&server.input(), entry.clone(), ExecutionConfig::default())
-                .unwrap()
-                .into_analysis();
+        let result = {
+            let algebra =
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+            let policies = crate::analysis::EnginePolicies::new(
+                crate::analysis::ContextInsensitive,
+                crate::analysis::MergeResumeStatus,
+            );
+            let mut extension = crate::analysis::cooperation::NoExtension;
+            let control = crate::analysis::control::Control::default();
+            let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+            crate::analysis::analyze_rpc(
+                engine,
+                &server.input(),
+                entry.clone(),
+                ExecutionConfig::default(),
+                &control,
+            )
+        }
+        .unwrap()
+        .into_analysis();
         assert_eq!(result.entry().environment, entry.environment);
         assert_eq!(
             result.world().snapshot_environment().unwrap().number,
@@ -152,18 +195,29 @@ fn missing_optional_fees_stay_unknown_and_required_headers_fail_before_accounts(
                 }
                 Reply::Json(reply)
             });
-            let result = rpc::load(&server.input());
+            let result = rpc::load::<crate::domain::NumericValue>(&server.input());
             if missing == "optional" {
                 let world = result.unwrap();
                 assert_eq!(world.snapshot_environment().unwrap().base_fee, None);
                 assert_eq!(world.snapshot_environment().unwrap().blob_base_fee, None);
-                let analysis =
-                    analysis::analyze_world(world, entry(), ExecutionConfig::default()).unwrap();
-                assert_eq!(analysis.entry().environment.base_fee, AbstractValue::top());
-                assert_eq!(
-                    analysis.entry().environment.blob_base_fee,
-                    AbstractValue::top()
-                );
+                let analysis = {
+                    let algebra =
+                        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+                    let policies = crate::analysis::EnginePolicies::new(
+                        crate::analysis::ContextInsensitive,
+                        crate::analysis::MergeResumeStatus,
+                    );
+                    let mut extension = crate::analysis::cooperation::NoExtension;
+                    let control = crate::analysis::control::Control::default();
+                    let engine =
+                        crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+                    let input = crate::analysis::AnalysisInput::new(world, entry()).unwrap();
+                    let mut engine = engine;
+                    engine.run(input, ExecutionConfig::default(), &control)
+                }
+                .unwrap();
+                assert_eq!(analysis.entry().environment.base_fee, TestValue::top());
+                assert_eq!(analysis.entry().environment.blob_base_fee, TestValue::top());
             } else {
                 let error = result.unwrap_err();
                 assert!(matches!(error, RpcError::Response { .. }));
@@ -193,7 +247,7 @@ fn null_required_header_fields_fail_and_null_optional_fees_stay_unknown() {
                 }
                 Reply::Json(reply)
             });
-            let error = rpc::load(&server.input()).unwrap_err();
+            let error = rpc::load::<crate::domain::NumericValue>(&server.input()).unwrap_err();
             assert!(matches!(error, RpcError::Response { .. }));
             assert_eq!(error.context().method, "eth_getBlockByHash");
             assert_eq!(server.requests().len(), 2);
@@ -207,7 +261,7 @@ fn null_required_header_fields_fail_and_null_optional_fees_stay_unknown() {
             }
             Reply::Json(reply)
         });
-        let world = rpc::load(&server.input()).unwrap();
+        let world = rpc::load::<crate::domain::NumericValue>(&server.input()).unwrap();
         let environment = world.snapshot_environment().unwrap();
         assert_eq!(environment.base_fee, None);
         assert_eq!(environment.blob_base_fee, None);
@@ -270,7 +324,7 @@ fn inconsistent_fee_or_header_observations_never_publish_a_snapshot() {
                 }
                 Reply::Json(reply)
             });
-            let error = rpc::load(&server.input()).unwrap_err();
+            let error = rpc::load::<crate::domain::NumericValue>(&server.input()).unwrap_err();
             if failure == "reorg" {
                 assert!(matches!(error, RpcError::BlockMismatch { .. }));
             }
@@ -297,12 +351,25 @@ fn rpc_progress_records_pin_acquisition_and_execution_without_changing_results()
     thread::scope(|scope| {
         let server = Server::new(scope, |request| Reply::Json(healthy(request)));
         let (sender, receiver) = mpsc::sync_channel(100);
-        let result = analysis::analyze_rpc_with_observer(
-            &server.input(),
-            entry(),
-            ExecutionConfig::default(),
-            &Observer::new(sender),
-        )
+        let result = {
+            let algebra =
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+            let policies = crate::analysis::EnginePolicies::new(
+                crate::analysis::ContextInsensitive,
+                crate::analysis::MergeResumeStatus,
+            );
+            let mut extension = crate::analysis::cooperation::NoExtension;
+            let control =
+                crate::analysis::control::Control::with_observer((&Observer::new(sender)).clone());
+            let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
+            crate::analysis::analyze_rpc(
+                engine,
+                &server.input(),
+                entry(),
+                ExecutionConfig::default(),
+                &control,
+            )
+        }
         .unwrap();
         let events: Vec<_> = receiver.try_iter().collect();
         for phase in [
@@ -355,7 +422,9 @@ fn nested_native_causes_survive_actual_rpc_code_and_snapshot_failures() {
             });
             let mut input = server.input();
             input.fork = Fork::Prague;
-            let failure = rpc::load(&input).unwrap_err().failure();
+            let failure = rpc::load::<crate::domain::NumericValue>(&input)
+                .unwrap_err()
+                .failure();
             let expected = match case {
                 "eof" => FailureCause::Code(CodeFailure::UnsupportedEof),
                 "delegation" => FailureCause::Code(CodeFailure::InvalidDelegation(
@@ -381,16 +450,16 @@ fn nested_native_causes_survive_actual_rpc_code_and_snapshot_failures() {
 
 #[test]
 fn world_hash_failure_keeps_original_account_and_both_hashes_in_serialized_evidence() {
-    use crate::world::{Account, World};
     use rpc::{FailureCause, RpcContext, WorldFailure};
+    use {crate::world::test_support::TestAccount, crate::world::test_support::TestWorld};
     let address = Address::repeat_byte(0x22);
     let expected = B256::repeat_byte(0x55);
     let observed = alloy_primitives::keccak256([0]);
-    let mut world = World::new(Fork::Osaka, "code hash mismatch");
+    let mut world = TestWorld::new(Fork::Osaka, "code hash mismatch");
     let source = world
         .insert_with_code_hash(
             address,
-            Account::from_hex("00", Fork::Osaka).unwrap(),
+            TestAccount::from_hex("00", Fork::Osaka).unwrap(),
             expected,
         )
         .unwrap_err();

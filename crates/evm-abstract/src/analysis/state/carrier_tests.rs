@@ -9,7 +9,7 @@ use crate::{
         transfer,
     },
     domain::{
-        DomainSpec, EvmNumericAlgebra, NumericReduction, Profile, ValueAlgebra, WordObservation,
+        DomainSpec, EvmNumericAlgebra, NumericReduction, ValueAlgebra, WordObservation,
         facts::FactError,
     },
     world::{EvmAccount, EvmWorld},
@@ -35,7 +35,6 @@ impl Algebra {
     fn new() -> Self {
         Self {
             spec: DomainSpec::new(
-                Profile::Product,
                 NonZeroUsize::new(8).unwrap(),
                 NonZeroUsize::new(4).unwrap(),
                 NonZeroUsize::new(256).unwrap(),
@@ -69,10 +68,15 @@ impl EvmNumericAlgebra for Algebra {
         self.reductions.set(self.reductions.get() + 1);
         NumericReduction::stable(value.clone())
     }
-    fn apply_numeric(&self, _op: u8, _args: &[ExcludingWord]) -> NumericReduction<ExcludingWord> {
+    fn apply_numeric<'a>(
+        &self,
+        _op: u8,
+        _args: impl ExactSizeIterator<Item = &'a ExcludingWord>,
+    ) -> NumericReduction<ExcludingWord> {
+        let _args: Vec<&ExcludingWord> = _args.collect();
         NumericReduction::stable(ExcludingWord::top())
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Self::Element>) -> usize
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize
     where
         Self::Element: 'a,
     {

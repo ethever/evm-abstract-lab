@@ -5,15 +5,17 @@ use crate::domain::relational::RelationLimits;
 
 #[test]
 fn native_byte_operand_entries_preserve_bounds_and_root_leaf_identity() {
-    let domain = Domain::default();
-    let offset = AbstractValue::unsigned_range(U256::ZERO, U256::from(64))
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let offset = TestValue::unsigned_range(U256::ZERO, U256::from(64))
         .unwrap()
         .with_expression(ExprId::fresh().unwrap());
-    let value = AbstractValue::unsigned_range(U256::from(7), U256::from(8))
+    let value = TestValue::unsigned_range(U256::from(7), U256::from(8))
         .unwrap()
         .with_expression(ExprId::fresh().unwrap());
-    let mut array = ByteArray::memory();
-    array.write_word(&offset, &value, 96, domain).unwrap();
+    let mut array = TestBytes::memory();
+    array
+        .write_word(&offset, &value, domain.borrowed())
+        .unwrap();
     let json = serde_json::to_value(&array).unwrap();
     let entries = json["operands"].as_array().unwrap();
     assert_eq!(entries.len(), array.symbolic_facts().count());
@@ -38,22 +40,26 @@ fn native_byte_operand_entries_preserve_bounds_and_root_leaf_identity() {
 
 #[test]
 fn native_byte_failures_are_visible_and_fact_export_is_bounded_and_cancellable() {
-    let low = Domain::from_spec(Domain::default().spec().with_relations(RelationLimits {
-        max_depth: 1,
-        ..RelationLimits::default()
-    }));
-    let failed = ByteArray::exact(&[1]).join(&ByteArray::exact(&[2]), low);
+    let low = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+            .spec()
+            .with_relations(RelationLimits {
+                max_depth: 1,
+                ..RelationLimits::default()
+            }),
+    ));
+    let failed = TestBytes::exact(&[1]).join(&TestBytes::exact(&[2]), low.borrowed());
     let json = serde_json::to_value(&failed).unwrap();
     assert_eq!(
         json["failure"].as_str(),
         Some(failed.failure.as_ref().unwrap().to_string().as_str())
     );
-    let mut oversized = ByteArray::empty();
+    let mut oversized = TestBytes::empty();
     for _ in 0..5000 {
         let e = ExprId::fresh().unwrap();
         oversized
             .operands
-            .insert(e.clone(), AbstractValue::top().with_expression(e));
+            .insert(e.clone(), TestValue::top().with_expression(e));
     }
     let error = serde_json::to_vec(&oversized).unwrap_err().to_string();
     assert!(
@@ -63,7 +69,7 @@ fn native_byte_failures_are_visible_and_fact_export_is_bounded_and_cancellable()
     let cancellation = analysis_control::Cancellation::new();
     cancellation.cancel();
     analysis_control::with_cancellation(&cancellation, || {
-        assert!(serde_json::to_value(ByteArray::unknown()).is_err());
+        assert!(serde_json::to_value(TestBytes::unknown()).is_err());
     });
 }
 
@@ -73,7 +79,7 @@ fn native_fact_list_charges_repeated_embedded_observations_not_only_flat_nodes()
     #[derive(serde::Serialize)]
     struct Record<'a> {
         #[serde(serialize_with = "crate::world::bytes::native::serialize_facts")]
-        facts: &'a BTreeMap<ExprId, AbstractValue>,
+        facts: &'a BTreeMap<ExprId, TestValue>,
     }
     let limits = ExprLimits {
         max_nodes: 100_000,
@@ -86,7 +92,7 @@ fn native_fact_list_charges_repeated_embedded_observations_not_only_flat_nodes()
             .map(|i| StateBinding {
                 index: U256::from(i),
                 value: shared.clone(),
-                numeric: AbstractValue::constant(U256::ZERO).numeric().clone().into(),
+                numeric: TestValue::constant(U256::ZERO).numeric().clone().into(),
             })
             .collect(),
         limits.into(),
@@ -98,7 +104,7 @@ fn native_fact_list_charges_repeated_embedded_observations_not_only_flat_nodes()
             ExprId::slot_read(observed.clone(), ExprId::constant(U256::from(i)), limits).unwrap();
         let graph = SymbolicGraph::expression(&read, GraphLimits::default()).unwrap();
         assert!(read.nodes() > graph.nodes.len() * 100);
-        facts.insert(read, AbstractValue::top());
+        facts.insert(read, TestValue::top());
     }
     assert!(serde_json::to_vec(&Record { facts: &facts }).is_err());
     let one = facts.into_iter().take(1).collect();

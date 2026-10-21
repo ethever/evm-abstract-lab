@@ -3,6 +3,10 @@ use super::{
     fixtures,
     policy::{Calls, Policy},
 };
+use crate::native;
+use evm_abstract::analysis::control::Control;
+use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
+use evm_abstract::domain::NumericValue;
 
 // Reuse revm execution/journaling only. These support constructors are concrete
 // oracle inputs; they never convert custom abstract execution into the default domain.
@@ -10,8 +14,10 @@ mod support {
     pub fn address(value: u64) -> alloy_primitives::Address {
         super::fixtures::address(value)
     }
-    pub fn word(value: u64) -> evm_abstract::domain::AbstractValue {
-        evm_abstract::domain::AbstractValue::constant(alloy_primitives::U256::from(value))
+    pub fn word(value: u64) -> evm_abstract::domain::EvmValue<evm_abstract::domain::NumericValue> {
+        evm_abstract::domain::EvmValue::<evm_abstract::domain::NumericValue>::constant(
+            alloy_primitives::U256::from(value),
+        )
     }
 }
 #[path = "../known_recursion/oracle.rs"]
@@ -20,18 +26,22 @@ mod concrete;
 fn concrete_input(
     code: &[u8],
     callee: Option<&[u8]>,
-) -> (evm_abstract::world::World, evm_abstract::world::Entry) {
+) -> (
+    evm_abstract::world::EvmWorld<NumericValue>,
+    evm_abstract::world::EvmEntry<NumericValue>,
+) {
     use evm_abstract::{
         Fork,
-        world::{Account, ByteArray, Entry, World},
+        world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
     };
-    let mut world = World::new(Fork::Osaka, "downstream concrete witness");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "downstream concrete witness");
     for (owner, code) in [(fixtures::OWNER, Some(code)), (fixtures::CALLEE, callee)] {
         let Some(code) = code else {
             continue;
         };
         let mut account =
-            Account::from_hex(&alloy_primitives::hex::encode(code), Fork::Osaka).unwrap();
+            EvmAccount::<NumericValue>::from_hex(&alloy_primitives::hex::encode(code), Fork::Osaka)
+                .unwrap();
         account.balance = support::word(1_000_000);
         account.storage_unknown = false;
         if owner == fixtures::OWNER {
@@ -41,18 +51,18 @@ fn concrete_input(
         }
         world.insert(support::address(owner), account).unwrap();
     }
-    let entry = Entry::concrete(
+    let entry = EvmEntry::<NumericValue>::concrete(
         support::address(fixtures::OWNER),
         support::address(0x900),
         support::word(0),
-        ByteArray::empty(),
+        EvmByteArray::<NumericValue>::empty(),
     );
     (world, entry)
 }
 
 pub fn assert_call_status_witnesses(code: &[u8], callee: &[u8]) {
     use alloy_primitives::U256;
-    use evm_abstract::analysis::{OutcomeKind, Status, analyze_world};
+    use evm_abstract::analysis::{OutcomeKind, Status};
     let (world, entry) = concrete_input(code, Some(callee));
     let success = concrete::execute(&world, &entry);
     assert_eq!(success.kind, OutcomeKind::Return);
@@ -77,7 +87,13 @@ pub fn assert_call_status_witnesses(code: &[u8], callee: &[u8]) {
     eprintln!(
         "revm CALL witnesses: forwarded GAS -> (status1,data42); forwarded0 -> (status0,data0)"
     );
-    let result = analyze_world(world, entry, fixtures::config(1_000_000_000)).unwrap();
+    let result = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        fixtures::config(1_000_000_000),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(result.status(), Status::Converged);
     success.covers(&result);
     failure.covers(&result);
@@ -101,12 +117,12 @@ pub fn assert_guard_coverage(
                 && o.data.len().contains(U256::from(witness.data.len()))
                 && witness.data.iter().enumerate().all(|(i, b)| {
                     o.data
-                        .byte_at_with(i, algebra.borrowed())
+                        .byte_at(i, algebra.borrowed())
                         .contains(U256::from(*b))
                 })
                 && witness.storage.iter().all(|((owner, slot), v)| {
                     o.store
-                        .read_with(
+                        .read(
                             *owner,
                             &evm_abstract::domain::EvmValue::constant(*slot),
                             algebra.borrowed(),
@@ -128,17 +144,18 @@ fn one_custom_outcome_covers_the_concrete_parent_and_rolled_back_delegate_subtre
     use alloy_primitives::{U256, hex};
     use evm_abstract::{
         Fork,
-        analysis::{EnginePolicies, OutcomeKind, Status, analyze_world, analyze_world_with},
+        analysis::{EnginePolicies, OutcomeKind, Status},
         domain::ValueAlgebra,
-        world::{Account, ByteArray, Entry, World},
+        world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
     };
     let fixture = fixtures::rollback();
-    let mut world = World::new(Fork::Osaka, "custom-carrier concrete witness");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "custom-carrier concrete witness");
     for (owner, code) in [
         (fixtures::OWNER, &fixture.root),
         (fixtures::CALLEE, &fixture.child),
     ] {
-        let mut account = Account::from_hex(&hex::encode(code), Fork::Osaka).unwrap();
+        let mut account =
+            EvmAccount::<NumericValue>::from_hex(&hex::encode(code), Fork::Osaka).unwrap();
         account.balance = support::word(1_000_000);
         account.storage_unknown = false;
         if owner == fixtures::OWNER {
@@ -146,11 +163,11 @@ fn one_custom_outcome_covers_the_concrete_parent_and_rolled_back_delegate_subtre
         }
         world.insert(support::address(owner), account).unwrap();
     }
-    let input = Entry::concrete(
+    let input = EvmEntry::<NumericValue>::concrete(
         support::address(fixtures::OWNER),
         support::address(0x900),
         support::word(0),
-        ByteArray::empty(),
+        EvmByteArray::<NumericValue>::empty(),
     );
     let witness = concrete::execute(&world, &input);
     assert_eq!(witness.kind, OutcomeKind::Return);
@@ -179,30 +196,37 @@ fn one_custom_outcome_covers_the_concrete_parent_and_rolled_back_delegate_subtre
     assert_eq!(write.opcode, revm_bytecode::opcode::SSTORE);
     assert_eq!(write.storage_write, Some((U256::ZERO, U256::from(42))));
 
-    let default_result = analyze_world(world, input, fixtures::config(1_000_000_000)).unwrap();
+    let default_result = native::run(
+        &native::product(),
+        AnalysisInput::new(world, input).unwrap(),
+        fixtures::config(1_000_000_000),
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(default_result.status(), Status::Converged);
     witness.covers(&default_result);
     let calls = Calls::default();
     let algebra = ValueAlgebra::new(Policy::new(&calls));
-    let result = analyze_world_with(
-        fixtures::rollback_world(&fixture),
-        fixtures::entry(),
-        fixtures::config(1_000_000_000),
-        &algebra,
-        &EnginePolicies::default(),
-    )
+    let result = {
+        let mut extension = evm_abstract::analysis::cooperation::NoExtension;
+        AnalysisEngine::new(&algebra, &EnginePolicies::default(), &mut extension).run(
+            AnalysisInput::new(fixtures::rollback_world(&fixture), fixtures::entry()).unwrap(),
+            fixtures::config(1_000_000_000),
+            &Control::default(),
+        )
+    }
     .unwrap();
     assert!(
         result.outcomes().iter().any(|outcome| {
             outcome.kind == witness.kind
                 && outcome
                     .data
-                    .read_word_with(&fixtures::word(0), algebra.borrowed())
+                    .read_word(&fixtures::word(0), algebra.borrowed())
                     .singleton()
                     == Some(U256::ONE)
                 && outcome
                     .store
-                    .read_with(
+                    .read(
                         fixtures::address(fixtures::OWNER),
                         &fixtures::word(0),
                         algebra.borrowed(),
@@ -210,7 +234,7 @@ fn one_custom_outcome_covers_the_concrete_parent_and_rolled_back_delegate_subtre
                     .contains(U256::from(41))
                 && outcome
                     .store
-                    .read_with(
+                    .read(
                         fixtures::address(fixtures::OWNER),
                         &fixtures::word(1),
                         algebra.borrowed(),

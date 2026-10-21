@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     Fork,
-    analysis::{EnginePolicies, ExecutionConfig, Status, analyze_world_with, transfer::relations},
+    analysis::{EnginePolicies, ExecutionConfig, Status, transfer::relations},
     domain::{EvmValue, ValueAlgebra, symbolic::ExprId},
     world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
@@ -131,13 +131,14 @@ fn cancellation_during_singleton_keeps_payment_but_discards_the_answer() {
 fn refinement_prepays_opaque_singletons_and_leaves_refused_values_intact() {
     let _receipt = RECEIPT.scope();
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let algebra = ValueAlgebra::new(Policy);
     let expression = ExprId::fresh().unwrap();
     let mut relations = crate::domain::relational::RelationState::default();
     relations.add_equal(
         &expression,
         &ExprId::constant(U256::from(7)),
-        &config.analysis.relations,
+        &config_numeric.relations,
     );
     let before = EvmValue::constant(U256::from(7)).with_expression(expression);
     let mut value = before.clone();
@@ -207,6 +208,7 @@ fn scalar_fixture() -> (
     crate::domain::relational::RelationState,
 ) {
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let expression = ExprId::fresh().unwrap();
     let before = EvmValue::from_numeric(Word {
         lower: U256::ONE,
@@ -220,7 +222,7 @@ fn scalar_fixture() -> (
     relations.add_equal(
         &expression,
         &ExprId::constant(U256::from(7)),
-        &config.analysis.relations,
+        &config_numeric.relations,
     );
     (config, before, relations)
 }
@@ -437,6 +439,7 @@ fn branch_discovery_pays_once_and_stops_before_returning_a_refused_successor() {
     use crate::analysis::transfer::{empty_execution, initial};
 
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let algebra = ValueAlgebra::new(Policy);
     let world = EvmWorld::<Word>::new(Fork::Osaka, "query branch");
     let entry = EvmEntry::concrete(
@@ -540,6 +543,7 @@ fn storage_discovery_prepays_the_opaque_owner_query() {
     use crate::analysis::transfer::{StorageReadPolicy, execute, initial};
 
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let algebra = ValueAlgebra::new(Policy);
     let owner_word = U256::from(0x7171);
     let owner = Address::from_word(owner_word.into());
@@ -609,14 +613,18 @@ fn public_pop_probe_needs_no_singleton_discovery_even_with_a_max_quote() {
         root_terminal_coverage: false,
         ..ExecutionConfig::default()
     };
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let algebra = ValueAlgebra::new(Policy);
     RECEIPT.update(|receipt| receipt.fee = usize::MAX);
-    let skipped = analyze_world_with(
-        world.clone(),
-        entry.clone(),
-        config.clone(),
+    let skipped = crate::analysis::AnalysisEngine::new(
         &algebra,
         &EnginePolicies::default(),
+        &mut crate::analysis::cooperation::NoExtension,
+    )
+    .run(
+        crate::analysis::AnalysisInput::new(world.clone(), entry.clone()).unwrap(),
+        config.clone(),
+        &crate::analysis::control::Control::default(),
     )
     .unwrap();
     assert_eq!(skipped.status(), Status::Converged);
@@ -627,8 +635,17 @@ fn public_pop_probe_needs_no_singleton_discovery_even_with_a_max_quote() {
         receipt.quotes = 0;
         receipt.queries = 0;
     });
-    let paid =
-        analyze_world_with(world, entry, config, &algebra, &EnginePolicies::default()).unwrap();
+    let paid = crate::analysis::AnalysisEngine::new(
+        &algebra,
+        &EnginePolicies::default(),
+        &mut crate::analysis::cooperation::NoExtension,
+    )
+    .run(
+        crate::analysis::AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &crate::analysis::control::Control::default(),
+    )
+    .unwrap();
     assert_eq!(paid.status(), Status::Converged);
     assert!(paid.frontiers().is_empty());
     assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));

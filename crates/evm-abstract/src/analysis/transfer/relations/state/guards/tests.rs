@@ -1,5 +1,9 @@
 //! Direct branch facts refine live and rollback wrappers without native queries.
 
+#[cfg(test)]
+use crate::analysis::testing::{Account, ByteArray, Entry, Snapshot, TestValue, World};
+use crate::domain::EvmNumericAlgebra as _;
+
 use crate::domain::ValueAlgebra;
 use crate::{
     Fork,
@@ -8,27 +12,30 @@ use crate::{
         machine::{ChildFrame, Continuation},
         transfer::initial,
     },
-    domain::{AbstractValue, Domain, relational::CheckResult, symbolic::ExprId},
+    domain::{ProductAlgebra, relational::CheckResult, symbolic::ExprId},
     resource::WorkBudget,
-    world::{AbstractLog, Account, ByteArray, Entry, LogKey, LogSourceKind, Snapshot, World},
+    analysis::testing::AbstractLog,
+world::{ LogKey, LogSourceKind},
 };
 use alloy_primitives::{Address, B256, U256};
 
 #[test]
 fn direct_guards_refine_live_bytes_and_saved_storage_together() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let address = Address::repeat_byte(0x11);
     let mut world = World::offline(Fork::Osaka, "local guards", "known initial storage");
     world.insert(address, Account::empty()).unwrap();
-    let mut payload = initial(&world, &Entry::new(address), ValueAlgebra::new(&domain)).unwrap();
+    let mut payload = initial(&world, &Entry::new(address), domain).unwrap();
     let guard = ExprId::fresh().unwrap();
     let bytes = ByteArray::exact(&[1])
         .join_guarded(
             &ByteArray::exact(&[3]),
             domain,
             guard.clone(),
-            config.analysis.relations.expressions(),
+            config_numeric.relations.expressions(),
         )
         .unwrap();
     payload.active_mut().memory = bytes.clone();
@@ -38,8 +45,8 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
     changed
         .write_checked(
             address,
-            &AbstractValue::constant(U256::ZERO),
-            &AbstractValue::constant(U256::from(7)),
+            &TestValue::constant(U256::ZERO),
+            &TestValue::constant(U256::from(7)),
             domain,
         )
         .unwrap();
@@ -48,21 +55,17 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
             &before,
             domain,
             guard.clone(),
-            config.analysis.relations.expressions(),
+            config_numeric.relations.expressions(),
         )
         .unwrap();
     payload.store = guarded.clone();
     payload.active_mut().saved_store = Snapshot::from_state(guarded);
     payload
         .relations
-        .assume(&guard, true, &config.analysis.relations);
+        .assume(&guard, true, &config_numeric.relations);
     let relations = payload.relations.clone();
     let mut budget = WorkBudget::new(10_000_000);
-    let mut context = crate::analysis::transfer::testing::context(
-        &config,
-        &mut budget,
-        ValueAlgebra::new(&domain),
-    );
+    let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
     let mut diagnostics = Vec::new();
     assert_eq!(
         super::refine(
@@ -71,10 +74,7 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
             &mut context,
             &mut diagnostics,
             0,
-            (
-                ValueAlgebra::new(&domain),
-                config.analysis.relations.expressions()
-            )
+            (domain, config_numeric.relations.expressions())
         ),
         Ok(true)
     );
@@ -90,7 +90,7 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
     assert_eq!(
         payload
             .store
-            .read(address, &AbstractValue::constant(U256::ZERO), domain)
+            .read(address, &TestValue::constant(U256::ZERO), domain)
             .singleton(),
         Some(U256::from(7))
     );
@@ -99,7 +99,7 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
             .active()
             .saved_store
             .state()
-            .read(address, &AbstractValue::constant(U256::ZERO), domain)
+            .read(address, &TestValue::constant(U256::ZERO), domain)
             .singleton(),
         Some(U256::from(7))
     );
@@ -107,30 +107,28 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
 
 #[test]
 fn absent_guard_proof_retains_wrapper_and_work_refusal_stops_before_rewrite() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let address = Address::repeat_byte(0x22);
     let mut world = World::offline(Fork::Osaka, "local guards", "unknown condition");
     world.insert(address, Account::empty()).unwrap();
-    let mut payload = initial(&world, &Entry::new(address), ValueAlgebra::new(&domain)).unwrap();
+    let mut payload = initial(&world, &Entry::new(address), domain).unwrap();
     let guard = ExprId::fresh().unwrap();
     payload.active_mut().memory = ByteArray::exact(&[1])
         .join_guarded(
             &ByteArray::exact(&[3]),
             domain,
             guard,
-            config.analysis.relations.expressions(),
+            config_numeric.relations.expressions(),
         )
         .unwrap();
     let before = payload.clone();
     let relations = payload.relations.clone();
     let mut diagnostics = Vec::new();
     let mut budget = WorkBudget::new(10_000_000);
-    let mut context = crate::analysis::transfer::testing::context(
-        &config,
-        &mut budget,
-        ValueAlgebra::new(&domain),
-    );
+    let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
     assert_eq!(
         super::refine(
             &mut payload,
@@ -138,10 +136,7 @@ fn absent_guard_proof_retains_wrapper_and_work_refusal_stops_before_rewrite() {
             &mut context,
             &mut diagnostics,
             0,
-            (
-                ValueAlgebra::new(&domain),
-                config.analysis.relations.expressions()
-            )
+            (domain, config_numeric.relations.expressions())
         ),
         Ok(true)
     );
@@ -156,10 +151,7 @@ fn absent_guard_proof_retains_wrapper_and_work_refusal_stops_before_rewrite() {
             &mut context,
             &mut diagnostics,
             0,
-            (
-                ValueAlgebra::new(&domain),
-                config.analysis.relations.expressions()
-            )
+            (domain, config_numeric.relations.expressions())
         ),
         Err(FrontierReason::Work)
     );
@@ -175,14 +167,14 @@ enum DirectCase {
 fn guard_config() -> ExecutionConfig {
     ExecutionConfig::default()
 }
-fn v(value: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+fn v(value: u64) -> TestValue {
+    TestValue::constant(U256::from(value))
 }
 fn bytes(condition: &ExprId) -> ByteArray {
     ByteArray::exact(&[1])
         .join_guarded(
             &ByteArray::exact(&[3]),
-            Domain::default(),
+            ProductAlgebra::default(),
             condition.clone(),
             guard_config().analysis.relations.expressions(),
         )
@@ -199,7 +191,8 @@ struct Fixture {
 
 impl Fixture {
     fn new(case: DirectCase) -> Self {
-        let domain = Domain::default();
+        let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+        let domain = domain.borrowed();
         let limits = guard_config().analysis.relations.expressions();
         let owners = [Address::repeat_byte(0x11), Address::repeat_byte(0x22)];
         let mut world = World::offline(Fork::Osaka, "joint guards", "frozen initial cells");
@@ -208,12 +201,8 @@ impl Fixture {
         account.storage.insert(U256::from(7), v(11));
         account.storage.insert(U256::from(9), v(13));
         world.insert(owners[1], account).unwrap();
-        let mut before = crate::analysis::transfer::initial(
-            &world,
-            &Entry::new(owners[0]),
-            ValueAlgebra::new(&domain),
-        )
-        .unwrap();
+        let mut before =
+            crate::analysis::transfer::initial(&world, &Entry::new(owners[0]), domain).unwrap();
         let guards = (0..6).map(|_| ExprId::fresh().unwrap()).collect::<Vec<_>>();
         let initial = before.store.clone();
         let mut changed = initial.clone();
@@ -302,8 +291,9 @@ impl Fixture {
         }
     }
 
-    fn observations(&self, payload: &MachinePayload) -> Vec<AbstractValue> {
-        let domain = Domain::default();
+    fn observations(&self, payload: &MachinePayload) -> Vec<TestValue> {
+        let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+        let domain = domain.borrowed();
         let log = &payload.store.possible_logs()[&self.site];
         let mut values = vec![
             payload.store.read(self.owners[1], &v(7), domain),
@@ -389,18 +379,16 @@ impl Fixture {
 #[test]
 fn direct_guard_refinement_covers_fourteen_live_and_rollback_observations() {
     let config = guard_config();
-    let domain = Domain::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     for case in [DirectCase::Zero, DirectCase::Nonzero, DirectCase::Undecided] {
         let fixture = Fixture::new(case);
         let mut payload = fixture.before.clone();
         let relations = payload.relations.clone();
         let mut budget = WorkBudget::new(config.max_work);
         let mut diagnostics = Vec::new();
-        let mut context = crate::analysis::transfer::testing::context(
-            &config,
-            &mut budget,
-            ValueAlgebra::new(&domain),
-        );
+        let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
         assert_eq!(
             super::refine(
                 &mut payload,
@@ -408,10 +396,7 @@ fn direct_guard_refinement_covers_fourteen_live_and_rollback_observations() {
                 &mut context,
                 &mut diagnostics,
                 7,
-                (
-                    ValueAlgebra::new(&domain),
-                    config.analysis.relations.expressions()
-                )
+                (domain, config_numeric.relations.expressions())
             ),
             Ok(true),
             "{case:?}"

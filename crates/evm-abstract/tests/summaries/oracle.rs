@@ -1,9 +1,11 @@
 //! Independent concrete execution and a joint output/effects coverage predicate.
+use crate::native;
 use alloy_primitives::{Address, U256};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
-    analysis::{OutcomeKind, WorldAnalysis},
-    domain::{AbstractValue, Domain},
-    world::{Entry, World},
+    analysis::{EvmWorldAnalysis, OutcomeKind},
+    domain::EvmValue,
+    world::{EvmEntry, EvmWorld},
 };
 use revm::{
     Context, ExecuteEvm, MainBuilder, MainContext,
@@ -13,7 +15,11 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 
-pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) -> OutcomeKind {
+pub(super) fn compare(
+    world: &EvmWorld<NumericValue>,
+    entry: &EvmEntry<NumericValue>,
+    analysis: &EvmWorldAnalysis<NumericValue>,
+) -> OutcomeKind {
     let mut db = InMemoryDB::default();
     for (address, account) in world.accounts() {
         if account.existence == evm_abstract::world::Existence::Absent {
@@ -67,7 +73,7 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
                     entry
                         .environment
                         .calldata
-                        .exact_bytes()
+                        .exact_bytes(native::product().borrowed())
                         .expect("oracle requires exact calldata")
                         .into(),
                 )
@@ -103,7 +109,7 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
                 && output.iter().enumerate().all(|(offset, byte)| {
                     outcome
                         .data
-                        .byte_at(offset, Domain::default())
+                        .byte_at(offset, native::product().borrowed())
                         .contains(U256::from(*byte))
                 })
                 && result.state.iter().all(|(owner, account)| {
@@ -115,7 +121,11 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
                     account.storage.iter().all(|(slot, value)| {
                         outcome
                             .store
-                            .read(*owner, &AbstractValue::constant(*slot), Domain::default())
+                            .read(
+                                *owner,
+                                &EvmValue::<NumericValue>::constant(*slot),
+                                native::product().borrowed(),
+                            )
                             .contains(value.present_value())
                     }) && outcome
                         .store
@@ -144,7 +154,7 @@ pub(super) fn compare(world: &World, entry: &Entry, analysis: &WorldAnalysis) ->
                                     && log.data.data.iter().enumerate().all(|(offset, byte)| {
                                         possible
                                             .data
-                                            .byte_at(offset, Domain::default())
+                                            .byte_at(offset, native::product().borrowed())
                                             .contains(U256::from(*byte))
                                     })
                             })

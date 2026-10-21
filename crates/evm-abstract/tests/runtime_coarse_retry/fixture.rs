@@ -1,14 +1,16 @@
 //! Cached graph metrics select one fixed policy, before either analysis path.
+use crate::native;
 
 use super::support::{Assembly, Fixture, NODE_CAP, word};
+use evm_abstract::domain::{NumericValue, ProductAlgebra};
 use evm_abstract::{
     U256,
     domain::{
-        AbstractValue, Domain,
+        EvmValue, ValueAlgebra,
         relational::RelationState,
         symbolic::{ByteStateKind, ExprId, StateError},
     },
-    world::{ByteArray, RangeError},
+    world::{EvmByteArray, RangeError},
 };
 use revm_bytecode::opcode;
 
@@ -114,21 +116,25 @@ pub(super) fn concrete_environment(bit: u16) -> Fixture {
     a.finish()
 }
 
-fn input_bit(domain: Domain) -> evm_abstract::domain::AbstractValue {
+fn input_bit(
+    domain: &ValueAlgebra<ProductAlgebra>,
+) -> evm_abstract::domain::EvmValue<NumericValue> {
     // The relative callback's summary independently instantiates its calldata.
-    let calldata = ByteArray::unknown()
-        .summary_projection(domain)
+    let calldata = EvmByteArray::<NumericValue>::unknown()
+        .summary_projection(domain.borrowed())
         .unwrap()
-        .instantiate(domain)
+        .instantiate(domain.borrowed())
         .unwrap();
-    let input = calldata.read_word_checked(&word(0), domain).unwrap();
+    let input = calldata
+        .read_word_checked(&word(0), domain.borrowed())
+        .unwrap();
     let bit = domain.apply(opcode::AND, &[word(1), input]);
     assert_eq!(bit.expression().unwrap().nodes(), 9);
     assert!(!bit.symbolic_limit_reached());
     bit
 }
 
-fn clean(array: &ByteArray, domain: Domain) {
+fn clean(array: &EvmByteArray<NumericValue>, domain: &ValueAlgebra<ProductAlgebra>) {
     assert!(!array.len().symbolic_limit_reached());
     assert!(!array.default_byte().symbolic_limit_reached());
     assert!(
@@ -144,25 +150,25 @@ fn clean(array: &ByteArray, domain: Domain) {
     for index in 0..32 {
         assert!(
             !array
-                .read_byte_checked(&word(index), domain)
+                .read_byte_checked(&word(index), domain.borrowed())
                 .unwrap()
                 .symbolic_limit_reached()
         );
     }
 }
 
-pub(super) fn entry_constructor_refusal(domain: Domain) {
+pub(super) fn entry_constructor_refusal(domain: &ValueAlgebra<ProductAlgebra>) {
     assert_eq!(domain.spec().relations().max_nodes, NODE_CAP);
-    let mut prefix = ByteArray::memory();
+    let mut prefix = EvmByteArray::<NumericValue>::memory();
     prefix
-        .write_byte(&word(0), &input_bit(domain), 65_536, domain)
+        .write_byte(&word(0), &input_bit(domain), domain.borrowed())
         .unwrap();
     assert_eq!(prefix.len().singleton(), Some(U256::from(32)));
     clean(&prefix, domain);
     let mut entry = prefix
-        .summary_projection(domain)
+        .summary_projection(domain.borrowed())
         .unwrap()
-        .instantiate(domain)
+        .instantiate(domain.borrowed())
         .unwrap();
     let ByteStateKind::Slice { source } = entry.state_root().kind() else {
         panic!("bounded cell summary");
@@ -190,16 +196,16 @@ pub(super) fn entry_constructor_refusal(domain: Domain) {
     clean(&entry, domain);
     let before = entry.clone();
     assert!(
-        matches!(entry.write_word(&word(64), &word(99), 65_536, domain),
+        matches!(entry.write_word(&word(64), &word(99), domain.borrowed()),
         Err(RangeError::State(StateError::Limit { nodes: 29, depth })) if depth <= 64)
     );
     assert_eq!(entry, before, "refused constructor is atomic");
 }
 
-pub(super) fn body_constructor_refusal(domain: Domain) {
+pub(super) fn body_constructor_refusal(domain: &ValueAlgebra<ProductAlgebra>) {
     let limits = domain.spec().relations();
     assert_eq!(limits.max_nodes, NODE_CAP);
-    let call_value = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
+    let call_value = EvmValue::<NumericValue>::top().with_expression(ExprId::fresh().unwrap());
     let guard = domain.apply(opcode::ISZERO, &[call_value]);
     let condition = guard.expression().unwrap();
     assert_eq!(condition.nodes(), 2);
@@ -207,31 +213,39 @@ pub(super) fn body_constructor_refusal(domain: Domain) {
     for nonzero in [false, true] {
         let mut relations = RelationState::default();
         relations
-            .assume_checked(condition, nonzero, &limits)
+            .assume_checked(
+                condition,
+                nonzero,
+                &limits,
+                native::product_with(native::spec(8, 4, 256).with_relations(limits.to_owned()))
+                    .borrowed(),
+            )
             .unwrap();
         assert!(!relations.is_bottom());
         assert_eq!(relations.constraints().len(), 1);
         assert_eq!(relations.work_size(), 4);
     }
-    let mut memory = ByteArray::memory()
-        .summary_projection(domain)
+    let mut memory = EvmByteArray::<NumericValue>::memory()
+        .summary_projection(domain.borrowed())
         .unwrap()
-        .instantiate(domain)
+        .instantiate(domain.borrowed())
         .unwrap();
     assert_eq!(memory.state_root().nodes(), 1);
     assert_eq!(memory.len().singleton(), Some(U256::ZERO));
     let bit = input_bit(domain);
     for (offset, nodes) in [(0, 12), (1, 23)] {
         memory
-            .write_byte(&word(offset), &bit, 65_536, domain)
+            .write_byte(&word(offset), &bit, domain.borrowed())
             .unwrap();
         assert_eq!(memory.state_root().nodes(), nodes);
         assert_eq!(memory.len().singleton(), Some(U256::from(32)));
         clean(&memory, domain);
     }
     let before = memory.clone();
-    assert!(matches!(memory.write_byte(&word(2), &bit, 65_536, domain),
-        Err(RangeError::State(StateError::Limit { nodes: 34, depth })) if depth <= 64));
+    assert!(
+        matches!(memory.write_byte(&word(2), &bit, domain.borrowed()),
+        Err(RangeError::State(StateError::Limit { nodes: 34, depth })) if depth <= 64)
+    );
     assert_eq!(memory, before, "refused body constructor is atomic");
     assert_eq!(bit.expression().unwrap().nodes(), 9);
     assert!(!bit.symbolic_limit_reached());

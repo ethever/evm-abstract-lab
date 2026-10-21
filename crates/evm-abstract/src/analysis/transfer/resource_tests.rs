@@ -1,8 +1,10 @@
+use crate::domain::ProductAlgebra;
 use super::*;
+use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork,
     analysis::{self, EnginePolicies, Status, engine::policy::RecentDistinctJumps},
-    domain::{NumericValue, Profile, ValueAlgebra},
+    domain::{NumericValue, ValueAlgebra},
     world::EvmAccount,
 };
 use revm_bytecode::opcode;
@@ -40,9 +42,9 @@ fn fixture(
         use_summaries: false,
         ..ExecutionConfig::default()
     };
-    config.analysis.relations.enabled = false;
-    config.analysis.domain_profile = Profile::ConstantsOnly;
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    config_numeric.relations.enabled = false;
+    let domain = ProductAlgebra::from_spec(config_numeric.spec());
     (world, entry, config, ValueAlgebra::new(Policy(domain)))
 }
 
@@ -54,9 +56,17 @@ fn public_dup_loop_cannot_converge_below_its_copy_bill() {
         let (world, entry, mut config, domain) = fixture(&code);
         config.max_work = max_work;
         reset();
-        let report =
-            analysis::analyze_world_with(world, entry, config, &domain, &EnginePolicies::default())
-                .unwrap();
+        let report = crate::analysis::AnalysisEngine::new(
+            &domain,
+            &EnginePolicies::default(),
+            &mut crate::analysis::cooperation::NoExtension,
+        )
+        .run(
+            crate::analysis::AnalysisInput::new(world, entry).unwrap(),
+            config,
+            &crate::analysis::control::Control::default(),
+        )
+        .unwrap();
         let observed = copies();
         (report, observed)
     };

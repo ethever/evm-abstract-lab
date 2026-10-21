@@ -1,22 +1,25 @@
 //! The production consumer queries only the composite length, never its arms.
 
+#[cfg(test)]
+use crate::analysis::testing::{Account, ByteArray, Entry, TestScalarQuery, TestValue, World};
+use crate::domain::EvmNumericAlgebra as _;
+
 use crate::domain::ValueAlgebra;
 
 use crate::{
     Fork,
     analysis::{ExecutionConfig, transfer::initial},
     domain::{
-        AbstractValue, Domain,
-        relational::{QueryReason, RelationState, ScalarQuery},
+        ProductAlgebra,
+        relational::{QueryReason, RelationState},
         symbolic::{ExprId, ExprLimits},
     },
     resource::WorkBudget,
-    world::{Account, ByteArray, Entry, World},
 };
 use alloy_primitives::{Address, U256};
 
-fn v(n: usize) -> AbstractValue {
-    AbstractValue::constant(U256::from(n))
+fn v(n: usize) -> TestValue {
+    TestValue::constant(U256::from(n))
 }
 
 fn before() -> ByteArray {
@@ -29,8 +32,7 @@ fn before() -> ByteArray {
             &ByteArray::exact(&bytes),
             &v(0),
             &v(64),
-            128,
-            Domain::default(),
+            ProductAlgebra::default(),
         )
         .unwrap();
     memory
@@ -38,17 +40,19 @@ fn before() -> ByteArray {
 
 #[test]
 fn composite_proof_narrows_both_unknown_arms_without_changing_guard_or_frozen_read() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let config = ExecutionConfig::default();
-    let limits = config.analysis.relations;
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let limits = config_numeric.relations;
     let selector = ExprId::fresh().unwrap();
     let returned = ByteArray::unknown();
     let reverted = ByteArray::unknown();
     let mut yes = before();
     let mut no = yes.clone();
-    yes.copy_return_data(&v(32), &returned, &v(16), 128, domain)
+    yes.copy_return_data(&v(32), &returned, &v(16), domain)
         .unwrap();
-    no.copy_return_data(&v(32), &reverted, &v(16), 128, domain)
+    no.copy_return_data(&v(32), &reverted, &v(16), domain)
         .unwrap();
     let memory = yes
         .join_guarded(&no, domain, selector.clone(), limits.expressions())
@@ -70,15 +74,11 @@ fn composite_proof_narrows_both_unknown_arms_without_changing_guard_or_frozen_re
     let address = Address::repeat_byte(0x71);
     let mut world = World::offline(Fork::Osaka, "length consequences", "paired unknown return");
     world.insert(address, Account::empty()).unwrap();
-    let mut payload = initial(&world, &Entry::new(address), ValueAlgebra::new(&domain)).unwrap();
+    let mut payload = initial(&world, &Entry::new(address), domain).unwrap();
     payload.active_mut().memory = memory;
     payload.active_mut().returndata = returndata.clone();
     let mut budget = WorkBudget::new(1_000_000);
-    let mut context = crate::analysis::transfer::testing::context(
-        &config,
-        &mut budget,
-        ValueAlgebra::new(&domain),
-    );
+    let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
     assert_eq!(
         super::refine(&mut payload, &relations, &mut context),
         Ok(())
@@ -110,8 +110,8 @@ fn composite_proof_narrows_both_unknown_arms_without_changing_guard_or_frozen_re
     }
     assert_eq!(relations, original_relations);
     assert_eq!(
-        relations.refine_numeric(&selector, AbstractValue::top().numeric(), domain, &limits),
-        ScalarQuery::Unchanged
+        relations.refine_numeric(&selector, TestValue::top().numeric(), domain, &limits),
+        TestScalarQuery::Unchanged
     );
     assert_eq!(payload.active().returndata, returndata);
     let once = payload.active().memory.clone();
@@ -129,34 +129,32 @@ fn composite_proof_narrows_both_unknown_arms_without_changing_guard_or_frozen_re
 
 #[test]
 fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomic() {
-    let domain = Domain::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = domain.borrowed();
     let config = ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let address = Address::repeat_byte(0x72);
     let mut world = World::offline(Fork::Osaka, "length admission", "optional precision");
     world.insert(address, Account::empty()).unwrap();
-    let mut original = initial(&world, &Entry::new(address), ValueAlgebra::new(&domain)).unwrap();
+    let mut original = initial(&world, &Entry::new(address), domain).unwrap();
     let returndata = ByteArray::unknown();
     let expression = returndata.len().expression().unwrap().clone();
     let mut memory = before();
     memory
-        .copy_return_data(&v(32), &returndata, &v(16), 128, domain)
+        .copy_return_data(&v(32), &returndata, &v(16), domain)
         .unwrap();
     original.active_mut().memory = memory;
     original.active_mut().returndata = returndata;
     let mut relations = RelationState::default();
     relations
-        .observe(&expression, v(1).numeric(), &config.analysis.relations)
+        .observe(&expression, v(1).numeric(), &config_numeric.relations)
         .unwrap();
     // Too little owner capacity for the fixed local quantum is optional, even
     // after paying cache preparation. It must not become a Work frontier.
     for capacity in [0, super::QUERY_WORK - 1] {
         let mut payload = original.clone();
         let mut budget = WorkBudget::new(capacity);
-        let mut context = crate::analysis::transfer::testing::context(
-            &config,
-            &mut budget,
-            ValueAlgebra::new(&domain),
-        );
+        let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
         assert_eq!(
             super::refine(&mut payload, &relations, &mut context),
             Ok(())
@@ -167,23 +165,19 @@ fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomi
     // The private attempt can also run out of its quantum after admission.
     // Its full reservation stays paid, while the owner's ledger stays usable.
     let mut expensive = relations.clone();
-    let range = AbstractValue::unsigned_range(U256::from(3), U256::from(9)).unwrap();
+    let range = TestValue::unsigned_range(U256::from(3), U256::from(9)).unwrap();
     for _ in 0..8 {
         expensive
             .observe(
                 &ExprId::fresh().unwrap(),
                 range.numeric(),
-                &config.analysis.relations,
+                &config_numeric.relations,
             )
             .unwrap();
     }
     let mut payload = original.clone();
     let mut budget = WorkBudget::new(1_000_000);
-    let mut context = crate::analysis::transfer::testing::context(
-        &config,
-        &mut budget,
-        ValueAlgebra::new(&domain),
-    );
+    let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
     assert_eq!(
         super::refine(&mut payload, &expensive, &mut context),
         Ok(())
@@ -240,11 +234,7 @@ fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomi
     analysis_control::with_cancellation(&cancellation, || {
         let mut payload = original.clone();
         let mut budget = WorkBudget::new(1_000_000);
-        let mut context = crate::analysis::transfer::testing::context(
-            &config,
-            &mut budget,
-            ValueAlgebra::new(&domain),
-        );
+        let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
         assert_eq!(
             super::refine(&mut payload, &relations, &mut context),
             Err(crate::analysis::FrontierReason::Relations(

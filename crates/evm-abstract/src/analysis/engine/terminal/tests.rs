@@ -1,14 +1,16 @@
+use crate::domain::ProductAlgebra;
 //! Private authority/admission probes; no fallback machine state is fabricated.
+
+#[cfg(test)]
+use crate::analysis::testing::{Account, TestValue};
+use crate::domain::EvmNumericAlgebra as _;
 
 use super::*;
 use crate::{
     Fork,
     analysis::{ChildFrame, Continuation},
-    domain::{
-        AbstractValue,
-        symbolic::{ExprId, ExprKind, SlotStateId, SlotStateKind, SourceId, StateError},
-    },
-    world::{Account, Code, Existence},
+    domain::symbolic::{ExprId, ExprKind, SlotStateId, SlotStateKind, SourceId, StateError},
+    world::{Code, Existence},
 };
 
 #[path = "../../../../tests/support/joint_witness.rs"]
@@ -19,8 +21,8 @@ fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
 
-fn word(number: u64) -> AbstractValue {
-    AbstractValue::constant(U256::from(number))
+fn word(number: u64) -> TestValue {
+    TestValue::constant(U256::from(number))
 }
 
 fn fixture(fork: Fork, is_static: bool) -> (World, Entry, ExecutionConfig, layers::StateFacts) {
@@ -67,7 +69,7 @@ fn ready(
         world,
         entry,
         config,
-        config.domain().unwrap(),
+        ProductAlgebra::from_spec(config_numeric.spec()),
         Some((facts.snapshot(), facts.revision())),
         budget,
     )
@@ -77,7 +79,13 @@ fn ready(
 /// forms decline the witness; numerical marginals cannot establish correlation.
 impl JointInput {
     // Private preparation probes require expression evidence even for singletons.
-    fn storage(&mut self, store: &Store, owner: Address, expected: u64, domain: Domain) -> bool {
+    fn storage(
+        &mut self,
+        store: &Store,
+        owner: Address,
+        expected: u64,
+        domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+    ) -> bool {
         let value = store.read_checked(owner, &word(8), domain).unwrap();
         let expected = U256::from(expected);
         value.contains(expected)
@@ -114,7 +122,8 @@ impl JointInput {
 #[test]
 fn capture_owns_the_actual_lifted_root_and_joint_return_effects() {
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
-    let domain = config.domain().unwrap();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let original =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let unchanged = original.clone();
@@ -183,7 +192,9 @@ fn original_rollback_future_three_touch_and_static_data_share_one_input() {
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         for is_static in [false, true] {
             let (world, entry, config, facts) = fixture(fork, is_static);
-            let domain = config.domain().unwrap();
+            let domain =
+                crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+            let domain = domain.borrowed();
             let original =
                 crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain)
                     .unwrap();
@@ -260,7 +271,9 @@ fn original_rollback_future_three_touch_and_static_data_share_one_input() {
 fn static_return_covers_unlisted_owner_cleanup_under_one_input_valuation() {
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         let (world, entry, config, facts) = fixture(fork, true);
-        let domain = config.domain().unwrap();
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
         let c = address(0x999);
         let d = address(0x998);
         assert!(!world.accounts().contains_key(&c));
@@ -352,7 +365,8 @@ fn static_return_covers_unlisted_owner_cleanup_under_one_input_valuation() {
 #[test]
 fn only_genuine_entry_shapes_and_real_identity_can_be_captured() {
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
-    let domain = config.domain().unwrap();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let original =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut budget = WorkBudget::new(usize::MAX);
@@ -413,7 +427,7 @@ fn exact_total_fee_admits_and_fee_minus_one_declines_without_sticky_work() {
         let original = crate::analysis::transfer::procedure::testing::initial(
             &world,
             &entry,
-            config.domain().unwrap(),
+            ProductAlgebra::from_spec(config_numeric.spec()),
         )
         .unwrap();
         let mut full = WorkBudget::new(usize::MAX);
@@ -468,7 +482,7 @@ fn prepaid_publish_survives_real_work_exhaustion_but_checks_payer_cancellation()
     let original = crate::analysis::transfer::procedure::testing::initial(
         &world,
         &entry,
-        config.domain().unwrap(),
+        ProductAlgebra::from_spec(config_numeric.spec()),
     )
     .unwrap();
     let payer = Cancellation::new();
@@ -508,7 +522,8 @@ fn prepaid_publish_survives_real_work_exhaustion_but_checks_payer_cancellation()
 #[test]
 fn checked_bytes_can_decline_after_paid_construction_without_mutating_input() {
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
-    let domain = config.domain().unwrap();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let original =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let unchanged = original.clone();
@@ -555,7 +570,7 @@ fn raw_code_and_offline_label_growth_are_linear_fee_terms() {
         let original = crate::analysis::transfer::procedure::testing::initial(
             &world,
             &entry,
-            config.domain().unwrap(),
+            ProductAlgebra::from_spec(config_numeric.spec()),
         )
         .unwrap();
         for label_len in [8usize, 8192] {
@@ -578,7 +593,9 @@ fn raw_code_and_offline_label_growth_are_linear_fee_terms() {
 fn no_delete_finalizer_guard_funds_actual_owner_local_receipts() {
     for count in [1u64, 8] {
         let (mut world, entry, config, _) = fixture(Fork::Osaka, true);
-        let domain = config.domain().unwrap();
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
         for number in 0..count {
             let mut account = Account::unknown();
             account.balance = domain.join(&word(0), &word(7));
@@ -637,7 +654,7 @@ fn ordinary_small_root_preparation_fits_the_default_work_budget() {
         let original = crate::analysis::transfer::procedure::testing::initial(
             &world,
             &entry,
-            config.domain().unwrap(),
+            ProductAlgebra::from_spec(config_numeric.spec()),
         )
         .unwrap();
         let mut budget = WorkBudget::new(config.max_work);

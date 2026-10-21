@@ -2,12 +2,13 @@ use super::{
     oracle,
     support::{Assembly, ROOT, address, complete, config, entry, run_world, word},
 };
+use crate::native;
 use alloy_primitives::{U256, hex, keccak256};
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Fork,
     analysis::{FrameCode, OutcomeKind},
-    domain::Domain,
-    world::{Account, ByteArray, Existence, World},
+    world::{EvmAccount, EvmByteArray, EvmWorld, Existence},
 };
 use revm_bytecode::opcode;
 
@@ -60,19 +61,24 @@ fn observed_world(
     root: &[u8],
     code_target: &[u8],
     absent: &[alloy_primitives::Address],
-) -> World {
-    let mut world = World::new(fork, "issue111:creation-context-and-savepoints");
+) -> EvmWorld<NumericValue> {
+    let mut world = EvmWorld::<NumericValue>::new(fork, "issue111:creation-context-and-savepoints");
     for (owner, bytes, nonce, balance) in [(ROOT, root, 5, 1000), (0x200, code_target, 37, 2000)] {
-        let mut account = Account::from_hex(&hex::encode(bytes), fork).unwrap();
+        let mut account = EvmAccount::<NumericValue>::from_hex(&hex::encode(bytes), fork).unwrap();
         account.nonce = word(nonce);
         account.balance = word(balance);
         world.insert(address(owner), account).unwrap();
     }
     for owner in absent {
-        world.insert(*owner, Account::absent()).unwrap();
+        world
+            .insert(*owner, EvmAccount::<NumericValue>::absent())
+            .unwrap();
     }
     world
-        .insert(alloy_primitives::Address::ZERO, Account::absent())
+        .insert(
+            alloy_primitives::Address::ZERO,
+            EvmAccount::<NumericValue>::absent(),
+        )
         .unwrap();
     world
 }
@@ -162,7 +168,7 @@ fn delegated_creation(call_op: u8, create2: bool) {
     };
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         let world = observed_world(fork, &root, &target, &[destination, wrong_owner]);
-        let entry = entry(ByteArray::empty());
+        let entry = entry(EvmByteArray::<NumericValue>::empty());
         let analysis = run_world(world.clone(), entry.clone(), config());
         complete(&analysis);
         let concrete = oracle::compare(&world, &entry, &analysis);
@@ -217,7 +223,7 @@ fn delegated_creation(call_op: u8, create2: bool) {
                 .all(|(slot, expected)| {
                     outcome
                         .store
-                        .read(destination, &word(slot), Domain::default())
+                        .read(destination, &word(slot), native::product().borrowed())
                         .singleton()
                         == Some(expected)
                 })
@@ -301,7 +307,7 @@ fn failed_init_nonce_belongs_to_its_outer_savepoint_and_preserves_prior_creation
         );
         for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
             let world = observed_world(fork, &root, &middle, &[prior, failed]);
-            let entry = entry(ByteArray::empty());
+            let entry = entry(EvmByteArray::<NumericValue>::empty());
             let analysis = run_world(world.clone(), entry.clone(), config());
             complete(&analysis);
             let concrete = oracle::compare(&world, &entry, &analysis);
@@ -387,7 +393,7 @@ fn failed_init_nonce_belongs_to_its_outer_savepoint_and_preserves_prior_creation
                 assert_eq!(
                     outcome
                         .store
-                        .read(failed, &word(0), Domain::default())
+                        .read(failed, &word(0), native::product().borrowed())
                         .singleton(),
                     Some(U256::ZERO)
                 );
@@ -409,7 +415,7 @@ fn failed_init_nonce_belongs_to_its_outer_savepoint_and_preserves_prior_creation
                         && outcome.store.existence(failed) == Existence::Absent
                         && outcome
                             .store
-                            .read(failed, &word(0), Domain::default())
+                            .read(failed, &word(0), native::product().borrowed())
                             .singleton()
                             == Some(U256::ZERO)),
                 "prior creation and the entered factory's nonce must coexist after rollback"
@@ -490,7 +496,7 @@ fn reverting_delegate_removes_its_deployed_code_storage_and_funding() {
     let root = hex::decode(root.finish().code).unwrap();
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         let world = observed_world(fork, &root, &middle, &[destination]);
-        let entry = entry(ByteArray::empty());
+        let entry = entry(EvmByteArray::<NumericValue>::empty());
         let analysis = run_world(world.clone(), entry.clone(), config());
         complete(&analysis);
         let concrete = oracle::compare(&world, &entry, &analysis);
@@ -547,14 +553,14 @@ fn reverting_delegate_removes_its_deployed_code_storage_and_funding() {
             assert_eq!(
                 outcome
                     .store
-                    .read(destination, &word(0), Domain::default())
+                    .read(destination, &word(0), native::product().borrowed())
                     .singleton(),
                 Some(U256::ZERO)
             );
             assert_eq!(
                 outcome
                     .store
-                    .read(address(ROOT), &word(9), Domain::default())
+                    .read(address(ROOT), &word(9), native::product().borrowed())
                     .singleton(),
                 Some(U256::from(3))
             );

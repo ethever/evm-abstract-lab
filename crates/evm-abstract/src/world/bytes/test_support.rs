@@ -1,6 +1,6 @@
 //! Assertions shared by conditional and numeric payment tests.
 
-use crate::domain::AbstractValue;
+use crate::world::test_support::TestValue;
 
 pub(super) fn total(trace: &[(bool, usize)]) -> usize {
     trace.iter().map(|(_, work)| work).sum()
@@ -25,9 +25,9 @@ pub(super) fn paid_prefix(trace: &[(bool, usize)], available: usize) -> &[(bool,
 // Persistent Eq omits runtime identity. Keep a runtime-only probe so immutable
 // input identity cannot mask lost alias information in either payment path.
 pub(super) fn assert_complete_value(
-    actual: &AbstractValue,
-    expected: &AbstractValue,
-    runtime_probe: &AbstractValue,
+    actual: &TestValue,
+    expected: &TestValue,
+    runtime_probe: &TestValue,
 ) {
     assert_eq!(actual, expected);
     assert!(runtime_probe.identity().input().is_none());

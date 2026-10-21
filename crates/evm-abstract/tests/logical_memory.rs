@@ -1,9 +1,15 @@
 //! Code-only acceptance: no observed caller, value, calldata or external world.
+use evm_abstract::analysis::AnalysisInput;
+use evm_abstract::analysis::control::Control;
+#[path = "support/native.rs"]
+mod native;
+
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
-    analysis::{ExecutionConfig, OutcomeKind, Status, analyze_world},
+    analysis::{ExecutionConfig, OutcomeKind, Status},
     domain::symbolic::ByteStateKind,
-    world::{Account, Code, Entry, World},
+    world::{Code, EvmAccount, EvmEntry, EvmWorld},
 };
 
 #[test]
@@ -16,7 +22,7 @@ fn code_only_memory_copy_returns_the_complete_original_input_at_default_work_bud
     let owner: Address = observed["address"].as_str().unwrap().parse().unwrap();
     let code = observed["code"].as_str().unwrap();
     assert_eq!(code, "0x365f6020373660205f5e365ff3");
-    let mut world = World::offline(
+    let mut world = EvmWorld::<NumericValue>::offline(
         Fork::Osaka,
         input["identity"]["label"].as_str().unwrap(),
         input["provenance"].as_str().unwrap(),
@@ -24,15 +30,15 @@ fn code_only_memory_copy_returns_the_complete_original_input_at_default_work_bud
     world
         .insert(
             owner,
-            Account {
+            EvmAccount {
                 code: Code::Runtime(
                     evm_abstract::bytecode::Program::from_hex_with_fork(code, Fork::Osaka).unwrap(),
                 ),
-                ..Account::unknown()
+                ..EvmAccount::<NumericValue>::unknown()
             },
         )
         .unwrap();
-    let entry = Entry {
+    let entry: EvmEntry<NumericValue> = EvmEntry {
         address: owner,
         environment: Default::default(),
     };
@@ -42,7 +48,13 @@ fn code_only_memory_copy_returns_the_complete_original_input_at_default_work_bud
     assert!(entry.environment.calldata.len().numeric().is_top());
     let config = ExecutionConfig::default();
     assert_eq!(config.max_work, 20_000_000);
-    let graph = analyze_world(world, entry, config).unwrap();
+    let graph = native::run(
+        &native::product(),
+        AnalysisInput::new(world, entry).unwrap(),
+        config,
+        &Control::default(),
+    )
+    .unwrap();
     assert_eq!(graph.status(), Status::Converged, "{:?}", graph.frontiers());
     assert!(graph.frontiers().is_empty());
     let original = &graph.states()[0].entry.active().calldata;

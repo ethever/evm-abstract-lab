@@ -1,8 +1,15 @@
+use crate::domain::ProductAlgebra;
 use super::*;
+use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::symbolic::ExprId;
 use revm_bytecode::opcode;
 
-fn report_execution(case: &str, mode: &str, execution: &Execution, domain: Domain) -> usize {
+fn report_execution(
+    case: &str,
+    mode: &str,
+    execution: &Execution,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+) -> usize {
     let mut returns = 0;
     for (index, output) in execution.outcomes.iter().enumerate() {
         let value = output.data.read_word(&word(0), domain);
@@ -37,7 +44,9 @@ fn relation_boundary_probe() {
     // Direct Table admission is a controlled internal payload probe. These
     // programs do not contain recursive calls.
     let config = crate::analysis::ExecutionConfig::default();
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     for (case, code) in [
         ("sameblock", "5f358060079055545f5260205ff3"),
         ("crossblock", "5f358060079055600a565b545f5260205ff3"),
@@ -152,7 +161,9 @@ fn relation_boundary_probe_same_numeric_different_alias_inputs() {
     let (world, mut entry) = fixture(&[(0x101, code)]);
     entry.environment.calldata = ByteArray::unknown();
     let config = crate::analysis::ExecutionConfig::default();
-    let domain = config.domain().unwrap();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     let initial =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut preparation_budget = WorkBudget::new(config.max_work);
@@ -179,7 +190,7 @@ fn relation_boundary_probe_same_numeric_different_alias_inputs() {
             k.expression().unwrap().clone(),
             q.expression().unwrap().clone(),
         ],
-        config.analysis.relations.expressions(),
+        config_numeric.relations.expressions(),
     )
     .unwrap();
     let mut inputs = Vec::new();
@@ -187,7 +198,7 @@ fn relation_boundary_probe_same_numeric_different_alias_inputs() {
         let mut payload = input.clone();
         payload
             .relations
-            .assume_checked(&equality, alias, &config.analysis.relations)
+            .assume_checked(&equality, alias, &config_numeric.relations)
             .unwrap();
         assert!(!payload.relations.is_bottom());
         inputs.push((case, expected, payload));
@@ -279,7 +290,10 @@ fn storage_observation_known_delegatecall_write_replaces_current_snapshot() {
     ] {
         let (world, entry) = fixture(&[(0x101, parent), (0x201, child)]);
         let config = crate::analysis::ExecutionConfig::default();
-        let domain = config.domain().unwrap();
+        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let domain =
+            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+        let domain = domain.borrowed();
         let input =
             crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let mut table = Table::default();
@@ -352,8 +366,10 @@ fn storage_duplicate_default_work_probe() {
     // Both programs must close under the default budget with the exact read.
     // The second keeps 16 DUP aliases through all 20 unconditional JUMPs.
     let config = crate::analysis::ExecutionConfig::default();
+    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     assert_eq!(config.max_work, 20_000_000);
-    let domain = config.domain().unwrap();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let domain = domain.borrowed();
     for copies in [1usize, 16] {
         let mut code = vec![0x5f, 0x35];
         code.extend(std::iter::repeat_n(0x80, copies));

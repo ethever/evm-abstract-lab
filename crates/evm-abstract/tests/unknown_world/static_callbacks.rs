@@ -1,11 +1,12 @@
 //! Static envelopes include real reentry while preserving transaction effects.
 
 use super::{oracle, support::*};
+use crate::native;
 use alloy_primitives::U256;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     analysis::{FrameCode, OutcomeKind},
-    domain::Domain,
-    world::{Account, ByteArray, Existence},
+    world::{EvmAccount, EvmByteArray, Existence},
 };
 use revm_bytecode::opcode;
 use std::collections::BTreeSet;
@@ -55,16 +56,16 @@ fn real_static_reentry_reads_known_owners_and_handles_a_failed_write() {
     world
         .insert(
             address(U),
-            Account {
+            EvmAccount {
                 balance: word(1_000_000),
                 nonce: word(0),
                 existence: Existence::Present,
                 storage_unknown: false,
-                ..Account::unknown()
+                ..EvmAccount::<NumericValue>::unknown()
             },
         )
         .unwrap();
-    let input = entry(ByteArray::empty());
+    let input = entry(EvmByteArray::<NumericValue>::empty());
     let concrete = oracle::concrete_unknown(&world, U, &u.finish());
     let observed = oracle::execute(&concrete, &input);
     assert_eq!(observed.kind, OutcomeKind::Return);
@@ -115,9 +116,11 @@ fn real_static_reentry_reads_known_owners_and_handles_a_failed_write() {
             only(&outcome.store.read_balance(address(owner)), &[1_000_000]);
             only(&outcome.store.nonce(address(owner)), &[0]);
             only(
-                &outcome
-                    .store
-                    .read_transient(address(owner), &word(0), Domain::default()),
+                &outcome.store.read_transient(
+                    address(owner),
+                    &word(0),
+                    native::product().borrowed(),
+                ),
                 &[0],
             );
             assert_eq!(outcome.store.existence(address(owner)), Existence::Present);
