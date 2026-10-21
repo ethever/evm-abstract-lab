@@ -267,14 +267,26 @@ pub(super) fn evaluate<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         return Ok(None);
     }
     if let Some(value) = retained {
-        return Ok(Some(numeric::attach(value, expression)));
+        return Ok(Some(attach_word(value, expression)));
     }
     let numeric = numeric::Reader::<N, D>::with_context(context.clone(), domain).word(root, offset);
     context.check()?;
     if context.stopped() {
         return Ok(None);
     }
-    Ok(Some(numeric::attach(numeric, expression)))
+    Ok(Some(attach_word(numeric, expression)))
+}
+
+fn attach_word<N: WordElement>(value: EvmValue<N>, expression: ExprId) -> EvmValue<N> {
+    // This content proof was computed by the paid read. Retain literal terms
+    // too: runtime identification must not replace them with an unrelated Fresh
+    // whose path-local numeric bound can disappear at a later store join.
+    let value = if let Some(word) = expression.as_constant() {
+        value.with_numeric(N::constant(word))
+    } else {
+        value
+    };
+    value.with_expression(expression)
 }
 
 pub(super) fn expression<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
@@ -315,6 +327,8 @@ pub(super) fn expression<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 
 #[cfg(test)]
 mod payer_tests;
+#[cfg(test)]
+mod proof_tests;
 
 // Bound the paid preflight scan by occurrences, including source views, scalar
 // offsets and bindings even where the numeric evaluator treats a read as opaque.
