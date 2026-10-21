@@ -238,16 +238,11 @@ fn complete(
         payload,
         OutcomeKind::Return,
         source,
-        &mut TransferContext {
-            config: &ExecutionConfig::default(),
-            domain: ValueAlgebra::new(DerivedPolicy).borrowed(),
+        &mut crate::analysis::transfer::testing::context(
+            &ExecutionConfig::default(),
             budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: false,
-            discover_code: false,
-        },
+            ValueAlgebra::new(DerivedPolicy).borrowed(),
+        ),
         7,
     );
 }

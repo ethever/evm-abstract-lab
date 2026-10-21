@@ -1,6 +1,6 @@
 use super::{
-    Builder, GuardRetention, QUOTE_WORK, RangeKind, TransferContext, build,
-    literal_memory_singleton_work, logical, output_release_work, release_work, value_copy_work,
+    Builder, GuardRetention, QUOTE_WORK, RangeKind, build, literal_memory_singleton_work, logical,
+    output_release_work, release_work, value_copy_work,
 };
 use crate::domain::ValueAlgebra;
 use crate::{
@@ -21,22 +21,7 @@ use crate::{
 };
 use revm_bytecode::opcode;
 
-fn context<'a>(
-    config: &'a ExecutionConfig,
-    budget: &'a mut WorkBudget,
-    algebra: crate::domain::AlgebraRef<'a, Domain>,
-) -> TransferContext<'a, Domain> {
-    TransferContext {
-        config,
-        domain: algebra,
-        budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: true,
-        discover_code: false,
-    }
-}
+use crate::analysis::transfer::testing::procedure_context as context;
 
 fn inputs() -> (AbstractValue, AbstractValue) {
     let mut offset = AbstractValue::top()
@@ -554,135 +539,120 @@ fn identification_short_circuits_without_calling_the_allocator() {
 }
 
 #[test]
-fn unmarked_offset_identity_failure_vetoes_the_real_finite_guard_error() {
-    let mut config = ExecutionConfig::default();
-    config.analysis.relations.max_nodes = 1;
-    let domain = config.domain().unwrap();
-    let offset = AbstractValue::top();
-    let size = inputs().1;
-    let steps = reference(&offset, &size, domain);
-    assert_eq!(
-        steps[0].2.symbolic_error,
-        Some(ExprError::Limit { nodes: 2, depth: 2 })
-    );
-    assert!(
-        steps[1..]
-            .iter()
-            .all(|step| step.2.symbolic_error.is_none())
-    );
+fn either_unmarked_operand_identity_failure_vetoes_finite_guard_evidence() {
+    for missing in [0, 1] {
+        let mut config = ExecutionConfig::default();
+        config.analysis.relations.max_nodes = 1;
+        let domain = config.domain().unwrap();
+        let (offset, size) = if missing == 0 {
+            (AbstractValue::top(), inputs().1)
+        } else {
+            (inputs().0, AbstractValue::top())
+        };
+        let steps = reference(&offset, &size, domain);
+        assert_eq!(
+            steps[missing].2.symbolic_error,
+            Some(ExprError::Limit {
+                nodes: 2 + missing,
+                depth: 2
+            }),
+            "missing operand {missing}"
+        );
+        if missing == 0 {
+            assert!(
+                steps[1..]
+                    .iter()
+                    .all(|step| step.2.symbolic_error.is_none())
+            );
+        }
 
-    let mut allocations = 0;
-    let mut budget = WorkBudget::new(usize::MAX);
-    let mut built = super::build_with_allocator(
-        &offset,
-        &size,
-        &mut context(
-            &config,
-            &mut budget,
-            ValueAlgebra::new(&config.domain().unwrap()),
-        ),
-        || {
-            allocations += 1;
-            None
-        },
-    )
-    .unwrap();
-    assert_eq!(allocations, 1);
-    assert_same_value(&built.request.offset, &offset);
-    assert!(!built.request.offset.symbolic_limit_reached());
-    assert_same_value(&built.request.size, &size);
-    assert_same_value(&built.condition, &steps[7].2.value);
-    assert!(built.condition.singleton().is_none());
-    assert!(built.condition.symbolic_expression().is_none());
-    assert!(built.condition.may_be_zero() && built.condition.may_be_nonzero());
-    let (prefix, cost) = *operation_refusals(&offset, &size, domain).last().unwrap();
-    assert_eq!(budget.used(), prefix + cost);
-    assert!(!budget.exhausted());
-    assert_eq!(built.retention.cause(), None);
-    built.retention.record(None);
-    built.retention.record(steps[0].2.symbolic_error.as_ref());
-    assert_eq!(built.retention.cause(), None);
-
-    let mut previously_eligible = GuardRetention::new(&offset, &size);
-    previously_eligible.record(steps[0].2.symbolic_error.as_ref());
-    assert_eq!(
-        previously_eligible.cause(),
-        Some(RetentionCause::Expression)
-    );
-    previously_eligible.veto_identity_failure();
-    previously_eligible.record(steps[0].2.symbolic_error.as_ref());
-    assert_eq!(previously_eligible.cause(), None);
-
-    let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut result =
-        empty_execution(initial(&world, &entry, ValueAlgebra::new(&Domain::default())).unwrap());
-    let before = result.payload.clone();
-    assert!(
-        super::super::partition(
-            &mut result,
-            &built.request,
-            super::super::Condition::prepare(&built.condition, built.singleton, &mut budget)
-                .unwrap(),
-            Some(&built.retention),
+        let mut allocations = 0;
+        let mut budget = WorkBudget::new(usize::MAX);
+        let mut built = super::build_with_allocator(
+            &offset,
+            &size,
             &mut context(
                 &config,
                 &mut budget,
-                ValueAlgebra::new(&config.domain().unwrap())
+                ValueAlgebra::new(&config.domain().unwrap()),
             ),
-            19,
+            || {
+                allocations += 1;
+                None
+            },
         )
-        .is_none()
-    );
-    assert_eq!(result.payload, before);
-    assert_eq!(result.frontiers.len(), 1);
-    assert_eq!(result.frontiers[0].pc, 19);
-    assert_eq!(
-        result.frontiers[0].reason,
-        FrontierReason::Relations(QueryReason::ExpressionLimit)
-    );
-    assert!(result.retention_failures.is_empty());
-    assert!(result.outcomes.is_empty());
-    assert!(result.successors.is_empty());
-    assert!(!budget.exhausted());
-    let witness = result.frontiers[0].range.as_ref().unwrap();
-    assert_same_value(&witness.request.offset, &offset);
-    assert_same_value(&witness.request.size, &size);
-    assert_same_value(&witness.condition, &built.condition);
-    assert_eq!(*witness.payload, before);
-}
+        .unwrap();
+        assert_eq!(allocations, 1, "missing operand {missing}");
+        assert_same_value(&built.request.offset, &offset);
+        assert!(
+            !built.request.offset.symbolic_limit_reached(),
+            "missing operand {missing}"
+        );
+        assert!(
+            !built.request.size.symbolic_limit_reached(),
+            "missing operand {missing}"
+        );
+        assert_same_value(&built.request.size, &size);
+        assert_same_value(&built.condition, &steps[7].2.value);
+        assert!(built.condition.singleton().is_none());
+        assert!(built.condition.symbolic_expression().is_none());
+        assert!(built.condition.may_be_zero() && built.condition.may_be_nonzero());
+        let (prefix, cost) = *operation_refusals(&offset, &size, domain).last().unwrap();
+        assert_eq!(budget.used(), prefix + cost);
+        assert!(!budget.exhausted());
+        assert_eq!(built.retention.cause(), None, "missing operand {missing}");
+        built.retention.record(None);
+        built
+            .retention
+            .record(steps[missing].2.symbolic_error.as_ref());
+        assert_eq!(built.retention.cause(), None, "missing operand {missing}");
 
-#[test]
-fn unmarked_size_identity_failure_also_vetoes_finite_guard_evidence() {
-    let mut config = ExecutionConfig::default();
-    config.analysis.relations.max_nodes = 1;
-    let offset = inputs().0;
-    let size = AbstractValue::top();
-    let steps = reference(&offset, &size, config.domain().unwrap());
-    assert_eq!(
-        steps[1].2.symbolic_error,
-        Some(ExprError::Limit { nodes: 3, depth: 2 })
-    );
-    let mut allocations = 0;
-    let mut budget = WorkBudget::new(usize::MAX);
-    let built = super::build_with_allocator(
-        &offset,
-        &size,
-        &mut context(
-            &config,
-            &mut budget,
-            ValueAlgebra::new(&config.domain().unwrap()),
-        ),
-        || {
-            allocations += 1;
-            None
-        },
-    )
-    .unwrap();
-    assert_eq!(allocations, 1);
-    assert_same_value(&built.request.offset, &offset);
-    assert_same_value(&built.request.size, &size);
-    assert!(!built.request.size.symbolic_limit_reached());
-    assert_same_value(&built.condition, &steps[7].2.value);
-    assert_eq!(built.retention.cause(), None);
-    assert!(!budget.exhausted());
+        let mut previously_eligible = GuardRetention::new(&offset, &size);
+        previously_eligible.record(steps[missing].2.symbolic_error.as_ref());
+        assert_eq!(
+            previously_eligible.cause(),
+            Some(RetentionCause::Expression)
+        );
+        previously_eligible.veto_identity_failure();
+        previously_eligible.record(steps[missing].2.symbolic_error.as_ref());
+        assert_eq!(previously_eligible.cause(), None);
+
+        let (world, entry) = fixture(&[(0x101, "00")]);
+        let mut result = empty_execution(
+            initial(&world, &entry, ValueAlgebra::new(&Domain::default())).unwrap(),
+        );
+        let before = result.payload.clone();
+        assert!(
+            super::super::partition(
+                &mut result,
+                &built.request,
+                super::super::Condition::prepare(&built.condition, built.singleton, &mut budget)
+                    .unwrap(),
+                Some(&built.retention),
+                &mut context(
+                    &config,
+                    &mut budget,
+                    ValueAlgebra::new(&config.domain().unwrap())
+                ),
+                19,
+            )
+            .is_none()
+        );
+        assert_eq!(result.payload, before);
+        assert_eq!(result.frontiers.len(), 1);
+        assert_eq!(result.frontiers[0].pc, 19);
+        assert_eq!(
+            result.frontiers[0].reason,
+            FrontierReason::Relations(QueryReason::ExpressionLimit)
+        );
+        assert!(result.retention_failures.is_empty());
+        assert!(result.outcomes.is_empty());
+        assert!(result.successors.is_empty());
+        assert!(!budget.exhausted());
+        let witness = result.frontiers[0].range.as_ref().unwrap();
+        assert_same_value(&witness.request.offset, &offset);
+        assert_same_value(&witness.request.size, &size);
+        assert_same_value(&witness.condition, &built.condition);
+        assert_eq!(*witness.payload, before);
+    }
 }

@@ -85,13 +85,20 @@ fn busy_x_closes_repeated_callbacks_at_zero_one_two_and_preserves_busy() {
 }
 
 #[test]
-fn busy_x_keeps_precision_with_nested_unknown_known_unknown_interactions() {
-    check_busy_x(true, true);
-}
-
-#[test]
-fn nested_busy_x_keeps_the_same_precision_and_closure_without_summary_cache() {
-    check_busy_x(true, false);
+fn nested_busy_x_keeps_precision_and_closure_in_each_cache_mode() {
+    for (case, use_summaries) in [
+        (
+            "busy_x_keeps_precision_with_nested_unknown_known_unknown_interactions",
+            true,
+        ),
+        (
+            "nested_busy_x_keeps_the_same_precision_and_closure_without_summary_cache",
+            false,
+        ),
+    ] {
+        eprintln!("case={case}");
+        check_busy_x(true, use_summaries);
+    }
 }
 
 #[test]

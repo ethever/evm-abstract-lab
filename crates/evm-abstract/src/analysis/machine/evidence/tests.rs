@@ -11,6 +11,9 @@ use crate::{
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
 
+#[path = "../../../../tests/support/work_boundary.rs"]
+mod work_boundary;
+
 fn address(value: u64) -> Address {
     Address::from_word(U256::from(value).into())
 }
@@ -63,21 +66,14 @@ fn pending_mload() -> WorldAnalysis {
     // Locate the first budget that visits MLOAD in this acyclic prefix. Its
     // visit consumes the offset, then the positive read-scan fee is refused.
     // The upper bound is measured under the unchanged successful policy.
-    let (mut minimum, mut maximum) = (1, complete.work());
-    while minimum < maximum {
-        let midpoint = minimum + (maximum - minimum) / 2;
-        config.max_work = midpoint;
+    let minimum = work_boundary::first_work_reaching(complete.work(), |allowance| {
+        config.max_work = allowance;
         let candidate = run(CODE, config.clone());
-        if candidate
+        candidate
             .states()
             .iter()
             .any(|state| state.executed_pcs.contains(&4))
-        {
-            maximum = midpoint;
-        } else {
-            minimum = midpoint + 1;
-        }
-    }
+    });
     config.max_work = minimum;
     run(CODE, config)
 }
@@ -224,15 +220,9 @@ fn result_observations_preserve_small_work_budget_receipts() {
         // private entry reservation formula into this receipt regression.
         let (full, _) = probe(config.max_work);
         assert_eq!(full.executed_pcs.first(), Some(&0));
-        let (mut minimum, mut maximum) = (1, config.max_work);
-        while minimum < maximum {
-            let midpoint = minimum + (maximum - minimum) / 2;
-            if probe(midpoint).0.executed_pcs.is_empty() {
-                minimum = midpoint + 1;
-            } else {
-                maximum = midpoint;
-            }
-        }
+        let minimum = work_boundary::first_work_reaching(config.max_work, |allowance| {
+            !probe(allowance).0.executed_pcs.is_empty()
+        });
         let admission = minimum.checked_sub(1).unwrap();
         assert!(admission > 0);
         for maximum in [0, admission - 1, admission] {

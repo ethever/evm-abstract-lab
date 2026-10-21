@@ -1,6 +1,6 @@
 //! revm owns concrete execution; one abstract outcome must cover the full tuple.
 
-use super::support::{USER, address, word};
+use super::support::{USER, address, entry, input, word};
 use alloy_primitives::{Address, U256};
 use evm_abstract::{
     analysis::{OutcomeKind, WorldAnalysis},
@@ -32,12 +32,13 @@ impl<CTX> Inspector<CTX, EthInterpreter> for Trace {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct Witness {
     pub(super) kind: OutcomeKind,
     pub(super) data: Vec<u8>,
     pub(super) storage: BTreeMap<(Address, U256), U256>,
     pub(super) steps: Vec<(Address, usize)>,
-    balances: BTreeMap<Address, U256>,
+    pub(super) balances: BTreeMap<Address, U256>,
 }
 
 impl Witness {
@@ -45,45 +46,70 @@ impl Witness {
         U256::from_be_slice(&self.data[offset..offset + 32])
     }
 
-    pub(super) fn covers(&self, graph: &WorldAnalysis) {
+    pub(super) fn covered_by(&self, graph: &WorldAnalysis) -> bool {
         let domain = Domain::from_spec(graph.domain_spec());
-        assert!(
-            graph.outcomes().iter().any(|outcome| {
-                outcome.kind == self.kind
-                    && outcome.data.len().contains(U256::from(self.data.len()))
-                    && self.data.iter().enumerate().all(|(i, byte)| {
-                        outcome.data.byte_at(i, domain).contains(U256::from(*byte))
-                    })
-                    && self
-                        .data
-                        .as_chunks::<32>()
-                        .0
-                        .iter()
-                        .enumerate()
-                        .all(|(i, bytes)| {
-                            outcome
-                                .data
-                                .read_word(&word((i * 32) as u64), domain)
-                                .contains(U256::from_be_slice(bytes))
-                        })
-                    && self.storage.iter().all(|((owner, slot), n)| {
+        graph.outcomes().iter().any(|outcome| {
+            outcome.kind == self.kind
+                && outcome.data.len().contains(U256::from(self.data.len()))
+                && self
+                    .data
+                    .iter()
+                    .enumerate()
+                    .all(|(i, byte)| outcome.data.byte_at(i, domain).contains(U256::from(*byte)))
+                && self
+                    .data
+                    .as_chunks::<32>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .all(|(i, bytes)| {
                         outcome
-                            .store
-                            .read(*owner, &AbstractValue::constant(*slot), domain)
-                            .contains(*n)
+                            .data
+                            .read_word(&word((i * 32) as u64), domain)
+                            .contains(U256::from_be_slice(bytes))
                     })
-                    && self
-                        .balances
-                        .iter()
-                        .all(|(owner, n)| outcome.store.read_balance(*owner).contains(*n))
-            }),
-            "no single terminal covers kind={:?}, data={}, store={:?}; frontiers={:?}",
+                && self.storage.iter().all(|((owner, slot), n)| {
+                    outcome
+                        .store
+                        .read(*owner, &AbstractValue::constant(*slot), domain)
+                        .contains(*n)
+                })
+                && self
+                    .balances
+                    .iter()
+                    .all(|(owner, n)| outcome.store.read_balance(*owner).contains(*n))
+        })
+    }
+
+    pub(super) fn covers(&self, graph: &WorldAnalysis) {
+        assert!(
+            self.covered_by(graph),
+            "no single terminal covers kind={:?}, data={}, store={:?}, balances={:?}; frontiers={:?}",
             self.kind,
             alloy_primitives::hex::encode(&self.data),
             self.storage,
+            self.balances,
             graph.frontiers()
         );
     }
+}
+
+/// Concrete execution depends on the fixture and input, never on the policy
+/// graph being checked. Validate each witness once, then reuse the complete
+/// tuple for every strategy/cache mode; `covers` still selects one terminal.
+pub(super) fn witnesses(
+    world: &World,
+    inputs: &[u64],
+    check: impl Fn(u64, &Witness),
+) -> Vec<Witness> {
+    inputs
+        .iter()
+        .map(|&n| {
+            let witness = execute(world, &entry(input(n)));
+            check(n, &witness);
+            witness
+        })
+        .collect()
 }
 
 pub(super) fn execute(world: &World, entry: &Entry) -> Witness {

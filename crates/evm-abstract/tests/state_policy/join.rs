@@ -1,8 +1,6 @@
 use super::{
     oracle,
-    support::{
-        ROOT, address, branches, complete, config, entry, input, run, starts_at, word, world,
-    },
+    support::{ROOT, address, branches, complete, config, entry, run, starts_at, word, world},
 };
 use alloy_primitives::U256;
 use evm_abstract::{
@@ -50,15 +48,16 @@ fn changing_whole_state_join_changes_real_cross_memory_precision() {
             ),
         ),
     );
+    let witnesses = oracle::witnesses(&world, &[0, 1, 2], |_, witness| {
+        assert_eq!(
+            witness.output_word(32),
+            U256::ZERO,
+            "stack value equals its memory copy"
+        );
+    });
     for graph in [&correlated, &bounded] {
         complete(graph);
-        for n in [0, 1, 2] {
-            let witness = oracle::execute(&world, &super::support::entry(input(n)));
-            assert_eq!(
-                witness.output_word(32),
-                U256::ZERO,
-                "stack value equals its memory copy"
-            );
+        for witness in &witnesses {
             witness.covers(graph);
         }
     }

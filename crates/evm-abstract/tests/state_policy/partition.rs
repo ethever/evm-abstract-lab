@@ -1,7 +1,7 @@
 use super::{
     oracle,
     support::{
-        ROOT, address, alternate_run, branches, complete, config, default_run, entry, input, run,
+        ROOT, address, alternate_run, branches, complete, config, default_run, entry, run,
         starts_at, word, world,
     },
 };
@@ -144,19 +144,32 @@ fn borrowed_operand_key_groups_different_histories_without_losing_concrete_tuple
         .unwrap()
         .verify(&predicate)
         .unwrap();
+    let witnesses = oracle::witnesses(&world, &[0, 1, 2], |n, witness| {
+        let expected = [0, 11, 22][n as usize];
+        assert_eq!(witness.output_word(0), U256::from(expected));
+        assert_eq!(witness.output_word(32), U256::from(expected));
+        assert_eq!(
+            witness.storage[&(address(ROOT), U256::ZERO)],
+            U256::from(expected)
+        );
+    });
     for graph in [&structural, &forgotten, &predicate] {
         complete(graph);
-        for (n, expected) in [(0, 0), (1, 11), (2, 22)] {
-            let witness = oracle::execute(&world, &super::support::entry(input(n)));
-            assert_eq!(witness.output_word(0), U256::from(expected));
-            assert_eq!(witness.output_word(32), U256::from(expected));
-            assert_eq!(
-                witness.storage[&(address(ROOT), U256::ZERO)],
-                U256::from(expected)
-            );
+        for witness in &witnesses {
             witness.covers(graph);
         }
     }
+    // Both values occur in genuine terminals, but the (output11, slot22)
+    // combination does not. This control detects an oracle that stitches
+    // output and storage checks from different outcomes.
+    let mut crossed = witnesses[1].clone();
+    crossed
+        .storage
+        .insert((address(ROOT), U256::ZERO), U256::from(22));
+    assert!(!crossed.covered_by(&structural));
+    let mut wrong_balance = witnesses[1].clone();
+    *wrong_balance.balances.get_mut(&address(ROOT)).unwrap() += U256::ONE;
+    assert!(!wrong_balance.covered_by(&structural));
     let path = |n| {
         structural
             .states()

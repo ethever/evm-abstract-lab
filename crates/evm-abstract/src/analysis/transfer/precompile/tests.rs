@@ -65,22 +65,7 @@ fn run(
     )
 }
 
-fn context<'a>(
-    config: &'a ExecutionConfig,
-    budget: &'a mut WorkBudget,
-    algebra: crate::domain::AlgebraRef<'a, Domain>,
-) -> TransferContext<'a, Domain> {
-    TransferContext {
-        config,
-        domain: algebra,
-        budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    }
-}
+use crate::analysis::transfer::testing::context;
 
 fn assert_boundary(result: &Execution, reason: FrontierReason) {
     assert_eq!(result.frontiers.len(), 1);

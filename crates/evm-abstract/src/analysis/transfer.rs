@@ -56,6 +56,8 @@ mod relations;
 mod resource_tests;
 #[cfg(test)]
 mod scalar_retention_tests;
+#[cfg(test)]
+mod testing;
 
 pub(super) use crate::resource::WorkBudget;
 use budget::{byte_work, operation_work_budgeted};

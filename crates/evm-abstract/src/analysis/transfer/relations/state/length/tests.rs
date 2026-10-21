@@ -4,10 +4,7 @@ use crate::domain::ValueAlgebra;
 
 use crate::{
     Fork,
-    analysis::{
-        ExecutionConfig,
-        transfer::{TransferContext, initial},
-    },
+    analysis::{ExecutionConfig, transfer::initial},
     domain::{
         AbstractValue, Domain,
         relational::{QueryReason, RelationState, ScalarQuery},
@@ -77,16 +74,11 @@ fn composite_proof_narrows_both_unknown_arms_without_changing_guard_or_frozen_re
     payload.active_mut().memory = memory;
     payload.active_mut().returndata = returndata.clone();
     let mut budget = WorkBudget::new(1_000_000);
-    let mut context = TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&domain),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&domain),
+    );
     assert_eq!(
         super::refine(&mut payload, &relations, &mut context),
         Ok(())
@@ -160,16 +152,11 @@ fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomi
     for capacity in [0, super::QUERY_WORK - 1] {
         let mut payload = original.clone();
         let mut budget = WorkBudget::new(capacity);
-        let mut context = TransferContext {
-            config: &config,
-            domain: ValueAlgebra::new(&domain),
-            budget: &mut budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: false,
-            discover_code: false,
-        };
+        let mut context = crate::analysis::transfer::testing::context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&domain),
+        );
         assert_eq!(
             super::refine(&mut payload, &relations, &mut context),
             Ok(())
@@ -192,16 +179,11 @@ fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomi
     }
     let mut payload = original.clone();
     let mut budget = WorkBudget::new(1_000_000);
-    let mut context = TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&domain),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&domain),
+    );
     assert_eq!(
         super::refine(&mut payload, &expensive, &mut context),
         Ok(())
@@ -258,16 +240,11 @@ fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomi
     analysis_control::with_cancellation(&cancellation, || {
         let mut payload = original.clone();
         let mut budget = WorkBudget::new(1_000_000);
-        let mut context = TransferContext {
-            config: &config,
-            domain: ValueAlgebra::new(&domain),
-            budget: &mut budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: false,
-            discover_code: false,
-        };
+        let mut context = crate::analysis::transfer::testing::context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&domain),
+        );
         assert_eq!(
             super::refine(&mut payload, &relations, &mut context),
             Err(crate::analysis::FrontierReason::Relations(

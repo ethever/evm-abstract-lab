@@ -190,16 +190,11 @@ fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query()
     let candidate = word(0x301);
     let mut result = super::super::empty_execution(payload.clone());
     let mut budget = WorkBudget::new(config.max_work);
-    let mut context = TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&domain),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&domain),
+    );
     let remainder = target_guard(
         &mut result,
         &payload,

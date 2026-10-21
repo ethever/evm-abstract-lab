@@ -7,21 +7,43 @@ use crate::{
     analysis::{machine::fixtures::fixture, transfer},
     domain::Domain,
 };
+use proptest::{collection::vec, prelude::*, test_runner::TestRunner};
 use std::collections::BTreeSet;
 
 #[test]
-fn older_duplicates_move_to_their_most_recent_position() {
-    assert_eq!(canonical(&[1, 2, 3, 2]).unwrap(), [1, 3, 2]);
-    assert_eq!(canonical(&[1, 2, 1, 2, 3, 2]).unwrap(), [1, 3, 2]);
-    assert!(canonical(&[]).unwrap().is_empty());
-}
-
-#[test]
-fn nested_helpers_keep_the_recent_outer_callsite() {
-    let first = [18, 400];
-    let second = [18, 400, 448, 416, 256, 400];
-    assert_ne!(canonical(&first).unwrap(), canonical(&second).unwrap());
-    assert_eq!(canonical(&second).unwrap(), [18, 448, 416, 256, 400]);
+fn canonical_history_keeps_exactly_the_last_occurrence_of_each_source() {
+    // Pin the original witnesses as well as checking generated histories. The
+    // reference scans suffixes in forward order, independently of the reverse
+    // tree traversal used by canonical.
+    let check = |history: &[usize]| {
+        let expected = history
+            .iter()
+            .enumerate()
+            .filter(|(index, source)| !history[index + 1..].contains(source))
+            .map(|(_, source)| *source)
+            .collect::<Vec<_>>();
+        let actual = canonical(history).unwrap();
+        prop_assert_eq!(&actual, &expected, "history {:?}", history);
+        prop_assert_eq!(canonical(&actual).unwrap(), actual);
+        Ok(())
+    };
+    for history in [
+        vec![],
+        vec![1, 2, 3, 2],
+        vec![1, 2, 1, 2, 3, 2],
+        vec![18, 400],
+        vec![18, 400, 448, 416, 256, 400],
+        (0..128).collect(),
+    ] {
+        check(&history).unwrap();
+    }
+    assert_ne!(
+        canonical(&[18, 400]).unwrap(),
+        canonical(&[18, 400, 448, 416, 256, 400]).unwrap()
+    );
+    TestRunner::default()
+        .run(&vec(0_usize..512, 0..257), |history| check(&history))
+        .unwrap();
 }
 
 #[test]
@@ -40,12 +62,9 @@ fn repeated_loop_sources_reach_periodic_keys_without_128_iterations() {
 }
 
 #[test]
-fn empty_and_declared_bounded_histories_do_not_grow_and_work_saturates() {
-    assert!(canonical(&[]).unwrap().is_empty());
+fn context_work_covers_declared_histories_and_saturates() {
     assert_eq!(work_size(0), 0);
     assert_eq!(work_size(usize::MAX), usize::MAX);
-    let history = (0..128).collect::<Vec<_>>();
-    assert_eq!(canonical(&history).unwrap(), history);
     assert!(work_size(128) >= 128);
 }
 

@@ -49,16 +49,7 @@ fn context<'a>(
     policy: &'a ValueAlgebra<Policy>,
     budget: &'a mut WorkBudget,
 ) -> TransferContext<'a, Policy> {
-    TransferContext {
-        config,
-        domain: policy.borrowed(),
-        budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    }
+    crate::analysis::transfer::testing::context(config, budget, policy.borrowed())
 }
 
 #[test]

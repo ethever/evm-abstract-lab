@@ -3,31 +3,13 @@ use crate::{
     analysis::{
         ChildFrame, Continuation, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind,
         machine::fixtures::{address, fixture, word},
-        transfer::{
-            StorageReadPolicy, TransferContext, WorkBudget, empty_execution, execute, finish,
-            initial,
-        },
+        transfer::{StorageReadPolicy, WorkBudget, empty_execution, execute, finish, initial},
     },
     domain::{Domain, relational::QueryReason},
     world::{AbstractLog, Account, ByteArray, Existence, LogKey, LogSourceKind},
 };
 
-fn context<'a>(
-    config: &'a ExecutionConfig,
-    budget: &'a mut WorkBudget,
-    algebra: crate::domain::AlgebraRef<'a, Domain>,
-) -> TransferContext<'a, Domain> {
-    TransferContext {
-        config,
-        domain: algebra,
-        budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: true,
-        discover_code: false,
-    }
-}
+use crate::analysis::transfer::testing::procedure_context as context;
 
 #[test]
 fn failure_after_prefix_rolls_back_storage_value_and_logs_but_keeps_address_three_touch() {

@@ -107,16 +107,11 @@ fn symbolic_logical_partition_retains_success_and_pre_effect_failure() {
     };
     let mut budget = super::super::WorkBudget::new(10_000_000);
     let transfer_numeric = Domain::default();
-    let mut context = super::TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&transfer_numeric),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&transfer_numeric),
+    );
     let source = ExprId::fresh().unwrap();
     let size = AbstractValue::top().with_expression(source.clone());
     assert!(super::memory(
@@ -183,16 +178,11 @@ fn assumption_capacity_failure_preserves_the_whole_unmodified_input() {
     let size = AbstractValue::top().with_expression(source);
     let mut budget = super::super::WorkBudget::new(10_000_000);
     let transfer_numeric = Domain::default();
-    let mut context = super::TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&transfer_numeric),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&transfer_numeric),
+    );
     assert!(!super::memory(
         &mut result,
         &value(U256::ZERO),
@@ -257,16 +247,11 @@ fn encoder_limit_keeps_success_guard_and_gas_failure_coverage() {
     assert!(expression.nodes() <= config.analysis.relations.max_nodes);
     let mut budget = super::super::WorkBudget::new(10_000_000);
     let transfer_numeric = Domain::default();
-    let mut context = super::TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&transfer_numeric),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&transfer_numeric),
+    );
     assert!(super::memory(
         &mut result,
         &value(U256::ZERO),
@@ -305,7 +290,7 @@ mod literal_memory {
         U256,
         analysis::{
             ExecutionConfig, FrontierReason, MachinePayload,
-            transfer::{Execution, TransferContext, WorkBudget},
+            transfer::{Execution, WorkBudget},
         },
         domain::{
             AbstractValue, Domain, DomainSpec, Profile, ReductionStatus, SingletonProof,
@@ -333,22 +318,7 @@ mod literal_memory {
         ))
     }
 
-    fn context<'a>(
-        config: &'a ExecutionConfig,
-        budget: &'a mut WorkBudget,
-        algebra: crate::domain::AlgebraRef<'a, Domain>,
-    ) -> TransferContext<'a, Domain> {
-        TransferContext {
-            config,
-            domain: algebra,
-            budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: false,
-            discover_code: false,
-        }
-    }
+    use crate::analysis::transfer::testing::context;
 
     fn assert_uninstalled(result: &Execution, before: &MachinePayload) {
         assert_eq!(&result.payload, before);

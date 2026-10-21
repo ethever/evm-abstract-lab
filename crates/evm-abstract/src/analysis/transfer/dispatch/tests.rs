@@ -341,16 +341,7 @@ fn fixture(code: &str, relations: bool) -> Fixture {
 }
 
 fn context<'a>(fixture: &'a Fixture, budget: &'a mut WorkBudget) -> TransferContext<'a, Policy> {
-    TransferContext {
-        config: &fixture.config,
-        domain: fixture.algebra.borrowed(),
-        budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: true,
-        discover_code: false,
-    }
+    transfer::testing::procedure_context(&fixture.config, budget, fixture.algebra.borrowed())
 }
 
 fn run(fixture: &Fixture, budget: &mut WorkBudget) -> transfer::EvmExecution<Opaque> {
@@ -367,31 +358,192 @@ fn run(fixture: &Fixture, budget: &mut WorkBudget) -> transfer::EvmExecution<Opa
     )
 }
 
+#[track_caller]
+fn assert_stop_frontier(
+    result: &transfer::EvmExecution<Opaque>,
+    reason: FrontierReason,
+    label: &str,
+) {
+    assert_eq!(result.frontiers.len(), 1, "{label}");
+    assert_eq!(result.frontiers[0].reason, reason, "{label}");
+    assert!(result.completed_calls.is_empty(), "{label}");
+}
+
+/// Use only before any alternative has completed: even a spurious Failure is
+/// a publication bug here. Later stops must describe their prior evidence.
+#[track_caller]
 fn assert_stopped(result: &transfer::EvmExecution<Opaque>, reason: FrontierReason) {
-    assert!(
-        result
-            .frontiers
-            .iter()
-            .any(|frontier| frontier.reason == reason)
+    assert_stop_frontier(result, reason, "strict stop before publication");
+    assert!(result.successors.is_empty());
+    assert!(result.outcomes.is_empty());
+}
+
+/// Expected semantic classes, independent of duplicate emission by different
+/// memory checks. A root fault rolls back; a rejected call resumes its caller;
+/// a rejected creation additionally preserves the creator nonce increment.
+#[derive(Clone, Copy, Debug)]
+enum PublishedBeforeStop {
+    Nothing,
+    RootFault,
+    RootFaultAndCallRejection,
+    RootFaultAndCreationRejection,
+}
+
+#[track_caller]
+fn assert_stopped_after_failures(
+    result: &transfer::EvmExecution<Opaque>,
+    reason: FrontierReason,
+    fixture: &Fixture,
+    published: PublishedBeforeStop,
+    label: &str,
+) {
+    assert_stop_frontier(result, reason, label);
+    let root_fault = !matches!(published, PublishedBeforeStop::Nothing);
+    assert_eq!(
+        result.outcomes.is_empty(),
+        !root_fault,
+        "{label}: root fault class"
     );
-    assert!(
-        result
-            .successors
-            .iter()
-            .all(|successor| successor.kind == MachineEdgeKind::Failure)
+    // Several pre-effect memory checks may emit the same (kind, data, store).
+    // Verify the normalized semantic set: require this class when expected and
+    // reject every other class, without requiring duplicate multiplicity.
+    for outcome in &result.outcomes {
+        assert_eq!(outcome.kind, OutcomeKind::Failure, "{label}");
+        assert_eq!(outcome.data, EvmByteArray::empty(), "{label}");
+        assert_eq!(
+            outcome.store,
+            *fixture.input.active().saved_store.state(),
+            "{label}: the completed root fault restores its checkpoint"
+        );
+    }
+    let has_resume = matches!(
+        published,
+        PublishedBeforeStop::RootFaultAndCallRejection
+            | PublishedBeforeStop::RootFaultAndCreationRejection
     );
-    assert!(
-        result
-            .outcomes
-            .iter()
-            .all(|outcome| outcome.kind == OutcomeKind::Failure)
+    assert_eq!(
+        result.successors.is_empty(),
+        !has_resume,
+        "{label}: caller rejection class"
     );
-    assert!(
-        result
-            .completed_calls
-            .iter()
-            .all(|completed| completed.kind == OutcomeKind::Failure)
-    );
+    if has_resume {
+        let mut expected = fixture.input.clone();
+        if matches!(
+            published,
+            PublishedBeforeStop::RootFaultAndCreationRejection
+        ) {
+            expected.store.touch_account(address(0x101));
+            expected.store.write_nonce(address(0x101), word(1));
+        }
+        let frame = expected.active_mut();
+        frame.stack.push(word(0));
+        frame.returndata = EvmByteArray::empty();
+        frame.key.basic_block_index += 1;
+        expected.normalize();
+        for successor in &result.successors {
+            assert_eq!(successor.kind, MachineEdgeKind::Failure, "{label}");
+            assert_eq!(successor.payload, expected, "{label}");
+        }
+    }
+}
+
+struct QueryStopCase<'a> {
+    site: &'a str,
+    published: PublishedBeforeStop,
+    watch_arithmetic: bool,
+    empty_stack: bool,
+}
+
+impl<'a> QueryStopCase<'a> {
+    fn new(site: &'a str, published: PublishedBeforeStop) -> Self {
+        Self {
+            site,
+            published,
+            watch_arithmetic: false,
+            empty_stack: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum QueryStop {
+    MaximumQuote,
+    ShortBudget,
+    QuoteCancelled,
+    QueryCancelled,
+}
+
+/// Every site keeps the same four payment boundaries. The maximum-quote run
+/// measures only the paid prefix, so structural fee changes cannot silently
+/// move the one-short run to an earlier phase. 313 is this carrier's chosen
+/// quote; 312 refuses that query by one, independently of production tariffs.
+fn assert_query_stops(
+    fixture: &Fixture,
+    case: QueryStopCase<'_>,
+    execute: impl Fn(&mut WorkBudget) -> transfer::EvmExecution<Opaque>,
+) {
+    let mut prefix = 0;
+    for mode in [
+        QueryStop::MaximumQuote,
+        QueryStop::ShortBudget,
+        QueryStop::QuoteCancelled,
+        QueryStop::QueryCancelled,
+    ] {
+        let label = format!("{}: {mode:?}", case.site);
+        let _receipt = RECEIPT.scope();
+        RECEIPT.update(|receipt| {
+            receipt.watch_arithmetic = case.watch_arithmetic;
+            receipt.fee = if matches!(mode, QueryStop::MaximumQuote) {
+                usize::MAX
+            } else {
+                313
+            };
+            receipt.on_quote = matches!(mode, QueryStop::QuoteCancelled);
+            receipt.on_query = matches!(mode, QueryStop::QueryCancelled);
+        });
+        let mut budget = WorkBudget::new(if matches!(mode, QueryStop::ShortBudget) {
+            prefix + 312
+        } else {
+            usize::MAX
+        });
+        let token = analysis_control::Cancellation::new();
+        let result = analysis_control::with_cancellation(&token, || execute(&mut budget));
+        if matches!(mode, QueryStop::MaximumQuote) {
+            prefix = budget.used();
+        }
+        let queried = matches!(mode, QueryStop::QueryCancelled);
+        let cancelled = matches!(mode, QueryStop::QuoteCancelled | QueryStop::QueryCancelled);
+        assert_stopped_after_failures(
+            &result,
+            if cancelled {
+                FrontierReason::Relations(QueryReason::Cancelled)
+            } else {
+                FrontierReason::Work
+            },
+            fixture,
+            case.published,
+            &label,
+        );
+        assert_eq!(RECEIPT.get().quotes, 1, "{label}");
+        assert_eq!(RECEIPT.get().queries, usize::from(queried), "{label}");
+        assert_eq!(
+            budget.used(),
+            prefix + if queried { 313 } else { 0 },
+            "{label}"
+        );
+        assert_eq!(result.payload.store, fixture.input.store, "{label}");
+        assert_eq!(
+            result.payload.active().memory,
+            fixture.input.active().memory,
+            "{label}"
+        );
+        if case.empty_stack {
+            assert!(
+                result.payload.active().stack.is_empty(),
+                "{label}: consumed operand must not publish a hash"
+            );
+        }
+    }
 }
 
 #[test]
@@ -438,28 +590,48 @@ fn jump_pays_exact_opaque_destination_and_keeps_its_only_valid_edge() {
     assert_eq!((RECEIPT.get().queries, short.used()), (0, prefix));
 }
 
+#[track_caller]
+fn assert_jumpi_successors(
+    result: &transfer::EvmExecution<Opaque>,
+    fixture: &Fixture,
+    expected: &[(EdgeKind, usize)],
+) {
+    assert!(result.frontiers.is_empty());
+    assert!(result.outcomes.is_empty());
+    assert!(result.completed_calls.is_empty());
+    assert_eq!(result.successors.len(), expected.len());
+    for &(kind, target) in expected {
+        let destinations = result
+            .successors
+            .iter()
+            .filter(|successor| successor.kind == MachineEdgeKind::Intraprocedural(kind))
+            .map(|successor| successor.payload.active().key.basic_block_index)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            destinations,
+            [fixture
+                .input
+                .active()
+                .program
+                .as_ref()
+                .unwrap()
+                .jumpdest_blocks()[&target]],
+            "JUMPI must retain the {kind:?} edge to PC {target} exactly once"
+        );
+    }
+}
+
 #[test]
 fn jumpi_reuses_condition_answer_and_preserves_arbitrary_nonzero_and_zero_edges() {
     for (condition, expected) in [
-        (watched(7), vec![EdgeKind::BranchTrue]),
-        (watched(0), vec![EdgeKind::BranchFalse]),
+        (watched(7), (EdgeKind::BranchTrue, 3)),
+        (watched(0), (EdgeKind::BranchFalse, 1)),
     ] {
         let mut fixture = fixture("575b005b00", false);
         fixture.input.active_mut().stack = vec![condition, word(3)];
         let _receipt = RECEIPT.scope();
         let result = run(&fixture, &mut WorkBudget::new(fixture.config.max_work));
-        assert!(result.frontiers.is_empty());
-        assert_eq!(
-            result
-                .successors
-                .iter()
-                .map(|successor| successor.kind)
-                .collect::<Vec<_>>(),
-            expected
-                .into_iter()
-                .map(MachineEdgeKind::Intraprocedural)
-                .collect::<Vec<_>>()
-        );
+        assert_jumpi_successors(&result, &fixture, &[expected]);
         assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (1, 1));
     }
     let mut fixture = fixture("575b005b00", false);
@@ -474,8 +646,11 @@ fn jumpi_reuses_condition_answer_and_preserves_arbitrary_nonzero_and_zero_edges(
     ];
     let _receipt = RECEIPT.scope();
     let result = run(&fixture, &mut WorkBudget::new(fixture.config.max_work));
-    assert!(result.frontiers.is_empty());
-    assert_eq!(result.successors.len(), 2);
+    assert_jumpi_successors(
+        &result,
+        &fixture,
+        &[(EdgeKind::BranchTrue, 3), (EdgeKind::BranchFalse, 1)],
+    );
     assert_eq!(
         (
             RECEIPT.get().quotes,
@@ -1161,10 +1336,21 @@ fn create_allocation_reuses_negative_offset_discovery_without_changing_its_carri
     );
 }
 
+#[derive(Clone, Copy, Debug)]
+enum JumpCover {
+    Open,
+    Valid,
+    InvalidThenValid,
+}
+
 #[test]
-fn jump_visit_refusal_keeps_completed_edges_and_reports_its_stop_once() {
+fn jump_visit_refusal_keeps_exactly_the_completed_edges_and_faults() {
     for conditional in [false, true] {
-        for finite in [false, true] {
+        for cover in [
+            JumpCover::Open,
+            JumpCover::Valid,
+            JumpCover::InvalidThenValid,
+        ] {
             let mut fixture = fixture(
                 if conditional {
                     "575b005b00"
@@ -1173,10 +1359,15 @@ fn jump_visit_refusal_keeps_completed_edges_and_reports_its_stop_once() {
                 },
                 false,
             );
+            let invalid = matches!(cover, JumpCover::InvalidThenValid);
             let target = EvmValue::from_numeric(Opaque {
                 low: U256::ZERO,
                 high: U256::from(3),
-                finite: finite.then(|| [U256::ONE, U256::from(3)].into()),
+                finite: match cover {
+                    JumpCover::Open => None,
+                    JumpCover::Valid => Some([U256::ONE, U256::from(3)].into()),
+                    JumpCover::InvalidThenValid => Some([U256::ZERO, U256::from(3)].into()),
+                },
                 ..Opaque::top()
             });
             fixture.input.active_mut().stack = if conditional {
@@ -1184,78 +1375,67 @@ fn jump_visit_refusal_keeps_completed_edges_and_reports_its_stop_once() {
             } else {
                 vec![target]
             };
+            let label = format!("conditional {conditional}, cover {cover:?}");
+            let roots = usize::from(!matches!(cover, JumpCover::Valid));
             let mut full_budget = WorkBudget::new(fixture.config.max_work);
             let full = run(&fixture, &mut full_budget);
-            assert!(full.frontiers.is_empty());
-            assert_eq!(full.successors.len(), 2);
-            assert_eq!(full.outcomes.len(), usize::from(!finite));
+            assert!(full.frontiers.is_empty(), "{label}");
+            assert_eq!(
+                full.successors.len(),
+                if invalid { 1 } else { 2 },
+                "{label}"
+            );
+            assert_eq!(full.outcomes.len(), roots, "{label}");
 
-            // Only the last target visit is refused. The earlier valid edge
-            // and the open target's independently completed fault both remain.
+            // Refuse only the last target visit. Valid and invalid completed
+            // candidates have different evidence, all checked at this boundary.
             let mut budget = WorkBudget::new(full_budget.used() - 1);
             let result = run(&fixture, &mut budget);
-            assert!(budget.exhausted());
-            assert_eq!(budget.used(), full_budget.used() - 1);
-            assert_eq!(result.frontiers.len(), 1);
-            assert_eq!(
-                (result.frontiers[0].pc, &result.frontiers[0].reason),
-                (0, &FrontierReason::Work)
-            );
-            assert_eq!(result.successors.len(), 1);
-            assert_eq!(
-                result.successors[0].kind,
-                MachineEdgeKind::Intraprocedural(if conditional {
-                    EdgeKind::BranchTrue
-                } else {
-                    EdgeKind::Jump
-                })
-            );
-            assert_eq!(
-                result.successors[0].payload.active().key.basic_block_index,
-                fixture
-                    .input
-                    .active()
-                    .program
-                    .as_ref()
-                    .unwrap()
-                    .jumpdest_blocks()[&1]
-            );
-            assert_eq!(result.outcomes.len(), usize::from(!finite));
+            assert!(budget.exhausted(), "{label}");
+            assert_eq!(budget.used(), full_budget.used() - 1, "{label}");
+            assert_stop_frontier(&result, FrontierReason::Work, &label);
+            assert_eq!(result.frontiers[0].pc, 0, "{label}");
+            assert_eq!(result.successors.len(), usize::from(!invalid), "{label}");
+            if !invalid {
+                assert_eq!(
+                    result.successors[0].kind,
+                    MachineEdgeKind::Intraprocedural(if conditional {
+                        EdgeKind::BranchTrue
+                    } else {
+                        EdgeKind::Jump
+                    }),
+                    "{label}"
+                );
+                assert_eq!(
+                    result.successors[0].payload.active().key.basic_block_index,
+                    fixture
+                        .input
+                        .active()
+                        .program
+                        .as_ref()
+                        .unwrap()
+                        .jumpdest_blocks()[&1],
+                    "{label}"
+                );
+            } else {
+                assert_eq!(
+                    result.diagnostics,
+                    [(0, crate::analysis::DiagnosticKind::InvalidJump)],
+                    "{label}"
+                );
+            }
+            assert_eq!(result.outcomes.len(), roots, "{label}");
             for outcome in result.outcomes {
-                assert_eq!(outcome.kind, OutcomeKind::Failure);
-                assert_eq!(outcome.store, *fixture.input.active().saved_store.state());
+                assert_eq!(outcome.kind, OutcomeKind::Failure, "{label}");
+                assert_eq!(outcome.data, EvmByteArray::empty(), "{label}");
+                assert_eq!(
+                    outcome.store,
+                    *fixture.input.active().saved_store.state(),
+                    "{label}"
+                );
             }
         }
     }
-}
-
-#[test]
-fn jump_visit_refusal_preserves_a_completed_invalid_target_failure() {
-    let mut fixture = fixture("565b005b00", false);
-    fixture.input.active_mut().stack = vec![EvmValue::from_numeric(Opaque {
-        low: U256::ZERO,
-        high: U256::from(3),
-        finite: Some([U256::ZERO, U256::from(3)].into()),
-        ..Opaque::top()
-    })];
-    let mut full_budget = WorkBudget::new(fixture.config.max_work);
-    let full = run(&fixture, &mut full_budget);
-    assert!(full.frontiers.is_empty());
-    assert_eq!(full.successors.len(), 1);
-    let result = run(&fixture, &mut WorkBudget::new(full_budget.used() - 1));
-    assert_eq!(result.frontiers.len(), 1);
-    assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
-    assert!(result.successors.is_empty());
-    assert_eq!(result.outcomes.len(), 1);
-    assert_eq!(result.outcomes[0].kind, OutcomeKind::Failure);
-    assert_eq!(
-        result.outcomes[0].store,
-        *fixture.input.active().saved_store.state()
-    );
-    assert_eq!(
-        result.diagnostics,
-        [(0, crate::analysis::DiagnosticKind::InvalidJump)]
-    );
 }
 
 #[test]
@@ -1285,13 +1465,20 @@ fn create2_salt_refusal_and_late_collision_cancellation_leave_no_partial_creatio
         let result = analysis_control::with_cancellation(&active, || {
             create(&fixture, opcode::CREATE2, &args, &mut budget)
         });
-        assert_stopped(
+        assert_stopped_after_failures(
             &result,
             if point == 0 {
                 FrontierReason::Work
             } else {
                 FrontierReason::Relations(QueryReason::Cancelled)
             },
+            &fixture,
+            if point == 2 {
+                PublishedBeforeStop::RootFaultAndCreationRejection
+            } else {
+                PublishedBeforeStop::RootFault
+            },
+            &format!("CREATE2 salt/collision {point}"),
         );
         assert_eq!(result.payload.store, fixture.input.store);
         assert_eq!(RECEIPT.get().queries, usize::from(point == 2));
@@ -1409,40 +1596,19 @@ fn every_creation_candidate_refuses_before_discovery_and_keeps_the_paid_prefix()
             8 => fixture.input.store.write_balance(destination, watched(50)),
             _ => unreachable!(),
         }
-        let _receipt = RECEIPT.scope();
-        RECEIPT.update(|receipt| receipt.fee = usize::MAX);
-        let mut unlimited = WorkBudget::new(usize::MAX);
-        assert_stopped(
-            &create(&fixture, opcode::CREATE2, &args, &mut unlimited),
-            FrontierReason::Work,
+        assert_query_stops(
+            &fixture,
+            QueryStopCase::new(
+                &format!("CREATE2 candidate {site}"),
+                match site {
+                    0 | 1 => PublishedBeforeStop::Nothing,
+                    2..=6 => PublishedBeforeStop::RootFault,
+                    7 | 8 => PublishedBeforeStop::RootFaultAndCreationRejection,
+                    _ => unreachable!(),
+                },
+            ),
+            |budget| create(&fixture, opcode::CREATE2, &args, budget),
         );
-        assert_eq!(RECEIPT.get().queries, 0, "site {site}");
-        let prefix = unlimited.used();
-        RECEIPT.update(|receipt| receipt.fee = 313);
-        let mut short = WorkBudget::new(prefix + 312);
-        assert_stopped(
-            &create(&fixture, opcode::CREATE2, &args, &mut short),
-            FrontierReason::Work,
-        );
-        assert_eq!(
-            (RECEIPT.get().queries, short.used()),
-            (0, prefix),
-            "site {site}"
-        );
-        for quote in [true, false] {
-            RECEIPT.update(|receipt| {
-                receipt.on_quote = quote;
-                receipt.on_query = !quote;
-            });
-            let mut budget = WorkBudget::new(usize::MAX);
-            let active = analysis_control::Cancellation::new();
-            let result = analysis_control::with_cancellation(&active, || {
-                create(&fixture, opcode::CREATE2, &args, &mut budget)
-            });
-            assert_stopped(&result, FrontierReason::Relations(QueryReason::Cancelled));
-            assert_eq!(result.payload.store, fixture.input.store, "site {site}");
-            assert_eq!(budget.used(), prefix + if quote { 0 } else { 313 });
-        }
     }
 }
 
@@ -1608,28 +1774,14 @@ fn call_target_balance_and_selfdestruct_queries_refuse_without_published_effects
                 run(&fixture, budget)
             }
         };
-        let _receipt = RECEIPT.scope();
-        RECEIPT.update(|receipt| receipt.fee = usize::MAX);
-        let mut unlimited = WorkBudget::new(usize::MAX);
-        assert_stopped(&run_case(&mut unlimited), FrontierReason::Work);
-        assert_eq!(RECEIPT.get().queries, 0, "site {site}");
-        let prefix = unlimited.used();
-        RECEIPT.update(|receipt| receipt.fee = 313);
-        let mut short = WorkBudget::new(prefix + 312);
-        assert_stopped(&run_case(&mut short), FrontierReason::Work);
-        assert_eq!((RECEIPT.get().queries, short.used()), (0, prefix));
-        for quote in [true, false] {
-            RECEIPT.update(|receipt| {
-                receipt.on_quote = quote;
-                receipt.on_query = !quote;
-            });
-            let active = analysis_control::Cancellation::new();
-            let mut budget = WorkBudget::new(usize::MAX);
-            let result = analysis_control::with_cancellation(&active, || run_case(&mut budget));
-            assert_stopped(&result, FrontierReason::Relations(QueryReason::Cancelled));
-            assert_eq!(result.payload.store, fixture.input.store);
-            assert_eq!(budget.used(), prefix + if quote { 0 } else { 313 });
-        }
+        assert_query_stops(
+            &fixture,
+            QueryStopCase::new(
+                &format!("CALL/SELFDESTRUCT operand {site}"),
+                PublishedBeforeStop::Nothing,
+            ),
+            run_case,
+        );
     }
 }
 
@@ -1846,30 +1998,21 @@ fn extcodehash_max_short_and_cancelling_account_queries_publish_no_hash_or_termi
             .input
             .store
             .write_nonce(address(0x202), if nonce { watched(0) } else { word(0) });
-        let _receipt = RECEIPT.scope();
-        RECEIPT.update(|receipt| receipt.fee = usize::MAX);
-        let mut unlimited = WorkBudget::new(usize::MAX);
-        assert_stopped(&run(&fixture, &mut unlimited), FrontierReason::Work);
-        assert_eq!(RECEIPT.get().queries, 0);
-        let prefix = unlimited.used();
-        RECEIPT.update(|receipt| receipt.fee = 313);
-        let mut short = WorkBudget::new(prefix + 312);
-        assert_stopped(&run(&fixture, &mut short), FrontierReason::Work);
-        assert_eq!((RECEIPT.get().queries, short.used()), (0, prefix));
-        for quote in [true, false] {
-            RECEIPT.update(|receipt| {
-                receipt.on_quote = quote;
-                receipt.on_query = !quote;
-            });
-            let active = analysis_control::Cancellation::new();
-            let mut budget = WorkBudget::new(usize::MAX);
-            let result =
-                analysis_control::with_cancellation(&active, || run(&fixture, &mut budget));
-            assert_stopped(&result, FrontierReason::Relations(QueryReason::Cancelled));
-            assert_eq!(result.payload.store, fixture.input.store);
-            assert!(result.payload.active().stack.is_empty());
-            assert_eq!(budget.used(), prefix + if quote { 0 } else { 313 });
-        }
+        assert_query_stops(
+            &fixture,
+            QueryStopCase {
+                empty_stack: true,
+                ..QueryStopCase::new(
+                    if nonce {
+                        "EXTCODEHASH nonce"
+                    } else {
+                        "EXTCODEHASH balance"
+                    },
+                    PublishedBeforeStop::Nothing,
+                )
+            },
+            |budget| run(&fixture, budget),
+        );
     }
 }
 
@@ -1935,31 +2078,25 @@ fn refused_arithmetic_result_classification_installs_no_partial_balance_effects(
                 run(&fixture, budget)
             }
         };
-        let _receipt = RECEIPT.scope();
-        RECEIPT.update(|receipt| {
-            receipt.watch_arithmetic = true;
-            receipt.fee = usize::MAX;
-        });
-        let mut unlimited = WorkBudget::new(usize::MAX);
-        assert_stopped(&run_case(&mut unlimited), FrontierReason::Work);
-        assert_eq!(RECEIPT.get().queries, 0);
-        let prefix = unlimited.used();
-        RECEIPT.update(|receipt| receipt.fee = 313);
-        let mut short = WorkBudget::new(prefix + 312);
-        assert_stopped(&run_case(&mut short), FrontierReason::Work);
-        assert_eq!((RECEIPT.get().queries, short.used()), (0, prefix));
-        for quote in [true, false] {
-            RECEIPT.update(|receipt| {
-                receipt.on_quote = quote;
-                receipt.on_query = !quote;
-            });
-            let active = analysis_control::Cancellation::new();
-            let mut budget = WorkBudget::new(usize::MAX);
-            let result = analysis_control::with_cancellation(&active, || run_case(&mut budget));
-            assert_stopped(&result, FrontierReason::Relations(QueryReason::Cancelled));
-            assert_eq!(result.payload.store, fixture.input.store);
-            assert_eq!(budget.used(), prefix + if quote { 0 } else { 313 });
-        }
+        assert_query_stops(
+            &fixture,
+            QueryStopCase {
+                watch_arithmetic: true,
+                ..QueryStopCase::new(
+                    if call_case {
+                        "CALL debit result"
+                    } else {
+                        "SELFDESTRUCT credit result"
+                    },
+                    if call_case {
+                        PublishedBeforeStop::RootFaultAndCallRejection
+                    } else {
+                        PublishedBeforeStop::Nothing
+                    },
+                )
+            },
+            run_case,
+        );
     }
 }
 
@@ -1986,21 +2123,16 @@ fn static_mixed_value_keeps_its_completed_fault_when_the_zero_paths_target_stops
         let result = analysis_control::with_cancellation(&token, || {
             call(&fixture, &args, &mut WorkBudget::new(usize::MAX))
         });
-        assert_stopped(
+        assert_stopped_after_failures(
             &result,
             if relations {
                 FrontierReason::Relations(QueryReason::Cancelled)
             } else {
                 FrontierReason::Work
             },
-        );
-        assert!(result.successors.is_empty());
-        assert!(
-            result
-                .outcomes
-                .iter()
-                .any(|outcome| outcome.kind == OutcomeKind::Failure
-                    && outcome.store == *fixture.input.active().saved_store.state())
+            &fixture,
+            PublishedBeforeStop::RootFault,
+            &format!("static mixed value, relations {relations}"),
         );
         assert_eq!(result.payload.store, before);
         assert_eq!(
@@ -2050,33 +2182,17 @@ fn creation_keeps_completed_oversize_and_nonce_gas_failures_on_later_query_stop(
             &args,
             &mut WorkBudget::new(usize::MAX),
         );
-        assert_stopped(&result, FrontierReason::Work);
-        if oversize {
-            assert!(
-                result
-                    .outcomes
-                    .iter()
-                    .any(|outcome| outcome.kind == OutcomeKind::Failure)
-            );
-        } else {
-            assert!(result.successors.iter().any(|successor| {
-                successor.kind == MachineEdgeKind::Failure
-                    && successor
-                        .payload
-                        .store
-                        .nonce(address(0x101))
-                        .numeric()
-                        .exact()
-                        == Some(U256::ONE)
-                    && successor
-                        .payload
-                        .store
-                        .read_balance(address(0x101))
-                        .numeric()
-                        .exact()
-                        == Some(U256::from(100))
-            }));
-        }
+        assert_stopped_after_failures(
+            &result,
+            FrontierReason::Work,
+            &fixture,
+            if oversize {
+                PublishedBeforeStop::RootFault
+            } else {
+                PublishedBeforeStop::RootFaultAndCreationRejection
+            },
+            &format!("creation prior failure, oversize {oversize}"),
+        );
         assert_eq!(RECEIPT.get().queries, 0);
     }
 }

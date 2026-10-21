@@ -18,7 +18,11 @@ use evm_abstract::{
     ssa::{self, PartialBlockCoverage},
     world::{Account, ByteArray, Code, Entry, Existence, Store, World},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
+
+#[path = "support/joint_witness.rs"]
+mod joint_witness;
+use joint_witness::JointWitness;
 
 const TWO_BLOCK_RETURN: &str = "6003565b602a5f5260205ff3";
 
@@ -54,61 +58,8 @@ fn fixture(fork: Fork) -> (World, Entry, ExecutionConfig) {
 /// roots. Unsupported shapes refuse; numerical marginals alone cannot pass.
 /// The finite assignments extend to total sources by choosing zero elsewhere;
 /// every byte below a selected complete data length is explicitly assigned.
-#[derive(Default)]
-struct JointWitness {
-    words: BTreeMap<ExprId, U256>,
-    cells: BTreeMap<(SourceId, U256), U256>,
-}
-
 impl JointWitness {
-    fn assign<K: Ord>(map: &mut BTreeMap<K, U256>, key: K, value: U256) -> bool {
-        match map.get(&key) {
-            Some(previous) => *previous == value,
-            None => {
-                map.insert(key, value);
-                true
-            }
-        }
-    }
-
-    fn expression(&mut self, expression: &ExprId, expected: U256) -> bool {
-        match expression.kind() {
-            ExprKind::Constant(value) => *value == expected,
-            ExprKind::Input(_) | ExprKind::Fresh(_) => {
-                Self::assign(&mut self.words, expression.clone(), expected)
-            }
-            ExprKind::SlotRead { state, key } => key
-                .as_constant()
-                .is_some_and(|key| self.slot(state, key, expected)),
-            _ => false,
-        }
-    }
-
-    fn slot(&mut self, state: &SlotStateId, key: U256, expected: U256) -> bool {
-        match state.kind() {
-            SlotStateKind::Zero => expected == U256::ZERO,
-            SlotStateKind::Input { source, bindings } => {
-                if let Some(binding) = bindings.iter().find(|binding| binding.index == key)
-                    && (!binding.numeric.contains(expected)
-                        || !self.expression(&binding.value, expected))
-                {
-                    return false;
-                }
-                Self::assign(&mut self.cells, (source.clone(), key), expected)
-            }
-            SlotStateKind::Store {
-                previous,
-                key: written,
-                value,
-            } => match written.as_constant() {
-                Some(written) if written == key => self.expression(value, expected),
-                Some(_) => self.slot(previous, key, expected),
-                None => false,
-            },
-            SlotStateKind::Ite { .. } => false,
-        }
-    }
-
+    // Public coverage also admits a proven singleton without an expression.
     fn storage(&mut self, store: &Store, owner: Address, expected: u64, domain: Domain) -> bool {
         let value = store.read_checked(owner, &word(8), domain).unwrap();
         let expected = U256::from(expected);
@@ -502,6 +453,10 @@ fn exceptional_finalization_covers_both_future_sticky_three_choices() {
         let saved = coverage.input().saved_store();
         let domain = Domain::from_spec(coverage.input().domain_spec());
         let original = saved.state().clone();
+        let exact = original.read_checked(address(3), &word(8), domain).unwrap();
+        assert_eq!(exact.singleton(), Some(U256::ZERO));
+        assert!(exact.expression().is_none());
+        assert!(JointWitness::default().storage(&original, address(3), 0, domain));
         for future_touch in [false, true] {
             // Compose the actual public rollback and finalization operations on
             // one saved root. These are Store witnesses, not executed CALLs.

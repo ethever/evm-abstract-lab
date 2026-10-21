@@ -861,10 +861,11 @@ fn symbolic_targets_and_unbounded_lazy_copy_sizes_keep_their_success_domains() {
     }
 }
 
+#[path = "support/terminal_coverage.rs"]
+mod terminal_coverage;
+
 #[test]
 fn symbolic_call_default_budget_keeps_its_original_root_terminal_relation() {
-    use analysis::{OutcomeKind, RootTerminalScope, RootTerminalTrigger};
-
     let program = Program::from_hex("5f5f5f5f5f5f356207a120f100").unwrap();
     let config = ExecutionConfig {
         analysis: Config {
@@ -901,47 +902,8 @@ fn symbolic_call_default_budget_keeps_its_original_root_terminal_relation() {
         frontier.reason,
         FrontierReason::Work | FrontierReason::SummaryWork
     )));
-    let coverage = execution.root_terminal_coverage().expect(
-        "the default original ledger must retain its prepaid root terminal relation on work refusal",
-    );
-    assert_eq!(coverage.scope(), RootTerminalScope::AllInputStates);
-    let trigger = match coverage.trigger() {
-        RootTerminalTrigger::Work => FrontierReason::Work,
-        RootTerminalTrigger::SummaryWork => FrontierReason::SummaryWork,
-        other => panic!("the actual boundary must be a work refusal: {other:?}"),
-    };
-    assert!(
-        execution
-            .frontiers()
-            .iter()
-            .any(|frontier| frontier.reason == trigger)
-    );
-    assert_eq!(
-        coverage.outcomes().each_ref().map(|outcome| outcome.kind()),
-        [
-            OutcomeKind::Return,
-            OutcomeKind::Revert,
-            OutcomeKind::Failure,
-        ]
-    );
-    let input = coverage.input();
-    let original = &execution.states()[0].entry;
-    assert_eq!(input.program(), &program);
-    assert_eq!(input.entry(), execution.entry());
-    assert_eq!(input.frame(), &original.active().key);
-    assert_eq!(input.calldata(), &original.active().calldata);
-    assert_eq!(input.call_value(), &original.active().call_value);
-    assert_eq!(input.saved_store(), &original.active().saved_store);
-    assert_eq!(input.initial_store(), &original.store);
-    assert_eq!(input.domain_spec(), execution.domain_spec());
-    assert_eq!(
-        serde_json::to_value(input.config()).unwrap(),
-        serde_json::to_value(&config).unwrap()
-    );
-    assert_eq!(
-        coverage.outcomes()[2].data().len().singleton(),
-        Some(U256::ZERO)
-    );
+    let coverage = terminal_coverage::assert_original_work_coverage(execution, &config);
+    assert_eq!(coverage.input().program(), &program);
 }
 
 #[test]

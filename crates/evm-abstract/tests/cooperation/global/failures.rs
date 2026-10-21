@@ -49,11 +49,7 @@ fn unknown_global_provider_and_independent_error_never_certify_completion() {
     let result = analyze_world_cooperating(
         fixtures::world(&[opcode::STOP]),
         fixtures::entry(),
-        ExecutionConfig {
-            max_work: 100_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        },
+        fixtures::config(100_000_000),
         &algebra,
         &EnginePolicies::default(),
         &mut missing,
@@ -68,11 +64,7 @@ fn unknown_global_provider_and_independent_error_never_certify_completion() {
     let result = analyze_world_cooperating(
         fixtures::world(&[opcode::STOP]),
         fixtures::entry(),
-        ExecutionConfig {
-            max_work: 100_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        },
+        fixtures::config(100_000_000),
         &algebra,
         &EnginePolicies::default(),
         &mut failing,
@@ -156,22 +148,13 @@ fn optional_future_discovery_expands_native_cfg_then_wakes_the_same_generation()
     let result = analyze_world_cooperating(
         fixtures::world(&[opcode::PUSH0, opcode::JUMPDEST, opcode::STOP]),
         fixtures::entry(),
-        ExecutionConfig {
-            max_work: 100_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        },
+        fixtures::config(100_000_000),
         &algebra,
         &EnginePolicies::default(),
         &mut extension,
     )
     .unwrap();
-    assert_eq!(
-        result.status(),
-        Status::Converged,
-        "{:?}",
-        result.frontiers()
-    );
+    fixtures::complete(&result);
     assert!(
         extension.analyzer.pending > 0,
         "a real discovered target exists before its Input is seeded"

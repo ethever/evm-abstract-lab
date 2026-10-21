@@ -17,6 +17,9 @@ use evm_abstract::{
 };
 use revm_bytecode::opcode;
 
+#[path = "support/work_boundary.rs"]
+mod work_boundary;
+
 #[test]
 fn copied_unknown_hash_branch_covers_both_retained_alternatives() {
     let address = Address::repeat_byte(0x11);
@@ -116,22 +119,15 @@ fn optional_expression_refusal_preserves_completion_and_a_typed_work_frontier() 
     // Bracket this acyclic leaf's first normal Return at STOP. Kernel
     // finish/closure adds later charges, so complete.work() - 1 can already
     // have returned. This search observes the semantic phase, not its tariff.
-    let (mut minimum, mut maximum) = (1, config.max_work);
-    while minimum < maximum {
-        let midpoint = minimum + (maximum - minimum) / 2;
-        config.max_work = midpoint;
+    let minimum = work_boundary::first_work_reaching(config.max_work, |allowance| {
+        config.max_work = allowance;
         let candidate =
             analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
-        if candidate
+        candidate
             .outcomes()
             .iter()
             .any(|outcome| outcome.kind == OutcomeKind::Return)
-        {
-            maximum = midpoint;
-        } else {
-            minimum = midpoint + 1;
-        }
-    }
+    });
     config.max_work = minimum;
     let returned = analysis::analyze_world(world.clone(), entry.clone(), config.clone()).unwrap();
     assert!(

@@ -11,6 +11,9 @@ use crate::{
 };
 use revm_bytecode::opcode;
 
+#[path = "../../../tests/support/work_boundary.rs"]
+mod work_boundary;
+
 fn address(value: u64) -> Address {
     Address::from_word(U256::from(value).into())
 }
@@ -64,21 +67,14 @@ fn pending_mload() -> WorldAnalysis {
     // In this acyclic prefix, the first budget admitting MLOAD's visit pays
     // for operand consumption but cannot also pay its positive read-scan fee.
     // Derive that cutoff from actual work, including root admission fees.
-    let (mut minimum, mut maximum) = (1, complete.work());
-    while minimum < maximum {
-        let midpoint = minimum + (maximum - minimum) / 2;
-        config.max_work = midpoint;
+    let minimum = work_boundary::first_work_reaching(complete.work(), |allowance| {
+        config.max_work = allowance;
         let candidate = run(CODE, config.clone());
-        if candidate
+        candidate
             .states()
             .iter()
             .any(|state| state.executed_pcs.contains(&4))
-        {
-            maximum = midpoint;
-        } else {
-            minimum = midpoint + 1;
-        }
-    }
+    });
     config.max_work = minimum;
     let analysis = run(CODE, config);
     assert_eq!(analysis.status(), Status::Incomplete);
@@ -413,21 +409,14 @@ fn optional_expression_limit_preserves_completion_and_a_separate_real_work_front
     // This straight-line leaf has one normal Return, produced by STOP. Locate
     // its first budget independently of the later Kernel finish/closure fees;
     // total consumed work minus one may already include that Return.
-    let (mut minimum, mut maximum) = (1, config.max_work);
-    while minimum < maximum {
-        let midpoint = minimum + (maximum - minimum) / 2;
-        config.max_work = midpoint;
+    let minimum = work_boundary::first_work_reaching(config.max_work, |allowance| {
+        config.max_work = allowance;
         let candidate = run_with_value("3460010100", config.clone(), AbstractValue::top());
-        if candidate
+        candidate
             .outcomes()
             .iter()
             .any(|outcome| outcome.kind == OutcomeKind::Return)
-        {
-            maximum = midpoint;
-        } else {
-            minimum = midpoint + 1;
-        }
-    }
+    });
     config.max_work = minimum;
     let returned = run_with_value("3460010100", config.clone(), AbstractValue::top());
     assert!(

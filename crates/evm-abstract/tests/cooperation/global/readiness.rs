@@ -4,7 +4,7 @@ use analysis_kernel::{Availability, Change, Closure, Version};
 use evm_abstract::analysis::{
     FrontierReason, OutcomeKind,
     control::Control,
-    cooperation::{CooperationError, Input, PointKind, analyze_world_cooperating_with_control},
+    cooperation::{CooperationError, PointKind, analyze_world_cooperating_with_control},
     progress::Observer,
 };
 use std::cell::RefCell;
@@ -63,10 +63,6 @@ enum Event {
 }
 type Trace = Rc<RefCell<Vec<Event>>>;
 
-fn pc(input: &Input<ExcludingWord>) -> usize {
-    let frame = input.payload().active();
-    frame.program.as_ref().unwrap().blocks()[frame.key.basic_block_index].start_pc
-}
 struct Fixture {
     code: Vec<u8>,
     a: usize,
@@ -162,7 +158,9 @@ where
             return Ok(LocalClosure::Stable);
         };
         cx.charge(input.work_size())?;
-        if subject.point.kind != PointKind::World || pc(input) != self.b {
+        if subject.point.kind != PointKind::World
+            || fixtures::input_pc(input).expect("native runtime block") != self.b
+        {
             return Ok(LocalClosure::Stable);
         }
         if self.seen {
@@ -243,10 +241,10 @@ where
         if subject.point.kind != PointKind::World {
             return Ok(LocalClosure::Stable);
         }
-        if pc(input) == self.after_a {
+        if fixtures::input_pc(input).expect("native runtime block") == self.after_a {
             self.trace.borrow_mut().push(Event::AfterA);
         }
-        if pc(input) != self.a {
+        if fixtures::input_pc(input).expect("native runtime block") != self.a {
             return Ok(LocalClosure::Stable);
         }
         let incoming = <Cx as Read<Topology, TopologyRoute>>::query(
@@ -341,11 +339,7 @@ fn run(
     let result = analyze_world_cooperating_with_control(
         fixtures::world(&fixture.code),
         fixtures::entry(),
-        ExecutionConfig {
-            max_work: 100_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        },
+        fixtures::config(100_000_000),
         algebra,
         &EnginePolicies::default(),
         &mut extension,
@@ -398,12 +392,7 @@ fn required_pending_defers_native_a_then_equivalent_top_retries_it() {
         ready < after_a,
         "A's actual successor can only appear after its required provider is ready"
     );
-    assert_eq!(
-        result.status(),
-        Status::Converged,
-        "{:?}",
-        result.frontiers()
-    );
+    fixtures::complete(&result);
     assert!(
         result
             .states()

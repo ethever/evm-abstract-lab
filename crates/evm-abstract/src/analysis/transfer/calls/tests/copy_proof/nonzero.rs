@@ -16,16 +16,7 @@ fn complete<D: EvmNumericAlgebra>(
         payload,
         OutcomeKind::Return,
         source,
-        &mut TransferContext {
-            config,
-            domain,
-            budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: false,
-            discover_code: false,
-        },
+        &mut crate::analysis::transfer::testing::context(config, budget, domain),
         7,
     );
     result

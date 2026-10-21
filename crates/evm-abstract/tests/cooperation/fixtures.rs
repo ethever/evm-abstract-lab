@@ -1,8 +1,12 @@
-use super::carrier::ExcludingWord;
+use super::{
+    carrier::ExcludingWord,
+    policy::{Calls, Policy},
+};
 use alloy_primitives::{Address, U256, hex};
 use evm_abstract::{
     Fork,
-    domain::EvmValue,
+    analysis::{EvmWorldAnalysis, ExecutionConfig, Status, cooperation::Input},
+    domain::{EvmValue, ValueAlgebra, WordElement},
     world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use revm_bytecode::opcode;
@@ -14,6 +18,45 @@ pub fn address(value: u64) -> Address {
 }
 pub fn word(value: u64) -> EvmValue<ExcludingWord> {
     EvmValue::constant(U256::from(value))
+}
+
+/// Keep each caller's original ledger while requiring executed terminal evidence.
+pub fn config(max_work: usize) -> ExecutionConfig {
+    ExecutionConfig {
+        max_work,
+        root_terminal_coverage: false,
+        ..ExecutionConfig::default()
+    }
+}
+
+/// External feedback, rather than the numeric EQ shortcut, must supply the proof.
+/// Retain the native exclusions: removing those is a separate production control.
+pub fn feedback_algebra(calls: &Calls) -> ValueAlgebra<Policy<'_>> {
+    let mut policy = Policy::new(calls);
+    policy.exclusion_queries = false;
+    ValueAlgebra::new(policy)
+}
+
+pub fn input_pc(input: &Input<ExcludingWord>) -> Option<usize> {
+    let frame = input.payload().active();
+    Some(
+        frame
+            .program
+            .as_ref()?
+            .blocks()
+            .get(frame.key.basic_block_index)?
+            .start_pc,
+    )
+}
+
+pub fn complete<N: WordElement>(result: &EvmWorldAnalysis<N>) {
+    assert_eq!(
+        result.status(),
+        Status::Converged,
+        "{:?}",
+        result.frontiers()
+    );
+    assert!(result.frontiers().is_empty());
 }
 
 pub fn world(code: &[u8]) -> EvmWorld<ExcludingWord> {

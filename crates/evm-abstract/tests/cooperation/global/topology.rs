@@ -1,6 +1,5 @@
 //! A late contributor is numerically covered but changes the declared universe.
 use super::*;
-use evm_abstract::analysis::cooperation::Input;
 
 struct Arrivals {
     source: usize,
@@ -14,17 +13,7 @@ struct Arrivals {
         bool,
     )>,
 }
-fn pc(input: &Input<ExcludingWord>) -> Option<usize> {
-    let frame = input.payload().active();
-    Some(
-        frame
-            .program
-            .as_ref()?
-            .blocks()
-            .get(frame.key.basic_block_index)?
-            .start_pc,
-    )
-}
+
 impl<Cx> Reduction<Cx> for Arrivals
 where
     Cx: Read<Inputs<ExcludingWord>, InputRoute, Error = Infrastructure>
@@ -44,7 +33,7 @@ where
         let Some(input) = answer.value() else {
             return Ok(LocalClosure::Stable);
         };
-        if pc(input) != Some(self.target) {
+        if fixtures::input_pc(input) != Some(self.target) {
             return Ok(LocalClosure::Stable);
         }
         cx.charge(input.work_size().saturating_mul(4))?;
@@ -68,7 +57,7 @@ where
                 return Ok(LocalClosure::Stable);
             };
             cx.charge(source.work_size().saturating_mul(4))?;
-            match pc(source) {
+            match fixtures::input_pc(source) {
                 Some(pc) if pc == self.source => {
                     // The source arm is reached only when the shared input
                     // bit is zero (ISZERO reverses the physical arm ordering).
@@ -176,20 +165,14 @@ fn covered_late_edge_and_backedge_reseed_old_must_facts_and_restore_a_feasible_b
         for reverse in [false, true] {
             let (code, source, late, target, restored) = fixture(backedge, reverse);
             let calls = Calls::default();
-            let mut policy = Policy::new(&calls);
-            policy.exclusion_queries = false;
-            let algebra = evm_abstract::domain::ValueAlgebra::new(policy);
+            let algebra = fixtures::feedback_algebra(&calls);
             let mut extension = Extension::new(Registered::new(Arrivals {
                 source,
                 late,
                 target,
                 snapshots: Vec::new(),
             }));
-            let mut config = ExecutionConfig {
-                max_work: 5_000_000_000,
-                root_terminal_coverage: false,
-                ..ExecutionConfig::default()
-            };
+            let mut config = fixtures::config(5_000_000_000);
             config.analysis.context_depth = 0;
             config.analysis.relations.enabled = false;
             let mut entry = fixtures::entry();
@@ -203,12 +186,7 @@ fn covered_late_edge_and_backedge_reseed_old_must_facts_and_restore_a_feasible_b
                 &mut extension,
             )
             .unwrap();
-            assert_eq!(
-                result.status(),
-                Status::Converged,
-                "{:?}",
-                result.frontiers()
-            );
+            fixtures::complete(&result);
             let trace = &extension.analyzer.rule().snapshots;
             let first = trace
                 .iter()

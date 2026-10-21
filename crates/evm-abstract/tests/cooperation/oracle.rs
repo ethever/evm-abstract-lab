@@ -52,7 +52,7 @@ fn concrete_input(
 
 pub fn assert_call_status_witnesses(code: &[u8], callee: &[u8]) {
     use alloy_primitives::U256;
-    use evm_abstract::analysis::{ExecutionConfig, OutcomeKind, Status, analyze_world};
+    use evm_abstract::analysis::{OutcomeKind, Status, analyze_world};
     let (world, entry) = concrete_input(code, Some(callee));
     let success = concrete::execute(&world, &entry);
     assert_eq!(success.kind, OutcomeKind::Return);
@@ -77,16 +77,7 @@ pub fn assert_call_status_witnesses(code: &[u8], callee: &[u8]) {
     eprintln!(
         "revm CALL witnesses: forwarded GAS -> (status1,data42); forwarded0 -> (status0,data0)"
     );
-    let result = analyze_world(
-        world,
-        entry,
-        ExecutionConfig {
-            max_work: 1_000_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        },
-    )
-    .unwrap();
+    let result = analyze_world(world, entry, fixtures::config(1_000_000_000)).unwrap();
     assert_eq!(result.status(), Status::Converged);
     success.covers(&result);
     failure.covers(&result);
@@ -137,9 +128,7 @@ fn one_custom_outcome_covers_the_concrete_parent_and_rolled_back_delegate_subtre
     use alloy_primitives::{U256, hex};
     use evm_abstract::{
         Fork,
-        analysis::{
-            EnginePolicies, ExecutionConfig, OutcomeKind, Status, analyze_world, analyze_world_with,
-        },
+        analysis::{EnginePolicies, OutcomeKind, Status, analyze_world, analyze_world_with},
         domain::ValueAlgebra,
         world::{Account, ByteArray, Entry, World},
     };
@@ -189,16 +178,8 @@ fn one_custom_outcome_covers_the_concrete_parent_and_rolled_back_delegate_subtre
     assert_eq!(write.pc, 3);
     assert_eq!(write.opcode, revm_bytecode::opcode::SSTORE);
     assert_eq!(write.storage_write, Some((U256::ZERO, U256::from(42))));
-    let default_result = analyze_world(
-        world,
-        input,
-        ExecutionConfig {
-            max_work: 1_000_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        },
-    )
-    .unwrap();
+
+    let default_result = analyze_world(world, input, fixtures::config(1_000_000_000)).unwrap();
     assert_eq!(default_result.status(), Status::Converged);
     witness.covers(&default_result);
     let calls = Calls::default();
@@ -206,11 +187,7 @@ fn one_custom_outcome_covers_the_concrete_parent_and_rolled_back_delegate_subtre
     let result = analyze_world_with(
         fixtures::rollback_world(&fixture),
         fixtures::entry(),
-        ExecutionConfig {
-            max_work: 1_000_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        },
+        fixtures::config(1_000_000_000),
         &algebra,
         &EnginePolicies::default(),
     )

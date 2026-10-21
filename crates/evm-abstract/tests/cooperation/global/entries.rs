@@ -76,10 +76,7 @@ struct Navigation {
     self_call_bodies: BTreeMap<(ProcedureId, usize), BTreeSet<Point>>,
     refined: usize,
 }
-fn pc(input: &evm_abstract::analysis::cooperation::Input<ExcludingWord>) -> usize {
-    let frame = input.payload().active();
-    frame.program.as_ref().unwrap().blocks()[frame.key.basic_block_index].start_pc
-}
+
 impl<Cx> Reduction<Cx> for Navigation
 where
     Cx: Read<Inputs<ExcludingWord>, InputRoute, Error = Infrastructure>
@@ -154,7 +151,7 @@ where
                     && own.payload().active().key.code_hash == descriptor.frame.code_hash
                 {
                     self.self_call_bodies
-                        .entry((*id, pc(own)))
+                        .entry((*id, fixtures::input_pc(own).expect("native runtime block")))
                         .or_default()
                         .insert(subject.point);
                 }
@@ -243,9 +240,7 @@ fn true_entries_support_multicaller_growth_and_distinct_body_policy_keys() {
             .insert(fixtures::address(fixtures::CALLEE), callee)
             .unwrap();
         let calls = Calls::default();
-        let mut numeric = Policy::new(&calls);
-        numeric.exclusion_queries = false;
-        let algebra = evm_abstract::domain::ValueAlgebra::new(numeric);
+        let algebra = fixtures::feedback_algebra(&calls);
         let state = SemanticPolicies::new(
             BodyKeys(split),
             CorrelatedJoin,
@@ -257,11 +252,7 @@ fn true_entries_support_multicaller_growth_and_distinct_body_policy_keys() {
             feedback: true,
             ..Navigation::default()
         }));
-        let mut config = ExecutionConfig {
-            max_work: 5_000_000_000,
-            root_terminal_coverage: false,
-            ..ExecutionConfig::default()
-        };
+        let mut config = fixtures::config(5_000_000_000);
         config.analysis.context_depth = 0;
         config.analysis.relations.enabled = false;
         let result = analyze_world_cooperating(
@@ -273,12 +264,7 @@ fn true_entries_support_multicaller_growth_and_distinct_body_policy_keys() {
             &mut extension,
         )
         .unwrap();
-        assert_eq!(
-            result.status(),
-            Status::Converged,
-            "{:?}",
-            result.frontiers()
-        );
+        fixtures::complete(&result);
         let nav = extension.analyzer.rule();
         assert!(
             nav.callers.values().any(|points| points

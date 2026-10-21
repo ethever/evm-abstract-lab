@@ -29,21 +29,10 @@ fn wide_symbolic_policy() -> ExecutionConfig {
     }
 }
 
-fn complete_symbolic(analysis: &evm_abstract::analysis::WorldAnalysis) {
-    complete(analysis);
-    assert!(!analysis.procedure_summaries().is_empty());
-    assert!(
-        analysis
-            .procedure_summaries()
-            .iter()
-            .all(|summary| summary.closed)
-    );
-}
-
 fn symbolic_with_native_input_gaps(analysis: &evm_abstract::analysis::WorldAnalysis) {
     assert!(!analysis.procedure_summaries().is_empty());
     if analysis.frontiers().is_empty() {
-        complete_symbolic(analysis);
+        complete_unknown(analysis);
     } else {
         // This full address space includes USER as an unknown-code address.
         // Its callback into A may enter the root branch and call a native
@@ -142,7 +131,7 @@ fn symbolic_target_covers_current_owner_other_known_and_remaining_addresses_with
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[]);
     let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
-    complete_symbolic(&analysis);
+    complete_unknown(&analysis);
     let call_pc = a.labels["call"] + 1;
     for candidate in [A, C] {
         let entries: Vec<_> = analysis
@@ -204,7 +193,7 @@ fn existing_target_path_condition_excludes_known_c_candidate() {
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[]);
     let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
-    complete_symbolic(&analysis);
+    complete_unknown(&analysis);
     let call_pc = a.labels["call"] + 1;
     assert!(
         !analysis
@@ -244,7 +233,7 @@ fn repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards
     insert(&mut world, A, &code, &[]);
     insert(&mut world, C, &known_c(), &[]);
     let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
-    complete_symbolic(&analysis);
+    complete_unknown(&analysis);
     let original = analysis.states()[0]
         .entry
         .call_stack
@@ -367,7 +356,6 @@ fn different_symbolic_targets_can_alias_the_same_known_storage_owner() {
 
 #[test]
 fn symbolic_alias_original_ledger_keeps_input_bound_coverage_or_complete_detail() {
-    use evm_abstract::analysis::{OutcomeKind, RootTerminalScope, RootTerminalTrigger};
     let world = symbolic_alias_world();
     let mut concrete_input = Vec::new();
     concrete_input.extend(U256::from(C).to_be_bytes::<32>());
@@ -396,48 +384,7 @@ fn symbolic_alias_original_ledger_keeps_input_bound_coverage_or_complete_detail(
         observed.covers(&analysis);
         return;
     }
-    assert_eq!(analysis.status(), Status::Incomplete);
-    let coverage = analysis
-        .root_terminal_coverage()
-        .expect("the original ledger keeps the prepaid root relation");
-    let reason = match coverage.trigger() {
-        RootTerminalTrigger::Work => FrontierReason::Work,
-        RootTerminalTrigger::SummaryWork => FrontierReason::SummaryWork,
-        other => panic!("expected an actual shared-ledger work stop: {other:?}"),
-    };
-    assert!(
-        analysis
-            .frontiers()
-            .iter()
-            .any(|frontier| frontier.reason == reason)
-    );
-    assert_eq!(coverage.scope(), RootTerminalScope::AllInputStates);
-    assert_eq!(
-        coverage.outcomes().each_ref().map(|outcome| outcome.kind()),
-        [
-            OutcomeKind::Return,
-            OutcomeKind::Revert,
-            OutcomeKind::Failure
-        ]
-    );
-    let input = coverage.input();
-    let original = &analysis.states()[0].entry;
-    assert_eq!(input.entry(), analysis.entry());
-    assert_eq!(input.frame(), &original.active().key);
-    assert_eq!(input.program(), original.active().program.as_ref().unwrap());
-    assert_eq!(input.calldata(), &original.active().calldata);
-    assert_eq!(input.call_value(), &original.active().call_value);
-    assert_eq!(input.saved_store(), &original.active().saved_store);
-    assert_eq!(input.initial_store(), &original.store);
-    assert_eq!(input.domain_spec(), analysis.domain_spec());
-    assert_eq!(
-        serde_json::to_value(input.config()).unwrap(),
-        serde_json::to_value(config).unwrap()
-    );
-    assert_eq!(
-        coverage.outcomes()[2].data().len().singleton(),
-        Some(U256::ZERO)
-    );
+    terminal_coverage::assert_original_work_coverage(&analysis, &config);
 }
 
 #[test]
