@@ -14,6 +14,7 @@ use std::{
 
 mod assumptions;
 mod changes;
+mod coverage;
 mod reclaim;
 mod report;
 mod run;
@@ -62,6 +63,8 @@ struct Fact {
     providers: BTreeSet<JobId>,
     // Reverse semantic assumptions, separate from ordinary wake dependencies.
     assumptions: BTreeSet<Scope>,
+    // One last-covered generation per stable source selector, never per job.
+    coverage: BTreeMap<FactId, Scope>,
     // A selector's current scope is lifecycle metadata shared by every handle.
     // Keeping it here also gives a fork its own authoritative staged selection.
     selected: Option<Scope>,
@@ -76,6 +79,7 @@ impl Fact {
             readers: BTreeSet::new(),
             providers: BTreeSet::new(),
             assumptions: BTreeSet::new(),
+            coverage: BTreeMap::new(),
             selected: None,
         }
     }
@@ -745,7 +749,7 @@ impl<J> Kernel<J> {
             .facts
             .iter()
             .filter(|fact| {
-                !fact.ready
+                (!fact.ready || !self.coverage_ready(fact))
                     && fact
                         .scope
                         .is_none_or(|scope| self.scopes[scope.index].active)

@@ -77,6 +77,41 @@ evaluation order; another fixture aggregates two independent provider routes.
   work can still discover and register successors/providers. Truly future external
   work must retain an explicit obligation before sealing.
 
+## Declared producer coverage
+
+A selected generation publishing outside its own scope declares its stable entry
+as a producer family of that fact. The fact retains one last-covered scope per
+family, across task identities and source retirement. This applies to typed
+channels and initialized sidecars, including equivalent prepared publications.
+All already declared families must cover their current fresh selections before
+the aggregate is available. The contract concerns that declared producer/input
+universe; establishing that the universe includes all required program behavior
+remains the adapter's coverage responsibility.
+
+A consumer querying only a shared fact automatically subscribes to its producer
+routes and adopts their validity when it obtains a Value. It need not know those
+producers' native inputs. Native-anchor growth can therefore stale `A -> X -> B`
+before X's numerical bound grows. A new B sees Pending while A is stale, and
+while A's new scope has not republished X. Retirement cannot remove this guard.
+A fact stored in the reader's own scope still adopts that fact as a premise when
+foreign producers support it; the local-feedback exemption applies to genuinely
+local facts. Equivalent new-scope publication restores coverage and wakes readers without a
+numerical-growth invalidation wave. A new family invalidates prior adopters once;
+a same-family, same-generation equivalent publication remains Unchanged.
+
+`read_slot` and typed `query` return Pending for unmet coverage. Metadata-only
+`observe_slot` and Vec-valued `keys` return recoverable `PendingCoverage`, retaining
+wake subscriptions. Closure counts demanded coverage as missing even when an old
+numerical value is retained and all current generations/jobs otherwise finished.
+`slot_version` remains an untracked constant-time publication counter;
+`Answer.version` describes that same fact's publications, not a standalone
+producer-validity certificate. A producer can turn stale while X.version stays
+unchanged and a tracked read of X becomes Pending. Query/observe_slot validation
+and the returned Availability must precede use or cache reuse.
+`resolve_absent` can explicitly renew a replaced producer's covering absence while
+retaining an aggregate may value; it cannot retract that value. An ordinary
+absence read is still a wake dependency, rather than a permanent negative proof.
+
 ## Installation and interruption
 
 Publication is atomic **per update**, rather than for a whole heterogeneous job:
@@ -96,7 +131,11 @@ can change without advancing the semantic version or waking consumers.
 
 `Run::suspend` releases kernel/meter borrows while keeping the evaluation in
 flight. `Kernel::resume` reacquires checked temporary access; only `finish` completes
-it. Notifications received while running, suspended or admitted remain separate
+it. A generic `solve` callback that invalidates its own selection returns a
+recoverable `SolveError::Kernel(StaleGeneration)` completion boundary with its
+owner still scheduled. The caller can seed/replace and continue. Completion
+consults the root meter before reporting obsolescence, preserving real work and
+cancellation failures; analyzer errors retain their original typed identity. Notifications received while running, suspended or admitted remain separate
 pending obligations. An abandoned token keeps closure open. `closure_in` checks
 one relative scope while the outer consumer remains in flight elsewhere.
 
@@ -124,8 +163,8 @@ prepared sidecars include live-value/evidence destruction in `install_work`.
 Incoming/prepared temporaries belong to the caller/policy preparation quotation,
 including their destruction on failure or equivalent publication.
 Arc/shared-handle carriers must override it when a cheap clone can own a deep
-payload. Key quotations include key destruction as well as clone/comparison. External slot operations explicitly quote
-application data costs. Kernel allocations, dependency retention, directory
+payload. Key quotations include key destruction as well as clone/comparison.
+External slot operations explicitly quote application data costs. Kernel allocations, dependency retention, directory
 scans, metadata snapshots, retirement and notification fanout are also charged.
 Costs that saturate are rejected, not silently accepted as bounded work.
 
@@ -149,7 +188,8 @@ per affected generation, reserving traversal and all resulting wakes before
 installation. Neither operation scans the full fact/provider history. The cost
 is proportional to touched live edges/jobs plus logarithmic index operations;
 reports and explicit snapshots still traverse retained metadata and are paid
-separately. `statistics` exposes retained identity counts, dependencies,
+separately. Coverage maps and their effective-availability scans are included in
+read, publication, snapshot, retirement and reporting quotations. `statistics` exposes retained identity counts, dependencies,
 evaluations and wake attempts.
 
 `Worklist` holds one dense node and one lookup entry per live pending obligation.

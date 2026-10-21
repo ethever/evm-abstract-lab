@@ -39,7 +39,9 @@ pub enum Availability<V> {
 pub struct Answer<V> {
     /// Availability is not a feasibility or execution-completion assertion.
     pub state: Availability<V>,
-    /// Semantic publication version.
+    /// This fact's publication/coverage-refresh counter. Producer invalidation
+    /// can make Availability Pending without changing this counter. It alone is
+    /// not a validity certificate: consume values through tracked guard checks.
     pub version: Version,
     /// Immutable assumptions supporting this observation.
     pub scope: Scope,
@@ -53,12 +55,14 @@ impl<V> Answer<V> {
         }
     }
 }
-/// Whether semantic information changed, rather than only its representation.
+/// Whether a publication changed semantic information or declared coverage
+/// availability, rather than only representation. Restoring a known producer's
+/// coverage wakes readers without seeding numerical-growth invalidation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
     /// Repeated or equivalent publication; readers are not rescheduled.
     Unchanged,
-    /// A new answer/version was installed and dependent readers were awakened.
+    /// A new answer/coverage version was installed and dependent readers woke.
     Changed,
 }
 

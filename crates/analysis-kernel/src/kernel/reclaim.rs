@@ -50,13 +50,15 @@ impl<J> Kernel<J> {
         }
         for id in &generation.facts {
             let fact = &self.facts[id.index];
-            cost = cost.saturating_add(
-                fact.readers
-                    .len()
-                    .saturating_add(fact.providers.len())
-                    .saturating_add(fact.assumptions.len())
-                    .saturating_mul(edge_work),
-            );
+            cost = cost
+                .saturating_add(fact.coverage.len().saturating_mul(2))
+                .saturating_add(
+                    fact.readers
+                        .len()
+                        .saturating_add(fact.providers.len())
+                        .saturating_add(fact.assumptions.len())
+                        .saturating_mul(edge_work),
+                );
         }
         Ok(cost)
     }
@@ -84,6 +86,7 @@ impl<J> Kernel<J> {
         }
         for id in std::mem::take(&mut self.scopes[scope.index].facts) {
             let fact = &mut self.facts[id.index];
+            fact.coverage.clear();
             for reader in std::mem::take(&mut fact.readers) {
                 self.jobs[reader.index].reads.remove(&id);
             }
