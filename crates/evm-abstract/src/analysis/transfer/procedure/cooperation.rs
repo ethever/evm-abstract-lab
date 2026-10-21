@@ -253,9 +253,28 @@ impl<
     }
 }
 
-impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, S: StatePolicy<D, P::Class>, X: Composition<D::Element, E>, E>
-    EvmSolver<'_, D, C, P, S, X, E>
+impl<
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element, E>,
+    E,
+> EvmSolver<'_, D, C, P, S, X, E>
 {
+    pub(super) fn source_inventory_changed(&mut self) -> Result<(), MachineError> {
+        self.cooperation
+            .structure_changed(
+                self.runtime,
+                self.active
+                    .as_mut()
+                    .or(self.caller.as_deref_mut())
+                    .ok_or(MachineError::Shape)?,
+                self.budget,
+            )
+            .map_err(|error| self.cooperation.stop(error, self.budget))
+    }
+
     fn body_point(index: usize) -> crate::analysis::cooperation::Point {
         crate::analysis::cooperation::Point {
             namespace: 1,
@@ -275,7 +294,11 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, S: StatePolicy<
             .saturating_add(64);
         self.reserve(work.saturating_mul(2))?;
         let info = crate::analysis::cooperation::ProcedureInfo {
-            entry: crate::analysis::cooperation::Point { namespace: 1, kind: crate::analysis::cooperation::PointKind::ProcedureEntry, index: id },
+            entry: crate::analysis::cooperation::Point {
+                namespace: 1,
+                kind: crate::analysis::cooperation::PointKind::ProcedureEntry,
+                index: id,
+            },
             frame: self.table.procedures[id].frame.clone(),
         };
         self.cooperation
@@ -341,17 +364,30 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, S: StatePolicy<
             .map_err(|error| self.cooperation.stop(error, self.budget))
     }
 
-    pub(super) fn observe_call_edge(&mut self, from: usize, callee: usize) -> Result<(), MachineError> {
-        self.cooperation.edge(
-            crate::analysis::cooperation::Edge {
-                from: Self::body_point(from),
-                to: crate::analysis::cooperation::Point { namespace: 1, kind: crate::analysis::cooperation::PointKind::ProcedureEntry, index: callee },
-                kind: MachineEdgeKind::Call,
-            },
-            self.runtime,
-            self.active.as_mut().or(self.caller.as_deref_mut()).ok_or(MachineError::Shape)?,
-            self.budget,
-        ).map_err(|error| self.cooperation.stop(error, self.budget))
+    pub(super) fn observe_call_edge(
+        &mut self,
+        from: usize,
+        callee: usize,
+    ) -> Result<(), MachineError> {
+        self.cooperation
+            .edge(
+                crate::analysis::cooperation::Edge {
+                    from: Self::body_point(from),
+                    to: crate::analysis::cooperation::Point {
+                        namespace: 1,
+                        kind: crate::analysis::cooperation::PointKind::ProcedureEntry,
+                        index: callee,
+                    },
+                    kind: MachineEdgeKind::Call,
+                },
+                self.runtime,
+                self.active
+                    .as_mut()
+                    .or(self.caller.as_deref_mut())
+                    .ok_or(MachineError::Shape)?,
+                self.budget,
+            )
+            .map_err(|error| self.cooperation.stop(error, self.budget))
     }
 
     fn summary_snapshot(
@@ -389,6 +425,14 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, S: StatePolicy<
     }
 
     pub(super) fn observe_summary(&mut self, id: usize, closed: bool) -> Result<(), MachineError> {
+        self.publish_summary_observation(id, closed)?;
+        if X::ENABLED && !closed {
+            self.runtime.schedule_observation(self.budget)?;
+        }
+        Ok(())
+    }
+
+    fn publish_summary_observation(&mut self, id: usize, closed: bool) -> Result<(), MachineError> {
         if !X::ENABLED {
             return Ok(());
         }
@@ -408,9 +452,6 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, S: StatePolicy<
                 self.budget,
             )
             .map_err(|error| self.cooperation.stop(error, self.budget))?;
-        if !closed {
-            self.runtime.schedule_observation(self.budget)?;
-        }
         Ok(())
     }
 
@@ -462,33 +503,83 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, S: StatePolicy<
         if !X::ENABLED {
             return Ok(());
         }
+        // Publish the actual retained entries first. This can invalidate old
+        // guarantees and enqueue callbacks/native owners anywhere in this run.
+        for id in 0..self.table.procedures.len() {
+            let source = self.table.entry_source(id).ok_or(MachineError::Shape)?;
+            let payload = source.payload;
+            let domain = self.domain;
+            self.cooperation
+                .publish_entry_input(
+                    crate::analysis::cooperation::ProcedureId {
+                        namespace: 1,
+                        index: id,
+                    },
+                    *source.revision,
+                    source.slot,
+                    self.runtime,
+                    self.active.as_mut().ok_or(MachineError::Shape)?,
+                    self.budget,
+                    |budget| {
+                        if !budget.charge(payload.work_size().saturating_mul(4)) {
+                            return Err(MachineError::work_failure());
+                        }
+                        super::instantiate_with(payload, domain)
+                    },
+                )
+                .map_err(|error| self.cooperation.stop(error, self.budget))?;
+        }
+        self.cooperation
+            .drain_observers(
+                self.runtime,
+                self.active.as_mut().ok_or(MachineError::Shape)?,
+                self.budget,
+            )
+            .map_err(|error| self.cooperation.stop(error, self.budget))?;
         let closed = self.runtime.relative_closed(self.budget)?
             && self.table.frontiers.is_empty()
             && !self.table.incomplete;
+        self.reserve(self.table.procedures.len().saturating_mul(4))?;
+        let mut summaries = Vec::with_capacity(self.table.procedures.len());
         for id in 0..self.table.procedures.len() {
-            let procedure = &self.table.procedures[id];
-            self.runtime.with_run(
+            summaries.push((
+                crate::analysis::cooperation::ProcedureId {
+                    namespace: 1,
+                    index: id,
+                },
+                self.summary_snapshot(id, closed)?,
+            ));
+        }
+        let table = &self.table;
+        self.cooperation
+            .publish_summaries(
+                summaries,
+                self.runtime,
                 self.active.as_mut().ok_or(MachineError::Shape)?,
                 self.budget,
                 |run| {
-                    run.observe_slot(&procedure.output)
-                        .map_err(crate::analysis::worklist::kernel_failure)?;
-                    run.reserve(procedure.nodes.len().saturating_add(1)).map_err(kernel_failure)?;
-                    for node in procedure.nodes.values() {
-                        run.observe_slot(&self.table.nodes[*node].input)
-                            .map_err(crate::analysis::worklist::kernel_failure)?;
+                    run.reserve(
+                        table
+                            .procedures
+                            .len()
+                            .saturating_mul(2)
+                            .saturating_add(table.nodes.len())
+                            .saturating_add(table.subscribers.len()),
+                    )?;
+                    for procedure in &table.procedures {
+                        run.observe_slot(&procedure.entry_source)?;
+                        run.observe_slot(&procedure.output)?;
+                    }
+                    for node in &table.nodes {
+                        run.observe_slot(&node.input)?;
+                    }
+                    for subscriber in &table.subscribers {
+                        run.observe_slot(&subscriber.input)?;
                     }
                     Ok(())
                 },
-            )?;
-            let key = crate::analysis::cooperation::ProcedureId {
-                namespace: 1,
-                index: id,
-            };
-            if self.cooperation.summary_closed(key) != closed {
-                self.observe_summary(id, closed)?;
-            }
-        }
+            )
+            .map_err(|error| self.cooperation.stop(error, self.budget))?;
         Ok(())
     }
 }

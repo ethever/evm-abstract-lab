@@ -59,12 +59,14 @@ type Route = SharedRoute<Here>;
 #[derive(Default)]
 pub(super) struct Source {
     pub(super) grown: usize,
+    adopt_closed: bool,
 }
 impl<Cx> Analyzer<Cx> for Source
 where
     Cx: Read<Inputs<ExcludingWord>, InputRoute, Error = Infrastructure>
         + Discover<Procedures, ProcedureRoute, Error = Infrastructure>
         + Discover<Summaries<ExcludingWord>, SummaryRoute, Error = Infrastructure>
+        + Read<Summaries<ExcludingWord>, SummaryRoute, Error = Infrastructure>
         + Accepts<GuardBound, Route, Error = PublishError<Infallible, MachineError>>
         + Charges<Error = Infrastructure>,
 {
@@ -92,9 +94,22 @@ where
                     cx,
                     Scoped::new(input.universe(), *id),
                 )?;
-                widen |= summary
+                let complete = summary
                     .value()
                     .is_some_and(|summary| summary.closed && !summary.outputs.is_empty());
+                if complete && self.adopt_closed {
+                    // A real must consumer adopts only an available closed
+                    // certificate. Pending has an independent invariant below,
+                    // so this feedback cycle does not require its own closure.
+                    let adopted = <Cx as Read<Summaries<ExcludingWord>, SummaryRoute>>::query(
+                        cx,
+                        Scoped::new(input.universe(), *id),
+                    )?;
+                    if !adopted.value().is_some_and(|summary| summary.closed) {
+                        return Ok(LocalClosure::Stable);
+                    }
+                }
+                widen |= complete;
             }
         }
         // Before widening the proof follows from the actual immutable store.
@@ -199,7 +214,9 @@ fn code() -> (Vec<u8>, usize) {
 }
 #[test]
 fn later_world_fact_reenters_body_changes_native_output_and_preserves_failure_causes() {
-    for use_summaries in [false, true] {
+    for (use_summaries, adopt_closed) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
         for (react, stop) in [
             (false, Stop::None),
             (true, Stop::None),
@@ -214,7 +231,10 @@ fn later_world_fact_reenters_body_changes_native_output_and_preserves_failure_ca
             let control = Control::new(Observer::default());
             let mut extension = Extension::with_tasks(
                 Pair::new(
-                    Source::default(),
+                    Source {
+                        adopt_closed,
+                        ..Source::default()
+                    },
                     Registered::new(Target {
                         rule: rule::Rule {
                             enabled: true,

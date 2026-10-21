@@ -299,7 +299,7 @@ impl<K: PolicyKey> KeyIndex<K> {
         self.entries.iter()
     }
 
-    /// Borrow only native IDs; callers prepay traversal before visiting them.
+    #[cfg(test)]
     pub(in crate::analysis) fn values(&self) -> btree_map::Values<'_, K, usize> {
         self.entries.values()
     }

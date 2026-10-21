@@ -148,6 +148,8 @@ pub(in crate::analysis) struct Cooperation<
     summary_publications: BTreeMap<public::ProcedureId, (usize, bool, usize)>,
     bindings: BTreeMap<Point, Binding<N>>,
     readonly: BTreeMap<public::ProcedureId, readonly::Binding<N>>,
+    proof: Option<proof::Proof>,
+    structure: Option<(analysis_kernel::SlotMeta<usize>, usize)>,
     dormant: BTreeMap<Point, Dormant>,
     owner_epochs: BTreeMap<JobId, usize>,
     scope_owners: BTreeMap<analysis_kernel::Scope, JobId>,
@@ -170,6 +172,8 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             summary_publications: BTreeMap::new(),
             bindings: BTreeMap::new(),
             readonly: BTreeMap::new(),
+            proof: None,
+            structure: None,
             dormant: BTreeMap::new(),
             owner_epochs: BTreeMap::new(),
             scope_owners: BTreeMap::new(),
@@ -278,6 +282,9 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
         }
         run.finish(result.map_err(CooperationError::Extension)?)?;
         let status = runtime.view().closure_in_metered(scope, &mut meter)?;
+        if clients_ready(status) {
+            runtime.notify_observation(meter.0)?;
+        }
         if clients_ready(status)
             && let Some(owner) = self.scope_owners.get(&scope).copied()
             && self.deferred.contains_key(&owner)
@@ -305,6 +312,20 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             self.evaluate_task(runtime, task, token, budget, Some(consumer))?;
         }
         Ok(())
+    }
+
+    /// Entry publication can wake current World callbacks as well as Body
+    /// clients. Execute those callbacks before checking native relative closure.
+    /// Native mandatory dependencies retain their real Deferred obligations;
+    /// a reader of completion cannot itself become a prerequisite for it.
+    pub(in crate::analysis) fn drain_observers(
+        &mut self,
+        runtime: &mut Runtime<<X as InputTasks>::Task>,
+        producer: &mut RunningJob,
+        budget: &mut WorkBudget,
+    ) -> Result<(), CooperationError<E>> {
+        let owner = self.consumer_job(runtime, producer, budget)?;
+        self.drain(runtime, budget, owner)
     }
 
     #[expect(
@@ -373,6 +394,11 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
                 .get(&point)
                 .is_none_or(|binding| binding.stamp != stamp)
         {
+            if point.kind == PointKind::Body {
+                // Replacement is a changed proof basis even if its previous
+                // Input was still Pending and therefore adopted no head.
+                self.structure_changed(runtime, consumer, budget)?;
+            }
             let (context, generation) = if let Some(binding) = self.bindings.get(&point) {
                 let key = binding.input.subject().scope.key();
                 (
@@ -642,6 +668,7 @@ fn resource_stop(error: &KernelError<MachineError>) -> bool {
 
 mod lifecycle;
 mod observations;
+mod proof;
 mod readonly;
 
 #[cfg(test)]
