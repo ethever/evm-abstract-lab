@@ -1,18 +1,22 @@
 //! The actual recursive engine result survives SSA and the browser protocol.
+use evm_abstract::domain::NumericValue;
 
 use super::*;
-use evm_abstract::{U256, domain::AbstractValue};
+use evm_abstract::{U256, domain::EvmValue};
 
 #[test]
 fn closed_unknown_interactions_project_as_summaries_without_invented_opcodes() {
     let root = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "unknown static interaction projection");
+    let mut world =
+        EvmWorld::<NumericValue>::new(Fork::Osaka, "unknown static interaction projection");
     // STATICCALL missing code, then return the preserved owner slot.
     let mut account =
-        Account::from_hex("5f5f5f5f6102015afa505f545f5260205ff3", Fork::Osaka).unwrap();
-    account
-        .storage
-        .insert(U256::ZERO, AbstractValue::constant(U256::from(42)));
+        EvmAccount::<NumericValue>::from_hex("5f5f5f5f6102015afa505f545f5260205ff3", Fork::Osaka)
+            .unwrap();
+    account.storage.insert(
+        U256::ZERO,
+        EvmValue::<NumericValue>::constant(U256::from(42)),
+    );
     world.insert(root, account).unwrap();
     let report = project_world(world, root);
     assert_eq!(report.status, api::AnalysisStatus::Converged);

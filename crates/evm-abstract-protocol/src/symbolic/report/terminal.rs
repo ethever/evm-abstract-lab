@@ -95,16 +95,11 @@ impl Validation<'_> {
         }
         let config = &input.config;
         let limits = &metadata.limits;
+        // The model label checks application consistency. Actual numeric
+        // controls come from the captured DomainSpec below.
         if !config.root_terminal_coverage
             || !limits.root_terminal_coverage
-            || config.domain_profile != limits.domain_profile
-            || config.reduction_rounds != limits.reduction_rounds
-            || config.max_facts != limits.max_facts
-            || config.relations.enabled != limits.relations_enabled
-            || config.relations.max_constraints != limits.max_constraints
-            || config.relations.max_nodes != limits.max_expression_nodes
-            || config.relations.max_depth != limits.max_expression_depth
-            || config.max_constants != limits.max_constants
+            || input.numeric_model != limits.numeric_model
             || config.context_depth != limits.context_depth
             || config.max_states != limits.max_states
             || config.max_transfers != limits.max_transfers
@@ -113,17 +108,11 @@ impl Validation<'_> {
             || config.max_memory_bytes != limits.max_memory_bytes
             || config.use_summaries != limits.use_summaries
             || [
-                config.max_constants,
-                config.reduction_rounds,
-                config.max_facts,
                 config.max_states,
                 config.max_transfers,
                 config.max_work,
                 config.max_call_depth,
                 config.max_memory_bytes,
-                config.relations.max_constraints,
-                config.relations.max_nodes,
-                config.relations.max_depth,
             ]
             .contains(&0)
         {
@@ -134,11 +123,22 @@ impl Validation<'_> {
             || domain.word_bits != 256
             || domain.cost_version == 0
             || domain.provenance_policy.is_empty()
-            || domain.profile != config.domain_profile
-            || domain.capacity != config.max_constants
-            || domain.reduction_rounds != config.reduction_rounds
-            || domain.fact_limit != config.max_facts
-            || domain.relations != config.relations
+            || domain.capacity != limits.max_constants
+            || domain.reduction_rounds != limits.reduction_rounds
+            || domain.fact_limit != limits.max_facts
+            || domain.relations.enabled != limits.relations_enabled
+            || domain.relations.max_constraints != limits.max_constraints
+            || domain.relations.max_nodes != limits.max_expression_nodes
+            || domain.relations.max_depth != limits.max_expression_depth
+            || [
+                domain.capacity,
+                domain.reduction_rounds,
+                domain.fact_limit,
+                domain.relations.max_constraints,
+                domain.relations.max_nodes,
+                domain.relations.max_depth,
+            ]
+            .contains(&0)
         {
             return Err(invalid(Failure::DomainSpec));
         }

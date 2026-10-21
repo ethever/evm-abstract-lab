@@ -8,6 +8,62 @@ use evm_abstract_protocol as api;
 
 pub(crate) const TWO_BLOCK_RETURN: &str = "6003565b602a5f5260205ff3";
 
+#[test]
+fn terminal_binding_checks_the_selected_model_and_actual_numeric_limits() {
+    for model in [api::NumericModel::Product, api::NumericModel::FiniteSet] {
+        let request = api::AnalyzeRequest {
+            input: api::AnalysisInput::Bytecode(api::BytecodeInput {
+                bytecode: TWO_BLOCK_RETURN.into(),
+                address: None,
+            }),
+            limits: api::AnalysisLimits {
+                numeric_model: model,
+                max_transfers: 1,
+                ..api::AnalysisLimits::default()
+            },
+            ..api::AnalyzeRequest::default()
+        };
+        let valid = evm_abstract_server::analyze::analyze(request).unwrap();
+        valid.validate().unwrap();
+        let input = &valid.root_terminal_coverage.as_ref().unwrap().input;
+        assert_eq!(input.numeric_model, model);
+        assert_eq!(
+            input.domain_spec.capacity,
+            valid.metadata.limits.max_constants
+        );
+        for field in 0..9 {
+            let mut invalid = valid.clone();
+            let input = &mut invalid.root_terminal_coverage.as_mut().unwrap().input;
+            match field {
+                0 => input.domain_spec.capacity += 1,
+                1 => input.domain_spec.reduction_rounds += 1,
+                2 => input.domain_spec.fact_limit += 1,
+                3 => input.domain_spec.relations.enabled = !input.domain_spec.relations.enabled,
+                4 => input.domain_spec.relations.max_constraints += 1,
+                5 => input.domain_spec.relations.max_nodes += 1,
+                6 => input.domain_spec.relations.max_depth += 1,
+                7 => {
+                    input.numeric_model = match model {
+                        api::NumericModel::Product => api::NumericModel::FiniteSet,
+                        api::NumericModel::FiniteSet => api::NumericModel::Product,
+                    };
+                }
+                _ => input.config.max_work += 1,
+            }
+            let expected = if field < 7 {
+                api::RootTerminalValidationFailure::DomainSpec
+            } else {
+                api::RootTerminalValidationFailure::Configuration
+            };
+            assert_eq!(
+                invalid.validate(),
+                Err(api::ReportValidationFailure::RootTerminal(expected)),
+                "{model:?} field {field}"
+            );
+        }
+    }
+}
+
 pub(crate) fn report() -> AnalysisReport {
     let mut request = api::AnalyzeRequest {
         input: api::AnalysisInput::Bytecode(api::BytecodeInput {

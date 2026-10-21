@@ -6,6 +6,7 @@ pub(crate) fn convert(source: SsaError) -> api::ApiError {
     let message = source.to_string();
     let details = match source {
         SsaError::Cancelled => return super::super::cancelled(),
+        SsaError::Work => api::SsaFailure::Work,
         SsaError::IncompleteAnalysis => api::SsaFailure::Coverage,
         SsaError::Normalization(source) => {
             use api::SsaNormalizationKind as P;
@@ -161,7 +162,11 @@ pub(crate) fn convert(source: SsaError) -> api::ApiError {
         })),
     };
     api::ApiError {
-        code: api::ApiErrorCode::Internal,
+        code: if matches!(details, api::SsaFailure::Work) {
+            api::ApiErrorCode::Export
+        } else {
+            api::ApiErrorCode::Internal
+        },
         message,
         details: api::ErrorDetails::Ssa(details),
     }

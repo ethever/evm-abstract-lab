@@ -1,11 +1,14 @@
 //! Bounded projection of procedure provenance without expanding callback graphs.
 
 use crate::analyze::{checkpoint, pools, symbolic::Pool};
-use evm_abstract::analysis::{self, control::Control};
+use evm_abstract::{
+    analysis::{self, control::Control},
+    domain::WordElement,
+};
 use evm_abstract_protocol as api;
 
-pub(super) fn project(
-    native: &analysis::WorldAnalysis,
+pub(super) fn project<N: WordElement>(
+    native: &analysis::EvmWorldAnalysis<N>,
     control: &Control,
     symbolic: &mut Pool<'_>,
 ) -> Result<Vec<api::AbstractSummary>, api::ApiError> {

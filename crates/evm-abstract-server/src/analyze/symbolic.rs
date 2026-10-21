@@ -7,7 +7,7 @@ use super::{checkpoint, value};
 use evm_abstract::{
     analysis::control::Control,
     domain::{
-        AbstractValue,
+        EvmValue, WordElement,
         relational::{Constraint, RelationPath, RelationPathKind, RelationState},
         symbolic::{
             ByteStateId, ByteView, ExprId, SlotStateId,
@@ -263,8 +263,11 @@ impl<'a> Pool<'a> {
         self.usage.nodes = self.graph.nodes.len();
         Ok(api::PathRef { node: index })
     }
-    pub fn value(&mut self, source: &AbstractValue) -> Result<api::ValueInfo, api::ApiError> {
-        self.charge(1 + source.constants().map_or(0, |v| v.len()))?;
+    pub fn value<N: WordElement>(
+        &mut self,
+        source: &EvmValue<N>,
+    ) -> Result<api::ValueInfo, api::ApiError> {
+        self.charge(source.numeric().work_size().saturating_add(1))?;
         let mut info = value::info(source);
         info.expression = source
             .expression()

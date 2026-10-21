@@ -2,6 +2,71 @@
 use evm_abstract_protocol::*;
 
 #[test]
+fn terminal_numeric_policy_is_separate_from_execution_budgets() {
+    let budgets = serde_json::json!({
+        "context_depth": 128,
+        "max_states": 100_000,
+        "max_transfers": 10_000_000,
+        "max_work": 9_007_199_254_740_993_u64,
+        "max_call_depth": 1025,
+        "max_memory_bytes": 67_108_864,
+        "use_summaries": true,
+        "root_terminal_coverage": true,
+    });
+    let config: RootTerminalConfig = serde_json::from_value(budgets.clone()).unwrap();
+    assert_eq!(config.max_work, 9_007_199_254_740_993);
+    assert_eq!(serde_json::to_value(config).unwrap(), budgets);
+    for (field, value) in [
+        ("domain_profile", serde_json::json!("Product")),
+        ("numeric_model", serde_json::json!("Product")),
+        ("max_constants", serde_json::json!(512)),
+        ("reduction_rounds", serde_json::json!(16)),
+        ("max_facts", serde_json::json!(4096)),
+        ("relations", serde_json::Value::Null),
+    ] {
+        let mut duplicate_policy = budgets.clone();
+        duplicate_policy[field] = value;
+        let error = serde_json::from_value::<RootTerminalConfig>(duplicate_policy).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("unknown RootTerminalConfig field: {field}")),
+            "{error}"
+        );
+    }
+    let numeric = serde_json::json!({
+        "schema_version": 1,
+        "word_bits": 256,
+        "capacity": 9_007_199_254_740_993_u64,
+        "reduction_rounds": 16,
+        "fact_limit": 4096,
+        "cost_version": 1,
+        "widening_after_updates": 4,
+        "provenance_policy": "test-policy",
+        "relations": {
+            "enabled": true,
+            "max_constraints": 2048,
+            "max_nodes": 16_384,
+            "max_depth": 256,
+        },
+    });
+    let spec: RootTerminalDomainSpec = serde_json::from_value(numeric.clone()).unwrap();
+    assert_eq!(spec.capacity, 9_007_199_254_740_993);
+    assert_eq!(serde_json::to_value(spec).unwrap(), numeric);
+    for field in ["profile", "numeric_model"] {
+        let mut labeled_spec = numeric.clone();
+        labeled_spec[field] = serde_json::json!("Product");
+        let error = serde_json::from_value::<RootTerminalDomainSpec>(labeled_spec).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("unknown RootTerminalDomainSpec field: {field}")),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn process_identities_are_canonical_decimal_strings_over_the_full_u64_interval() {
     for value in [
         0,

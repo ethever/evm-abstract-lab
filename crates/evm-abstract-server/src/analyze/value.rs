@@ -2,7 +2,7 @@
 //! report-local expression references without recursively expanding states.
 use evm_abstract::{
     U256,
-    domain::{AbstractValue, identity::Symbol, provenance::Origin},
+    domain::{EvmValue, WordElement, WordObservation, identity::Symbol, provenance::Origin},
     world::AddressInput,
 };
 use evm_abstract_protocol as api;
@@ -57,7 +57,31 @@ pub(super) fn origin(source: Origin) -> api::ValueOrigin {
         Origin::Nonce => O::Nonce,
     }
 }
-pub(super) fn info(source: &AbstractValue) -> api::ValueInfo {
+/// Project the carrier's sound observation, retaining metadata from the same
+/// executable value. Presentation never substitutes a product carrier for N.
+pub(super) fn info<N: WordElement>(source: &EvmValue<N>) -> api::ValueInfo {
+    let mut info = observation(&source.numeric().observation());
+    info.summary = source.to_string();
+    info.origins = source
+        .provenance()
+        .origins()
+        .sources()
+        .map(|sources| sources.iter().copied().map(origin).collect());
+    info.code_address_role = source.provenance().is_code_address();
+    info.identity = source
+        .identity()
+        .input()
+        .map(|identity| api::InputIdentity {
+            scope: api::DecimalU64(identity.scope()),
+            symbol: symbol(identity.symbol()),
+        });
+    info.symbolic_limit = source.symbolic_limit_reached();
+    info
+}
+
+/// An immutable source binding already carries this neutral guarantee language.
+/// Do not import it into any executable numeric carrier just to display it.
+pub(super) fn observation(source: &WordObservation) -> api::ValueInfo {
     let (lower, upper) = source.interval().unsigned_bounds();
     let unsigned = api::WordBounds {
         lower: word(lower),
@@ -94,20 +118,10 @@ pub(super) fn info(source: &AbstractValue) -> api::ValueInfo {
         unsigned,
         signed,
         congruence,
-        origins: source
-            .provenance()
-            .origins()
-            .sources()
-            .map(|sources| sources.iter().copied().map(origin).collect()),
-        code_address_role: source.provenance().is_code_address(),
-        identity: source
-            .identity()
-            .input()
-            .map(|identity| api::InputIdentity {
-                scope: api::DecimalU64(identity.scope()),
-                symbol: symbol(identity.symbol()),
-            }),
+        origins: None,
+        code_address_role: false,
+        identity: None,
         expression: None,
-        symbolic_limit: source.symbolic_limit_reached(),
+        symbolic_limit: false,
     }
 }
