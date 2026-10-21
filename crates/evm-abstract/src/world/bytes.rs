@@ -299,6 +299,14 @@ impl<N: WordElement> EvmByteArray<N> {
     pub fn len(&self) -> &EvmValue<N> {
         &self.length
     }
+
+    /// Retain a literal proved for this unchanged length N. The caller funds
+    /// construction and old-expression release and checks cancellation before
+    /// installation. No opaque value is queried, copied, replaced or dropped.
+    pub(crate) fn retain_length_literal(&mut self, expression: ExprId) {
+        debug_assert!(expression.as_constant().is_some());
+        self.length.set_expression(expression);
+    }
     /// Explicit current numeric upper bounds. The root also covers unlisted bytes.
     pub fn stored_bytes(&self) -> impl ExactSizeIterator<Item = (usize, &EvmValue<N>)> {
         self.bytes.iter().map(|(i, v)| (*i, v))

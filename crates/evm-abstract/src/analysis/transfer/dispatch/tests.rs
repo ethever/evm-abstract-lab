@@ -879,10 +879,8 @@ fn create_and_create2_discover_inputs_once_and_preserve_endowment_and_nonce_roll
             assert_eq!(child.store.created_in_transaction(destination), Some(true));
             assert_eq!(
                 (RECEIPT.get().quotes, RECEIPT.get().queries),
-                (1, if site == 8 { 4 } else { 1 }),
-                // Offset has three further uses inside the existing complete
-                // byte-expansion envelope; only discovery has a singleton fee.
-                "opcode {op}, site {site}"
+                (1, 1),
+                "paid input discovery is reused through all later phases: opcode {op}, site {site}",
             );
             let mut resumed = empty_execution(child.clone());
             transfer::calls::finish(
@@ -908,6 +906,305 @@ fn create_and_create2_discover_inputs_once_and_preserve_endowment_and_nonce_roll
             );
         }
     }
+}
+
+#[test]
+fn create_reuses_expensive_offset_discovery_through_allocation_and_initcode_entry() {
+    for op in [opcode::CREATE, opcode::CREATE2] {
+        let mut fixture = fixture(if op == opcode::CREATE { "f000" } else { "f500" }, false);
+        let destination = if op == opcode::CREATE {
+            address(0x101).create(0)
+        } else {
+            address(0x101).create2_from_code(U256::from(9).to_be_bytes::<32>(), [0])
+        };
+        fixture
+            .world
+            .insert(destination, EvmAccount::empty())
+            .unwrap();
+        fixture.input =
+            transfer::initial(&fixture.world, &fixture.entry, fixture.algebra.borrowed()).unwrap();
+        let args = [word(3), watched(1), word(1), word(9)];
+        let mut costs = Vec::new();
+        for fee in [313, 1_000_000] {
+            let _receipt = RECEIPT.scope();
+            RECEIPT.update(|receipt| receipt.fee = fee);
+            let mut budget = WorkBudget::new(fixture.config.max_work);
+            let result = create(&fixture, op, &args, &mut budget);
+            assert!(result.frontiers.is_empty());
+            assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (1, 1));
+            let child = result
+                .successors
+                .iter()
+                .find(|successor| successor.kind == MachineEdgeKind::Call)
+                .unwrap();
+            let parent = child.payload.call_stack.parent().unwrap();
+            assert_eq!(parent.memory.len().numeric().exact(), Some(U256::from(32)));
+            assert!(
+                parent
+                    .memory
+                    .allocation_facts()
+                    .any(|(offset, size)| offset.as_constant() == Some(U256::ONE)
+                        && size.as_constant() == Some(U256::ONE))
+            );
+            assert_eq!(child.payload.active().key.address, destination);
+            assert_eq!(
+                child
+                    .payload
+                    .store
+                    .read_balance(address(0x101))
+                    .numeric()
+                    .exact(),
+                Some(U256::from(97))
+            );
+            assert_eq!(
+                child
+                    .payload
+                    .store
+                    .read_balance(destination)
+                    .numeric()
+                    .exact(),
+                Some(U256::from(3))
+            );
+            costs.push(budget.used());
+        }
+        assert_eq!(
+            costs[1] - costs[0],
+            1_000_000 - 313,
+            "one query's named fee, without a structural-fee allowance"
+        );
+    }
+}
+
+#[test]
+fn create_old_msize_discovery_is_paid_once_and_stops_before_metadata_installation() {
+    let fixture = fixture("f000", false);
+    let offset = word(1).with_expression(ExprId::constant(U256::ONE));
+    let size = word(1).with_expression(ExprId::constant(U256::ONE));
+    for stop in 0..5 {
+        let mut result = empty_execution(fixture.input.clone());
+        let before = result.payload.active().memory.clone();
+        let _receipt = RECEIPT.scope();
+        RECEIPT.update(|receipt| {
+            receipt.watch_word = Some(U256::ZERO);
+            receipt.fee = if stop == 1 { usize::MAX } else { 1_000_000 };
+            receipt.on_quote = stop == 3;
+            receipt.on_query = stop == 4;
+        });
+        let mut budget = WorkBudget::new(if stop == 2 { 999_999 } else { usize::MAX });
+        let token = analysis_control::Cancellation::new();
+        let answer = analysis_control::with_cancellation(&token, || {
+            transfer::create::expand_prepared(
+                &mut result,
+                &offset,
+                &size,
+                &mut context(&fixture, &mut budget),
+            )
+        });
+        assert_eq!(RECEIPT.get().quotes, 1);
+        assert_eq!(RECEIPT.get().queries, usize::from(stop == 0 || stop == 4));
+        if stop == 0 {
+            assert_eq!(answer, Ok(()));
+            assert_eq!(
+                result.payload.active().memory.len().numeric().exact(),
+                Some(U256::from(32))
+            );
+        } else {
+            assert_eq!(
+                answer,
+                Err(if stop < 3 {
+                    FrontierReason::Work
+                } else {
+                    FrontierReason::Relations(QueryReason::Cancelled)
+                })
+            );
+            assert_eq!(result.payload.active().memory, before);
+            assert_eq!(budget.used(), if stop == 4 { 1_000_000 } else { 0 });
+        }
+    }
+    // Empty creation cannot change MSIZE, even when its discovery is refused.
+    let mut result = empty_execution(fixture.input.clone());
+    let _receipt = RECEIPT.scope();
+    RECEIPT.update(|receipt| {
+        receipt.watch_word = Some(U256::ZERO);
+        receipt.fee = usize::MAX;
+    });
+    let zero = word(0).with_expression(ExprId::constant(U256::ZERO));
+    transfer::create::expand_prepared(
+        &mut result,
+        &offset,
+        &zero,
+        &mut context(&fixture, &mut WorkBudget::new(fixture.config.max_work)),
+    )
+    .unwrap();
+    assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
+    assert_eq!(
+        result.payload.active().memory,
+        fixture.input.active().memory
+    );
+}
+
+#[test]
+fn create_allocation_reuses_negative_offset_discovery_without_changing_its_carrier() {
+    let fixture = fixture("f000", true);
+    let offset = EvmValue::from_numeric(Opaque {
+        watched: true,
+        low: U256::ONE,
+        high: U256::from(2),
+        finite: Some([U256::ONE, U256::from(2)].into()),
+        ..Opaque::top()
+    })
+    .with_expression(ExprId::fresh().unwrap());
+    let original = offset.clone();
+    let size = word(1).with_expression(ExprId::constant(U256::ONE));
+    let _receipt = RECEIPT.scope();
+    RECEIPT.update(|receipt| receipt.fee = 1_000_000);
+    let mut budget = WorkBudget::new(fixture.config.max_work);
+    let answer = transfer::query::singleton(offset.numeric(), &mut budget).unwrap();
+    assert_eq!(answer, None);
+    assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (1, 1));
+    let mut result = empty_execution(fixture.input.clone());
+    assert!(transfer::ranges::memory_after_queries(
+        &mut result,
+        &offset,
+        &size,
+        SingletonProof::Answer(answer),
+        SingletonProof::Answer(Some(U256::ONE)),
+        &mut context(&fixture, &mut budget),
+        0,
+    ));
+    assert!(result.frontiers.is_empty());
+    // The complete numeric guard operations own their expression preparation.
+    // Allocation must add neither a raw query nor a new standalone payment.
+    let before = RECEIPT.get();
+    RECEIPT.update(|receipt| receipt.fee = usize::MAX);
+    transfer::create::expand_prepared(
+        &mut result,
+        &offset,
+        &size,
+        &mut context(&fixture, &mut budget),
+    )
+    .unwrap();
+    assert_eq!(
+        (RECEIPT.get().quotes, RECEIPT.get().queries),
+        (before.quotes, before.queries)
+    );
+    assert_eq!(offset, original);
+    assert!(offset.numeric().exact().is_none());
+    assert!(
+        result
+            .payload
+            .active()
+            .memory
+            .len()
+            .numeric()
+            .contains(U256::from(32))
+    );
+    assert!(
+        result
+            .payload
+            .active()
+            .memory
+            .allocation_facts()
+            .any(|(at, length)| Some(at) == offset.expression()
+                && length.as_constant() == Some(U256::ONE))
+    );
+}
+
+#[test]
+fn jump_visit_refusal_keeps_completed_edges_and_reports_its_stop_once() {
+    for conditional in [false, true] {
+        for finite in [false, true] {
+            let mut fixture = fixture(
+                if conditional {
+                    "575b005b00"
+                } else {
+                    "565b005b00"
+                },
+                false,
+            );
+            let target = EvmValue::from_numeric(Opaque {
+                low: U256::ZERO,
+                high: U256::from(3),
+                finite: finite.then(|| [U256::ONE, U256::from(3)].into()),
+                ..Opaque::top()
+            });
+            fixture.input.active_mut().stack = if conditional {
+                vec![word(1), target]
+            } else {
+                vec![target]
+            };
+            let mut full_budget = WorkBudget::new(fixture.config.max_work);
+            let full = run(&fixture, &mut full_budget);
+            assert!(full.frontiers.is_empty());
+            assert_eq!(full.successors.len(), 2);
+            assert_eq!(full.outcomes.len(), usize::from(!finite));
+
+            // Only the last target visit is refused. The earlier valid edge
+            // and the open target's independently completed fault both remain.
+            let mut budget = WorkBudget::new(full_budget.used() - 1);
+            let result = run(&fixture, &mut budget);
+            assert!(budget.exhausted());
+            assert_eq!(budget.used(), full_budget.used() - 1);
+            assert_eq!(result.frontiers.len(), 1);
+            assert_eq!(
+                (result.frontiers[0].pc, &result.frontiers[0].reason),
+                (0, &FrontierReason::Work)
+            );
+            assert_eq!(result.successors.len(), 1);
+            assert_eq!(
+                result.successors[0].kind,
+                MachineEdgeKind::Intraprocedural(if conditional {
+                    EdgeKind::BranchTrue
+                } else {
+                    EdgeKind::Jump
+                })
+            );
+            assert_eq!(
+                result.successors[0].payload.active().key.basic_block_index,
+                fixture
+                    .input
+                    .active()
+                    .program
+                    .as_ref()
+                    .unwrap()
+                    .jumpdest_blocks()[&1]
+            );
+            assert_eq!(result.outcomes.len(), usize::from(!finite));
+            for outcome in result.outcomes {
+                assert_eq!(outcome.kind, OutcomeKind::Failure);
+                assert_eq!(outcome.store, *fixture.input.active().saved_store.state());
+            }
+        }
+    }
+}
+
+#[test]
+fn jump_visit_refusal_preserves_a_completed_invalid_target_failure() {
+    let mut fixture = fixture("565b005b00", false);
+    fixture.input.active_mut().stack = vec![EvmValue::from_numeric(Opaque {
+        low: U256::ZERO,
+        high: U256::from(3),
+        finite: Some([U256::ZERO, U256::from(3)].into()),
+        ..Opaque::top()
+    })];
+    let mut full_budget = WorkBudget::new(fixture.config.max_work);
+    let full = run(&fixture, &mut full_budget);
+    assert!(full.frontiers.is_empty());
+    assert_eq!(full.successors.len(), 1);
+    let result = run(&fixture, &mut WorkBudget::new(full_budget.used() - 1));
+    assert_eq!(result.frontiers.len(), 1);
+    assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+    assert!(result.successors.is_empty());
+    assert_eq!(result.outcomes.len(), 1);
+    assert_eq!(result.outcomes[0].kind, OutcomeKind::Failure);
+    assert_eq!(
+        result.outcomes[0].store,
+        *fixture.input.active().saved_store.state()
+    );
+    assert_eq!(
+        result.diagnostics,
+        [(0, crate::analysis::DiagnosticKind::InvalidJump)]
+    );
 }
 
 #[test]
