@@ -9,15 +9,15 @@ use crate::{
         NumericReduction, ProductAlgebra, ValueAlgebra, WordElement, WordObservation,
     },
     ssa::test_support::{postprocessing, run_native},
+    test_instrumentation::Counter,
     world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use serde::Serialize;
-use std::{cell::Cell, fmt};
+use std::fmt;
 
-thread_local! {
-    static LITERAL_FACTORIES: Cell<usize> = const { Cell::new(0) };
-    static NUMERIC_COPIES: Cell<usize> = const { Cell::new(0) };
-}
+// Unscoped positive tests cannot update another thread's measured counters.
+static LITERAL_FACTORIES: Counter<usize> = Counter::new(0);
+static NUMERIC_COPIES: Counter<usize> = Counter::new(0);
 
 fn reset_native_counters() {
     LITERAL_FACTORIES.set(0);
@@ -33,7 +33,7 @@ enum CustomWord {
 }
 impl Clone for CustomWord {
     fn clone(&self) -> Self {
-        NUMERIC_COPIES.set(NUMERIC_COPIES.get() + 1);
+        NUMERIC_COPIES.update(|copies| *copies += 1);
         match self {
             Self::Open => Self::Open,
             Self::Exact { word } => Self::Exact { word: *word },
@@ -55,7 +55,7 @@ impl WordElement for CustomWord {
         Self::Open
     }
     fn constant(word: U256) -> Self {
-        LITERAL_FACTORIES.set(LITERAL_FACTORIES.get() + 1);
+        LITERAL_FACTORIES.update(|factories| *factories += 1);
         Self::Exact { word }
     }
     fn from_observation(value: &WordObservation) -> Self {
@@ -504,6 +504,8 @@ fn custom_execution(
 #[test]
 fn stop_only_structural_build_and_verifier_replay_require_positive_work() {
     use crate::{resource::WorkBudget, ssa::SsaError};
+    let _literal_factories = LITERAL_FACTORIES.scope();
+    let _numeric_copies = NUMERIC_COPIES.scope();
     let analysis = custom_execution("00", ExecutionConfig::default());
     assert_eq!(analysis.status(), Status::Converged);
     assert_eq!(analysis.states().len(), 1);
@@ -548,6 +550,8 @@ fn stop_only_structural_build_and_verifier_replay_require_positive_work() {
 #[test]
 fn every_metered_ssa_path_checks_captured_and_ambient_owners_even_without_facts() {
     use crate::{analysis::control::Control, ssa::SsaError};
+    let _literal_factories = LITERAL_FACTORIES.scope();
+    let _numeric_copies = NUMERIC_COPIES.scope();
     let stop = custom_execution("00", ExecutionConfig::default());
     let empty = custom_execution(
         "00",
@@ -619,6 +623,8 @@ fn structural_refusal_precedes_native_copy_and_derived_proofs_never_construct_ca
         resource::WorkBudget,
         ssa::{FactSource, SsaError},
     };
+    let _literal_factories = LITERAL_FACTORIES.scope();
+    let _numeric_copies = NUMERIC_COPIES.scope();
     let code = format!("{}600260030160000234801800", "600150".repeat(256));
     let analysis = custom_execution(&code, ExecutionConfig::default());
     assert_eq!(analysis.status(), Status::Converged);
