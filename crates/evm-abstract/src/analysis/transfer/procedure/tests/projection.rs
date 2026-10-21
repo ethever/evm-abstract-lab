@@ -36,7 +36,7 @@ fn callee_subscription_projects_the_actual_target_guard_before_erasing_relations
         StorageReadPolicy::Abstract,
     );
     let parent = solver.procedure(input.clone()).unwrap();
-    let from = solver.table.procedures[parent].entry;
+    let from = solver.table.procedures[parent].first_body();
     let expression = ExprId::fresh().unwrap();
     input.store.write(
         address(0x101),
@@ -77,7 +77,7 @@ fn callee_subscription_projects_the_actual_target_guard_before_erasing_relations
     let callee = solver.table.subscribers[0].callee;
     assert_ne!(callee, parent);
     let replay = instantiate(
-        &solver.table.nodes[solver.table.procedures[callee].entry].payload,
+        &solver.table.nodes[solver.table.procedures[callee].first_body()].payload,
         domain,
     )
     .unwrap();

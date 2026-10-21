@@ -27,7 +27,7 @@ fn duplicate_and_growing_inputs_park_each_resume_partition_with_its_current_boun
             StorageReadPolicy::Abstract,
         );
         let procedure = solver.procedure(payload.clone()).unwrap();
-        root = solver.table.procedures[procedure].entry;
+        root = solver.table.procedures[procedure].first_body();
         success = solver
             .enqueue(procedure, payload.clone(), Some(true), root)
             .unwrap();

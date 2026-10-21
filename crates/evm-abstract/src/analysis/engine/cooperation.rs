@@ -147,6 +147,7 @@ pub(in crate::analysis) struct Cooperation<
     // snapshot, and older snapshots are released on publication.
     summary_publications: BTreeMap<public::ProcedureId, (usize, bool, usize)>,
     bindings: BTreeMap<Point, Binding<N>>,
+    readonly: BTreeMap<public::ProcedureId, readonly::Binding<N>>,
     dormant: BTreeMap<Point, Dormant>,
     owner_epochs: BTreeMap<JobId, usize>,
     scope_owners: BTreeMap<analysis_kernel::Scope, JobId>,
@@ -168,6 +169,7 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             global: None,
             summary_publications: BTreeMap::new(),
             bindings: BTreeMap::new(),
+            readonly: BTreeMap::new(),
             dormant: BTreeMap::new(),
             owner_epochs: BTreeMap::new(),
             scope_owners: BTreeMap::new(),
@@ -193,6 +195,9 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
                 CooperationError::Initialization(public::InitializationError::Kernel(error)) => {
                     resource_stop(error)
                 }
+                CooperationError::Initialization(public::InitializationError::Materialization(
+                    MachineError::Work,
+                )) => true,
                 CooperationError::Initialization(public::InitializationError::Input(
                     analysis_kernel::PublishError::Kernel(error),
                 )) => resource_stop(error),
@@ -325,6 +330,9 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
         // Disabled extensions bypass this owned local-view allocation at every
         // caller, preserving the default execution path and its work tariff.
         debug_assert!(X::ENABLED);
+        if point.kind == PointKind::ProcedureEntry {
+            return Err(KernelError::InvalidJob.into());
+        }
         // Point/scope keys have fixed width; reserve a usize-sized tree-height
         // envelope before either route lookup or retained generation metadata.
         analysis_kernel::Meter::reserve(
@@ -435,6 +443,7 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             let owner = match point.kind {
                 PointKind::World => runtime.world,
                 PointKind::Body => runtime.relative,
+                PointKind::ProcedureEntry => return Err(KernelError::InvalidJob.into()),
             };
             let mut retired = self
                 .bindings
@@ -633,6 +642,7 @@ fn resource_stop(error: &KernelError<MachineError>) -> bool {
 
 mod lifecycle;
 mod observations;
+mod readonly;
 
 #[cfg(test)]
 mod tests;

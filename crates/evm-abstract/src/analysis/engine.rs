@@ -27,9 +27,9 @@
 use super::{
     ConfigError, Diagnostic, Limit, Status, SummaryStats, WorldAnalysis,
     machine::{
-        EvmEntryAlternatives, EvmExecutionEvidence, EvmMachineFrontier, EvmMachineOutcome,
-        EvmMachinePayload, EvmMachineState, EvmWorldAnalysis, ExecutionConfig, FrontierReason,
-        MachineEdge, MachineEdgeKind, MachineError, OutcomeKind,
+        EvmExecutionEvidence, EvmMachineFrontier, EvmMachineOutcome, EvmMachinePayload,
+        EvmMachineState, EvmWorldAnalysis, ExecutionConfig, FrontierReason, MachineEdge,
+        MachineEdgeKind, MachineError, OutcomeKind,
     },
     summary::{EvmCache, EvmCertificate, EvmPrepared, EvmReplay},
     transfer::{self, EvmCompletedCall, EvmSuccessor, WorkBudget},
@@ -46,10 +46,7 @@ use crate::{
     world::{EvmEntry, EvmWorld},
 };
 use analysis_kernel::{Availability, Change, RunningJob, SlotMeta};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 pub(in crate::analysis) mod cooperation;
 pub(in crate::analysis) mod policy;
@@ -63,6 +60,15 @@ mod installation;
 mod reuse;
 mod terminal;
 pub use policy::ContextPolicy as EvmContextPolicy;
+use policy::KeyIndex;
+pub use policy::{
+    Acceleration, AccelerationInput, AccelerationPolicy, BoundedJoin, CoarseSummaries,
+    CorrelatedJoin, EagerAcceleration, FeedbackAcceleration, ForgetJumpHistory, MachinePartition,
+    NoAcceleration, PartitionRefusal, PartitionResult, Partitioned, PartitionedRelative,
+    PolicyContext, PolicyKey, PolicySite, ProcedureOutput, ProcedureSummaryPolicy,
+    ProjectedSummaries, QuotedKey, RelativePartitionResult, RelativeState, SemanticPolicies,
+    StatePolicy, StructuralPartition, WholeStateMetadata, WholeStatePolicy,
+};
 pub use policy::{
     Arrival, ContextInsensitive, ContextPolicy, EnginePolicies, FirstResumeStatus,
     MergeResumeStatus, PartitionPolicy, RecentDistinctJumps,
@@ -173,12 +179,17 @@ pub(super) fn run_reusing(
 }
 
 /// Execute an injected numeric algebra and frozen precision policies directly.
-pub(super) fn run_world_with<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy>(
+pub(super) fn run_world_with<
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+>(
     world: EvmWorld<D::Element>,
     entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     domain: AlgebraRef<'_, D>,
-    policies: &EnginePolicies<C, P>,
+    policies: &EnginePolicies<C, P, S>,
     observer: &super::progress::Observer,
 ) -> Result<EvmWorldAnalysis<D::Element>, ConfigError> {
     let mut budget = WorkBudget::new(config.max_work);
@@ -200,12 +211,12 @@ pub(super) fn run_world_with<D: EvmNumericAlgebra, C: ContextPolicy, P: Partitio
 }
 
 /// Join the real interpreter with a caller-owned static analyzer assembly.
-pub(super) fn run_world_cooperating<D, C, P, A, S, F, G, E>(
+pub(super) fn run_world_cooperating<D, C, P, H, A, S, F, G, E>(
     world: EvmWorld<D::Element>,
     entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     domain: AlgebraRef<'_, D>,
-    policies: &EnginePolicies<C, P>,
+    policies: &EnginePolicies<C, P, H>,
     extension: &mut Extension<A, S, F, G>,
     observer: &super::progress::Observer,
 ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>>
@@ -213,6 +224,7 @@ where
     D: EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
+    H: StatePolicy<D, P::Class>,
     S: InputTasks,
     F: ExtraStores,
     G: ExtraStores,
@@ -258,6 +270,7 @@ fn run_reusing_with<
     D: EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
     X: Composition<D::Element, E>,
     E,
 >(
@@ -265,7 +278,7 @@ fn run_reusing_with<
     mut entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     domain: AlgebraRef<'_, D>,
-    policies: &EnginePolicies<C, P>,
+    policies: &EnginePolicies<C, P, S>,
     budget: &mut WorkBudget,
     counters: &mut Counters,
     storage_reads: transfer::StorageReadPolicy,
@@ -381,7 +394,78 @@ fn run_reusing_with<
         result.work = budget.used();
         return Ok(result);
     }
-    let alternatives = EvmEntryAlternatives::new(&initial);
+    let classes = policy::classify(&policies.partition, Arrival::default(), budget)
+        .and_then(|class| policy::clone_key(&class, budget).map(|prepared| (class, prepared)));
+    let (initial_class, prepared_class) = match classes {
+        Ok(classes) => classes,
+        Err(error) => {
+            result.frontiers.push(EvmMachineFrontier {
+                from: None,
+                target: Some(initial.key()),
+                pc: None,
+                reason: error.frontier_reason(),
+                range: None,
+                payload: Some(Arc::new(initial)),
+            });
+            result.status = Status::Incomplete;
+            result.work = budget.used();
+            return Ok(result);
+        }
+    };
+    let prepared = policies.state.prepare_owned(
+        initial,
+        PolicySite::World,
+        prepared_class,
+        &mut PolicyContext {
+            domain,
+            environment: &result.entry,
+            budget,
+        },
+    );
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(PartitionRefusal {
+            input: initial,
+            error,
+        }) => {
+            result.frontiers.push(EvmMachineFrontier {
+                from: None,
+                target: Some(initial.key()),
+                pc: None,
+                reason: error.frontier_reason(),
+                range: None,
+                payload: Some(Arc::new(initial)),
+            });
+            result.status = Status::Incomplete;
+            result.work = budget.used();
+            return Ok(result);
+        }
+    };
+    let initial_key = prepared.key;
+    let initial = prepared.payload;
+    let alternatives = match policies.state.initialize(
+        &initial,
+        &mut PolicyContext {
+            domain,
+            environment: &result.entry,
+            budget,
+        },
+    ) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            result.frontiers.push(EvmMachineFrontier {
+                from: None,
+                target: Some(initial.key()),
+                pc: None,
+                reason: error.frontier_reason(),
+                range: None,
+                payload: Some(Arc::new(initial)),
+            });
+            result.status = Status::Incomplete;
+            result.work = budget.used();
+            return Ok(result);
+        }
+    };
     if let Some(reuse) = &mut reuse {
         reuse.record_dependencies(0, &initial);
     }
@@ -445,7 +529,9 @@ fn run_reusing_with<
         resume_status: None,
     });
     counters.states += 1;
-    let cache = (result.config.use_summaries && !X::ENABLED).then(EvmCache::new);
+    let cache =
+        (result.config.use_summaries && !X::ENABLED && policies.state.supports_graph_replay())
+            .then(EvmCache::new);
     let runtime = Runtime::new(budget).and_then(|mut runtime| {
         let scope = runtime.world;
         let input = runtime
@@ -471,6 +557,20 @@ fn run_reusing_with<
             return Ok(result);
         }
     };
+    let mut ids = KeyIndex::new();
+    if let Err(error) = ids.insert_with(initial_key, budget, |_| Ok(0)) {
+        result.frontiers.push(EvmMachineFrontier {
+            from: None,
+            target: Some(result.states[0].key.clone()),
+            pc: None,
+            reason: error.frontier_reason(),
+            range: None,
+            payload: None,
+        });
+        result.status = Status::Incomplete;
+        result.work = budget.used();
+        return Ok(result);
+    }
     let mut engine = EvmEngine {
         result,
         domain,
@@ -478,8 +578,10 @@ fn run_reusing_with<
         budget,
         counters,
         storage_reads,
-        ids: BTreeMap::from([((key, policies.partition.classify(Arrival::default())), 0)]),
-        partitions: vec![policies.partition.classify(Arrival::default())],
+        ids,
+        partitions: vec![initial_class],
+        updates: vec![0],
+        feedback: vec![false],
         runtime,
         cooperation: Some(cooperation),
         inputs: vec![input],
@@ -541,6 +643,7 @@ struct EvmEngine<
     D: EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
     X: Composition<D::Element, E>,
     E,
 > {
@@ -548,7 +651,7 @@ struct EvmEngine<
     result: EvmWorldAnalysis<D::Element>,
     /// 所有普通转换、join 和摘要回放共用的有限值域及其容量规则。
     domain: AlgebraRef<'a, D>,
-    policies: &'a EnginePolicies<C, P>,
+    policies: &'a EnginePolicies<C, P, S>,
     /// 入口复制、执行、join、摘要比较/认证/导入共用的累计工作账本。
     budget: &'a mut WorkBudget,
     /// Prior RPC refinement rounds also consume state and transfer capacity.
@@ -556,14 +659,15 @@ struct EvmEngine<
     /// 是否在 RPC refinement 中把缺失的初始槽观测记录为请求边界。
     storage_reads: transfer::StorageReadPolicy,
     /// 完整 payload 备选的覆盖证据；独立字段的数值 widening 不证明状态覆盖。
-    alternatives: Vec<EvmEntryAlternatives<D::Element>>,
+    alternatives: Vec<S::Metadata>,
     /// Only selectors allocated by a machine join, never source/observation IDs.
     selectors: BTreeSet<ExprId>,
-    /// Structural entries, with a bounded status partition for the first block
-    /// resumed by a call. Intraprocedural successors use None again;
-    /// neither recursion depth nor arbitrary stack values become new keys.
-    ids: BTreeMap<(super::MachineKey, P::Class), usize>,
+    /// The semantic partition's actual identity, after its covering preparation.
+    /// Public MachineKeys are report projections and need not be unique.
+    ids: KeyIndex<S::Key>,
     partitions: Vec<P::Class>,
+    updates: Vec<usize>,
+    feedback: Vec<bool>,
     /// 待处理义务及 FIFO 记录；摘要回放满足节点后可保留失效记录。
     runtime: Runtime<<X as InputTasks>::Task>,
     cooperation: Option<Cooperation<D::Element, X, E>>,
@@ -582,7 +686,7 @@ struct EvmEngine<
     /// 可选的完整 callee 图证书缓存；关闭摘要时普通工作表路径仍然成立。
     cache: Option<EvmCache<D::Element, P::Class>>,
     /// Known/unknown procedure inputs, outputs and retained return continuations.
-    procedures: transfer::procedure::EvmTable<D::Element, P::Class>,
+    procedures: transfer::procedure::EvmTable<D::Element, S::Key>,
     /// Session-owned pure deltas and conservative initial-read index.
     reuse: Option<&'a mut EvmExecutionReuse<D::Element>>,
     /// Original typed detailed boundary; never inferred from final JSON reasons.
@@ -604,8 +708,14 @@ enum SummaryAttempt {
     Interrupted(FrontierReason),
 }
 
-impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<D::Element, E>, E>
-    EvmEngine<'_, D, C, P, X, E>
+impl<
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element, E>,
+    E,
+> EvmEngine<'_, D, C, P, S, X, E>
 {
     #[cfg(test)]
     fn test_admission(&mut self) -> Result<(), MachineError> {
@@ -1020,7 +1130,19 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             if let Some(token) = self.active.take()
                 && let Err(error) = self.runtime.finish(token, self.budget)
             {
-                self.stop_after_execution(id, reported_work, error.frontier_reason());
+                let finish_reason = error.frontier_reason();
+                let reason = if matches!(
+                    finish_reason,
+                    FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+                ) {
+                    finish_reason
+                } else {
+                    self.cache
+                        .as_ref()
+                        .and_then(|cache| cache.stop_reason())
+                        .unwrap_or(finish_reason)
+                };
+                self.stop_after_execution(id, reported_work, reason);
                 break;
             }
             self.active_node = None;
@@ -1029,7 +1151,11 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     .cache
                     .as_ref()
                     .and_then(|cache| cache.pending_target(&self.result));
-                let reason = super::summary::summary_boundary();
+                let reason = self
+                    .cache
+                    .as_ref()
+                    .and_then(|cache| cache.stop_reason())
+                    .unwrap_or_else(|| super::summary::summary_boundary(self.budget));
                 self.frontier(Some(id), target, reason.clone());
                 self.stop_queued(reason);
                 break;
@@ -1124,7 +1250,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 if cache.begin(id, input, self.budget) {
                     SummaryAttempt::Miss
                 } else {
-                    let reason = super::summary::summary_boundary();
+                    let reason = super::summary::summary_boundary(self.budget);
                     self.frontier(
                         Some(id),
                         Some(self.result.states[id].key.clone()),
@@ -1134,7 +1260,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 }
             }
             Err(()) => {
-                let reason = super::summary::summary_boundary();
+                let reason = super::summary::summary_boundary(self.budget);
                 self.frontier(
                     Some(id),
                     Some(self.result.states[id].key.clone()),
@@ -1226,18 +1352,67 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         work_reason: FrontierReason,
     ) -> Option<usize> {
         successor.payload.normalize();
-        let key = successor.payload.key();
         #[cfg(test)]
         if let Err(error) = self.test_admission() {
             self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
             return None;
         }
         let resume_status = self.call_resume_status(from, &successor);
-        let entry_key = (
-            key.clone(),
-            self.policies.partition.classify(Arrival { resume_status }),
+        let classes = policy::classify(
+            &self.policies.partition,
+            Arrival { resume_status },
+            self.budget,
+        )
+        .and_then(|class| policy::clone_key(&class, self.budget).map(|prepared| (class, prepared)));
+        let (class, prepared_class) = match classes {
+            Ok(classes) => classes,
+            Err(error) => {
+                let reason = if error == MachineError::Work {
+                    work_reason
+                } else {
+                    error.frontier_reason()
+                };
+                self.frontier_payload(Some(from), reason, successor.payload);
+                return None;
+            }
+        };
+        let prepared = self.policies.state.prepare_owned(
+            successor.payload,
+            PolicySite::World,
+            prepared_class,
+            &mut PolicyContext {
+                domain: self.domain,
+                environment: &self.result.entry,
+                budget: self.budget,
+            },
         );
-        let to = if let Some(existing) = self.ids.get(&entry_key).copied() {
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(PartitionRefusal { input, error }) => {
+                let reason = if error == MachineError::Work {
+                    work_reason
+                } else {
+                    error.frontier_reason()
+                };
+                self.frontier_payload(Some(from), reason, input);
+                return None;
+            }
+        };
+        let entry_key = prepared.key;
+        successor.payload = prepared.payload;
+        let existing = match self.ids.get(&entry_key, self.budget) {
+            Ok(existing) => existing,
+            Err(error) => {
+                let reason = if error == MachineError::Work {
+                    work_reason
+                } else {
+                    error.frontier_reason()
+                };
+                self.frontier_payload(Some(from), reason, successor.payload);
+                return None;
+            }
+        };
+        let to = if let Some(existing) = existing {
             let cyclic = match self.joins_cycle(existing, from) {
                 Ok(cyclic) => cyclic,
                 Err(error) => {
@@ -1250,7 +1425,17 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     return None;
                 }
             };
-            let old_alternatives_work = self.alternatives[existing].work_size();
+            if cyclic
+                && !self.feedback[existing]
+                && let Err(error) = self.mark_feedback(existing)
+            {
+                self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
+                return None;
+            }
+            let old_alternatives_work = self
+                .policies
+                .state
+                .metadata_work(&self.alternatives[existing]);
             if !self
                 .budget
                 .charge(old_alternatives_work.saturating_add(successor.payload.work_size()))
@@ -1259,14 +1444,23 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 return None;
             }
             let mut alternatives = self.alternatives[existing].clone();
-            let joined = alternatives.join_entry(
+            let acceleration = self.policies.state.decide(AccelerationInput {
+                site: PolicySite::World,
+                feedback: self.feedback[existing],
+                updates: self.updates[existing],
+                default_delay: self.domain.spec().widening_after_updates(),
+            });
+            let joined = self.policies.state.admit(
                 &self.result.states[existing].entry,
                 &successor.payload,
-                &self.result.entry,
-                self.domain,
-                self.budget,
+                &mut alternatives,
+                acceleration,
                 &self.selectors,
-                cyclic,
+                &mut PolicyContext {
+                    domain: self.domain,
+                    environment: &self.result.entry,
+                    budget: self.budget,
+                },
             );
             let joined = match joined {
                 Ok(joined) => joined,
@@ -1287,7 +1481,12 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 alternatives,
                 old_alternatives_work,
             ) {
-                self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
+                let reason = if error == MachineError::Work {
+                    work_reason
+                } else {
+                    error.frontier_reason()
+                };
+                self.frontier_payload(Some(from), reason, successor.payload);
                 return None;
             }
             existing
@@ -1308,47 +1507,80 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 self.frontier_payload(Some(from), reason, successor.payload);
                 return None;
             }
-            let alternatives = EvmEntryAlternatives::new(&successor.payload);
-            // states 与 completed_calls 同时追加，保证后者始终可用同一节点编号索引。
-            let id = self.result.states.len();
-            let scope = self.runtime.world;
-            let registered = self
-                .runtime
-                .kernel()
-                .slot(scope, &mut MachineMeter(self.budget))
-                .map_err(kernel_failure)
-                .and_then(|slot| {
-                    self.runtime.register_world(
-                        id,
-                        successor.payload.call_stack.depth(),
-                        self.budget,
-                    )?;
-                    Ok(slot)
-                });
-            let slot = match registered {
-                Ok(slot) => slot,
+            let alternatives = match self.policies.state.initialize(
+                &successor.payload,
+                &mut PolicyContext {
+                    domain: self.domain,
+                    environment: &self.result.entry,
+                    budget: self.budget,
+                },
+            ) {
+                Ok(metadata) => metadata,
                 Err(error) => {
-                    self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
+                    let reason = if error == MachineError::Work {
+                        work_reason
+                    } else {
+                        error.frontier_reason()
+                    };
+                    self.frontier_payload(Some(from), reason, successor.payload);
                     return None;
                 }
             };
-            self.partitions.push(entry_key.1.clone());
-            self.ids.insert(entry_key, id);
-            self.result.states.push(EvmMachineState {
-                id,
-                key,
-                entry: successor.payload,
-                exit: None,
-                exit_stack: Vec::new(),
-                executed_pcs: Vec::new(),
-                execution_evidence: None,
-                resume_status,
+            let key = successor.payload.key();
+            // Reserve/search the private index before registering a job. Taking
+            // it out allows the infallible state builder to borrow other fields;
+            // no interpreter/policy callback runs while the index is detached.
+            let mut payload = Some(successor.payload);
+            let mut ids = std::mem::take(&mut self.ids);
+            let admitted = ids.insert_with(entry_key, self.budget, |budget| {
+                let id = self.result.states.len();
+                let scope = self.runtime.world;
+                let slot = self
+                    .runtime
+                    .kernel()
+                    .slot(scope, &mut MachineMeter(budget))
+                    .map_err(kernel_failure)?;
+                self.runtime.register_world(
+                    id,
+                    payload.as_ref().expect("pending input").call_stack.depth(),
+                    budget,
+                )?;
+                self.partitions.push(class);
+                self.updates.push(0);
+                self.feedback.push(false);
+                self.result.states.push(EvmMachineState {
+                    id,
+                    key,
+                    entry: payload.take().expect("registered input"),
+                    exit: None,
+                    exit_stack: Vec::new(),
+                    executed_pcs: Vec::new(),
+                    execution_evidence: None,
+                    resume_status,
+                });
+                self.counters.states += 1;
+                self.completed_calls.push(Vec::new());
+                self.alternatives.push(alternatives);
+                self.inputs.push(slot);
+                Ok(id)
             });
-            self.counters.states += 1;
-            self.completed_calls.push(Vec::new());
-            self.alternatives.push(alternatives);
-            self.inputs.push(slot);
-            id
+            self.ids = ids;
+            match admitted {
+                Ok(id) => id,
+                Err(error) => {
+                    let reason = if error == MachineError::Work {
+                        work_reason
+                    } else {
+                        error.frontier_reason()
+                    };
+                    self.frontier_payload(
+                        Some(from),
+                        reason,
+                        payload.take().expect("refused input remains owned"),
+                    );
+                    return None;
+                }
+            }
         };
         // 即使入口没有变，也观察到了一条有效转移；不能因“不重访”而漏掉这条边。
         self.edges.insert(MachineEdge {
@@ -1394,7 +1626,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         id: usize,
         incoming: EvmMachinePayload<D::Element>,
         joined: Option<EvmMachinePayload<D::Element>>,
-        mut alternatives: EvmEntryAlternatives<D::Element>,
+        mut alternatives: S::Metadata,
         old_alternatives_work: usize,
     ) -> Result<(), MachineError> {
         // None is the state adapter's whole-input coverage proof. It has not
@@ -1403,11 +1635,11 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         if joined.is_none() {
             return Ok(());
         }
-        let work = installation::JoinWork::quote::<D::Element>(
+        let work = installation::JoinWork::quote_for::<D::Element, S::Metadata>(
             self.result.states[id].entry.work_size(),
             incoming.work_size(),
             joined.as_ref().map_or(0, EvmMachinePayload::work_size),
-            alternatives.work_size(),
+            self.policies.state.metadata_work(&alternatives),
             old_alternatives_work,
             self.selectors.len(),
         );
@@ -1416,20 +1648,25 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         }
         let mut selectors = self.selectors.clone();
         if let Some(joined) = &joined
-            && !alternatives.has_loop_bound()
+            && !self.policies.state.has_bound(&alternatives)
         {
             let mut previous = self.result.states[id].entry.fresh_leaves();
             previous.extend(incoming.fresh_leaves());
             selectors.extend(joined.fresh_leaves().difference(&previous).cloned());
         }
-        alternatives.retain(incoming);
+        self.policies.state.retain(&mut alternatives, incoming);
         let changed = if joined.is_some() {
             Change::Changed
         } else {
             Change::Unchanged
         };
-        let bounded = alternatives.has_loop_bound();
+        let bounded = self.policies.state.has_bound(&alternatives);
+        let updates = self.updates[id]
+            .checked_add(1)
+            .ok_or(MachineError::IdentityExhausted)?;
+        let public_key = joined.as_ref().map(EvmMachinePayload::key);
         let state = &mut self.result.states[id];
+        let current_updates = &mut self.updates[id];
         let current_alternatives = &mut self.alternatives[id];
         let current_selectors = &mut self.selectors;
         // The infallible installation includes coverage/frozen mode and old
@@ -1441,8 +1678,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 run.publish_prepared_with(&self.inputs[id], changed, work.installation, || {
                     *current_alternatives = alternatives;
                     *current_selectors = selectors;
+                    *current_updates = updates;
                     if let Some(joined) = joined {
                         state.entry = joined;
+                        state.key = public_key.expect("changed entry has a structural projection");
                         state.invalidate_execution();
                     }
                 })
@@ -1504,14 +1743,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         if !popped_call && !rejected_call {
             return None;
         }
-        // Several successes joined with local rejection can leave an arbitrary
-        // ITE selector on the success arm. Keeping just this resumed block apart
-        // preserves the returned prefix without dropping any failure behavior.
-        match successor.payload.active().stack.last()?.singleton()? {
-            alloy_primitives::U256::ZERO => Some(false),
-            alloy_primitives::U256::ONE => Some(true),
-            _ => None,
-        }
+        // The typed call-resume edge already proves the CALL result, including
+        // local rejection. Classifying it needs no opaque numeric discovery.
+        // This precision class lasts only for the first resumed block.
+        policy::call_result(successor.kind)
     }
 
     fn joins_cycle(&mut self, target: usize, from: usize) -> Result<bool, MachineError> {
@@ -1538,6 +1773,25 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         Ok(false)
     }
 
+    /// Feedback is semantic admission metadata. Its first discovery invalidates
+    /// both execution receipts and every kernel reader even for a covered input.
+    fn mark_feedback(&mut self, id: usize) -> Result<(), MachineError> {
+        let feedback = &mut self.feedback[id];
+        let state = &mut self.result.states[id];
+        self.runtime.with_run(
+            self.active.as_mut().ok_or(MachineError::Shape)?,
+            self.budget,
+            |run| {
+                run.publish_prepared_with(&self.inputs[id], Change::Changed, 1, || {
+                    *feedback = true;
+                    state.invalidate_execution();
+                })
+                .map(|_| ())
+                .map_err(kernel_failure)
+            },
+        )
+    }
+
     fn record_successor(&mut self, from: usize, to: usize, kind: MachineEdgeKind) {
         if let Some(evidence) = &mut self.result.states[from].execution_evidence {
             let successor = (to, kind);
@@ -1557,7 +1811,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             .world
             .work_size()
             .saturating_add(self.result.entry.environment.work_size())
-            .saturating_add(self.ids.len())
+            .saturating_add(self.ids.work_size())
             .saturating_add(self.runtime.work_size())
             .saturating_add(self.edges.len())
             .saturating_add(self.diagnostics.len())
@@ -1588,9 +1842,13 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                         .saturating_add(evidence.successors.len())
                 }));
         }
+        for class in &self.partitions {
+            MachineError::check_cancelled()?;
+            cost = cost.saturating_add(class.key_work());
+        }
         for alternatives in &self.alternatives {
             MachineError::check_cancelled()?;
-            cost = cost.saturating_add(alternatives.work_size());
+            cost = cost.saturating_add(self.policies.state.metadata_work(alternatives));
         }
         for calls in &self.completed_calls {
             for call in calls {
@@ -1681,7 +1939,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             }
         };
         if cost == usize::MAX || !self.budget.charge(cost) {
-            let reason = super::summary::summary_boundary();
+            let reason = super::summary::summary_boundary(self.budget);
             self.frontier(
                 Some(root),
                 Some(self.result.states[root].key.clone()),
@@ -1712,7 +1970,30 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             Ok(runtime) => runtime,
             Err(error) => return Err(self.replay_failure(root, error.frontier_reason(), pending)),
         };
-        let mut staged: EvmEngine<'_, D, C, P, X, E> = EvmEngine {
+        // The replay copy envelope includes index and class work. Check
+        // cancellation around opaque clones without charging their owner twice.
+        let copied_ids = self.ids.clone();
+        if let Err(error) =
+            PolicyContext::new(self.domain, &self.result.entry, self.budget).reserve(0)
+        {
+            return Err(self.replay_failure(root, error.frontier_reason(), pending));
+        }
+        let mut copied_partitions = Vec::new();
+        for class in &self.partitions {
+            if let Err(error) =
+                PolicyContext::new(self.domain, &self.result.entry, self.budget).reserve(0)
+            {
+                return Err(self.replay_failure(root, error.frontier_reason(), pending));
+            }
+            let class = class.clone();
+            if let Err(error) =
+                PolicyContext::new(self.domain, &self.result.entry, self.budget).reserve(0)
+            {
+                return Err(self.replay_failure(root, error.frontier_reason(), pending));
+            }
+            copied_partitions.push(class);
+        }
+        let mut staged: EvmEngine<'_, D, C, P, S, X, E> = EvmEngine {
             result: self.result.clone(),
             domain: self.domain,
             policies: self.policies,
@@ -1721,8 +2002,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             storage_reads: self.storage_reads,
             alternatives: self.alternatives.clone(),
             selectors: self.selectors.clone(),
-            ids: self.ids.clone(),
-            partitions: self.partitions.clone(),
+            ids: copied_ids,
+            partitions: copied_partitions,
+            updates: self.updates.clone(),
+            feedback: self.feedback.clone(),
             runtime,
             cooperation: None,
             inputs: self.inputs.clone(),
@@ -1762,6 +2045,8 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             selectors,
             ids,
             partitions,
+            updates,
+            feedback,
             runtime,
             inputs,
             edges,
@@ -1776,6 +2061,8 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             self.selectors = selectors;
             self.ids = ids;
             self.partitions = partitions;
+            self.updates = updates;
+            self.feedback = feedback;
             self.inputs = inputs;
             self.edges = edges;
             self.diagnostics = diagnostics;
@@ -1789,7 +2076,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             // only after the entire import succeeds. The replay copy fee
             // already covers walking the retained alternatives metadata.
             for (id, alternatives) in self.alternatives.iter().enumerate() {
-                if alternatives.has_loop_bound() {
+                if self.policies.state.has_bound(alternatives) {
                     reuse
                         .dependencies
                         .add(id, super::layers::FactDependency::AllInitialState);
@@ -1809,34 +2096,73 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         self.test_admission()
             .map_err(MachineError::frontier_reason)?;
         let mut ids = Vec::new();
-        for node in prepared.nodes {
+        for mut node in prepared.nodes {
+            // A certificate carries its arrival class, never an assumption that
+            // every policy uses the legacy structural identity. Preparation may
+            // cover more inputs; such a node remains an execution obligation.
+            PolicyContext::new(self.domain, &self.result.entry, self.budget)
+                .reserve(0)
+                .map_err(MachineError::frontier_reason)?;
+            let partition = node.partition.clone();
+            PolicyContext::new(self.domain, &self.result.entry, self.budget)
+                .reserve(0)
+                .map_err(MachineError::frontier_reason)?;
+            let partitioned = self
+                .policies
+                .state
+                .prepare(
+                    &node.entry,
+                    PolicySite::World,
+                    partition,
+                    &mut PolicyContext {
+                        domain: self.domain,
+                        environment: &self.result.entry,
+                        budget: self.budget,
+                    },
+                )
+                .map_err(MachineError::frontier_reason)?;
+            let certificate_covers_prepared = node
+                .entry
+                .content_form()
+                .and_then(|entry| Ok(entry == partitioned.payload.content_form()?))
+                .map_err(MachineError::frontier_reason)?;
+            node.entry = partitioned.payload;
+            let entry_key = partitioned.key;
             let key = node.entry.key();
-            // Preserve the certified call continuation partition. Replaying
-            // its graph must not merge success with a previously seen failure.
-            let entry_key = (key.clone(), node.partition.clone());
-            let id = if let Some(existing) = self.ids.get(&entry_key).copied() {
+            let id = if let Some(existing) = self
+                .ids
+                .get(&entry_key, self.budget)
+                .map_err(MachineError::frontier_reason)?
+            {
                 // The replay copy reservation covers inspecting this retained
                 // metadata. Reuse the quote at installation rather than walking
                 // the old payload histories again before its preparation fee.
-                let old_alternatives_work = self.alternatives[existing].work_size();
+                let old_alternatives_work = self
+                    .policies
+                    .state
+                    .metadata_work(&self.alternatives[existing]);
                 let mut alternatives = self.alternatives[existing].clone();
-                let joined = alternatives
-                    .join_entry(
+                let acceleration = self.policies.state.decide(AccelerationInput {
+                    site: PolicySite::World,
+                    feedback: self.feedback[existing],
+                    updates: self.updates[existing],
+                    default_delay: self.domain.spec().widening_after_updates(),
+                });
+                let joined = self
+                    .policies
+                    .state
+                    .admit(
                         &self.result.states[existing].entry,
                         &node.entry,
-                        &self.result.entry,
-                        self.domain,
-                        self.budget,
+                        &mut alternatives,
+                        acceleration,
                         &self.selectors,
-                        false,
+                        &mut PolicyContext {
+                            domain: self.domain,
+                            environment: &self.result.entry,
+                            budget: self.budget,
+                        },
                     )
-                    .map_err(MachineError::frontier_reason)?;
-                // Equality is a coverage proof. A whole-state join containing
-                // other alternatives cannot use this certificate's exit alone.
-                let compatible = self.result.states[existing]
-                    .entry
-                    .content_form()
-                    .and_then(|entry| Ok(entry == node.entry.content_form()?))
                     .map_err(MachineError::frontier_reason)?;
                 self.install_join(
                     existing,
@@ -1846,6 +2172,14 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     old_alternatives_work,
                 )
                 .map_err(MachineError::frontier_reason)?;
+                // Check the installed state: acceleration may have changed its
+                // representation even if the old input equalled the certificate.
+                let compatible = certificate_covers_prepared
+                    && self.result.states[existing]
+                        .entry
+                        .content_form()
+                        .and_then(|entry| Ok(entry == node.entry.content_form()?))
+                        .map_err(MachineError::frontier_reason)?;
                 if compatible {
                     let state = &self.result.states[existing];
                     self.runtime
@@ -1874,49 +2208,69 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 }
                 let cost = node.entry.work_size().saturating_mul(2);
                 if cost == usize::MAX || !self.budget.charge(cost) {
-                    return Err(super::summary::summary_boundary());
+                    return Err(super::summary::summary_boundary(self.budget));
                 }
-                let id = self.result.states.len();
-                let scope = self.runtime.world;
-                let input = self
-                    .runtime
-                    .kernel()
-                    .slot(scope, &mut MachineMeter(self.budget))
-                    .map_err(kernel_failure)
-                    .map_err(MachineError::frontier_reason)?;
-                self.runtime
-                    .register_world(id, node.entry.call_stack.depth(), self.budget)
-                    .map_err(MachineError::frontier_reason)?;
-                self.alternatives
-                    .push(EvmEntryAlternatives::new(&node.entry));
-                self.partitions.push(entry_key.1.clone());
-                self.ids.insert(entry_key, id);
-                self.result.states.push(EvmMachineState {
-                    id,
-                    key,
-                    entry: node.entry,
-                    exit: Some(node.exit),
-                    exit_stack: node.exit_stack,
-                    executed_pcs: node.executed_pcs,
-                    execution_evidence: Some(EvmExecutionEvidence::new(
-                        node.instruction_progress,
-                        node.instruction_values,
-                    )),
-                    resume_status: node.resume_status,
-                });
-                self.counters.states += 1;
-                self.completed_calls.push(node.completed_calls);
-                self.inputs.push(input);
-                let state = &self.result.states[id];
-                self.runtime
-                    .satisfy_world(
-                        id,
-                        &self.inputs[id],
-                        &state.entry,
-                        state.entry.work_size(),
-                        self.budget,
+                let metadata = self
+                    .policies
+                    .state
+                    .initialize(
+                        &node.entry,
+                        &mut PolicyContext {
+                            domain: self.domain,
+                            environment: &self.result.entry,
+                            budget: self.budget,
+                        },
                     )
                     .map_err(MachineError::frontier_reason)?;
+                let mut index = std::mem::take(&mut self.ids);
+                let admitted = index.insert_with(entry_key, self.budget, |budget| {
+                    let id = self.result.states.len();
+                    let scope = self.runtime.world;
+                    let input = self
+                        .runtime
+                        .kernel()
+                        .slot(scope, &mut MachineMeter(budget))
+                        .map_err(kernel_failure)?;
+                    self.runtime
+                        .register_world(id, node.entry.call_stack.depth(), budget)?;
+                    self.alternatives.push(metadata);
+                    self.partitions.push(node.partition);
+                    self.updates.push(0);
+                    self.feedback.push(false);
+                    self.result.states.push(EvmMachineState {
+                        id,
+                        key,
+                        entry: node.entry,
+                        exit: Some(node.exit),
+                        exit_stack: node.exit_stack,
+                        executed_pcs: node.executed_pcs,
+                        execution_evidence: Some(EvmExecutionEvidence::new(
+                            node.instruction_progress,
+                            node.instruction_values,
+                        )),
+                        resume_status: node.resume_status,
+                    });
+                    self.counters.states += 1;
+                    self.completed_calls.push(node.completed_calls);
+                    self.inputs.push(input);
+                    Ok(id)
+                });
+                self.ids = index;
+                let id = admitted.map_err(MachineError::frontier_reason)?;
+                let state = &self.result.states[id];
+                if certificate_covers_prepared {
+                    self.runtime
+                        .satisfy_world(
+                            id,
+                            &self.inputs[id],
+                            &state.entry,
+                            state.entry.work_size(),
+                            self.budget,
+                        )
+                        .map_err(MachineError::frontier_reason)?;
+                } else {
+                    self.result.states[id].invalidate_execution();
+                }
                 id
             };
             for mut diagnostic in node.diagnostics {
@@ -1928,7 +2282,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         }
         for edge in &certificate.edges {
             if !self.budget.charge(1) {
-                return Err(super::summary::summary_boundary());
+                return Err(super::summary::summary_boundary(self.budget));
             }
             let from = *ids
                 .get(edge.from)
@@ -1936,6 +2290,17 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             let to = *ids
                 .get(edge.to)
                 .ok_or(FrontierReason::StateJoin(super::JoinBoundary::Shape))?;
+            // A certified graph may close feedback after its inputs were
+            // imported. The new schedule is part of the retained obligation,
+            // even if each individual certificate input was already covered.
+            if !self.feedback[to]
+                && self
+                    .joins_cycle(to, from)
+                    .map_err(MachineError::frontier_reason)?
+            {
+                self.mark_feedback(to)
+                    .map_err(MachineError::frontier_reason)?;
+            }
             self.edges.insert(MachineEdge {
                 from,
                 to,
@@ -1973,11 +2338,11 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 }
             }
             if self.budget.exhausted() {
-                return Err(super::summary::summary_boundary());
+                return Err(super::summary::summary_boundary(self.budget));
             }
         }
         if !self.budget.charge(0) {
-            return Err(super::summary::summary_boundary());
+            return Err(super::summary::summary_boundary(self.budget));
         }
         Ok(())
     }
@@ -1992,9 +2357,10 @@ type Engine<'a> = EvmEngine<
     crate::domain::Domain,
     RecentDistinctJumps,
     FirstResumeStatus,
+    SemanticPolicies,
     Empty,
     std::convert::Infallible,
 >;
 
 #[cfg(test)]
-use super::{machine::EntryAlternatives, summary::Cache, transfer::Successor};
+use super::{summary::Cache, transfer::Successor};

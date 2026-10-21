@@ -15,6 +15,86 @@ use crate::{
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
+#[test]
+fn optional_projection_does_not_discover_singletons_before_relevance() {
+    use crate::analysis::state::query::tests::carrier::{Algebra, Probe, Word};
+    use crate::domain::EvmValue;
+    use std::rc::Rc;
+
+    let algebra = ValueAlgebra::new(Algebra);
+    let limits = RelationLimits::default();
+    let unrelated = ExprId::fresh().unwrap();
+    for fee in [61, usize::MAX] {
+        for summary in [false, true] {
+            for empty in [false, true] {
+                let relations = if empty {
+                    RelationState::default()
+                } else {
+                    bounded_relations(std::slice::from_ref(&unrelated), &limits)
+                };
+                let probe = Rc::new(Probe::new(fee));
+                let mut value =
+                    EvmValue::from_numeric(Word::constant(U256::from(7)).watched(&probe))
+                        .with_expression(ExprId::fresh().unwrap())
+                        .with_symbolic_limit();
+                let before = value.clone();
+                let mut budget = WorkBudget::new(10_000);
+                let mut diagnostics = Vec::new();
+                let policy = if summary {
+                    Policy::Summary
+                } else {
+                    Policy::Branch {
+                        diagnostics: &mut diagnostics,
+                        pc: 17,
+                    }
+                };
+                let mut projection =
+                    Projection::new(&relations, algebra.borrowed(), &limits, &mut budget, policy);
+                projection.value(&mut value);
+                assert_eq!(projection.finish(), Ok(true));
+                assert_eq!(value, before);
+                assert_eq!(probe.counts(), (0, 0, 0));
+                assert!(diagnostics.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn relevant_projection_keeps_the_obligation_when_refinement_refuses() {
+    use crate::analysis::state::query::tests::carrier::{Algebra, Probe, Word};
+    use crate::domain::EvmValue;
+    use std::rc::Rc;
+
+    let algebra = ValueAlgebra::new(Algebra);
+    let limits = RelationLimits::default();
+    let expression = ExprId::fresh().unwrap();
+    let relations = bounded_relations(std::slice::from_ref(&expression), &limits);
+    for summary in [false, true] {
+        let probe = Rc::new(Probe::new(usize::MAX));
+        let mut value = EvmValue::from_numeric(Word::constant(U256::from(7)).watched(&probe))
+            .with_expression(expression.clone());
+        let before = value.clone();
+        let mut budget = WorkBudget::new(usize::MAX);
+        let mut diagnostics = Vec::new();
+        let policy = if summary {
+            Policy::Summary
+        } else {
+            Policy::Branch {
+                diagnostics: &mut diagnostics,
+                pc: 17,
+            }
+        };
+        let mut projection =
+            Projection::new(&relations, algebra.borrowed(), &limits, &mut budget, policy);
+        projection.value(&mut value);
+        assert_eq!(projection.finish(), Err(MachineError::Work));
+        assert_eq!(value, before);
+        assert_eq!(probe.counts(), (0, 0, 0));
+        assert!(diagnostics.is_empty());
+    }
+}
+
 fn bounded_relations(expressions: &[ExprId], limits: &RelationLimits) -> RelationState {
     let mut relations = RelationState::default();
     for expression in expressions {
@@ -294,7 +374,7 @@ fn lazy_size_keeps_the_exact_and_one_short_work_boundaries() {
 }
 
 #[test]
-fn concrete_values_and_empty_relations_do_not_scan() {
+fn literal_expressions_and_empty_relations_do_not_scan() {
     let domain = Domain::default();
     let algebra = ValueAlgebra::new(domain);
     let limits = RelationLimits::default();
@@ -312,7 +392,7 @@ fn concrete_values_and_empty_relations_do_not_scan() {
         );
         assert_eq!(projection.relations_work_size_scans, 0);
         let mut values = vec![
-            AbstractValue::constant(U256::ONE).with_expression(expression.clone()),
+            AbstractValue::constant(U256::ONE).with_expression(ExprId::constant(U256::ONE)),
             AbstractValue::top(),
         ];
         if relations.is_empty() {

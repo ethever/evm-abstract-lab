@@ -1,7 +1,7 @@
 //! Arbitrary local effects and repeatable ordinary calls into protected owners.
 
 use super::Composition;
-use crate::analysis::engine::{ContextPolicy, PartitionPolicy};
+use crate::analysis::engine::{ContextPolicy, PartitionPolicy, StatePolicy};
 use crate::domain::EvmNumericAlgebra;
 
 use super::{
@@ -11,8 +11,14 @@ use super::{
     boundary_on, calls, keccak256, zero,
 };
 
-impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<D::Element, E>, E>
-    EvmSolver<'_, D, C, P, X, E>
+impl<
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element, E>,
+    E,
+> EvmSolver<'_, D, C, P, S, X, E>
 {
     pub(super) fn environment(
         &mut self,

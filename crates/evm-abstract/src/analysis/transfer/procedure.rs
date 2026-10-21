@@ -5,8 +5,16 @@
 //! summary invocation gets independent symbolic state roots. A caller subscription keeps
 //! its own continuation and rollback checkpoint. Known bytecode, repeated environment
 //! interactions, and their mutually recursive calls therefore use the same worklist.
+//!
+//! Frozen state policies own finite entry/body/subscriber identities, covering
+//! relative/output admission and acceleration schedules. Report frame keys do
+//! not constrain those identities. Retained feedback metadata publishes through
+//! the same native slots as payload growth, including after a consumer settles.
 
-use crate::analysis::engine::{ContextPolicy, EnginePolicies, PartitionPolicy};
+use crate::analysis::engine::policy::{KeyIndex, PolicyKey};
+use crate::analysis::engine::{
+    ContextPolicy, EnginePolicies, PartitionPolicy, ProcedureOutput, StatePolicy,
+};
 use crate::analysis::{
     cooperation::InputTasks,
     engine::cooperation::{Composition, Cooperation},
@@ -31,10 +39,7 @@ use crate::{
         worklist::{kernel_failure, runtime::Runtime, transfer_stop},
     },
     domain::{AlgebraRef, EvmValue},
-    world::{
-        AddressInput, Code, EvmByteArray, EvmByteArraySummary, EvmEntry, EvmStore, EvmStoreSummary,
-        EvmWorld,
-    },
+    world::{AddressInput, Code, EvmByteArray, EvmByteArraySummary, EvmEntry, EvmStore, EvmWorld},
 };
 use alloy_primitives::{Address, keccak256};
 use analysis_kernel::{Availability, RunningJob, SlotMeta, Version};
@@ -54,13 +59,15 @@ mod tests;
 
 use crate::analysis::state::{
     EvmPayloadSummary,
-    payload::{self, instantiate as instantiate_with, join as join_with, semantic_eq},
+    payload::{self, instantiate as instantiate_with, semantic_eq},
     projection, storage_observations,
 };
 #[cfg(test)]
 use crate::analysis::state::{context, stack_alias};
 #[cfg(test)]
 pub(in crate::analysis) use coarse_retry::prepare as prepare_runtime_retry;
+#[cfg(test)]
+use payload::join as join_with;
 pub(in crate::analysis) use recursion::is_recursive_entry;
 
 /// This is an internal owner namespace, never an observed account address.
@@ -97,18 +104,27 @@ struct EvmNode<N: WordElement> {
     /// Callee entries stay in the separate procedure dependency graph.
     successors: BTreeSet<usize>,
     loop_head: bool,
+    /// Feedback already admitted and published to this body's input readers.
+    feedback: bool,
     /// Promotion belongs to the node, across incoming joins and fresh roots.
     runtime_retry: coarse_retry::EvmRuntimeRetry<N>,
     excluded: bool,
 }
 
-struct EvmProcedure<N: WordElement, Tag: Clone + Ord> {
+struct EvmProcedure<N: WordElement, Key: PolicyKey> {
     namespace: usize,
     frame: FrameKey,
-    entry: usize,
-    // A real CALL continuation keeps success/failure separate for one block.
-    // No arbitrary scalar or physical depth becomes part of this finite key.
-    nodes: BTreeMap<(FrameKey, Tag), usize>,
+    /// Procedure preparation and body preparation may choose different keys.
+    /// Retain the actual entry bound rather than borrowing the first body.
+    entry_payload: EvmPayloadSummary<N>,
+    entry_updates: usize,
+    entry_feedback: bool,
+    entry_revision: usize,
+    entry_source: SlotMeta<usize>,
+    entries: BTreeSet<usize>,
+    // The injected partition owns the complete body identity. The representative
+    // frame above is retained solely for reporting.
+    nodes: KeyIndex<Key>,
     outputs: BTreeMap<OutcomeKind, EvmOutput<N>>,
     output: SlotMeta<BTreeMap<OutcomeKind, EvmOutput<N>>>,
     subscribers: Vec<usize>,
@@ -119,12 +135,29 @@ struct EvmProcedure<N: WordElement, Tag: Clone + Ord> {
     covered_blocks: BTreeSet<usize>,
 }
 
+/// A procedure's actual input anchor, independently of all selected Body keys.
+/// The revision slot changes atomically with the payload and semantic metadata.
+pub(in crate::analysis) struct ProcedureEntrySource<'a, N: WordElement> {
+    pub namespace: usize,
+    pub payload: &'a EvmPayloadSummary<N>,
+    pub revision: &'a usize,
+    pub slot: &'a SlotMeta<usize>,
+}
+
+#[cfg(test)]
+impl<N: WordElement, Key: PolicyKey> EvmProcedure<N, Key> {
+    fn first_body(&self) -> usize {
+        *self.entries.first().expect("admitted procedure has a body")
+    }
+}
+
 #[derive(Clone)]
 struct EvmOutput<N: WordElement> {
-    data: EvmByteArraySummary<N>,
-    store: EvmStoreSummary<N>,
+    summary: ProcedureOutput<N>,
     work: usize,
     generation: usize,
+    /// Semantic content updates, independent of delivery/schedule invalidation.
+    updates: usize,
 }
 
 struct EvmSubscriber<N: WordElement> {
@@ -134,18 +167,25 @@ struct EvmSubscriber<N: WordElement> {
     payload: EvmPayloadSummary<N>,
     input: SlotMeta<EvmPayloadSummary<N>>,
     updates: usize,
+    feedback: bool,
     delivered: BTreeMap<OutcomeKind, (Version, usize)>,
 }
 
 /// One shared relation table can grow across multiple relative entries of a
 /// transaction. The optional graph-certificate cache is independent of this
 /// semantic fixed point and cannot replace it for recursive calls.
-pub(in crate::analysis) struct EvmTable<N: WordElement, Tag: Clone + Ord = Option<bool>> {
-    procedures: Vec<EvmProcedure<N, Tag>>,
-    procedures_by_key: BTreeMap<(usize, FrameKey), usize>,
+pub(in crate::analysis) struct EvmTable<
+    N: WordElement,
+    Key: PolicyKey = (crate::analysis::MachineKey, Option<bool>),
+> {
+    procedures: Vec<EvmProcedure<N, Key>>,
+    procedures_by_key: KeyIndex<(usize, Key)>,
     nodes: Vec<EvmNode<N>>,
     subscribers: Vec<EvmSubscriber<N>>,
-    subscribers_by_key: BTreeMap<(usize, usize), usize>,
+    // Each continuation/callee pair scopes the injected finite vocabulary.
+    // Subscriber cardinality is bounded by bodies x procedures x policy keys;
+    // every allocation consumes the same transaction work ledger.
+    subscribers_by_key: KeyIndex<(usize, usize, Key)>,
     frontiers: Vec<EvmExecutionFrontier<N>>,
     // Moving deferred frontier payloads to the outer result does not erase the
     // relation's incompleteness or make its native completion observation true.
@@ -168,14 +208,14 @@ pub(in crate::analysis) struct EvmTable<N: WordElement, Tag: Clone + Ord = Optio
     >,
 }
 
-impl<N: WordElement, Tag: Clone + Ord> Default for EvmTable<N, Tag> {
+impl<N: WordElement, Key: PolicyKey> Default for EvmTable<N, Key> {
     fn default() -> Self {
         Self {
             procedures: Vec::new(),
-            procedures_by_key: BTreeMap::new(),
+            procedures_by_key: KeyIndex::new(),
             nodes: Vec::new(),
             subscribers: Vec::new(),
-            subscribers_by_key: BTreeMap::new(),
+            subscribers_by_key: KeyIndex::new(),
             frontiers: Vec::new(),
             incomplete: false,
             precision_losses: BTreeSet::new(),
@@ -191,15 +231,16 @@ struct EvmSolver<
     D: EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
     X: Composition<D::Element, E>,
     E,
 > {
-    table: &'a mut EvmTable<D::Element, P::Class>,
+    table: &'a mut EvmTable<D::Element, S::Key>,
     world: &'a EvmWorld<D::Element>,
     entry: &'a EvmEntry<D::Element>,
     config: &'a crate::analysis::ExecutionConfig,
     domain: AlgebraRef<'a, D>,
-    policies: &'a EnginePolicies<C, P>,
+    policies: &'a EnginePolicies<C, P, S>,
     budget: &'a mut WorkBudget,
     counters: &'a mut Counters,
     storage_reads: StorageReadPolicy,
@@ -213,7 +254,22 @@ struct EvmSolver<
     consumed: Option<crate::analysis::cooperation::Subject>,
 }
 
-impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
+impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
+    /// Give cooperation an explicit native source; callers need not infer an
+    /// entry Body index or reinterpret a Body input under another payload.
+    pub(in crate::analysis) fn entry_source(
+        &self,
+        procedure: usize,
+    ) -> Option<ProcedureEntrySource<'_, N>> {
+        self.procedures
+            .get(procedure)
+            .map(|entry| ProcedureEntrySource {
+                namespace: entry.namespace,
+                payload: &entry.entry_payload,
+                revision: &entry.entry_revision,
+                slot: &entry.entry_source,
+            })
+    }
     #[expect(
         clippy::too_many_arguments,
         reason = "one transaction ledger and fixed execution inputs"
@@ -221,7 +277,8 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
     pub(in crate::analysis) fn execute_with<
         D: EvmNumericAlgebra<Element = N>,
         C: ContextPolicy,
-        P: PartitionPolicy<Class = Tag>,
+        P: PartitionPolicy,
+        S: StatePolicy<D, P::Class, Key = Key>,
         X: Composition<N, E>,
         E,
     >(
@@ -232,7 +289,7 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
         payload: EvmMachinePayload<N>,
         config: &crate::analysis::ExecutionConfig,
         domain: AlgebraRef<'_, D>,
-        policies: &EnginePolicies<C, P>,
+        policies: &EnginePolicies<C, P, S>,
         budget: &mut WorkBudget,
         counters: &mut Counters,
         storage_reads: StorageReadPolicy,
@@ -315,7 +372,10 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
         if kind == ProcedureSummaryKind::KnownRecursion
             && let Some(root) = root
             && solver.table.procedures[root].outputs.is_empty()
-            && !solver.table.nodes[solver.table.procedures[root].entry].excluded
+            && solver.table.procedures[root]
+                .entries
+                .iter()
+                .any(|id| !solver.table.nodes[*id].excluded)
             && relative_closed
             && solver.table.frontiers.is_empty()
             && !solver.table.incomplete
@@ -323,11 +383,21 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
             // Folding physical depth cannot certify empty finite behavior.
             // CALL rejection normally supplies real continuation-derived exits;
             // when none reaches a terminal, retain the unmodeled termination.
-            let current = solver.table.procedures[root].entry;
+            let current = solver.table.procedures[root]
+                .entries
+                .iter()
+                .copied()
+                .find(|id| !solver.table.nodes[*id].excluded)
+                .expect("a reachable entry checked above");
             solver.frontier_node(current, FrontierReason::RecursiveNoTerminal, 0);
         }
         if let Some(root) = root {
             let procedure = &solver.table.procedures[root];
+            let entry_source = solver
+                .table
+                .entry_source(root)
+                .expect("retained root procedure");
+            debug_assert_eq!(entry_source.namespace, namespace);
             let output_work = procedure
                 .outputs
                 .values()
@@ -338,6 +408,8 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
                 solver.caller.as_deref_mut().expect("outer caller"),
                 solver.budget,
                 |run| {
+                    run.read_slot(entry_source.slot, entry_source.revision, 1)
+                        .map_err(kernel_failure)?;
                     run.read_slot(&procedure.output, &procedure.outputs, output_work)
                         .map_err(kernel_failure)
                 },
@@ -367,23 +439,28 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
                 // Static execution preserves data and historical read roots,
                 // while nested zero-value calls can add EIP-161 touches.
                 let output_store = if payload.active().key.is_static {
-                    Ok(output.store.apply_static_touches(&payload.store))
+                    Ok(output.summary.store.apply_static_touches(&payload.store))
                 } else {
-                    output.store.instantiate_with(domain)
+                    output.summary.store.instantiate_with(domain)
                 };
                 // Equal numerical byte bounds on mutually exclusive exits of
                 // this invocation describe the same unconstrained observable
                 // buffer. Give them one fresh source so a return-status join
                 // does not manufacture separate length identities. This cache
                 // is local to one invocation; later calls remain independent.
-                let output_data = if let Some((_, data)) =
-                    data_sources.iter().find(|(bound, _)| *bound == output.data)
+                let output_data = if let Some((_, data)) = data_sources
+                    .iter()
+                    .find(|(bound, _)| *bound == output.summary.data)
                 {
                     Ok(data.clone())
                 } else {
-                    output.data.instantiate_with(domain).inspect(|data| {
-                        data_sources.push((output.data.clone(), data.clone()));
-                    })
+                    output
+                        .summary
+                        .data
+                        .instantiate_with(domain)
+                        .inspect(|data| {
+                            data_sources.push((output.summary.data.clone(), data.clone()));
+                        })
                 };
                 let (store, data) = match (output_store, output_data) {
                     (Ok(store), Ok(data)) => (store, data),
@@ -454,15 +531,10 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
             .iter()
             .fold(0usize, |work, procedure| {
                 procedure.outputs.values().fold(
-                    work.saturating_add(
-                        solver.table.nodes[procedure.entry]
-                            .payload
-                            .store
-                            .work_size(),
-                    )
-                    .saturating_add(procedure.covered_blocks.len())
-                    .saturating_add(procedure.dependencies.len())
-                    .saturating_add(1),
+                    work.saturating_add(procedure.entry_payload.store.work_size())
+                        .saturating_add(procedure.covered_blocks.len())
+                        .saturating_add(procedure.dependencies.len())
+                        .saturating_add(1),
                     |work, output| work.saturating_add(output.work),
                 )
             });
@@ -473,26 +545,25 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
                     .table
                     .procedures
                     .iter()
-                    .map(|procedure| {
+                    .enumerate()
+                    .map(|(id, procedure)| {
+                        let input = solver.table.entry_source(id).expect("retained procedure");
                         Ok(EvmProcedureSummary {
                             frame: procedure.frame.clone(),
-                            input: solver.table.nodes[procedure.entry]
-                                .payload
-                                .store
-                                .instantiate_with(domain)?,
+                            input: input.payload.store.instantiate_with(domain)?,
                             outputs: procedure
                                 .outputs
                                 .iter()
                                 .map(|(kind, output)| {
                                     Ok(EvmProcedureSummaryOutput {
                                         kind: *kind,
-                                        data: output.data.instantiate_with(domain)?,
-                                        store: output.store.instantiate_with(domain)?,
+                                        data: output.summary.data.instantiate_with(domain)?,
+                                        store: output.summary.store.instantiate_with(domain)?,
                                     })
                                 })
                                 .collect::<Result<Vec<_>, MachineError>>()?,
                             dependencies: procedure.dependencies.iter().copied().collect(),
-                            input_updates: solver.table.nodes[procedure.entry].updates,
+                            input_updates: procedure.entry_updates,
                             output_updates: procedure.output_updates,
                             covered_blocks: procedure.covered_blocks.iter().copied().collect(),
                         })

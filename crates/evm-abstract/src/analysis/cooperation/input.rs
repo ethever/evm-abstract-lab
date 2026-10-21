@@ -10,6 +10,9 @@ pub enum PointKind {
     World,
     /// Relative procedure body node, including resumed summary contributions.
     Body,
+    /// Read-only retained procedure entry, independent of executable Body keys.
+    /// No component tasks or consumable refinement port are registered here.
+    ProcedureEntry,
 }
 
 /// Run-local interpreter point. Relative namespaces distinguish tables whose

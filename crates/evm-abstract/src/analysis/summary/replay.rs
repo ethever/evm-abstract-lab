@@ -1,6 +1,7 @@
 //! Instantiate every scalar, source and state root before installing any graph.
 //! One map belongs to one replay; certified snapshots are never mutated.
 
+use crate::analysis::engine::policy::{PolicyKey, key_checkpoint};
 use crate::domain::{AlgebraRef, EvmNumericAlgebra, WordElement};
 
 use super::{EvmCertificate, EvmNode, EvmTerminal};
@@ -17,13 +18,13 @@ use std::{
     sync::Arc,
 };
 
-pub(in crate::analysis) struct EvmPrepared<N: WordElement, Tag: Clone + Ord = Option<bool>> {
+pub(in crate::analysis) struct EvmPrepared<N: WordElement, Tag: PolicyKey = Option<bool>> {
     pub nodes: Vec<EvmNode<N, Tag>>,
     pub terminals: Vec<EvmTerminal<N>>,
     pub renaming: BTreeMap<ExprId, ExprId>,
 }
 
-pub(in crate::analysis) struct EvmReplay<'a, N: WordElement, Tag: Clone + Ord = Option<bool>> {
+pub(in crate::analysis) struct EvmReplay<'a, N: WordElement, Tag: PolicyKey = Option<bool>> {
     certificate: &'a EvmCertificate<N, Tag>,
     prefix: EvmCallStack<N>,
     continuation: EvmContinuation<N>,
@@ -33,14 +34,18 @@ pub(in crate::analysis) struct EvmReplay<'a, N: WordElement, Tag: Clone + Ord = 
 }
 
 fn charge(budget: &mut WorkBudget, cost: usize) -> Result<(), MachineError> {
-    if cost == usize::MAX || !budget.charge(cost) {
-        Err(MachineError::work_failure())
-    } else {
-        Ok(())
+    key_checkpoint(budget)?;
+    if cost == usize::MAX {
+        return Err(MachineError::Work);
     }
+    if !budget.charge(cost) {
+        key_checkpoint(budget)?;
+        return Err(MachineError::Work);
+    }
+    key_checkpoint(budget)
 }
 
-impl<'a, N: WordElement, Tag: Clone + Ord> EvmReplay<'a, N, Tag> {
+impl<'a, N: WordElement, Tag: PolicyKey> EvmReplay<'a, N, Tag> {
     pub fn new(
         certificate: &'a EvmCertificate<N, Tag>,
         payload: &EvmMachinePayload<N>,
@@ -151,6 +156,11 @@ impl<'a, N: WordElement, Tag: Clone + Ord> EvmReplay<'a, N, Tag> {
             )
             .saturating_mul(4);
         charge(budget, cost)?;
+        // Node work includes the actual class clone; check opaque cancellation
+        // before allowing its result into the rebound certificate.
+        charge(budget, 0)?;
+        let partition = source.partition.clone();
+        charge(budget, 0)?;
         let mut exit_stack = source.exit_stack.clone();
         for value in &mut exit_stack {
             charge(budget, 0)?;
@@ -172,7 +182,7 @@ impl<'a, N: WordElement, Tag: Clone + Ord> EvmReplay<'a, N, Tag> {
         Ok(EvmNode {
             entry: self.payload(&source.entry, domain)?,
             resume_status: source.resume_status,
-            partition: source.partition.clone(),
+            partition,
             exit: self.payload(&source.exit, domain)?,
             exit_stack,
             executed_pcs: source.executed_pcs.clone(),

@@ -30,8 +30,6 @@ pub use frame::{
     ChildFrame, EvmChildFrame, EvmFrame, EvmFrameState, EvmRootFrame, FrameState, RootFrame,
 };
 pub(in crate::analysis) use frame::{FrameByteKind, FrameMapOrder};
-#[cfg(test)]
-pub(crate) use join::EntryAlternatives;
 pub(crate) use join::EvmEntryAlternatives;
 pub use join::{JoinBoundary, MachineError};
 pub use range::{
@@ -109,7 +107,9 @@ pub struct FrameKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-/// Structural identity of the entire call stack; payload values join only within this identity.
+/// Structural projection of the complete call stack and executable code.
+/// The default policy uses this identity; injected policies own their actual
+/// keys and establish a covering representation before grouping inputs.
 pub struct MachineKey {
     /// Oldest caller first, active frame last.
     pub frames: Vec<FrameKey>,
