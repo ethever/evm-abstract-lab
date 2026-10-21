@@ -7,18 +7,27 @@ use crate::domain::{EvmValue, symbolic::ExprId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
-// Independent proofs shared by COPY quotation and execution. A complete finite
-// cover or retained literal needs no opaque numeric singleton discovery.
+// Numeric certificates must remain independent of the retained expression.
+// These exported views are cached; none invokes opaque N::singleton discovery.
+pub(super) fn numeric_singleton<N: WordElement>(value: &EvmValue<N>) -> Option<U256> {
+    value
+        .constants()
+        .filter(|values| values.len() == 1)
+        .and_then(|values| values.first().copied())
+        .or_else(|| value.known_bits().singleton())
+        .or_else(|| {
+            let (lower, upper) = value.interval().unsigned_bounds();
+            (lower == upper).then_some(lower)
+        })
+}
+
+// Shared independent proof for quotation and executable range shortcuts. A
+// retained literal also proves a range, but cannot certify its own display.
 pub(super) fn known_singleton<N: WordElement>(value: &EvmValue<N>) -> Option<U256> {
     value
         .expression()
         .and_then(ExprId::as_constant)
-        .or_else(|| {
-            value
-                .constants()
-                .filter(|values| values.len() == 1)
-                .and_then(|values| values.first().copied())
-        })
+        .or_else(|| numeric_singleton(value))
 }
 
 // Existing allocation callers retain their discovery behavior. CALL's COPY fee
@@ -42,7 +51,10 @@ impl Queries {
             .map_or_else(|| value.interval().unsigned_bounds(), |word| (word, word))
     }
 
-    fn expression<N: WordElement>(self, value: &EvmValue<N>) -> Result<ExprId, RangeError> {
+    pub(super) fn expression<N: WordElement>(
+        self,
+        value: &EvmValue<N>,
+    ) -> Result<ExprId, RangeError> {
         match self {
             Self::Discover => expr(value),
             Self::Independent => expr_without_query(value),
@@ -281,8 +293,8 @@ pub(super) fn minimum<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         // into copy_from's zero guard instead of rediscovering it on the result.
         return Ok(zero_with().with_expression(ExprId::constant(U256::ZERO)));
     }
-    let left_expr = expr(left)?;
-    let right_expr = expr(right)?;
+    let left_expr = expr_without_query(left)?;
+    let right_expr = expr_without_query(right)?;
     let condition = op(opcode::LT, &[left_expr.clone(), right_expr.clone()], domain)?;
     let expression = choose(condition, left_expr, right_expr, domain)?;
     let numerical = numeric::numeric_domain_with(domain);
