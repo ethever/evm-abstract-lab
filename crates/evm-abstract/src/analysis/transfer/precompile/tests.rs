@@ -416,6 +416,7 @@ fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() 
     observed
         .write_byte(&value(1), &value(42), 3, domain)
         .expect("observed: retain the original byte fact");
+    let mut common_copy_work = None;
     for (case, input) in [
         ("unknown", unknown),
         ("huge", huge),
@@ -428,8 +429,36 @@ fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() 
         eprintln!("identity case={case}");
         let (world, entry, payload) = fixture(address(4), input, Fork::Osaka, &config);
         let expected = payload.active().calldata.clone();
-        let mut budget = WorkBudget::new(config.max_work);
-        let result = run(&world, &entry, payload, &config, &mut budget);
+        // Each of Return/Revert/Failure stages one ordinary Store; the latter
+        // two additionally restore its checkpoint. Fund those actual new copy
+        // owners without changing the original 50k bound on the other work.
+        let mut copies = WorkBudget::new(usize::MAX);
+        for _ in 0..3 {
+            payload.store.pay_clone_with(&mut copies).unwrap();
+        }
+        for _ in 0..2 {
+            payload
+                .active()
+                .saved_store
+                .state()
+                .pay_clone_with(&mut copies)
+                .unwrap();
+        }
+        let copy_work = copies.used();
+        if let Some(common) = common_copy_work {
+            assert_eq!(
+                copy_work, common,
+                "logical input length cannot change Store copy work"
+            );
+        }
+        common_copy_work = Some(copy_work);
+        let funded = ExecutionConfig {
+            max_work: config.max_work.checked_add(copy_work).unwrap(),
+            ..config.clone()
+        };
+        let limited_input = payload.clone();
+        let mut budget = WorkBudget::new(funded.max_work);
+        let result = run(&world, &entry, payload, &funded, &mut budget);
         let diagnostics = format!(
             "{case}: budget={budget:?}, frontiers={:?}",
             result.frontiers
@@ -445,7 +474,48 @@ fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() 
             returned.data, expected,
             "{diagnostics}: preserve source, length and all facts"
         );
-        assert!(budget.used() < 50_000, "{diagnostics}");
+        assert!(
+            budget
+                .used()
+                .checked_sub(copy_work)
+                .expect("new copy owners were paid")
+                < 50_000,
+            "{diagnostics}: copy_work={copy_work}"
+        );
+
+        // The same whole input still exercises the original 50k ledger. A
+        // resource stop may retain a valid finalized prefix; cheaper complete
+        // execution must still return the complete original Identity buffer.
+        let mut original_budget = WorkBudget::new(config.max_work);
+        let original = run(&world, &entry, limited_input, &config, &mut original_budget);
+        assert!(original_budget.used() <= 50_000);
+        assert!(original.successors.is_empty() && original.completed_calls.is_empty());
+        if original.frontiers.is_empty() {
+            assert!(
+                original
+                    .outcomes
+                    .iter()
+                    .any(|outcome| outcome.kind == OutcomeKind::Return)
+            );
+        } else {
+            assert!(
+                original
+                    .frontiers
+                    .iter()
+                    .all(|frontier| frontier.reason == FrontierReason::Work)
+            );
+            assert!(original_budget.exhausted());
+        }
+        for returned in original
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome.kind == OutcomeKind::Return)
+        {
+            assert_eq!(
+                returned.data, expected,
+                "{case}: original-ledger prefix is exact"
+            );
+        }
     }
 }
 
