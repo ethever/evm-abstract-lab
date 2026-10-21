@@ -45,7 +45,7 @@ fn actual_nested_and_indirect_unknown_callbacks_are_included() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[(0, 0), (1, 0)]);
     let input = entry(calldata(0));
-    let analysis = run(world.clone(), input.clone());
+    let analysis = run_config(world.clone(), input.clone(), callback_closure_config());
     complete_unknown(&analysis);
     let mut concrete =
         oracle::concrete_unknown(&world, U, &fixtures::callback_sequence(&[3, 2], false));
@@ -92,6 +92,11 @@ fn actual_unknown_to_known_c_write_and_readonly_guard_match_revm() {
             world.clone(),
             input.clone(),
             evm_abstract::analysis::ExecutionConfig {
+                max_work: if enabled == 1 {
+                    callback_closure_config().max_work
+                } else {
+                    evm_abstract::analysis::ExecutionConfig::default().max_work
+                },
                 root_terminal_coverage: false,
                 ..Default::default()
             },
@@ -174,4 +179,11 @@ fn unknown_delegating_known_code_still_covers_its_guarded_cross_owner_call() {
         only(&read(&outcome.store, C, 0), &[3, 77]);
     }
     assert!(reachable(&analysis, A, a.labels["allowed"]));
+}
+
+#[test]
+fn nested_callbacks_keep_default_ledger_root_coverage() {
+    let mut world = new_world();
+    insert(&mut world, A, &fixtures::busy_x(true), &[(0, 0), (1, 0)]);
+    default_callback_coverage(world, entry(calldata(0)));
 }
