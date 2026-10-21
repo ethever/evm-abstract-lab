@@ -289,8 +289,12 @@ mod tests {
         assert_eq!(native.status(), Status::Incomplete);
         assert!(native.states().is_empty());
         let frontier_count = native.frontiers().len();
-        let view =
-            EvmAnalysis::from_execution(native, &mut WorkBudget::new(2_000_000_000)).unwrap();
+        let mut postprocessing = WorkBudget::new(2_000_000_000);
+        assert_eq!(
+            native.root_code(&mut postprocessing).unwrap(),
+            FrameCode::Runtime
+        );
+        let view = EvmAnalysis::from_execution(native, &mut postprocessing).unwrap();
         assert_eq!(view.program().bytes(), &[0x60, 1, 0x60, 2, 1, 0]);
         assert!(view.states().is_empty() && view.edges().is_empty());
         assert_eq!(view.status(), Status::Incomplete);
@@ -324,8 +328,13 @@ mod tests {
             } else {
                 assert!(!native.states().is_empty());
             }
+            let mut postprocessing = WorkBudget::new(2_000_000_000);
+            assert_eq!(
+                native.root_code(&mut postprocessing).unwrap(),
+                FrameCode::Precompile(owner)
+            );
             assert!(
-                matches!(EvmAnalysis::from_execution(native, &mut WorkBudget::new(2_000_000_000)),
+                matches!(EvmAnalysis::from_execution(native, &mut postprocessing),
                 Err(ProjectionError::NonRuntime(FrameCode::Precompile(address))) if address == owner)
             );
         }

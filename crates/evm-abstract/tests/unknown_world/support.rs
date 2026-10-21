@@ -30,7 +30,7 @@ pub(super) fn word(value: u64) -> EvmValue<NumericValue> {
 }
 
 /// Only PUSH operands and JUMPDEST labels are resolved here. EVM execution
-/// always belongs to analyze_world or the independent revm oracle.
+/// always belongs to the native AnalysisEngine or the independent revm oracle.
 #[derive(Default)]
 pub(super) struct Assembly {
     bytes: Vec<u8>,

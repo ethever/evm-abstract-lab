@@ -1,7 +1,7 @@
 //! Carrier-generic input authority, root coverage and paid projection fixture.
 use evm_abstract::{
     U256,
-    analysis::{AnalysisInput, Config, ContextPolicy, EvmAnalysis, Status, control::Control},
+    analysis::{AnalysisInput, Config, EvmAnalysis, Status, control::Control},
 };
 
 /// The context policy deliberately owns a borrow and implements neither Clone
@@ -24,6 +24,7 @@ impl evm_abstract::analysis::ContextPolicy for BorrowedContext<'_> {
 
 pub fn assert_native_input_coverage<D: evm_abstract::domain::EvmNumericAlgebra>(
     values: &evm_abstract::domain::ValueAlgebra<D>,
+    max_work: usize,
 ) {
     use evm_abstract::{
         Address, Fork,
@@ -57,6 +58,7 @@ pub fn assert_native_input_coverage<D: evm_abstract::domain::EvmNumericAlgebra>(
         .run(
             input,
             ExecutionConfig {
+                max_work,
                 analysis: Config {
                     max_transfers: 1,
                     ..Config::default()
@@ -70,9 +72,13 @@ pub fn assert_native_input_coverage<D: evm_abstract::domain::EvmNumericAlgebra>(
     assert_eq!(graph.status(), Status::Incomplete);
     assert_eq!(graph.transfers(), 1);
     assert!(advances.get() > 0);
-    let coverage = graph
-        .root_terminal_coverage()
-        .expect("all carriers retain original root authority");
+    let coverage = graph.root_terminal_coverage().unwrap_or_else(|| {
+        panic!(
+            "all carriers retain original root authority: work={} initial_relations={:?}",
+            graph.work(),
+            graph.states()[0].entry.relations
+        )
+    });
     assert_eq!(coverage.trigger(), &RootTerminalTrigger::Transfers);
     assert_eq!(coverage.input().snapshot(), &snapshot);
     assert_eq!(coverage.input().revision(), revision);

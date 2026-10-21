@@ -152,4 +152,28 @@ fn quotation_and_refused_execution_do_not_deep_clone_an_unpaid_custom_element() 
         clones.load(Ordering::Relaxed) > 0,
         "execution cloning is observable after charging"
     );
+
+    // The native carrier intentionally retains Top here. Exact immutable terms
+    // still let the common facade evaluate EXP, so admission must cover that
+    // evaluator even though Policy::transfer itself does not implement EXP.
+    let terms = [U256::from(3), U256::MAX].map(|literal| {
+        EvmValue::<ExcludingWord>::top()
+            .with_expression(evm_abstract::domain::symbolic::ExprId::constant(literal))
+    });
+    let before = calls.arithmetic.load(Ordering::Relaxed);
+    let mut refused = WorkBudget::new(1);
+    assert!(
+        algebra
+            .apply_budgeted(opcode::EXP, &terms, &mut refused)
+            .is_err()
+    );
+    assert_eq!(calls.arithmetic.load(Ordering::Relaxed), before);
+    let mut funded = WorkBudget::new(1_000_000);
+    let power = algebra
+        .apply_budgeted(opcode::EXP, &terms, &mut funded)
+        .unwrap();
+    // 3^(2^256-1) is the multiplicative inverse of 3 modulo 2^256.
+    let mut inverse = [0xaa; 32];
+    inverse[31] = 0xab;
+    assert_eq!(power.value.singleton(), Some(U256::from_be_bytes(inverse)));
 }

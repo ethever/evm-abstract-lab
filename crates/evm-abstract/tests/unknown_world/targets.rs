@@ -3,7 +3,7 @@ use crate::native;
 use alloy_primitives::U256;
 use evm_abstract::domain::NumericValue;
 use evm_abstract::{
-    analysis::{Config, ExecutionConfig, FrontierReason, MachineEdgeKind, Status},
+    analysis::{ExecutionConfig, FrontierReason, MachineEdgeKind, Status},
     domain::relational::{CheckResult, RelationLimits},
     world::{EvmAccount, EvmByteArray, EvmWorld},
 };
@@ -15,7 +15,6 @@ fn wide_symbolic_policy() -> ExecutionConfig {
     // resource-boundary test below keeps the same complete address space.
     ExecutionConfig {
         max_work: 1_000_000_000,
-        analysis: Config::default(),
         ..Default::default()
     }
 }

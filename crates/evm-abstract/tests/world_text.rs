@@ -649,13 +649,10 @@ fn stack(values: &[EvmValue<NumericValue>]) -> String {
 }
 
 fn length(value: &EvmValue<NumericValue>) -> String {
-    if let Some(constants) = value.constants()
-        && constants.len() == 1
-    {
-        format!("{} bytes", constants.first().unwrap())
-    } else {
-        format!("{value} bytes")
-    }
+    value.singleton().map_or_else(
+        || format!("{value} bytes"),
+        |exact| format!("{value} ({exact} bytes)"),
+    )
 }
 
 #[test]

@@ -153,7 +153,7 @@ fn strong_top_write_changes_reuse_state_work_and_symbolic_json() {
     );
     assert_eq!(
         observed_bindings[0]["numeric"],
-        serde_json::json!(top.numeric())
+        serde_json::json!(evm_abstract::domain::WordObservation::top())
     );
     assert_eq!(
         observed["source"]["namespace"],

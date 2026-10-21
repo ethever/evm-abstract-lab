@@ -341,6 +341,8 @@ fn borrowed_nonclone_custom_algebra_retains_native_root_coverage() {
     let calls = Calls::default();
     let numeric = Policy::new(&calls);
     let values = evm_abstract::domain::ValueAlgebra::new(&numeric);
-    root_input::assert_native_input_coverage(&values);
+    // This independent carrier prices each native field at 512 units, so the
+    // generic owned coverage envelope needs an explicit ample root ledger.
+    root_input::assert_native_input_coverage(&values, 1_000_000_000);
     assert!(calls.projections.load(std::sync::atomic::Ordering::Relaxed) > 0);
 }

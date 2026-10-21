@@ -198,12 +198,21 @@ impl EvmNumericAlgebra for Policy<'_> {
         }
         NumericReduction::stable(self.transfer(op, &args))
     }
-    fn operation_work<'a>(&self, _op: u8, args: impl Iterator<Item = &'a ExcludingWord>) -> usize
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a ExcludingWord>) -> usize
     where
         ExcludingWord: 'a,
     {
+        // Even an opcode this carrier leaves at Top can fold an exact retained
+        // expression in ValueAlgebra. Its quote must cover that opcode's real
+        // concrete evaluator as well as this policy's own data copies/queries.
+        let evaluation = match op {
+            opcode::EXP => 16_384,
+            opcode::ADDMOD | opcode::MULMOD => 4096,
+            opcode::DIV | opcode::SDIV | opcode::MOD | opcode::SMOD => 1024,
+            _ => 512,
+        };
         args.fold(
-            self.configuration.len().saturating_add(512),
+            self.configuration.len().saturating_add(evaluation),
             |cost, value| cost.saturating_add(value.work_size().saturating_mul(8)),
         )
     }

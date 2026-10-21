@@ -139,6 +139,9 @@ mod root_input;
 
 #[test]
 fn product_and_finite_inputs_share_native_scope_and_root_coverage() {
-    root_input::assert_native_input_coverage(&native::product());
-    root_input::assert_native_input_coverage(&native::finite_with(native::spec(8, 4, 256)));
+    root_input::assert_native_input_coverage(&native::product(), 20_000_000);
+    root_input::assert_native_input_coverage(
+        &native::finite_with(native::spec(8, 4, 256)),
+        20_000_000,
+    );
 }

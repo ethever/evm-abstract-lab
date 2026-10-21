@@ -20,7 +20,6 @@ use std::collections::BTreeSet;
 
 #[test]
 fn validation_reports_typed_errors_without_entering_the_engine() {
-    assert!(std::num::NonZeroUsize::new(0).is_none());
     for config in [
         Config {
             max_states: 0,
@@ -125,9 +124,13 @@ fn single_program_execution_policy_controls_materialization_and_actual_work() {
             .iter()
             .any(|frontier| matches!(frontier.reason, FrontierReason::Work))
     );
+    let bounded = EvmAnalysis::from_execution(bounded, &mut native::postprocessing()).unwrap();
+    assert_eq!(bounded.status(), Status::Incomplete);
+    assert!(bounded.states().is_empty());
+    assert!(bounded.execution().states().is_empty());
     assert!(matches!(
-        EvmAnalysis::from_execution(bounded, &mut native::postprocessing()),
-        Err(evm_abstract::analysis::ProjectionError::MissingProgram)
+        evm_abstract::ssa::build(&bounded),
+        Err(evm_abstract::ssa::SsaError::IncompleteAnalysis)
     ));
 }
 
@@ -198,7 +201,6 @@ fn unknown_calldata_clz(capacity: usize, max_work: usize) -> EvmWorldAnalysis<Fi
         )
         .unwrap(),
         ExecutionConfig {
-            analysis: Config::default(),
             max_work,
             ..ExecutionConfig::default()
         },
