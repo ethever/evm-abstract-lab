@@ -7,7 +7,7 @@ use evm_abstract::{
         ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status, WorldAnalysis,
         analyze_world,
     },
-    domain::{AbstractValue, Domain, provenance::Origin},
+    domain::{AbstractValue, Domain, provenance::Origin, symbolic::ExprId},
     world::{Account, ByteArray, Code, Entry, World},
 };
 
@@ -240,9 +240,10 @@ fn another_call_clears_the_suspended_callers_previous_return_buffer() {
         .collect();
     assert!(!children.is_empty());
     for child in children {
+        // Clearing constructs an empty buffer with its exact zero-length proof.
         assert_eq!(
             *child.entry.call_stack.root().state.returndata.len(),
-            AbstractValue::constant(U256::ZERO)
+            AbstractValue::constant(U256::ZERO).with_expression(ExprId::constant(U256::ZERO))
         );
     }
 }
@@ -357,6 +358,7 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
             resumed.active().returndata.len().provenance(),
             length.provenance()
         );
+        // The complete word read retains the child's stored constant proof of 42.
         assert_eq!(
             child
                 .exit
@@ -366,6 +368,7 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
                 .memory
                 .read_word(&zero, domain),
             AbstractValue::constant(U256::from(42))
+                .with_expression(ExprId::constant(U256::from(42)))
         );
         let copied = resumed.active().memory.read_word(&zero, domain);
         let expected_copy = domain
