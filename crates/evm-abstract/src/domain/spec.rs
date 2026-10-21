@@ -43,8 +43,8 @@ impl DomainSpec {
             capacity,
             reduction_rounds,
             fact_limit,
-            // Version 5 includes typed scalar dependencies and paid operand clones.
-            cost_version: 5,
+            // Version 6 prices shared-kernel work, custom rules and opaque queries.
+            cost_version: 6,
             widening_after_updates: 2,
             provenance_policy: "scoped-expressions-and-value-identities-v3",
             relations: super::relational::RelationLimits::default(),
