@@ -10,7 +10,7 @@ use crate::{
 };
 use analysis_kernel::{JobId, KernelError, Meter, ReclaimScope, RunningJob, Scope, ScopeKey};
 
-impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
+impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
     /// Share only allocation lineage; each producer still owns its distinct
     /// scope inventory, seeding, selector publication and retirement protocol.
     pub(super) fn next_scope_key(

@@ -178,10 +178,15 @@ impl Default for FiniteConstantSet {
 
 impl Serialize for FiniteConstantSet {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self.as_values() {
-            None => serializer.serialize_str("Top"),
-            Some(values) => values.serialize(serializer),
+        #[derive(Serialize)]
+        struct Native<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            constants: Option<&'a BTreeSet<U256>>,
         }
+        Native {
+            constants: self.as_values(),
+        }
+        .serialize(serializer)
     }
 }
 

@@ -1,12 +1,12 @@
 //! Differential default-policy proof cases; no timing or contract fixture.
+
 use super::*;
 use crate::domain::{EvmNumericAlgebra, EvmValue, ReductionStatus, ValueAlgebra};
 use proptest::{prelude::*, test_runner::TestCaseResult};
 
-fn policy(profile: Profile, capacity: usize, rounds: usize, facts: usize) -> Domain {
-    Domain::from_spec(
+fn policy(capacity: usize, rounds: usize, facts: usize) -> ProductAlgebra {
+    ProductAlgebra::from_spec(
         DomainSpec::new(
-            profile,
             NonZeroUsize::new(capacity).unwrap(),
             NonZeroUsize::new(rounds).unwrap(),
             NonZeroUsize::new(facts).unwrap(),
@@ -46,7 +46,7 @@ fn captured() -> [NumericValue; 32] {
 
 /// The original ordered injected scalar fold, retaining every operation and its
 /// full detailed status. No packing helper or observation roundtrip is involved.
-fn ordinary(domain: Domain, bytes: &[NumericValue; 32]) -> NumericValue {
+fn ordinary(domain: ProductAlgebra, bytes: &[NumericValue; 32]) -> NumericValue {
     let algebra = ValueAlgebra::new(domain);
     let mut word = EvmValue::constant(U256::ZERO);
     for (i, byte) in bytes.iter().enumerate() {
@@ -72,7 +72,7 @@ fn ordinary(domain: Domain, bytes: &[NumericValue; 32]) -> NumericValue {
     word.numeric().clone()
 }
 
-fn equivalent(domain: Domain, bytes: &[NumericValue; 32]) -> NumericValue {
+fn equivalent(domain: ProductAlgebra, bytes: &[NumericValue; 32]) -> NumericValue {
     let refs = std::array::from_fn(|i| &bytes[i]);
     let result = domain.pack_word_numeric(&refs).expect("certified cubes");
     assert_eq!(result, ordinary(domain, bytes), "spec={:?}", domain.spec());
@@ -93,7 +93,7 @@ fn equivalent(domain: Domain, bytes: &[NumericValue; 32]) -> NumericValue {
 fn captured_low_five_zero_and_all_unknown_match_full_scalar_fold() {
     for capacity in [1, 4, 8, 64, 512] {
         for rounds in [4, 16] {
-            let domain = policy(Profile::Product, capacity, rounds, 4096);
+            let domain = policy(capacity, rounds, 4096);
             let bytes = captured();
             let packed = equivalent(domain, &bytes);
             assert_eq!(packed.known_bits().zero(), U256::from(31));
@@ -112,7 +112,7 @@ fn captured_low_five_zero_and_all_unknown_match_full_scalar_fold() {
 fn every_word_limb_and_sign_boundary_keeps_full_finite_presentation() {
     for bit in [0, 1, 7, 8, 63, 64, 127, 128, 247, 248, 254, 255] {
         for capacity in [1, 2, 8, 512] {
-            let domain = policy(Profile::Product, capacity, 4, 4096);
+            let domain = policy(capacity, 4, 4096);
             for fixed in [0u8, !(1u8 << (bit % 8))] {
                 let mut bytes = std::array::from_fn(|_| NumericValue::constant(U256::ZERO));
                 bytes[31 - bit / 8] = cube(1 << (bit % 8), fixed, bit % 2 == 0);
@@ -135,7 +135,7 @@ fn assert_two_lane_cube(
     one: [u8; 2],
 ) -> TestCaseResult {
     assert_ne!(left, right);
-    let domain = policy(Profile::Product, capacity, 16, 4096);
+    let domain = policy(capacity, 16, 4096);
     let packed = equivalent(domain, bytes);
     // Enumerate concrete bytes by a direct mask predicate, independently of
     // NumericValue::contains and both the scalar and packing algorithms.
@@ -231,7 +231,7 @@ proptest! {
 
 #[test]
 fn constrained_counterexamples_are_not_cube_certificates() {
-    let domain = policy(Profile::Product, 512, 16, 4096);
+    let domain = policy(512, 16, 4096);
     let mut sparse = cube(3, 0, true);
     sparse.finite =
         FiniteConstantSet::try_from_values(BTreeSet::from([U256::ZERO, U256::from(3)])).unwrap();
@@ -298,10 +298,7 @@ fn singleton_forms(exact: U256) -> [NumericValue; 7] {
 
 #[test]
 fn product_component_singletons_keep_the_existing_concrete_packing_admission() {
-    for domain in [
-        policy(Profile::Product, 512, 16, 4096),
-        policy(Profile::Product, 1, 1, 1),
-    ] {
+    for domain in [policy(512, 16, 4096), policy(1, 1, 1)] {
         for exact in [0u8, 7, 127, 128, 255] {
             for value in singleton_forms(U256::from(exact)) {
                 assert_eq!(value.singleton(), Some(U256::from(exact)));
@@ -318,7 +315,7 @@ fn product_component_singletons_keep_the_existing_concrete_packing_admission() {
 #[test]
 fn component_singletons_mix_with_certified_cubes_without_losing_constraints() {
     for capacity in [1, 8, 512] {
-        let domain = policy(Profile::Product, capacity, 16, 4096);
+        let domain = policy(capacity, 16, 4096);
         let mut bytes = std::array::from_fn(|_| {
             NumericValue::unsigned_range(U256::from(7), U256::from(7)).unwrap()
         });
@@ -342,7 +339,7 @@ fn component_singletons_mix_with_certified_cubes_without_losing_constraints() {
 
 #[test]
 fn singleton_candidates_must_satisfy_every_own_constraint() {
-    let domain = policy(Profile::Product, 512, 16, 4096);
+    let domain = policy(512, 16, 4096);
     let seven = U256::from(7);
     let eight = U256::from(8);
     let mut wrong_modulo = NumericValue::unsigned_range(seven, seven).unwrap();
@@ -384,14 +381,14 @@ fn singleton_candidates_must_satisfy_every_own_constraint() {
 }
 
 #[test]
-fn wide_singletons_and_constants_only_without_finite_literals_still_decline() {
-    let product = policy(Profile::Product, 512, 16, 4096);
-    let constants = policy(Profile::ConstantsOnly, 512, 16, 4096);
+fn wide_component_singletons_decline_byte_packing() {
+    let product = policy(512, 16, 4096);
     for exact in [U256::from(256), U256::MAX] {
         for value in singleton_forms(exact) {
             assert_eq!(value.singleton(), Some(exact));
             let bytes: [_; 32] = std::array::from_fn(|_| value.clone());
-            for domain in [product, constants] {
+            {
+                let domain = product;
                 assert!(
                     domain
                         .pack_word_numeric(&std::array::from_fn(|i| &bytes[i]))
@@ -400,24 +397,12 @@ fn wide_singletons_and_constants_only_without_finite_literals_still_decline() {
             }
         }
     }
-    for value in singleton_forms(U256::from(7)) {
-        let bytes: [_; 32] = std::array::from_fn(|_| value.clone());
-        if value.finite.cardinality() == Some(1) {
-            equivalent(constants, &bytes);
-        } else {
-            assert!(
-                constants
-                    .pack_word_numeric(&std::array::from_fn(|i| &bytes[i]))
-                    .is_none()
-            );
-        }
-    }
 }
 
 #[test]
 fn singleton_quotes_fund_discovery_without_changing_the_captured_cube_fees() {
     use crate::domain::WordElement;
-    let domain = policy(Profile::Product, 512, 16, 4096);
+    let domain = policy(512, 16, 4096);
     let unknown: [_; 32] = std::array::from_fn(|_| NumericValue::unknown_byte());
     assert_eq!(
         domain.pack_word_work(&std::array::from_fn(|i| &unknown[i])),
@@ -455,12 +440,7 @@ fn singleton_quotes_fund_discovery_without_changing_the_captured_cube_fees() {
 
 #[test]
 fn output_quote_overflow_still_refuses_before_finite_construction() {
-    let domain = policy(
-        Profile::Product,
-        1usize << (usize::BITS - 1),
-        16,
-        usize::MAX,
-    );
+    let domain = policy(1usize << (usize::BITS - 1), 16, usize::MAX);
     let bytes: [_; 32] = std::array::from_fn(|i| {
         let remaining = (usize::BITS as usize - 1).saturating_sub(8 * i).min(8);
         cube(((1u16 << remaining) - 1) as u8, 0, false)
@@ -472,12 +452,8 @@ fn output_quote_overflow_still_refuses_before_finite_construction() {
 }
 
 #[test]
-fn small_cooperation_limits_and_constants_only_keep_conservative_admission() {
-    for domain in [
-        policy(Profile::Product, 512, 1, 4096),
-        policy(Profile::Product, 512, 16, 512),
-        policy(Profile::ConstantsOnly, 512, 16, 4096),
-    ] {
+fn small_cooperation_limits_keep_conservative_product_admission() {
+    for domain in [policy(512, 1, 4096), policy(512, 16, 512)] {
         let bytes = captured();
         assert!(
             domain
@@ -487,13 +463,4 @@ fn small_cooperation_limits_and_constants_only_keep_conservative_admission() {
         let bytes = std::array::from_fn(|i| NumericValue::constant(U256::from(i)));
         equivalent(domain, &bytes);
     }
-    let domain = policy(Profile::ConstantsOnly, 8, 4, 256);
-    let mut bytes: [_; 32] = std::array::from_fn(|_| NumericValue::constant(U256::ZERO));
-    // A singleton established only by bits is not a ConstantsOnly literal.
-    bytes[31].finite = FiniteConstantSet::top();
-    assert!(
-        domain
-            .pack_word_numeric(&std::array::from_fn(|i| &bytes[i]))
-            .is_none()
-    );
 }

@@ -28,7 +28,7 @@ pub(super) struct Proof {
     owner: JobId,
 }
 
-impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
+impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
     /// New native sources/edges and previously unseeded contribution families
     /// change the proof basis even before any old scalar slot version changes.
     pub(in crate::analysis) fn structure_changed(

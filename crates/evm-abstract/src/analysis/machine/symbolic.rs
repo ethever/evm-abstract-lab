@@ -50,7 +50,7 @@ impl<N: WordElement> EvmMachinePayload<N> {
 
     /// The same map renames every occurrence of one local source/selector. A
     /// failed traversal leaves the original payload and its history untouched.
-    pub(crate) fn rename_fresh_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn rename_fresh<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         map: &BTreeMap<ExprId, ExprId>,
         limits: ExprLimits,
@@ -65,12 +65,12 @@ impl<N: WordElement> EvmMachinePayload<N> {
                     value.forget_identity();
                     value.rename_fresh(map, limits)?;
                 }
-                StatePart::Bytes(bytes) => bytes.rename_fresh_with(map, limits, domain)?,
-                StatePart::Store(store) => store.to_mut().rename_fresh_with(map, limits, domain)?,
+                StatePart::Bytes(bytes) => bytes.rename_fresh(map, limits, domain)?,
+                StatePart::Store(store) => store.to_mut().rename_fresh(map, limits, domain)?,
             }
             Ok(())
         })?;
-        renamed.store.rename_fresh_with(map, limits, domain)?;
+        renamed.store.rename_fresh(map, limits, domain)?;
         renamed.relations = renamed.relations.rename_fresh(map, limits)?;
         checkpoint()?;
         *self = renamed;
@@ -87,7 +87,7 @@ impl super::MachinePayload {
         map: &BTreeMap<ExprId, ExprId>,
         limits: ExprLimits,
     ) -> Result<(), MachineError> {
-        let numeric = crate::domain::Domain::default();
-        self.rename_fresh_with(map, limits, ValueAlgebra::new(numeric).borrowed())
+        let numeric = crate::domain::ProductAlgebra::default();
+        self.rename_fresh(map, limits, ValueAlgebra::new(numeric).borrowed())
     }
 }

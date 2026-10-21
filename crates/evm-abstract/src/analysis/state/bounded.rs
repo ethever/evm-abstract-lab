@@ -45,14 +45,14 @@ fn restrict<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     layout: &EvmPayloadSummary<N>,
     domain: AlgebraRef<'_, D>,
 ) -> EvmPayloadSummary<N> {
-    summary.store = summary.store.project_to_layout_with(&layout.store, domain);
+    summary.store = summary.store.project_to_layout(&layout.store, domain);
     for (frame, shape) in summary.frames.iter_mut().zip(&layout.frames) {
         for (bytes, shape) in frame.byte_arrays_mut().into_iter().zip(shape.byte_arrays()) {
-            *bytes = bytes.project_to_layout_with(shape, domain);
+            *bytes = bytes.project_to_layout(shape, domain);
         }
         frame.saved_store = frame
             .saved_store
-            .project_to_layout_with(&shape.saved_store, domain);
+            .project_to_layout(&shape.saved_store, domain);
     }
     summary
 }

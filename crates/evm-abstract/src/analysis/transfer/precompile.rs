@@ -221,7 +221,7 @@ fn materialize<D: EvmNumericAlgebra>(
             return Err(FrontierReason::Work);
         }
         let value = input
-            .read_byte_checked_with(
+            .read_byte_checked(
                 &EvmValue::<D::Element>::constant(U256::from(index)),
                 context.domain,
             )
@@ -250,14 +250,13 @@ fn success_data<D: EvmNumericAlgebra>(
             // These native successes return either no bytes or a full word.
             // Slice accepts concrete sizes, so join the two complete buffers
             // instead of asking it to enumerate a numeric range of lengths.
-            let word = EvmByteArray::<D::Element>::unknown_checked()?.slice_with(
+            let word = EvmByteArray::<D::Element>::unknown_checked()?.slice(
                 &EvmValue::<D::Element>::constant(U256::ZERO),
                 &EvmValue::<D::Element>::constant(U256::from(32)),
-                32,
                 domain,
             )?;
             let selector = ExprId::fresh().ok_or(StateError::IdentityExhausted)?;
-            return EvmByteArray::<D::Element>::empty().join_guarded_with(
+            return EvmByteArray::<D::Element>::empty().join_guarded(
                 &word,
                 domain,
                 selector,
@@ -282,10 +281,9 @@ fn success_data<D: EvmNumericAlgebra>(
         // max_memory_bytes. General/future variants get no invented byte cap.
         _ => return EvmByteArray::<D::Element>::unknown_checked(),
     };
-    EvmByteArray::<D::Element>::unknown_checked()?.slice_with(
+    EvmByteArray::<D::Element>::unknown_checked()?.slice(
         &EvmValue::<D::Element>::constant(U256::ZERO),
         &length,
-        256,
         domain,
     )
 }

@@ -1,9 +1,7 @@
 //! Bounded presentation projection; the captured root and facts remain authoritative.
 
-use super::{COPY_FACT_LIMIT, EvmByteArray, zero_with};
+use super::{COPY_FACT_LIMIT, EvmByteArray, zero};
 use crate::domain::AlgebraRef;
-#[cfg(test)]
-use crate::domain::{AbstractValue, Domain};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
     EvmValue,
@@ -11,11 +9,11 @@ use crate::domain::{
     symbolic::{ByteStateKind, ExprId, ExprKind},
 };
 #[cfg(test)]
-use crate::world::ByteArray;
-#[cfg(test)]
-use crate::world::bytes::zero;
+use crate::world::test_support::TestBytes;
 use alloy_primitives::U256;
 use std::collections::BTreeMap;
+#[cfg(test)]
+use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 type Facts<N = crate::domain::NumericValue> = BTreeMap<ExprId, EvmValue<N>>;
 
@@ -67,16 +65,16 @@ fn certified<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         }
         _ => return false,
     };
-    let constant_with = EvmValue::<N>::constant(byte);
+    let constant = EvmValue::<N>::constant(byte);
     let expression = ExprId::constant(byte);
     // Constant-key guarantees can carry observed sources after normalization.
     // Keep their complete metadata rather than copying just a numeric byte.
     let expected = source.operands.get(&expression).map_or_else(
-        || constant_with.clone(),
+        || constant.clone(),
         |fact| {
             domain
-                .join(fact, &constant_with)
-                .with_numeric(constant_with.numeric().clone())
+                .join(fact, &constant)
+                .with_numeric(constant.numeric().clone())
         },
     );
     value == &expected
@@ -143,7 +141,7 @@ pub(super) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             continue;
         };
         let value = if source_bounds.is_some_and(|(_, hi)| at >= hi) {
-            zero_with()
+            zero()
         } else if !same_context || !certified(source, *source_index, value, domain) {
             // Keep the candidate coordinate for summary projection, which
             // rereads the complete root. The old display value proves nothing.
@@ -151,7 +149,7 @@ pub(super) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         } else if delta >= output_lo || source_bounds.is_some_and(|(lo, _)| at >= lo) {
             // Union removes the source equality/alias when padding is
             // possible. These display values never enter operand facts.
-            domain.join(value, &zero_with())
+            domain.join(value, &zero())
         } else {
             value.clone()
         };
@@ -192,7 +190,7 @@ fn comparison_work(query_nodes: usize) -> usize {
 impl<N: WordElement> EvmByteArray<N> {
     /// Prepay the slice algorithm from cached counts, before any map/graph
     /// census. Exact payloads and logical lengths are retained by reference.
-    pub(crate) fn slice_work_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn slice_work<D: EvmNumericAlgebra<Element = N>>(
         &self,
         offset: &EvmValue<N>,
         size: &EvmValue<N>,
@@ -263,20 +261,3 @@ impl<N: WordElement> EvmByteArray<N> {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-impl EvmByteArray<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn slice_work(
-        &self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        size: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> usize {
-        self.slice_work_with(
-            offset,
-            size,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-}

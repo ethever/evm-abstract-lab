@@ -1,6 +1,6 @@
 //! Logical allocation arithmetic. Symbolic ranges arrive constrained by transfer.
 
-use super::{RangeError, constant_with, expr, expr_without_query, limits, numeric, zero_with};
+use super::{RangeError, constant, expr, expr_without_query, limits, numeric, zero};
 use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{EvmValue, symbolic::ExprId};
@@ -144,7 +144,6 @@ pub(super) fn expanded_with_queries<N: WordElement, D: EvmNumericAlgebra<Element
     old: &EvmValue<N>,
     offset: &EvmValue<N>,
     size: &EvmValue<N>,
-    _max_bytes: usize,
     memory: bool,
     domain: AlgebraRef<'_, D>,
     queries: Queries,
@@ -166,7 +165,7 @@ pub(super) fn expanded_with_queries<N: WordElement, D: EvmNumericAlgebra<Element
             return Ok(EvmValue::<N>::constant(old.max(end)));
         }
     }
-    let numerical = numeric::numeric_domain_with(domain);
+    let numerical = numeric::numeric_domain(domain);
     let mut finite = None;
     if let (Some(old), Some(offsets), Some(sizes)) =
         (old.constants(), offset.constants(), size.constants())
@@ -294,13 +293,13 @@ pub(super) fn minimum<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     if known_singleton(left) == Some(U256::ZERO) || known_singleton(right) == Some(U256::ZERO) {
         // N::constant need not export a finite view. Carry this literal proof
         // into copy_from's zero guard instead of rediscovering it on the result.
-        return Ok(zero_with().with_expression(ExprId::constant(U256::ZERO)));
+        return Ok(zero().with_expression(ExprId::constant(U256::ZERO)));
     }
     let left_expr = expr_without_query(left)?;
     let right_expr = expr_without_query(right)?;
     let condition = op(opcode::LT, &[left_expr.clone(), right_expr.clone()], domain)?;
     let expression = choose(condition, left_expr, right_expr, domain)?;
-    let numerical = numeric::numeric_domain_with(domain);
+    let numerical = numeric::numeric_domain(domain);
     let numeric = if let (Some(left), Some(right)) = (left.constants(), right.constants()) {
         let mut out = None;
         for a in left {
@@ -312,7 +311,7 @@ pub(super) fn minimum<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                 });
             }
         }
-        out.unwrap_or_else(|| constant_with(0))
+        out.unwrap_or_else(|| constant(0))
     } else {
         let (alo, ahi) = Queries::Independent.bounds(left);
         let (blo, bhi) = Queries::Independent.bounds(right);
@@ -334,17 +333,8 @@ fn expanded<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     old: &EvmValue<N>,
     offset: &EvmValue<N>,
     size: &EvmValue<N>,
-    max_bytes: usize,
     memory: bool,
     domain: AlgebraRef<'_, D>,
 ) -> Result<EvmValue<N>, RangeError> {
-    expanded_with_queries(
-        old,
-        offset,
-        size,
-        max_bytes,
-        memory,
-        domain,
-        Queries::Discover,
-    )
+    expanded_with_queries(old, offset, size, memory, domain, Queries::Discover)
 }

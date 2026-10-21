@@ -1,23 +1,23 @@
 //! Finite, congruence and nonzero exchange with bounded transactional facts.
 use super::{
-    Accepts, Bounds, BoundsRoute, Charges, Domain, FactError, KernelError, LocalClosure, MaskRoute,
-    Masks, NumericValue, PublishError, Read, Reduction, RuleError, ScalarGuarantees, ScalarRoute,
-    Scalars, Scope, WorkExhausted, publish, read,
+    Accepts, Bounds, BoundsRoute, Charges, DomainSpec, FactError, KernelError, LocalClosure,
+    MaskRoute, Masks, NumericValue, PublishError, Read, Reduction, RuleError, ScalarGuarantees,
+    ScalarRoute, Scalars, Scope, WorkExhausted, publish, read,
 };
-use crate::domain::{AbstractValue, WordElement};
+use crate::domain::{EvmValue, WordElement};
 
 pub(super) struct ScalarRule {
-    domain: Domain,
+    domain: DomainSpec,
     lattice: crate::domain::facts::FactLattice,
     pub(super) value: NumericValue,
     pub(super) rounds: usize,
     pub(super) strengthened: usize,
 }
 impl ScalarRule {
-    pub(super) fn new(domain: Domain, value: NumericValue) -> Self {
+    pub(super) fn new(domain: DomainSpec, value: NumericValue) -> Self {
         Self {
             domain,
-            lattice: crate::domain::facts::FactLattice::new(domain.spec().fact_limit()),
+            lattice: crate::domain::facts::FactLattice::new(domain.fact_limit()),
             value,
             rounds: 0,
             strengthened: 0,
@@ -60,7 +60,7 @@ where
         )?;
         super::super::reduce::export(
             self.domain,
-            &AbstractValue::from_numeric(value.clone()),
+            &EvmValue::from_numeric(value.clone()),
             &mut self.lattice,
             &mut self.strengthened,
         )?;

@@ -18,8 +18,8 @@ use std::collections::BTreeMap;
 /// Constant folding after the caller's registered-selector projection is an
 /// authoritative proof, while nonconstant external/manual symbols stay intact.
 pub(in crate::world) fn refresh_constant<N: WordElement>(value: &mut EvmValue<N>) {
-    if let Some(constant_with) = value.expression().and_then(ExprId::as_constant) {
-        *value = value.clone().with_numeric(N::constant(constant_with));
+    if let Some(constant) = value.expression().and_then(ExprId::as_constant) {
+        *value = value.clone().with_numeric(N::constant(constant));
     }
 }
 
@@ -106,7 +106,7 @@ pub(in crate::world) fn retained_facts<N: WordElement>(
 impl<N: WordElement> EvmByteArray<N> {
     /// Canonicalize disposable cycle metadata without rewriting immutable
     /// content, external operand guarantees, source identity, or logical length.
-    pub(crate) fn widening_form_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn widening_form<D: EvmNumericAlgebra<Element = N>>(
         &self,
         _domain: AlgebraRef<'_, D>,
         limits: ExprLimits,
@@ -132,17 +132,5 @@ impl<N: WordElement> EvmByteArray<N> {
         refresh_constant(&mut out.length);
         out.check_existing(limits)?;
         Ok(out)
-    }
-}
-
-#[cfg(test)]
-impl EvmByteArray<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn widening_form(
-        &self,
-        _domain: crate::domain::Domain,
-        limits: ExprLimits,
-    ) -> Result<Self, RangeError> {
-        self.widening_form_with(ValueAlgebra::new(_domain).borrowed(), limits)
     }
 }

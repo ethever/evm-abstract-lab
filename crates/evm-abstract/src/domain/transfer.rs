@@ -1,7 +1,7 @@
 //! Pure numeric transfer over validated EVM operands and component guarantees.
 //! Source labels and equal abstract summaries never establish value equality.
 use super::{
-    Domain, NumericReduction, NumericValue, congruence::Congruence, interval::Interval,
+    DomainSpec, NumericReduction, NumericValue, congruence::Congruence, interval::Interval,
     known_bits::KnownBits,
 };
 use alloy_primitives::U256;
@@ -25,7 +25,7 @@ fn exact(op: u8, args: &[&NumericValue]) -> Option<NumericValue> {
 }
 
 pub(super) fn apply(
-    domain: Domain,
+    domain: DomainSpec,
     op: u8,
     args: &[&NumericValue],
     reduce: impl FnOnce(NumericValue) -> NumericReduction<NumericValue>,
@@ -55,7 +55,7 @@ pub(super) fn apply(
     let mut reduced = reduce(value);
     // A result and its operands need exactly one operation atom plus one per
     // operand. No other fact was retained or queried by this local admission.
-    if domain.spec().fact_limit() < 1 + args.len()
+    if domain.fact_limit() < 1 + args.len()
         && !matches!(
             reduced.status,
             super::ReductionStatus::WorkLimit

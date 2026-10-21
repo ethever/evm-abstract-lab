@@ -329,10 +329,10 @@ impl<N: WordElement> ConditionalFacts<N> {
                     for (expression, value) in &source.facts {
                         let (expression, value) = map(expression, Some(value))?;
                         if let Some(mut value) = value {
-                            if let Some(constant_with) = expression.as_constant() {
+                            if let Some(constant) = expression.as_constant() {
                                 value = domain
-                                    .join(&value, &EvmValue::<N>::constant(constant_with))
-                                    .with_numeric(N::constant(constant_with));
+                                    .join(&value, &EvmValue::<N>::constant(constant))
+                                    .with_numeric(N::constant(constant));
                             }
                             // Renaming may merge keys; keep every possible source.
                             facts

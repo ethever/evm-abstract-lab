@@ -329,7 +329,7 @@ pub(super) fn covers<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     let answer =
         incoming
             .relations
-            .can_equal_budgeted_with(&predicate, U256::ZERO, &policy, budget, domain);
+            .can_equal_budgeted(&predicate, U256::ZERO, &policy, budget, domain);
     if budget.exhausted() {
         return Err(MachineError::work_failure());
     }

@@ -1,13 +1,12 @@
-use super::{ScalarQuery, failed};
+use super::{EvmScalarQuery, failed};
 use crate::domain::{
-    Domain, NumericValue,
+    DomainSpec, FiniteConstantSet, FiniteSetAlgebra, NumericValue, ProductAlgebra, ValueAlgebra,
     facts::{FactError, Symbol},
     identity,
     symbolic::{ExprId, ExprLimits},
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
-use std::num::NonZeroUsize;
 
 #[test]
 fn masked_target_equality_refines_only_the_proved_bits() {
@@ -43,10 +42,10 @@ fn masked_target_equality_refines_only_the_proved_bits() {
                 bottom: false,
                 path: Default::default(),
             };
-            let ScalarQuery::Refined { numeric, .. } = relations.refine_numeric(
+            let EvmScalarQuery::Refined { numeric, .. } = relations.refine_numeric(
                 &variable,
                 &NumericValue::top(),
-                Domain::default(),
+                ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
                 &limits,
             ) else {
                 panic!("masked equality must translate into known bits");
@@ -70,8 +69,13 @@ fn masked_target_equality_refines_only_the_proved_bits() {
             path: Default::default(),
         };
         assert_eq!(
-            excluded.refine_numeric(&variable, &NumericValue::top(), Domain::default(), &limits),
-            ScalarQuery::Unchanged
+            excluded.refine_numeric(
+                &variable,
+                &NumericValue::top(),
+                ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
+                &limits
+            ),
+            EvmScalarQuery::Unchanged
         );
     }
 }
@@ -92,8 +96,8 @@ fn malformed_or_metadata_facts_never_claim_numerical_bottom() {
         },
     ] {
         assert_eq!(
-            failed(error.clone()),
-            ScalarQuery::Unknown(super::QueryReason::ScalarFactError(error))
+            failed::<NumericValue>(error.clone()),
+            EvmScalarQuery::Unknown(super::QueryReason::ScalarFactError(error))
         );
     }
     for error in [
@@ -104,11 +108,11 @@ fn malformed_or_metadata_facts_never_claim_numerical_bottom() {
             subject: Symbol::THIS,
         },
     ] {
-        assert_eq!(failed::<NumericValue>(error), ScalarQuery::Infeasible);
+        assert_eq!(failed::<NumericValue>(error), EvmScalarQuery::Infeasible);
     }
 }
 #[test]
-fn scalar_projection_preserves_the_constants_only_numeric_profile() {
+fn scalar_projection_uses_the_native_finite_carrier_without_inventing_range_precision() {
     let variable = ExprId::input(1, identity::Symbol::CallValue);
     let condition = ExprId::operation(
         opcode::LT,
@@ -128,14 +132,14 @@ fn scalar_projection_preserves_the_constants_only_numeric_profile() {
     };
     let result = state.refine_numeric(
         &variable,
-        &NumericValue::top(),
-        Domain::new(NonZeroUsize::new(8).unwrap()),
+        &FiniteConstantSet::top(),
+        ValueAlgebra::new(FiniteSetAlgebra::from_spec(DomainSpec::default())).borrowed(),
         &super::super::RelationLimits::default(),
     );
-    if let ScalarQuery::Refined { numeric, .. } = result {
+    if let EvmScalarQuery::Refined { numeric, .. } = result {
         assert!(numeric.is_top());
     } else {
-        panic!("expected sound coarse constants-only projection: {result:?}");
+        panic!("expected sound coarse finite projection: {result:?}");
     }
 }
 

@@ -30,7 +30,7 @@ pub(super) fn refine<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
 ) -> Result<(), FrontierReason> {
     cancelled()?;
-    let limits = context.config.analysis.relations;
+    let limits = context.domain.spec().relations();
     if !limits.enabled || !limits.valid() {
         return Ok(());
     }
@@ -76,12 +76,8 @@ pub(super) fn refine<D: EvmNumericAlgebra>(
             // The owner pays the entire admitted quantum, including an
             // unsuccessful attempt. Never share a private refusal with it.
             let mut private = WorkBudget::new(QUERY_WORK);
-            let answer = relations.local_value_budgeted_with(
-                expression,
-                &limits,
-                &mut private,
-                context.domain,
-            );
+            let answer =
+                relations.local_value_budgeted(expression, &limits, &mut private, context.domain);
             cancelled()?;
             // The private precision quantum is not part of the shared cache
             // identity. A refused optional query must not poison a later paid

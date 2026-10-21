@@ -5,6 +5,9 @@
 //! a hash recovered from a later state. Every optional stage checks its complete
 //! fee before charging, and every actual finalizer uses the original ledger.
 
+#[cfg(test)]
+use crate::analysis::testing::{ByteArray, Entry, Store, World};
+
 use crate::domain::{AlgebraRef, EvmNumericAlgebra, WordElement};
 
 use crate::{
@@ -49,7 +52,6 @@ pub(super) enum UnsupportedRoot {
     NotRuntime,
     NotEntry,
     InputByteView,
-    Configuration,
 }
 
 impl From<AdmissionStop> for PrepareError {
@@ -109,7 +111,7 @@ impl<N: WordElement> EvmReadyRoot<N> {
 }
 
 /// Called only between the real paid root initialization and `states[0]` install.
-pub(super) fn prepare_with<D: EvmNumericAlgebra>(
+pub(super) fn prepare<D: EvmNumericAlgebra>(
     initial: &EvmMachinePayload<D::Element>,
     world: &EvmWorld<D::Element>,
     entry: &EvmEntry<D::Element>,
@@ -122,7 +124,7 @@ pub(super) fn prepare_with<D: EvmNumericAlgebra>(
     // Checked byte/state APIs and the real finalizer consult cancellation TLS.
     // Bind them to the payer too, rather than trusting the caller's current scope.
     analysis_control::with_cancellation(&cancellation, || {
-        prepare_with_bytes_algebra(
+        prepare_with_bytes(
             initial,
             world,
             entry,
@@ -257,7 +259,7 @@ fn finalization_bound(current: StoreShape, saved: Option<StoreShape>, owners: us
     clippy::too_many_arguments,
     reason = "private original-entry preparation and local checked-byte injection"
 )]
-fn prepare_with_bytes_algebra<D: EvmNumericAlgebra>(
+fn prepare_with_bytes<D: EvmNumericAlgebra>(
     initial: &EvmMachinePayload<D::Element>,
     world: &EvmWorld<D::Element>,
     entry: &EvmEntry<D::Element>,
@@ -282,6 +284,9 @@ fn prepare_with_bytes_algebra<D: EvmNumericAlgebra>(
     }) else {
         return Err(PrepareError::Unsupported(UnsupportedRoot::NotRuntime));
     };
+    // This query is independent of structural work_size and is paid before
+    // calling into an opaque carrier. Unknown quote refuses optional coverage.
+    reserve(budget, cancellation, frame.memory.len().singleton_work())?;
     if !frame.stack.is_empty()
         || frame.key.stack_height != 0
         || frame.key.basic_block_index != 0
@@ -307,14 +312,6 @@ fn prepare_with_bytes_algebra<D: EvmNumericAlgebra>(
     {
         return Err(PrepareError::Unsupported(UnsupportedRoot::NotEntry));
     }
-    if config
-        .analysis
-        .validated_spec()
-        .map_or(true, |configured| configured != domain.spec())
-    {
-        return Err(PrepareError::Unsupported(UnsupportedRoot::Configuration));
-    }
-
     let (calldata_headers, calldata_bytes) = input_headers(&frame.calldata)?;
     let (request_headers, request_bytes) = input_headers(&entry.environment.calldata)?;
     let text = match snapshot.identity() {
@@ -368,6 +365,31 @@ fn prepare_with_bytes_algebra<D: EvmNumericAlgebra>(
             .saturating_add(8192),
     )?;
 
+    // Native clone tariffs are independent from retained/structural work_size.
+    // The census is already admitted above; reserve each complete copy envelope
+    // before constructing the owned root binding or its terminal branches.
+    let native_copies =
+        crate::analysis::layers::payment::environment_clone(&entry.environment, budget)
+            .and_then(|entry_work| {
+                let data_work = frame.calldata.clone_work_with(budget)?;
+                let store_work = initial.store.clone_work_with(budget)?;
+                let saved_work = frame.saved_store.state().clone_work_with(budget)?;
+                Ok(entry_work
+                    .saturating_add(data_work)
+                    .saturating_add(frame.call_value.clone_work())
+                    .saturating_add(store_work.saturating_mul(3))
+                    .saturating_add(saved_work))
+            })
+            .map_err(|error| match error {
+                crate::resource::CloneError::Cancelled => {
+                    PrepareError::Admission(AdmissionStop::Cancelled)
+                }
+                crate::resource::CloneError::Work => {
+                    PrepareError::Admission(AdmissionStop::Overflow)
+                }
+            })?;
+    reserve(budget, cancellation, native_copies)?;
+
     // Sole authority mint. No recomputed initial EvmStore<D::Element>, input lift or equality
     // check can substitute for the real initialization call at the engine seam.
     let anchor = EvmRootAnchor {
@@ -390,7 +412,7 @@ fn prepare_with_bytes_algebra<D: EvmNumericAlgebra>(
     };
     // Static suffixes can also delete touched, omitted empty owners at cleanup.
     // Independent all-account effects cover those changes under the same input.
-    let mut returned = EvmStore::root_terminal_all_effects_checked_with(domain)?;
+    let mut returned = EvmStore::root_terminal_all_effects_checked(domain)?;
     let return_data = bytes()?;
     return_data.check_existing(domain.spec().relations().expressions())?;
     let revert_data = bytes()?;
@@ -410,7 +432,7 @@ fn prepare_with_bytes_algebra<D: EvmNumericAlgebra>(
         let current = StoreShape::measure(store)?;
         let guard = finalization_bound(current, rollback.map(|_| saved_shape), branch_owners);
         available(budget, cancellation, guard)?;
-        let finalized = store.finalize_transaction_checked_with(domain, rollback, budget);
+        let finalized = store.finalize_transaction_checked(domain, rollback, budget);
         if let Err(error) = finalized {
             return Err(if cancellation.is_cancelled() || error.is_cancelled() {
                 PrepareError::Admission(AdmissionStop::Cancelled)
@@ -472,58 +494,4 @@ fn prepare_with_bytes_algebra<D: EvmNumericAlgebra>(
 type ReadyRoot = EvmReadyRoot<crate::domain::NumericValue>;
 
 #[cfg(test)]
-pub(super) fn prepare(
-    initial: &crate::analysis::MachinePayload,
-    world: &crate::world::World,
-    entry: &crate::world::Entry,
-    config: &ExecutionConfig,
-    domain: crate::domain::Domain,
-    identity: Option<(&layers::SnapshotId, layers::FactRevision)>,
-    budget: &mut WorkBudget,
-) -> Result<ReadyRoot, PrepareError> {
-    prepare_with(
-        initial,
-        world,
-        entry,
-        config,
-        crate::domain::ValueAlgebra::new(domain).borrowed(),
-        identity,
-        budget,
-    )
-}
-
-#[cfg(test)]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "default admission fixture preserves the existing byte constructor injection"
-)]
-fn prepare_with_bytes(
-    initial: &crate::analysis::MachinePayload,
-    world: &crate::world::World,
-    entry: &crate::world::Entry,
-    config: &ExecutionConfig,
-    domain: crate::domain::Domain,
-    identity: Option<(&layers::SnapshotId, layers::FactRevision)>,
-    budget: &mut WorkBudget,
-    cancellation: &Cancellation,
-    bytes: impl FnMut() -> Result<crate::world::ByteArray, RangeError>,
-) -> Result<ReadyRoot, PrepareError> {
-    prepare_with_bytes_algebra(
-        initial,
-        world,
-        entry,
-        config,
-        crate::domain::ValueAlgebra::new(domain).borrowed(),
-        identity,
-        budget,
-        cancellation,
-        bytes,
-    )
-}
-
-#[cfg(test)]
-use crate::{
-    analysis::MachinePayload,
-    domain::Domain,
-    world::{ByteArray, Entry, Store, World},
-};
+use crate::{analysis::MachinePayload, domain::ProductAlgebra};

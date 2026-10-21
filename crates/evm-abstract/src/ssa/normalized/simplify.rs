@@ -1,14 +1,10 @@
-//! Unconditional EVM identities and concrete evaluation through the shared domain.
+//! Unconditional EVM identities and exact, carrier-independent word evaluation.
 
 use super::{
     FactSource, NormalizedInstruction, NormalizedOperation, ValueMapping, ValueOperand,
     ValueTransformation,
 };
-use crate::{
-    analysis::InstructionProgress,
-    domain::{AbstractValue, Domain},
-    ssa::ValueId,
-};
+use crate::{analysis::InstructionProgress, ssa::ValueId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
@@ -23,7 +19,6 @@ pub(super) fn instruction(
     step: &NormalizedInstruction,
     known: &[Option<U256>],
     mappings: &[ValueMapping],
-    domain: Domain,
 ) -> Simplification {
     let operands = step
         .origin
@@ -59,12 +54,17 @@ pub(super) fn instruction(
         if let Some(constants) = operands
             .iter()
             .map(|value| match value {
-                ValueOperand::Constant(value) => Some(AbstractValue::constant(*value)),
+                ValueOperand::Constant(value) => Some(*value),
                 ValueOperand::Value(_) => None,
             })
             .collect::<Option<Vec<_>>>()
-            && let Some(value) = domain.apply(op, &constants).singleton()
         {
+            let value = crate::domain::concrete::evaluate(
+                op,
+                constants[0],
+                constants.get(1).copied().unwrap_or(U256::ZERO),
+                constants.get(2).copied().unwrap_or(U256::ZERO),
+            );
             return constant(
                 value,
                 ValueTransformation::ConstantFold,
@@ -126,13 +126,7 @@ fn operand(mut value: ValueId, known: &[Option<U256>], mappings: &[ValueMapping]
 }
 
 fn pure(op: u8, arity: usize) -> bool {
-    matches!(op, 0x01..=0x0b | 0x10..=0x1e)
-        && arity
-            == match op {
-                opcode::ISZERO | opcode::NOT | opcode::CLZ => 1,
-                opcode::ADDMOD | opcode::MULMOD => 3,
-                _ => 2,
-            }
+    crate::domain::concrete::arity(op) == Some(arity)
 }
 
 fn algebraic(op: u8, operands: &[ValueOperand]) -> Option<NormalizedOperation> {

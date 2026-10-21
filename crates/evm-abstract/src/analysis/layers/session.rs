@@ -6,14 +6,16 @@ use super::{
 };
 use crate::{
     analysis::{
-        ConfigError, ExecutionConfig, WorldAnalysis,
+        AnalysisEngine, AnalysisInput, ConfigError, ContextPolicy, EvmWorldAnalysis,
+        ExecutionConfig, PartitionPolicy, StatePolicy,
         control::{Cancelled, Control},
-        engine::{self, Counters, ExecutionReuse},
+        cooperation::{Composition, CooperationError},
+        engine::{Counters, EvmExecutionReuse},
         transfer::StorageReadPolicy,
     },
-    domain::{AbstractValue, NumericValue},
+    domain::{EvmNumericAlgebra, EvmValue, WordElement},
     resource::WorkBudget,
-    world::{Account, Code, Entry, Existence, SnapshotIdentity, World, WorldError},
+    world::{Code, EvmAccount, EvmWorld, Existence, WorldError},
 };
 use std::{collections::BTreeSet, sync::Arc};
 use thiserror::Error;
@@ -73,17 +75,17 @@ pub enum RefinementEffect {
 
 /// An immutable EVM result and the exact fact revision that produced it.
 #[derive(Debug)]
-pub struct SessionAnalysis {
+pub struct SessionAnalysis<N: WordElement> {
     snapshot: SnapshotId,
     revision: FactRevision,
     entry_code: Option<CodeId>,
-    analysis: WorldAnalysis,
+    analysis: EvmWorldAnalysis<N>,
     dependencies: FactDependencies,
     reuse: ReuseStats,
     demand_driven: bool,
 }
 
-impl SessionAnalysis {
+impl<N: WordElement> SessionAnalysis<N> {
     /// Snapshot whose initial-state set was analyzed.
     pub fn snapshot(&self) -> &SnapshotId {
         &self.snapshot
@@ -100,7 +102,7 @@ impl SessionAnalysis {
     }
 
     /// Native execution retains ownership, static-call and rollback semantics.
-    pub fn analysis(&self) -> &WorldAnalysis {
+    pub fn analysis(&self) -> &EvmWorldAnalysis<N> {
         &self.analysis
     }
 
@@ -139,7 +141,13 @@ impl SessionAnalysis {
 
 /// Incoherent inputs fail before publishing a new fact revision or report.
 #[derive(Debug, Error)]
-pub enum SessionError {
+pub enum SessionError<E> {
+    /// Failure of the actual borrowed engine or analyzer assembly.
+    #[error("{0}")]
+    Cooperation(#[from] CooperationError<E>),
+    /// Required input projection could not be paid from the cumulative ledger.
+    #[error("session preparation work exhausted")]
+    Work,
     /// Cooperative cancellation of execution or session preparation.
     #[error("{0}")]
     Cancelled(Cancelled),
@@ -169,31 +177,31 @@ pub enum SessionError {
     Seed,
 }
 
-impl From<Cancelled> for SessionError {
+impl<E> From<Cancelled> for SessionError<E> {
     fn from(error: Cancelled) -> Self {
         Self::Cancelled(error)
     }
 }
 
-impl From<ConfigError> for SessionError {
+impl<E> From<ConfigError> for SessionError<E> {
     fn from(error: ConfigError) -> Self {
         Self::Config(error)
     }
 }
 
-impl From<CatalogError> for SessionError {
+impl<E> From<CatalogError> for SessionError<E> {
     fn from(error: CatalogError) -> Self {
         Self::Catalog(error)
     }
 }
 
-impl From<FactError> for SessionError {
+impl<E> From<FactError> for SessionError<E> {
     fn from(error: FactError) -> Self {
         Self::Facts(error)
     }
 }
 
-impl From<WorldError> for SessionError {
+impl<E> From<WorldError> for SessionError<E> {
     fn from(error: WorldError) -> Self {
         Self::World(error)
     }
@@ -205,110 +213,62 @@ impl From<WorldError> for SessionError {
 /// under cumulative budgets. Certified stack-only computation can be reused;
 /// no historical Store or checkpoint is ever changed. General stateful selective
 /// continuation is not claimed by the narrow pure-block reuse mechanism.
-pub struct AnalysisSession {
+pub struct AnalysisSession<'a, D: EvmNumericAlgebra, C, P, S, X> {
+    engine: AnalysisEngine<'a, D, C, P, S, X>,
     catalog: Arc<CodeCatalog>,
-    facts: StateFacts,
-    entry_code: Option<CodeId>,
-    entry: Entry,
+    input: AnalysisInput<D::Element>,
     config: ExecutionConfig,
-    // Cloning this empty seed preserves offline symbolic source identity across
-    // revisions; adapters can additionally retain pinned header observations.
-    seed: World,
-    budget: WorkBudget,
+    budget: Option<WorkBudget>,
     counters: Counters,
     has_executed: bool,
     executed_revision: Option<FactRevision>,
     pending_changes: BTreeSet<FactKey>,
-    latest: Option<Arc<SessionAnalysis>>,
-    reuse: ExecutionReuse,
+    latest: Option<Arc<SessionAnalysis<D::Element>>>,
+    reuse: EvmExecutionReuse<D::Element>,
 }
 
-impl AnalysisSession {
-    /// Compatibility adapter retaining every abstract initial World assumption.
-    /// Exact consequences populate StateFacts; bounds and symbolic/provenance
-    /// layers remain in the immutable base rather than being replaced by Top.
-    pub fn from_world(
-        world: World,
-        entry: Entry,
+impl<'a, D, C, P, S, X> AnalysisSession<'a, D, C, P, S, X>
+where
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element>,
+{
+    /// Freeze the actual borrowed policies over a validated immutable request.
+    /// Catalog failures are surfaced; a code collision cannot silently discard
+    /// source identity or switch execution routes.
+    pub fn new(
+        engine: AnalysisEngine<'a, D, C, P, S, X>,
+        input: AnalysisInput<D::Element>,
         config: ExecutionConfig,
-    ) -> Result<Self, ConfigError> {
-        config.domain()?;
-        entry.environment.validate()?;
-        let snapshot = match world.identity() {
-            SnapshotIdentity::Offline { label } => SnapshotId::offline(label),
-            SnapshotIdentity::Chain {
-                chain_id,
-                block_hash,
-            } => SnapshotId::chain(*chain_id, *block_hash),
-        };
-        let mut catalog = CodeCatalog::new(world.fork());
-        let mut observations = Vec::new();
-        for (address, account) in world.accounts() {
-            let address = *address;
-            let code = match &account.code {
-                Code::Runtime(program) if program.byte_len() == 0 => Some(CodeObservation::Empty),
-                Code::Runtime(program) => match catalog.with_runtime(program.clone()) {
-                    Ok((next, id)) => {
-                        catalog = next;
-                        Some(CodeObservation::Runtime(id))
-                    }
-                    // Compilation is optional acceleration for the compatibility
-                    // route. On a content collision retain the original base
-                    // Program and ordinary execution; never equate its semantics.
-                    Err(_) => None,
-                },
-                Code::Empty => Some(CodeObservation::Empty),
-                Code::Delegation(target) => Some(CodeObservation::Delegation(*target)),
-                Code::Unknown => None,
-            };
-            if let Some(code) = code {
-                observations.push(Observation::Code { address, code });
-            }
-            if let Some(value) = account.balance.singleton() {
-                observations.push(Observation::Balance { address, value });
-            }
-            if let Some(value) = account.nonce.singleton() {
-                observations.push(Observation::Nonce { address, value });
-            }
-            if account.existence != Existence::Unknown {
-                observations.push(Observation::Existence {
-                    address,
-                    exists: account.existence == Existence::Present,
-                });
-            }
-            if !account.storage_unknown
-                && account
-                    .storage
-                    .values()
-                    .all(|value| value.singleton().is_some())
-            {
-                observations.push(Observation::StorageComplete { address });
-            }
-            for (slot, value) in &account.storage {
-                if let Some(value) = value.singleton() {
-                    observations.push(Observation::Storage {
-                        address,
-                        slot: *slot,
-                        value,
-                    });
-                }
+    ) -> Result<Self, SessionError<<X as Composition<D::Element>>::Error>> {
+        config.validate()?;
+        engine
+            .algebra
+            .spec()
+            .validate()
+            .map_err(ConfigError::from)?;
+        let mut catalog = CodeCatalog::new(input.world.fork());
+        for account in input.world.accounts().values() {
+            if let Code::Runtime(program) = &account.code {
+                let (next, _) = catalog.with_runtime(program.clone())?;
+                catalog = next;
             }
         }
         let catalog = Arc::new(catalog);
         Ok(Self {
-            reuse: ExecutionReuse::new(
+            reuse: EvmExecutionReuse::new(
                 Arc::clone(&catalog),
                 config.analysis.max_states,
                 config.max_work,
                 config.max_memory_bytes,
             ),
+            engine,
             catalog,
-            facts: StateFacts::from_base(snapshot, observations),
-            entry_code: None,
-            entry,
-            budget: WorkBudget::new(config.max_work),
+            input,
             config,
-            seed: world,
+            budget: None,
             counters: Counters::default(),
             has_executed: false,
             executed_revision: None,
@@ -316,76 +276,9 @@ impl AnalysisSession {
             latest: None,
         })
     }
-
-    /// Immutable abstract assumptions, independent of later exact observations.
-    pub fn base(&self) -> &World {
-        &self.seed
-    }
-    /// Start an offline session. Known code/address implies no other account facts.
-    pub fn new(
-        catalog: Arc<CodeCatalog>,
-        facts: StateFacts,
-        entry_code: CodeId,
-        entry: Entry,
-        config: ExecutionConfig,
-    ) -> Result<Self, SessionError> {
-        let seed = match facts.snapshot().identity() {
-            SnapshotIdentity::Offline { label } => {
-                World::offline(catalog.fork(), label, "layered initial observations")
-            }
-            SnapshotIdentity::Chain {
-                chain_id,
-                block_hash,
-            } => World::anchored(
-                catalog.fork(),
-                *chain_id,
-                *block_hash,
-                "layered pinned initial observations",
-            ),
-        };
-        Self::with_seed(catalog, facts, Some(entry_code), entry, config, seed)
-    }
-
-    /// Adapter-only seed carries identity/header data, never transaction effects.
-    pub(crate) fn with_seed(
-        catalog: Arc<CodeCatalog>,
-        facts: StateFacts,
-        entry_code: Option<CodeId>,
-        entry: Entry,
-        config: ExecutionConfig,
-        seed: World,
-    ) -> Result<Self, SessionError> {
-        config.domain()?;
-        entry.environment.validate().map_err(ConfigError::from)?;
-        if seed.fork() != catalog.fork()
-            || seed.identity() != facts.snapshot().identity()
-            || !seed.accounts().is_empty()
-        {
-            return Err(SessionError::Seed);
-        }
-        validate_entry(&catalog, &facts, entry_code, entry.address)?;
-        // Validate the complete batch before making the session observable.
-        project_world(&catalog, &facts, &seed, entry_code, entry.address)?;
-        Ok(Self {
-            reuse: ExecutionReuse::new(
-                Arc::clone(&catalog),
-                config.analysis.max_states,
-                config.max_work,
-                config.max_memory_bytes,
-            ),
-            catalog,
-            facts,
-            entry_code,
-            entry,
-            budget: WorkBudget::new(config.max_work),
-            config,
-            seed,
-            counters: Counters::default(),
-            has_executed: false,
-            executed_revision: None,
-            pending_changes: BTreeSet::new(),
-            latest: None,
-        })
+    /// Original abstract assumptions and symbolic input source.
+    pub fn base(&self) -> &EvmWorld<D::Element> {
+        &self.input.world
     }
 
     /// Shared compiled semantics, independent of this session's snapshot.
@@ -395,149 +288,168 @@ impl AnalysisSession {
 
     /// Current immutable initial observations.
     pub fn facts(&self) -> &StateFacts {
-        &self.facts
+        &self.input.facts
     }
 
     /// Compile additional code without asserting which account supplies it.
     pub fn supply_runtime(
         &mut self,
         program: crate::bytecode::Program,
-    ) -> Result<CodeId, SessionError> {
+    ) -> Result<CodeId, SessionError<<X as Composition<D::Element>>::Error>> {
         let (catalog, id) = self.catalog.with_runtime(program)?;
         self.catalog = Arc::new(catalog);
         self.reuse.set_catalog(Arc::clone(&self.catalog));
         Ok(id)
     }
 
-    /// Session-scoped cancellation retains the engine's shared control contract.
-    pub fn analyze_with_control(
+    fn entry_code(&self) -> Option<CodeId> {
+        self.input
+            .world
+            .runtime(self.input.entry.address)
+            .and_then(|p| {
+                self.catalog
+                    .source(alloy_primitives::keccak256(p.bytes()), CodeMode::Runtime)
+            })
+            .map(|code| code.id())
+    }
+    /// Execute this revision or share its unchanged immutable report.
+    pub fn run(
         &mut self,
         control: &Control,
-    ) -> Result<Arc<SessionAnalysis>, SessionError> {
+    ) -> Result<Arc<SessionAnalysis<D::Element>>, SessionError<<X as Composition<D::Element>>::Error>>
+    {
+        self.run_policy(control, StorageReadPolicy::Abstract)
+    }
+    /// Request concrete missing initial code/slots without performing I/O.
+    pub fn run_with_demands(
+        &mut self,
+        control: &Control,
+    ) -> Result<Arc<SessionAnalysis<D::Element>>, SessionError<<X as Composition<D::Element>>::Error>>
+    {
+        self.run_policy(control, StorageReadPolicy::Discover)
+    }
+    fn run_policy(
+        &mut self,
+        control: &Control,
+        policy: StorageReadPolicy,
+    ) -> Result<Arc<SessionAnalysis<D::Element>>, SessionError<<X as Composition<D::Element>>::Error>>
+    {
         control.scope(|| {
             control.checkpoint()?;
-            let report = self.analyze()?;
+            // Bind the persistent ledger to its first real operation's control.
+            let budget = self
+                .budget
+                .get_or_insert_with(|| WorkBudget::new(self.config.max_work));
+            if crate::analysis::MachineError::check_cancelled().is_err() || !budget.charge(0) {
+                return Err(SessionError::Cancelled(Cancelled));
+            }
+            if let Some(latest) = &self.latest
+                && latest.demand_driven == (policy == StorageReadPolicy::Discover)
+            {
+                return Ok(Arc::clone(latest));
+            }
+            self.counters.set_observer(control.observer());
+            let analysis = self.run_metered(policy)?;
             control.checkpoint()?;
+            let report = Arc::new(SessionAnalysis {
+                snapshot: self.input.snapshot().clone(),
+                revision: self.input.revision(),
+                entry_code: self.entry_code(),
+                analysis,
+                dependencies: self.reuse.dependencies.clone(),
+                reuse: self.reuse.stats(),
+                demand_driven: policy == StorageReadPolicy::Discover,
+            });
+            self.latest = Some(Arc::clone(&report));
             Ok(report)
         })
     }
-
-    /// Analyze the current revision or share its unchanged report without rerunning.
-    /// A new revision always creates fresh Store and saved rollback checkpoints.
-    pub fn analyze(&mut self) -> Result<Arc<SessionAnalysis>, SessionError> {
-        self.analyze_policy(StorageReadPolicy::Abstract)
-    }
-
-    /// Request concrete missing initial code/finite slots without doing I/O.
-    /// Supply the returned typed demands through `refine`, then call again.
-    /// Unknown targets/keys still follow the ordinary conservative executor.
-    pub fn analyze_with_demands(&mut self) -> Result<Arc<SessionAnalysis>, SessionError> {
-        self.analyze_policy(StorageReadPolicy::Discover)
-    }
-
-    fn analyze_policy(
+    fn run_metered(
         &mut self,
         policy: StorageReadPolicy,
-    ) -> Result<Arc<SessionAnalysis>, SessionError> {
-        // A same-revision report is still a new API request: both the current
-        // thread scope and the session's captured token must allow its return.
-        if crate::analysis::MachineError::check_cancelled().is_err() || !self.budget.charge(0) {
-            return Err(SessionError::Cancelled(Cancelled));
-        }
-        if let Some(latest) = &self.latest
-            && latest.demand_driven == (policy == StorageReadPolicy::Discover)
-        {
-            return Ok(Arc::clone(latest));
-        }
+    ) -> Result<EvmWorldAnalysis<D::Element>, SessionError<<X as Composition<D::Element>>::Error>>
+    {
+        let entry_code = self.entry_code();
+        let budget = self
+            .budget
+            .as_mut()
+            .expect("run_policy establishes the persistent ledger");
+        // Pay traversal and actual native clones before any copy/query. The base
+        // keeps all abstract assumptions; facts only restrict this same request.
+        super::payment::pay_input(&self.input, budget).map_err(|error| match error {
+            crate::resource::CloneError::Cancelled => SessionError::Cancelled(Cancelled),
+            crate::resource::CloneError::Work => SessionError::Work,
+        })?;
         let world = project_world(
             &self.catalog,
-            &self.facts,
-            &self.seed,
-            self.entry_code,
-            self.entry.address,
+            &self.input.facts,
+            &self.input.world,
+            entry_code,
+            self.input.entry.address,
+            budget,
         )?;
-        let analysis = engine::run_reusing(
+        let input = AnalysisInput {
             world,
-            self.entry.clone(),
+            entry: self.input.entry.clone(),
+            facts: self.input.facts.clone(),
+        };
+        let analysis = self.engine.run_metered(
+            input,
             self.config.clone(),
-            &mut self.budget,
+            budget,
             &mut self.counters,
             policy,
             Some(&mut self.reuse),
-            Some((self.facts.snapshot(), self.facts.revision())),
-        )?;
-        if crate::analysis::MachineError::check_cancelled().is_err() || !self.budget.charge(0) {
-            return Err(SessionError::Cancelled(Cancelled));
-        }
-        let report = Arc::new(SessionAnalysis {
-            snapshot: self.facts.snapshot().clone(),
-            revision: self.facts.revision(),
-            entry_code: self.entry_code,
-            analysis,
-            dependencies: self.reuse.dependencies.clone(),
-            reuse: self.reuse.stats(),
-            demand_driven: policy == StorageReadPolicy::Discover,
-        });
-        self.has_executed = true;
-        self.executed_revision = Some(self.facts.revision());
-        self.pending_changes.clear();
-        self.latest = Some(Arc::clone(&report));
-        Ok(report)
-    }
-
-    /// Shared executor for acquisition adapters using their cumulative ledger.
-    /// Observations still enter exclusively through `refine` and fresh projection.
-    pub(in crate::analysis) fn run_metered(
-        &mut self,
-        budget: &mut WorkBudget,
-        counters: &mut Counters,
-        policy: StorageReadPolicy,
-    ) -> Result<WorldAnalysis, SessionError> {
-        let world = project_world(
-            &self.catalog,
-            &self.facts,
-            &self.seed,
-            self.entry_code,
-            self.entry.address,
-        )?;
-        let analysis = engine::run_reusing(
-            world,
-            self.entry.clone(),
-            self.config.clone(),
-            budget,
-            counters,
-            policy,
-            Some(&mut self.reuse),
-            Some((self.facts.snapshot(), self.facts.revision())),
         )?;
         self.has_executed = true;
-        self.executed_revision = Some(self.facts.revision());
+        self.executed_revision = Some(self.input.revision());
         self.pending_changes.clear();
         self.latest = None;
         Ok(analysis)
     }
-
-    /// Ordinary World routes need no projection when no facts have been added:
-    /// their original immutable input already contains every base assumption.
-    pub(crate) fn execute_base(
-        mut self,
-        observer: &crate::analysis::progress::Observer,
-    ) -> Result<WorldAnalysis, ConfigError> {
-        self.counters = Counters::with_observer(observer);
-        // This adapter consumes the session, so a memo could never be reused
-        // after fact injection. Keep the shared catalog/dependency path without
-        // charging one-shot calls for constructing disposable memo entries.
-        self.reuse.disable_memo();
-        engine::run_reusing(
-            self.seed,
-            self.entry,
-            self.config,
-            &mut self.budget,
-            &mut self.counters,
-            StorageReadPolicy::Abstract,
-            Some(&mut self.reuse),
-            Some((self.facts.snapshot(), self.facts.revision())),
-        )
+    pub(in crate::analysis) fn run_uncached(
+        &mut self,
+        control: &Control,
+        policy: StorageReadPolicy,
+    ) -> Result<EvmWorldAnalysis<D::Element>, SessionError<<X as Composition<D::Element>>::Error>>
+    {
+        control.scope(|| {
+            control.checkpoint()?;
+            self.budget
+                .get_or_insert_with(|| WorkBudget::new(self.config.max_work));
+            self.counters.set_observer(control.observer());
+            let result = self.run_metered(policy)?;
+            control.checkpoint()?;
+            Ok(result)
+        })
+    }
+    pub(in crate::analysis) fn reserve_acquisition(
+        &mut self,
+        work: usize,
+    ) -> Option<crate::analysis::FrontierReason> {
+        use crate::analysis::{FrontierReason, Limit};
+        if self.counters.states >= self.config.analysis.max_states {
+            return Some(FrontierReason::Budget(Limit::States));
+        }
+        if self.counters.transfers >= self.config.analysis.max_transfers {
+            return Some(FrontierReason::Budget(Limit::Transfers));
+        }
+        let budget = self
+            .budget
+            .get_or_insert_with(|| WorkBudget::new(self.config.max_work));
+        if work == usize::MAX || budget.exhausted() || !budget.charge(work) {
+            Some(FrontierReason::Work)
+        } else {
+            None
+        }
+    }
+    /// Cumulative execution work, including discarded refinement rounds.
+    pub fn work_used(&self) -> usize {
+        self.budget.as_ref().map_or(0, WorkBudget::used)
+    }
+    /// Cumulative state allocations, including invalidated graphs.
+    pub fn states_created(&self) -> usize {
+        self.counters.states
     }
 
     /// Install a monotone initial-fact batch, with explicit graph invalidation.
@@ -546,28 +458,48 @@ impl AnalysisSession {
         &mut self,
         snapshot: &SnapshotId,
         observations: impl IntoIterator<Item = Observation>,
-    ) -> Result<RefinementEffect, SessionError> {
-        let previous = self.facts.revision();
-        let refinement = self.facts.refine(snapshot, observations)?;
+        control: &Control,
+    ) -> Result<RefinementEffect, SessionError<<X as Composition<D::Element>>::Error>> {
+        control.scope(|| {
+            control.checkpoint()?;
+            let budget = self
+                .budget
+                .get_or_insert_with(|| WorkBudget::new(self.config.max_work));
+            crate::resource::clone_payment::checkpoint(budget).map_err(session_clone_error)?;
+            let result = self.refine_scoped(snapshot, observations)?;
+            control.checkpoint()?;
+            Ok(result)
+        })
+    }
+    fn refine_scoped(
+        &mut self,
+        snapshot: &SnapshotId,
+        observations: impl IntoIterator<Item = Observation>,
+    ) -> Result<RefinementEffect, SessionError<<X as Composition<D::Element>>::Error>> {
+        let previous = self.input.facts.revision();
+        let refinement = self.input.facts.refine(snapshot, observations)?;
         if refinement.added().is_empty() {
             return Ok(RefinementEffect::Unchanged { revision: previous });
         }
         validate_entry(
             &self.catalog,
             refinement.facts(),
-            self.entry_code,
-            self.entry.address,
+            self.entry_code(),
+            self.input.entry.address,
         )?;
-        project_world(
-            &self.catalog,
-            refinement.facts(),
-            &self.seed,
-            self.entry_code,
-            self.entry.address,
-        )?;
+        let budget = self
+            .budget
+            .get_or_insert_with(|| WorkBudget::new(self.config.max_work));
+        validate_refinement(&self.catalog, &self.input.world, refinement.facts(), budget)?;
         let current = refinement.facts().revision();
         let added = refinement.added().to_vec();
-        self.facts = refinement.into_facts();
+        crate::resource::clone_payment::checkpoint(
+            self.budget
+                .as_ref()
+                .expect("refine establishes the retained ledger"),
+        )
+        .map_err(session_clone_error)?;
+        self.input.facts = refinement.into_facts();
         self.latest = None;
         if self.has_executed {
             let dependencies = self.reuse.dependencies.clone();
@@ -594,7 +526,7 @@ impl AnalysisSession {
     }
 }
 
-fn runtime(catalog: &CodeCatalog, id: CodeId) -> Result<Code, SessionError> {
+fn runtime<E>(catalog: &CodeCatalog, id: CodeId) -> Result<Code, SessionError<E>> {
     if id.mode() != CodeMode::Runtime {
         return Err(SessionError::InitcodeBinding(id));
     }
@@ -606,12 +538,12 @@ fn runtime(catalog: &CodeCatalog, id: CodeId) -> Result<Code, SessionError> {
     })
 }
 
-fn validate_entry(
+fn validate_entry<E>(
     catalog: &CodeCatalog,
     facts: &StateFacts,
     entry_code: Option<CodeId>,
     address: crate::Address,
-) -> Result<(), SessionError> {
+) -> Result<(), SessionError<E>> {
     let Some(entry_code) = entry_code else {
         return Ok(());
     };
@@ -628,21 +560,23 @@ fn validate_entry(
     Ok(())
 }
 
-fn project_world(
+fn project_world<N: WordElement, E>(
     catalog: &CodeCatalog,
     facts: &StateFacts,
-    seed: &World,
+    seed: &EvmWorld<N>,
     entry_code: Option<CodeId>,
     entry_address: crate::Address,
-) -> Result<World, SessionError> {
+    budget: &mut WorkBudget,
+) -> Result<EvmWorld<N>, SessionError<E>> {
     let mut addresses: BTreeSet<_> = facts.observations().map(|(key, _)| key.address()).collect();
+    addresses.extend(seed.accounts().keys().copied());
     addresses.insert(entry_address);
     let mut accounts = std::collections::BTreeMap::new();
     for address in addresses {
         let mut account = seed
             .account(address)
             .cloned()
-            .unwrap_or_else(Account::unknown);
+            .unwrap_or_else(EvmAccount::unknown);
         if let Observed::Known(exists) = facts.existence(address) {
             let observed = if exists {
                 Existence::Present
@@ -658,11 +592,13 @@ fn project_world(
             &account.balance,
             facts.balance(address),
             FactKey::Balance(address),
+            budget,
         )?;
         account.nonce = intersect(
             &account.nonce,
             facts.nonce(address),
             FactKey::Nonce(address),
+            budget,
         )?;
         if facts.storage_complete(address) {
             account.storage_unknown = false;
@@ -695,6 +631,7 @@ fn project_world(
                     address,
                     slot: *slot,
                 },
+                budget,
             )?;
         }
         // Binding executable source never fills any other account component.
@@ -723,9 +660,9 @@ fn project_world(
                 .unwrap_or_else(|| {
                     if base.is_some_and(|a| !a.storage_unknown || a.existence == Existence::Absent)
                     {
-                        AbstractValue::constant(crate::U256::ZERO)
+                        EvmValue::constant(crate::U256::ZERO)
                     } else {
-                        AbstractValue::top()
+                        EvmValue::top()
                     }
                 });
             account.storage.insert(
@@ -737,6 +674,7 @@ fn project_world(
                         address: *address,
                         slot: *slot,
                     },
+                    budget,
                 )?,
             );
         }
@@ -744,23 +682,99 @@ fn project_world(
     Ok(seed.with_initial_accounts(accounts)?)
 }
 
-fn conflict(key: FactKey) -> SessionError {
+fn conflict<E>(key: FactKey) -> SessionError<E> {
     FactError::Conflict { key }.into()
 }
 
-fn intersect(
-    base: &AbstractValue,
+fn intersect<N: WordElement, E>(
+    base: &EvmValue<N>,
     observed: Observed<crate::U256>,
     key: FactKey,
-) -> Result<AbstractValue, SessionError> {
-    match observed {
-        Observed::Unobserved => Ok(base.clone()),
-        Observed::Known(value) if *base == AbstractValue::top() => {
-            Ok(AbstractValue::constant(value))
+    budget: &mut WorkBudget,
+) -> Result<EvmValue<N>, SessionError<E>> {
+    let Observed::Known(value) = observed else {
+        return Ok(base.clone());
+    };
+    let observation = crate::domain::WordObservation::constant(value);
+    let work = base
+        .clone_work()
+        .saturating_add(base.work_size())
+        .saturating_add(base.numeric().constrain_work(&observation));
+    crate::resource::clone_payment::pay(budget, work).map_err(|error| match error {
+        crate::resource::CloneError::Cancelled => SessionError::Cancelled(Cancelled),
+        crate::resource::CloneError::Work => SessionError::Work,
+    })?;
+    if !base.contains(value) {
+        return Err(conflict(key));
+    }
+    let numeric = base
+        .numeric()
+        .constrain(&observation)
+        .map_err(|_| conflict(key))?;
+    crate::resource::clone_payment::checkpoint(budget)
+        .map_err(|_| SessionError::Cancelled(Cancelled))?;
+    Ok(base.clone().with_numeric(numeric))
+}
+
+/// Validate a complete proposed revision against the original request before
+/// committing it. Native constraints stay on N; no observation round trip can
+/// erase hidden carrier predicates or authorize an unpriced opaque query.
+fn validate_refinement<N: WordElement, E>(
+    catalog: &CodeCatalog,
+    seed: &EvmWorld<N>,
+    facts: &StateFacts,
+    budget: &mut WorkBudget,
+) -> Result<(), SessionError<E>> {
+    for (key, observation) in facts.observations() {
+        if let Some(account) = seed.account(key.address()) {
+            match observation {
+                Observation::Code { address, code } => {
+                    let observed = match code {
+                        CodeObservation::Empty => Code::Empty,
+                        CodeObservation::Delegation(target) => Code::Delegation(*target),
+                        CodeObservation::Runtime(id) => runtime(catalog, *id)?,
+                    };
+                    let empty = |code: &Code| {
+                        matches!(code, Code::Empty)
+                            || matches!(code, Code::Runtime(program) if program.byte_len() == 0)
+                    };
+                    if account.code != Code::Unknown
+                        && account.code != observed
+                        && !(empty(&account.code) && empty(&observed))
+                    {
+                        return Err(conflict(FactKey::Code(*address)));
+                    }
+                }
+                Observation::Balance { value, .. } => {
+                    intersect(&account.balance, Observed::Known(*value), *key, budget)?;
+                }
+                Observation::Nonce { value, .. } => {
+                    intersect(&account.nonce, Observed::Known(*value), *key, budget)?;
+                }
+                Observation::Storage { slot, value, .. } => {
+                    if let Some(base) = account.storage.get(slot) {
+                        intersect(base, Observed::Known(*value), *key, budget)?;
+                    } else if !account.storage_unknown && *value != crate::U256::ZERO {
+                        return Err(conflict(*key));
+                    }
+                }
+                Observation::Existence { exists, .. } => {
+                    if account.existence != Existence::Unknown
+                        && (*exists != (account.existence == Existence::Present))
+                    {
+                        return Err(conflict(*key));
+                    }
+                }
+                _ => {}
+            }
         }
-        Observed::Known(value) if base.contains(value) => {
-            Ok(base.clone().with_numeric(NumericValue::constant(value)))
-        }
-        Observed::Known(_) => Err(conflict(key)),
+    }
+    Ok(())
+}
+
+fn session_clone_error<E>(error: crate::resource::CloneError) -> SessionError<E> {
+    match error {
+        crate::resource::CloneError::Cancelled => SessionError::Cancelled(Cancelled),
+        crate::resource::CloneError::Work => SessionError::Work,
     }
 }

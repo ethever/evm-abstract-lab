@@ -44,7 +44,7 @@ impl<N: WordElement> EvmStore<N> {
     /// Project caller-proved zero/nonzero selectors through both planes and log
     /// data. No proof result becomes an initial/RPC observation. False means
     /// infeasible; any error leaves the transaction checkpoint unchanged.
-    pub fn refine_guards_with<E, D: EvmNumericAlgebra<Element = N>>(
+    pub fn refine_guards<E, D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         domain: AlgebraRef<'_, D>,
         limits: ExprLimits,
@@ -68,7 +68,7 @@ impl<N: WordElement> EvmStore<N> {
                 }
             }
             for (address, key) in plane.slots.keys().copied().collect::<Vec<_>>() {
-                let value = plane.read_checked_with(
+                let value = plane.read_checked(
                     address,
                     &crate::domain::EvmValue::<N>::constant(key),
                     domain,
@@ -86,33 +86,14 @@ impl<N: WordElement> EvmStore<N> {
             for topic in &mut log.topics {
                 refresh_scalar(topic, &out.persistent.operands, domain);
             }
-            if !log
-                .data
-                .refine_guards_with(domain, limits, &mut |condition| {
-                    Ok::<_, E>(truths.get(condition).copied().flatten())
-                })?
-            {
+            if !log.data.refine_guards(domain, limits, &mut |condition| {
+                Ok::<_, E>(truths.get(condition).copied().flatten())
+            })? {
                 return Ok(false);
             }
         }
         out.check_existing(limits)?;
         *self = out;
         Ok(true)
-    }
-}
-
-impl EvmStore<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn refine_guards<E>(
-        &mut self,
-        domain: crate::domain::Domain,
-        limits: ExprLimits,
-        proof: &mut impl FnMut(&ExprId) -> Result<Option<bool>, E>,
-    ) -> Result<bool, GuardRefinementError<E>> {
-        self.refine_guards_with(
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            limits,
-            proof,
-        )
     }
 }

@@ -79,7 +79,7 @@ fn prepare_refine<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
 ) -> Result<PreparedRefinement, FrontierReason> {
     query::checkpoint(context.budget)?;
-    let limits = context.config.analysis.relations;
+    let limits = context.domain.spec().relations();
     if !limits.enabled || relations.is_bottom() {
         return Ok(PreparedRefinement::Done(!relations.is_bottom()));
     }
@@ -105,7 +105,7 @@ fn prepare_refine<D: EvmNumericAlgebra>(
     if !has_state_semantics && !relations.relevant(&expression) {
         return Ok(PreparedRefinement::Done(true));
     }
-    let answer = relations.refine_numeric_budgeted_with(
+    let answer = relations.refine_numeric_budgeted(
         &expression,
         value,
         context.domain,
@@ -152,9 +152,9 @@ fn local_refine<D: EvmNumericAlgebra>(
     relations: &RelationState,
     context: &mut TransferContext<'_, D>,
 ) -> Result<bool, FrontierReason> {
-    let limits = context.config.analysis.relations;
+    let limits = context.domain.spec().relations();
     let answer =
-        relations.local_value_budgeted_with(expression, &limits, context.budget, context.domain);
+        relations.local_value_budgeted(expression, &limits, context.budget, context.domain);
     query::checkpoint(context.budget)?;
     context
         .query_cache
@@ -279,7 +279,7 @@ pub(super) fn branch_with_singleton<D: EvmNumericAlgebra>(
         boundary(result, pc, reason);
         return None;
     }
-    let limits = context.config.analysis.relations;
+    let limits = context.domain.spec().relations();
     if !limits.enabled {
         return Some(payload);
     }
@@ -328,7 +328,7 @@ pub(super) fn branch_with_singleton<D: EvmNumericAlgebra>(
         boundary(result, pc, FrontierReason::Work);
         return None;
     }
-    let checked = payload.relations.assume_checked_budgeted_with(
+    let checked = payload.relations.assume_checked_budgeted(
         &expression,
         nonzero,
         &limits,

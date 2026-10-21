@@ -3,10 +3,8 @@
 //! Projection deliberately forgets allocation, alias and path correlations. A
 //! summary is never an executable array: each instantiation gets fresh sources.
 
-use super::{COPY_FACT_LIMIT, EvmByteArray, RangeError, limits, zero_with};
+use super::{COPY_FACT_LIMIT, EvmByteArray, RangeError, limits, zero};
 use crate::domain::AlgebraRef;
-#[cfg(test)]
-use crate::domain::{AbstractValue, Domain};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
     EvmValue,
@@ -17,8 +15,12 @@ use crate::domain::{
 };
 use alloy_primitives::U256;
 use std::{collections::BTreeMap, sync::Arc};
+#[cfg(test)]
+use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 mod layout;
+#[cfg(test)]
+use crate::world::test_support::TestBytesSummary;
 mod presentation;
 #[cfg(test)]
 mod retention_tests;
@@ -68,10 +70,8 @@ pub(in crate::world) fn instantiate_scalar<N: WordElement, D: EvmNumericAlgebra<
     value: &EvmValue<N>,
     domain: AlgebraRef<'_, D>,
 ) -> Result<EvmValue<N>, RangeError> {
-    if let Some(constant_with) = value.singleton() {
-        return Ok(value
-            .clone()
-            .with_expression(ExprId::constant(constant_with)));
+    if let Some(constant) = value.singleton() {
+        return Ok(value.clone().with_expression(ExprId::constant(constant)));
     }
     if value.numeric().is_top() {
         // Top contributes no numeric constraint. An independent leaf expresses
@@ -177,14 +177,14 @@ impl<N: WordElement> EvmByteArray<N> {
         // At most one complete demand per 32 retained bytes. The existing
         // full-read and projection quotes cover evaluation and scalar policy;
         // custom query/copy fees cover the additional retained word payloads.
-        self.word_numeric_work_with(&self.length, domain)
+        self.word_numeric_work(&self.length, domain)
             .saturating_add(projection)
             .saturating_add(scalar)
             .saturating_mul(COPY_FACT_LIMIT / 32)
     }
 
     /// Evaluate the complete content graph before forgetting its correlations.
-    pub fn summary_projection_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn summary_projection<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> Result<EvmByteArraySummary<N>, RangeError> {
@@ -201,7 +201,7 @@ impl<N: WordElement> EvmByteArray<N> {
             ByteStateKind::Zero => Content::<N>::Zero,
             ByteStateKind::Exact(bytes) => Content::<N>::exact(Arc::clone(bytes)),
             _ => {
-                if let Some(exact) = self.exact_bytes_bounded_with(COPY_FACT_LIMIT, domain) {
+                if let Some(exact) = self.exact_bytes_bounded(COPY_FACT_LIMIT, domain) {
                     Content::<N>::exact(Arc::from(exact))
                 } else {
                     let mut keys = self.bytes.keys().copied().collect::<Vec<_>>();
@@ -324,7 +324,7 @@ impl<N: WordElement> EvmByteArraySummary<N> {
     }
 
     /// Complete numerical union. Widening affects growing word fields only.
-    pub fn join_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn join<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
@@ -362,16 +362,16 @@ impl<N: WordElement> EvmByteArraySummary<N> {
     }
 
     /// Coverage of content, logical length and allocation mode together.
-    pub fn covers_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn covers<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
     ) -> bool {
-        self.join_with(other, domain, false) == *self
+        self.join(other, domain, false) == *self
     }
 
     /// Build independent symbolic cells and a constrained length for one use.
-    pub fn instantiate_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn instantiate<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
     ) -> Result<EvmByteArray<N>, RangeError> {
@@ -389,10 +389,10 @@ impl<N: WordElement> EvmByteArraySummary<N> {
         };
         let mut bare_cells = false;
         match &self.content {
-            Content::<N>::Zero => out.default = scalar(&zero_with(), domain),
+            Content::<N>::Zero => out.default = scalar(&zero(), domain),
             Content::<N>::Exact(bytes) => {
                 out.root = ByteStateId::exact(Arc::clone(bytes));
-                out.default = scalar(&zero_with(), domain);
+                out.default = scalar(&zero(), domain);
                 out.bytes = bytes
                     .iter()
                     .enumerate()
@@ -430,13 +430,7 @@ impl<N: WordElement> EvmByteArraySummary<N> {
                             // its executable carrier drops a proved redundant
                             // finite component, before observed checks its size.
                             // The original full summary work is still prepaid.
-                            numeric: if domain.spec().profile() == crate::domain::Profile::Product {
-                                value.numeric().compact_for_retention().observation()
-                            } else {
-                                // ConstantsOnly joins inspect finite alone;
-                                // retain its existing executable representation.
-                                value.numeric().observation()
-                            },
+                            numeric: value.numeric().compact_for_retention().observation(),
                         })
                     })
                     .collect::<Result<Vec<_>, RangeError>>()?;
@@ -449,11 +443,7 @@ impl<N: WordElement> EvmByteArraySummary<N> {
                         // a new nonliteral executable operand fact.
                         continue;
                     }
-                    let numeric = if domain.spec().profile() == crate::domain::Profile::Product {
-                        value.numeric().compact_for_retention()
-                    } else {
-                        value.numeric().clone()
-                    };
+                    let numeric = value.numeric().compact_for_retention();
                     out.operands.insert(
                         binding.value.clone(),
                         EvmValue::<N>::from_numeric(numeric).with_expression(binding.value.clone()),
@@ -517,40 +507,5 @@ impl<N: WordElement> EvmByteArraySummary<N> {
         words::instantiate(&self.words, &mut out, domain)?;
         out.check_existing(limits(domain))?;
         Ok(out)
-    }
-}
-
-/// Default numeric-carrier compatibility alias.
-pub type ByteArraySummary = EvmByteArraySummary<crate::domain::NumericValue>;
-
-impl EvmByteArray<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn summary_projection(
-        &self,
-        domain: crate::domain::Domain,
-    ) -> Result<EvmByteArraySummary<crate::domain::NumericValue>, RangeError> {
-        self.summary_projection_with(crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-}
-
-impl EvmByteArraySummary<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn join(&self, other: &Self, domain: crate::domain::Domain, widen: bool) -> Self {
-        self.join_with(
-            other,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            widen,
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn covers(&self, other: &Self, domain: crate::domain::Domain) -> bool {
-        self.covers_with(other, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn instantiate(
-        &self,
-        domain: crate::domain::Domain,
-    ) -> Result<EvmByteArray<crate::domain::NumericValue>, RangeError> {
-        self.instantiate_with(crate::domain::ValueAlgebra::new(domain).borrowed())
     }
 }

@@ -31,7 +31,7 @@ pub(super) fn view_word_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>
     context: &Context<'_, N, D>,
     domain: AlgebraRef<'_, D>,
 ) -> Option<ExprId> {
-    let domain = numeric::numeric_domain_with(domain);
+    let domain = numeric::numeric_domain(domain);
     let relative = numeric::scalar_in(at, context, domain);
     let offset = numeric::scalar_in(&view.offset, context, domain);
     let length = numeric::scalar_in(&view.length, context, domain);
@@ -74,7 +74,7 @@ pub(super) fn copy_word_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>
     context: &Context<'_, N, D>,
     domain: AlgebraRef<'_, D>,
 ) -> Option<ExprId> {
-    let domain = numeric::numeric_domain_with(domain);
+    let domain = numeric::numeric_domain(domain);
     let offset = numeric::scalar_in(at, context, domain);
     at.as_constant()
         .unwrap_or_else(|| offset.interval().unsigned_bounds().1)
@@ -105,12 +105,9 @@ pub(super) fn same_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     domain: AlgebraRef<'_, D>,
 ) -> bool {
     left == right
-        || numeric::scalar_in(left, context, numeric::numeric_domain_with(domain))
+        || numeric::scalar_in(left, context, numeric::numeric_domain(domain))
             .singleton()
-            .zip(
-                numeric::scalar_in(right, context, numeric::numeric_domain_with(domain))
-                    .singleton(),
-            )
+            .zip(numeric::scalar_in(right, context, numeric::numeric_domain(domain)).singleton())
             .is_some_and(|(left, right)| left == right)
 }
 

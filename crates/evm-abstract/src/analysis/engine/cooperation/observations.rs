@@ -20,7 +20,7 @@ use analysis_kernel::{
 };
 use std::{collections::BTreeSet, convert::Infallible, sync::Arc};
 
-impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
+impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
     fn with_shared<R>(
         &mut self,
         runtime: &mut Runtime<<X as InputTasks>::Task>,

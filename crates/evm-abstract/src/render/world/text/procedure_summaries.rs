@@ -1,10 +1,14 @@
 //! Provenance and closure of abstract interaction relations.
 
-use crate::analysis::WorldAnalysis;
+use crate::analysis::EvmWorldAnalysis;
+use crate::domain::WordElement;
 use evm_abstract_notation::Symbol;
 use std::fmt::Write;
 
-pub(in crate::render::world) fn write(output: &mut String, analysis: &WorldAnalysis) {
+pub(in crate::render::world) fn write<N: WordElement>(
+    output: &mut String,
+    analysis: &EvmWorldAnalysis<N>,
+) {
     if analysis.procedure_summaries().is_empty() {
         return;
     }

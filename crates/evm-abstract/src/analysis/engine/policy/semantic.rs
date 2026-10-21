@@ -374,7 +374,7 @@ pub trait WholeStatePolicy<D: EvmNumericAlgebra> {
         incoming: &EvmMachinePayload<D::Element>,
         metadata: &mut Self::Metadata,
         acceleration: Acceleration,
-        selectors: &BTreeSet<ExprId>,
+        _selectors: &BTreeSet<ExprId>,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Option<EvmMachinePayload<D::Element>>, MachineError>;
 
@@ -415,7 +415,7 @@ impl<N: WordElement> WholeStateMetadata<N> {
         current: &EvmMachinePayload<N>,
         incoming: &EvmMachinePayload<N>,
         acceleration: Acceleration,
-        selectors: &BTreeSet<ExprId>,
+        _selectors: &BTreeSet<ExprId>,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
         cx.reserve(0)?;
@@ -425,7 +425,6 @@ impl<N: WordElement> WholeStateMetadata<N> {
             cx.environment,
             cx.domain,
             cx.budget,
-            selectors,
             acceleration == Acceleration::Widen,
         );
         cx.reserve(0)?;

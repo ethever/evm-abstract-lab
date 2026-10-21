@@ -3,10 +3,11 @@
 //! 调用者提供已经验证的 WorldSsa。效果名表示包含检查点的整机 bundle，
 //! 并不拆分内存别名或声称提供精确的 MemorySSA。
 
+use crate::domain::WordElement;
 use evm_abstract_notation::Symbol;
 
 use crate::{
-    analysis::{FrameCode, FrameKey, MachineEdgeKind, MachineState, WorldAnalysis},
+    analysis::{EvmMachineState, EvmWorldAnalysis, FrameCode, FrameKey, MachineEdgeKind},
     bytecode::Program,
     render::{
         instruction::InstructionLayout,
@@ -23,15 +24,18 @@ pub(super) mod teaching;
 mod tests;
 
 /// 将已验证的栈 SSA 和粗粒度效果 SSA 连同原图上下文一起展示。
-pub(super) fn render(analysis: &WorldAnalysis, ssa: &WorldSsa) -> String {
+pub(super) fn render<N: WordElement>(analysis: &EvmWorldAnalysis<N>, ssa: &WorldSsa) -> String {
     render_artifact(analysis, Artifact::World(ssa))
 }
 
-pub(super) fn render_normalized(analysis: &WorldAnalysis, ssa: &NormalizedSsa) -> String {
+pub(super) fn render_normalized<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ssa: &NormalizedSsa<N>,
+) -> String {
     render_artifact(analysis, Artifact::Normalized(ssa))
 }
 
-fn render_artifact(analysis: &WorldAnalysis, ssa: Artifact<'_>) -> String {
+fn render_artifact<N: WordElement>(analysis: &EvmWorldAnalysis<N>, ssa: Artifact<'_, N>) -> String {
     let mut output = String::from("Verified cross-contract SSA:\n");
     writeln!(
         output,
@@ -65,10 +69,10 @@ fn render_artifact(analysis: &WorldAnalysis, ssa: Artifact<'_>) -> String {
     output
 }
 
-fn write_block(
+fn write_block<N: WordElement>(
     output: &mut String,
-    analysis: &WorldAnalysis,
-    state: &MachineState,
+    analysis: &EvmWorldAnalysis<N>,
+    state: &EvmMachineState<N>,
     block: Block<'_>,
 ) {
     let depth = state.key.frames.len();
@@ -194,13 +198,13 @@ fn write_block(
     .unwrap();
 }
 
-fn write_frame(
+fn write_frame<N: WordElement>(
     output: &mut String,
     index: usize,
     active: bool,
     frame: &FrameKey,
     program: Option<&Program>,
-    analysis: &WorldAnalysis,
+    analysis: &EvmWorldAnalysis<N>,
 ) {
     let role = if active { "active" } else { "suspended" };
     let location = program
@@ -292,9 +296,9 @@ fn values(values: &[ValueId]) -> String {
     )
 }
 
-fn write_transition(
+fn write_transition<N: WordElement>(
     output: &mut String,
-    analysis: &WorldAnalysis,
+    analysis: &EvmWorldAnalysis<N>,
     index: usize,
     transition: &Transition,
 ) {
@@ -352,7 +356,11 @@ fn write_transition(
 
 // 返回边的字节码属于子帧；必须从其 continuation 判断 CREATE 地址结果。
 // 同深度的即时失败则从源调用指令判断，避免把 CREATE 的零地址误标成布尔值。
-fn deferred_kind(analysis: &WorldAnalysis, from: usize, to: usize) -> &'static str {
+fn deferred_kind<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    from: usize,
+    to: usize,
+) -> &'static str {
     let source = &analysis.states()[from];
     let creation = if source.key.frames.len() > analysis.states()[to].key.frames.len() {
         source
@@ -380,7 +388,7 @@ fn deferred_kind(analysis: &WorldAnalysis, from: usize, to: usize) -> &'static s
     }
 }
 
-fn empty_instruction_reason(state: &MachineState) -> &'static str {
+fn empty_instruction_reason<N: WordElement>(state: &EvmMachineState<N>) -> &'static str {
     match state.active().mode {
         FrameCode::InvalidDelegation => "invalid nested delegation; exceptional halt",
         FrameCode::Precompile(_) => "native execution; no bytecode instructions",

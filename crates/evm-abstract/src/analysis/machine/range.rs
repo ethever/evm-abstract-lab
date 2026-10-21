@@ -73,8 +73,8 @@ pub struct EvmRangeWitness<N: WordElement> {
     pub payload: Arc<EvmMachinePayload<N>>,
 }
 
-/// Default numeric assembly for [`EvmRangeRequest`].
-pub type RangeRequest = EvmRangeRequest<crate::domain::NumericValue>;
-
-/// Default numeric assembly for [`EvmRangeWitness`].
-pub type RangeWitness = EvmRangeWitness<crate::domain::NumericValue>;
+// Local regression fixtures use explicit built-in carriers.
+#[cfg(test)]
+pub(in crate::analysis) type RangeRequest = EvmRangeRequest<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type RangeWitness = EvmRangeWitness<crate::domain::NumericValue>;

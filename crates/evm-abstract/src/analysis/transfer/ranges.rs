@@ -270,7 +270,7 @@ fn literal_memory_range_with_queries<D: EvmNumericAlgebra>(
     if !context.budget.charge(LITERAL_MEMORY_METADATA_WORK) {
         return Err(FrontierReason::Work);
     }
-    let limits = context.config.analysis.relations;
+    let limits = context.domain.spec().relations();
     if [offset, size].into_iter().any(|value| {
         value.symbolic_limit_reached()
             || value.expression().is_some_and(|expression| {
@@ -449,7 +449,7 @@ fn partition<D: EvmNumericAlgebra>(
     let mut input = result.payload.clone();
     let checked = (|| {
         if truth.zero && truth.nonzero {
-            let limits = context.config.analysis.relations;
+            let limits = context.domain.spec().relations();
             for value in [&request.offset, &request.size, &request.limit] {
                 if let Some(expression) = value.expression() {
                     input
@@ -511,7 +511,7 @@ fn constrained<D: EvmNumericAlgebra>(
         .expression()
         .cloned()
         .ok_or_else(|| Failure::missing_expression(retention))?;
-    let limits = context.config.analysis.relations;
+    let limits = context.domain.spec().relations();
     let cost = payload
         .relations
         .work_size()
@@ -519,7 +519,7 @@ fn constrained<D: EvmNumericAlgebra>(
     if !context.budget.charge(cost) {
         return Err(Failure::plain(FrontierReason::Work));
     }
-    let answer = payload.relations.assume_checked_budgeted_with(
+    let answer = payload.relations.assume_checked_budgeted(
         &expression,
         nonzero,
         &limits,

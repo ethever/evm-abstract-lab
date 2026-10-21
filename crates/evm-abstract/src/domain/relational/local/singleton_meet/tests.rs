@@ -1,12 +1,17 @@
+fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+}
 use super::super::{Engine, LocalResult, Stop, Work};
 use super::{ADMISSION_WORK, CANONICAL_WORK, CLONE_WORK, MEMBERSHIP_WORK, WORD_LIMBS};
 use crate::{
     domain::{
-        Domain, DomainSpec, FiniteConstantSet, NumericValue, Profile,
+        DomainSpec, FiniteConstantSet, NumericValue, ProductAlgebra,
         congruence::Congruence,
         interval::Interval,
         known_bits::KnownBits,
-        relational::{QueryReason, RelationLimits, RelationState, ValueQuery, intersect_numeric},
+        relational::{
+            EvmValueQuery, QueryReason, RelationLimits, RelationState, intersect_numeric,
+        },
         symbolic::ExprId,
     },
     resource::WorkBudget,
@@ -18,7 +23,7 @@ use std::{collections::BTreeSet, num::NonZeroUsize};
 fn engine_meet(
     left: &NumericValue,
     right: &NumericValue,
-    domain: Domain,
+    domain: ProductAlgebra,
     budget: &mut WorkBudget,
 ) -> LocalResult<NumericValue> {
     let limits = RelationLimits::default();
@@ -35,7 +40,7 @@ fn engine_meet(
     .meet(left, right)
 }
 
-fn assert_generic(left: &NumericValue, right: &NumericValue, domain: Domain) {
+fn assert_generic(left: &NumericValue, right: &NumericValue, domain: ProductAlgebra) {
     let expected = intersect_numeric(
         left,
         right,
@@ -50,24 +55,22 @@ fn assert_generic(left: &NumericValue, right: &NumericValue, domain: Domain) {
     assert!(!budget.exhausted());
 }
 
-fn frozen_domains() -> [Domain; 6] {
+fn frozen_domains() -> [ProductAlgebra; 5] {
     // Selected boundaries, rather than a full Cartesian policy matrix.
     [
-        (Profile::Product, 1, 1, 1, false),
-        (Profile::Product, 8, 4, 256, true),
-        (Profile::Product, 512, 1, 2, true),
-        (Profile::ConstantsOnly, 1, 1, 1, true),
-        (Profile::ConstantsOnly, 8, 4, 256, false),
-        (Profile::ConstantsOnly, 512, 1, 2, true),
+        (1, 1, 1, false),
+        (8, 4, 256, true),
+        (512, 1, 2, true),
+        (1, 1, 1, true),
+        (8, 4, 256, false),
     ]
-    .map(|(profile, capacity, rounds, facts, enabled)| {
+    .map(|(capacity, rounds, facts, enabled)| {
         let relations = RelationLimits {
             enabled,
             ..RelationLimits::default()
         };
-        Domain::from_spec(
+        ProductAlgebra::from_spec(
             DomainSpec::new(
-                profile,
                 NonZeroUsize::new(capacity).unwrap(),
                 NonZeroUsize::new(rounds).unwrap(),
                 NonZeroUsize::new(facts).unwrap(),
@@ -85,7 +88,7 @@ fn finite(values: impl IntoIterator<Item = U256>) -> NumericValue {
 }
 
 #[test]
-fn canonical_intersections_match_full_generic_components_and_frozen_profiles() {
+fn canonical_intersections_match_full_generic_components_and_frozen_limits() {
     let zero = U256::ZERO;
     let one = U256::ONE;
     let seven = U256::from(7);
@@ -190,10 +193,10 @@ fn noncanonical_singletons_general_modulo_and_unproved_ranges_keep_generic_path(
                 ledger: None,
             };
             assert!(
-                super::meet_with(
+                super::meet(
                     left,
                     right,
-                    crate::domain::ValueAlgebra::new(Domain::default()).borrowed(),
+                    crate::domain::ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
                     &mut work
                 )
                 .unwrap()
@@ -214,10 +217,10 @@ fn noncanonical_singletons_general_modulo_and_unproved_ranges_keep_generic_path(
         ledger: None,
     };
     assert!(
-        super::meet_with(
+        super::meet(
             &NumericValue::constant(word),
             &modulo,
-            crate::domain::ValueAlgebra::new(Domain::default()).borrowed(),
+            crate::domain::ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
             &mut work
         )
         .unwrap()
@@ -239,12 +242,12 @@ fn large_finite_membership_pays_input_bound_without_generic_reduction() {
         + CLONE_WORK;
     let mut budget = WorkBudget::new(expected_work);
     assert_eq!(
-        engine_meet(&canonical, &other, Domain::default(), &mut budget).unwrap(),
+        engine_meet(&canonical, &other, ProductAlgebra::default(), &mut budget).unwrap(),
         canonical
     );
     assert_eq!(budget.used(), expected_work);
     assert!(!budget.exhausted());
-    assert_generic(&canonical, &other, Domain::default());
+    assert_generic(&canonical, &other, ProductAlgebra::default());
 }
 
 #[test]
@@ -266,7 +269,7 @@ fn each_refused_stage_keeps_paid_prefix_and_does_not_reserve_generic_fallback() 
     for end in ends {
         let mut budget = WorkBudget::new(end - 1);
         assert!(matches!(
-            engine_meet(&canonical, &other, Domain::default(), &mut budget),
+            engine_meet(&canonical, &other, ProductAlgebra::default(), &mut budget),
             Err(Stop::Pending(QueryReason::ExpressionLimit))
         ));
         assert_eq!(budget.used(), previous);
@@ -275,7 +278,7 @@ fn each_refused_stage_keeps_paid_prefix_and_does_not_reserve_generic_fallback() 
     }
     let mut budget = WorkBudget::new(previous + CLONE_WORK - 1);
     assert!(matches!(
-        engine_meet(&canonical, &other, Domain::default(), &mut budget),
+        engine_meet(&canonical, &other, ProductAlgebra::default(), &mut budget),
         Err(Stop::Pending(QueryReason::ExpressionLimit))
     ));
     assert_eq!(budget.used(), previous);
@@ -297,7 +300,7 @@ fn contradiction_pays_membership_without_cloning_and_shortcut_prices_stay_exact(
         + MEMBERSHIP_WORK;
     let mut budget = WorkBudget::new(expected);
     assert!(matches!(
-        engine_meet(&zero, &nonzero, Domain::default(), &mut budget),
+        engine_meet(&zero, &nonzero, ProductAlgebra::default(), &mut budget),
         Err(Stop::Bottom)
     ));
     assert_eq!(budget.used(), expected);
@@ -306,7 +309,7 @@ fn contradiction_pays_membership_without_cloning_and_shortcut_prices_stay_exact(
         let old_price = left.work_size() + right.work_size();
         let mut budget = WorkBudget::new(old_price);
         assert_eq!(
-            engine_meet(left, right, Domain::default(), &mut budget).unwrap(),
+            engine_meet(left, right, ProductAlgebra::default(), &mut budget).unwrap(),
             zero
         );
         assert_eq!(budget.used(), old_price);
@@ -341,7 +344,7 @@ fn refused_learning_and_cancellation_preserve_retained_numeric_facts() {
             cancellation: cancellation.clone(),
             ledger: None,
         };
-        let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+        let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
         let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
         engine
             .facts
@@ -390,8 +393,13 @@ fn observed_false_comparison_still_projects_an_exact_local_consumer_value() {
     let before = state.clone();
     let mut budget = WorkBudget::new(20_000_000);
     assert_eq!(
-        state.local_value_budgeted(&comparison, &limits, &mut budget),
-        ValueQuery::Exact(U256::ZERO)
+        state.local_value_budgeted(
+            &comparison,
+            &limits,
+            &mut budget,
+            product_algebra().borrowed()
+        ),
+        EvmValueQuery::Exact(U256::ZERO)
     );
     assert_eq!(state, before);
     assert!(!budget.exhausted());

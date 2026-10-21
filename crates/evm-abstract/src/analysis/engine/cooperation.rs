@@ -32,7 +32,7 @@ use std::{
 pub(in crate::analysis) use public::Composition;
 
 /// Borrow the caller's concrete assembly without cloning its mutable state.
-pub(super) struct Borrowed<'a, X>(pub &'a mut X);
+pub(in crate::analysis) struct Borrowed<'a, X>(pub &'a mut X);
 impl<X: InputTasks> InputTasks for Borrowed<'_, X> {
     type Task = X::Task;
     const ENABLED: bool = X::ENABLED;
@@ -121,9 +121,10 @@ pub(in crate::analysis) struct Cooperation<
     pub interrupted: bool,
 }
 
-pub(in crate::analysis) type Empty = public::Extension<public::NoExtension, public::NoTasks>;
+#[cfg(test)]
+pub(in crate::analysis) type Empty = public::NoExtension;
 
-impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
+impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
     pub fn new(assembly: X) -> Self {
         Self {
             assembly,

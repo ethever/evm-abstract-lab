@@ -1,14 +1,14 @@
-//! Actual Engine imports, with the previous reservation as the reference owner.
+//! Native Engine imports preserve concrete fact semantics and atomic admission.
 
-use super::super::{Engine, LocalResult, QueryReason, RelationLimits, Stop, Work, keys::KeyMap};
+use super::super::{Engine, QueryReason, RelationLimits, Stop, Work, keys::KeyMap};
 use super::reservation;
 use crate::{
     domain::{
-        AbstractValue, Domain, DomainSpec, FiniteConstantSet, NumericValue, Profile,
+        DomainSpec, EvmValue, FiniteConstantSet, NumericValue, ProductAlgebra, ValueAlgebra,
         congruence::Congruence,
         facts::{
-            BinaryFact, BinaryPredicate, BitConstraints, BitIndex, Fact, FactLattice, FiniteSet,
-            Symbol, Term, UnaryFact, UnaryPredicate, WordBounds,
+            BinaryFact, BinaryPredicate, BitConstraints, BitIndex, Fact, FiniteSet, Symbol, Term,
+            UnaryFact, UnaryPredicate, WordBounds,
         },
         interval::Interval,
         known_bits::KnownBits,
@@ -21,24 +21,6 @@ use std::{collections::BTreeSet, num::NonZeroUsize};
 
 fn unary(predicate: UnaryPredicate) -> Fact {
     Fact::Unary(UnaryFact::new(Symbol::THIS, predicate))
-}
-
-// This is the previous Engine::import sequence. Both sides execute the same
-// real FactLattice/reduce::import/learn mathematics; only their quote differs.
-fn legacy_import(
-    engine: &mut Engine<'_, '_, '_, Domain>,
-    expression: &ExprId,
-    fact: Fact,
-) -> LocalResult<()> {
-    let known = engine.known(expression)?;
-    let input = AbstractValue::from_numeric(known);
-    engine
-        .work
-        .prepay(engine.domain.refinement_work(&input, 1))?;
-    let mut lattice = FactLattice::new(engine.domain.spec().fact_limit());
-    lattice.insert(fact)?;
-    let value = crate::domain::reduce::import(&input, &lattice)?;
-    engine.learn(expression, value.numeric())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -72,7 +54,11 @@ struct Entries {
     terms: Vec<Option<ExprId>>,
 }
 
-fn entries(engine: &Engine<'_, '_, '_, Domain>, expression: &ExprId, sentinel: &ExprId) -> Entries {
+fn entries(
+    engine: &Engine<'_, '_, '_, ProductAlgebra>,
+    expression: &ExprId,
+    sentinel: &ExprId,
+) -> Entries {
     let keys = [expression, sentinel];
     Entries {
         facts: keys
@@ -101,13 +87,7 @@ struct Outcome {
     exhausted: bool,
 }
 
-fn run(
-    expression: &ExprId,
-    initial: &NumericValue,
-    fact: Fact,
-    domain: Domain,
-    legacy: bool,
-) -> Outcome {
+fn run(expression: &ExprId, initial: &NumericValue, fact: Fact, domain: ProductAlgebra) -> Outcome {
     let limits = RelationLimits::default();
     let mut budget = WorkBudget::new(1_000_000);
     let mut work = Work {
@@ -152,12 +132,7 @@ fn run(
     let before = entries(&engine, expression, &sentinel);
     engine.work.remaining = 100_000;
     engine.work.ledger = Some(&mut budget);
-    let result = if legacy {
-        legacy_import(&mut engine, expression, fact)
-    } else {
-        engine.import(expression, fact)
-    }
-    .map_err(failure);
+    let result = engine.import(expression, fact).map_err(failure);
     Outcome {
         result,
         before,
@@ -168,34 +143,129 @@ fn run(
     }
 }
 
-fn compare(initial: NumericValue, fact: Fact, domain: Domain) -> Outcome {
+// Direct word predicates are independent of Engine import, reduction and its
+// reservation implementation. Unknown external symbols impose no scalar fact.
+fn admits(fact: &Fact, word: U256) -> bool {
+    match fact {
+        Fact::Unary(fact) if fact.subject == Symbol::THIS => match &fact.predicate {
+            UnaryPredicate::Exact(exact) => word == *exact,
+            UnaryPredicate::MemberOf(values) => values.values().contains(&word),
+            UnaryPredicate::KnownBits(bits) => {
+                word & bits.zero() == U256::ZERO && word & bits.one() == bits.one()
+            }
+            UnaryPredicate::BitSet(bit) => word.bit(usize::from(bit.get())),
+            UnaryPredicate::BitClear(bit) => !word.bit(usize::from(bit.get())),
+            UnaryPredicate::UnsignedBounds(bounds) => {
+                bounds.lower() <= word && word <= bounds.upper()
+            }
+            UnaryPredicate::SignedBounds(bounds) => {
+                let biased = word ^ (U256::ONE << 255usize);
+                bounds.lower() <= biased && biased <= bounds.upper()
+            }
+            UnaryPredicate::Congruent(congruence) => {
+                if let Some(exact) = congruence.singleton() {
+                    word == exact
+                } else {
+                    congruence
+                        .modulus_residue()
+                        .is_none_or(|(modulus, residue)| word % modulus == residue)
+                }
+            }
+            UnaryPredicate::IsZero => word == U256::ZERO,
+            UnaryPredicate::NonZero => word != U256::ZERO,
+            UnaryPredicate::IsAddress => word <= U256::MAX >> 96usize,
+            UnaryPredicate::IsCodeAddress | UnaryPredicate::PossibleOrigins(_) => true,
+        },
+        Fact::Unary(_) => true,
+        Fact::Binary(fact) => {
+            let term = |term| match term {
+                Term::Symbol(symbol) if symbol == Symbol::THIS => Some(word),
+                Term::Constant(value) => Some(value),
+                Term::Symbol(_) => None,
+            };
+            let Some((left, right)) = term(fact.left).zip(term(fact.right)) else {
+                return true;
+            };
+            match fact.predicate {
+                BinaryPredicate::Eq => left == right,
+                BinaryPredicate::Ne => left != right,
+                BinaryPredicate::Ult => left < right,
+                BinaryPredicate::Ule => left <= right,
+                BinaryPredicate::Slt => {
+                    (left ^ (U256::ONE << 255usize)) < (right ^ (U256::ONE << 255usize))
+                }
+                BinaryPredicate::Sle => {
+                    (left ^ (U256::ONE << 255usize)) <= (right ^ (U256::ONE << 255usize))
+                }
+            }
+        }
+        _ => panic!("this import oracle requires an explicit scalar predicate"),
+    }
+}
+
+fn check_import(initial: NumericValue, fact: Fact, domain: ProductAlgebra) -> Outcome {
     let expression = ExprId::fresh().unwrap();
-    let input = AbstractValue::from_numeric(initial.clone());
-    let new_fee = reservation(domain, &input, &fact);
-    let old_fee = domain.refinement_work(&input, 1);
-    let old = run(&expression, &initial, fact.clone(), domain, true);
-    let new = run(&expression, &initial, fact, domain, false);
-    assert_eq!(new.result, old.result);
-    assert_eq!(new.before, old.before);
-    assert_eq!(
-        new.after, old.after,
-        "compare complete retained numeric components"
-    );
-    assert_eq!(
-        new.remaining, old.remaining,
-        "local charges remain unchanged"
-    );
-    assert_eq!(
-        new.used + old_fee,
-        old.used + new_fee,
-        "only the import reservation changes; learn/meet retain their fees"
-    );
-    assert!(!new.exhausted && !old.exhausted);
-    new
+    let result = run(&expression, &initial, fact.clone(), domain);
+    let samples = (0u64..=256).map(U256::from).chain([
+        U256::ONE << 255usize,
+        (U256::ONE << 255usize) - U256::ONE,
+        U256::MAX,
+    ]);
+    match &result.result {
+        Ok(()) => {
+            let numeric = result.after.facts[0].as_ref().unwrap_or(&initial);
+            // An open product cannot encode exclusion of an arbitrary nonzero
+            // literal. This unsupported relation must keep the original
+            // carrier; finite covers can still filter that literal exactly.
+            let open_exclusion = initial.constants().is_none()
+                && matches!(&fact, Fact::Binary(binary)
+                    if binary.predicate == BinaryPredicate::Ne
+                        && matches!((binary.left, binary.right),
+                            (Term::Symbol(Symbol::THIS), Term::Constant(value))
+                            | (Term::Constant(value), Term::Symbol(Symbol::THIS))
+                            if value != U256::ZERO));
+            if open_exclusion {
+                assert_eq!(numeric, &initial);
+            }
+            for word in samples {
+                let admitted = initial.contains(word) && admits(&fact, word);
+                if open_exclusion {
+                    assert!(!admitted || numeric.contains(word));
+                } else {
+                    assert_eq!(
+                        numeric.contains(word),
+                        admitted,
+                        "fact={fact:?}, initial={initial:?}, word={word}"
+                    );
+                }
+            }
+            // Import updates only the intended fact; unrelated keyed entries
+            // and the parent/memo/term maps remain unchanged.
+            assert_eq!(result.after.facts[1], result.before.facts[1]);
+            assert_eq!(result.after.parents, result.before.parents);
+            assert_eq!(result.after.memo, result.before.memo);
+            assert_eq!(result.after.terms, result.before.terms);
+            assert!(result.used > 0);
+        }
+        Err(Failure::Bottom) => {
+            assert!(
+                samples
+                    .into_iter()
+                    .all(|word| !initial.contains(word) || !admits(&fact, word))
+            );
+            assert_eq!(result.after, result.before);
+        }
+        Err(Failure::Pending(reason)) => {
+            assert_eq!(*reason, QueryReason::ScalarFactLimit);
+            assert_eq!(result.after, result.before);
+        }
+    }
+    assert!(!result.exhausted);
+    result
 }
 
 #[test]
-fn supported_unary_shapes_match_the_complete_legacy_numeric_result() {
+fn supported_unary_imports_match_independent_concrete_predicates() {
     let predicates = [
         UnaryPredicate::KnownBits(BitConstraints::new(U256::from(8), U256::ONE).unwrap()),
         UnaryPredicate::KnownBits(BitConstraints::new(U256::ZERO, U256::ZERO).unwrap()),
@@ -221,27 +291,30 @@ fn supported_unary_shapes_match_the_complete_legacy_numeric_result() {
     ] {
         for predicate in &predicates {
             let fact = unary(predicate.clone());
-            let input = AbstractValue::from_numeric(initial.clone());
+            let input = EvmValue::<NumericValue>::from_numeric(initial.clone());
             assert!(
-                reservation(Domain::default(), &input, &fact)
-                    < Domain::default().refinement_work(&input, 1)
+                reservation(
+                    ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
+                    &input,
+                    &fact
+                ) < ValueAlgebra::new(ProductAlgebra::default()).refinement_work(&input, 1)
             );
-            compare(initial.clone(), fact, Domain::default());
+            check_import(initial.clone(), fact, ProductAlgebra::default());
         }
     }
     // Import does not visit an existing modulo constraint when finite stays Top.
     let mut modular = NumericValue::top();
     modular.congruence = Congruence::new(U256::from(3), U256::ONE).unwrap();
-    compare(
+    check_import(
         modular,
         unary(UnaryPredicate::BitClear(BitIndex::new(1).unwrap())),
-        Domain::default(),
+        ProductAlgebra::default(),
     );
 }
 
 #[test]
-fn measured_binary_eq_and_ne_zero_match_legacy_in_either_operand_order() {
-    let domain = Domain::default();
+fn binary_eq_and_ne_zero_imports_match_concrete_predicates_in_both_orders() {
+    let domain = ProductAlgebra::default();
     let mut finite = NumericValue::top();
     finite.finite = FiniteConstantSet::constant(U256::from(7));
     for initial in [
@@ -264,16 +337,18 @@ fn measured_binary_eq_and_ne_zero_match_legacy_in_either_operand_order() {
                     (Term::Symbol(Symbol::THIS), Term::Constant(value))
                 };
                 let fact = Fact::Binary(BinaryFact::new(left, predicate, right));
-                let input = AbstractValue::from_numeric(initial.clone());
-                assert!(reservation(domain, &input, &fact) < domain.refinement_work(&input, 1));
-                compare(initial.clone(), fact, domain);
+                let input = EvmValue::<NumericValue>::from_numeric(initial.clone());
+                assert!(
+                    reservation(ValueAlgebra::new(domain).borrowed(), &input, &fact)
+                        < ValueAlgebra::new(domain).refinement_work(&input, 1)
+                );
+                check_import(initial.clone(), fact, domain);
             }
         }
     }
     // The general Ne0 lattice retains its binary edge: atoms=2, so the existing
     // capacity error remains distinct from Bottom under a one-atom policy.
-    let one = Domain::from_spec(DomainSpec::new(
-        Profile::Product,
+    let one = ProductAlgebra::from_spec(DomainSpec::new(
         NonZeroUsize::new(8).unwrap(),
         NonZeroUsize::new(4).unwrap(),
         NonZeroUsize::new(1).unwrap(),
@@ -283,7 +358,7 @@ fn measured_binary_eq_and_ne_zero_match_legacy_in_either_operand_order() {
         BinaryPredicate::Ne,
         Term::Constant(U256::ZERO),
     ));
-    let outcome = compare(NumericValue::top(), fact, one);
+    let outcome = check_import(NumericValue::top(), fact, one);
     assert_eq!(
         outcome.result,
         Err(Failure::Pending(QueryReason::ScalarFactLimit))
@@ -292,8 +367,8 @@ fn measured_binary_eq_and_ne_zero_match_legacy_in_either_operand_order() {
 }
 
 #[test]
-fn finite_filtering_keeps_the_exact_previous_reservation() {
-    let domain = Domain::default();
+fn finite_filtering_pays_the_full_input_reservation() {
+    let domain = ProductAlgebra::default();
     let mut finite = NumericValue::top();
     finite.finite =
         FiniteConstantSet::try_from_values(BTreeSet::from([U256::ZERO, U256::ONE, U256::from(2)]))
@@ -305,46 +380,35 @@ fn finite_filtering_keeps_the_exact_previous_reservation() {
             UnaryPredicate::KnownBits(BitConstraints::new(U256::ZERO, U256::from(8)).unwrap()),
         ),
     ] {
-        let input = AbstractValue::from_numeric(initial.clone());
+        let input = EvmValue::<NumericValue>::from_numeric(initial.clone());
         let fact = unary(predicate);
         assert_eq!(
-            reservation(domain, &input, &fact),
-            domain.refinement_work(&input, 1)
+            reservation(ValueAlgebra::new(domain).borrowed(), &input, &fact),
+            ValueAlgebra::new(domain).refinement_work(&input, 1)
         );
-        let outcome = compare(initial, fact, domain);
+        let outcome = check_import(initial, fact, domain);
         if outcome.result.is_err() {
             assert_eq!(outcome.after, outcome.before);
         }
     }
     let expression = ExprId::constant(U256::from(7));
-    let old = run(
+    let result = run(
         &expression,
         &NumericValue::top(),
         unary(UnaryPredicate::Exact(U256::from(7))),
         domain,
-        true,
     );
-    let new = run(
-        &expression,
-        &NumericValue::top(),
-        unary(UnaryPredicate::Exact(U256::from(7))),
-        domain,
-        false,
-    );
-    assert_eq!(new.result, old.result);
-    assert_eq!(new.after, old.after);
-    let input = AbstractValue::from_numeric(NumericValue::constant(U256::from(7)));
-    let fact = unary(UnaryPredicate::Exact(U256::from(7)));
-    assert_eq!(
-        new.used + domain.refinement_work(&input, 1),
-        old.used + reservation(domain, &input, &fact)
-    );
+    assert_eq!(result.result, Ok(()));
+    // A literal is already authoritative; importing the same literal must not
+    // add a redundant keyed fact or invalidate unrelated retained entries.
+    assert_eq!(result.after, result.before);
+    assert!(!result.exhausted);
 }
 
 #[test]
-fn unsupported_kinds_subjects_and_exact_with_modulo_use_the_old_fee() {
-    let domain = Domain::default();
-    let input = AbstractValue::from_numeric(NumericValue::top());
+fn unsupported_shortcut_shapes_reserve_the_complete_refinement_work() {
+    let domain = ProductAlgebra::default();
+    let input = EvmValue::<NumericValue>::from_numeric(NumericValue::top());
     let facts = [
         unary(UnaryPredicate::MemberOf(
             FiniteSet::new(BTreeSet::from([U256::ONE, U256::from(3)])).unwrap(),
@@ -377,10 +441,10 @@ fn unsupported_kinds_subjects_and_exact_with_modulo_use_the_old_fee() {
     ];
     for fact in facts {
         assert_eq!(
-            reservation(domain, &input, &fact),
-            domain.refinement_work(&input, 1)
+            reservation(ValueAlgebra::new(domain).borrowed(), &input, &fact),
+            ValueAlgebra::new(domain).refinement_work(&input, 1)
         );
-        compare(NumericValue::top(), fact, domain);
+        check_import(NumericValue::top(), fact, domain);
     }
     let mut modular_finite = NumericValue::top();
     modular_finite.finite = FiniteConstantSet::constant(U256::ONE);
@@ -394,30 +458,30 @@ fn unsupported_kinds_subjects_and_exact_with_modulo_use_the_old_fee() {
             Term::Constant(U256::ONE),
         )),
     ] {
-        let input = AbstractValue::from_numeric(modular_finite.clone());
+        let input = EvmValue::<NumericValue>::from_numeric(modular_finite.clone());
         assert_eq!(
-            reservation(domain, &input, &fact),
-            domain.refinement_work(&input, 1)
+            reservation(ValueAlgebra::new(domain).borrowed(), &input, &fact),
+            ValueAlgebra::new(domain).refinement_work(&input, 1)
         );
-        compare(modular_finite.clone(), fact, domain);
+        check_import(modular_finite.clone(), fact, domain);
     }
     for congruence in [Congruence::new(U256::from(3), U256::ONE).unwrap()] {
         let mut initial = NumericValue::top();
         initial.congruence = congruence;
         for predicate in [UnaryPredicate::Exact(U256::ONE), UnaryPredicate::IsZero] {
             let fact = unary(predicate);
-            let input = AbstractValue::from_numeric(initial.clone());
+            let input = EvmValue::<NumericValue>::from_numeric(initial.clone());
             assert_eq!(
-                reservation(domain, &input, &fact),
-                domain.refinement_work(&input, 1)
+                reservation(ValueAlgebra::new(domain).borrowed(), &input, &fact),
+                ValueAlgebra::new(domain).refinement_work(&input, 1)
             );
-            compare(initial.clone(), fact, domain);
+            check_import(initial.clone(), fact, domain);
         }
     }
 }
 
 #[test]
-fn direct_contradictions_and_fact_capacity_keep_legacy_errors_and_state() {
+fn direct_contradictions_and_fact_capacity_keep_typed_errors_and_atomic_state() {
     let mut bits = NumericValue::top();
     bits.bits = KnownBits::exact(U256::ZERO);
     let mut zero = NumericValue::top();
@@ -430,17 +494,16 @@ fn direct_contradictions_and_fact_capacity_keep_legacy_errors_and_state() {
         (bits, unary(UnaryPredicate::Exact(U256::ONE))),
         (zero, unary(UnaryPredicate::NonZero)),
     ] {
-        let outcome = compare(initial, fact, Domain::default());
+        let outcome = check_import(initial, fact, ProductAlgebra::default());
         assert_eq!(outcome.result, Err(Failure::Bottom));
         assert_eq!(outcome.after, outcome.before);
     }
-    let domain = Domain::from_spec(DomainSpec::new(
-        Profile::Product,
+    let domain = ProductAlgebra::from_spec(DomainSpec::new(
         NonZeroUsize::new(8).unwrap(),
         NonZeroUsize::new(4).unwrap(),
         NonZeroUsize::new(1).unwrap(),
     ));
-    let outcome = compare(
+    let outcome = check_import(
         NumericValue::top(),
         unary(UnaryPredicate::IsAddress),
         domain,
@@ -462,7 +525,7 @@ fn cancelled_import_never_reserves_or_installs() {
         cancellation: token.clone(),
         ledger: Some(&mut budget),
     };
-    let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
     let expression = ExprId::fresh().unwrap();
     token.cancel();
@@ -501,7 +564,7 @@ fn bounded_import(maximum: usize, local: usize) -> Outcome {
         cancellation: analysis_control::Cancellation::default(),
         ledger: Some(&mut budget),
     };
-    let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
     let expression = ExprId::fresh().unwrap();
     let sentinel = ExprId::constant(U256::MAX);
@@ -521,8 +584,12 @@ fn bounded_import(maximum: usize, local: usize) -> Outcome {
 
 #[test]
 fn root_reservation_refusal_and_exact_total_boundary_are_atomic() {
-    let input = AbstractValue::from_numeric(NumericValue::top());
-    let fee = reservation(Domain::default(), &input, &binary_nonzero());
+    let input = EvmValue::<NumericValue>::from_numeric(NumericValue::top());
+    let fee = reservation(
+        ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
+        &input,
+        &binary_nonzero(),
+    );
     // known's root step pays one; the import reservation cannot fit afterward.
     let refused = bounded_import(fee, 100);
     assert_eq!(
@@ -551,8 +618,12 @@ fn root_reservation_refusal_and_exact_total_boundary_are_atomic() {
 
 #[test]
 fn local_refusal_keeps_paid_import_work_without_installing_a_result() {
-    let input = AbstractValue::from_numeric(NumericValue::top());
-    let fee = reservation(Domain::default(), &input, &binary_nonzero());
+    let input = EvmValue::<NumericValue>::from_numeric(NumericValue::top());
+    let fee = reservation(
+        ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
+        &input,
+        &binary_nonzero(),
+    );
     for local in [0, 1, 4] {
         let refused = bounded_import(100_000, local);
         assert_eq!(
@@ -571,15 +642,20 @@ fn local_refusal_keeps_paid_import_work_without_installing_a_result() {
 }
 
 #[test]
-fn saturated_unsupported_quote_is_exactly_the_legacy_reservation() {
-    let domain = Domain::from_spec(DomainSpec::new(
-        Profile::Product,
+fn saturated_unsupported_quote_refuses_the_whole_refinement_reservation() {
+    let domain = ProductAlgebra::from_spec(DomainSpec::new(
         NonZeroUsize::new(usize::MAX).unwrap(),
         NonZeroUsize::new(usize::MAX).unwrap(),
         NonZeroUsize::new(256).unwrap(),
     ));
-    let input = AbstractValue::from_numeric(NumericValue::top());
+    let input = EvmValue::<NumericValue>::from_numeric(NumericValue::top());
     let fact = unary(UnaryPredicate::IsCodeAddress);
-    assert_eq!(domain.refinement_work(&input, 1), usize::MAX);
-    assert_eq!(reservation(domain, &input, &fact), usize::MAX);
+    assert_eq!(
+        ValueAlgebra::new(domain).refinement_work(&input, 1),
+        usize::MAX
+    );
+    assert_eq!(
+        reservation(ValueAlgebra::new(domain).borrowed(), &input, &fact),
+        usize::MAX
+    );
 }
