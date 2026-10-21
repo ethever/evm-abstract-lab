@@ -18,7 +18,7 @@ use analysis_kernel::{
 
 mod bits;
 mod bounds;
-mod cost;
+pub(super) mod cost;
 mod policy;
 mod scalar;
 #[cfg(test)]

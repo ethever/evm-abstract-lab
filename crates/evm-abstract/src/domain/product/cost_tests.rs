@@ -164,6 +164,37 @@ fn stable_inputs_pay_one_cycle_and_finite_inputs_pay_at_most_two() {
 }
 
 #[test]
+fn closure_coupon_itself_funds_stable_inputs_without_import_allowance() {
+    let _counter = cooperation::PROTOCOL_WORK.scope();
+    for capacity in [1, 8, 512] {
+        let domain = domain(capacity, 8);
+        for value in [NumericValue::top(), NumericValue::constant(U256::from(7))] {
+            // This is the closure tariff alone. The surrounding import/fact
+            // envelope must not conceal underpriced kernel work or reporting.
+            let coupon = domain.numeric_closure_work(value.finite.work_size(), Some(1));
+            cooperation::PROTOCOL_WORK.set((0, 0, 0));
+            let result = cooperation::close_with_work(
+                domain,
+                value.clone(),
+                BoundsToMask,
+                MaskToBounds,
+                coupon,
+            );
+            assert_eq!(
+                result.status,
+                ReductionStatus::Stable,
+                "capacity={capacity}"
+            );
+            assert_eq!(result.value, value);
+            assert_eq!(result.rounds, 1);
+            let (used, dependencies, steps) = cooperation::PROTOCOL_WORK.get();
+            assert!(used <= coupon);
+            assert_eq!((dependencies, steps), (10, 4));
+        }
+    }
+}
+
+#[test]
 fn filtered_finite_covers_stabilize_without_capacity_truncation() {
     let _counter = cooperation::PROTOCOL_WORK.scope();
     for capacity in [1, 8, 32] {
@@ -214,6 +245,15 @@ fn arithmetic_reservation_is_atomic_and_covers_the_actual_cooperative_schedule()
                     assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
                     let mut paid = WorkBudget::new(quote);
                     let actual = domain.apply_budgeted(op, &args, &mut paid).unwrap();
+                    assert!(
+                        !matches!(
+                            actual.status,
+                            ReductionStatus::WorkLimit
+                                | ReductionStatus::Cancelled
+                                | ReductionStatus::KernelFailure
+                        ),
+                        "the paid quote must fund the schedule, op={op:02x} rounds={rounds}"
+                    );
                     assert_eq!(paid.used(), quote);
                     assert!(!paid.exhausted());
                     assert!(cooperation::PROTOCOL_WORK.get().0 <= quote);
