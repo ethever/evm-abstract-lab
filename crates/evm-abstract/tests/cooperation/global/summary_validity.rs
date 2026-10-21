@@ -267,11 +267,16 @@ where
 #[derive(Debug, thiserror::Error)]
 enum ReaderError {
     #[error("{0}")]
-    Summary(#[from] evm_abstract::analysis::cooperation::SummaryReadError<Infrastructure>),
+    Summary(evm_abstract::analysis::cooperation::SummaryReadError<Infrastructure>),
     #[error("capability operation failed: {0}")]
     Infrastructure(Infrastructure),
     #[error("old closed Summary is still available: generation={generation}, revision={revision}")]
     StaleClosed { generation: usize, revision: usize },
+}
+impl From<evm_abstract::analysis::cooperation::SummaryReadError<Infrastructure>> for ReaderError {
+    fn from(error: evm_abstract::analysis::cooperation::SummaryReadError<Infrastructure>) -> Self {
+        Self::Summary(error)
+    }
 }
 impl From<Infrastructure> for ReaderError {
     fn from(error: Infrastructure) -> Self {

@@ -94,7 +94,7 @@ where
 pub enum SummaryReadError<E> {
     /// An underlying required capability query failed.
     #[error("summary capability query failed: {0}")]
-    Capability(#[from] E),
+    Capability(E),
     /// The publisher supplied a ready certificate for another native snapshot.
     #[error("summary generation {snapshot} differs from certificate generation {certificate}")]
     GenerationMismatch {
@@ -103,6 +103,13 @@ pub enum SummaryReadError<E> {
         /// Native generation covered by the completion certificate.
         certificate: usize,
     },
+}
+
+// Explicit conversion keeps the cause concrete, using Error::source's default.
+impl<E> From<E> for SummaryReadError<E> {
+    fn from(error: E) -> Self {
+        Self::Capability(error)
+    }
 }
 
 /// A typed complete-bound query, distinct from an incremental MAY snapshot.
