@@ -1,8 +1,11 @@
 //! Local conjunction consequences and guarded/overlap boundaries.
 
-use super::super::{CheckResult, Constraint, RelationLimits, RelationState, ValueQuery};
+fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+}
+use super::super::{CheckResult, Constraint, EvmValueQuery, RelationLimits, RelationState};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, SourceId, StateBinding};
-use crate::domain::{AbstractValue, Domain, NumericValue};
+use crate::domain::{EvmValue, NumericValue, ProductAlgebra};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::sync::Arc;
@@ -44,23 +47,33 @@ fn default_fuel_conjunction_aliases_keep_their_asserted_predicates() {
                 }
                 let mut path = RelationState::default();
                 assert_eq!(
-                    path.assume(&guard, equal ^ (negations % 2 != 0), &limits),
+                    path.assume(
+                        &guard,
+                        equal ^ (negations % 2 != 0),
+                        &limits,
+                        product_algebra().borrowed()
+                    ),
                     CheckResult::MayBeFeasible,
                     "local"
                 );
                 assert_eq!(
-                    path.local_value(&read, &limits),
-                    ValueQuery::Exact(U256::from(if equal { 9 } else { 7 })),
+                    path.local_value(&read, &limits, product_algebra().borrowed()),
+                    EvmValueQuery::Exact(U256::from(if equal { 9 } else { 7 })),
                     "local, equal={equal}, negations={negations}"
                 );
                 // A fold must never erase the premise supporting it.
                 assert_eq!(
-                    path.can_equal(&equality, U256::from(u8::from(!equal)), &limits),
+                    path.can_equal(
+                        &equality,
+                        U256::from(u8::from(!equal)),
+                        &limits,
+                        product_algebra().borrowed()
+                    ),
                     CheckResult::ProvenImpossible,
                     "local"
                 );
                 assert_eq!(
-                    path.assume(&equality, !equal, &limits),
+                    path.assume(&equality, !equal, &limits, product_algebra().borrowed()),
                     CheckResult::ProvenImpossible
                 );
             }
@@ -96,33 +109,44 @@ fn delayed_input_key_aliases_refine_a_read_with_earlier_numeric_observations() {
         for equal in [false, true] {
             let mut path = RelationState::default();
             assert_eq!(
-                path.add_unsigned_bounds(&length, U256::from(64), U256::from(1024), &limits),
+                path.add_unsigned_bounds(
+                    &length,
+                    U256::from(64),
+                    U256::from(1024),
+                    &limits,
+                    product_algebra().borrowed()
+                ),
                 CheckResult::MayBeFeasible
             );
             path.observe(
                 &read,
-                Domain::default()
+                crate::domain::ValueAlgebra::new(ProductAlgebra::default())
                     .join(
-                        &AbstractValue::constant(U256::from(7)),
-                        &AbstractValue::constant(U256::from(9)),
+                        &EvmValue::<NumericValue>::constant(U256::from(7)),
+                        &EvmValue::<NumericValue>::constant(U256::from(9)),
                     )
                     .numeric(),
                 &limits,
             )
             .unwrap();
             let assumption = if equal {
-                path.add_equal(&k, &q, &limits)
+                path.add_equal(&k, &q, &limits, product_algebra().borrowed())
             } else {
-                path.assume(&equality, false, &limits)
+                path.assume(&equality, false, &limits, product_algebra().borrowed())
             };
             assert_eq!(assumption, CheckResult::MayBeFeasible, "local");
             assert_eq!(
-                path.local_value(&read, &limits),
-                ValueQuery::Exact(U256::from(if equal { 9 } else { 7 })),
+                path.local_value(&read, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::from(if equal { 9 } else { 7 })),
                 "local, equal={equal}"
             );
             assert_eq!(
-                path.can_equal(&read, U256::from(if equal { 7 } else { 9 }), &limits),
+                path.can_equal(
+                    &read,
+                    U256::from(if equal { 7 } else { 9 }),
+                    &limits,
+                    product_algebra().borrowed()
+                ),
                 CheckResult::ProvenImpossible,
                 "local"
             );
@@ -161,14 +185,15 @@ fn asserted_input_length_bounds_preserve_the_last_byte_padding_boundary() {
                     &length,
                     U256::from(start + 31),
                     U256::from(start + 32),
-                    &limits
+                    &limits,
+                    product_algebra().borrowed()
                 ),
                 CheckResult::MayBeFeasible
             );
             let full = U256::from_be_bytes([1; 32]);
             for expected in [full, full - U256::from(1)] {
                 assert_eq!(
-                    path.can_equal(&word, expected, &limits),
+                    path.can_equal(&word, expected, &limits, product_algebra().borrowed()),
                     CheckResult::MayBeFeasible,
                     "local, start={start}"
                 );
@@ -179,13 +204,14 @@ fn asserted_input_length_bounds_preserve_the_last_byte_padding_boundary() {
                     &length,
                     U256::from(start + 32),
                     U256::from(start + 64),
-                    &limits
+                    &limits,
+                    product_algebra().borrowed()
                 ),
                 CheckResult::MayBeFeasible
             );
             assert_eq!(
-                covered.local_value(&word, &limits),
-                ValueQuery::Exact(full),
+                covered.local_value(&word, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Exact(full),
                 "local, start={start}"
             );
         }
@@ -223,8 +249,8 @@ fn retained_inconsistent_equalities_and_ranges_cannot_produce_a_folded_value() {
         };
         assert!(!equal.bottom);
         assert_eq!(
-            equal.local_value(&read, &limits),
-            ValueQuery::ProvenImpossible,
+            equal.local_value(&read, &limits, product_algebra().borrowed()),
+            EvmValueQuery::ProvenImpossible,
             "local"
         );
 
@@ -261,8 +287,8 @@ fn retained_inconsistent_equalities_and_ranges_cannot_produce_a_folded_value() {
         };
         assert!(!range.bottom);
         assert_eq!(
-            range.local_value(&hash, &limits),
-            ValueQuery::ProvenImpossible,
+            range.local_value(&hash, &limits, product_algebra().borrowed()),
+            EvmValueQuery::ProvenImpossible,
             "local"
         );
     }
@@ -285,31 +311,39 @@ fn guarded_path_alias_facts_never_become_unconditional_read_rewrites() {
         let mut same = RelationState::default();
         let mut different = RelationState::default();
         assert_eq!(
-            same.assume(&equality, true, &limits),
+            same.assume(&equality, true, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            different.assume(&equality, false, &limits),
+            different.assume(&equality, false, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         let joined = same
             .join_guarded(&different, selector.clone(), &limits)
             .unwrap();
-        super::bounds_include(joined.local_value(&read, &limits), &[7, 9]);
+        super::bounds_include(
+            joined.local_value(&read, &limits, product_algebra().borrowed()),
+            &[7, 9],
+        );
         for (branch, expected) in [(true, 9), (false, 7)] {
             assert_eq!(
-                joined.can_equal(&read, U256::from(expected), &limits),
+                joined.can_equal(
+                    &read,
+                    U256::from(expected),
+                    &limits,
+                    product_algebra().borrowed()
+                ),
                 CheckResult::MayBeFeasible,
                 "local, both guarded valuations survive"
             );
             let mut selected = joined.clone();
             assert_eq!(
-                selected.assume(&selector, branch, &limits),
+                selected.assume(&selector, branch, &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
             assert_eq!(
-                selected.local_value(&read, &limits),
-                ValueQuery::Exact(U256::from(expected)),
+                selected.local_value(&read, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::from(expected)),
                 "local, branch={branch}"
             );
         }
@@ -347,7 +381,13 @@ fn bounded_hash_rewrites_retain_overlap_overflow_and_partial_copy_alternatives()
         let equality = op(opcode::EQ, &[old_hash, source_hash.clone()], limits);
         let mut path = RelationState::default();
         assert_eq!(
-            path.add_unsigned_bounds(&length, U256::from(512), U256::from(2048), &limits),
+            path.add_unsigned_bounds(
+                &length,
+                U256::from(512),
+                U256::from(2048),
+                &limits,
+                product_algebra().borrowed()
+            ),
             CheckResult::MayBeFeasible
         );
         // The same admitted length range has both a disjoint boundary and an
@@ -355,21 +395,31 @@ fn bounded_hash_rewrites_retain_overlap_overflow_and_partial_copy_alternatives()
         for (sample, disjoint) in [(1024, true), (1025, false)] {
             let mut boundary = path.clone();
             assert_eq!(
-                boundary.add_equal(&length, &c(sample), &limits),
+                boundary.add_equal(&length, &c(sample), &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
             if disjoint {
                 assert_eq!(
-                    boundary.local_value(&equality, &limits),
-                    ValueQuery::Exact(U256::from(1))
+                    boundary.local_value(&equality, &limits, product_algebra().borrowed()),
+                    EvmValueQuery::Exact(U256::from(1))
                 );
             } else {
                 assert_eq!(
-                    boundary.can_equal(&equality, U256::ZERO, &limits),
+                    boundary.can_equal(
+                        &equality,
+                        U256::ZERO,
+                        &limits,
+                        product_algebra().borrowed()
+                    ),
                     CheckResult::MayBeFeasible
                 );
                 assert_eq!(
-                    boundary.can_equal(&equality, U256::from(1), &limits),
+                    boundary.can_equal(
+                        &equality,
+                        U256::from(1),
+                        &limits,
+                        product_algebra().borrowed()
+                    ),
                     CheckResult::MayBeFeasible
                 );
             }
@@ -392,7 +442,12 @@ fn bounded_hash_rewrites_retain_overlap_overflow_and_partial_copy_alternatives()
             let equality = op(opcode::EQ, &[hash, source_hash.clone()], limits);
             for expected in [0, 1] {
                 assert_eq!(
-                    path.can_equal(&equality, U256::from(expected), &limits),
+                    path.can_equal(
+                        &equality,
+                        U256::from(expected),
+                        &limits,
+                        product_algebra().borrowed()
+                    ),
                     CheckResult::MayBeFeasible,
                     "local, invalid whole range or partial source copy; collisions remain possible"
                 );

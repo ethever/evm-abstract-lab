@@ -1,3 +1,7 @@
+fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+}
+use crate::domain::NumericValue;
 mod assumptions;
 mod forwarding;
 mod guarantees;
@@ -6,7 +10,7 @@ mod history;
 mod retention;
 mod state;
 
-use super::{CheckResult, RelationLimits, RelationState, ValueQuery};
+use super::{CheckResult, EvmValueQuery, RelationLimits, RelationState};
 use crate::domain::{
     identity::Symbol,
     symbolic::{ExprId, ExprLimits},
@@ -40,11 +44,21 @@ fn incompatible_branch_conditions_are_unsat_with_a_retained_input() {
     let x = ExprId::input(1, Symbol::CallValue);
     let mut state = RelationState::default();
     assert_eq!(
-        state.assume(&op(opcode::EQ, &[x.clone(), c(1)]), true, &limits()),
+        state.assume(
+            &op(opcode::EQ, &[x.clone(), c(1)]),
+            true,
+            &limits(),
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        state.assume(&op(opcode::EQ, &[x, c(2)]), true, &limits()),
+        state.assume(
+            &op(opcode::EQ, &[x, c(2)]),
+            true,
+            &limits(),
+            product_algebra().borrowed()
+        ),
         CheckResult::ProvenImpossible
     );
     assert!(state.is_bottom());
@@ -55,11 +69,11 @@ fn distinct_input_scopes_remain_independent_not_disequal() {
     let right = ExprId::input(2, Symbol::Caller);
     let equality = op(opcode::EQ, &[left, right]);
     assert_eq!(
-        RelationState::default().assume(&equality, true, &limits()),
+        RelationState::default().assume(&equality, true, &limits(), product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        RelationState::default().assume(&equality, false, &limits()),
+        RelationState::default().assume(&equality, false, &limits(), product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
 }
@@ -68,16 +82,26 @@ fn join_covers_both_paths_instead_of_conjoining_their_conditions() {
     let x = ExprId::input(1, Symbol::CallValue);
     let mut a = RelationState::default();
     let mut b = a.clone();
-    a.assume(&op(opcode::EQ, &[x.clone(), c(1)]), true, &limits());
-    b.assume(&op(opcode::EQ, &[x.clone(), c(2)]), true, &limits());
+    a.assume(
+        &op(opcode::EQ, &[x.clone(), c(1)]),
+        true,
+        &limits(),
+        product_algebra().borrowed(),
+    );
+    b.assume(
+        &op(opcode::EQ, &[x.clone(), c(2)]),
+        true,
+        &limits(),
+        product_algebra().borrowed(),
+    );
     let joined = a.join(&b);
     assert!(!joined.is_bottom());
     assert_eq!(
-        joined.can_equal(&x, U256::from(1), &limits()),
+        joined.can_equal(&x, U256::from(1), &limits(), product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        joined.can_equal(&x, U256::from(2), &limits()),
+        joined.can_equal(&x, U256::from(2), &limits(), product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
 }
@@ -89,8 +113,12 @@ fn budget_unknown_never_becomes_unsat_or_a_fabricated_constant() {
         ..limits()
     };
     assert!(matches!(
-        RelationState::default().local_value(&op(opcode::ADD, &[x, c(1)]), &limits),
-        ValueQuery::Undetermined(_)
+        RelationState::default().local_value(
+            &op(opcode::ADD, &[x, c(1)]),
+            &limits,
+            product_algebra().borrowed()
+        ),
+        EvmValueQuery::Undetermined(_)
     ));
 }
 #[test]
@@ -98,10 +126,15 @@ fn arithmetic_relation_refines_other_values_and_wraps_as_evm_words() {
     let x = ExprId::input(1, Symbol::CallValue);
     let next = op(opcode::ADD, &[x.clone(), c(1)]);
     let mut state = RelationState::default();
-    state.assume(&op(opcode::EQ, &[next, c(0)]), true, &limits());
+    state.assume(
+        &op(opcode::EQ, &[next, c(0)]),
+        true,
+        &limits(),
+        product_algebra().borrowed(),
+    );
     assert_eq!(
-        state.local_value(&x, &limits()),
-        ValueQuery::Exact(U256::MAX)
+        state.local_value(&x, &limits(), product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::MAX)
     );
 }
 #[test]
@@ -157,15 +190,21 @@ fn all_exact_encodings_match_the_shared_evm_oracle_at_boundaries() {
                 let mut state = RelationState::default();
                 for (variable, value) in variables.iter().zip(actuals).take(count) {
                     assert_eq!(
-                        state.add_unsigned_bounds(variable, value, value, &policy),
+                        state.add_unsigned_bounds(
+                            variable,
+                            value,
+                            value,
+                            &policy,
+                            product_algebra().borrowed()
+                        ),
                         CheckResult::MayBeFeasible
                     );
                 }
                 let expression = op(opcode, &variables[..count]);
                 let expected = crate::domain::concrete::evaluate(opcode, a, b, modulus);
                 assert_eq!(
-                    state.local_value(&expression, &policy),
-                    ValueQuery::Exact(expected),
+                    state.local_value(&expression, &policy, product_algebra().borrowed()),
+                    EvmValueQuery::Exact(expected),
                     "provider=local,opcode={opcode:x},a={a},b={b},c={modulus}"
                 );
             }
@@ -181,10 +220,13 @@ fn scalar_observation_imports_bounds_bits_and_constants_without_solver_roundtrip
         .observe(&x, &crate::domain::NumericValue::unknown_byte(), &limits())
         .unwrap();
     assert_eq!(
-        state.can_equal(&x, U256::from(256), &limits()),
+        state.can_equal(&x, U256::from(256), &limits(), product_algebra().borrowed()),
         CheckResult::ProvenImpossible
     );
-    bounds_include(state.local_value(&x, &limits()), &[0, 255]);
+    bounds_include(
+        state.local_value(&x, &limits(), product_algebra().borrowed()),
+        &[0, 255],
+    );
     state
         .observe(
             &x,
@@ -193,8 +235,8 @@ fn scalar_observation_imports_bounds_bits_and_constants_without_solver_roundtrip
         )
         .unwrap();
     assert_eq!(
-        state.local_value(&x, &limits()),
-        ValueQuery::Exact(U256::from(7))
+        state.local_value(&x, &limits(), product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::from(7))
     );
 }
 
@@ -207,17 +249,27 @@ fn constraint_capacity_preserves_prior_guarantees_without_claiming_bottom() {
     };
     let mut state = RelationState::default();
     assert_eq!(
-        state.assume(&op(opcode::EQ, &[x.clone(), c(1)]), true, &policy),
+        state.assume(
+            &op(opcode::EQ, &[x.clone(), c(1)]),
+            true,
+            &policy,
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        state.assume(&op(opcode::EQ, &[x.clone(), c(2)]), true, &policy),
+        state.assume(
+            &op(opcode::EQ, &[x.clone(), c(2)]),
+            true,
+            &policy,
+            product_algebra().borrowed()
+        ),
         CheckResult::Undetermined(super::QueryReason::ConstraintLimit)
     );
     assert!(!state.is_bottom());
     assert_eq!(
-        state.local_value(&x, &policy),
-        ValueQuery::Exact(U256::from(1))
+        state.local_value(&x, &policy, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::from(1))
     );
 }
 
@@ -225,13 +277,14 @@ fn constraint_capacity_preserves_prior_guarantees_without_claiming_bottom() {
 fn default_fuel_handles_a_scoped_address_equality_without_redundant_bool_circuits() {
     let caller = ExprId::input(1, Symbol::Caller);
     let condition = op(opcode::EQ, &[caller.clone(), c(1)]);
-    let numeric_condition = crate::domain::Domain::default().apply(
-        opcode::EQ,
-        &[
-            crate::domain::AbstractValue::unknown_address(),
-            crate::domain::AbstractValue::constant(U256::from(1)),
-        ],
-    );
+    let numeric_condition =
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).apply(
+            opcode::EQ,
+            &[
+                crate::domain::EvmValue::<NumericValue>::unknown_address(),
+                crate::domain::EvmValue::<NumericValue>::constant(U256::from(1)),
+            ],
+        );
     let policy = RelationLimits::default();
     let mut state = RelationState::default();
     state
@@ -250,12 +303,12 @@ fn default_fuel_handles_a_scoped_address_equality_without_redundant_bool_circuit
         "address mask alone implies its unsigned bounds and comparison word has built-in boolean semantics"
     );
     assert_eq!(
-        state.assume(&condition, true, &policy),
+        state.assume(&condition, true, &policy, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        state.local_value(&caller, &policy),
-        ValueQuery::Exact(U256::from(1))
+        state.local_value(&caller, &policy, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::from(1))
     );
 }
 
@@ -269,13 +322,13 @@ fn deterministic_resource_exhaustion_is_unknown_and_cannot_poison_a_fresh_query(
         ..RelationLimits::default()
     };
     assert_eq!(
-        state.assume(&condition, true, &tiny),
+        state.assume(&condition, true, &tiny, product_algebra().borrowed()),
         CheckResult::Undetermined(super::QueryReason::ExpressionLimit)
     );
     assert!(!state.is_bottom());
     assert_eq!(
-        state.local_value(&x, &RelationLimits::default()),
-        ValueQuery::Exact(U256::from(1))
+        state.local_value(&x, &RelationLimits::default(), product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::from(1))
     );
 }
 
@@ -285,14 +338,22 @@ fn direct_boolean_encoding_still_honors_the_expression_depth_limit() {
     let condition = op(opcode::EQ, &[x, c(1)]);
     let mut state = RelationState::default();
     assert_eq!(
-        state.assume(&condition, true, &RelationLimits::default()),
+        state.assume(
+            &condition,
+            true,
+            &RelationLimits::default(),
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        state.check(&RelationLimits {
-            max_depth: 1,
-            ..RelationLimits::default()
-        }),
+        state.check(
+            &RelationLimits {
+                max_depth: 1,
+                ..RelationLimits::default()
+            },
+            product_algebra().borrowed()
+        ),
         CheckResult::Undetermined(super::QueryReason::ExpressionLimit)
     );
 }
@@ -309,9 +370,9 @@ proptest::proptest! {
         let opcode = [opcode::ADD, opcode::SUB, opcode::MUL, opcode::XOR, opcode::SHL, opcode::SHR, opcode::SAR, opcode::SDIV][selected];
         let left = ExprId::fresh().unwrap(); let right = ExprId::fresh().unwrap();
         let mut state = RelationState::default();
-        state.add_unsigned_bounds(&left,a,a,&limits()); state.add_unsigned_bounds(&right,b,b,&limits());
+        state.add_unsigned_bounds(&left,a,a,&limits(), product_algebra().borrowed()); state.add_unsigned_bounds(&right,b,b,&limits(), product_algebra().borrowed());
         let expression = op(opcode,&[left,right]);
-        proptest::prop_assert_eq!(state.local_value(&expression,&limits()), ValueQuery::Exact(crate::domain::concrete::evaluate(opcode,a,b,U256::ZERO)));
+        proptest::prop_assert_eq!(state.local_value(&expression,&limits(), product_algebra().borrowed()), EvmValueQuery::Exact(crate::domain::concrete::evaluate(opcode,a,b,U256::ZERO)));
     }
 }
 
@@ -330,13 +391,19 @@ fn default_fuel_handles_false_address_guard_and_unrelated_value_projection() {
         )
         .unwrap();
     assert_eq!(
-        state.assume(&condition, false, &policy),
+        state.assume(&condition, false, &policy, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     assert!(state.relevant(&caller));
     assert!(!state.relevant(&other));
-    bounds_include(state.local_value(&caller, &policy), &[0, 2]);
-    bounds_include(state.local_value(&other, &policy), &[0, 1]);
+    bounds_include(
+        state.local_value(&caller, &policy, product_algebra().borrowed()),
+        &[0, 2],
+    );
+    bounds_include(
+        state.local_value(&other, &policy, product_algebra().borrowed()),
+        &[0, 1],
+    );
 }
 
 #[test]
@@ -364,8 +431,8 @@ fn exact_exponentiation_handles_symbolic_base_and_literal_exponent_boundaries() 
                 .unwrap();
             let expression = op(opcode::EXP, &[variable, ExprId::constant(exponent)]);
             assert_eq!(
-                state.local_value(&expression, &policy),
-                ValueQuery::Exact(base.wrapping_pow(exponent)),
+                state.local_value(&expression, &policy, product_algebra().borrowed()),
+                EvmValueQuery::Exact(base.wrapping_pow(exponent)),
                 "provider=local, base={base}, exponent={exponent}"
             );
         }
@@ -380,8 +447,12 @@ fn symbolic_exponentiation_retains_unknown_without_a_fake_resource_failure() {
             ExprId::input(1, Symbol::GasPrice),
         ],
     );
-    let answer = RelationState::default().local_value(&expression, &RelationLimits::default());
-    let ValueQuery::Bounds(bounds) = answer else {
+    let answer = RelationState::default().local_value(
+        &expression,
+        &RelationLimits::default(),
+        product_algebra().borrowed(),
+    );
+    let EvmValueQuery::Bounds(bounds) = answer else {
         panic!("expected conservative exponentiation bounds: {answer:?}");
     };
     for (base, exponent) in [(0u64, 0u64), (0, 1), (2, 255), (7, 32)] {
@@ -399,7 +470,7 @@ fn symbolic_square_retains_arithmetic_without_algebraic_entailment() {
     assert_eq!(product.inputs(), base.inputs());
     for expression in [&square, &product] {
         bounds_include(
-            RelationState::default().local_value(expression, &policy),
+            RelationState::default().local_value(expression, &policy, product_algebra().borrowed()),
             &[0, 1, 9],
         );
     }
@@ -407,7 +478,7 @@ fn symbolic_square_retains_arithmetic_without_algebraic_entailment() {
     // The retained operations share an input, but local rules do not rewrite
     // EXP(x, 2) into MUL(x, x). This result does not witness a counterexample.
     assert_eq!(
-        RelationState::default().assume(&equality, false, &policy),
+        RelationState::default().assume(&equality, false, &policy, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     for (input, expected) in [
@@ -417,18 +488,23 @@ fn symbolic_square_retains_arithmetic_without_algebraic_entailment() {
     ] {
         let mut state = RelationState::default();
         assert_eq!(
-            state.add_equal(&base, &ExprId::constant(input), &policy),
+            state.add_equal(
+                &base,
+                &ExprId::constant(input),
+                &policy,
+                product_algebra().borrowed()
+            ),
             CheckResult::MayBeFeasible
         );
         for expression in [&square, &product] {
             assert_eq!(
-                state.local_value(expression, &policy),
-                ValueQuery::Exact(expected),
+                state.local_value(expression, &policy, product_algebra().borrowed()),
+                EvmValueQuery::Exact(expected),
                 "concrete base {input}"
             );
         }
         assert_eq!(
-            state.assume(&equality, false, &policy),
+            state.assume(&equality, false, &policy, product_algebra().borrowed()),
             CheckResult::ProvenImpossible
         );
     }
@@ -445,7 +521,7 @@ fn observed_constant_substitution_preserves_intrinsic_address_bounds() {
         )
         .unwrap();
     assert_eq!(
-        state.check(&RelationLimits::default()),
+        state.check(&RelationLimits::default(), product_algebra().borrowed()),
         CheckResult::ProvenImpossible
     );
 }
@@ -485,7 +561,8 @@ fn cheap_guard_projection_preserves_every_matching_word_at_unsigned_and_signed_b
                     let result = state.refine_numeric(
                         &variable,
                         &crate::domain::NumericValue::top(),
-                        crate::domain::Domain::default(),
+                        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+                            .borrowed(),
                         &RelationLimits::default(),
                     );
                     for candidate in boundaries {
@@ -498,12 +575,13 @@ fn cheap_guard_projection_preserves_every_matching_word_at_unsigned_and_signed_b
                             != U256::ZERO;
                         if actual == truth {
                             match &result {
-                                super::ScalarQuery::Refined { numeric, .. } => assert!(
+                                super::EvmScalarQuery::Refined { numeric, .. } => assert!(
                                     numeric.contains(candidate),
                                     "opcode={opcode:x},c={constant},candidate={candidate},truth={truth},left={variable_left}"
                                 ),
-                                super::ScalarQuery::Unchanged | super::ScalarQuery::Unknown(_) => {}
-                                super::ScalarQuery::Infeasible => panic!(
+                                super::EvmScalarQuery::Unchanged
+                                | super::EvmScalarQuery::Unknown(_) => {}
+                                super::EvmScalarQuery::Infeasible => panic!(
                                     "pruned feasible guard: opcode={opcode:x},c={constant},v={candidate},truth={truth}"
                                 ),
                             }
@@ -522,10 +600,10 @@ fn cheap_loop_guard_refines_the_derived_expression_to_nine_without_a_native_quer
     match state.refine_numeric(
         &next,
         &crate::domain::NumericValue::top(),
-        crate::domain::Domain::default(),
+        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
         &RelationLimits::default(),
     ) {
-        super::ScalarQuery::Refined { numeric, complete } => {
+        super::EvmScalarQuery::Refined { numeric, complete } => {
             assert_eq!(
                 numeric.interval().unsigned_bounds(),
                 (U256::ZERO, U256::from(9))
@@ -540,7 +618,6 @@ fn cheap_fact_capacity_cannot_be_confused_with_contradiction() {
     let variable = ExprId::input(1, Symbol::CallValue);
     let state = direct_guard_state(op(opcode::LT, &[variable.clone(), c(10)]), true);
     let policy = crate::domain::DomainSpec::new(
-        crate::domain::Profile::Product,
         std::num::NonZeroUsize::new(8).unwrap(),
         std::num::NonZeroUsize::new(4).unwrap(),
         std::num::NonZeroUsize::new(1).unwrap(),
@@ -549,10 +626,11 @@ fn cheap_fact_capacity_cannot_be_confused_with_contradiction() {
         state.refine_numeric(
             &variable,
             &crate::domain::NumericValue::top(),
-            crate::domain::Domain::from_spec(policy),
+            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(policy))
+                .borrowed(),
             &RelationLimits::default()
         ),
-        super::ScalarQuery::Unknown(super::QueryReason::ScalarFactLimit)
+        super::EvmScalarQuery::Unknown(super::QueryReason::ScalarFactLimit)
     );
 }
 
@@ -569,7 +647,12 @@ fn default_fuel_handles_masked_derived_loop_guard_with_named_arithmetic() {
         let policy = RelationLimits::default();
         state.observe(&next, &numeric, &policy).unwrap();
         assert_eq!(
-            state.assume(&op(opcode::LT, &[next, c(10)]), truth, &policy),
+            state.assume(
+                &op(opcode::LT, &[next, c(10)]),
+                truth,
+                &policy,
+                product_algebra().borrowed()
+            ),
             CheckResult::MayBeFeasible,
             "truth={truth}"
         );
@@ -584,29 +667,43 @@ fn local_facts_preserve_exactness_path_relations_and_evm_wrapping() {
         let next = op(opcode::ADD, &[x.clone(), c(1)]);
         let mut state = RelationState::default();
         assert_eq!(
-            state.assume(&op(opcode::EQ, &[next, c(0)]), true, &policy),
+            state.assume(
+                &op(opcode::EQ, &[next, c(0)]),
+                true,
+                &policy,
+                product_algebra().borrowed()
+            ),
             CheckResult::MayBeFeasible,
             "local"
         );
         assert_eq!(
-            state.local_value(&x, &policy),
-            ValueQuery::Exact(U256::MAX),
+            state.local_value(&x, &policy, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::MAX),
             "local"
         );
         assert_eq!(
-            state.can_equal(&x, U256::ZERO, &policy),
+            state.can_equal(&x, U256::ZERO, &policy, product_algebra().borrowed()),
             CheckResult::ProvenImpossible,
             "local"
         );
         let mut range = RelationState::default();
         assert_eq!(
-            range.add_unsigned_bounds(&x, U256::from(1), U256::from(2), &policy),
+            range.add_unsigned_bounds(
+                &x,
+                U256::from(1),
+                U256::from(2),
+                &policy,
+                product_algebra().borrowed()
+            ),
             CheckResult::MayBeFeasible
         );
-        bounds_include(range.local_value(&x, &policy), &[1, 2]);
+        bounds_include(
+            range.local_value(&x, &policy, product_algebra().borrowed()),
+            &[1, 2],
+        );
         let same = op(opcode::EQ, &[x.clone(), x]);
         assert_eq!(
-            RelationState::default().assume(&same, false, &policy),
+            RelationState::default().assume(&same, false, &policy, product_algebra().borrowed()),
             CheckResult::ProvenImpossible,
             "local"
         );
@@ -614,10 +711,10 @@ fn local_facts_preserve_exactness_path_relations_and_evm_wrapping() {
 }
 
 /// Completed exact or numeric results must include every known concrete sample.
-fn bounds_include(answer: ValueQuery, samples: &[u64]) {
+fn bounds_include(answer: EvmValueQuery<NumericValue>, samples: &[u64]) {
     let bounds = match answer {
-        ValueQuery::Exact(value) => crate::domain::NumericValue::constant(value),
-        ValueQuery::Bounds(bounds) => *bounds,
+        EvmValueQuery::Exact(value) => crate::domain::NumericValue::constant(value),
+        EvmValueQuery::Bounds(bounds) => *bounds,
         other => panic!("expected completed local bounds: {other:?}"),
     };
     for sample in samples {

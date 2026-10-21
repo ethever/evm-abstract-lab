@@ -361,7 +361,7 @@ fn fact_candidates_use_atom_capacity_instead_of_stored_domain_capacity() {
     assert_eq!(open.atoms(), 1, "finite Top costs no fact atoms");
 
     let candidates: BTreeSet<_> = (0u64..9).map(U256::from).collect();
-    assert!(candidates.len() > crate::domain::Domain::default().capacity());
+    assert!(candidates.len() > crate::domain::DomainSpec::default().capacity());
     let mut lattice = FactLattice::new(9);
     assert_eq!(lattice.atoms(), 0, "unconstrained components cost no atoms");
     lattice
@@ -389,11 +389,11 @@ fn fact_candidates_use_atom_capacity_instead_of_stored_domain_capacity() {
 }
 
 #[test]
-fn finite_membership_keeps_its_serialized_array_shape() {
+fn finite_membership_keeps_the_complete_native_candidate_payload() {
     let candidates = BTreeSet::from([U256::from(1), U256::from(2)]);
     let predicate = UnaryPredicate::MemberOf(FiniteSet::new(candidates.clone()).expect("nonempty"));
     let expected = serde_json::json!({
-        "MemberOf": serde_json::to_value(&candidates).expect("candidate array"),
+        "MemberOf": {"constants": serde_json::to_value(&candidates).expect("candidate array")},
     });
     assert_eq!(
         serde_json::to_value(&predicate).expect("serialized membership"),
@@ -870,7 +870,7 @@ fn address_range_and_code_role_have_separate_guarantees() {
 
 #[test]
 fn tutorial_initial_facts_exchange_bounds_and_general_congruence() {
-    let value = crate::domain::Domain::default()
+    let value = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
         .from_facts(&[
             UnaryPredicate::UnsignedBounds(
                 WordBounds::new(U256::from(1), U256::from(20)).expect("range"),

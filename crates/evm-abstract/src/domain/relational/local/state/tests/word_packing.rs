@@ -1,17 +1,16 @@
 use super::*;
 use crate::domain::{
     DomainSpec, EvmNumericAlgebra, EvmValue, FiniteConstantSet, NumericReduction, NumericValue,
-    Profile, ValueAlgebra, WordElement,
+    ValueAlgebra, WordElement,
     cooperation::{KeepBounds, KeepMasks, ProductAlgebra},
 };
 use std::{cell::Cell, collections::BTreeSet, num::NonZeroUsize};
 
 mod hidden;
 
-fn captured_domain() -> Domain {
-    Domain::from_spec(
+fn captured_domain() -> ProductAlgebra {
+    ProductAlgebra::from_spec(
         DomainSpec::new(
-            Profile::Product,
             NonZeroUsize::new(512).unwrap(),
             NonZeroUsize::new(16).unwrap(),
             NonZeroUsize::new(4096).unwrap(),
@@ -27,11 +26,9 @@ fn captured_domain() -> Domain {
 
 fn captured_bytes() -> [NumericValue; 32] {
     let mut bytes = std::array::from_fn(|_| NumericValue::unknown_byte());
-    bytes[31] = Domain::finite(
+    bytes[31] = crate::domain::product::finite(
         FiniteConstantSet::try_from_values((0..8).map(|v| U256::from(v * 32)).collect()).unwrap(),
-    )
-    .numeric()
-    .clone();
+    );
     bytes
 }
 
@@ -80,7 +77,7 @@ fn pack<D: EvmNumericAlgebra>(
 /// admission. Delegation here is explicit test policy code, never engine logic.
 #[derive(Debug)]
 struct Probe {
-    domain: Domain,
+    domain: ProductAlgebra,
     fee: Option<usize>,
     decline: bool,
     packs: Cell<usize>,
@@ -119,12 +116,16 @@ impl EvmNumericAlgebra for Probe {
     fn reduce_numeric(&self, v: &NumericValue) -> NumericReduction<NumericValue> {
         self.domain.reduce_numeric(v)
     }
-    fn apply_numeric(&self, op: u8, args: &[NumericValue]) -> NumericReduction<NumericValue> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a NumericValue>,
+    ) -> NumericReduction<NumericValue> {
         self.operations.set(self.operations.get() + 1);
         self.domain.apply_numeric(op, args)
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a NumericValue>) -> usize {
-        EvmNumericAlgebra::operation_work(&self.domain, args)
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a NumericValue>) -> usize {
+        EvmNumericAlgebra::operation_work(&self.domain, op, args)
     }
     fn literal_quote_work(&self, value: U256) -> usize {
         self.domain.literal_quote_work(value)
@@ -225,7 +226,6 @@ fn borrowed_policy_controls_opt_out_and_paid_decline_preserves_all_operations() 
 #[test]
 fn custom_product_rules_decline_default_packing_and_keep_their_own_result() {
     let spec = DomainSpec::new(
-        Profile::Product,
         NonZeroUsize::new(1).unwrap(),
         NonZeroUsize::new(16).unwrap(),
         NonZeroUsize::new(4096).unwrap(),
@@ -238,7 +238,9 @@ fn custom_product_rules_decline_default_packing_and_keep_their_own_result() {
     assert_eq!(algebra.pack_word_work(&refs), None);
     assert!(algebra.pack_word_numeric(&refs).is_none());
     let expected = ordinary(&algebra, &bytes);
-    let default = Domain::from_spec(spec).pack_word_numeric(&refs).unwrap();
+    let default = ProductAlgebra::from_spec(spec)
+        .pack_word_numeric(&refs)
+        .unwrap();
     assert_ne!(
         expected, default,
         "custom cooperation must remain observable"

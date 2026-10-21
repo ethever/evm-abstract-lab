@@ -1,10 +1,13 @@
 //! Same-F hash recovery from joined immutable byte views and conservative histories.
 
+fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+}
 use super::super::{Engine, QueryReason, RelationLimits, Stop, Work, keys::KeyMap};
 use crate::{
     domain::{
-        Domain,
-        relational::{CheckResult, Constraint, RelationState, ValueQuery},
+        ProductAlgebra,
+        relational::{CheckResult, Constraint, EvmValueQuery, RelationState},
         symbolic::{ByteStateId, ByteView, ExprId, ExprKind, SourceId},
     },
     resource::WorkBudget,
@@ -103,7 +106,7 @@ fn full_f(length: &ExprId) -> RelationState {
     let mut state = RelationState::default();
     let guard = op(opcode::ISZERO, std::slice::from_ref(length));
     assert_eq!(
-        state.assume(&guard, false, &limits()),
+        state.assume(&guard, false, &limits(), product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     assert_eq!(state.len(), 1);
@@ -146,8 +149,13 @@ fn residual_echo_511_hashes_and_equality_use_only_the_composite_length_guard() {
     ] {
         let mut budget = WorkBudget::new(100_000_000);
         assert_eq!(
-            state.local_value_budgeted(&expression, &limits(), &mut budget),
-            ValueQuery::Exact(expected)
+            state.local_value_budgeted(
+                &expression,
+                &limits(),
+                &mut budget,
+                product_algebra().borrowed()
+            ),
+            EvmValueQuery::Exact(expected)
         );
         assert!(budget.used() > 0);
         assert!(!budget.exhausted());
@@ -165,13 +173,17 @@ fn residual_echo_without_its_own_guard_keeps_both_contents() {
         let other = joined_echo(&bytes, exact(&bytes));
         for state in [RelationState::default(), full_f(&other.length)] {
             let before = state.clone();
-            let answer = state.local_value(&hash(&echo.returned), &limits());
+            let answer = state.local_value(
+                &hash(&echo.returned),
+                &limits(),
+                product_algebra().borrowed(),
+            );
             match answer {
-                ValueQuery::Bounds(bounds) => {
+                EvmValueQuery::Bounds(bounds) => {
                     assert!(bounds.contains(digest(&bytes)));
                     assert!(bounds.contains(digest(&vec![0; length])));
                 }
-                ValueQuery::Undetermined(QueryReason::ExpressionLimit) if length == 511 => {}
+                EvmValueQuery::Undetermined(QueryReason::ExpressionLimit) if length == 511 => {}
                 other => panic!("an unrelated F selected the echo: {other:?}"),
             }
             assert_eq!(state, before);
@@ -189,21 +201,21 @@ fn residual_echo_without_its_own_guard_keeps_both_contents() {
     let right = hash(&ByteView::new(literal, offset.clone(), c(1)));
     let equality = op(opcode::EQ, &[left, right]);
     assert!(matches!(
-        RelationState::default().local_value(&equality, &limits()),
-        ValueQuery::Bounds(_)
+        RelationState::default().local_value(&equality, &limits(), product_algebra().borrowed()),
+        EvmValueQuery::Bounds(_)
     ));
     let mut state = RelationState::default();
     assert_eq!(
-        state.assume(&selector, false, &limits()),
+        state.assume(&selector, false, &limits(), product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        state.local_value(&equality, &limits()),
-        ValueQuery::Exact(U256::ONE)
+        state.local_value(&equality, &limits(), product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::ONE)
     );
     assert!(matches!(
-        state.local_value(&offset, &limits()),
-        ValueQuery::Bounds(_)
+        state.local_value(&offset, &limits(), product_algebra().borrowed()),
+        EvmValueQuery::Bounds(_)
     ));
 }
 
@@ -215,15 +227,20 @@ fn residual_echo_changed_last_byte_and_source_do_not_reuse_the_first_hash() {
     let echo = joined_echo(&bytes, exact(&changed));
     let state = full_f(&echo.length);
     assert_eq!(
-        state.local_value(&hash(&echo.returned), &limits()),
-        ValueQuery::Exact(digest(&changed))
+        state.local_value(
+            &hash(&echo.returned),
+            &limits(),
+            product_algebra().borrowed()
+        ),
+        EvmValueQuery::Exact(digest(&changed))
     );
     assert_eq!(
         state.local_value(
             &op(opcode::EQ, &[hash(&echo.first), hash(&echo.returned)]),
-            &limits()
+            &limits(),
+            product_algebra().borrowed()
         ),
-        ValueQuery::Exact(U256::ZERO)
+        EvmValueQuery::Exact(U256::ZERO)
     );
     let token = ExprId::fresh().unwrap();
     for source in [
@@ -234,8 +251,12 @@ fn residual_echo_changed_last_byte_and_source_do_not_reuse_the_first_hash() {
         let echo = joined_echo(&bytes, ByteStateId::input(source, c(bytes.len())));
         let state = full_f(&echo.length);
         assert!(matches!(
-            state.local_value(&hash(&echo.returned), &limits()),
-            ValueQuery::Bounds(_)
+            state.local_value(
+                &hash(&echo.returned),
+                &limits(),
+                product_algebra().borrowed()
+            ),
+            EvmValueQuery::Bounds(_)
         ));
     }
 }
@@ -272,17 +293,24 @@ fn residual_echo_partial_overlapping_and_unknown_writes_keep_the_byte_fallback()
         let expected = digest(&expected);
         assert_ne!(expected, digest(&bytes));
         assert_eq!(
-            RelationState::default().local_value(&hash(&view), &limits()),
-            ValueQuery::Exact(expected)
+            RelationState::default().local_value(
+                &hash(&view),
+                &limits(),
+                product_algebra().borrowed()
+            ),
+            EvmValueQuery::Exact(expected)
         );
     }
     let unknown = original
         .write_byte(ExprId::fresh().unwrap(), c(0xa5), states)
         .unwrap();
     assert!(matches!(
-        RelationState::default()
-            .local_value(&hash(&ByteView::new(unknown, c(0), c(64))), &limits()),
-        ValueQuery::Bounds(_)
+        RelationState::default().local_value(
+            &hash(&ByteView::new(unknown, c(0), c(64))),
+            &limits(),
+            product_algebra().borrowed()
+        ),
+        EvmValueQuery::Bounds(_)
     ));
 }
 
@@ -301,7 +329,7 @@ fn residual_echo_bulk_admission_is_paid_atomic_and_cancellable() {
         Engine::new(
             &mut work,
             &limits,
-            crate::domain::ValueAlgebra::new(Domain::default()).borrowed()
+            crate::domain::ValueAlgebra::new(ProductAlgebra::default()).borrowed()
         )
         .literal_hash(&literal)
         .unwrap(),
@@ -317,7 +345,7 @@ fn residual_echo_bulk_admission_is_paid_atomic_and_cancellable() {
             cancellation: analysis_control::Cancellation::default(),
             ledger: Some(&mut budget),
         };
-        let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+        let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
         let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
         assert!(matches!(
             engine.literal_hash(&literal),
@@ -336,7 +364,7 @@ fn residual_echo_bulk_admission_is_paid_atomic_and_cancellable() {
             cancellation: analysis_control::Cancellation::default(),
             ledger: None,
         };
-        let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+        let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
         let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
         for atom in &state.constraints {
             engine.atom(atom).unwrap();
@@ -378,7 +406,7 @@ fn residual_echo_bulk_admission_is_paid_atomic_and_cancellable() {
         Engine::new(
             &mut work,
             &limits,
-            crate::domain::ValueAlgebra::new(Domain::default()).borrowed()
+            crate::domain::ValueAlgebra::new(ProductAlgebra::default()).borrowed()
         )
         .literal_hash(&literal),
         Err(Stop::Pending(QueryReason::Cancelled))
@@ -395,15 +423,20 @@ fn residual_echo_hash_alias_does_not_turn_a_union_find_cycle_into_evaluation() {
     let expression = hash(&echo.returned);
     let mut state = RelationState::default();
     assert_eq!(
-        state.add_equal(&echo.selector, &expression, &limits()),
+        state.add_equal(
+            &echo.selector,
+            &expression,
+            &limits(),
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     let before = state.clone();
     // The immutable definition refers to q, while F aliases q to that result.
     // Normalizing view operands must not recursively evaluate the UF parent.
     assert!(matches!(
-        state.local_value(&expression, &limits()),
-        ValueQuery::Bounds(_)
+        state.local_value(&expression, &limits(), product_algebra().borrowed()),
+        EvmValueQuery::Bounds(_)
     ));
     assert_eq!(state, before);
 }

@@ -1,5 +1,5 @@
 use super::{FactError, NumericValue, WordElement, WordObservation};
-use crate::domain::{AbstractValue, EvmValue, facts::Symbol};
+use crate::domain::{EvmValue, facts::Symbol};
 use alloy_primitives::U256;
 use serde::Serialize;
 use std::{cell::Cell, collections::BTreeSet, fmt, rc::Rc};
@@ -259,22 +259,34 @@ fn custom_native_serialization_keeps_exact_exclusions_without_cloning() {
 }
 
 #[test]
-fn default_native_serialization_keeps_the_exact_legacy_shape() {
-    assert_eq!(serde_json::to_value(AbstractValue::top()).unwrap(), "Top");
-    let value = AbstractValue::constant(U256::from(42));
+fn product_native_serialization_keeps_actual_components_for_top_and_constants() {
+    let top = serde_json::to_value(EvmValue::<NumericValue>::top()).unwrap();
+    assert!(top.is_object());
     assert_eq!(
-        serde_json::to_value(&value).unwrap(),
+        top["numeric"],
+        serde_json::to_value(NumericValue::top()).unwrap()
+    );
+    assert_eq!(top["numeric"], serde_json::json!({}));
+    let value = EvmValue::<NumericValue>::constant(U256::from(42));
+    let json = serde_json::to_value(&value).unwrap();
+    assert!(json.is_object());
+    assert_eq!(
+        json["numeric"],
         serde_json::json!({
-            "Constants": ["0x2a"],
-            "known_bits": value.known_bits(),
-            "interval": value.interval(),
-            "congruence": value.congruence(),
-            "provenance": value.provenance(),
-            "nonzero": true,
+                "constants": ["0x2a"],
+                "known_bits": value.known_bits(),
+                "interval": value.interval(),
+                "congruence": value.congruence(),
+                "nonzero": true,
         })
     );
     assert_eq!(
-        serde_json::to_value(value.numeric().observation()).unwrap(),
+        json["numeric"],
         serde_json::to_value(value.numeric()).unwrap()
     );
+    assert_eq!(
+        json["provenance"],
+        serde_json::to_value(value.provenance()).unwrap()
+    );
+    assert_eq!(json["numeric"]["constants"], serde_json::json!(["0x2a"]));
 }

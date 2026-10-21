@@ -1,6 +1,69 @@
 //! Exact carrier compaction is independent of reduction and candidate queries.
 
+use crate::domain::NumericValue;
+
 use super::*;
+
+#[test]
+fn sparse_native_json_omits_only_top_components_and_keeps_each_actual_constraint() {
+    assert_eq!(
+        serde_json::to_value(NumericValue::top()).unwrap(),
+        serde_json::json!({})
+    );
+    for (key, numeric) in [
+        (
+            "constants",
+            NumericValue {
+                finite: FiniteConstantSet::try_from_values(
+                    [U256::ZERO, U256::from(7)].into_iter().collect(),
+                )
+                .unwrap(),
+                ..NumericValue::top()
+            },
+        ),
+        (
+            "known_bits",
+            NumericValue {
+                bits: KnownBits::exact(U256::from(7)),
+                ..NumericValue::top()
+            },
+        ),
+        (
+            "interval",
+            NumericValue {
+                interval: range(3, 9),
+                ..NumericValue::top()
+            },
+        ),
+        (
+            "congruence",
+            NumericValue {
+                congruence: Congruence::new(U256::from(3), U256::ONE).unwrap(),
+                ..NumericValue::top()
+            },
+        ),
+        (
+            "nonzero",
+            NumericValue {
+                nonzero: true,
+                ..NumericValue::top()
+            },
+        ),
+    ] {
+        let json = serde_json::to_value(&numeric).unwrap();
+        assert_eq!(
+            json.as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [key]
+        );
+        assert!(!json[key].is_null());
+        let value = crate::domain::EvmValue::from_numeric(numeric);
+        assert_eq!(serde_json::to_value(value).unwrap()["numeric"], json);
+    }
+}
 
 fn finite(values: impl IntoIterator<Item = U256>, interval: Interval) -> NumericValue {
     NumericValue {
@@ -214,40 +277,33 @@ fn top_and_singleton_finite_components_keep_their_existing_carriers() {
 }
 
 #[test]
-fn profile_projection_and_later_reduction_do_not_change_the_carrier_gamma_proof() {
-    use crate::domain::{AbstractValue, Domain, DomainSpec, Profile};
+fn product_projection_and_later_reduction_do_not_change_the_carrier_gamma_proof() {
+    use crate::domain::{DomainSpec, EvmValue, ProductAlgebra, ValueAlgebra};
     use std::num::NonZeroUsize;
 
     let original = NumericValue {
         finite: FiniteConstantSet::try_from_values((0u64..=255).map(U256::from).collect()).unwrap(),
         ..NumericValue::unknown_byte()
     };
-    for profile in [Profile::Product, Profile::ConstantsOnly] {
-        let domain = Domain::from_spec(DomainSpec::new(
-            profile,
-            NonZeroUsize::new(256).unwrap(),
-            NonZeroUsize::new(4).unwrap(),
-            NonZeroUsize::new(1024).unwrap(),
-        ));
-        let projected = domain.project(&AbstractValue::from_numeric(original.clone()));
-        let carrier = assert_carrier(projected.numeric(), true);
-        // Subsequent projection/reduction is allowed to enumerate normally.
-        // Neither result is fed back into the executable binding constructor.
-        let value = AbstractValue::from_numeric(carrier.clone());
-        let projected_again = domain.project(&value);
-        if profile == Profile::Product {
-            assert!(projected_again.constants().is_none());
-        } else {
-            assert_eq!(projected_again.constants(), original.constants());
-        }
-        let reduced = domain.reduce(&value).value;
-        assert_eq!(reduced.constants(), original.constants());
-        for candidate in (0u64..=256).map(U256::from).chain([U256::MAX]) {
-            assert_eq!(projected.contains(candidate), carrier.contains(candidate));
-            assert_eq!(carrier.contains(candidate), reduced.contains(candidate));
-        }
-        assert!(carrier.constants().is_none());
+    let domain = ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::new(
+        NonZeroUsize::new(256).unwrap(),
+        NonZeroUsize::new(4).unwrap(),
+        NonZeroUsize::new(1024).unwrap(),
+    )));
+    let projected = domain.project(&EvmValue::<NumericValue>::from_numeric(original.clone()));
+    let carrier = assert_carrier(projected.numeric(), true);
+    // Subsequent projection/reduction is allowed to enumerate normally.
+    // Neither result is fed back into the executable binding constructor.
+    let value = EvmValue::<NumericValue>::from_numeric(carrier.clone());
+    let projected_again = domain.project(&value);
+    assert!(projected_again.constants().is_none());
+    let reduced = domain.reduce(&value).value;
+    assert_eq!(reduced.constants(), original.constants());
+    for candidate in (0u64..=256).map(U256::from).chain([U256::MAX]) {
+        assert_eq!(projected.contains(candidate), carrier.contains(candidate));
+        assert_eq!(carrier.contains(candidate), reduced.contains(candidate));
     }
+    assert!(carrier.constants().is_none());
 }
 
 #[test]

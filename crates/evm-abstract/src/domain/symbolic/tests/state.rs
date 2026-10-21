@@ -3,7 +3,8 @@ use super::super::{
     HashSupport, SlotStateId, SourceId, StateError, StateLimits, SymbolicGraph, SymbolicGraphNode,
     state,
 };
-use crate::domain::{AbstractValue, Domain, identity::Symbol};
+use crate::domain::NumericValue;
+use crate::domain::{EvmValue, ProductAlgebra, identity::Symbol};
 use alloy_primitives::U256;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -491,10 +492,10 @@ fn flat_export_deduplicates_state_references_and_limits_exact_data() {
 #[test]
 fn guarded_value_join_keeps_numeric_union_and_scalar_pairing() {
     let g = ExprId::fresh().unwrap();
-    let value = AbstractValue::constant(U256::from(128))
+    let value = EvmValue::<NumericValue>::constant(U256::from(128))
         .join_guarded(
-            &AbstractValue::constant(U256::from(192)),
-            Domain::default(),
+            &EvmValue::<NumericValue>::constant(U256::from(192)),
+            crate::domain::ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
             g,
             ExprLimits::default(),
         )

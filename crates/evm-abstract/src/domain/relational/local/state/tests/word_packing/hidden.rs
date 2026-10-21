@@ -1,4 +1,5 @@
 //! Independent finite carrier with an intentionally hidden interior exclusion.
+
 use super::*;
 use crate::domain::{WordObservation, interval::Interval};
 use serde::Serialize;
@@ -102,11 +103,17 @@ impl EvmNumericAlgebra for HiddenPolicy {
     fn reduce_numeric(&self, v: &Hidden) -> NumericReduction<Hidden> {
         NumericReduction::stable(v.clone())
     }
-    fn apply_numeric(&self, op: u8, args: &[Hidden]) -> NumericReduction<Hidden> {
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        mut args: impl ExactSizeIterator<Item = &'a Hidden>,
+    ) -> NumericReduction<Hidden> {
         self.calls.set(self.calls.get() + 1);
-        let [a, b] = args else {
+        if args.len() != 2 {
             return NumericReduction::stable(Hidden::top());
-        };
+        }
+        let a = args.next().unwrap();
+        let b = args.next().unwrap();
         let value = match (&a.members, &b.members) {
             (Some(a), Some(b)) if a.len() * b.len() <= 512 => Hidden::finite(
                 a.iter()
@@ -124,7 +131,7 @@ impl EvmNumericAlgebra for HiddenPolicy {
         };
         NumericReduction::stable(value)
     }
-    fn operation_work<'a>(&self, args: impl Iterator<Item = &'a Hidden>) -> usize {
+    fn operation_work<'a>(&self, _op: u8, args: impl Iterator<Item = &'a Hidden>) -> usize {
         args.fold(1024usize, |work, v| {
             work.saturating_add(v.work_size().saturating_mul(4096))
         })

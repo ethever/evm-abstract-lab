@@ -1,4 +1,8 @@
+fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+}
 use super::*;
+use crate::domain::NumericValue;
 use crate::{domain::WorkExhausted, resource::WorkBudget};
 use analysis_kernel::{Accepts, Availability, Charges, KernelError, PublishError, Read, Scoped};
 
@@ -38,7 +42,6 @@ fn expensive_custom_rules_use_their_explicit_work_contract_at_every_round_cap() 
     let _counter = super::super::PROTOCOL_WORK.scope();
     for rounds in [1, 4, 64, 64_000] {
         let spec = DomainSpec::new(
-            Profile::Product,
             NonZeroUsize::new(8).unwrap(),
             NonZeroUsize::new(rounds).unwrap(),
             NonZeroUsize::new(4096).unwrap(),
@@ -63,7 +66,12 @@ fn expensive_custom_rules_use_their_explicit_work_contract_at_every_round_cap() 
             let used = super::super::PROTOCOL_WORK.get().0;
             assert!(used > 100_000 && used <= quote);
             assert!(
-                quote > EvmNumericAlgebra::refinement_work(&Domain::from_spec(spec), &input, 0)
+                quote
+                    > EvmNumericAlgebra::refinement_work(
+                        &ProductAlgebra::from_spec(spec),
+                        &input,
+                        0
+                    )
             );
         }
     }
@@ -71,7 +79,6 @@ fn expensive_custom_rules_use_their_explicit_work_contract_at_every_round_cap() 
 
 #[test]
 fn exact_custom_operation_quote_is_atomic_and_stays_on_the_original_root_budget() {
-    let _copies = crate::domain::algebra::OPERAND_COPIES.scope();
     let calls = Cell::new(0);
     let algebra = ValueAlgebra::new(ProductAlgebra::new(
         spec(8, 4096),
@@ -81,20 +88,22 @@ fn exact_custom_operation_quote_is_atomic_and_stays_on_the_original_root_budget(
         },
         KeepBounds,
     ));
-    let args = [AbstractValue::top(), AbstractValue::constant(U256::from(7))];
-    let quote = algebra.operation_work(&args);
-    let numeric = algebra
-        .numeric_algebra()
-        .operation_work(args.iter().map(AbstractValue::numeric));
+    let args = [
+        EvmValue::<NumericValue>::top(),
+        EvmValue::<NumericValue>::constant(U256::from(7)),
+    ];
+    let quote = algebra.operation_work(opcode::ADD, &args);
+    let numeric = algebra.numeric_algebra().operation_work(
+        opcode::ADD,
+        args.iter().map(EvmValue::<NumericValue>::numeric),
+    );
     let metadata = args
         .iter()
         .map(|v| v.work_size() - v.numeric().work_size())
         .sum::<usize>();
     assert_eq!(quote, numeric + 3 * 256 + metadata);
     assert!(quote >= 200_000);
-    assert_eq!(algebra.operation_work_for(opcode::ADD, &args), quote);
     assert_eq!(calls.get(), 0);
-    assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 0);
     let mut denied = WorkBudget::new(quote - 1);
     assert!(
         algebra
@@ -120,17 +129,16 @@ fn exact_custom_operation_quote_is_atomic_and_stays_on_the_original_root_budget(
     );
     assert_eq!(paid.used(), quote + 17);
     assert_eq!(calls.get(), 1, "a second call cannot reset the root budget");
-    assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 0);
 
     let before = calls.get();
-    algebra
-        .numeric_algebra()
-        .observe_byte_numeric_borrowed(opcode::AND, args.iter().map(AbstractValue::numeric));
+    algebra.numeric_algebra().observe_byte_numeric(
+        opcode::AND,
+        args.iter().map(EvmValue::<NumericValue>::numeric),
+    );
     assert!(
         calls.get() > before,
         "a declined byte projection must retain the custom reducer"
     );
-    assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 0);
 }
 
 #[test]
@@ -152,16 +160,16 @@ fn composed_refinement_pays_import_then_the_actual_custom_closure_once() {
     let domain = algebra.borrowed();
     let limits = RelationLimits::default();
     let expression = ExprId::fresh().unwrap();
-    let input = AbstractValue::top().with_expression(expression.clone());
+    let input = EvmValue::<NumericValue>::top().with_expression(expression.clone());
     let mut relations = RelationState::default();
     assert_eq!(
         relations
-            .assume_checked(&expression, true, &limits)
+            .assume_checked(&expression, true, &limits, product_algebra().borrowed())
             .unwrap(),
         CheckResult::MayBeFeasible
     );
     let import = relations
-        .refinement_import_work_with(&expression, &input, domain)
+        .refinement_import_work(&expression, &input, domain)
         .unwrap();
     let imported = NumericValue {
         nonzero: true,
@@ -171,7 +179,7 @@ fn composed_refinement_pays_import_then_the_actual_custom_closure_once() {
     let mut denied = WorkBudget::new(import - 1);
     assert!(
         relations
-            .refine_numeric_budgeted_with(&expression, &input, domain, &limits, &mut denied)
+            .refine_numeric_budgeted(&expression, &input, domain, &limits, &mut denied)
             .is_err()
     );
     assert_eq!(calls.get(), 0);
@@ -179,7 +187,7 @@ fn composed_refinement_pays_import_then_the_actual_custom_closure_once() {
     let mut denied_closure = WorkBudget::new(quote - 1);
     assert!(
         relations
-            .refine_numeric_budgeted_with(&expression, &input, domain, &limits, &mut denied_closure)
+            .refine_numeric_budgeted(&expression, &input, domain, &limits, &mut denied_closure)
             .is_err()
     );
     assert_eq!(
@@ -190,7 +198,7 @@ fn composed_refinement_pays_import_then_the_actual_custom_closure_once() {
     assert_eq!(calls.get(), 0);
     let mut exact = WorkBudget::new(quote);
     let result = relations
-        .refine_numeric_budgeted_with(&expression, &input, domain, &limits, &mut exact)
+        .refine_numeric_budgeted(&expression, &input, domain, &limits, &mut exact)
         .unwrap();
     assert!(
         matches!(result, EvmScalarQuery::Refined { numeric, .. } if !numeric.may_be_zero() && numeric.contains(U256::ONE))
@@ -246,7 +254,7 @@ fn payload_dependent_rule_work_is_paid_after_import_and_before_rule_execution() 
         ));
         let domain = algebra.borrowed();
         let expression = ExprId::fresh().unwrap();
-        let input = AbstractValue::top().with_expression(expression.clone());
+        let input = EvmValue::<NumericValue>::top().with_expression(expression.clone());
         let imported = NumericValue {
             finite: FiniteConstantSet::try_from_values((0..size).map(U256::from).collect())
                 .unwrap(),
@@ -256,14 +264,14 @@ fn payload_dependent_rule_work_is_paid_after_import_and_before_rule_execution() 
         let mut relations = RelationState::default();
         relations.observe(&expression, &imported, &limits).unwrap();
         let import = relations
-            .refinement_import_work_with(&expression, &input, domain)
+            .refinement_import_work(&expression, &input, domain)
             .unwrap();
         let closure = domain.numeric_reduction_work(&imported);
         let total = import + closure;
         let mut denied = WorkBudget::new(total - 1);
         assert!(
             relations
-                .refine_numeric_budgeted_with(&expression, &input, domain, &limits, &mut denied)
+                .refine_numeric_budgeted(&expression, &input, domain, &limits, &mut denied)
                 .is_err()
         );
         assert_eq!(
@@ -274,7 +282,7 @@ fn payload_dependent_rule_work_is_paid_after_import_and_before_rule_execution() 
         assert_eq!(denied.used(), import);
         let mut exact = WorkBudget::new(total);
         let result = relations
-            .refine_numeric_budgeted_with(&expression, &input, domain, &limits, &mut exact)
+            .refine_numeric_budgeted(&expression, &input, domain, &limits, &mut exact)
             .unwrap();
         assert!(
             matches!(result, EvmScalarQuery::Refined { ref numeric, .. } if (0..size).all(|word| numeric.contains(U256::from(word))))
@@ -340,8 +348,11 @@ fn exact_local_allowance_pays_reporting_and_one_less_reports_work_exhaustion() {
     }
     calls.set(0);
     let unquotable = ValueAlgebra::new(algebra.with_work(BoundedWork(usize::MAX)));
-    let args = [AbstractValue::top(), AbstractValue::constant(U256::ONE)];
-    assert_eq!(unquotable.operation_work(&args), usize::MAX);
+    let args = [
+        EvmValue::<NumericValue>::top(),
+        EvmValue::<NumericValue>::constant(U256::ONE),
+    ];
+    assert_eq!(unquotable.operation_work(opcode::ADD, &args), usize::MAX);
     assert_eq!(unquotable.numeric_reduction_work(&input), usize::MAX);
     let mut root = WorkBudget::new(usize::MAX);
     assert!(
@@ -425,11 +436,11 @@ fn paid_custom_inference_adds_real_precision_with_an_independent_removal_control
         assert!(control.value.contains(word));
     }
     let args = [
-        AbstractValue::from_numeric(full.value),
-        AbstractValue::constant(U256::from(2)),
+        EvmValue::<NumericValue>::from_numeric(full.value),
+        EvmValue::<NumericValue>::constant(U256::from(2)),
     ];
     let algebra = ValueAlgebra::new(custom);
-    let quote = algebra.operation_work(&args);
+    let quote = algebra.operation_work(opcode::AND, &args);
     let mut denied = WorkBudget::new(quote - 1);
     assert!(
         algebra
@@ -446,7 +457,7 @@ fn paid_custom_inference_adds_real_precision_with_an_independent_removal_control
     assert_eq!(exact.used(), quote);
     let control = removed.apply_numeric(
         opcode::AND,
-        &[control.value, NumericValue::constant(U256::from(2))],
+        [control.value, NumericValue::constant(U256::from(2))].iter(),
     );
     assert!(control.value.contains(U256::ZERO));
     assert!(
@@ -495,8 +506,11 @@ fn cancellation_is_captured_by_the_local_meter_and_keeps_the_root_identity() {
         .with_work(BoundedWork(200_000));
         if budgeted {
             let algebra = ValueAlgebra::new(custom);
-            let args = [AbstractValue::top(), AbstractValue::constant(U256::from(7))];
-            let quote = algebra.operation_work(&args);
+            let args = [
+                EvmValue::<NumericValue>::top(),
+                EvmValue::<NumericValue>::constant(U256::from(7)),
+            ];
+            let quote = algebra.operation_work(opcode::ADD, &args);
             let mut root = analysis_control::with_cancellation(&owner, || WorkBudget::new(quote));
             // The call runs outside the root token's thread-local scope.
             assert!(
@@ -568,7 +582,7 @@ fn infrastructure_failure_is_typed_and_an_unavailable_relation_does_not_hide_wor
         .with_work(BoundedWork(0))
         .apply_numeric(
             opcode::MUL,
-            &[NumericValue::top(), NumericValue::constant(U256::ZERO)],
+            [NumericValue::top(), NumericValue::constant(U256::ZERO)].iter(),
         );
     assert_eq!(limited.status, ReductionStatus::WorkLimit);
     assert!(limited.value.contains(U256::ZERO));
