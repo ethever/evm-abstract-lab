@@ -11,7 +11,7 @@ use crate::domain::AlgebraRef;
 #[cfg(test)]
 use crate::domain::Domain;
 use crate::domain::{EvmNumericAlgebra, WordElement};
-use crate::resource::WorkBudget;
+use crate::resource::{CloneError, WorkBudget};
 #[cfg(test)]
 use crate::world::Store;
 use alloy_primitives::Address;
@@ -31,6 +31,15 @@ pub(crate) enum FinalizationError {
 impl From<StoreError> for FinalizationError {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
+    }
+}
+
+impl From<CloneError> for FinalizationError {
+    fn from(error: CloneError) -> Self {
+        match error {
+            CloneError::Work => Self::Work,
+            CloneError::Cancelled => Self::Cancelled,
+        }
     }
 }
 
@@ -454,9 +463,9 @@ impl<N: WordElement> EvmStore<N> {
             Some(snapshot) => Footprint::measure(snapshot.state(), budget)?,
             None => current,
         };
-        // Reserve staging, checkpoint restoration, replacement and all drops,
-        // including discarding the staged Store on later admission/cancellation.
-        // The possible RIPEMD touch entry also needs a COW tree update.
+        // Retain the staging/replacement/drop and RIPEMD COW envelope,
+        // including discarding staged data on later admission/cancellation.
+        // Owned native copy prices are paid separately at their clone sites.
         reserve(
             budget,
             tree_work(
@@ -472,8 +481,10 @@ impl<N: WordElement> EvmStore<N> {
                 0
             }),
         )?;
+        self.pay_clone_with(budget)?;
         let mut staged = self.clone();
         if let Some(snapshot) = rollback {
+            snapshot.state().pay_clone_with(budget)?;
             staged.restore(snapshot.clone());
         }
         staged.prepare_unlisted_finalization_checked_with(domain, budget)?;

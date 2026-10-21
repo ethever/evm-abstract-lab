@@ -56,6 +56,7 @@ use super::cooperation::{
 };
 use analysis_kernel::Analyzer;
 use cooperation::{Borrowed, Composition, Cooperation, Empty};
+mod input;
 mod installation;
 mod reuse;
 mod terminal;
@@ -897,13 +898,12 @@ impl<
             self.active = Some(token);
             self.active_node = Some(id);
             let state = &self.result.states[id];
-            let answer = self.runtime.with_run(
+            let answer = input::read(
+                &mut self.runtime,
                 self.active.as_mut().ok_or(MachineError::Shape)?,
+                &self.inputs[id],
+                &state.entry,
                 self.budget,
-                |run| {
-                    run.read_slot(&self.inputs[id], &state.entry, state.entry.work_size())
-                        .map_err(kernel_failure)
-                },
             )?;
             let Availability::Value(input) = answer.state else {
                 return Err(MachineError::Shape);

@@ -274,17 +274,11 @@ impl CompletionWork {
     ) -> Option<Self> {
         let current = StoreWork::measure(&payload.store, context.budget)?;
         let relative_rollbacks = if context.procedure {
-            let saved = StoreWork::measure(
-                payload.call_stack.root().state.saved_store.state(),
-                context.budget,
-            )?;
-            // Each shared checkpoint restores one EvmStore and makes three fixed
-            // address tree queries/updates. The flat saved-EvmStore bound also
-            // pays imbl's first-write COW and its temporary node drops. Input
-            // retains the checkpoint, so try_unwrap cannot move its EvmStore.
-            saved
-                .clone_and_drop
-                .saturating_add(TOUCH_QUERY_WORK.saturating_mul(3))
+            // The common finish_root_store payer owns each restored Store.
+            // Keep the independent sticky-touch searches/updates, checkpoint
+            // handle and possible new entry for both non-return alternatives.
+            TOUCH_QUERY_WORK
+                .saturating_mul(3)
                 .saturating_add(HANDLE_WORK)
                 .saturating_add(STORE_ENTRY_WORK)
                 .saturating_mul(2)

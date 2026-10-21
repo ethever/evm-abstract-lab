@@ -32,9 +32,13 @@ fn identity_scope() -> Option<u64> {
         .ok()
 }
 
+#[cfg(test)]
+mod arithmetic_proof_tests;
 mod budget;
 mod calls;
 mod candidates;
+#[cfg(test)]
+mod clone_payment_tests;
 pub(super) mod create;
 mod dispatch;
 mod environment;
@@ -192,6 +196,18 @@ fn resume_summary_inner<D: EvmNumericAlgebra>(
     budget: &mut WorkBudget,
     procedure: bool,
 ) -> EvmExecution<D::Element> {
+    if let Err(error) = payload.pay_clone_with(budget) {
+        let pc = payload
+            .active()
+            .program
+            .as_ref()
+            .and_then(|program| program.blocks().get(payload.active().key.basic_block_index))
+            .and_then(|block| block.instructions.last())
+            .map_or(0, |instruction| instruction.pc);
+        let mut result = empty_execution(payload);
+        boundary(&mut result, pc, error.into());
+        return result;
+    }
     let mut result = EvmExecution {
         payload: payload.clone(),
         executed_pcs: Vec::new(),
@@ -511,6 +527,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
         return result;
     }
     if code == FrameCode::Empty {
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(&mut result, 0, error.into());
+            return result;
+        }
         let payload = result.payload.clone();
         finish(
             &mut result,
@@ -531,6 +551,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
     let program = &program;
     let basic_block_index = result.payload.active().key.basic_block_index;
     let Some(block) = program.blocks().get(basic_block_index) else {
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(&mut result, program.byte_len(), error.into());
+            return result;
+        }
         let payload = result.payload.clone();
         finish(
             &mut result,
@@ -906,6 +930,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                 return result;
             }
             opcode::STOP => {
+                if let Err(error) = result.payload.pay_clone_with(context.budget) {
+                    boundary(&mut result, pc, error.into());
+                    return result;
+                }
                 result.mark_instruction(InstructionProgress::Dispatched);
                 let payload = result.payload.clone();
                 finish(
@@ -934,6 +962,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         return result;
                     }
                 };
+                if let Err(error) = result.payload.pay_clone_with(context.budget) {
+                    boundary(&mut result, pc, error.into());
+                    return result;
+                }
                 result.mark_instruction(InstructionProgress::Dispatched);
                 let payload = result.payload.clone();
                 finish(
@@ -1507,7 +1539,12 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         if !matches!(op, 0x01..=0x0b | 0x10..=0x1e) {
                             result.diagnostics.push((pc, DiagnosticKind::OpaqueResult));
                         }
-                        let mut reduction = domain.apply_detailed(op, &args);
+                        let (mut reduction, proof) =
+                            domain.apply_detailed_with_singleton(op, &args);
+                        if let Err(reason) = query::checkpoint(context.budget) {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
                         if matches!(
                             reduction.symbolic_error,
                             Some(crate::domain::symbolic::ExprError::Limit { .. })
@@ -1546,6 +1583,22 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                             result
                                 .diagnostics
                                 .push((pc, DiagnosticKind::FactExchangeLimited(reduction.status)));
+                        }
+                        if domain.spec().relations().enabled
+                            && matches!(op, 0x01..=0x0b | 0x10..=0x1e)
+                            && reduction.status == crate::domain::ReductionStatus::Stable
+                            && reduction.symbolic_error.is_none()
+                            && !reduction.value.symbolic_limit_reached()
+                            && reduction.value.expression().is_none()
+                            && reduction.value.identity().input().is_none()
+                            && let crate::domain::SingletonProof::Answer(Some(word)) = proof
+                        {
+                            // The operation paid for this result proof and its
+                            // expression envelope. Keep N and source metadata;
+                            // identify must not replace a proved result by Fresh.
+                            reduction
+                                .value
+                                .set_expression(crate::domain::symbolic::ExprId::constant(word));
                         }
                         reduction.value
                     }
@@ -1629,6 +1682,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
             EdgeKind::Fallthrough,
         );
     } else {
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(&mut result, program.byte_len(), error.into());
+            return result;
+        }
         let payload = result.payload.clone();
         finish(
             &mut result,

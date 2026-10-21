@@ -1,8 +1,10 @@
 //! 根执行、数值域、状态操作和摘要共同使用的累计工作账本。
 //! 调用者先预留可信上界，再执行整项操作；失败时不能安装半个结果。
 
+pub(crate) mod clone_payment;
 mod completion;
 
+pub(crate) use clone_payment::CloneError;
 pub(crate) use completion::{AdmissionStop, CompletionPermit};
 
 /// 单次分析的累计逻辑工作预算，不等同于 EVM gas。

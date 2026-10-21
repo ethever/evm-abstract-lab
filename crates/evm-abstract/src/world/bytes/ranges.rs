@@ -190,8 +190,10 @@ pub(super) fn expanded_with_queries<N: WordElement, D: EvmNumericAlgebra<Element
                     };
                     if let Some(v) = candidate {
                         let v = EvmValue::<N>::constant(v);
-                        finite =
-                            Some(finite.map_or_else(|| v.clone(), |old| numerical.join(&old, &v)));
+                        finite = Some(match finite {
+                            None => v,
+                            Some(old) => numerical.join(&old, &v),
+                        });
                     } else {
                         finite = Some(EvmValue::<N>::top());
                     }
@@ -226,7 +228,8 @@ pub(super) fn expanded_with_queries<N: WordElement, D: EvmNumericAlgebra<Element
         // A wrapped ADD/round-up is not an exact MSIZE expression. Retain one
         // bounded source for this allocation's coarse length; ByteArray stores
         // it, and repeated expansion of the same allocation reuses it.
-        return queries.normalized(&numeric);
+        let expression = queries.expression(&numeric)?;
+        return Ok(numeric.with_expression(expression));
     }
     let endpoint_lower = checked_end(queries.bounds(offset).0, queries.bounds(size).0, memory);
     let size_expr = queries.expression(size)?;
@@ -303,7 +306,10 @@ pub(super) fn minimum<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         for a in left {
             for b in right {
                 let v = EvmValue::<N>::constant((*a).min(*b));
-                out = Some(out.map_or_else(|| v.clone(), |old| numerical.join(&old, &v)));
+                out = Some(match out {
+                    None => v,
+                    Some(old) => numerical.join(&old, &v),
+                });
             }
         }
         out.unwrap_or_else(|| constant_with(0))

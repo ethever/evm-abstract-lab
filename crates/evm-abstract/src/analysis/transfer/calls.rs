@@ -171,6 +171,10 @@ pub(super) fn finish_root_store<D: EvmNumericAlgebra>(
                 }
             })?;
     } else if kind != OutcomeKind::Return {
+        saved_store
+            .state()
+            .pay_clone_with(context.budget)
+            .map_err(FrontierReason::from)?;
         store.restore(saved_store.clone());
     }
     Ok(())
@@ -186,10 +190,27 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
 ) {
     let config = context.config;
     let domain = context.domain;
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary_on(result, pc, reason, payload.key());
+        return;
+    }
+    if payload.call_stack.active_child().is_some() {
+        let paid = payload
+            .pay_clone_with(context.budget)
+            .and_then(|()| data.pay_clone_with(context.budget));
+        if let Err(error) = paid {
+            boundary_on(result, pc, clone_reason(error), payload.key());
+            return;
+        }
+    }
     let completed = payload
         .call_stack
         .active_child()
         .map(|_| (payload.clone(), kind, data.clone()));
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary_on(result, pc, reason, payload.key());
+        return;
+    }
     if let Err(reason) =
         super::create::finish_creation(&mut payload, &mut kind, &mut data, context, pc)
     {
@@ -199,15 +220,40 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
     if let Some(child) = payload.call_stack.active_child() {
         let continuation = &child.continuation;
         let parent = payload.call_stack.parent().expect("a child has a parent");
-        let cost = parent.memory.copy_return_data_work_with(
+        // Creation has finished: price the actual rollback/output objects,
+        // while the original pre-creation completed-call capture stays intact.
+        let snapshots = (|| {
+            let store = if kind == OutcomeKind::Return {
+                &payload.store
+            } else {
+                let saved = child.state.saved_store.state();
+                saved.pay_clone_with(context.budget)?;
+                saved
+            };
+            store.pay_clone_with(context.budget)?;
+            data.pay_clone_with(context.budget)
+        })();
+        if let Err(error) = snapshots {
+            boundary_on(result, pc, clone_reason(error), payload.key());
+            return;
+        }
+        let paid = parent.memory.pay_return_copy_with(
             &data,
             &continuation.output_offset,
             &continuation.output_size,
             domain,
+            context.budget,
         );
-        if !context.budget.charge(cost) {
-            boundary_on(result, pc, FrontierReason::Work, payload.key());
-            return;
+        match paid {
+            Ok(true) => {}
+            Ok(false) => {
+                boundary_on(result, pc, FrontierReason::Work, payload.key());
+                return;
+            }
+            Err(error) => {
+                boundary_on(result, pc, super::errors::bytes(error), payload.key());
+                return;
+            }
         }
     }
     let Some(child) = payload.call_stack.pop_child() else {
@@ -233,6 +279,10 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
     let continuation = child.continuation;
     let output_store = payload.store.clone();
     let output_data = data.clone();
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary_on(result, pc, reason, payload.key());
+        return;
+    }
     let output_kind = kind;
     let parent = payload.active_mut();
     parent.returndata = data;
@@ -247,14 +297,27 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
     parent
         .stack
         .push(EvmValue::<D::Element>::constant(result_value));
-    if let Err(error) = parent.memory.copy_return_data_with(
+    let copied = parent.memory.copy_return_data_budgeted_with(
         &continuation.output_offset,
         &parent.returndata,
         &continuation.output_size,
         config.max_memory_bytes,
         domain,
-    ) {
-        boundary_on(result, pc, super::errors::bytes(error), payload.key());
+        context.budget,
+    );
+    match copied {
+        Ok(true) => {}
+        Ok(false) => {
+            boundary_on(result, pc, FrontierReason::Work, payload.key());
+            return;
+        }
+        Err(error) => {
+            boundary_on(result, pc, super::errors::bytes(error), payload.key());
+            return;
+        }
+    }
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary_on(result, pc, reason, payload.key());
         return;
     }
     parent.key.basic_block_index = continuation
@@ -286,6 +349,10 @@ pub(super) fn failure<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) {
+    if let Err(error) = result.payload.pay_clone_with(context.budget) {
+        boundary_on(result, pc, clone_reason(error), result.payload.key());
+        return;
+    }
     finish(
         result,
         result.payload.clone(),
@@ -294,6 +361,15 @@ pub(super) fn failure<D: EvmNumericAlgebra>(
         context,
         pc,
     );
+}
+
+fn clone_reason(error: crate::resource::CloneError) -> FrontierReason {
+    match error {
+        crate::resource::CloneError::Work => FrontierReason::Work,
+        crate::resource::CloneError::Cancelled => {
+            FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+        }
+    }
 }
 
 fn immediate_call_failure<N: WordElement>(
