@@ -387,6 +387,8 @@ impl Domain {
     }
 
     fn numeric_closure_work(self, finite: usize, rounds: Option<usize>) -> usize {
+        use super::cooperation::{BoundsToMask, MaskToBounds, RuleWork, cost};
+
         if self
             .spec()
             .reduction_rounds()
@@ -396,29 +398,19 @@ impl Domain {
         {
             return usize::MAX;
         }
-        // One scope, three singleton channels, four jobs, ten live read edges.
-        // Each query costs at most 9 (intern) + 28 (two tracked reads) + value.
-        // A changed publication costs 9 + policy + value + 38: at most three
-        // readers, each reserving a 12-unit enqueue, plus value/version writes.
-        // Selection/handle/begin/finish costs at most 7 per non-seed evaluation.
-        let mask = 256usize + 7 + (9 + 28 + 8) + (9 + 16 + 8 + 38);
-        let bounds =
-            (4096usize + 7 + 3 * (9 + 28) + 3 * 8 + 9 + 128 + 8 + 38).saturating_add(finite);
-        // ScalarRule reserves the configured capacity even for a singleton;
-        // channel copying/meeting uses the actual retained cover bound instead.
-        // Public oversized covers also need their full arithmetic/fact envelope.
-        let scalar_capacity = self.capacity().max(finite);
-        let scalar = 4096usize
-            .saturating_add(256usize.saturating_mul(scalar_capacity))
-            .saturating_add(32usize.saturating_mul(scalar_capacity.saturating_add(32)))
-            // Three queries and three publications, including ScalarMeet's
-            // 64 * (old finite + new finite + 16) reservation exactly once.
-            .saturating_add(1475)
-            .saturating_add(130usize.saturating_mul(finite));
-        // Setup/seed, its first publications and the fixed-size numeric copies.
-        let seed = 256usize.saturating_add(finite);
+        // Share protocol/query/publication/report tariffs with ProductAlgebra.
+        // Only the scheduling proof differs: these exact built-in rules permit
+        // the input-sensitive cycle bounds and weighted schedule below.
+        let mask = BoundsToMask
+            .evaluation_work(self.spec(), finite)
+            .saturating_add(cost::STEP_WORK);
+        let bounds = MaskToBounds
+            .evaluation_work(self.spec(), finite)
+            .saturating_add(cost::STEP_WORK);
+        let scalar = cost::scalar_work(self.spec(), finite).saturating_add(cost::STEP_WORK);
+        let fixed = cost::fixed_work(finite);
         if let Some(rounds) = rounds {
-            return seed.saturating_add(
+            return fixed.saturating_add(
                 mask.saturating_add(bounds)
                     .saturating_add(scalar)
                     .saturating_mul(rounds.min(self.spec().reduction_rounds())),
@@ -432,7 +424,8 @@ impl Domain {
         let steps = self.spec().reduction_rounds().saturating_mul(3);
         let scalars = steps.saturating_sub(1) / 2;
         let bounds_runs = steps.saturating_sub(1).saturating_sub(scalars);
-        seed.saturating_add(mask)
+        fixed
+            .saturating_add(mask)
             .saturating_add(scalar.saturating_mul(scalars))
             .saturating_add(bounds.saturating_mul(bounds_runs))
     }

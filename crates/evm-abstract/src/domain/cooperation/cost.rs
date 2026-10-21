@@ -44,10 +44,10 @@ impl<M: RuleWork, R: RuleWork> ProductWork<M, R> for ComposedWork {
             .evaluation_work(spec, finite)
             .max(bounds.evaluation_work(spec, finite))
             .max(scalar_work(spec, finite));
-        // At most four queued jobs: selection, handle, begin and finish cost 7
-        // after the seed. Any component may rerun, so reserve the largest bound
-        // for every remaining step rather than assuming a built-in wake order.
-        fixed_work(finite).saturating_add(per_step.saturating_add(7).saturating_mul(steps))
+        // The seed has no reads and never reruns. Any of the three remaining
+        // jobs may rerun, so reserve the largest bound for every remaining step
+        // rather than assuming the built-in rules' wake order.
+        fixed_work(finite).saturating_add(per_step.saturating_add(STEP_WORK).saturating_mul(steps))
     }
 }
 
@@ -62,29 +62,51 @@ impl<M, R> ProductWork<M, R> for BoundedWork {
     }
 }
 
-// These tariffs follow the fixed topology: one scope, three singleton channels,
-// four jobs and at most twelve live read edges (three values plus the scope
-// head per non-seed job). Component quotes include every capability call;
-// repeated calls must be counted repeatedly by the component author.
-pub(super) fn query_work(value: usize) -> usize {
-    9usize.saturating_add(28).saturating_add(value)
+// Shared by the generic assembly and Domain's separately proved schedules.
+// One unselected scope, three singleton channels and four jobs give ten facts:
+// a scope head, three global directories, three scoped directories and values.
+// A non-seed job has at most four read/required edges, and any value/head has
+// at most three readers/demands. There are no producer guards, foreign premises,
+// lifecycle operations or explicit obligations in this ephemeral topology.
+// Kernel tree_work(n) = floor(log2(n + 1)) + 2, so t(1)=3 and t(3..=6)=4.
+// Every capability call is counted, including repeat observations of one edge.
+const INTERN_WORK: usize = 3 + 9; // existing scope table and existing unit key
+pub(in crate::domain) const STEP_WORK: usize = 3 + (2 * 4 + 12) + 3;
+
+pub(in crate::domain) fn query_work(value: usize) -> usize {
+    // Required observe: 2*t(reads) + t(readers) + 2, then t(required) +
+    // t(demands) + 2 = 24. Both the scope head and value are observed. Discovery
+    // pays only the first 14; numeric Read uses Required, so reserve both indexes.
+    INTERN_WORK.saturating_add(2 * 24).saturating_add(value)
 }
-pub(super) fn publish_work(policy: usize, value: usize) -> usize {
-    9usize
+pub(in crate::domain) fn publish_work(policy: usize, value: usize) -> usize {
+    // A descending replacement has one changed fact and no semantic seeds.
+    // Plan7 + install1 + fact2 + batch enqueue66 + three wake visits9 = 85.
+    // The batch upper bound includes geometric growth: with <=3 pending jobs
+    // and <=3 wakes, 3*(t(6)+6) + 6*6 = 66, even for duplicate pending readers.
+    // Numeric capabilities use value_work for both clone and retained-old drop.
+    INTERN_WORK
         .saturating_add(policy)
-        .saturating_add(value)
-        .saturating_add(38)
+        .saturating_add(value.saturating_mul(2))
+        .saturating_add(85)
 }
-fn fixed_work(finite: usize) -> usize {
-    let setup: usize = 11 + 3 * 4 + 4 * (7 + 4 + 5) + 1;
-    // Seed runs first: three new keys, no readers/policy meets, eight units of
-    // dispatch and complete scalar payload retention.
-    let seed = (3 * (6 + 8 + 2) + 24 + 8usize).saturating_add(finite);
-    // solve_report's metadata scan plus its scope/job/fact/reader traversal.
-    let report = 8 + 16 + 4 * 4 + 8 * 4 + 6 * 7 + 4 + 6 * 12;
+pub(in crate::domain) fn fixed_work(finite: usize) -> usize {
+    // Scope11, channels12, seal1. Registration pays 7 + t(jobs) + enqueue;
+    // successive queue lengths/capacities are 0/0, 1/1, 2/2 and 3/4.
+    let registration = (7 + 2 + 15) + (7 + 3 + 21) + (7 + 3 + 28) + (7 + 4 + 10);
+    let setup: usize = 11 + 3 * 4 + registration + 1;
+    // Each first write interns its scoped directory and value: 29,31,31.
+    // Each changes two facts: semantic-directory classification4, plan13,
+    // fact writes4 and installation1, plus its value. No old value/readers yet.
+    // Seed dispatch has four queued jobs: selection24 + handle/begin/finish3.
+    let seed = (29 + 31 + 31 + 3 * (4 + 13 + 4 + 1) + 24 + 27usize).saturating_add(finite);
+    // solve calls solve_report, not closure_in_metered: metadata11, base16,
+    // <=3 pending, four jobs, ten facts, one scope and <=12 read edges. Required
+    // indexes are covered by the new 12-per-fact traversal; coverage stays zero.
+    let report = 11 + 16 + 4 * 3 + 8 * 4 + 12 * 10 + 4 + 6 * 12;
     setup.saturating_add(seed).saturating_add(report)
 }
-fn scalar_work(spec: DomainSpec, finite: usize) -> usize {
+pub(in crate::domain) fn scalar_work(spec: DomainSpec, finite: usize) -> usize {
     4096usize
         .saturating_add(256usize.saturating_mul(spec.capacity().max(finite)))
         .saturating_add(32usize.saturating_mul(spec.capacity().max(finite).saturating_add(32)))
