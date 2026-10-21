@@ -204,7 +204,7 @@ channel 通常用 [`Ascending<JoinPolicy>` 或 `Descending<RefinePolicy>`](../cr
 
 `ComposedWork` 要求所选规则实现 [`RuleWork`](../crates/evm-abstract/src/domain/cooperation/cost.rs)，覆盖一次执行的能力调用、发布策略及计算，再按允许的整个调度组合报价。`with_work` 可注入针对这对规则的 `ProductWork`，包括显式的 `BoundedWork`；有限工作额度并不承诺局部闭包，也不改变事实容量和允许的规则步数。
 
-`EvmNumericAlgebra::apply_numeric(op, args)` 接收 `ExactSizeIterator<Item = &Element>`，`observe_byte_numeric` 使用同一借用协议。`operation_work(op, args)` 必须按实际 opcode 报价，覆盖该实现内部的复制和查询；共用的 `ValueAlgebra` 不强制复制数值操作数。缺少可选能力时可以保守返回 Top 或拒绝未知工作，不能把缺少报价读成免费执行。
+`EvmNumericAlgebra::apply_numeric(op, args)` 接收 `ExactSizeIterator<Item = &Element>`，`observe_byte_numeric` 使用同一借用协议。`operation_work(op, args)` 必须按实际 opcode 覆盖数值运算本身（含实现内部的复制和查询），且报价必须不小于返回元素的 `Element::work_size`；调用方可据此另行预留临时结果的释放费用。`EvmValue` 的公共元数据独立计费，共用的 `ValueAlgebra` 不强制复制数值操作数。报价不能通过先执行运算或构造结果取得；未知报价以 `usize::MAX` 拒绝。缺少可选能力时可以保守返回 Top。后续独立查询仍按下文的查询契约另行计费。
 
 观察导入与闭包是不同工作。策略若提供 `refinement_import_work`，先支付导入，再按实际导入结果支付后续规约；新增 `MemberOf` 的集合可能比原输入大，原来的 atom 数不足以推导其闭包成本。未提供导入专用报价时，保留完整 `refinement_work` 的付款契约。具体接口见 [`EvmNumericAlgebra`](../crates/evm-abstract/src/domain/algebra.rs)。
 
