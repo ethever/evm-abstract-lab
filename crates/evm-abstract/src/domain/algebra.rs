@@ -101,6 +101,12 @@ pub trait EvmNumericAlgebra: Debug {
     /// and singleton/expression queries inside apply_detailed or observe_byte.
     /// This includes the numeric implementation's own operand copies and result
     /// queries; independent caller queries require their separate payment.
+    /// The quote also upper-bounds `Element::work_size` for every possible numeric
+    /// result of the same opcode/operands, including facade-installed literals
+    /// from identity or expression folding. Callers may reuse this structural
+    /// bound to prepay release separately; execution payment does not pay release
+    /// or facade output metadata. Inspect only cached sizes while quoting, and
+    /// return `usize::MAX` when work or the output bound is unknown/overflows.
     fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize
     where
         Self::Element: 'a;
@@ -686,7 +692,9 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     ) -> usize {
         self.numeric.memory_write_passes(offset, value, width)
     }
-    fn operation_envelope<'a>(
+    /// Compose a cached numeric quote without quoting it again when a caller
+    /// also uses its output-size guarantee for an independent lifecycle payment.
+    pub(crate) fn operation_envelope<'a>(
         &self,
         args: impl Iterator<Item = &'a EvmValue<D::Element>> + Clone,
         numeric: usize,

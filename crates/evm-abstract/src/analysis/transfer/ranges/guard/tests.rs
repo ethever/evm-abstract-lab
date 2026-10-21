@@ -124,6 +124,9 @@ fn verify_paid_operations<D: EvmNumericAlgebra>(numeric: D) {
             retention: GuardRetention::new(&offset, &size),
         };
         for (step, (op, args, expected)) in steps.iter().enumerate() {
+            let numeric_work = domain
+                .numeric_algebra()
+                .operation_work(*op, args.iter().map(EvmValue::numeric));
             let actual = if matches!(step, 1 | 3 | 4) {
                 builder.copied(*op, [&args[0], &args[1]])
             } else {
@@ -131,7 +134,13 @@ fn verify_paid_operations<D: EvmNumericAlgebra>(numeric: D) {
             }
             .unwrap();
             assert_same_value(&actual, &expected.value);
-            assert!(release_work(actual.work_size()) <= output_release_work(domain, *op, args));
+            assert!(actual.numeric().work_size() <= numeric_work);
+            assert!(
+                release_work(actual.work_size()) <= output_release_work(domain, numeric_work, args),
+                "opcode {op:#x}: output size {}, release quote {}",
+                actual.work_size(),
+                output_release_work(domain, numeric_work, args),
+            );
         }
         let mut budget = WorkBudget::new(usize::MAX);
         let built = build(&offset, &size, &mut context(&config, &mut budget, domain)).unwrap();
@@ -160,6 +169,53 @@ fn paid_guard_operations_keep_semantics_for_product_and_finite_carriers() {
     }
 }
 
+#[test]
+fn paid_guard_operations_keep_semantics_for_opaque_carrier() {
+    use crate::analysis::transfer::query::tests::{Policy, RECEIPT};
+
+    let _receipt = RECEIPT.scope();
+    // This carrier has no finite candidate view, and its structural bound is
+    // independent of Product's inline fields and native finite cardinality.
+    verify_paid_operations(Policy);
+}
+
+#[test]
+fn opaque_output_release_and_execution_are_prepaid_before_the_operation() {
+    use crate::analysis::transfer::query::tests::{Policy, RECEIPT, Word};
+
+    let _receipt = RECEIPT.scope();
+    RECEIPT.update(|receipt| receipt.cancel_on_apply = true);
+    let algebra = ValueAlgebra::new(Policy);
+    let domain = algebra.borrowed();
+    let args = [EvmValue::<Word>::top(), EvmValue::top()];
+    let numeric_work = domain
+        .numeric_algebra()
+        .operation_work(opcode::SUB, args.iter().map(EvmValue::numeric));
+    let release = output_release_work(domain, numeric_work, &args);
+    let execution = domain.operation_work(opcode::SUB, &args);
+    for (remaining, paid) in [(release - 1, 0), (release + execution - 1, release)] {
+        let cancellation = analysis_control::Cancellation::new();
+        analysis_control::with_cancellation(&cancellation, || {
+            let mut budget = WorkBudget::new(17 + QUOTE_WORK + remaining);
+            assert!(budget.charge(17));
+            let mut builder = Builder {
+                domain,
+                budget: &mut budget,
+                retention: GuardRetention::new(&args[0], &args[1]),
+            };
+            assert!(matches!(
+                builder.apply(opcode::SUB, &args),
+                Err(FrontierReason::Work)
+            ));
+            assert_eq!(budget.used(), 17 + QUOTE_WORK + paid);
+            assert!(budget.exhausted());
+            // The opaque hook cancels on entry. A refused output reservation
+            // or execution fee must leave that hook entirely unexecuted.
+            assert!(!cancellation.is_cancelled());
+        });
+    }
+}
+
 // Quote only cached metadata of the already computed reference steps. Each
 // pair is the paid prefix and the next actual ProductAlgebra operation's exact price.
 fn operation_refusals(
@@ -182,7 +238,10 @@ fn operation_refusals(
             if matches!(step, 1 | 3 | 4) {
                 prefix += QUOTE_WORK + args.iter().map(value_copy_work).sum::<usize>();
             }
-            prefix += QUOTE_WORK + output_release_work(domain, *op, args);
+            let numeric_work = domain
+                .numeric_algebra()
+                .operation_work(*op, args.iter().map(EvmValue::numeric));
+            prefix += QUOTE_WORK + output_release_work(domain, numeric_work, args);
             let cost = domain.operation_work(*op, args);
             let refusal = (prefix, cost);
             prefix += cost;
