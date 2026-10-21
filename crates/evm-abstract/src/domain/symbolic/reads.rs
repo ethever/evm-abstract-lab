@@ -8,6 +8,9 @@ use alloy_primitives::{U256, keccak256};
 use revm_bytecode::opcode;
 use std::sync::Arc;
 
+#[cfg(test)]
+mod tests;
+
 impl ExprId {
     pub(super) fn retained(
         kind: ExprKind,
@@ -229,39 +232,85 @@ impl ExprId {
     }
     /// Ordered array read; a structurally identical latest key folds locally.
     pub fn slot_read(state: SlotStateId, key: Self, limits: ExprLimits) -> Result<Self, ExprError> {
-        let (nodes, depth) =
-            state::metrics([(state.nodes(), state.depth()), (key.nodes(), key.depth())]);
-        state::check(nodes, depth, limits.into())?;
-        match state.kind() {
-            SlotStateKind::Zero => return Ok(Self::constant(U256::ZERO)),
-            SlotStateKind::Store {
-                key: stored, value, ..
-            } if *stored == key => {
-                state::check(value.nodes(), value.depth(), limits.into())?;
-                return Ok(value.clone());
-            }
-            SlotStateKind::Store {
-                previous,
-                key: stored,
-                ..
-            } if matches!((stored.as_constant(), key.as_constant()), (Some(a), Some(b)) if a != b) =>
-            {
-                // Only unequal concrete keys prove nonaliasing. Keep the
-                // previous immutable snapshot for this demanded fixed slot.
-                return Self::slot_read(previous.clone(), key, limits);
-            }
-            SlotStateKind::Ite {
-                condition,
-                then_state,
-                else_state,
-            } if key.as_constant().is_some() => {
-                let yes = Self::slot_read(then_state.clone(), key.clone(), limits)?;
-                let no = Self::slot_read(else_state.clone(), key, limits)?;
-                return Self::ite(condition.clone(), yes, no, limits);
-            }
-            _ => {}
+        enum Frame<'a> {
+            Else {
+                condition: &'a ExprId,
+                state: &'a SlotStateId,
+            },
+            Join {
+                condition: &'a ExprId,
+                yes: ExprId,
+            },
         }
-        Self::retained(ExprKind::SlotRead { state, key }, nodes, depth, limits)
+
+        let literal_key = key.as_constant();
+        let mut cursor = &state;
+        let mut frames = Vec::new();
+        loop {
+            // Check the original root and every visited snapshot before any
+            // reduction, including snapshots reached through disjoint writes.
+            let (nodes, depth) =
+                state::metrics([(cursor.nodes(), cursor.depth()), (key.nodes(), key.depth())]);
+            state::check(nodes, depth, limits.into())?;
+            let mut value = match cursor.kind() {
+                SlotStateKind::Zero => Self::constant(U256::ZERO),
+                SlotStateKind::Store {
+                    key: stored, value, ..
+                } if *stored == key => {
+                    state::check(value.nodes(), value.depth(), limits.into())?;
+                    value.clone()
+                }
+                SlotStateKind::Store {
+                    previous,
+                    key: stored,
+                    ..
+                } if matches!((stored.as_constant(), literal_key), (Some(a), Some(b)) if a != b) => {
+                    // Only unequal literal keys prove nonaliasing. Borrow the
+                    // retained root's graph instead of recursing down its spine.
+                    cursor = previous;
+                    continue;
+                }
+                SlotStateKind::Ite {
+                    condition,
+                    then_state,
+                    else_state,
+                } if literal_key.is_some() => {
+                    frames.push(Frame::Else {
+                        condition,
+                        state: else_state,
+                    });
+                    cursor = then_state;
+                    continue;
+                }
+                _ => Self::retained(
+                    ExprKind::SlotRead {
+                        state: cursor.clone(),
+                        key: key.clone(),
+                    },
+                    nodes,
+                    depth,
+                    limits,
+                )?,
+            };
+            loop {
+                match frames.pop() {
+                    None => return Ok(value),
+                    Some(Frame::Else { condition, state }) => {
+                        // Complete yes before visiting no; even a later ITE
+                        // fold must observe both branches' checks and errors.
+                        frames.push(Frame::Join {
+                            condition,
+                            yes: value,
+                        });
+                        cursor = state;
+                        break;
+                    }
+                    Some(Frame::Join { condition, yes }) => {
+                        value = Self::ite(condition.clone(), yes, value, limits)?;
+                    }
+                }
+            }
+        }
     }
     /// Hash a canonical content sequence. No collision-free assumption is added.
     pub fn keccak(input: ByteView, limits: ExprLimits) -> Result<Self, ExprError> {
