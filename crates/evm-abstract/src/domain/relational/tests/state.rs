@@ -1,9 +1,7 @@
 //! Local state interpretation and retained conditional/history guarantees.
 
-fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
-    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-}
 use super::super::{CheckResult, EvmScalarQuery, EvmValueQuery, RelationLimits, RelationState};
+use super::product_algebra;
 use crate::domain::{EvmValue, NumericValue, ProductAlgebra, identity::Symbol, symbolic::*};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;

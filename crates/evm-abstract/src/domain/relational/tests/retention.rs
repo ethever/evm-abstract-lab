@@ -1,9 +1,7 @@
 //! Default-policy local checks for shared ordered updates above guarded states.
 
-fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
-    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-}
 use super::super::{CheckResult, EvmValueQuery, RelationLimits, RelationState};
+use super::product_algebra;
 use crate::domain::{
     NumericValue,
     symbolic::{
