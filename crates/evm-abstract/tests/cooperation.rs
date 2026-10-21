@@ -17,3 +17,6 @@ mod policy;
 mod product;
 #[path = "cooperation/production.rs"]
 mod production;
+
+#[path = "cooperation/global.rs"]
+mod global;

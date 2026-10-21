@@ -83,9 +83,11 @@ impl Table {
             runtime: &mut self.runtime,
             cooperation: &mut self.cooperation,
             active: None,
-            caller: &mut self.caller,
+            caller: Some(&mut self.caller),
             namespace: if config.use_summaries { 0 } else { 1 },
             producer: None,
+            deferred: false,
+            consumed: None,
         }
     }
 

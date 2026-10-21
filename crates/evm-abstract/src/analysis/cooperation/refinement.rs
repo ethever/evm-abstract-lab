@@ -1,6 +1,6 @@
 use super::{
-    ExtraStores, ImmutableInputPolicy, Input, InputAlreadyInitialized, InputRoute, Inputs, Ports,
-    RefinementRoute, Refinements, StackFacts, StackMeet, Subject,
+    Input, InputAlreadyInitialized, InputRoute, Inputs, Ports, RefinementRoute, Refinements,
+    Shared, StackFacts, Subject,
 };
 use crate::{
     analysis::{EvmMachinePayload, MachineError},
@@ -11,8 +11,8 @@ use crate::{
     resource::WorkBudget,
 };
 use analysis_kernel::{
-    Accepts, Analyzer, Answer, Capability, Cons, Context, Descending, Kernel, KernelError,
-    LocalClosure, Meter, PublishError, Reduction, Registered, Run, Scoped,
+    Accepts, Analyzer, Answer, Capability, Context, KernelError, LocalClosure, Meter, PublishError,
+    Reduction, Registered, Run, Scoped,
 };
 
 /// Failed preparation is not a proof that the EVM input is unreachable.
@@ -30,17 +30,6 @@ pub enum InitializationError<S> {
     /// Registered initial guarantees could not be installed completely.
     #[error("cooperation feedback initialization failed: {0}")]
     Feedback(PublishError<FactError, S>),
-}
-
-pub(crate) fn create_ports<N: WordElement, J, M: Meter, F: ExtraStores>(
-    kernel: &mut Kernel<J>,
-    meter: &mut M,
-    factory: &F,
-) -> Result<Ports<N, F::Stores>, KernelError<M::Stop>> {
-    let input = kernel.channel(ImmutableInputPolicy::default(), meter)?;
-    let feedback = kernel.channel(Descending(StackMeet), meter)?;
-    let tail = factory.create(kernel, meter)?;
-    Ok(Cons::new(input, Cons::new(feedback, tail)))
 }
 
 /// Explicitly registered initialization accepts the same fixed-input semantic
@@ -79,9 +68,9 @@ where
 
 /// Called on a bootstrap job in the NEW input scope, before publishing its
 /// stable generation selector. Failure leaves that bootstrap obligation open.
-pub(crate) fn initialize<N: WordElement, J, M: Meter, Tail>(
+pub(crate) fn initialize<N: WordElement, J, M: Meter, Tail, Global>(
     run: &mut Run<'_, J, M>,
-    ports: &mut Ports<N, Tail>,
+    ports: &mut Ports<'_, N, Tail, Global>,
     input: Input<N>,
 ) -> Result<(), InitializationError<M::Stop>> {
     let subject = input.subject();
@@ -103,17 +92,20 @@ pub(crate) fn initialize<N: WordElement, J, M: Meter, Tail>(
 /// Interpreter consumers read feedback through this same tracked publication
 /// channel. Retired subjects fail through the kernel's scope validation; pending
 /// answers retain a mandatory read obligation and never imply unreachable.
-pub(crate) fn read_refinements<N: WordElement, J, M: Meter, Tail>(
+pub(crate) fn read_refinements<N: WordElement, J, M: Meter>(
     run: &mut Run<'_, J, M>,
-    ports: &mut Ports<N, Tail>,
+    shared: &mut Shared<N>,
     subject: Subject,
 ) -> Result<Answer<StackFacts>, KernelError<M::Stop>> {
-    run.query(&mut ports.tail.head, Scoped::new(subject.scope, ()))
+    run.query(&mut shared.refinements, Scoped::new(subject.scope, ()))
 }
 
 /// A detached executable view, with contradiction separate from interruption.
 #[derive(Debug)]
 pub enum LocalInput<N: WordElement> {
+    /// Required provider work is pending; the same Kernel retries the native
+    /// owner after its client scope settles, including equivalent Top answers.
+    Deferred,
     /// A valid numerical contradiction in this fixed input universe.
     Unreachable,
     /// The original carrier and metadata survive; precision limits do not remove

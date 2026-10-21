@@ -174,17 +174,18 @@ fn static_pair_routes_create_distinct_component_jobs_for_the_same_universe() {
 }
 
 #[test]
-fn input_ports_do_not_expose_another_generations_premises() {
-    use super::{Input, create_ports, initialize};
+fn shared_inputs_route_foreign_subjects_and_keep_unknown_providers_pending() {
+    use super::{Input, Ports, Shared, initialize};
     use crate::{
         analysis::machine::fixtures,
         domain::{Domain, NumericValue},
     };
-    use analysis_kernel::{Availability, LocalClosure, Scoped};
+    use analysis_kernel::{Availability, LocalClosure, Nil, Scoped};
 
     let mut kernel = Kernel::<u8>::new().unwrap();
     let mut meter = TestMeter;
-    let mut inputs = Vec::new();
+    let mut shared = Shared::<NumericValue>::new(&mut kernel, &mut meter).unwrap();
+    let mut subjects = Vec::new();
     for generation in 1..=2 {
         let scope = kernel
             .scope(
@@ -200,15 +201,19 @@ fn input_ports_do_not_expose_another_generations_premises() {
             point: Point {
                 namespace: 0,
                 kind: PointKind::World,
-                index: 0,
+                index: generation as usize,
             },
             scope,
         };
-        let mut ports =
-            create_ports::<NumericValue, _, _, _>(&mut kernel, &mut meter, &super::NoStores)
-                .unwrap();
         let job = kernel.register(scope, 0, &mut meter).unwrap();
         let mut run = kernel.begin(job, &mut meter).unwrap();
+        let mut local = Nil;
+        let mut global = Nil;
+        let mut ports = Ports {
+            shared: &mut shared,
+            local: &mut local,
+            global: &mut global,
+        };
         initialize(
             &mut run,
             &mut ports,
@@ -217,24 +222,29 @@ fn input_ports_do_not_expose_another_generations_premises() {
         .unwrap();
         run.finish(LocalClosure::Stable).unwrap();
         kernel.seal_scope(scope, &mut meter).unwrap();
-        inputs.push((subject, ports));
+        subjects.push(subject);
     }
-    let first = inputs[0].0;
-    let second = inputs[1].0;
-    let job = kernel.register(first.scope, 1, &mut meter).unwrap();
+    let job = kernel.register(subjects[0].scope, 1, &mut meter).unwrap();
     let mut run = kernel.begin(job, &mut meter).unwrap();
-    // The other generation really is seeded, but it is not a provider route
-    // exposed by this fixed universe's public context.
-    assert!(matches!(
-        run.query(&mut inputs[1].1.head, Scoped::new(second.scope, ()))
-            .unwrap()
-            .state,
-        Availability::Value(_)
-    ));
-    let foreign = run
-        .query(&mut inputs[0].1.head, Scoped::new(second.scope, ()))
+    for subject in &subjects {
+        let answer = run
+            .query(&mut shared.inputs, Scoped::new(subject.scope, ()))
+            .unwrap();
+        assert_eq!(answer.value().unwrap().subject(), *subject);
+    }
+    let unknown = run
+        .query(
+            &mut shared.generations,
+            Scoped::new(
+                subjects[0].scope,
+                Point {
+                    index: 99,
+                    ..subjects[0].point
+                },
+            ),
+        )
         .unwrap();
-    assert!(matches!(foreign.state, Availability::Pending));
+    assert!(matches!(unknown.state, Availability::Pending));
     run.finish(LocalClosure::Stable).unwrap();
     assert_ne!(kernel.closure(), analysis_kernel::Closure::Closed);
 }

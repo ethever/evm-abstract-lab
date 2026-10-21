@@ -5,7 +5,7 @@ use super::admission::SummaryAdmission;
 use crate::analysis::engine::{Arrival, ContextPolicy, PartitionPolicy};
 use crate::analysis::worklist::{MachineMeter, kernel_failure, runtime::TaskKind};
 use crate::domain::EvmNumericAlgebra;
-use analysis_kernel::{Availability, Change, PublishError, Version};
+use analysis_kernel::{Availability, Change, PublishError, RunningJob, Version};
 
 use super::coarse_retry::{self, EvmRuntimeRetry};
 use super::{
@@ -124,6 +124,25 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         self.table.frontiers.push(frontier);
     }
 
+    fn park_admitted(
+        &mut self,
+        task: &TaskKind<<X as crate::analysis::cooperation::InputTasks>::Task>,
+        reason: FrontierReason,
+    ) {
+        match task {
+            TaskKind::Body(id) => self.frontier_node(*id, reason.clone(), 0),
+            TaskKind::Resume(id) => self.frontier_subscriber(*id, reason.clone(), 0),
+            _ => self.table.frontiers.push(EvmExecutionFrontier {
+                pc: 0,
+                reason: reason.clone(),
+                target: None,
+                range: None,
+                payload: None,
+            }),
+        }
+        self.park_pending(reason);
+    }
+
     pub(super) fn park_pending(&mut self, reason: FrontierReason) {
         let pending = self.runtime.pending_relative().collect::<Vec<_>>();
         for task in pending {
@@ -161,6 +180,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 self.call_dependency(from, id)?;
             }
             self.enqueue_summary(id, payload, None, None)?;
+            self.observe_procedure(id)?;
             return Ok(id);
         }
         let id = self.table.procedures.len();
@@ -177,6 +197,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             .procedures_by_key
             .insert((self.namespace, key.clone()), id);
         self.table.procedures.push(EvmProcedure {
+            namespace: self.namespace,
             frame: key,
             entry: self.table.nodes.len(),
             nodes: BTreeMap::new(),
@@ -203,6 +224,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         if let Some(from) = from {
             self.call_dependency(from, id)?;
         }
+        self.observe_procedure(id)?;
         Ok(id)
     }
 
@@ -229,6 +251,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             payload.active().key.clone(),
             self.policies.partition.classify(Arrival { resume_status }),
         );
+        let previous_updates = self.table.procedures[procedure]
+            .nodes
+            .get(&key)
+            .map(|id| self.table.nodes[*id].updates);
         let id = if let Some(id) = self.table.procedures[procedure].nodes.get(&key).copied() {
             if let Some(from) = from {
                 self.node_edge(from, id)?;
@@ -250,7 +276,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 let work = widened.work_size().saturating_add(1);
                 let old = &mut self.table.nodes[id];
                 self.runtime.with_run(
-                    self.active.as_mut().unwrap_or(self.caller),
+                    self.active
+                        .as_mut()
+                        .or(self.caller.as_deref_mut())
+                        .ok_or(MachineError::Shape)?,
                     self.budget,
                     |run| {
                         run.publish_prepared_parts(
@@ -276,7 +305,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     widen,
                 };
                 self.runtime.with_run(
-                    self.active.as_mut().unwrap_or(self.caller),
+                    self.active
+                        .as_mut()
+                        .or(self.caller.as_deref_mut())
+                        .ok_or(MachineError::Shape)?,
                     self.budget,
                     |run| {
                         run.admit(
@@ -333,6 +365,13 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             }
             id
         };
+        if X::ENABLED {
+            // Only genuine native-input growth reopens completion. Active jobs
+            // and selector movement alone cannot force repeated close/reset cycles.
+            if previous_updates != Some(self.table.nodes[id].updates) {
+                self.observe_summary(procedure, false)?;
+            }
+        }
         Ok(id)
     }
 
@@ -346,45 +385,142 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     break;
                 }
             };
-            self.active = Some(token);
-            let result = match &task.0 {
-                TaskKind::Body(id) => self.step(*id),
-                TaskKind::Resume(subscriber) => match self.resume(*subscriber) {
-                    Ok(complete) => complete,
-                    Err(error) => {
-                        let reason = error.frontier_reason();
-                        self.frontier_subscriber(*subscriber, reason.clone(), 0);
-                        self.park_pending(reason);
-                        false
-                    }
-                },
-                TaskKind::Extension(_) => {
-                    let token = self.active.take().expect("external evaluation admitted");
-                    if let Err(error) =
-                        self.cooperation
-                            .evaluate(self.runtime, task, token, self.budget)
-                    {
-                        let error = self.cooperation.stop(error, self.budget);
-                        self.park_pending(error.frontier_reason());
-                        false
-                    } else {
-                        true
-                    }
-                }
-                TaskKind::World { .. } | TaskKind::Seed(_) => {
-                    unreachable!("uninitialized or foreign task")
-                }
-            };
-            if !result {
-                break;
-            }
-            if let Some(token) = self.active.take()
-                && let Err(error) = self.runtime.finish(token, self.budget)
-            {
-                self.park_pending(error.frontier_reason());
+            if !self.run_admitted(task, token) {
                 break;
             }
         }
+    }
+
+    pub(super) fn run_admitted(
+        &mut self,
+        task: Arc<
+            crate::analysis::worklist::runtime::Task<
+                <X as crate::analysis::cooperation::InputTasks>::Task,
+            >,
+        >,
+        token: RunningJob,
+    ) -> bool {
+        let procedure = match &task.0 {
+            TaskKind::Body(id) => Some(self.table.nodes[*id].procedure),
+            TaskKind::Resume(id) => {
+                Some(self.table.nodes[self.table.subscribers[*id].from].procedure)
+            }
+            _ => None,
+        };
+        if let Some(id) = procedure {
+            self.namespace = self.table.procedures[id].namespace;
+        }
+        self.active = Some(token);
+        self.deferred = false;
+        self.consumed = None;
+        let native_owner = matches!(&task.0, TaskKind::Body(_) | TaskKind::Resume(_));
+        let evaluated_stamp = match self.source_stamp(&task.0) {
+            Ok(stamp) => stamp,
+            Err(error) => {
+                self.park_admitted(&task.0, error.frontier_reason());
+                return false;
+            }
+        };
+        let frontiers_before = self.table.frontiers.len();
+        if native_owner
+            && let Err(error) = self.cooperation.begin_owner(
+                self.runtime,
+                self.active.as_mut().expect("admitted native owner"),
+                self.budget,
+            )
+        {
+            let error = self.cooperation.stop(error, self.budget);
+            self.park_admitted(&task.0, error.frontier_reason());
+            return false;
+        }
+        let result = match &task.0 {
+            TaskKind::Body(id) => self.step(*id),
+            TaskKind::Resume(subscriber) => match self.resume(*subscriber) {
+                Ok(complete) => complete,
+                Err(error) => {
+                    let reason = error.frontier_reason();
+                    self.frontier_subscriber(*subscriber, reason.clone(), 0);
+                    self.park_pending(reason);
+                    false
+                }
+            },
+            TaskKind::Extension(_) => {
+                let token = self.active.take().expect("external evaluation admitted");
+                if let Err(error) =
+                    self.cooperation
+                        .evaluate(self.runtime, Arc::clone(&task), token, self.budget)
+                {
+                    let error = self.cooperation.stop(error, self.budget);
+                    self.park_pending(error.frontier_reason());
+                    false
+                } else {
+                    true
+                }
+            }
+            TaskKind::SummaryObservation => match self.complete_observations() {
+                Ok(()) => true,
+                Err(error) => {
+                    let reason = error.frontier_reason();
+                    self.park_pending(reason.clone());
+                    self.table.frontiers.push(EvmExecutionFrontier {
+                        pc: 0,
+                        reason,
+                        target: None,
+                        range: None,
+                        payload: None,
+                    });
+                    false
+                }
+            },
+            TaskKind::World { .. } | TaskKind::Seed(_) => {
+                unreachable!("uninitialized or foreign task")
+            }
+        };
+        if !result {
+            return false;
+        }
+        let same_source = match self.source_stamp(&task.0) {
+            Ok(stamp) => stamp == evaluated_stamp,
+            Err(error) => {
+                self.park_admitted(&task.0, error.frontier_reason());
+                return false;
+            }
+        };
+        if native_owner
+            && !self.deferred
+            && same_source
+            && self.table.frontiers.len() == frontiers_before
+            && let Err(error) = self.cooperation.finish_owner(
+                self.runtime,
+                self.active.as_mut().expect("complete native owner"),
+                self.budget,
+                self.consumed,
+            )
+        {
+            let error = self.cooperation.stop(error, self.budget);
+            self.park_pending(error.frontier_reason());
+            return false;
+        }
+        if native_owner
+            && X::ENABLED
+            && let Err(error) = self.runtime.schedule_observation(self.budget)
+        {
+            let reason = error.frontier_reason();
+            match &task.0 {
+                TaskKind::Body(id) => self.frontier_node(*id, reason.clone(), 0),
+                TaskKind::Resume(id) => self.frontier_subscriber(*id, reason.clone(), 0),
+                _ => {}
+            }
+            self.park_pending(reason);
+            return false;
+        }
+        if let Some(token) = self.active.take()
+            && let Err(error) = self.runtime.finish(token, self.budget)
+        {
+            self.park_pending(error.frontier_reason());
+            return false;
+        }
+        true
     }
 
     /// Perform one admitted body obligation under the transaction ledger.
@@ -469,6 +605,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             case: 0,
             input: version,
             other: None,
+            parent: self.consumed,
         });
         if !execution.executed_pcs.is_empty() {
             let procedure = self.table.nodes[id].procedure;
@@ -544,9 +681,16 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         {
             return first;
         }
+        let first_receipt = self.consumed;
         match self.execute_coarse(id, original) {
-            Ok(retry) => super::coarse_retry::reconcile(first, retry),
+            Ok(retry) => {
+                if !retry.frontiers.is_empty() {
+                    self.consumed = first_receipt;
+                }
+                super::coarse_retry::reconcile(first, retry)
+            }
             Err(reason) => {
+                self.consumed = first_receipt;
                 if super::coarse_retry::interruption(&reason) {
                     super::super::boundary(&mut first, 0, reason);
                 }
@@ -585,6 +729,9 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         {
             Some(payload) => payload,
             None => {
+                if self.deferred {
+                    self.table.nodes[id].runtime_retry = EvmRuntimeRetry::Fresh;
+                }
                 return Ok(super::super::empty_execution(
                     instantiate_with(&bound, self.domain).map_err(MachineError::frontier_reason)?,
                 ));
@@ -622,7 +769,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             let node = &mut self.table.nodes[id];
             self.runtime
                 .with_run(
-                    self.active.as_mut().unwrap_or(self.caller),
+                    self.active
+                        .as_mut()
+                        .or(self.caller.as_deref_mut())
+                        .ok_or(MachineError::Shape.frontier_reason())?,
                     self.budget,
                     |run| {
                         run.publish_prepared_with(&node.input, Change::Changed, work, || {
@@ -697,8 +847,9 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 // This finite partition lasts exactly the first resumed block,
                 // where bytecode normally tests CALL status. Its successors use
                 // their actual new edge kinds and return to ordinary node keys.
+                let kind = successor.kind;
                 self.enqueue(procedure, successor.payload, resume_status, from)
-                    .map(|_| ())
+                    .and_then(|to| self.observe_body_edge(from, to, kind))
             };
             if let Err(error) = operation {
                 self.frontier(original, error.frontier_reason(), 0);
@@ -732,7 +883,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 widen,
             };
             self.runtime.with_run(
-                self.active.as_mut().unwrap_or(self.caller),
+                self.active
+                    .as_mut()
+                    .or(self.caller.as_deref_mut())
+                    .ok_or(MachineError::Shape)?,
                 self.budget,
                 |run| {
                     run.admit(
@@ -767,6 +921,25 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             self.table.subscribers_by_key.insert(key, subscription);
             self.table.procedures[callee].subscribers.push(subscription);
         }
+        let subscription = *self
+            .table
+            .subscribers_by_key
+            .get(&key)
+            .ok_or(MachineError::Shape)?;
+        self.observe_continuation(subscription)?;
+        self.observe_origin(
+            crate::analysis::cooperation::Point {
+                namespace: 1,
+                kind: crate::analysis::cooperation::PointKind::Body,
+                index: from,
+            },
+            callee,
+        )?;
+        self.observe_body_edge(
+            from,
+            self.table.procedures[callee].entry,
+            MachineEdgeKind::Call,
+        )?;
         // Resume reads both slots before using either. Kernel publications wake
         // it for caller-template growth as well as output growth; no manual
         // eager delivery recursion or generation-only receipt can lose a caller.
@@ -838,7 +1011,10 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             .checked_add(1)
             .ok_or(MachineError::IdentityExhausted)?;
         self.runtime.with_run(
-            self.active.as_mut().unwrap_or(self.caller),
+            self.active
+                .as_mut()
+                .or(self.caller.as_deref_mut())
+                .ok_or(MachineError::Shape)?,
             self.budget,
             |run| {
                 run.publish_prepared_parts(
@@ -853,6 +1029,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 .map_err(kernel_failure)
             },
         )?;
+        self.observe_summary(procedure, false)?;
         Ok(())
     }
 
@@ -898,6 +1075,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 },
                 input: template.version,
                 other: Some(outputs_version),
+                parent: None,
             });
             if !self.deliver(
                 subscriber,
@@ -922,7 +1100,9 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
     ) -> Result<bool, MachineError> {
         let subscription = &self.table.subscribers[subscriber];
         let stamp = (template_version, output.generation);
-        if subscription.delivered.get(&kind).copied() == Some(stamp) {
+        // Native stamps alone cannot certify cooperative contributions: a
+        // foreign premise can retire a namespace2 scope without changing them.
+        if !X::ENABLED && subscription.delivered.get(&kind).copied() == Some(stamp) {
             return Ok(true);
         }
         let from = subscription.from;
@@ -961,7 +1141,9 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             // Changing the active frame and EvmStore<D::Element> invalidates current-read templates.
             resumed.storage_observations = Default::default();
             resumed.work = resumed.measure_work();
-            self.enqueue_summary(self.table.nodes[from].procedure, resumed, None, Some(from))?;
+            let to =
+                self.enqueue_summary(self.table.nodes[from].procedure, resumed, None, Some(from))?;
+            self.observe_body_edge(from, to, MachineEdgeKind::Summary(kind))?;
             self.table.subscribers[subscriber]
                 .delivered
                 .insert(kind, stamp);
