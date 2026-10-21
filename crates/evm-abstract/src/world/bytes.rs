@@ -124,13 +124,27 @@ pub(super) fn constant_with<N: WordElement>(value: usize) -> EvmValue<N> {
     EvmValue::<N>::constant(U256::from(value))
 }
 pub(super) fn expr<N: WordElement>(value: &EvmValue<N>) -> Result<ExprId, RangeError> {
+    // Preserve hidden-singleton precision for existing byte reads. COPY uses
+    // expr_without_query to stay within its range proof/observation fee.
+    if value.expression().is_none()
+        && ranges::known_singleton(value).is_none()
+        && let Some(constant) = value.singleton()
+    {
+        return Ok(ExprId::constant(constant));
+    }
+    expr_without_query(value)
+}
+
+pub(super) fn expr_without_query<N: WordElement>(
+    value: &EvmValue<N>,
+) -> Result<ExprId, RangeError> {
     // A numeric proof does not replace the source term of the same value.
     // Retain that term; its numeric guarantee is paired in operand facts.
     if let Some(expression) = value.expression() {
         return Ok(expression.clone());
     }
-    if let Some(expression) = value.symbolic_expression() {
-        return Ok(expression);
+    if let Some(constant) = ranges::known_singleton(value) {
+        return Ok(ExprId::constant(constant));
     }
     let fresh = ExprId::fresh().ok_or(StateError::IdentityExhausted)?;
     if value.numeric().is_top() {
@@ -525,22 +539,41 @@ impl<N: WordElement> EvmByteArray<N> {
         max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
-        if size.singleton() == Some(U256::ZERO) {
+        self.expand_with_queries(offset, size, max_bytes, domain, ranges::Queries::Discover)
+    }
+
+    fn expand_with_queries<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        offset: &EvmValue<N>,
+        size: &EvmValue<N>,
+        max_bytes: usize,
+        domain: AlgebraRef<'_, D>,
+        queries: ranges::Queries,
+    ) -> Result<(), RangeError> {
+        if queries.singleton(size) == Some(U256::ZERO) {
             return Ok(());
         }
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
-        ranges::validate_target(offset, size, self.memory)?;
-        let offset = &ranges::normalized(offset)?;
-        let size = &ranges::normalized(size)?;
+        ranges::validate_target(offset, size, self.memory, queries)?;
+        let offset = &queries.normalized(offset)?;
+        let size = &queries.normalized(size)?;
         let allocation = (expr(offset)?, expr(size)?);
         ranges::check_allocation(&allocation, domain)?;
         if self.allocations.contains(&allocation) {
             self.check_existing(limits(domain))?;
             return Ok(());
         }
-        let length = ranges::expanded(&self.length, offset, size, max_bytes, self.memory, domain)?;
+        let length = ranges::expanded_with_queries(
+            &self.length,
+            offset,
+            size,
+            max_bytes,
+            self.memory,
+            domain,
+            queries,
+        )?;
         check_value(&length, limits(domain))?;
         if self.allocations.len().saturating_add(1) > limits(domain).max_nodes {
             return Err(StateError::Limit {
@@ -713,7 +746,7 @@ impl<N: WordElement> EvmByteArray<N> {
         max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
-        if size.singleton() == Some(U256::ZERO) {
+        if ranges::known_singleton(size) == Some(U256::ZERO) {
             return Ok(());
         }
         if let Some(error) = self.failure.as_ref().or(source.failure.as_ref()) {
@@ -758,15 +791,22 @@ impl<N: WordElement> EvmByteArray<N> {
         max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
-        let target_offset = &ranges::normalized(target_offset)?;
-        let requested = &ranges::normalized(requested)?;
-        // Keep both fallible normalizations before skipping the staged clone;
-        // expand, minimum and copy_from already do nothing for this size.
-        if requested.singleton() == Some(U256::ZERO) {
+        let target_offset = &ranges::normalized_without_query(target_offset)?;
+        let requested = &ranges::normalized_without_query(requested)?;
+        // Keep both fallible normalizations before skipping the staged clone.
+        // Use the same independent proof as quotation, even if N declines its
+        // optional numeric query. Empty sources still pass through expansion.
+        if ranges::known_singleton(requested) == Some(U256::ZERO) {
             return Ok(());
         }
         let mut out = self.clone();
-        out.expand_with(target_offset, requested, max_bytes, domain)?;
+        out.expand_with_queries(
+            target_offset,
+            requested,
+            max_bytes,
+            domain,
+            ranges::Queries::Independent,
+        )?;
         let copied = ranges::minimum(requested, returndata.len(), domain)?;
         out.copy_from_with(
             target_offset,
