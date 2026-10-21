@@ -27,6 +27,8 @@ const MAX_EXACT_PRECOMPILE_WORK: usize = 16 * 1024 * 1024;
 const MAX_MATERIALIZATION_WORK: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]
+mod completion_tests;
+#[cfg(test)]
 mod query_tests;
 mod root;
 #[cfg(test)]
@@ -302,6 +304,7 @@ fn summarize<D: EvmNumericAlgebra>(
     // Each of three alternatives retains at most four payload-sized copies:
     // input, completion receipt, resumed payload and output store/data. The
     // fixed allowance pays for fresh roots, one bounded slice and empty data.
+    // Actual native copies retain separate typed payers at their clone sites.
     // No logical bytes are enumerated, allocated or charged by this summary.
     let work = result
         .payload
@@ -311,6 +314,18 @@ fn summarize<D: EvmNumericAlgebra>(
         .saturating_mul(3);
     if context.budget.exhausted() || !context.budget.charge(work) {
         boundary(result, 0, FrontierReason::Work);
+        return;
+    }
+    // Identity's successful buffer owns a separate calldata clone, before
+    // any completion input is copied. Retention is not its native-copy price.
+    if matches!(id, PrecompileId::Identity)
+        && let Err(error) = result
+            .payload
+            .active()
+            .calldata
+            .pay_clone_with(context.budget)
+    {
+        boundary(result, 0, error.into());
         return;
     }
     // Construct and validate all buffers before publishing any alternative.
@@ -339,8 +354,8 @@ fn summarize<D: EvmNumericAlgebra>(
     .into_iter()
     .zip(data)
     {
-        if context.budget.exhausted() || !context.budget.charge(0) {
-            boundary(result, 0, FrontierReason::Work);
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(result, 0, error.into());
             return;
         }
         // Native operations are pure; the call layer owns touch metadata and
@@ -391,6 +406,25 @@ fn finish_native<D: EvmNumericAlgebra>(
     let data = EvmByteArray::<D::Element>::exact(&bytes);
     if let Err(error) = data.check_existing(context.domain.spec().relations().expressions()) {
         boundary(result, 0, super::errors::bytes(error));
+        return;
+    }
+    if let Err(error) = result.payload.pay_clone_with(context.budget) {
+        boundary(result, 0, error.into());
+        return;
+    }
+    // A relative root restores directly in finish_root_store; only child
+    // rollback has a saved-store payer in finish. Checkpoint clones are handles.
+    if context.procedure
+        && result.payload.call_stack.active_child().is_none()
+        && kind != OutcomeKind::Return
+        && let Err(error) = result
+            .payload
+            .active()
+            .saved_store
+            .state()
+            .pay_clone_with(context.budget)
+    {
+        boundary(result, 0, error.into());
         return;
     }
     let payload = result.payload.clone();
