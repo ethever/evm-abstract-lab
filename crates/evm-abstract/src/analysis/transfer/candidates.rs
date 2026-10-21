@@ -66,6 +66,18 @@ pub(super) fn prepare<'a, N: WordElement>(
     budget: &mut WorkBudget,
 ) -> Result<(Option<Candidates<'a>>, SingletonProof), FrontierReason> {
     super::query::checkpoint(budget)?;
+    // Symbolic byte/hash consumers can use this literal even when the numeric
+    // view declines precision. Quote the same exact extent/target without
+    // rediscovering it through N or constructing a temporary numeric value.
+    if let Some(word) = value
+        .expression()
+        .and_then(|expression| expression.as_constant())
+    {
+        return Ok((
+            Some(Candidates::single(word)),
+            SingletonProof::Answer(Some(word)),
+        ));
+    }
     if let Some(finite) = value.constants() {
         let proof = if finite.len() == 1 {
             SingletonProof::Answer(finite.first().copied())
