@@ -38,7 +38,14 @@ pub(super) static EPOCHS: Counter<Stats> = Counter::new(Stats {
     cancel_after: 0,
 });
 
-pub(super) fn observed(reader: &super::numeric::Reader<'_>, before: (usize, usize), shared: bool) {
+pub(super) fn observed<
+    N: crate::domain::WordElement,
+    D: crate::domain::EvmNumericAlgebra<Element = N>,
+>(
+    reader: &super::numeric::Reader<'_, N, D>,
+    before: (usize, usize),
+    shared: bool,
+) {
     let (entries, retained) = reader.cache_stats();
     let mut cancel = false;
     EPOCHS.update(|stats| {
@@ -93,9 +100,16 @@ fn differential(staged: ByteArray, domain: Domain) -> ByteArray {
     // Share the EXACT staged root/source identities with the original oracle.
     let saved = staged.clone();
     let mut expected = staged.clone();
-    expected.refresh(domain);
+    expected.refresh(crate::domain::ValueAlgebra::new(&domain));
     let mut actual = staged;
-    assert!(run(&mut actual, domain, &mut WorkBudget::new(1_000_000_000)).unwrap());
+    assert!(
+        run(
+            &mut actual,
+            crate::domain::ValueAlgebra::new(&domain),
+            &mut WorkBudget::new(1_000_000_000)
+        )
+        .unwrap()
+    );
     assert_eq!(actual, expected);
     assert_eq!(actual.root, saved.root);
     assert_eq!(actual.operands, saved.operands);
@@ -135,7 +149,15 @@ fn original_refresh_matches_whole_staged_history_guards_and_saved_snapshots() {
     let value = source();
     for prior in [before.clone(), guarded] {
         let saved = prior.clone();
-        let staged = prior.staged_write(&at, &value, 32, 128, domain).unwrap();
+        let staged = prior
+            .staged_write(
+                &at,
+                &value,
+                32,
+                128,
+                crate::domain::ValueAlgebra::new(&domain),
+            )
+            .unwrap();
         assert!(
             matches!(staged.root.kind(), ByteStateKind::WriteWord { previous, .. }
             if previous == saved.state_root())
@@ -153,7 +175,13 @@ fn original_refresh_matches_whole_staged_history_guards_and_saved_snapshots() {
     // Finite views keep their own zero padding after the same symbolic write.
     differential(
         ByteArray::exact(&[1, 2, 3])
-            .staged_write(&at, &value, 32, 128, domain)
+            .staged_write(
+                &at,
+                &value,
+                32,
+                128,
+                crate::domain::ValueAlgebra::new(&domain),
+            )
             .unwrap(),
         domain,
     );
@@ -169,14 +197,29 @@ fn cacheable_non_top_words_reuse_one_reader_with_every_cell_read_and_new_epochs(
     let value = source();
     assert!(!value.numeric().is_top());
     assert!(value.finite_constants().is_top());
-    let staged = before.staged_write(&at, &value, 32, 128, domain).unwrap();
+    let staged = before
+        .staged_write(
+            &at,
+            &value,
+            32,
+            128,
+            crate::domain::ValueAlgebra::new(&domain),
+        )
+        .unwrap();
     let mut expected = staged.clone();
     NUMERIC_READS.set(0);
-    expected.refresh(domain);
+    expected.refresh(crate::domain::ValueAlgebra::new(&domain));
     assert_eq!(NUMERIC_READS.get(), 32);
     NUMERIC_READS.set(0);
     let mut actual = staged;
-    assert!(run(&mut actual, domain, &mut WorkBudget::new(1_000_000_000)).unwrap());
+    assert!(
+        run(
+            &mut actual,
+            crate::domain::ValueAlgebra::new(&domain),
+            &mut WorkBudget::new(1_000_000_000)
+        )
+        .unwrap()
+    );
     assert_eq!(NUMERIC_READS.get(), 32);
     assert_eq!(actual, expected);
     let stats = EPOCHS.get();
@@ -189,9 +232,15 @@ fn cacheable_non_top_words_reuse_one_reader_with_every_cell_read_and_new_epochs(
     assert!(stats.retained > 0 && stats.retained <= 8192);
     let saved = actual.clone();
     expected = actual
-        .staged_write(&word(64), &word(7), 1, 128, domain)
+        .staged_write(
+            &word(64),
+            &word(7),
+            1,
+            128,
+            crate::domain::ValueAlgebra::new(&domain),
+        )
         .unwrap();
-    expected.refresh(domain);
+    expected.refresh(crate::domain::ValueAlgebra::new(&domain));
     NUMERIC_READS.set(0);
     assert!(
         actual
@@ -228,10 +277,16 @@ fn cacheable_non_top_words_reuse_one_reader_with_every_cell_read_and_new_epochs(
     assert_eq!(NUMERIC_READS.get(), 1);
     assert_eq!(EPOCHS.get().epochs, 2);
     let mut old = ByteArray::memory()
-        .staged_write(&word(0), &top, 32, 128, domain)
+        .staged_write(
+            &word(0),
+            &top,
+            32,
+            128,
+            crate::domain::ValueAlgebra::new(&domain),
+        )
         .unwrap();
     NUMERIC_READS.set(0);
-    old.refresh(domain);
+    old.refresh(crate::domain::ValueAlgebra::new(&domain));
     assert_eq!(NUMERIC_READS.get(), 32);
     assert_eq!(fresh, old);
 }
@@ -241,7 +296,13 @@ fn full_facts_mismatch_and_changed_guard_policy_keep_independent_scopes() {
     let _stats = EPOCHS.scope();
     let domain = Domain::default();
     let mut staged = memory(domain)
-        .staged_write(&offset(), &source(), 32, 128, domain)
+        .staged_write(
+            &offset(),
+            &source(),
+            32,
+            128,
+            crate::domain::ValueAlgebra::new(&domain),
+        )
         .unwrap();
     // A valid noncanonical constant-key AV loses its expression when index zero
     // is remembered. Numeric equality alone would incorrectly admit later cells.
@@ -251,8 +312,12 @@ fn full_facts_mismatch_and_changed_guard_policy_keep_independent_scopes() {
             .with_origin(Origin::Storage)
             .with_expression(ExprId::fresh().unwrap()),
     );
-    let (_, zero_facts) = staged.prepare_byte_read(&word(0), domain).unwrap();
-    let (_, one_facts) = staged.prepare_byte_read(&word(1), domain).unwrap();
+    let (_, zero_facts) = staged
+        .prepare_byte_read(&word(0), crate::domain::ValueAlgebra::new(&domain))
+        .unwrap();
+    let (_, one_facts) = staged
+        .prepare_byte_read(&word(1), crate::domain::ValueAlgebra::new(&domain))
+        .unwrap();
     let key = ExprId::constant(U256::ZERO);
     assert_eq!(zero_facts[&key].numeric(), one_facts[&key].numeric());
     assert_ne!(zero_facts, one_facts);
@@ -289,9 +354,17 @@ fn optional_declines_keep_old_work_and_actual_stops_abort_without_poisoning_late
     let saved = before.clone();
     let at = offset();
     let value = source();
-    let staged = before.staged_write(&at, &value, 32, 128, domain).unwrap();
+    let staged = before
+        .staged_write(
+            &at,
+            &value,
+            32,
+            128,
+            crate::domain::ValueAlgebra::new(&domain),
+        )
+        .unwrap();
     let mut expected = staged.clone();
-    expected.refresh(domain);
+    expected.refresh(crate::domain::ValueAlgebra::new(&domain));
     let census = staged.operands.len() * 8 + 8;
     let total = census + super::EPOCH_WORK + (equality_work(&staged) + 8) * staged.bytes.len();
     for cut in [0, census - 1, census, total - 1] {
@@ -387,7 +460,13 @@ fn cache_capacity_refusal_and_checked_read_markers_keep_original_results() {
     assert!(expression.work_size() > 8192);
     let value = source().with_expression(expression);
     let staged = memory(domain)
-        .staged_write(&offset(), &value, 32, 128, domain)
+        .staged_write(
+            &offset(),
+            &value,
+            32,
+            128,
+            crate::domain::ValueAlgebra::new(&domain),
+        )
         .unwrap();
     differential(staged, domain);
     assert_eq!(
@@ -410,9 +489,15 @@ fn cache_capacity_refusal_and_checked_read_markers_keep_original_results() {
     let value = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
     let before = ByteArray::memory();
     let mut expected = before
-        .staged_write(&word(0), &value, 1, 128, limited)
+        .staged_write(
+            &word(0),
+            &value,
+            1,
+            128,
+            crate::domain::ValueAlgebra::new(&limited),
+        )
         .unwrap();
-    expected.refresh(limited);
+    expected.refresh(crate::domain::ValueAlgebra::new(&limited));
     let mut actual = before;
     assert!(
         actual

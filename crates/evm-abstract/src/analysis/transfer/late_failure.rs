@@ -4,11 +4,16 @@
 //! SELFDESTRUCT also has an instruction-local failure point: its host effects
 //! precede the dynamic gas charge. Both envelopes retain normal execution.
 
-use super::{Execution, ExecutionFrontier, TransferContext, WorkBudget, boundary_reason, calls};
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
+use super::{
+    EvmExecution, EvmExecutionFrontier, TransferContext, WorkBudget, boundary_reason, calls,
+};
+
 use crate::{
-    analysis::{FrontierReason, MachinePayload, OutcomeKind},
-    domain::{AbstractValue, provenance::MAX_ORIGINS, relational::Constraint},
-    world::{ByteArray, Store},
+    analysis::{EvmMachinePayload, FrontierReason, OutcomeKind},
+    domain::provenance::MAX_ORIGINS,
+    world::{EvmByteArray, EvmStore},
 };
 use alloy_primitives::{Address, U256};
 
@@ -21,7 +26,7 @@ mod tests;
 const TOUCH_QUERY_WORK: usize = (usize::BITS as usize + 1) * 16;
 
 fn reserve(budget: &mut WorkBudget, work: usize) -> Option<()> {
-    (!budget.exhausted() && work != usize::MAX && budget.charge(work)).then_some(())
+    crate::resource::clone_payment::pay(budget, work).ok()
 }
 
 fn tree_work(entries: usize) -> usize {
@@ -33,10 +38,8 @@ fn tree_work(entries: usize) -> usize {
         .saturating_mul(16)
 }
 
-// These units include eventual temporary-container drops. Numeric candidates,
-// expressions, byte/slot roots, Programs, paths and snapshots clone handles;
-// only the small OriginSet inside a value owns a cloned tree.
-const HANDLE_CLONE_WORK: usize = 2; // retain + release
+// Construction, parent Vec growth and normalization are separate from the
+// actual snapshot copies paid by the common completion boundaries.
 const MAP_ENTRY_WORK: usize = 4; // allocation, entry copy, removal, release
 const VALUE_INLINE_WORK: usize = 20; // fixed numeric/identity/flag/handle fields
 const MAX_VALUE_CLONE_WORK: usize = VALUE_INLINE_WORK + MAP_ENTRY_WORK * MAX_ORIGINS;
@@ -44,128 +47,50 @@ const ARRAY_FIXED_WORK: usize = 16; // headers, root, metrics, flags and failure
 const EMPTY_DATA_WORK: usize = ARRAY_FIXED_WORK + 2 * MAX_VALUE_CLONE_WORK;
 const STORE_ENTRY_WORK: usize = 12; // fixed key/value fields and node bookkeeping
 const FRAME_KEY_WORK: usize = 20; // ten fixed fields, including Vec bookkeeping
-const FRAME_FIXED_WORK: usize = 12; // Program/Snapshot handles, mode and headers
-const CONSTRAINT_INLINE_WORK: usize = 16; // fixed words and up to two Expr handles
 
-fn value_clone_work(value: &AbstractValue) -> usize {
-    VALUE_INLINE_WORK.saturating_add(
-        value
-            .provenance()
-            .origins()
-            .work_size()
-            .saturating_mul(MAP_ENTRY_WORK),
-    )
-}
-
-fn array_work(array: &ByteArray, budget: &mut WorkBudget) -> Option<usize> {
-    // Only the directly owned value metadata is inspected, after admission.
-    // Conditional subtrees, Exact buffers and byte-state history stay shared.
-    reserve(budget, array.cloned_value_count().saturating_add(1))?;
-    let bytes = array.stored_bytes();
-    let operands = array.symbolic_facts();
-    let cells = bytes.len().saturating_add(operands.len());
-    let expressions = operands.len();
-    let allocations = array.allocation_facts().len();
-    let values = bytes
-        .map(|(_, value)| value)
-        .chain(operands.map(|(_, value)| value))
-        .chain([array.len(), array.default_byte()])
-        .fold(0usize, |work, value| {
-            work.saturating_add(value_clone_work(value))
-        });
-    Some(
-        ARRAY_FIXED_WORK
-            .saturating_add(values)
-            .saturating_add(cells.saturating_mul(MAP_ENTRY_WORK))
-            .saturating_add(expressions.saturating_mul(HANDLE_CLONE_WORK))
-            .saturating_add(allocations.saturating_mul(MAP_ENTRY_WORK + 2 * HANDLE_CLONE_WORK))
-            .saturating_add(
-                array
-                    .cloned_conditional_branches()
-                    .saturating_mul(HANDLE_CLONE_WORK + 2),
-            ),
-    )
-}
-
-struct StoreWork {
-    clone: usize,
-    key_error: usize,
-}
-
-fn store_work(store: &Store, key_error: bool, budget: &mut WorkBudget) -> Option<StoreWork> {
+fn store_error_work<N: WordElement>(store: &EvmStore<N>, budget: &mut WorkBudget) -> Option<usize> {
     let entries = store.finalization_entries();
-    // O(1) census first: two flat passes cover scalar/log metadata and, when
-    // needed, runtime lengths. No AV, topic, log data or code entry is read yet.
+    // Admit the flat runtime-length census before inspecting code entries.
     reserve(budget, entries.saturating_add(1).saturating_mul(2))?;
-    let mut clone = store
-        .cloned_values()
-        .fold(entries.saturating_mul(STORE_ENTRY_WORK), |work, value| {
-            work.saturating_add(value_clone_work(value))
-        });
-    for log in store.possible_logs().values() {
-        reserve(budget, log.topics.len().saturating_add(1))?;
-        clone = log.topics.iter().fold(
-            clone.saturating_add(array_work(&log.data, budget)?),
-            |work, value| work.saturating_add(value_clone_work(value)),
-        );
-    }
-    let key_error = if key_error {
-        // finish can construct ONE error key. code_identity really builds an
-        // address set and hashes raw runtime bytes: this is not Program.clone.
-        // One set insertion + up to eight lookups per entry; the maximum key
-        // record is address + tag + code hash + three lifecycle flags. Four
-        // byte passes cover Vec append/growth and the final record-buffer hash.
-        let record_bytes = 20 + 1 + 32 + 3;
+    // finish can construct ONE error key. code_identity really builds an
+    // address set and hashes raw runtime bytes: this is not Program.clone.
+    // One set insertion + up to eight lookups per entry; the maximum key
+    // record is address + tag + code hash + three lifecycle flags. Four
+    // byte passes cover Vec append/growth and the final record-buffer hash.
+    let record_bytes = 20 + 1 + 32 + 3;
+    Some(
         tree_work(entries)
             .saturating_mul(9)
             .saturating_add(entries.saturating_mul(record_bytes * 4))
-            .saturating_add(store.code_identity_bytes().saturating_mul(2))
-    } else {
-        0
-    };
-    Some(StoreWork { clone, key_error })
+            .saturating_add(store.code_identity_bytes().saturating_mul(2)),
+    )
 }
 
-fn reserve_failure(
-    payload: &MachinePayload,
+fn reserve_failure<N: WordElement>(
+    payload: &EvmMachinePayload<N>,
     procedure: bool,
     budget: &mut WorkBudget,
 ) -> Option<()> {
     let child = payload.call_stack.active_child().is_some();
-    let current = store_work(&payload.store, child || !procedure, budget)?;
-    let saved = if procedure || child {
-        // Snapshot.clone shares an Arc. Only the active snapshot is restored;
-        // the original payload keeps it shared, so restoration clones one Store.
-        Some(store_work(
-            payload.active().saved_store.state(),
-            child,
-            budget,
-        )?)
+    let mut key_error = if child || !procedure {
+        store_error_work(&payload.store, budget)?
     } else {
-        // Checked transaction finalization owns its staging/rollback work.
-        None
+        0
     };
+    if child {
+        key_error = key_error.max(store_error_work(
+            payload.active().saved_store.state(),
+            budget,
+        )?);
+    }
     let depth = payload.call_stack.depth();
     reserve(budget, depth.saturating_mul(4))?;
-    let mut frames = 0usize;
     let mut key_frames = 0usize;
     let mut normalize_values = 1usize; // the parent's newly pushed result
     for (index, frame) in payload.call_stack.iter().enumerate() {
         reserve(budget, frame.stack.len().saturating_add(4))?;
         let key = FRAME_KEY_WORK.saturating_add(frame.key.jump_history.len().saturating_mul(2));
         key_frames = key_frames.saturating_add(key);
-        frames = frame.stack.iter().fold(
-            frames
-                .saturating_add(key)
-                .saturating_add(FRAME_FIXED_WORK)
-                .saturating_add(value_clone_work(&frame.call_value))
-                .saturating_add(frame.address_operand.as_ref().map_or(0, value_clone_work))
-                .saturating_add(frame.caller_operand.as_ref().map_or(0, value_clone_work)),
-            |work, value| work.saturating_add(value_clone_work(value)),
-        );
-        for array in [&frame.memory, &frame.calldata, &frame.returndata] {
-            frames = frames.saturating_add(array_work(array, budget)?);
-        }
         if index + 1 < depth {
             normalize_values = normalize_values
                 .saturating_add(frame.stack.len())
@@ -176,48 +101,16 @@ fn reserve_failure(
     }
     let children = payload.call_stack.children().len();
     reserve(budget, children.saturating_mul(2).saturating_add(1))?;
-    for child in payload.call_stack.children() {
-        frames = frames
-            .saturating_add(8) // continuation fixed fields and child Vec entry
-            .saturating_add(value_clone_work(&child.continuation.output_offset))
-            .saturating_add(value_clone_work(&child.continuation.output_size));
-    }
-    let constraints = payload.relations.constraints();
-    reserve(budget, constraints.len().saturating_add(1))?;
-    let mut relations = 8usize // path Arc, bottom flag and owned-set header
-        .saturating_add(
-            constraints
-                .len()
-                .saturating_mul(CONSTRAINT_INLINE_WORK + MAP_ENTRY_WORK),
-        );
-    for constraint in constraints {
-        if let Constraint::Members { values, .. } = constraint {
-            // Members owns U256s; finite numeric candidates and the path do not.
-            relations = relations.saturating_add(values.len().saturating_mul(2 + MAP_ENTRY_WORK));
-        }
-    }
-    let payload_clone = current
-        .clone
-        .saturating_add(frames)
-        .saturating_add(relations);
-    // Failure clones the input once; a child additionally retains CompletedCall.
-    let mut work = payload_clone
-        .saturating_mul(if child { 2 } else { 1 })
-        .saturating_add(EMPTY_DATA_WORK);
-    let mut key_error = current.key_error;
-    if let Some(saved) = saved {
-        work = work
-            .saturating_add(saved.clone)
-            // Three touched-map searches/updates; the flat Store clone bound
-            // also covers first-write imbl COW and its temporary node drops.
-            .saturating_add(TOUCH_QUERY_WORK.saturating_mul(3));
-        key_error = key_error.max(saved.key_error);
+    // Input and completed-call captures, saved-store restoration and output
+    // snapshots are paid at their actual clone sites by calls::failure/finish.
+    // Keep only this envelope's construction, sticky-touch and error-key work.
+    let mut work = EMPTY_DATA_WORK;
+    if procedure || child {
+        work = work.saturating_add(TOUCH_QUERY_WORK.saturating_mul(3));
         if child {
-            // output_store clones the restored Store; one new touch entry may
-            // have appeared. No other historical saved Store is restored here.
-            work = work
-                .saturating_add(saved.clone)
-                .saturating_add(STORE_ENTRY_WORK);
+            // Restoration can add the sticky touch after finish's saved-store
+            // quote. Keep the extra entry's allocation/COW/drop allowance.
+            work = work.saturating_add(STORE_ENTRY_WORK);
         }
     }
     if child {
@@ -250,12 +143,16 @@ fn reserve_failure(
     reserve(budget, work)
 }
 
-fn refused(result: &mut Execution, pc: usize) -> bool {
+fn refused<N: WordElement>(result: &mut EvmExecution<N>, pc: usize, budget: &WorkBudget) -> bool {
     // Building a MachineKey hashes code and clones frame keys. Refused
     // admission retains the location without doing that unpaid extra work.
-    result.frontiers.push(ExecutionFrontier {
+    result.frontiers.push(EvmExecutionFrontier {
         pc,
-        reason: boundary_reason(FrontierReason::Work),
+        reason: boundary_reason(
+            crate::resource::clone_payment::checkpoint(budget)
+                .err()
+                .map_or(FrontierReason::Work, FrontierReason::from),
+        ),
         target: None,
         range: None,
         payload: None,
@@ -263,7 +160,10 @@ fn refused(result: &mut Execution, pc: usize) -> bool {
     false
 }
 
-pub(super) fn at_block_entry(result: &mut Execution, context: &mut TransferContext<'_>) -> bool {
+pub(super) fn at_block_entry<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    context: &mut TransferContext<'_, D>,
+) -> bool {
     let frame = result.payload.active();
     let pc = frame.program.as_ref().map_or(0, |program| {
         program
@@ -273,7 +173,7 @@ pub(super) fn at_block_entry(result: &mut Execution, context: &mut TransferConte
             .map_or(program.byte_len(), |instruction| instruction.pc)
     });
     if reserve(context.budget, TOUCH_QUERY_WORK).is_none() {
-        return refused(result, pc);
+        return refused(result, pc, context.budget);
     }
     let ripemd = Address::from_word(U256::from(3).into());
     let touched = result.payload.store.touched_in_transaction(ripemd);
@@ -281,7 +181,7 @@ pub(super) fn at_block_entry(result: &mut Execution, context: &mut TransferConte
         return true;
     }
     if reserve_failure(&result.payload, context.procedure, context.budget).is_none() {
-        return refused(result, pc);
+        return refused(result, pc, context.budget);
     }
     let frontiers = result.frontiers.len();
     calls::failure(result, context, pc);
@@ -289,7 +189,7 @@ pub(super) fn at_block_entry(result: &mut Execution, context: &mut TransferConte
         return false;
     }
     if context.budget.exhausted() {
-        return refused(result, pc);
+        return refused(result, pc, context.budget);
     }
     true
 }
@@ -297,28 +197,33 @@ pub(super) fn at_block_entry(result: &mut Execution, context: &mut TransferConte
 /// The host may touch RIPEMD before SELFDESTRUCT's dynamic gas charge fails.
 /// Restore through the ordinary completion path so only that sticky touch,
 /// not the transferred balance or destruction effects, survives failure.
-pub(super) fn after_selfdestruct(
-    result: &mut Execution,
-    payload: &MachinePayload,
-    context: &mut TransferContext<'_>,
+pub(super) fn after_selfdestruct<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    payload: &EvmMachinePayload<D::Element>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
     if reserve(context.budget, TOUCH_QUERY_WORK).is_none() {
-        return refused(result, pc);
+        return refused(result, pc, context.budget);
     }
     let ripemd = Address::from_word(U256::from(3).into());
     if payload.store.touched_in_transaction(ripemd) == Some(false) {
         return true;
     }
     if reserve_failure(payload, context.procedure, context.budget).is_none() {
-        return refused(result, pc);
+        return refused(result, pc, context.budget);
+    }
+    // This borrowed candidate has no calls::failure input owner. Its input
+    // copy remains separate from finish's completed-call/output snapshots.
+    if payload.pay_clone_with(context.budget).is_err() {
+        return refused(result, pc, context.budget);
     }
     let frontiers = result.frontiers.len();
     calls::finish(
         result,
         payload.clone(),
         OutcomeKind::Failure,
-        ByteArray::empty(),
+        EvmByteArray::<D::Element>::empty(),
         context,
         pc,
     );
@@ -326,7 +231,7 @@ pub(super) fn after_selfdestruct(
         return false;
     }
     if context.budget.exhausted() {
-        return refused(result, pc);
+        return refused(result, pc, context.budget);
     }
     true
 }

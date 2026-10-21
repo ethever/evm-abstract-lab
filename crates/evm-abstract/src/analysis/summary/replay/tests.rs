@@ -89,6 +89,7 @@ fn certificate(domain: Domain) -> (Certificate, crate::analysis::MachinePayload,
     let node = Node {
         entry: entry.clone(),
         resume_status: Some(true),
+        partition: Some(true),
         exit: exit.clone(),
         exit_stack: vec![historical],
         executed_pcs: vec![0],
@@ -160,7 +161,12 @@ fn replay_renames_all_hidden_sources_roots_history_and_outputs_with_one_map() {
     assert!(!old_tokens.is_empty());
     assert!(old_tokens.iter().all(|token| map.contains_key(token)));
     let expected: BTreeSet<_> = old_tokens.iter().map(|token| map[token].clone()).collect();
-    let prepared = replay.prepare(&mut budget).unwrap();
+    let prepared = replay
+        .prepare(
+            &mut budget,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+        .unwrap();
     let node = &prepared.nodes[0];
     assert_eq!(node.resume_status, Some(true));
     assert_eq!(
@@ -216,7 +222,12 @@ fn replay_renames_all_hidden_sources_roots_history_and_outputs_with_one_map() {
     )
     .unwrap();
     let second_map = replay.renaming.clone();
-    let second = replay.prepare(&mut budget).unwrap();
+    let second = replay
+        .prepare(
+            &mut budget,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+        .unwrap();
     assert!(
         map.values()
             .all(|token| !second_map.values().any(|other| token == other))
@@ -249,7 +260,14 @@ fn replay_failure_and_cancellation_do_not_change_input_or_certificate_snapshots(
         max_depth: 1,
     };
     let replay = Replay::new(&certificate, &caller, &mut budget, limits).unwrap();
-    assert!(replay.prepare(&mut budget).is_err());
+    assert!(
+        replay
+            .prepare(
+                &mut budget,
+                crate::domain::ValueAlgebra::new(domain).borrowed()
+            )
+            .is_err()
+    );
     assert_eq!(caller, before);
     assert_eq!(certificate.nodes[0].exit, original);
     assert_eq!(certificate.terminals[0].raw_data, data);
@@ -493,4 +511,71 @@ fn rejected_world_fingerprint_runs_without_a_summary_or_a_guessed_key() {
         .unwrap()
         .verify(&result)
         .unwrap();
+}
+
+#[test]
+fn actual_replay_rejects_current_and_captured_cancellation_after_paid_class_clone() {
+    use crate::analysis::summary::{EvmCertificate, EvmNode, EvmReplay, cancellation::CancelClass};
+    use analysis_control::{Cancellation, with_cancellation};
+    use std::cell::Cell;
+
+    for cancel_captured in [false, true] {
+        let domain = Domain::default();
+        let (original, caller, _) = certificate(domain);
+        let owner = Cancellation::new();
+        let current = Cancellation::new();
+        let clones = Cell::new(0);
+        let target = if cancel_captured {
+            owner.clone()
+        } else {
+            current.clone()
+        };
+        let tagged = EvmCertificate {
+            record: original.record,
+            edges: original.edges,
+            terminals: original.terminals,
+            nodes: original
+                .nodes
+                .into_iter()
+                .enumerate()
+                .map(|(id, node)| EvmNode {
+                    entry: node.entry,
+                    resume_status: node.resume_status,
+                    partition: CancelClass {
+                        id,
+                        clones: &clones,
+                        cancel: Some(target.clone()),
+                    },
+                    exit: node.exit,
+                    exit_stack: node.exit_stack,
+                    executed_pcs: node.executed_pcs,
+                    instruction_progress: node.instruction_progress,
+                    instruction_values: node.instruction_values,
+                    diagnostics: node.diagnostics,
+                    completed_calls: node.completed_calls,
+                })
+                .collect(),
+        };
+        let mut budget = with_cancellation(&owner, || WorkBudget::new(100_000_000));
+        let result = with_cancellation(&current, || {
+            EvmReplay::new(
+                &tagged,
+                &caller,
+                &mut budget,
+                domain.spec().relations().expressions(),
+            )
+            .and_then(|replay| {
+                replay.prepare(
+                    &mut budget,
+                    crate::domain::ValueAlgebra::new(domain).borrowed(),
+                )
+            })
+        });
+        assert!(matches!(
+            result,
+            Err(MachineError::Relations(QueryReason::Cancelled))
+        ));
+        assert_eq!(clones.get(), 1);
+        assert!(budget.used() > 0);
+    }
 }

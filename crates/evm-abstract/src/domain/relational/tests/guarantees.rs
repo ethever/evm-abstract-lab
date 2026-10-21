@@ -143,7 +143,7 @@ fn asserted_input_length_bounds_preserve_the_last_byte_padding_boundary() {
                     .map(|index| StateBinding {
                         index: U256::from(index),
                         value: c(1),
-                        numeric: NumericValue::constant(U256::from(1)),
+                        numeric: NumericValue::constant(U256::from(1)).into(),
                     })
                     .collect(),
                 limits.expressions().into(),

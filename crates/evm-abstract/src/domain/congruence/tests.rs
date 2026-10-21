@@ -4,6 +4,8 @@ use proptest::prelude::*;
 use revm_bytecode::opcode;
 use std::collections::BTreeSet;
 
+mod numerical;
+
 fn u(value: u64) -> U256 {
     U256::from(value)
 }

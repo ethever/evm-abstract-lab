@@ -2,22 +2,24 @@
 //! transformed; this walk owns frame coverage and rebuilding rollback snapshots.
 //! Scalar updates use the world's scoped-value APIs and cannot rename roots.
 
+use crate::domain::WordElement;
+
 use crate::{
-    analysis::{CallStack, MachineError, MachinePayload},
-    domain::AbstractValue,
-    world::{ByteArray, Snapshot, Store},
+    analysis::machine::{EvmCallStack, EvmMachinePayload, MachineError},
+    domain::EvmValue,
+    world::{EvmByteArray, EvmSnapshot, EvmStore},
 };
 use std::borrow::Cow;
 
-pub(in crate::analysis) enum StatePart<'a, 'store> {
-    Value(&'a mut AbstractValue),
-    Bytes(&'a mut ByteArray),
+pub(in crate::analysis) enum StatePart<'a, 'store, N: WordElement> {
+    Value(&'a mut EvmValue<N>),
+    Bytes(&'a mut EvmByteArray<N>),
     /// A frame's rollback version; current transaction state stays with callers.
-    Store(&'a mut Cow<'store, Store>),
+    Store(&'a mut Cow<'store, EvmStore<N>>),
 }
 
-impl StatePart<'_, '_> {
-    pub(in crate::analysis) fn update_values(self, update: &mut impl FnMut(&mut AbstractValue)) {
+impl<N: WordElement> StatePart<'_, '_, N> {
+    pub(in crate::analysis) fn update_values(self, update: &mut impl FnMut(&mut EvmValue<N>)) {
         match self {
             Self::Value(value) => update(value),
             Self::Bytes(bytes) => bytes.update_values(update),
@@ -26,10 +28,10 @@ impl StatePart<'_, '_> {
     }
 }
 
-impl CallStack {
+impl<N: WordElement> EvmCallStack<N> {
     pub(in crate::analysis) fn transform(
         &mut self,
-        transform: &mut impl FnMut(StatePart<'_, '_>) -> Result<(), MachineError>,
+        transform: &mut impl FnMut(StatePart<'_, '_, N>) -> Result<(), MachineError>,
     ) -> Result<(), MachineError> {
         for frame in self.iter_mut() {
             MachineError::check_cancelled()?;
@@ -43,7 +45,7 @@ impl CallStack {
             // checkpoint; in-place transforms copy it only on first mutation.
             let mut saved = Cow::Borrowed(frame.saved_store.state());
             transform(StatePart::Store(&mut saved))?;
-            frame.saved_store = Snapshot::from_state(saved.into_owned());
+            frame.saved_store = EvmSnapshot::from_state(saved.into_owned());
         }
         for child in self.children_mut() {
             MachineError::check_cancelled()?;
@@ -54,12 +56,12 @@ impl CallStack {
     }
 }
 
-impl MachinePayload {
+impl<N: WordElement> EvmMachinePayload<N> {
     /// Preserve frame/continuation/current-Store order for comparison forms.
     /// Relations and immutable roots are outside unconditional scalar updates.
     pub(in crate::analysis) fn update_values(
         &mut self,
-        update: &mut impl FnMut(&mut AbstractValue),
+        update: &mut impl FnMut(&mut EvmValue<N>),
     ) -> Result<(), MachineError> {
         self.call_stack.transform(&mut |part| {
             part.update_values(update);

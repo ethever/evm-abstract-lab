@@ -1,18 +1,23 @@
-//! Native-root completion owns only complete output buffers and the live Store.
+//! Native-root completion owns only complete output buffers and the live EvmStore.
 //!
 //! The unchanged input retains frames, relations, checkpoints and their shared
 //! graphs. Discovery is admitted before metadata scans; the error-key receipt
 //! permits one lazy original key, without hashing any code on a successful path.
 
-use super::{Execution, TransferContext, success_data};
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
+use super::{EvmExecution, TransferContext, success_data};
+
 use crate::{
-    analysis::{FrameCode, FrontierReason, MachinePayload, OutcomeKind},
-    domain::{AbstractValue, Domain, provenance::MAX_ORIGINS},
-    world::{ByteArray, Store},
+    analysis::{EvmMachinePayload, FrameCode, FrontierReason, OutcomeKind},
+    domain::{AlgebraRef, EvmValue, provenance::MAX_ORIGINS},
+    world::{EvmByteArray, EvmStore},
 };
 use revm_precompile::PrecompileId;
 
-use super::super::{ExecutionFrontier, Outcome, WorkBudget, boundary_on, boundary_reason, calls};
+use super::super::{
+    EvmExecutionFrontier, EvmOutcome, WorkBudget, boundary_on, boundary_reason, calls,
+};
 
 #[cfg(test)]
 pub(super) mod tests;
@@ -52,25 +57,19 @@ fn tree_work(entries: usize) -> usize {
     tree_units(entries).saturating_mul(16)
 }
 
-pub(super) fn applicable(payload: &MachinePayload) -> bool {
+pub(super) fn applicable<N: WordElement>(payload: &EvmMachinePayload<N>) -> bool {
     payload.call_stack.active_child().is_none()
         && matches!(payload.active().code, FrameCode::Precompile(_))
 }
 
-fn value_clone_work(value: &AbstractValue) -> usize {
-    VALUE_INLINE_WORK.saturating_add(
-        value
-            .provenance()
-            .origins()
-            .work_size()
-            .saturating_mul(MAP_ENTRY_WORK),
-    )
+fn value_clone_work<N: WordElement>(value: &EvmValue<N>) -> usize {
+    value.clone_work()
 }
 
 /// Only directly owned metadata is copied: Exact data, finite candidates,
 /// expressions, byte roots and conditional scopes keep their shared contents.
 /// The caller must reserve a census before reading any scalar metadata.
-fn array_clone_work(array: &ByteArray) -> usize {
+fn array_clone_work<N: WordElement>(array: &EvmByteArray<N>) -> usize {
     let bytes = array.stored_bytes();
     let operands = array.symbolic_facts();
     let cells = bytes.len().saturating_add(operands.len());
@@ -103,7 +102,7 @@ struct BufferWork {
 }
 
 impl BufferWork {
-    fn measure(data: &ByteArray, budget: &mut WorkBudget) -> Option<Self> {
+    fn measure<N: WordElement>(data: &EvmByteArray<N>, budget: &mut WorkBudget) -> Option<Self> {
         // work_size visits local scalar/allocation metadata and exact_work's
         // seen-set/root census. Exact contents contribute a cached length only.
         reserve(
@@ -151,7 +150,7 @@ impl BufferWork {
 /// The slice quote specialized algebraically to a fresh unknown source:
 /// root.nodes=3, no facts/cells/conditional scopes, constant range work=28.
 /// This is exactly bytes/slice.rs::slice_work's bound (T has no *16 factor).
-fn fresh_slice_work(domain: Domain) -> usize {
+fn fresh_slice_work<D: EvmNumericAlgebra>(domain: AlgebraRef<'_, D>) -> usize {
     let union = tree_units(domain.capacity().saturating_add(1))
         .saturating_add(tree_units(MAX_ORIGINS.saturating_mul(2)))
         .saturating_add(12);
@@ -165,15 +164,15 @@ struct ConstructionWork {
 }
 
 impl ConstructionWork {
-    fn measure(
-        input: &ByteArray,
+    fn measure<D: EvmNumericAlgebra>(
+        input: &EvmByteArray<D::Element>,
         id: &PrecompileId,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
     ) -> Option<Self> {
         let returned = match id {
             PrecompileId::Identity => {
-                // ByteArray's maps are std maps even with the imbl Store.
+                // EvmByteArray's maps are std maps even with the imbl EvmStore.
                 reserve(budget, input.cloned_value_count().saturating_add(1))?;
                 array_clone_work(input)
             }
@@ -238,7 +237,7 @@ struct StoreWork {
 }
 
 impl StoreWork {
-    fn measure(store: &Store, budget: &mut WorkBudget) -> Option<Self> {
+    fn measure<N: WordElement>(store: &EvmStore<N>, budget: &mut WorkBudget) -> Option<Self> {
         let entries = store.finalization_entries();
         // O(1) lengths prepay scalar and log metadata before either is visited.
         reserve(budget, entries.saturating_add(1).saturating_mul(2))?;
@@ -268,24 +267,18 @@ struct CompletionWork {
 }
 
 impl CompletionWork {
-    fn measure(
-        payload: &MachinePayload,
+    fn measure<D: EvmNumericAlgebra>(
+        payload: &EvmMachinePayload<D::Element>,
         id: &PrecompileId,
-        context: &mut TransferContext<'_>,
+        context: &mut TransferContext<'_, D>,
     ) -> Option<Self> {
         let current = StoreWork::measure(&payload.store, context.budget)?;
         let relative_rollbacks = if context.procedure {
-            let saved = StoreWork::measure(
-                payload.call_stack.root().state.saved_store.state(),
-                context.budget,
-            )?;
-            // Each shared checkpoint restores one Store and makes three fixed
-            // address tree queries/updates. The flat saved-Store bound also
-            // pays imbl's first-write COW and its temporary node drops. Input
-            // retains the checkpoint, so try_unwrap cannot move its Store.
-            saved
-                .clone_and_drop
-                .saturating_add(TOUCH_QUERY_WORK.saturating_mul(3))
+            // The common finish_root_store payer owns each restored Store.
+            // Keep the independent sticky-touch searches/updates, checkpoint
+            // handle and possible new entry for both non-return alternatives.
+            TOUCH_QUERY_WORK
+                .saturating_mul(3)
                 .saturating_add(HANDLE_WORK)
                 .saturating_add(STORE_ENTRY_WORK)
                 .saturating_mul(2)
@@ -324,7 +317,10 @@ struct KeyWork {
 }
 
 impl KeyWork {
-    fn measure(payload: &MachinePayload, budget: &mut WorkBudget) -> Option<Self> {
+    fn measure<N: WordElement>(
+        payload: &EvmMachinePayload<N>,
+        budget: &mut WorkBudget,
+    ) -> Option<Self> {
         let entries = payload.store.code_identity_entries();
         // Actual code-identity map lengths, excluding finalization's 16 fixed
         // headers. Admit the runtime-length census before code iteration.
@@ -358,14 +354,14 @@ impl KeyWork {
 struct ErrorKeyAllowance;
 
 impl ErrorKeyAllowance {
-    fn refuse(self, result: &mut Execution, reason: FrontierReason) {
+    fn refuse<N: WordElement>(self, result: &mut EvmExecution<N>, reason: FrontierReason) {
         let key = result.payload.key();
         boundary_on(result, 0, reason, key);
     }
 }
 
-fn refuse_without_key(result: &mut Execution) {
-    result.frontiers.push(ExecutionFrontier {
+fn refuse_without_key<N: WordElement>(result: &mut EvmExecution<N>) {
+    result.frontiers.push(EvmExecutionFrontier {
         pc: 0,
         reason: boundary_reason(FrontierReason::Work),
         target: None,
@@ -374,10 +370,10 @@ fn refuse_without_key(result: &mut Execution) {
     });
 }
 
-pub(super) fn summarize(
-    result: &mut Execution,
+pub(super) fn summarize<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
     id: &PrecompileId,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) {
     // The caller proves actual native code and no child. finish_creation's
     // first child lookup would return None; root and checkpoint stay borrowed.
@@ -400,8 +396,8 @@ pub(super) fn summarize(
     }
     let data = (|| {
         let returned = success_data(&result.payload.active().calldata, id, context.domain)?;
-        let reverted = ByteArray::unknown_checked()?;
-        let failed = ByteArray::empty();
+        let reverted = EvmByteArray::<D::Element>::unknown_checked()?;
+        let failed = EvmByteArray::<D::Element>::empty();
         Ok::<_, crate::world::RangeError>([returned, reverted, failed])
     })();
     let data = match data {
@@ -412,7 +408,7 @@ pub(super) fn summarize(
         }
     };
     // Complete metadata discovery/validation of ALL buffers precedes the first
-    // Store clone/publication. Refused discovery still drops prepaid buffers.
+    // EvmStore clone/publication. Refused discovery still drops prepaid buffers.
     let mut validation = 0usize;
     for data in &data {
         let Some(work) = BufferWork::measure(data, context.budget) else {
@@ -452,10 +448,10 @@ pub(super) fn summarize(
             context,
         ) {
             // Checked finalization is atomic. Its error leaves this clone at
-            // the original Store identity, as in ordinary finish's error key.
+            // the original EvmStore identity, as in ordinary finish's error key.
             error_key.refuse(result, reason);
             return;
         }
-        result.outcomes.push(Outcome { kind, data, store });
+        result.outcomes.push(EvmOutcome { kind, data, store });
     }
 }

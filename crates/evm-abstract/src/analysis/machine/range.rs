@@ -1,7 +1,9 @@
 //! Recoverable evidence for a byte-range subdomain left before its effect.
 
-use super::MachinePayload;
-use crate::domain::AbstractValue;
+use crate::domain::WordElement;
+
+use super::EvmMachinePayload;
+use crate::domain::EvmValue;
 use alloy_primitives::U256;
 use serde::Serialize;
 use std::sync::Arc;
@@ -46,27 +48,33 @@ pub enum RangeKind {
 
 /// Original operands retained independently of a host-sized representation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct RangeRequest {
+pub struct EvmRangeRequest<N: WordElement> {
     /// Meaning of the bound and of an excluded input.
     pub kind: RangeKind,
     /// Start of the requested range in EVM word space.
-    pub offset: AbstractValue,
+    pub offset: EvmValue<N>,
     /// Requested byte count, including zero.
-    pub size: AbstractValue,
+    pub size: EvmValue<N>,
     /// Historical memory policy, representable logical end, or actual returndata length.
-    pub limit: AbstractValue,
+    pub limit: EvmValue<N>,
 }
 
 /// An uncovered portion of the input, before modifying memory or calling code.
 /// The snapshot is taken after operands are popped; `request` retains them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct RangeWitness {
+pub struct EvmRangeWitness<N: WordElement> {
     /// The checked access, without enumerating or truncating its length.
-    pub request: RangeRequest,
+    pub request: EvmRangeRequest<N>,
     /// EVM word predicate whose nonzero valuations satisfy the bound.
-    pub condition: AbstractValue,
+    pub condition: EvmValue<N>,
     /// Selected side, or the entire pre-effect input if retaining a guard failed.
     pub nonzero: Option<bool>,
     /// Immutable machine state, including the surviving branch assumptions.
-    pub payload: Arc<MachinePayload>,
+    pub payload: Arc<EvmMachinePayload<N>>,
 }
+
+/// Default numeric assembly for [`EvmRangeRequest`].
+pub type RangeRequest = EvmRangeRequest<crate::domain::NumericValue>;
+
+/// Default numeric assembly for [`EvmRangeWitness`].
+pub type RangeWitness = EvmRangeWitness<crate::domain::NumericValue>;

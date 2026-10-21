@@ -9,7 +9,8 @@ use super::{
     Constraint, QueryReason, RelationLimits, RelationPath, RelationPathKind, RelationState,
 };
 use crate::domain::{
-    AbstractValue, Domain, FiniteConstantSet, NumericValue,
+    AlgebraRef, EvmNumericAlgebra, EvmValue, FiniteConstantSet, ValueAlgebra, WordElement,
+    WordObservation,
     facts::{Fact, FactError, FactLattice},
     symbolic::{ExprId, ExprKind},
 };
@@ -68,6 +69,9 @@ impl Work<'_> {
         if self.cancellation.is_cancelled() {
             return Err(Stop::Pending(QueryReason::Cancelled));
         }
+        if amount == usize::MAX {
+            return Err(Stop::Pending(QueryReason::ExpressionLimit));
+        }
         if let Some(ledger) = self.ledger.as_mut() {
             // Optional precision may stop without exhausting the shared ledger.
             // The later charge is still transactional if cancellation races.
@@ -97,13 +101,14 @@ impl Work<'_> {
 
 /// `None` is proved bottom; a numeric result covers every remaining alternative.
 /// A candidate is checked against the original facts, never imported as a fact.
-pub(super) fn project(
+pub(super) fn project_with<D: EvmNumericAlgebra>(
     state: &RelationState,
     expression: Option<&ExprId>,
     candidate: Option<U256>,
     limits: &RelationLimits,
     ledger: Option<&mut crate::resource::WorkBudget>,
-) -> Result<Option<NumericValue>, QueryReason> {
+    domain: AlgebraRef<'_, D>,
+) -> Result<Option<D::Element>, QueryReason> {
     let cancellation = analysis_control::current_cancellation();
     if cancellation.is_cancelled() {
         return Err(QueryReason::Cancelled);
@@ -138,7 +143,7 @@ pub(super) fn project(
         cancellation,
         ledger,
     };
-    let mut engine = Engine::new(&mut work, limits, Domain::default());
+    let mut engine = Engine::new(&mut work, limits, domain);
     // Value projection trusts retained guarantees. Feasibility additionally
     // compares their immediate definitions without rebuilding the shared F.
     engine.check_definitions = expression.is_none();
@@ -160,7 +165,7 @@ pub(super) fn project(
         engine.memo.clear(engine.work)?;
         engine.terms.clear(engine.work)?;
         let Some(expression) = expression else {
-            return Ok(NumericValue::top());
+            return Ok(D::Element::top());
         };
         let value = engine.eval(expression)?;
         if let Some(candidate) = candidate
@@ -178,22 +183,44 @@ pub(super) fn project(
     }
 }
 
-struct Engine<'a, 'ledger> {
+/// Compatibility query; production generic callers use project_with.
+pub(super) fn project(
+    state: &RelationState,
+    expression: Option<&ExprId>,
+    candidate: Option<U256>,
+    limits: &RelationLimits,
+    ledger: Option<&mut crate::resource::WorkBudget>,
+) -> Result<Option<crate::domain::NumericValue>, QueryReason> {
+    project_with(
+        state,
+        expression,
+        candidate,
+        limits,
+        ledger,
+        ValueAlgebra::new(crate::domain::Domain::default()).borrowed(),
+    )
+}
+
+struct Engine<'a, 'ledger, 'policy, D: EvmNumericAlgebra> {
     work: &'a mut Work<'ledger>,
     limits: &'a RelationLimits,
-    domain: Domain,
+    domain: AlgebraRef<'policy, D>,
     parents: KeyMap<ExprId>,
     unequal: Vec<(ExprId, ExprId)>,
-    facts: KeyMap<NumericValue>,
-    memo: KeyMap<NumericValue>,
+    facts: KeyMap<D::Element>,
+    memo: KeyMap<D::Element>,
     terms: KeyMap<ExprId>,
     check_definitions: bool,
     determined_ite: bool,
     has_source_bytes: bool,
     source_words: Vec<state::SourceWord>,
 }
-impl<'a, 'ledger> Engine<'a, 'ledger> {
-    fn new(work: &'a mut Work<'ledger>, limits: &'a RelationLimits, domain: Domain) -> Self {
+impl<'a, 'ledger, 'policy, D: EvmNumericAlgebra> Engine<'a, 'ledger, 'policy, D> {
+    fn new(
+        work: &'a mut Work<'ledger>,
+        limits: &'a RelationLimits,
+        domain: AlgebraRef<'policy, D>,
+    ) -> Self {
         Self {
             work,
             limits,
@@ -220,7 +247,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         Ok(root)
     }
 
-    fn meet(&mut self, left: &NumericValue, right: &NumericValue) -> LocalResult<NumericValue> {
+    fn meet(&mut self, left: &D::Element, right: &D::Element) -> LocalResult<D::Element> {
         self.work
             .prepay(left.work_size().saturating_add(right.work_size()))?;
         if left == right || right.is_top() {
@@ -229,21 +256,22 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         if left.is_top() {
             return Ok(right.clone());
         }
-        if let Some(value) = singleton_meet::meet(left, right, self.domain, self.work)? {
+        if let Some(value) = singleton_meet::meet_with(left, right, self.domain, self.work)? {
             return Ok(value);
         }
-        let cost = self
-            .domain
-            .refinement_work(&AbstractValue::from_numeric(left.clone()), 1)
-            .saturating_add(right.work_size());
-        self.work.prepay(cost)?;
-        super::intersect_numeric(left, right, self.domain).ok_or(Stop::Bottom)
+        // Keep the existing right-side observation payment. The selected
+        // backend either retains its whole quote or reserves detached import
+        // followed by closure of the actual intersection, before either runs.
+        self.work.prepay(right.work_size())?;
+        self.domain
+            .intersect_numeric_with_payment(left, right, 1, |work| self.work.prepay(work))?
+            .ok_or(Stop::Bottom)
     }
 
-    fn known(&mut self, expression: &ExprId) -> LocalResult<NumericValue> {
+    fn known(&mut self, expression: &ExprId) -> LocalResult<D::Element> {
         let root = self.root(expression)?;
         if let Some(value) = root.as_constant() {
-            return Ok(NumericValue::constant(value));
+            return Ok(D::Element::constant(value));
         }
         if let Some(value) = self.facts.get(&root, self.work)? {
             self.work.prepay(value.work_size())?;
@@ -259,7 +287,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
                         | crate::domain::identity::Symbol::Coinbase
                 ) =>
             {
-                NumericValue::unknown_address()
+                D::Element::unknown_address()
             }
             ExprKind::Operation { opcode, .. }
                 if matches!(
@@ -272,13 +300,13 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
                         | opcode::SGT
                 ) =>
             {
-                NumericValue::unsigned_range(U256::ZERO, U256::ONE).unwrap()
+                D::Element::unsigned_range(U256::ZERO, U256::ONE).unwrap()
             }
-            _ => NumericValue::top(),
+            _ => D::Element::top(),
         })
     }
 
-    fn learn(&mut self, expression: &ExprId, value: &NumericValue) -> LocalResult<()> {
+    fn learn(&mut self, expression: &ExprId, value: &D::Element) -> LocalResult<()> {
         self.work.charge(1)?;
         let root = self.root(expression)?;
         let old = self.known(&root)?;
@@ -342,14 +370,14 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         if let (Some(a), Some(b)) = (av.singleton(), bv.singleton()) {
             return Ok(Some(a == b));
         }
-        if (av.nonzero && bv.singleton() == Some(U256::ZERO))
-            || (bv.nonzero && av.singleton() == Some(U256::ZERO))
+        if (!av.may_be_zero() && bv.singleton() == Some(U256::ZERO))
+            || (!bv.may_be_zero() && av.singleton() == Some(U256::ZERO))
         {
             return Ok(Some(false));
         }
         let (al, au) = av.interval().unsigned_bounds();
         let (bl, bu) = bv.interval().unsigned_bounds();
-        if au < bl || bu < al || av.bits.meet(&bv.bits).is_none() {
+        if au < bl || bu < al || av.known_bits().meet(bv.known_bits()).is_none() {
             return Ok(Some(false));
         }
         Ok(None)
@@ -357,9 +385,9 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
 
     fn import(&mut self, expression: &ExprId, fact: Fact) -> LocalResult<()> {
         let known = self.known(expression)?;
-        let input = AbstractValue::from_numeric(known);
+        let input = EvmValue::from_numeric(known);
         self.work
-            .prepay(import_work::reservation(self.domain, &input, &fact))?;
+            .prepay(import_work::reservation_with(self.domain, &input, &fact))?;
         let mut lattice = FactLattice::new(self.domain.spec().fact_limit());
         lattice.insert(fact)?;
         let value = crate::domain::reduce::import(&input, &lattice)?;
@@ -367,6 +395,12 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
     }
 
     fn atom(&mut self, atom: &Constraint) -> LocalResult<()> {
+        if let Constraint::Members { values, .. } = atom {
+            // direct() owns a Word256 set: pay its one deep payload clone
+            // before translating the matching subject, not after allocation.
+            self.work
+                .prepay(values.len().saturating_mul(4).saturating_add(8))?;
+        }
         self.work.charge(
             atom.expressions()
                 .iter()
@@ -401,12 +435,11 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
 
     fn direct_truth(&mut self, expression: &ExprId, nonzero: bool) -> LocalResult<()> {
         self.work.charge(1)?;
-        let mut value = NumericValue::top();
-        if nonzero {
-            value.nonzero = true;
+        let value = if nonzero {
+            D::Element::from_observation(&WordObservation::nonzero_word())
         } else {
-            value = NumericValue::constant(U256::ZERO);
-        }
+            D::Element::constant(U256::ZERO)
+        };
         self.learn(expression, &value)?;
         match expression.kind() {
             ExprKind::Operation {
@@ -604,12 +637,11 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         if (nonzero && !value.may_be_nonzero()) || (!nonzero && !value.may_be_zero()) {
             return Err(Stop::Bottom);
         }
-        let mut numeric = NumericValue::top();
-        if nonzero {
-            numeric.nonzero = true;
+        let numeric = if nonzero {
+            D::Element::from_observation(&WordObservation::nonzero_word())
         } else {
-            numeric = NumericValue::constant(U256::ZERO);
-        }
+            D::Element::constant(U256::ZERO)
+        };
         self.learn(expression, &numeric)?;
         if let ExprKind::Operation { opcode: op, args } = expression.kind() {
             match *op {
@@ -666,14 +698,14 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         &mut self,
         expression: &ExprId,
         result_root: &ExprId,
-    ) -> LocalResult<NumericValue> {
+    ) -> LocalResult<D::Element> {
         if let Some(value) = expression.as_constant() {
-            return Ok(NumericValue::constant(value));
+            return Ok(D::Element::constant(value));
         }
         let root = self.root(expression)?;
         if self.work.same_expression(&root, result_root)? {
             // The imported ITE result cannot supply its own branch bound.
-            return Ok(NumericValue::top());
+            return Ok(D::Element::top());
         }
         self.known(&root)
     }
@@ -695,8 +727,8 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
                     .collect::<LocalResult<Vec<_>>>()?;
                 self.apply(*opcode, &args)?
             }
-            ExprKind::ByteRead { .. } => NumericValue::unknown_byte(),
-            _ => NumericValue::top(),
+            ExprKind::ByteRead { .. } => D::Element::unknown_byte(),
+            _ => D::Element::top(),
         };
         let (lower, upper) = known.interval().unsigned_bounds();
         let (defined_lower, defined_upper) = defined.interval().unsigned_bounds();
@@ -706,7 +738,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
     fn inverse_ite(
         &mut self,
         expression: &ExprId,
-        result: &NumericValue,
+        result: &D::Element,
         condition: &ExprId,
         then_value: &ExprId,
         else_value: &ExprId,
@@ -801,12 +833,12 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             _ => None,
         };
         if let Some((target, value)) = inferred {
-            self.learn(target, &NumericValue::constant(value))?;
+            self.learn(target, &D::Element::constant(value))?;
         }
         Ok(())
     }
 
-    fn apply(&mut self, op: u8, args: &[NumericValue]) -> LocalResult<NumericValue> {
+    fn apply(&mut self, op: u8, args: &[D::Element]) -> LocalResult<D::Element> {
         self.work.prepay(
             args.iter()
                 .fold(1usize, |n, value| n.saturating_add(value.work_size())),
@@ -814,13 +846,14 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         let args = args
             .iter()
             .cloned()
-            .map(AbstractValue::from_numeric)
+            .map(EvmValue::from_numeric)
             .collect::<Vec<_>>();
-        self.work.prepay(self.domain.operation_work(&args))?;
+        self.work
+            .prepay(self.domain.operation_work_for(op, &args))?;
         Ok(self.domain.apply(op, &args).numeric().clone())
     }
 
-    fn join(&mut self, a: NumericValue, b: NumericValue) -> LocalResult<NumericValue> {
+    fn join(&mut self, a: D::Element, b: D::Element) -> LocalResult<D::Element> {
         self.work.prepay(
             a.work_size()
                 .saturating_add(b.work_size())
@@ -828,10 +861,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         )?;
         Ok(self
             .domain
-            .join(
-                &AbstractValue::from_numeric(a),
-                &AbstractValue::from_numeric(b),
-            )
+            .join(&EvmValue::from_numeric(a), &EvmValue::from_numeric(b))
             .numeric()
             .clone())
     }
@@ -839,8 +869,8 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
     fn exclude_finite(
         &mut self,
         expression: &ExprId,
-        mut value: NumericValue,
-    ) -> LocalResult<NumericValue> {
+        mut value: D::Element,
+    ) -> LocalResult<D::Element> {
         let Some(constants) = value.constants() else {
             return Ok(value);
         };
@@ -869,11 +899,15 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
         }
         // This is set difference over an already bounded numeric component.
         // No candidate is assumed, and no conditional path is selected.
-        value.finite = FiniteConstantSet::try_from_values(retained).map_err(|_| Stop::Bottom)?;
+        let facts = WordObservation {
+            finite: FiniteConstantSet::try_from_values(retained).map_err(|_| Stop::Bottom)?,
+            ..WordObservation::top()
+        };
+        value = value.constrain(&facts)?;
         Ok(value)
     }
 
-    fn eval(&mut self, expression: &ExprId) -> LocalResult<NumericValue> {
+    fn eval(&mut self, expression: &ExprId) -> LocalResult<D::Element> {
         self.work.charge(1)?;
         let known = self.known(expression)?;
         // Imported exact guarantees also cover compound terms. Reconstructing
@@ -888,7 +922,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
             return self.exclude_finite(expression, value);
         }
         let numeric = match expression.kind() {
-            ExprKind::Constant(value) => NumericValue::constant(*value),
+            ExprKind::Constant(value) => D::Element::constant(*value),
             ExprKind::Input(_) | ExprKind::Fresh(_) => known.clone(),
             ExprKind::Operation { opcode: op, args } => {
                 let left = self.term(&args[0])?;
@@ -900,7 +934,7 @@ impl<'a, 'ledger> Engine<'a, 'ledger> {
                 if *op == opcode::EQ
                     && let Some(equal) = self.same(&left, right.as_ref().expect("binary EQ"))?
                 {
-                    NumericValue::constant(U256::from(u8::from(equal)))
+                    D::Element::constant(U256::from(u8::from(equal)))
                 } else {
                     let args = args
                         .iter()

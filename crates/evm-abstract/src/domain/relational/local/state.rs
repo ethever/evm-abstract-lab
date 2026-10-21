@@ -3,10 +3,7 @@
 
 use super::{Engine, LocalResult, QueryReason, Stop, terms::denied};
 use crate::domain::{
-    NumericValue,
-    congruence::Congruence,
-    interval::Interval,
-    known_bits::KnownBits,
+    WordElement,
     symbolic::{
         ByteStateId, ByteStateKind, ByteView, ExprId, ExprKind, SlotStateId, SlotStateKind,
         SourceId,
@@ -42,7 +39,7 @@ enum WindowContent<'a> {
     Input { upper: U256, words: Vec<usize> },
 }
 
-impl Engine<'_, '_> {
+impl<D: crate::domain::EvmNumericAlgebra> Engine<'_, '_, '_, D> {
     fn initial_byte(&mut self, state: &ByteStateId, index: &ExprId) -> LocalResult<ExprId> {
         let ByteStateKind::Input { source, length, .. } = state.kind() else {
             unreachable!("initial byte identity requires an input state");
@@ -306,15 +303,15 @@ impl Engine<'_, '_> {
         Ok(Some(ByteWindow { start, content }))
     }
 
-    fn window_byte(&mut self, window: &ByteWindow<'_>, index: usize) -> LocalResult<NumericValue> {
+    fn window_byte(&mut self, window: &ByteWindow<'_>, index: usize) -> LocalResult<D::Element> {
         self.work.charge(1)?;
         let at = window
             .start
             .checked_add(U256::from(index))
             .expect("nonwrapping window");
         Ok(match &window.content {
-            WindowContent::Zero => NumericValue::constant(U256::ZERO),
-            WindowContent::Exact(bytes) => NumericValue::constant(U256::from(
+            WindowContent::Zero => D::Element::constant(U256::ZERO),
+            WindowContent::Exact(bytes) => D::Element::constant(U256::from(
                 usize::try_from(at)
                     .ok()
                     .and_then(|at| bytes.get(at))
@@ -323,8 +320,8 @@ impl Engine<'_, '_> {
             )),
             WindowContent::Input { upper, words } if at < *upper => self
                 .window_source_byte(words, at)?
-                .map_or_else(NumericValue::unknown_byte, NumericValue::constant),
-            WindowContent::Input { .. } => NumericValue::constant(U256::ZERO),
+                .map_or_else(D::Element::unknown_byte, D::Element::constant),
+            WindowContent::Input { .. } => D::Element::constant(U256::ZERO),
         })
     }
 
@@ -350,21 +347,19 @@ impl Engine<'_, '_> {
                     self.work.charge(1)?;
                     self.source_facts(&binding.value)?;
                     let value = self.eval(&binding.value)?;
-                    let value = self.meet(&value, &binding.numeric)?;
+                    let value =
+                        self.meet(&value, &D::Element::from_observation(&binding.numeric))?;
                     let byte = if let Some(value) = value.singleton() {
-                        NumericValue::constant(value & U256::from(255))
+                        D::Element::constant(value & U256::from(255))
                     } else {
-                        self.apply(
-                            opcode::AND,
-                            &[value, NumericValue::constant(U256::from(255))],
-                        )?
+                        self.apply(opcode::AND, &[value, D::Element::constant(U256::from(255))])?
                     };
                     let byte = if binding.index >= upper {
-                        NumericValue::constant(U256::ZERO)
+                        D::Element::constant(U256::ZERO)
                     } else if binding.index < lower {
                         byte
                     } else {
-                        self.join(byte, NumericValue::constant(U256::ZERO))?
+                        self.join(byte, D::Element::constant(U256::ZERO))?
                     };
                     let read = self.initial_byte(state, &ExprId::constant(binding.index))?;
                     self.learn(&read, &byte)?;
@@ -429,22 +424,22 @@ impl Engine<'_, '_> {
         Ok(self.eval(expression)?.singleton())
     }
 
-    pub(super) fn slot(&mut self, state: &SlotStateId, key: &ExprId) -> LocalResult<NumericValue> {
+    pub(super) fn slot(&mut self, state: &SlotStateId, key: &ExprId) -> LocalResult<D::Element> {
         self.work.charge(1)?;
         match state.kind() {
-            SlotStateKind::Zero => Ok(NumericValue::constant(U256::ZERO)),
+            SlotStateKind::Zero => Ok(D::Element::constant(U256::ZERO)),
             SlotStateKind::Input { bindings, .. } => {
                 let Some(key) = self.exact(key)? else {
-                    return Ok(NumericValue::top());
+                    return Ok(D::Element::top());
                 };
                 for binding in bindings {
                     self.work.charge(1)?;
                     if binding.index == key {
                         let value = self.eval(&binding.value)?;
-                        return self.meet(&value, &binding.numeric);
+                        return self.meet(&value, &D::Element::from_observation(&binding.numeric));
                     }
                 }
-                Ok(NumericValue::top())
+                Ok(D::Element::top())
             }
             SlotStateKind::Store {
                 previous,
@@ -489,19 +484,15 @@ impl Engine<'_, '_> {
         }
     }
 
-    pub(super) fn byte(
-        &mut self,
-        state: &ByteStateId,
-        index: &ExprId,
-    ) -> LocalResult<NumericValue> {
+    pub(super) fn byte(&mut self, state: &ByteStateId, index: &ExprId) -> LocalResult<D::Element> {
         self.work.charge(1)?;
         match state.kind() {
-            ByteStateKind::Zero => Ok(NumericValue::constant(U256::ZERO)),
+            ByteStateKind::Zero => Ok(D::Element::constant(U256::ZERO)),
             ByteStateKind::Exact(bytes) => {
                 Ok(self
                     .exact(index)?
-                    .map_or_else(NumericValue::unknown_byte, |index| {
-                        NumericValue::constant(U256::from(
+                    .map_or_else(D::Element::unknown_byte, |index| {
+                        D::Element::constant(U256::from(
                             usize::try_from(index)
                                 .ok()
                                 .and_then(|i| bytes.get(i))
@@ -518,11 +509,11 @@ impl Engine<'_, '_> {
                 let at = self.exact(index)?;
                 let length = self.eval(input_length)?;
                 let Some(at) = at else {
-                    return Ok(NumericValue::unknown_byte());
+                    return Ok(D::Element::unknown_byte());
                 };
                 let (lower, upper) = length.interval().unsigned_bounds();
                 if at >= upper {
-                    return Ok(NumericValue::constant(U256::ZERO));
+                    return Ok(D::Element::constant(U256::ZERO));
                 }
                 let word_byte = self.source_word_byte(source, input_length, at)?;
                 if self.has_source_bytes {
@@ -536,31 +527,30 @@ impl Engine<'_, '_> {
                         return Ok(observed);
                     }
                     if !observed.is_top() {
-                        let byte = word_byte
-                            .map_or_else(NumericValue::unknown_byte, NumericValue::constant);
+                        let byte =
+                            word_byte.map_or_else(D::Element::unknown_byte, D::Element::constant);
                         return self.meet(&observed, &byte);
                     }
                 }
                 if let Some(byte) = word_byte {
-                    return Ok(NumericValue::constant(byte));
+                    return Ok(D::Element::constant(byte));
                 }
                 for binding in bindings {
                     self.work.charge(1)?;
                     if binding.index == at {
                         let value = self.eval(&binding.value)?;
-                        let value = self.meet(&value, &binding.numeric)?;
-                        let byte = self.apply(
-                            opcode::AND,
-                            &[value, NumericValue::constant(U256::from(255))],
-                        )?;
+                        let value =
+                            self.meet(&value, &D::Element::from_observation(&binding.numeric))?;
+                        let byte = self
+                            .apply(opcode::AND, &[value, D::Element::constant(U256::from(255))])?;
                         return Ok(if at < lower {
                             byte
                         } else {
-                            self.join(byte, NumericValue::constant(U256::ZERO))?
+                            self.join(byte, D::Element::constant(U256::ZERO))?
                         });
                     }
                 }
-                Ok(NumericValue::unknown_byte())
+                Ok(D::Element::unknown_byte())
             }
             ByteStateKind::WriteByte {
                 previous,
@@ -575,10 +565,8 @@ impl Engine<'_, '_> {
                     Some(false) => self.byte(previous, index),
                     yes => {
                         let value = self.eval(value)?;
-                        let value = self.apply(
-                            opcode::AND,
-                            &[value, NumericValue::constant(U256::from(255))],
-                        )?;
+                        let value = self
+                            .apply(opcode::AND, &[value, D::Element::constant(U256::from(255))])?;
                         if yes == Some(true) {
                             Ok(value)
                         } else {
@@ -605,10 +593,10 @@ impl Engine<'_, '_> {
                 };
                 if let Some(relative) = relative {
                     let value = self.eval(value)?;
-                    self.apply(opcode::BYTE, &[NumericValue::constant(relative), value])
+                    self.apply(opcode::BYTE, &[D::Element::constant(relative), value])
                 } else {
                     // Unproved overlap cannot pick either historical source.
-                    Ok(NumericValue::unknown_byte())
+                    Ok(D::Element::unknown_byte())
                 }
             }
             ByteStateKind::Copy {
@@ -618,7 +606,7 @@ impl Engine<'_, '_> {
                 length,
             } => {
                 let (Some(at), Some(start)) = (self.exact(index)?, self.exact(destination)?) else {
-                    return Ok(NumericValue::unknown_byte());
+                    return Ok(D::Element::unknown_byte());
                 };
                 if at < start {
                     return self.byte(previous, index);
@@ -639,7 +627,7 @@ impl Engine<'_, '_> {
             }
             ByteStateKind::Slice { source } => match self.exact(index)? {
                 Some(index) => self.view_byte(source, index),
-                None => Ok(NumericValue::unknown_byte()),
+                None => Ok(D::Element::unknown_byte()),
             },
             ByteStateKind::Ite {
                 condition,
@@ -657,40 +645,40 @@ impl Engine<'_, '_> {
         }
     }
 
-    fn view_byte(&mut self, view: &ByteView, relative: U256) -> LocalResult<NumericValue> {
+    fn view_byte(&mut self, view: &ByteView, relative: U256) -> LocalResult<D::Element> {
         self.work.charge(1)?;
         let length = self.eval(&view.length)?;
         let (lower, upper) = length.interval().unsigned_bounds();
         if relative >= upper {
-            return Ok(NumericValue::constant(U256::ZERO));
+            return Ok(D::Element::constant(U256::ZERO));
         }
         let offset = self.eval(&view.offset)?;
         let read = if let Some(start) = offset.singleton() {
             match start.checked_add(relative) {
                 Some(at) => self.byte(&view.state, &ExprId::constant(at))?,
-                None => NumericValue::constant(U256::ZERO),
+                None => D::Element::constant(U256::ZERO),
             }
         } else if relative == U256::ZERO {
             self.byte(&view.state, &view.offset)?
         } else {
-            NumericValue::unknown_byte()
+            D::Element::unknown_byte()
         };
         Ok(if relative < lower {
             read
         } else {
-            self.join(read, NumericValue::constant(U256::ZERO))?
+            self.join(read, D::Element::constant(U256::ZERO))?
         })
     }
 
-    pub(super) fn word(&mut self, view: &ByteView, relative: &ExprId) -> LocalResult<NumericValue> {
+    pub(super) fn word(&mut self, view: &ByteView, relative: &ExprId) -> LocalResult<D::Element> {
         self.work.charge(1)?;
         let Some(relative) = self.exact(relative)? else {
-            return Ok(NumericValue::top());
+            return Ok(D::Element::top());
         };
         let length = self.eval(&view.length)?;
         let (lower, upper) = length.interval().unsigned_bounds();
         if relative >= upper {
-            return Ok(NumericValue::constant(U256::ZERO));
+            return Ok(D::Element::constant(U256::ZERO));
         }
         if relative == U256::ZERO && lower >= U256::from(32) {
             // This shortcut needs the entire word in the nonwrapping address
@@ -707,73 +695,50 @@ impl Engine<'_, '_> {
                 return self.eval(value);
             }
         }
-        // Whole-word forwarding above preserves correlations and explicit
-        // source facts. Independent unconstrained bytes add no information to
-        // generic SHL/OR; pack their masks directly, keeping concrete padding.
+        // Whole-word forwarding above preserves correlations and source facts.
+        // Only the injected numeric policy may replace independent byte folding.
         let window = self.view_window(view, relative)?;
         self.work.prepay(32)?;
         let mut bytes = Vec::with_capacity(32);
-        let mut simple = true;
-        let mut zero = U256::ZERO;
-        let mut one = U256::ZERO;
         for i in 0..32usize {
             self.work.charge(1)?;
             let byte = match &window {
                 Some(window) => self.window_byte(window, i)?,
                 None => match relative.checked_add(U256::from(i)) {
                     Some(at) => self.view_byte(view, at)?,
-                    None => NumericValue::constant(U256::ZERO),
+                    None => D::Element::constant(U256::ZERO),
                 },
             };
             self.work.prepay(byte.work_size())?;
-            let shift = (31 - i) * 8;
-            if let Some(value) = byte.singleton() {
-                zero |= (!value & U256::from(255)) << shift;
-                one |= (value & U256::from(255)) << shift;
-            } else if byte != NumericValue::unknown_byte() {
-                simple = false;
-            }
             bytes.push(byte);
         }
-        if simple {
-            let bits = KnownBits::new(zero, one).expect("disjoint byte positions");
-            if let Some(value) = bits.singleton() {
-                return Ok(NumericValue::constant(value));
+        self.pack_word(bytes.try_into().expect("32 demanded bytes"))
+    }
+
+    fn pack_word(&mut self, bytes: [D::Element; 32]) -> LocalResult<D::Element> {
+        self.work.prepay(32)?;
+        let refs = std::array::from_fn(|i| &bytes[i]);
+        if let Some(fee) = self.domain.pack_word_work(&refs) {
+            self.work.prepay(fee)?;
+            let packed = self.domain.pack_word_numeric(&refs);
+            self.work.charge(0)?;
+            if let Some(packed) = packed {
+                return Ok(packed);
             }
-            let sign = U256::ONE << 255usize;
-            let biased_one = (one & !sign) | (zero & sign);
-            let biased_zero = (zero & !sign) | (one & sign);
-            let interval = Interval::new_unsigned(one, !zero)
-                .and_then(|unsigned| {
-                    unsigned.meet(&Interval::new_signed(biased_one, !biased_zero)?)
-                })
-                .expect("byte mask endpoints are included");
-            let fixed_low = (zero | one).trailing_ones();
-            let congruence = if fixed_low == 0 {
-                Congruence::top()
-            } else {
-                let modulus = U256::ONE << fixed_low;
-                Congruence::new(modulus, one & (modulus - U256::ONE))
-                    .expect("nonzero byte mask modulus")
-            };
-            return Ok(NumericValue {
-                bits,
-                interval,
-                congruence,
-                nonzero: one != U256::ZERO,
-                ..NumericValue::top()
-            });
         }
-        // Informative finite/range/congruence bytes retain the existing scalar
-        // transfer; the direct packing rule does not discard their guarantees.
-        let mut word = NumericValue::constant(U256::ZERO);
+        // Opaque policies and uncertified inputs retain every injected scalar
+        // operation. Literal construction is paid before opaque factories run;
+        // apply keeps its existing operand/operation reservations unchanged.
+        self.work
+            .prepay(self.domain.literal_quote_work(U256::ZERO))?;
+        let mut word = D::Element::constant(U256::ZERO);
         for (i, byte) in bytes.into_iter().enumerate() {
-            let shifted = self.apply(
-                opcode::SHL,
-                &[NumericValue::constant(U256::from((31 - i) * 8)), byte],
-            )?;
+            let shift = U256::from((31 - i) * 8);
+            self.work.prepay(self.domain.literal_quote_work(shift))?;
+            let shifted = self.apply(opcode::SHL, &[D::Element::constant(shift), byte])?;
             word = self.apply(opcode::OR, &[word, shifted])?;
         }
+        self.work.charge(0)?;
         Ok(word)
     }
 
@@ -831,17 +796,17 @@ impl Engine<'_, '_> {
         Ok(Some(hash))
     }
 
-    pub(super) fn hash(&mut self, view: &ByteView) -> LocalResult<NumericValue> {
+    pub(super) fn hash(&mut self, view: &ByteView) -> LocalResult<D::Element> {
         let Some(length) = self.exact(&view.length)? else {
-            return Ok(NumericValue::top());
+            return Ok(D::Element::top());
         };
         let Ok(length) = usize::try_from(length) else {
-            return Ok(NumericValue::top());
+            return Ok(D::Element::top());
         };
         // Do not allocate or traverse an attacker-selected hash length. The
         // ordinary unknown hash is a useful retained symbolic value, not failure.
         if length > self.work.remaining {
-            return Ok(NumericValue::top());
+            return Ok(D::Element::top());
         }
         // Resolve joined lengths/selectors once under the full current F.
         // Ineligible histories still use the original demand-local byte reads.
@@ -849,19 +814,19 @@ impl Engine<'_, '_> {
         if length != 0 {
             let normalized = self.hash_view(view)?;
             if let Some(hash) = self.literal_hash(&normalized)? {
-                return Ok(NumericValue::constant(hash));
+                return Ok(D::Element::constant(hash));
             }
         }
         let mut bytes = Vec::new();
         for i in 0..length {
             let Some(byte) = self.view_byte(view, U256::from(i))?.singleton() else {
-                return Ok(NumericValue::top());
+                return Ok(D::Element::top());
             };
             bytes.push(byte.to::<u8>());
         }
         self.work
             .prepay(length.saturating_mul(24).saturating_add(24))?;
-        Ok(NumericValue::constant(U256::from_be_bytes(
+        Ok(D::Element::constant(U256::from_be_bytes(
             keccak256(bytes).0,
         )))
     }

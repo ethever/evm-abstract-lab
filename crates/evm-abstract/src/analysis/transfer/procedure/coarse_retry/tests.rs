@@ -1,6 +1,6 @@
 //! Source-only regressions; Root owns compilation and execution of these cases.
 
-use super::super::{Solver, Table, form, instantiate, semantic_eq};
+use super::super::{Solver, Table, execute_inner, form, instantiate, semantic_eq};
 
 mod before_body;
 mod controls;
@@ -12,7 +12,7 @@ use crate::{
         DiagnosticKind, ExecutionConfig, FrontierReason, InstructionProgress, Limit, OutcomeKind,
         engine::Counters,
         machine::fixtures::{self, address, word},
-        transfer::{self, RetentionCause, StorageReadPolicy, execute_inner},
+        transfer::{self, RetentionCause, StorageReadPolicy},
     },
     world::{Entry, World},
 };
@@ -31,7 +31,8 @@ impl Harness {
         let (world, entry) = fixtures::fixture(&[(0x101, code)]);
         let mut config = fixtures::config();
         let domain = config.domain().unwrap();
-        let mut input = transfer::initial(&world, &entry, domain).unwrap();
+        let mut input =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let byte = domain.join(&word(1), &word(2));
         input
             .active_mut()
@@ -59,17 +60,14 @@ impl Harness {
     }
 
     fn solver(&mut self) -> Solver<'_> {
-        let domain = self.config.domain().unwrap();
-        Solver {
-            table: &mut self.table,
-            world: &self.world,
-            entry: &self.entry,
-            config: &self.config,
-            domain,
-            budget: &mut self.budget,
-            counters: &mut self.counters,
-            storage_reads: StorageReadPolicy::Abstract,
-        }
+        self.table.solver(
+            &self.world,
+            &self.entry,
+            &self.config,
+            &mut self.budget,
+            &mut self.counters,
+            StorageReadPolicy::Abstract,
+        )
     }
 
     fn first(&mut self) -> Execution {
@@ -91,6 +89,18 @@ impl Harness {
     fn retry(&mut self, first: Execution) -> Execution {
         let original = self.table.nodes[0].payload.clone();
         self.solver().retry_runtime(0, &original, first)
+    }
+
+    fn preparation_work(&mut self) -> usize {
+        let original = self.table.nodes[0].payload.clone();
+        // Quote the actual, detached production stage on an independent ledger.
+        // No retry bit, transfer count, source slot or retained bound is changed.
+        let live_budget =
+            std::mem::replace(&mut self.budget, WorkBudget::new(self.config.max_work));
+        self.solver().prepare_runtime_retry(0, &original).unwrap();
+        let work = self.budget.used();
+        self.budget = live_budget;
+        work
     }
 }
 
@@ -144,7 +154,16 @@ fn actual_runtime_mstore_cap_retries_to_a_known_successor_once() {
     else {
         panic!("must preserve the coarse input behind the actual write")
     };
-    assert_eq!(value.as_constant(), Some(U256::from(7)));
+    // A numerically exact operand may have an independent Fresh expression.
+    // Read back its retained numeric facts without the original constructor cap
+    // also limiting this additional inspection of the completed write.
+    let written = post
+        .active()
+        .memory
+        .read_word_checked(&word(0), Domain::default())
+        .unwrap();
+    assert_eq!(written.singleton(), Some(U256::from(7)));
+    assert_eq!(written.expression(), Some(value));
     let before_byte = crate::domain::symbolic::ExprId::byte_read(
         previous.clone(),
         crate::domain::symbolic::ExprId::constant(U256::ZERO),
@@ -174,12 +193,11 @@ fn actual_runtime_mstore_cap_retries_to_a_known_successor_once() {
     }
     h.solver().accept(0, retried);
     assert_eq!(h.table.nodes.len(), 2);
-    assert!(
-        h.table.procedures[0]
-            .nodes
-            .keys()
-            .any(|(key, _)| key.basic_block_index == 1)
-    );
+    assert!(h.table.procedures[0].nodes.keys().any(|(key, _)| {
+        key.frames
+            .last()
+            .is_some_and(|frame| frame.basic_block_index == 1)
+    }));
 }
 
 #[test]
@@ -202,7 +220,7 @@ fn real_worklist_counts_both_attempts_and_only_actually_covered_blocks() {
             .outputs
             .contains_key(&OutcomeKind::Return)
     );
-    assert_eq!(h.table.worklist.work_size(), 0);
+    assert!(h.table.runtime.relative_closed(&mut h.budget).unwrap());
     assert_eq!(
         h.table
             .nodes
@@ -226,9 +244,22 @@ fn failed_coarse_transfer_keeps_original_input_receipts_and_failure_alternative(
     assert_eq!(first.retention_failures, [(0, RetentionCause::State)]);
     let before_payload = first.payload.clone();
     let before_receipts = first.instruction_progress.clone();
+    let before_values = first.instruction_values.clone();
     let before_pcs = first.executed_pcs.clone();
-    let alternatives = first.outcomes.len();
-    assert!(alternatives > 0);
+    let alternatives = first
+        .outcomes
+        .iter()
+        .map(|outcome| (outcome.kind, outcome.data.clone(), outcome.store.clone()))
+        .collect::<Vec<_>>();
+    assert!(!alternatives.is_empty());
+    let original_frontier = &first.frontiers[0];
+    let original_boundary = (
+        original_frontier.pc,
+        original_frontier.reason.clone(),
+        original_frontier.target.clone(),
+        original_frontier.range.clone(),
+        original_frontier.payload.clone(),
+    );
     let failed = h.retry(first);
     assert!(semantic_eq(&original, &h.table.nodes[0].payload));
     assert!(matches!(
@@ -237,10 +268,28 @@ fn failed_coarse_transfer_keeps_original_input_receipts_and_failure_alternative(
     ));
     assert_eq!(failed.payload, before_payload);
     assert_eq!(failed.instruction_progress, before_receipts);
+    assert_eq!(failed.instruction_values, before_values);
     assert_eq!(failed.executed_pcs, before_pcs);
-    assert_eq!(failed.outcomes.len(), alternatives);
+    assert_eq!(
+        failed
+            .outcomes
+            .iter()
+            .map(|outcome| (outcome.kind, outcome.data.clone(), outcome.store.clone()))
+            .collect::<Vec<_>>(),
+        alternatives
+    );
     assert_eq!(failed.retention_failures, [(0, RetentionCause::State)]);
     assert_eq!(failed.frontiers.len(), 1);
+    assert_eq!(
+        (
+            failed.frontiers[0].pc,
+            failed.frontiers[0].reason.clone(),
+            failed.frontiers[0].target.clone(),
+            failed.frontiers[0].range.clone(),
+            failed.frontiers[0].payload.clone(),
+        ),
+        original_boundary
+    );
     assert_eq!(h.counters.transfers, 2);
     let again = h.retry(failed);
     assert_eq!(h.counters.transfers, 2);
@@ -254,9 +303,19 @@ fn max_transfers_keeps_first_result_and_does_not_run_or_install_a_retry() {
     let first = h.first();
     h.config.analysis.max_transfers = h.counters.transfers;
     let used = h.budget.used();
+    let before_payload = first.payload.clone();
+    let before_receipts = first.instruction_progress.clone();
+    let before_values = first.instruction_values.clone();
+    let before_pcs = first.executed_pcs.clone();
     let stopped = h.retry(first);
     assert_eq!(h.counters.transfers, 1);
-    assert_eq!(h.budget.used(), used);
+    // Retaining the rejected retry obligation can pay to reify the original
+    // checkpoint even though transfer admission refuses before preparation.
+    assert!(h.budget.used() >= used && !h.budget.exhausted());
+    assert_eq!(stopped.payload, before_payload);
+    assert_eq!(stopped.instruction_progress, before_receipts);
+    assert_eq!(stopped.instruction_values, before_values);
+    assert_eq!(stopped.executed_pcs, before_pcs);
     assert!(semantic_eq(&original, &h.table.nodes[0].payload));
     assert!(matches!(
         &h.table.nodes[0].runtime_retry,
@@ -267,6 +326,13 @@ fn max_transfers_keeps_first_result_and_does_not_run_or_install_a_retry() {
         stopped.frontiers[1].reason,
         FrontierReason::Budget(Limit::Transfers)
     );
+    assert_eq!(
+        stopped.frontiers[1].target.as_ref(),
+        Some(&original.location)
+    );
+    let checkpoint = stopped.frontiers[1].payload.as_ref().unwrap();
+    let retained = form(checkpoint, &h.entry, h.config.domain().unwrap()).unwrap();
+    assert!(semantic_eq(&original, &retained));
     assert!(
         stopped
             .outcomes

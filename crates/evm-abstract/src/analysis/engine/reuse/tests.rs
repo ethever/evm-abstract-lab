@@ -33,14 +33,31 @@ fn fixture_with_code(code: &str, value: Option<u64>) -> (World, Entry, Arc<CodeC
     (world, Entry::new(address), Arc::new(catalog))
 }
 
+// Test-only equality uses explicit proofs from the concrete built-in carrier.
+// Production content comparison conservatively retains opaque expressions.
+fn numeric_constant_form(
+    payload: &crate::analysis::MachinePayload,
+) -> crate::analysis::MachinePayload {
+    let mut content = payload.content_form().unwrap();
+    content
+        .update_values(&mut |value| {
+            if value.singleton().is_some() {
+                value.forget_expression();
+            }
+        })
+        .unwrap();
+    content
+}
+
 #[test]
 fn hit_keeps_new_store_and_all_saved_checkpoints() {
     let (old_world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
     let domain = Domain::default();
-    let input = transfer::initial(&old_world, &entry, domain).unwrap();
+    let input =
+        crate::analysis::transfer::procedure::testing::initial(&old_world, &entry, domain).unwrap();
     let mut ledger = WorkBudget::new(config.max_work);
-    let execution = transfer::execute(
+    let execution = crate::analysis::transfer::procedure::testing::execute(
         &old_world,
         &entry,
         input.clone(),
@@ -64,7 +81,8 @@ fn hit_keeps_new_store_and_all_saved_checkpoints() {
         .storage
         .insert(U256::ZERO, AbstractValue::constant(U256::from(7)));
     new_world.insert(other, other_account).unwrap();
-    let new = transfer::initial(&new_world, &entry, domain).unwrap();
+    let new =
+        crate::analysis::transfer::procedure::testing::initial(&new_world, &entry, domain).unwrap();
     assert_ne!(input.store, new.store);
     assert_ne!(input.active().saved_store, new.active().saved_store);
     assert_eq!(
@@ -86,7 +104,7 @@ fn hit_keeps_new_store_and_all_saved_checkpoints() {
             new.active().saved_store
         );
     }
-    let mut ordinary = transfer::execute(
+    let mut ordinary = crate::analysis::transfer::procedure::testing::execute(
         &new_world,
         &entry,
         new.clone(),
@@ -97,13 +115,19 @@ fn hit_keeps_new_store_and_all_saved_checkpoints() {
     );
     ordinary.payload.normalize();
     let cached = reuse.lookup(&new, &mut ledger).unwrap().unwrap();
-    assert_eq!(cached.payload, ordinary.payload);
+    assert_eq!(
+        numeric_constant_form(&cached.payload),
+        numeric_constant_form(&ordinary.payload)
+    );
     assert_eq!(cached.executed_pcs, ordinary.executed_pcs);
     assert_eq!(cached.successors.len(), ordinary.successors.len());
     for (cached, mut ordinary) in cached.successors.into_iter().zip(ordinary.successors) {
         ordinary.payload.normalize();
         assert_eq!(cached.kind, ordinary.kind);
-        assert_eq!(cached.payload, ordinary.payload);
+        assert_eq!(
+            numeric_constant_form(&cached.payload),
+            numeric_constant_form(&ordinary.payload)
+        );
     }
     let mut nested = new.clone();
     nested.call_stack.push_child(ChildFrame {
@@ -148,7 +172,8 @@ fn touched_ripemd_inputs_fall_back_to_fresh_failure_and_normal_execution() {
     let config = ExecutionConfig::default();
     let domain = Domain::default();
     let zero = AbstractValue::constant(U256::ZERO);
-    let mut input = transfer::initial(&world, &entry, domain).unwrap();
+    let mut input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     input
         .active_mut()
         .stack
@@ -157,7 +182,7 @@ fn touched_ripemd_inputs_fall_back_to_fresh_failure_and_normal_execution() {
     assert_eq!(input.store.touched_in_transaction(ripemd), Some(false));
     let original = input.clone();
     let mut preparation = WorkBudget::new(config.max_work);
-    let execution = transfer::execute(
+    let execution = crate::analysis::transfer::procedure::testing::execute(
         &world,
         &entry,
         input.clone(),
@@ -206,7 +231,7 @@ fn touched_ripemd_inputs_fall_back_to_fresh_failure_and_normal_execution() {
         assert_eq!(reuse.dependencies, before_dependencies);
 
         let mut ledger = WorkBudget::new(config.max_work);
-        let fresh = transfer::execute(
+        let fresh = crate::analysis::transfer::procedure::testing::execute(
             &world,
             &entry,
             current.clone(),
@@ -293,11 +318,13 @@ fn touched_ripemd_inputs_fall_back_to_fresh_failure_and_normal_execution() {
 fn budget_and_current_cancellation_refuse_reuse_without_partial_effects() {
     let (world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
-    let input = transfer::initial(&world, &entry, Domain::default()).unwrap();
+    let input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, Domain::default())
+            .unwrap();
     let before = input.clone();
     let mut reuse = ExecutionReuse::new(catalog, 4, config.max_work, config.max_memory_bytes);
     let mut preparation = WorkBudget::new(config.max_work);
-    let execution = transfer::execute(
+    let execution = crate::analysis::transfer::procedure::testing::execute(
         &world,
         &entry,
         input.clone(),
@@ -371,9 +398,10 @@ fn ineligible_inputs_pay_only_metadata_before_lookup_or_remember() {
     let config = ExecutionConfig::default();
     let domain = Domain::default();
     let (world, entry, _) = fixture(None);
-    let input = transfer::initial(&world, &entry, domain).unwrap();
+    let input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut preparation = WorkBudget::new(config.max_work);
-    let clean = transfer::execute(
+    let clean = crate::analysis::transfer::procedure::testing::execute(
         &world,
         &entry,
         input,
@@ -384,7 +412,8 @@ fn ineligible_inputs_pay_only_metadata_before_lookup_or_remember() {
     );
     for code in ["f100", "00", "60026003016008565b00"] {
         let (world, entry, catalog) = fixture_with_code(code, None);
-        let input = transfer::initial(&world, &entry, domain).unwrap();
+        let input =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let mut reuse = ExecutionReuse::new(catalog, 4, config.max_work, config.max_memory_bytes);
         let mut candidates = Vec::new();
         if code != "60026003016008565b00" {
@@ -424,7 +453,8 @@ fn disqualified_results_return_before_full_signature_or_key() {
     let (world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
     let domain = Domain::default();
-    let input = transfer::initial(&world, &entry, domain).unwrap();
+    let input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut reuse = ExecutionReuse::new(catalog, 4, config.max_work, config.max_memory_bytes);
     enum Disqualify {
         Successors,
@@ -442,7 +472,7 @@ fn disqualified_results_return_before_full_signature_or_key() {
     ];
     for disqualify in disqualify {
         let mut preparation = WorkBudget::new(config.max_work);
-        let mut execution = transfer::execute(
+        let mut execution = crate::analysis::transfer::procedure::testing::execute(
             &world,
             &entry,
             input.clone(),
@@ -499,7 +529,8 @@ fn eligible_paths_keep_full_signature_program_stack_and_policy_guards() {
     let (world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
     let domain = Domain::default();
-    let mut input = transfer::initial(&world, &entry, domain).unwrap();
+    let mut input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     input
         .active_mut()
         .stack
@@ -518,7 +549,7 @@ fn eligible_paths_keep_full_signature_program_stack_and_policy_guards() {
         ELIGIBILITY_WORK + TOUCH_QUERY_WORK + reuse.signature_work(&input)
     );
     assert_eq!(reuse.stats().misses, 1);
-    let execution = transfer::execute(
+    let execution = crate::analysis::transfer::procedure::testing::execute(
         &world,
         &entry,
         input.clone(),
@@ -604,9 +635,11 @@ fn eligible_paths_keep_full_signature_program_stack_and_policy_guards() {
 fn optional_retention_cap_refuses_entry_without_changing_execution() {
     let (world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
-    let input = transfer::initial(&world, &entry, Domain::default()).unwrap();
+    let input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, Domain::default())
+            .unwrap();
     let mut ledger = WorkBudget::new(config.max_work);
-    let execution = transfer::execute(
+    let execution = crate::analysis::transfer::procedure::testing::execute(
         &world,
         &entry,
         input.clone(),

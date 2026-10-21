@@ -86,7 +86,7 @@ fn native_fact_list_charges_repeated_embedded_observations_not_only_flat_nodes()
             .map(|i| StateBinding {
                 index: U256::from(i),
                 value: shared.clone(),
-                numeric: AbstractValue::constant(U256::ZERO).numeric().clone(),
+                numeric: AbstractValue::constant(U256::ZERO).numeric().clone().into(),
             })
             .collect(),
         limits.into(),

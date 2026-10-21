@@ -65,7 +65,8 @@ fn coarse_entry_has_common_witnesses_for_all_original_joint_tuples_and_rolls_bac
     let domain = config.domain().unwrap();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
     let owner = address(0x101);
-    let mut input = transfer::initial(&world, &entry, domain).unwrap();
+    let mut input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let saved = domain.join(&word(3), &word(5));
     let current = domain.join(&word(11), &word(13));
     let transient = domain.join(&word(17), &word(19));
@@ -163,7 +164,7 @@ fn coarse_entry_has_common_witnesses_for_all_original_joint_tuples_and_rolls_bac
             kind,
             crate::world::ByteArray::empty(),
             &config,
-            domain,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
             &mut budget,
             true,
         );

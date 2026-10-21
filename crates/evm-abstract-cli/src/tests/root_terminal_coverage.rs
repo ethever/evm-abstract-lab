@@ -197,8 +197,8 @@ fn default_coverage_and_the_entire_certificate_survive_existing_ssa_envelopes() 
     let ir = ssa::build_normalized_partial_world(analysis.execution()).unwrap();
     let forwarded: Json =
         serde_json::from_str(&crate::json::program(&analysis, &ir).unwrap()).unwrap();
-    assert_eq!(native["schema_version"], 10);
-    assert_eq!(machine["schema_version"], 10);
+    assert_eq!(native["schema_version"], 11);
+    assert_eq!(machine["schema_version"], 11);
     assert_eq!(forwarded["analysis"], native);
     assert_eq!(forwarded["machine_analysis"], machine);
     assert_eq!(
@@ -236,7 +236,7 @@ fn default_coverage_and_the_entire_certificate_survive_existing_ssa_envelopes() 
     let ir = ssa::build_normalized_partial_world(&analysis).unwrap();
     let forwarded: Json =
         serde_json::from_str(&crate::json::world(&analysis, Some(&ir)).unwrap()).unwrap();
-    assert_eq!(native["schema_version"], 10);
+    assert_eq!(native["schema_version"], 11);
     assert_eq!(plain, native);
     assert_eq!(forwarded["analysis"], native);
     assert!(forwarded.get("root_terminal_coverage").is_none());

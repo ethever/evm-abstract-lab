@@ -1,8 +1,12 @@
 //! Operand guarantees include singleton sources, independently of numeric equality.
 
 use super::check_value;
+use crate::domain::AlgebraRef;
+#[cfg(test)]
+use crate::domain::{AbstractValue, Domain};
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    AbstractValue, Domain,
+    EvmValue,
     symbolic::{ExprError, ExprId, ExprLimits},
 };
 use std::collections::BTreeMap;
@@ -10,11 +14,11 @@ use std::collections::BTreeMap;
 /// These are unconditional guarantees, so a missing entry on either path means
 /// no guarantee. The immutable roots keep branch effects even when their local
 /// operand bounds cannot be retained outside that branch.
-pub(in crate::world) fn join_common(
-    left: &BTreeMap<ExprId, AbstractValue>,
-    right: &BTreeMap<ExprId, AbstractValue>,
-    domain: Domain,
-) -> BTreeMap<ExprId, AbstractValue> {
+pub(in crate::world) fn join_common<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    left: &BTreeMap<ExprId, EvmValue<N>>,
+    right: &BTreeMap<ExprId, EvmValue<N>>,
+    domain: AlgebraRef<'_, D>,
+) -> BTreeMap<ExprId, EvmValue<N>> {
     left.iter()
         .filter_map(|(expression, value)| {
             right
@@ -26,29 +30,29 @@ pub(in crate::world) fn join_common(
 
 /// Merge source alternatives, never infer input identity from an equal number.
 /// The caller stages this map so a rejected metadata bound remains atomic.
-pub(in crate::world) fn remember(
-    facts: &mut BTreeMap<ExprId, AbstractValue>,
+pub(in crate::world) fn remember<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    facts: &mut BTreeMap<ExprId, EvmValue<N>>,
     expression: ExprId,
-    value: &AbstractValue,
-    domain: Domain,
+    value: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
     limits: ExprLimits,
 ) -> Result<(), ExprError> {
     validate(&expression, value, limits)?;
     let mut clean = value.clone();
     normalize(&expression, &mut clean, domain);
     if informative(&expression, &clean) || facts.contains_key(&expression) {
-        insert(facts, expression, &clean, domain);
+        insert(facts, expression, clean, domain);
     }
     check_count(facts.len(), limits)
 }
 
 /// Import into a logically empty map without looking up or ordering each key.
 /// The private clone is published only after the original ordered checks pass.
-pub(super) fn import_empty(
-    source: &BTreeMap<ExprId, AbstractValue>,
-    domain: Domain,
+pub(super) fn import_empty<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    source: &BTreeMap<ExprId, EvmValue<N>>,
+    domain: AlgebraRef<'_, D>,
     limits: ExprLimits,
-) -> Result<BTreeMap<ExprId, AbstractValue>, ExprError> {
+) -> Result<BTreeMap<ExprId, EvmValue<N>>, ExprError> {
     let mut facts = source.clone();
     let mut kept = 0;
     let mut result = Ok(());
@@ -72,9 +76,9 @@ pub(super) fn import_empty(
     Ok(facts)
 }
 
-fn validate(
+fn validate<N: WordElement>(
     expression: &ExprId,
-    value: &AbstractValue,
+    value: &EvmValue<N>,
     limits: ExprLimits,
 ) -> Result<(), ExprError> {
     check_value(value, limits)?;
@@ -87,21 +91,25 @@ fn validate(
     Ok(())
 }
 
-fn normalize(expression: &ExprId, value: &mut AbstractValue, domain: Domain) {
+fn normalize<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    expression: &ExprId,
+    value: &mut EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
+) {
     value.forget_identity();
-    if let Some(constant) = expression.as_constant() {
+    if let Some(constant_with) = expression.as_constant() {
         // One constant entry describes possible sources, not an occurrence of
         // a scoped input. Keep its exact numeric proof and remove must-aliases.
         *value = domain
-            .join(value, &AbstractValue::constant(constant))
-            .with_numeric(crate::domain::NumericValue::constant(constant));
+            .join(value, &EvmValue::<N>::constant(constant_with))
+            .with_numeric(N::constant(constant_with));
     }
 }
 
-fn informative(expression: &ExprId, value: &AbstractValue) -> bool {
+fn informative<N: WordElement>(expression: &ExprId, value: &EvmValue<N>) -> bool {
     expression
         .as_constant()
-        .is_none_or(|n| *value != AbstractValue::constant(n))
+        .is_none_or(|n| *value != EvmValue::<N>::constant(n))
 }
 
 fn check_count(count: usize, limits: ExprLimits) -> Result<(), ExprError> {
@@ -114,16 +122,20 @@ fn check_count(count: usize, limits: ExprLimits) -> Result<(), ExprError> {
     Ok(())
 }
 
-fn insert(
-    facts: &mut BTreeMap<ExprId, AbstractValue>,
+fn insert<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    facts: &mut BTreeMap<ExprId, EvmValue<N>>,
     expression: ExprId,
-    value: &AbstractValue,
-    domain: Domain,
+    value: EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
 ) {
-    facts
-        .entry(expression)
-        .and_modify(|old| *old = domain.join(old, value))
-        .or_insert_with(|| value.clone());
+    match facts.entry(expression) {
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            *entry.get_mut() = domain.join(entry.get(), &value);
+        }
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(value);
+        }
+    }
 }
 
 #[cfg(test)]

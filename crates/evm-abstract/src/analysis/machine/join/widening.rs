@@ -4,17 +4,16 @@
 //! the resulting path contains only common guarantees, so no lost scalar
 //! correlation is presented as a retained guarded disjunction.
 
-use super::{MachineError, checkpoint};
-use crate::{
-    analysis::MachinePayload,
-    domain::{Domain, NumericValue},
-};
+use crate::domain::{EvmNumericAlgebra, WordElement};
 
-pub(super) fn stack(
-    previous: &MachinePayload,
-    incoming: &MachinePayload,
-    domain: Domain,
-) -> Result<Option<MachinePayload>, MachineError> {
+use super::{MachineError, checkpoint};
+use crate::{analysis::machine::EvmMachinePayload, domain::AlgebraRef};
+
+pub(super) fn stack<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    previous: &EvmMachinePayload<N>,
+    incoming: &EvmMachinePayload<N>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
     checkpoint()?;
     let mut old_shape = previous.content_form()?;
     let mut new_shape = incoming.content_form()?;
@@ -49,7 +48,7 @@ pub(super) fn stack(
                 // unchanged words retain all their original product facts.
                 let (lower, upper) = widened.interval().unsigned_bounds();
                 widened = widened.with_numeric(
-                    NumericValue::unsigned_range(lower, upper)
+                    N::unsigned_range(lower, upper)
                         .expect("widening preserves ordered unsigned bounds"),
                 );
             }

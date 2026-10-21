@@ -43,8 +43,8 @@ impl DomainSpec {
             capacity,
             reduction_rounds,
             fact_limit,
-            // Version 4 accounts for shared replay evidence and canonical bounds.
-            cost_version: 4,
+            // Version 6 prices shared-kernel work, custom rules and opaque queries.
+            cost_version: 6,
             widening_after_updates: 2,
             provenance_policy: "scoped-expressions-and-value-identities-v3",
             relations: super::relational::RelationLimits::default(),
@@ -91,7 +91,9 @@ impl DomainSpec {
     pub(crate) fn constant_capacity(self) -> NonZeroUsize {
         self.capacity
     }
-    /// 一次临时交换最多执行的完整轮数；不声称理论最精确闭包。
+    /// 局部交换的调度额度参数，不声称理论最精确闭包。
+    /// 默认协作 product 按饱和运算换算为最多 `1 + 3 * R` 次任务评估，
+    /// 包含输入初始化；它不是所有组件同步读取旧快照的轮数。
     pub fn reduction_rounds(self) -> usize {
         self.reduction_rounds.get()
     }

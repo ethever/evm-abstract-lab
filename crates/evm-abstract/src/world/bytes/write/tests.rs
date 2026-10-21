@@ -60,8 +60,14 @@ fn original(
     width: usize,
     domain: Domain,
 ) -> Result<(), RangeError> {
-    let mut out = array.staged_write(offset, value, width, 96, domain)?;
-    out.refresh(domain);
+    let mut out = array.staged_write(
+        offset,
+        value,
+        width,
+        96,
+        crate::domain::ValueAlgebra::new(&domain),
+    )?;
+    out.refresh(crate::domain::ValueAlgebra::new(&domain));
     *array = out;
     Ok(())
 }
@@ -114,7 +120,13 @@ fn a1_matches_entire_original_arrays_and_reads_under_the_same_policy() {
             let value = source(numeric, 73);
             assert!(value.provenance().is_code_address());
             let before = ByteArray::memory();
-            assert!(eligible(&before, &constant(0), &value, 32, domain));
+            assert!(eligible(
+                &before,
+                &constant(0),
+                &value,
+                32,
+                crate::domain::ValueAlgebra::new(&domain)
+            ));
             let mut actual = before.clone();
             let mut expected = before.clone();
             NUMERIC_READS.set(0);
@@ -319,14 +331,26 @@ fn fallback(
     width: usize,
     domain: Domain,
 ) {
-    assert!(!eligible(&array, &offset, &value, width, domain));
+    assert!(!eligible(
+        &array,
+        &offset,
+        &value,
+        width,
+        crate::domain::ValueAlgebra::new(&domain)
+    ));
     if width == 32 {
         assert_eq!(array.uniform_word_write_work(&offset, &value, domain), None);
     }
     let mut actual = array.clone();
     let mut expected = array;
     assert_eq!(
-        actual.write(&offset, &value, width, 96, domain),
+        actual.write_with(
+            &offset,
+            &value,
+            width,
+            96,
+            crate::domain::ValueAlgebra::new(&domain)
+        ),
         original(&mut expected, &offset, &value, width, domain)
     );
     assert_complete(&actual, &expected, domain);
@@ -370,7 +394,13 @@ fn nonuniform_sources_and_nonfresh_or_guarded_shapes_keep_the_original_path() {
     let offset = constant(0);
     let canonical_source = ExprId::fresh().unwrap();
     assert!(unbound.expression().is_none());
-    assert!(!eligible(&before, &offset, &unbound, 32, domain));
+    assert!(!eligible(
+        &before,
+        &offset,
+        &unbound,
+        32,
+        crate::domain::ValueAlgebra::new(&domain)
+    ));
     assert_eq!(
         before.uniform_word_write_work(&offset, &unbound, domain),
         None
@@ -380,7 +410,7 @@ fn nonuniform_sources_and_nonfresh_or_guarded_shapes_keep_the_original_path() {
         &offset,
         &unbound.clone().with_expression(canonical_source.clone()),
         32,
-        domain,
+        crate::domain::ValueAlgebra::new(&domain),
     ));
     assert!(before.fresh_leaves().is_empty());
     let mut actual = before.clone();
@@ -421,14 +451,14 @@ fn nonuniform_sources_and_nonfresh_or_guarded_shapes_keep_the_original_path() {
         array
             .rename_fresh(
                 &BTreeMap::from([(generated.clone(), canonical_source.clone())]),
-                super::super::limits(domain),
+                super::super::limits(crate::domain::ValueAlgebra::new(&domain)),
             )
             .unwrap();
         let mut restored = array.clone();
         restored
             .rename_fresh(
                 &BTreeMap::from([(canonical_source.clone(), generated)]),
-                super::super::limits(domain),
+                super::super::limits(crate::domain::ValueAlgebra::new(&domain)),
             )
             .unwrap();
         assert_eq!(restored, saved);
@@ -447,7 +477,11 @@ fn nonuniform_sources_and_nonfresh_or_guarded_shapes_keep_the_original_path() {
     with_bytes.bytes.insert(0, constant(0));
     let mut with_facts = ByteArray::memory();
     with_facts
-        .remember(value.expression().unwrap().clone(), &value, domain)
+        .remember(
+            value.expression().unwrap().clone(),
+            &value,
+            crate::domain::ValueAlgebra::new(&domain),
+        )
         .unwrap();
     let guarded = with_facts
         .join_guarded(

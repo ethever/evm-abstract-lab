@@ -1,10 +1,14 @@
+use crate::domain::ValueAlgebra;
 mod bounded_promotion;
 mod byte_roots;
 mod conditional_normalization;
 
 use super::{EntryAlternatives, MachineError};
 use crate::{
-    analysis::{Continuation, OutcomeKind, RootFrame, Status, machine::fixtures},
+    analysis::{
+        Continuation, OutcomeKind, RootFrame, Status, engine::policy::RecentDistinctJumps,
+        machine::fixtures,
+    },
     domain::{
         AbstractValue, Domain,
         relational::{CheckResult, ValueQuery},
@@ -29,7 +33,8 @@ fn actual_machine_join_keeps_zero_and_nonzero_branches_after_one_sided_world_pro
         // MLOAD/SLOAD/TLOAD; ISZERO; JUMPI, followed by two marker returns.
         let code = format!("5f{opcode:02x}15600e5760015f5260205ff35b5f5f5260205ff3");
         let (world, entry) = fixtures::fixture(&[(0x101, &code)]);
-        let mut right = transfer::initial(&world, &entry, domain).unwrap();
+        let mut right =
+            transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
         let guard = ExprId::fresh().unwrap();
         if opcode == 0x51 {
             let mut yes = ByteArray::memory();
@@ -90,7 +95,7 @@ fn actual_machine_join_keeps_zero_and_nonzero_branches_after_one_sided_world_pro
         let saved = left.store.snapshot();
         left.active_mut().saved_store = saved;
         for (a, b) in [(&left, &right), (&right, &left)] {
-            let joined = a.join(b, domain).unwrap();
+            let joined = a.join(b, ValueAlgebra::new(domain).borrowed()).unwrap();
             if opcode != 0x51 {
                 let saved = joined.active().saved_store.state();
                 let read = if opcode == 0x5c {
@@ -109,7 +114,8 @@ fn actual_machine_join_keeps_zero_and_nonzero_branches_after_one_sided_world_pro
                 &entry,
                 joined,
                 &config,
-                domain,
+                ValueAlgebra::new(domain).borrowed(),
+                &RecentDistinctJumps,
                 &mut WorkBudget::new(config.max_work),
                 transfer::StorageReadPolicy::Abstract,
             );
@@ -185,7 +191,9 @@ fn one_selector_pairs_every_frame_value_root_checkpoint_and_continuation() {
         payload.call_stack.push_child(child);
         payload.normalize();
     }
-    let joined = left.join(&right, domain).unwrap();
+    let joined = left
+        .join(&right, ValueAlgebra::new(domain).borrowed())
+        .unwrap();
     let selector = scalar_guard(&joined.active().stack[0]);
     for frame in joined.call_stack.iter() {
         assert_eq!(scalar_guard(&frame.stack[0]), selector);
@@ -261,7 +269,12 @@ fn checked_join_and_rename_leave_all_original_fields_unchanged_on_failure() {
         .unwrap();
     let before = (left.clone(), right.clone());
     config.analysis.relations.max_nodes = 1;
-    let failure = left.join(&right, config.domain().unwrap()).unwrap_err();
+    let failure = left
+        .join(
+            &right,
+            ValueAlgebra::new(config.domain().unwrap()).borrowed(),
+        )
+        .unwrap_err();
     assert!(matches!(
         failure,
         MachineError::Expression(_) | MachineError::Bytes(_)
@@ -306,19 +319,34 @@ fn previously_represented_whole_payload_is_absorbed_without_a_new_selector() {
     let mut alternatives = EntryAlternatives::new(&first);
     let mut budget = WorkBudget::new(10_000_000);
     let joined = alternatives
-        .join(&first, &second, domain, &mut budget)
+        .join(
+            &first,
+            &second,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+        )
         .unwrap()
         .unwrap();
     alternatives.retain(second.clone());
     let identities = joined.fresh_leaves();
     assert!(
         alternatives
-            .join(&joined, &second, domain, &mut budget)
+            .join(
+                &joined,
+                &second,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut budget
+            )
             .unwrap()
             .is_none()
     );
     assert_eq!(joined.fresh_leaves(), identities);
-    assert_eq!(first.join(&first, domain).unwrap(), first);
+    assert_eq!(
+        first
+            .join(&first, ValueAlgebra::new(domain).borrowed())
+            .unwrap(),
+        first
+    );
 }
 
 #[test]
@@ -529,7 +557,10 @@ fn growing_loop_bound_contains_the_concrete_counter_and_memory_pair() {
     assert_eq!(length_bindings.len(), 1);
     let binding = &length_bindings[0];
     assert_eq!(binding.index, U256::ZERO);
-    assert_eq!(&binding.numeric, memory.len().numeric());
+    assert_eq!(
+        binding.numeric,
+        crate::domain::WordObservation::from(memory.len().numeric())
+    );
     let ExprKind::SlotRead { state: raw, key } = binding.value.kind() else {
         panic!("length binding must not impose a cross-field equality");
     };
@@ -559,9 +590,7 @@ fn growing_loop_bound_contains_the_concrete_counter_and_memory_pair() {
         assert!(index < bytes.len());
         assert!(matches!(binding.value.kind(), ExprKind::Fresh(_)));
         assert!(independent.insert(binding.value.clone()));
-        assert!(
-            AbstractValue::from_numeric(binding.numeric.clone()).contains(U256::from(bytes[index]))
-        );
+        assert!(binding.numeric.contains(U256::from(bytes[index])));
     }
     assert_eq!(memory.fresh_leaves(), independent);
     // Inspect the rest of this same payload for accidental shared sources.
@@ -867,7 +896,12 @@ fn new_unknown_source_does_not_match_old_unknown_content() {
     let mut budget = WorkBudget::new(10_000_000);
     assert!(
         alternatives
-            .join(&first, &second, domain, &mut budget)
+            .join(
+                &first,
+                &second,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut budget
+            )
             .unwrap()
             .is_some()
     );
@@ -994,11 +1028,12 @@ fn scalar_counter_widening_covers_immutable_input_with_independent_roots() {
     ] {
         let operand = operand.as_ref().expect("canonical frame operand");
         assert_eq!(operand.singleton(), Some(U256::from(value)));
-        assert!(
-            operand
-                .expression()
-                .is_none_or(|expression| expression.as_constant() == Some(U256::from(value)))
-        );
+        if let Some(expression) = operand.expression() {
+            assert!(!independent.contains(expression));
+            if let Some(literal) = expression.as_constant() {
+                assert_eq!(literal, U256::from(value));
+            }
+        }
     }
     assert!(header.entry.active().stack[1].contains(U256::ZERO));
     assert!(header.entry.active().stack[1].contains(U256::MAX));
@@ -1107,7 +1142,12 @@ fn an_incoming_leaf_is_retained_when_the_old_guard_selects_a_different_root() {
     let mut alternatives = EntryAlternatives::new(&old);
     let mut budget = WorkBudget::new(10_000_000);
     let joined = alternatives
-        .join(&old, &incoming, domain, &mut budget)
+        .join(
+            &old,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+        )
         .unwrap()
         .expect("root leaf membership does not prove complete guarded coverage");
     let mut path = joined.relations.clone();
@@ -1152,12 +1192,14 @@ fn canonical_case_rebuild_keeps_previously_accepted_stack_root_pairs() {
         Some(&seven),
         &nine,
         &BTreeSet::new(),
-        domain,
+        ValueAlgebra::new(domain).borrowed(),
         &mut budget,
     )
     .unwrap();
     assert_eq!(cases.len(), 2);
-    let mut entry = cases[0].join(&cases[1], domain).unwrap();
+    let mut entry = cases[0]
+        .join(&cases[1], ValueAlgebra::new(domain).borrowed())
+        .unwrap();
     let mut bound = cases[0].fresh_leaves();
     bound.extend(cases[1].fresh_leaves());
     let mut selectors: BTreeSet<_> = entry.fresh_leaves().difference(&bound).cloned().collect();
@@ -1169,7 +1211,14 @@ fn canonical_case_rebuild_keeps_previously_accepted_stack_root_pairs() {
     let mut incoming = entry.clone();
     incoming.active_mut().stack = vec![fixtures::word(1)];
     let widened = alternatives
-        .join_cyclic(&entry, &incoming, domain, &mut budget, &selectors, true)
+        .join_cyclic(
+            &entry,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+            &selectors,
+            true,
+        )
         .unwrap()
         .unwrap();
     let mut previous = entry.fresh_leaves();
@@ -1183,7 +1232,14 @@ fn canonical_case_rebuild_keeps_previously_accepted_stack_root_pairs() {
         .write_word(&fixtures::word(0), &fixtures::word(11), 4096, domain)
         .unwrap();
     let result = alternatives
-        .join_cyclic(&entry, &last, domain, &mut budget, &selectors, true)
+        .join_cyclic(
+            &entry,
+            &last,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+            &selectors,
+            true,
+        )
         .unwrap()
         .unwrap();
     let stack = result.active().stack[0].symbolic_expression().unwrap();
@@ -1254,7 +1310,9 @@ fn cycle_projection_never_enumerates_external_sources_or_manual_guards() {
     left.active_mut().stack = vec![fixtures::word(0), gas.clone()];
     let mut right = left.clone();
     right.active_mut().stack[0] = fixtures::word(1);
-    let joined = left.join(&right, domain).unwrap();
+    let joined = left
+        .join(&right, ValueAlgebra::new(domain).borrowed())
+        .unwrap();
     let mut inputs = left.fresh_leaves();
     inputs.extend(right.fresh_leaves());
     let selectors = joined
@@ -1266,8 +1324,15 @@ fn cycle_projection_never_enumerates_external_sources_or_manual_guards() {
     assert!(!selectors.contains(&manual));
     assert!(!selectors.contains(&observation));
     let mut budget = WorkBudget::new(100_000_000);
-    let cases =
-        super::cases::prepare(&[], Some(&joined), &right, &selectors, domain, &mut budget).unwrap();
+    let cases = super::cases::prepare(
+        &[],
+        Some(&joined),
+        &right,
+        &selectors,
+        ValueAlgebra::new(domain).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     for payload in cases {
         assert_eq!(payload.active().calldata.fresh_leaves(), input_sources);
         assert!(payload.fresh_leaves().contains(&manual));
@@ -1301,7 +1366,9 @@ fn a_constrained_entry_from_outside_a_cycle_keeps_its_actual_guard() {
         .write_word(&fixtures::word(0), &fixtures::word(9), 4096, domain)
         .unwrap();
     let mut alternatives = EntryAlternatives::new(&seven);
-    let mut entry = seven.join(&nine, domain).unwrap();
+    let mut entry = seven
+        .join(&nine, ValueAlgebra::new(domain).borrowed())
+        .unwrap();
     let mut original = seven.fresh_leaves();
     original.extend(nine.fresh_leaves());
     let mut selectors: BTreeSet<_> = entry
@@ -1314,7 +1381,14 @@ fn a_constrained_entry_from_outside_a_cycle_keeps_its_actual_guard() {
     incoming.active_mut().stack[0] = fixtures::word(1);
     let mut budget = WorkBudget::new(100_000_000);
     let canonical = alternatives
-        .join_cyclic(&entry, &incoming, domain, &mut budget, &selectors, true)
+        .join_cyclic(
+            &entry,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+            &selectors,
+            true,
+        )
         .unwrap()
         .unwrap();
     assert!(alternatives.cycle_widened);
@@ -1335,7 +1409,14 @@ fn a_constrained_entry_from_outside_a_cycle_keeps_its_actual_guard() {
         CheckResult::MayBeFeasible
     );
     let result = alternatives
-        .join_cyclic(&entry, &guarded, domain, &mut budget, &selectors, false)
+        .join_cyclic(
+            &entry,
+            &guarded,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+            &selectors,
+            false,
+        )
         .unwrap()
         .unwrap();
     assert!(!alternatives.cycle_widened);

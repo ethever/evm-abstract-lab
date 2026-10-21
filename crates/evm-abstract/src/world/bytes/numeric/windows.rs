@@ -284,7 +284,7 @@ fn checked_window_addition_never_forwards_a_truncated_or_wrapped_word() {
     let sliced = near_max
         .slice(term(U256::MAX), term(U256::from(32)), limits)
         .unwrap();
-    let mut reader = Reader::new(&facts, domain);
+    let mut reader = Reader::new(&facts, crate::domain::ValueAlgebra::new(&domain));
     let complete = ByteStateId::zero()
         .write_word(term(U256::MAX - U256::from(31)), expression.clone(), limits)
         .unwrap()

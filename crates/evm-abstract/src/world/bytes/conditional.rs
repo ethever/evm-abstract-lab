@@ -3,15 +3,17 @@
 //! Joins retain only the changed facts below their selector. Shared subtrees are
 //! immutable; lookup follows determined guards and never scans byte-state roots.
 
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 mod context;
 mod length;
 mod normalize;
-pub(super) use context::Context;
-pub(super) use context::{CONTEXTS, Preparation, preparation};
+pub(in crate::world) use context::Context;
+pub(super) use context::{BindingBudget, CONTEXTS, Preparation, preparation};
 
 use super::{RangeError, native};
 use crate::domain::{
-    AbstractValue, Domain,
+    EvmValue,
     relational::{QueryReason, RelationLimits, RelationState},
     symbolic::{ExprError, ExprId, ExprLimits},
 };
@@ -22,11 +24,11 @@ use serde::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
-type Facts = BTreeMap<ExprId, AbstractValue>;
+type Facts<N = crate::domain::NumericValue> = BTreeMap<ExprId, EvmValue<N>>;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct ConditionalFacts {
-    branches: Vec<Arc<Branch>>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::world) struct ConditionalFacts<N: WordElement = crate::domain::NumericValue> {
+    branches: Vec<Arc<Branch<N>>>,
     entries: usize,
     depth: usize,
     work: usize,
@@ -35,23 +37,24 @@ pub(super) struct ConditionalFacts {
     lookup_scopes: usize,
     lookup_numeric_work: usize,
     fact_entries: usize,
+    retained_words: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct Branch {
+struct Branch<N: WordElement = crate::domain::NumericValue> {
     condition: ExprId,
-    then_facts: Scope,
-    else_facts: Scope,
+    then_facts: Scope<N>,
+    else_facts: Scope<N>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct Scope {
+struct Scope<N: WordElement = crate::domain::NumericValue> {
     #[serde(serialize_with = "native::serialize_facts")]
-    facts: Facts,
-    conditional: ConditionalFacts,
+    facts: Facts<N>,
+    conditional: ConditionalFacts<N>,
 }
 
-impl Serialize for ConditionalFacts {
+impl<N: WordElement> Serialize for ConditionalFacts<N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let limits = crate::domain::symbolic::GraphLimits::default();
         self.check(ExprLimits {
@@ -72,13 +75,13 @@ impl Serialize for ConditionalFacts {
     }
 }
 
-impl ConditionalFacts {
+impl<N: WordElement> ConditionalFacts<N> {
     /// Only these handles are copied by Clone; nested scopes remain shared.
-    pub(super) fn cloned_branches(&self) -> usize {
+    pub(in crate::world) fn cloned_branches(&self) -> usize {
         self.branches.len()
     }
 
-    fn from_branches(branches: Vec<Arc<Branch>>) -> Self {
+    fn from_branches(branches: Vec<Arc<Branch<N>>>) -> Self {
         let mut out = Self {
             branches,
             ..Self::default()
@@ -91,6 +94,7 @@ impl ConditionalFacts {
             let mut lookup_scopes = 0;
             let mut lookup_numeric_work = 0;
             for scope in [&branch.then_facts, &branch.else_facts] {
+                out.retained_words |= scope.conditional.retained_words;
                 out.fact_entries = out
                     .fact_entries
                     .saturating_add(scope.facts.len())
@@ -113,6 +117,10 @@ impl ConditionalFacts {
                 depth = depth.max(scope.conditional.depth);
                 let mut numeric_work = 0;
                 for (expression, value) in &scope.facts {
+                    out.retained_words |= matches!(
+                        expression.kind(),
+                        crate::domain::symbolic::ExprKind::WordRead { .. }
+                    ) && value.numeric().requires_retained_binding();
                     numeric_work = numeric_work.max(value.numeric().work_size());
                     out.work = out
                         .work
@@ -140,17 +148,42 @@ impl ConditionalFacts {
         out
     }
 
-    pub(super) fn join(
-        left: (&Facts, &Self),
-        right: (&Facts, &Self),
-        common: &Facts,
+    pub(in crate::world) fn join(
+        left: (&Facts<N>, &Self),
+        right: (&Facts<N>, &Self),
+        common: &Facts<N>,
         condition: ExprId,
         limits: ExprLimits,
     ) -> Result<Self, ExprError> {
-        let scope = |(facts, conditional): (&Facts, &Self)| Scope {
+        Self::join_filtered(left, right, common, condition, limits, |_| true)
+    }
+
+    pub(in crate::world) fn join_retained(
+        left: (&Facts<N>, &Self),
+        right: (&Facts<N>, &Self),
+        common: &Facts<N>,
+        condition: ExprId,
+        limits: ExprLimits,
+    ) -> Result<Self, ExprError> {
+        Self::join_filtered(left, right, common, condition, limits, |value| {
+            value.requires_retained_binding()
+        })
+    }
+
+    fn join_filtered(
+        left: (&Facts<N>, &Self),
+        right: (&Facts<N>, &Self),
+        common: &Facts<N>,
+        condition: ExprId,
+        limits: ExprLimits,
+        retain: impl Fn(&N) -> bool,
+    ) -> Result<Self, ExprError> {
+        let scope = |(facts, conditional): (&Facts<N>, &Self)| Scope {
             facts: facts
                 .iter()
-                .filter(|(expression, value)| common.get(*expression) != Some(*value))
+                .filter(|(expression, value)| {
+                    retain(value.numeric()) && common.get(*expression) != Some(*value)
+                })
                 .map(|(expression, value)| (expression.clone(), value.clone()))
                 .collect(),
             conditional: conditional.clone(),
@@ -178,7 +211,11 @@ impl ConditionalFacts {
 
     /// Copy captures both snapshots' implications. No guard is selected and no
     /// branch-local bound becomes an unconditional guarantee of its source.
-    pub(super) fn extend(&mut self, other: &Self, limits: ExprLimits) -> Result<(), ExprError> {
+    pub(in crate::world) fn extend(
+        &mut self,
+        other: &Self,
+        limits: ExprLimits,
+    ) -> Result<(), ExprError> {
         let mut branches = self.branches.clone();
         for branch in &other.branches {
             if !branches.iter().any(|old| Arc::ptr_eq(old, branch)) {
@@ -191,7 +228,7 @@ impl ConditionalFacts {
         Ok(())
     }
 
-    pub(super) fn check(&self, limits: ExprLimits) -> Result<(), ExprError> {
+    pub(in crate::world) fn check(&self, limits: ExprLimits) -> Result<(), ExprError> {
         if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled);
         }
@@ -209,32 +246,44 @@ impl ConditionalFacts {
         Ok(())
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(in crate::world) fn has_no_scopes(&self) -> bool {
+        self.entries == 0
+    }
+
+    /// Cached alongside branch work; quotation must not traverse native facts.
+    pub(in crate::world::bytes) fn retains_words(&self) -> bool {
+        self.retained_words
+    }
+
+    pub(in crate::world) fn len(&self) -> usize {
         self.entries
     }
 
-    pub(super) fn work_size(&self) -> usize {
+    pub(in crate::world) fn work_size(&self) -> usize {
         self.work
     }
 
     /// Conservative fallback for readers without a prepared metadata demand.
-    pub(super) fn lookup_work(&self, domain: Domain) -> usize {
+    pub(in crate::world) fn lookup_work<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: AlgebraRef<'_, D>,
+    ) -> usize {
         self.lookup_scopes
             .saturating_mul(
                 domain
-                    .refinement_work(&AbstractValue::top(), 1)
+                    .refinement_work(&EvmValue::<N>::top(), 1)
                     .saturating_add(1),
             )
             .saturating_add(self.lookup_numeric_work.saturating_mul(2))
     }
 
-    pub(super) fn symbolic_limit_reached(&self) -> bool {
+    pub(in crate::world) fn symbolic_limit_reached(&self) -> bool {
         self.limited
     }
 
     // Each shared branch is visited once for metadata operations. Reads instead
     // use lookup below, which stops immediately at an undetermined selector.
-    pub(super) fn visit(&self, visit: &mut impl FnMut(&ExprId, Option<&AbstractValue>)) {
+    pub(in crate::world) fn visit(&self, visit: &mut impl FnMut(&ExprId, Option<&EvmValue<N>>)) {
         let mut seen = std::collections::BTreeSet::new();
         let mut pending = self.branches.iter().collect::<Vec<_>>();
         while let Some(branch) = pending.pop() {
@@ -251,21 +300,23 @@ impl ConditionalFacts {
         }
     }
 
-    pub(super) fn map(
+    pub(in crate::world) fn map<D: EvmNumericAlgebra<Element = N>>(
         &self,
+        domain: AlgebraRef<'_, D>,
         map: &mut impl FnMut(
             &ExprId,
-            Option<&AbstractValue>,
-        ) -> Result<(ExprId, Option<AbstractValue>), RangeError>,
+            Option<&EvmValue<N>>,
+        ) -> Result<(ExprId, Option<EvmValue<N>>), RangeError>,
     ) -> Result<Self, RangeError> {
-        fn mapped(
-            source: &ConditionalFacts,
+        fn mapped<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+            source: &ConditionalFacts<N>,
+            domain: AlgebraRef<'_, D>,
             map: &mut impl FnMut(
                 &ExprId,
-                Option<&AbstractValue>,
-            ) -> Result<(ExprId, Option<AbstractValue>), RangeError>,
-            memo: &mut BTreeMap<*const Branch, ConditionalFacts>,
-        ) -> Result<ConditionalFacts, RangeError> {
+                Option<&EvmValue<N>>,
+            ) -> Result<(ExprId, Option<EvmValue<N>>), RangeError>,
+            memo: &mut BTreeMap<*const Branch<N>, ConditionalFacts<N>>,
+        ) -> Result<ConditionalFacts<N>, RangeError> {
             let mut branches = Vec::new();
             for branch in &source.branches {
                 if let Some(old) = memo.get(&Arc::as_ptr(branch)) {
@@ -273,26 +324,26 @@ impl ConditionalFacts {
                     continue;
                 }
                 let condition = map(&branch.condition, None)?.0;
-                let mut scope = |source: &Scope| -> Result<Scope, RangeError> {
-                    let mut facts = Facts::new();
+                let mut scope = |source: &Scope<N>| -> Result<Scope<N>, RangeError> {
+                    let mut facts = Facts::<N>::new();
                     for (expression, value) in &source.facts {
                         let (expression, value) = map(expression, Some(value))?;
                         if let Some(mut value) = value {
-                            if let Some(constant) = expression.as_constant() {
-                                value = Domain::default()
-                                    .join(&value, &AbstractValue::constant(constant))
-                                    .with_numeric(crate::domain::NumericValue::constant(constant));
+                            if let Some(constant_with) = expression.as_constant() {
+                                value = domain
+                                    .join(&value, &EvmValue::<N>::constant(constant_with))
+                                    .with_numeric(N::constant(constant_with));
                             }
                             // Renaming may merge keys; keep every possible source.
                             facts
                                 .entry(expression)
-                                .and_modify(|old| *old = Domain::default().join(old, &value))
+                                .and_modify(|old| *old = domain.join(old, &value))
                                 .or_insert(value);
                         }
                     }
                     Ok(Scope {
                         facts,
-                        conditional: mapped(&source.conditional, map, memo)?,
+                        conditional: mapped(&source.conditional, domain, map, memo)?,
                     })
                 };
                 let out = if let Some(value) = condition.as_constant() {
@@ -311,17 +362,17 @@ impl ConditionalFacts {
                     } else {
                         // Keep selected guarantees scoped; do not promote them
                         // into the separate unconditional must-fact table.
-                        ConditionalFacts::from_branches(vec![Arc::new(Branch {
+                        ConditionalFacts::<N>::from_branches(vec![Arc::new(Branch {
                             condition: ExprId::constant(U256::ONE),
                             then_facts: selected,
                             else_facts: Scope {
-                                facts: Facts::new(),
-                                conditional: ConditionalFacts::default(),
+                                facts: Facts::<N>::new(),
+                                conditional: ConditionalFacts::<N>::default(),
                             },
                         })])
                     }
                 } else {
-                    ConditionalFacts::from_branches(vec![Arc::new(Branch {
+                    ConditionalFacts::<N>::from_branches(vec![Arc::new(Branch {
                         condition,
                         then_facts: scope(&branch.then_facts)?,
                         else_facts: scope(&branch.else_facts)?,
@@ -330,18 +381,18 @@ impl ConditionalFacts {
                 branches.extend(out.branches.iter().map(Arc::clone));
                 memo.insert(Arc::as_ptr(branch), out);
             }
-            Ok(ConditionalFacts::from_branches(branches))
+            Ok(ConditionalFacts::<N>::from_branches(branches))
         }
-        mapped(self, map, &mut BTreeMap::new())
+        mapped(self, domain, map, &mut BTreeMap::new())
     }
 
-    pub(super) fn relations(
+    pub(in crate::world) fn relations(
         &self,
         mut incoming: RelationState,
         limits: &RelationLimits,
     ) -> Result<RelationState, QueryReason> {
         for branch in &self.branches {
-            let scope = |scope: &Scope| {
+            let scope = |scope: &Scope<N>| {
                 let mut facts = incoming.clone();
                 for (expression, value) in &scope.facts {
                     facts.observe(expression, value.numeric(), limits)?;
@@ -358,7 +409,7 @@ impl ConditionalFacts {
     }
 }
 
-impl super::ByteArray {
+impl<N: WordElement> super::EvmByteArray<N> {
     /// Complete numeric guarantees, including branch-local bounds under their
     /// original guards. `symbolic_facts` deliberately exports must facts only.
     /// This builds a bounded formula; it performs no feasibility query.
@@ -392,5 +443,22 @@ impl super::ByteArray {
             out.observe(expression, value.numeric(), limits)?;
         }
         self.conditional.relations(out, limits)
+    }
+}
+
+impl<N: WordElement> Default for ConditionalFacts<N> {
+    fn default() -> Self {
+        Self {
+            branches: Vec::new(),
+            entries: 0,
+            depth: 0,
+            work: 0,
+            largest_expression: 0,
+            limited: false,
+            lookup_scopes: 0,
+            lookup_numeric_work: 0,
+            fact_entries: 0,
+            retained_words: false,
+        }
     }
 }

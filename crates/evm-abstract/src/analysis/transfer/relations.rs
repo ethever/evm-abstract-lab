@@ -3,17 +3,19 @@
 //! Local propagation reserves its bounded work from the transaction ledger.
 //! Real bounds retain the path and record why optional precision stopped.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 mod cache;
 mod state;
 #[cfg(test)]
 mod tests;
 
-use super::{Execution, TransferContext, boundary};
+use super::{EvmExecution, TransferContext, boundary, query};
 use crate::{
-    analysis::{FrontierReason, MachinePayload},
+    analysis::{EvmMachinePayload, FrontierReason},
     domain::{
-        AbstractValue, NumericValue,
-        relational::{CheckResult, QueryReason, RelationState, ScalarQuery, ValueQuery},
+        EvmValue,
+        relational::{CheckResult, EvmScalarQuery, EvmValueQuery, QueryReason, RelationState},
         symbolic::ExprId,
     },
 };
@@ -22,8 +24,8 @@ pub(super) use cache::QueryCache;
 
 /// Failure of an optional value projection does not leave an execution path
 /// unexpanded. Cancellation and the shared ledger still stop real work.
-pub(super) fn refinement_failure(
-    result: &mut Execution,
+pub(super) fn refinement_failure<N: WordElement>(
+    result: &mut EvmExecution<N>,
     pc: usize,
     reason: FrontierReason,
 ) -> bool {
@@ -51,10 +53,10 @@ pub(super) fn refinement_failure(
 }
 
 /// Project only proven consequences; the expression and its scope survive.
-pub(super) fn refine(
-    value: &mut AbstractValue,
+pub(super) fn refine<D: EvmNumericAlgebra>(
+    value: &mut EvmValue<D::Element>,
     relations: &RelationState,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) -> Result<bool, FrontierReason> {
     match prepare_refine(value, relations, context)? {
         PreparedRefinement::Done(feasible) => Ok(feasible),
@@ -71,26 +73,26 @@ enum PreparedRefinement {
 
 /// Keep the numerical and original per-value fact paths ahead of local evaluation.
 /// Pending values have paid for local preparation, but not a local evaluation.
-fn prepare_refine(
-    value: &mut AbstractValue,
+fn prepare_refine<D: EvmNumericAlgebra>(
+    value: &mut EvmValue<D::Element>,
     relations: &RelationState,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) -> Result<PreparedRefinement, FrontierReason> {
-    if analysis_control::current_cancellation().is_cancelled() {
-        return Err(FrontierReason::Relations(QueryReason::Cancelled));
-    }
-    if !context.budget.charge(0) {
-        return Err(FrontierReason::Work);
-    }
+    query::checkpoint(context.budget)?;
     let limits = context.config.analysis.relations;
-    if !limits.enabled || value.singleton().is_some() {
+    if !limits.enabled || relations.is_bottom() {
         return Ok(PreparedRefinement::Done(!relations.is_bottom()));
     }
+    // Without a retained term there is no relational refinement to attempt.
+    // In particular, consuming a literal in POP needs no numeric discovery.
     let Some(expression) = value.expression().cloned() else {
         return Ok(PreparedRefinement::Done(true));
     };
     let has_state_semantics = expression.has_state_semantics();
     if relations.is_empty() && !has_state_semantics {
+        return Ok(PreparedRefinement::Done(true));
+    }
+    if query::singleton(value.numeric(), context.budget)?.is_some() {
         return Ok(PreparedRefinement::Done(true));
     }
     // Constraints on another independent input cannot make this value unique.
@@ -103,67 +105,84 @@ fn prepare_refine(
     if !has_state_semantics && !relations.relevant(&expression) {
         return Ok(PreparedRefinement::Done(true));
     }
-    if !context
-        .budget
-        .charge(context.domain.refinement_work(value, relations.len()))
-    {
-        return Err(FrontierReason::Work);
-    }
-    match relations.refine_numeric(&expression, value.numeric(), context.domain, &limits) {
-        ScalarQuery::Refined { numeric, complete } => {
-            *value = value.clone().with_numeric(*numeric);
-            if complete || value.singleton().is_some() {
+    let answer = relations.refine_numeric_budgeted_with(
+        &expression,
+        value,
+        context.domain,
+        &limits,
+        context.budget,
+    );
+    query::checkpoint(context.budget)?;
+    match answer.map_err(|_| FrontierReason::Work)? {
+        EvmScalarQuery::Refined { numeric, complete } => {
+            // The scalar envelope paid for import/reduction, not this caller's
+            // query on the opaque result. Reuse its answer when installing it.
+            let singleton = if !complete || value.symbolic_limit_reached() {
+                query::singleton(numeric.as_ref(), context.budget)?
+            } else {
+                None
+            };
+            let refined = value
+                .clone()
+                .with_numeric_after_singleton(*numeric, singleton);
+            query::checkpoint(context.budget)?;
+            *value = refined;
+            if complete || singleton.is_some() {
                 return Ok(PreparedRefinement::Done(true));
             }
         }
-        ScalarQuery::Infeasible => return Ok(PreparedRefinement::Done(false)),
-        ScalarQuery::Unchanged => {}
-        ScalarQuery::Unknown(crate::domain::relational::QueryReason::ScalarFactLimit) => {}
-        ScalarQuery::Unknown(reason) => return Err(FrontierReason::Relations(reason)),
+        EvmScalarQuery::Infeasible => return Ok(PreparedRefinement::Done(false)),
+        EvmScalarQuery::Unchanged => {}
+        EvmScalarQuery::Unknown(crate::domain::relational::QueryReason::ScalarFactLimit) => {}
+        EvmScalarQuery::Unknown(reason) => return Err(FrontierReason::Relations(reason)),
     }
-    let cache_work = context.query_cache.work(relations, &expression);
-    if cache_work == usize::MAX || !context.budget.charge(cache_work) {
-        return Err(FrontierReason::Work);
-    }
-    if let Some(answer) = context.query_cache.get(relations, &expression, &limits) {
+    if let Some(answer) = context
+        .query_cache
+        .get(relations, &expression, &limits, context.budget)
+    {
         return finish_refine(value, context, answer).map(PreparedRefinement::Done);
     }
     Ok(PreparedRefinement::Pending(expression))
 }
 
 /// Bounded local propagation; the cache contains only this frozen conjunction.
-fn local_refine(
-    value: &mut AbstractValue,
+fn local_refine<D: EvmNumericAlgebra>(
+    value: &mut EvmValue<D::Element>,
     expression: &ExprId,
     relations: &RelationState,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) -> Result<bool, FrontierReason> {
     let limits = context.config.analysis.relations;
-    let answer = relations.local_value_budgeted(expression, &limits, context.budget);
-    if context.budget.exhausted() {
-        return Err(FrontierReason::Work);
-    }
+    let answer =
+        relations.local_value_budgeted_with(expression, &limits, context.budget, context.domain);
+    query::checkpoint(context.budget)?;
     context
         .query_cache
-        .remember(relations, expression, &limits, &answer);
+        .remember(relations, expression, &limits, &answer, context.budget);
+    query::checkpoint(context.budget)?;
     finish_refine(value, context, answer)
 }
 
 /// Apply each proof to this caller's own numeric upper bound and identity.
-fn finish_refine(
-    value: &mut AbstractValue,
-    context: &mut TransferContext<'_>,
-    answer: ValueQuery,
+fn finish_refine<D: EvmNumericAlgebra>(
+    value: &mut EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
+    answer: EvmValueQuery<D::Element>,
 ) -> Result<bool, FrontierReason> {
     match answer {
-        ValueQuery::Exact(exact) => {
+        EvmValueQuery::Exact(exact) => {
             if value.contains(exact) {
-                *value = value.clone().with_numeric(NumericValue::constant(exact));
+                let refined = value
+                    .clone()
+                    .with_numeric_after_singleton(D::Element::constant(exact), Some(exact));
+                query::checkpoint(context.budget)?;
+                *value = refined;
             } else {
+                query::checkpoint(context.budget)?;
                 return Ok(false);
             }
         }
-        ValueQuery::Bounds(bounds) => {
+        EvmValueQuery::Bounds(bounds) => {
             // Equality can traverse finite candidates. Pay before comparing, and
             // leave every value layer intact when the meet adds no numeric facts.
             if !context.budget.charge(
@@ -174,26 +193,44 @@ fn finish_refine(
             ) {
                 return Err(FrontierReason::Work);
             }
-            if bounds.is_top() || value.numeric() == bounds.as_ref() {
+            let unchanged = bounds.is_top() || value.numeric() == bounds.as_ref();
+            query::checkpoint(context.budget)?;
+            if unchanged {
                 return Ok(true);
             }
-            if !context
-                .budget
-                .charge(context.domain.refinement_work(value, 1))
-            {
-                return Err(FrontierReason::Work);
-            }
-            let Some(numeric) = crate::domain::relational::intersect_numeric(
+            let metadata_work = value
+                .work_size()
+                .saturating_sub(value.numeric().work_size());
+            let numeric = context.domain.intersect_numeric_with_payment(
                 value.numeric(),
-                &bounds,
-                context.domain,
-            ) else {
+                bounds.as_ref(),
+                metadata_work,
+                |work| {
+                    query::checkpoint(context.budget)?;
+                    if work != usize::MAX && context.budget.charge(work) {
+                        query::checkpoint(context.budget)
+                    } else {
+                        Err(FrontierReason::Work)
+                    }
+                },
+            );
+            query::checkpoint(context.budget)?;
+            let Some(numeric) = numeric? else {
                 return Ok(false);
             };
-            *value = value.clone().with_numeric(numeric);
+            let singleton = if value.symbolic_limit_reached() {
+                query::singleton(&numeric, context.budget)?
+            } else {
+                None
+            };
+            let refined = value
+                .clone()
+                .with_numeric_after_singleton(numeric, singleton);
+            query::checkpoint(context.budget)?;
+            *value = refined;
         }
-        ValueQuery::ProvenImpossible => return Ok(false),
-        ValueQuery::Undetermined(reason) => return Err(FrontierReason::Relations(reason)),
+        EvmValueQuery::ProvenImpossible => return Ok(false),
+        EvmValueQuery::Undetermined(reason) => return Err(FrontierReason::Relations(reason)),
     }
     Ok(true)
 }
@@ -201,30 +238,74 @@ fn finish_refine(
 pub(super) use crate::analysis::state::identify;
 
 /// Each successor owns its assumptions; the predecessor remains unchanged.
-pub(super) fn branch(
-    result: &mut Execution,
-    condition: &AbstractValue,
+#[cfg(test)]
+pub(super) fn branch<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    condition: &EvmValue<D::Element>,
     nonzero: bool,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
-) -> Option<MachinePayload> {
+) -> Option<EvmMachinePayload<D::Element>> {
+    branch_with_singleton(
+        result,
+        condition,
+        nonzero,
+        crate::domain::SingletonProof::NotQueried,
+        context,
+        pc,
+    )
+}
+
+/// Dispatch classified this same immutable condition already. A saved answer
+/// avoids querying again when adding assumptions to its two successor copies.
+pub(super) fn branch_with_singleton<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    condition: &EvmValue<D::Element>,
+    nonzero: bool,
+    mut proof: crate::domain::SingletonProof,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) -> Option<EvmMachinePayload<D::Element>> {
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary(result, pc, reason);
+        return None;
+    }
     if !context.budget.charge(result.payload.work_size()) {
         boundary(result, pc, FrontierReason::Work);
         return None;
     }
     let mut payload = result.payload.clone();
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary(result, pc, reason);
+        return None;
+    }
     let limits = context.config.analysis.relations;
     if !limits.enabled {
         return Some(payload);
     }
-    // The numerical layer has already selected the only feasible edge. Its
-    // constant condition supplies no additional relational information.
-    if condition.singleton().is_some() {
-        return Some(payload);
-    }
-    let Some(expression) = condition.symbolic_expression() else {
+    let Some(expression) = condition.expression().cloned() else {
         return Some(payload);
     };
+    // The numerical layer has already selected the only feasible edge. Its
+    // constant condition supplies no additional relational information.
+    let answer =
+        if proof == crate::domain::SingletonProof::NotQueried && condition.constants().is_some() {
+            // A complete cover permits conservative guard retention without a new
+            // discovery. It does not assert that the full carrier is nonsingleton.
+            Ok(None)
+        } else {
+            query::resolve(condition.numeric(), &mut proof, context.budget)
+        };
+    let singleton = match answer {
+        Ok(singleton) => singleton,
+        Err(reason) => {
+            boundary(result, pc, reason);
+            return None;
+        }
+    };
+    if singleton.is_some() {
+        return Some(payload);
+    }
     let values = payload
         .active()
         .stack
@@ -247,12 +328,15 @@ pub(super) fn branch(
         boundary(result, pc, FrontierReason::Work);
         return None;
     }
-    let checked =
-        payload
-            .relations
-            .assume_checked_budgeted(&expression, nonzero, &limits, context.budget);
-    if context.budget.exhausted() {
-        boundary(result, pc, FrontierReason::Work);
+    let checked = payload.relations.assume_checked_budgeted_with(
+        &expression,
+        nonzero,
+        &limits,
+        context.budget,
+        context.domain,
+    );
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary(result, pc, reason);
         return None;
     }
     let guard_retained = match checked {
@@ -298,6 +382,10 @@ pub(super) fn branch(
                 return None;
             }
         }
+    }
+    if let Err(reason) = query::checkpoint(context.budget) {
+        boundary(result, pc, reason);
+        return None;
     }
     Some(payload)
 }

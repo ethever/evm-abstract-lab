@@ -1,9 +1,14 @@
 //! Finite must-equalities between stack positions, without retained expressions.
 
-use super::{AbstractValue, BTreeMap, MachineError, identify};
+use crate::domain::WordElement;
+
+use super::{BTreeMap, EvmValue, MachineError, identify};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+use crate::domain::AbstractValue;
 
 /// Each class is labelled by its first position; singleton positions label themselves.
 /// Mixed numeric bounds on one node deliberately lose their alias guarantee.
@@ -33,8 +38,8 @@ impl StackAliases {
     }
 
     /// Caller reserves tree work and numeric comparison work before entering.
-    pub(in crate::analysis) fn form(
-        stack: &[AbstractValue],
+    pub(in crate::analysis) fn form<N: WordElement>(
+        stack: &[EvmValue<N>],
         enabled: bool,
     ) -> Result<Self, MachineError> {
         MachineError::check_cancelled()?;
@@ -86,16 +91,16 @@ impl StackAliases {
 
     /// A fresh leader per invocation, sharing only its expression. Every stack
     /// position keeps its own numerical bound, including mixed-bound singletons.
-    pub(in crate::analysis) fn instantiate(
+    pub(in crate::analysis) fn instantiate<N: WordElement>(
         &self,
-        stack: &[AbstractValue],
+        stack: &[EvmValue<N>],
         enabled: bool,
-    ) -> Result<Vec<AbstractValue>, MachineError> {
+    ) -> Result<Vec<EvmValue<N>>, MachineError> {
         MachineError::check_cancelled()?;
         if self.0.len() != stack.len() {
             return Err(MachineError::Shape);
         }
-        let mut output: Vec<AbstractValue> = Vec::with_capacity(stack.len());
+        let mut output: Vec<EvmValue<N>> = Vec::with_capacity(stack.len());
         for (position, (value, &leader)) in stack.iter().zip(&self.0).enumerate() {
             MachineError::check_cancelled()?;
             if leader > position {

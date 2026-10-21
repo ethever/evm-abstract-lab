@@ -435,7 +435,7 @@ fn initial_source_observations_keep_namespace_length_writes_and_guards() {
             .map(|(index, byte)| StateBinding {
                 index: U256::from(index),
                 value: ExprId::fresh().unwrap(),
-                numeric: NumericValue::constant(U256::from(byte)),
+                numeric: NumericValue::constant(U256::from(byte)).into(),
             })
             .collect(),
         states,
@@ -611,7 +611,8 @@ fn known_source_word_registration_leaves_byte_facts_unmaterialized() {
         cancellation: analysis_control::current_cancellation(),
         ledger: None,
     };
-    let mut engine = super::Engine::new(&mut work, &limits, crate::domain::Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(crate::domain::Domain::default());
+    let mut engine = super::Engine::new(&mut work, &limits, algebra.borrowed());
     engine
         .atom(&Constraint::Equal {
             left: read.clone(),
@@ -1416,8 +1417,8 @@ fn literal_representatives_override_both_real_fingerprint_orderings() {
                 cancellation: analysis_control::current_cancellation(),
                 ledger: None,
             };
-            let mut engine =
-                super::Engine::new(&mut work, &limits, crate::domain::Domain::default());
+            let algebra = crate::domain::ValueAlgebra::new(crate::domain::Domain::default());
+            let mut engine = super::Engine::new(&mut work, &limits, algebra.borrowed());
             engine.equal(left, right).unwrap();
             assert_eq!(engine.root(&input).unwrap(), literal);
             assert_eq!(engine.root(&literal).unwrap(), literal);
@@ -1445,7 +1446,8 @@ fn equality_root_chains_decrease_by_literal_rank_then_existing_order() {
         cancellation: analysis_control::current_cancellation(),
         ledger: None,
     };
-    let mut engine = super::Engine::new(&mut work, &limits, crate::domain::Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(crate::domain::Domain::default());
+    let mut engine = super::Engine::new(&mut work, &limits, algebra.borrowed());
     // A numeric singleton is still a nonliteral and keeps the old ExprId order.
     engine
         .learn(&terms[2], &NumericValue::constant(U256::from(7)))
@@ -1583,7 +1585,8 @@ fn literal_rank_work_refuses_before_linking_and_preserves_cancellation_priority(
         cancellation: analysis_control::Cancellation::new(),
         ledger: None,
     };
-    let mut engine = super::Engine::new(&mut work, &limits, crate::domain::Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(crate::domain::Domain::default());
+    let mut engine = super::Engine::new(&mut work, &limits, algebra.borrowed());
     assert!(matches!(
         engine.equal(&input, &literal),
         Err(super::Stop::Pending(QueryReason::ExpressionLimit))

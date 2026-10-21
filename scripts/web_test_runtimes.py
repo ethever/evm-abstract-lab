@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from collections import Counter
 from playwright.sync_api import expect
 from web_test_graph_helpers import graph_mode, pick_graph_instance, symbol
 from web_test_harness import settle_gesture, webgpu_evidence
@@ -91,7 +92,7 @@ def layout_runtime_programs(report, code, metadata):
 
 def layout_runtime_request(request, report, code, metadata):
     entry = metadata["browser_entry"]
-    assert report["schema_version"] == 15 and report["root_terminal_coverage"] is None
+    assert report["schema_version"] == 16 and report["root_terminal_coverage"] is None
     assert set(request) == {"input", "fork", "environment", "limits"}
     assert request["input"] == {"Bytecode": {"bytecode": code, "address": entry.get("address")}}
     assert request["fork"] == report["fork"] == entry.get("fork", "Osaka")
@@ -144,10 +145,146 @@ def layout_runtime_request(request, report, code, metadata):
             "calldata_sha256": hashlib.sha256(raw).hexdigest(), "root_terminal_coverage": False}
 
 
+def _runtime_boundary_profile(report, entry, nodes):
+    """Recognize exact current boundary sets; saved legacy oracles stay strict."""
+    policy = entry["product_oracle"]
+    frontiers = report["frontiers"]
+    starts = {nodes[frontier["from"]]["start_pc"] for frontier in frontiers
+              if frontier["from"] in nodes}
+    profile = None
+    if report["schema_version"] == 16 and policy["boundary"] == "root_instruction" and 3634 in starts:
+        profile = "copy"
+        expected = [(3634, 3645, "Relations"), (3634, 3638, "Relations")]
+        assert len({frontier["from"] for frontier in frontiers}) == 1
+    elif report["schema_version"] == 16 and policy["boundary"] == "incoming" and any(
+            frontier["kind"] == "Work" for frontier in frontiers):
+        profile = "router"
+        expected = [(877, 884, "Relations"), (16597, 16802, "Work"),
+                    (None, None, "Work"), (None, None, "Work")]
+    if profile is None:
+        return None
+    assert report["metadata"]["limits"] == RUNTIME_DETAIL_LIMITS
+    assert report["scope"] == "SingleProgram" and report["root_terminal_coverage"] is None
+    actual = []
+    for frontier in frontiers:
+        source = nodes.get(frontier["from"])
+        assert frontier["range"] is None and frontier["payload"] is None
+        assert frontier["reason"] == ({"Relations": "ExpressionLimit"}
+                                      if frontier["kind"] == "Relations" else "Work")
+        assert frontier["detail"] == ("Relations(ExpressionLimit)" if frontier["kind"] == "Relations" else "Work")
+        actual.append((source["start_pc"] if source else None, frontier["pc"], frontier["kind"]))
+    assert Counter(actual) == Counter(expected), actual
+    return profile
+
+
+def _runtime_current_prefix(report, source, state, block):
+    """Cross-check current SSA IDs, phases and numeric/source facts against native frames."""
+    sid = source["id"]
+    program = report["programs"][source["program"]]
+    decoded = program["blocks"][source["basic_block"]]["instructions"]
+    instructions = block["instructions"]
+    assert [item["pc"] for item in instructions] == source["executed_pcs"]
+    assert source["executed_pcs"] == [item["pc"] for item in decoded[:len(instructions)]]
+    assert instructions and instructions[-1]["progress"] == "OperandsConsumed"
+    assert all(item["progress"] == "Completed" for item in instructions[:-1])
+    assert source["frame_depth"] == len(state["entry"]["frames"]) == len(state["exit"]["frames"]) == 1
+    before, after = state["entry"]["frames"][0], state["exit"]["frames"][0]
+    stable = set(before) - {"stack", "memory"}
+    assert all(before[key] == after[key] for key in stable)
+    assert before["context"] == source["context"]
+    assert before["code_address"].lower() == source["code_address"].lower()
+    assert before["storage_address"].lower() == source["storage_address"].lower()
+    assert before["storage_address"].lower() == before["code_address"].lower()
+    assert before["address_value"] == report["metadata"]["environment"]["to"]
+    assert before["caller"] == report["metadata"]["environment"]["caller"]
+    assert not before["is_static"] and before["kind"] == "Runtime"
+    assert state["entry"]["store"] == state["exit"]["store"]
+    # This receipt contains only local stack/memory operations, never a hidden
+    # call, storage mutation, log, successful termination or dispatched effect.
+    assert not {item["opcode"] for item in instructions}.intersection(
+        {0x00, 0x55, 0x5d, *range(0xa0, 0xa5), 0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xfa, 0xfd, 0xff})
+    values = {value["id"]: value for value in report["ssa"]["values"]}
+    assert len(values) == len(report["ssa"]["values"])
+    # SSA observations deliberately retain numeric/provenance layers rather
+    # than the native value's optional expression or equality identity.
+    fields = {"summary", "constants", "known_zero", "known_one", "nonzero", "unsigned",
+              "signed", "congruence", "origins", "code_address_role"}
+
+    def observed(vid, native, origin, observation_source):
+        value = values[vid]
+        assert value["origin"] == origin
+        facts = [fact for fact in value["facts"] if fact["status"] == "Current"
+                 and fact["scope"] == {"State": sid} and fact["source"] == observation_source]
+        assert len(facts) == 1
+        if native is not None:
+            assert all(facts[0]["value"][key] == native[key] for key in fields)
+        return facts[0]["value"]
+
+    def rendered(vid):
+        origin = values[vid]["origin"].get("Instruction")
+        if origin is not None and origin["state"] == sid:
+            definition = instructions[origin["instruction_index"]]
+            if definition["immediate"] is not None:
+                assert vid in definition["results"]
+                return {"Constant": definition["immediate"]}
+        return {"Value": vid}
+
+    phis = {(phi["frame"], phi["slot"]): phi for phi in block["phis"]}
+    assert len(phis) == len(block["phis"]) == len(before["stack"])
+    stack = []
+    for slot, native in enumerate(before["stack"]):
+        phi = phis[0, slot]
+        observed(phi["result"], native, {"Phi": {"state": sid, "frame": 0, "slot": slot}}, "Entry")
+        stack.append(phi["result"])
+    effect = block["effect"]
+    effects = {effect}
+    for order, (item, native) in enumerate(zip(instructions, decoded, strict=False)):
+        assert all(item[key] == native[key] for key in ["pc", "opcode", "name", "immediate"])
+        assert not item["fault"] and item["effect_input"] == effect
+        assert type(item["effect_result"]) is int and 0 <= item["effect_result"] < report["ssa"]["effect_count"]
+        assert item["effect_result"] not in effects
+        effect = item["effect_result"]
+        effects.add(effect)
+        op = item["opcode"]
+        if 0x80 <= op <= 0x8f:
+            assert item["operands"] == [stack[-(op - 0x7f)]] and not item["results"]
+            stack.append(item["operands"][0])
+        elif 0x90 <= op <= 0x9f:
+            other = -(op - 0x8f + 1)
+            assert item["operands"] == [stack[-1], stack[other]] and not item["results"]
+            stack[-1], stack[other] = stack[other], stack[-1]
+        else:
+            count = native["stack_inputs"]
+            operands = list(reversed(stack[-count:])) if count else []
+            assert item["operands"] == operands
+            if count:
+                del stack[-count:]
+            results = native["stack_outputs"] if item["progress"] == "Completed" else 0
+            assert len(item["results"]) == results
+            for vid in item["results"]:
+                fact = observed(vid, None, {"Instruction": {"state": sid, "instruction_index": order,
+                                                          "pc": item["pc"]}}, "Execution")
+                if item["immediate"] is not None:
+                    assert _runtime_numeric_contains(fact, int(item["immediate"], 16))
+                    assert fact["origins"] == ["Constant"]
+            stack.extend(item["results"])
+        if item["immediate"] is None:
+            assert item["operation"] == {"Opcode": {"opcode": op, "name": item["name"],
+                                                    "operands": [rendered(vid) for vid in item["operands"]]}}
+        else:
+            assert item["operation"] == {"Constant": item["immediate"]}
+    assert block["exit_frames"] == [stack] and len(stack) == len(after["stack"])
+    assert effect == block["exit_effect"]
+    for vid, native in zip(stack, after["stack"], strict=True):
+        origin = values[vid]["origin"]
+        observed(vid, native, origin, "Entry" if "Phi" in origin else "Execution")
+    return before, after
+
+
 def layout_pending_machines(report, entry):
     # Schema 14 is used only by unchanged saved-report offline controls;
-    # layout_runtime_request requires schema 15 for every browser submission.
-    assert report["schema_version"] in {14,15}
+    # layout_runtime_request requires schema 16 for every browser submission.
+    assert report["schema_version"] in {14,16}
     policy = entry["product_oracle"]
     assert report["status"] == entry["expected_status"] == "Incomplete" and report["frontiers"]
     pending = report["pending_machines"]
@@ -168,6 +305,7 @@ def layout_pending_machines(report, entry):
     assert len(transitions) == len(report["ssa"]["transitions"]) and len(deferred) == len(report["ssa"]["deferred_edges"])
     assert not set(transitions) & set(deferred) and set(transitions) | set(deferred) == set(edges)
     assert all(ssa_blocks[edges[index]["from"]]["coverage"] == "Current" for index,reason in deferred.items() if reason == "NotInExecutionEvidence")
+    profile = _runtime_boundary_profile(report, entry, nodes)
     graph = report["symbolic"]["nodes"]
     word_kinds = {"Constant","Input","Fresh","Operation","Ite","ByteRead","WordRead","SlotRead","Keccak"}
     byte_kinds = {"BytesZero","BytesInput","BytesExact","WriteByte","WriteWord","Copy","Slice","BytesIte"}
@@ -216,11 +354,21 @@ def layout_pending_machines(report, entry):
         assert any(node["program"] == active["program"] and node["basic_block"] == active["basic_block"]
                    and node["frame_depth"] == len(machine["frames"]) for node in nodes.values())
         return active
-    pending_locations = []; instruction_frontiers = []
+    pending_locations = []; instruction_frontiers = []; retained_frontiers = []; work_frontiers = []
     for frontier in report["frontiers"]:
+        if profile == "router" and frontier["from"] is None:
+            # Queue obligations carry no instruction or owning frame. Never
+            # reinterpret their absent location as the current memory opcode.
+            assert frontier == {"from": None, "pc": None, "kind": "Work", "reason": "Work",
+                                "detail": "Work", "range": None, "payload": None}
+            work_frontiers.append({"source": None, "pc": None, "progress": None, "kind": "Work"})
+            continue
         assert frontier["from"] in nodes and frontier["range"] is None
-        assert frontier["kind"] == "Relations" and frontier["reason"] == {"Relations":"ExpressionLimit"}
-        assert frontier["detail"] == f"{frontier['kind']}({frontier['reason'][frontier['kind']]})"
+        if profile == "router" and frontier["kind"] == "Work":
+            assert frontier["reason"] == frontier["detail"] == "Work"
+        else:
+            assert frontier["kind"] == "Relations" and frontier["reason"] == {"Relations":"ExpressionLimit"}
+            assert frontier["detail"] == f"{frontier['kind']}({frontier['reason'][frontier['kind']]})"
         source = nodes[frontier["from"]]
         state = states[source["id"]]; block = ssa_blocks[source["id"]]
         assert source["program"] == report["metadata"]["root_program"] and source["frame_depth"] == 1
@@ -235,6 +383,38 @@ def layout_pending_machines(report, entry):
         decoded = next(item for item in source_block["instructions"] if item["pc"] == instruction["pc"])
         assert all(instruction[key] == decoded[key] for key in ["opcode","name","immediate"])
         assert instruction["pc"] == source["executed_pcs"][-1]
+        if profile is not None:
+            before, after = _runtime_current_prefix(report, source, state, block)
+            if profile == "copy":
+                assert (source["start_pc"], instruction["pc"], instruction["opcode"], instruction["name"]) == (
+                    3634, 3638, 0x37, "CALLDATACOPY")
+                assert len(instruction["operands"]) == 3 and before["stack"] == after["stack"]
+                memory_before = pool(before["memory"], report["byte_arrays"])
+                memory_after = pool(after["memory"], report["byte_arrays"])
+                assert all(memory_before[key] == memory_after[key] for key in set(memory_before) - {"length", "symbolic"})
+                assert all(memory_before["length"][key] == memory_after["length"][key]
+                           for key in set(memory_before["length"]) - {"expression"})
+                views = [graph[memory["symbolic"]["node"]]["View"] for memory in [memory_before, memory_after]]
+                assert views[0]["state"] == views[1]["state"] and views[0]["offset"] == views[1]["offset"]
+                assert all(view["length"] == memory["length"]["expression"]
+                           for view, memory in zip(views, [memory_before, memory_after], strict=True))
+                if frontier["pc"] != instruction["pc"]:
+                    # Frontiers accumulate across visits; this latest receipt
+                    # stops earlier. The retained MSTORE has no current phase,
+                    # operands/results or effect to borrow from CALLDATACOPY.
+                    assert frontier["pc"] == 3645
+                    retained = next(item for item in source_block["instructions"] if item["pc"] == frontier["pc"])
+                    assert (retained["opcode"], retained["name"], retained["stack_inputs"], retained["stack_outputs"]) == (
+                        0x52, "MSTORE", 2, 0)
+                    assert all(item["pc"] != frontier["pc"] for item in block["instructions"])
+                    retained_frontiers.append({"source_start_pc": source["start_pc"], "pc": frontier["pc"],
+                                               "opcode": retained["opcode"], "name": retained["name"],
+                                               "current_progress": None, "current_stop_pc": instruction["pc"]})
+                    continue
+            elif instruction["name"] == "MSTORE":
+                assert (source["start_pc"], instruction["pc"]) == (877, 884)
+                assert before["stack"] == after["stack"]
+                assert pool(before["memory"], report["byte_arrays"]) == pool(after["memory"], report["byte_arrays"])
         if frontier["payload"] is not None:
             assert policy["boundary"] == "incoming" and frontier["pc"] is None
             machine = pool(frontier["payload"],pending)
@@ -263,29 +443,46 @@ def layout_pending_machines(report, entry):
                 assert transitions[edge["id"]]["kind"] == edge["kind"]
             pending_locations.append(location)
             continue
-        assert policy["boundary"] == "root_instruction" and frontier["pc"] is not None
+        assert (policy["boundary"] == "root_instruction" or profile == "router") and frontier["pc"] is not None
         assert instruction["pc"] == frontier["pc"] == source["executed_pcs"][-1]
-        assert instruction["opcode"] == 0x52 and instruction["name"] == "MSTORE" and instruction["progress"] == "OperandsConsumed"
-        assert not instruction["fault"] and not instruction["results"] and len(instruction["operands"]) == 2
-        # The exit snapshot is after operand consumption, not a resumable pre-MSTORE checkpoint.
+        expected = ((0x37, "CALLDATACOPY", 3) if profile == "copy" else
+                    (0x51, "MLOAD", 1) if profile == "router" and frontier["kind"] == "Work" else
+                    (0x52, "MSTORE", 2))
+        assert (instruction["opcode"], instruction["name"], len(instruction["operands"])) == expected
+        assert instruction["progress"] == "OperandsConsumed" and not instruction["fault"] and not instruction["results"]
+        # The exit snapshot is after operand consumption, not a resumable
+        # pre-instruction checkpoint or a claim that its ordinary effect ran.
         assert instruction["effect_result"] is not None and instruction["effect_result"] == block["exit_effect"]
         assert [len(frame) for frame in block["exit_frames"]] == [len(frame["stack"]) for frame in state["exit"]["frames"]]
-        # Earlier gas-failure alternatives do not complete the refused MSTORE.
+        # Earlier gas-failure alternatives do not complete the refused opcode.
         for outcome in report["outcomes"]:
             if outcome["state"] == source["id"]:
                 data = pool(outcome["data"],report["byte_arrays"])
                 assert outcome["kind"] == "Failure" and data["length"]["constants"] == ["0x0"] and not data["cells"]
         outgoing = [edge for edge in report["edges"] if edge["from"] == frontier["from"]]
-        assert outgoing
+        if profile is None or instruction["name"] == "MSTORE":
+            assert outgoing
+        else:
+            assert not outgoing
         edge_ids = {edge["id"] for edge in outgoing}
         assert len(edge_ids) == len(outgoing)
         assert not edge_ids.intersection(transition["edge"] for transition in report["ssa"]["transitions"])
         assert all(deferred.get(edge) == "NotInExecutionEvidence" for edge in edge_ids)
-        instruction_frontiers.append({"source_start_pc":source["start_pc"],"source_frame_depth":source["frame_depth"],
+        location = {"source_start_pc":source["start_pc"],"source_frame_depth":source["frame_depth"],
                                       "pc":instruction["pc"],"opcode":instruction["opcode"],"name":instruction["name"],
                                       "progress":instruction["progress"],"coverage":block["coverage"],
-                                      "deferred_edge_kinds":sorted(edge["kind"] for edge in outgoing)})
-    if policy["boundary"] == "incoming":
+                                      "deferred_edge_kinds":sorted(edge["kind"] for edge in outgoing)}
+        if frontier["kind"] == "Work":
+            work_frontiers.append(location)
+        else:
+            instruction_frontiers.append(location)
+    if profile == "copy":
+        assert not pending and not pending_locations and not work_frontiers
+        assert len(instruction_frontiers) == len(retained_frontiers) == 1
+    elif profile == "router":
+        assert not pending and not pending_locations and not retained_frontiers
+        assert len(instruction_frontiers) == 1 and len(work_frontiers) == 3
+    elif policy["boundary"] == "incoming":
         assert pending and pending_locations, "Router must retain nonempty typed incoming payloads"
         assert sorted(pending_locations,key=lambda location:location["source_pc"]) == policy["pending_sources"] and not instruction_frontiers
     else:
@@ -294,7 +491,7 @@ def layout_pending_machines(report, entry):
         store = report["stores"][index]
         fields = {"storage_default","transient_default","balance_default","accounts","logs",
                   "logs_unknown","storage_facts","transient_facts","touched_default"}
-        if report["schema_version"] == 15:
+        if report["schema_version"] == 16:
             fields |= {"storage_root","transient_root","nonce_default","code_default","existence_default",
                        "created_default","pending_destruction_default"}
             for name in ["storage_root","transient_root"]:reference(store[name],slot_kinds)
@@ -338,8 +535,68 @@ def layout_pending_machines(report, entry):
     assert {block["state"] for block in report["ssa"]["blocks"]} == set(nodes)
     assert all(not block["incoming_complete"] for block in report["ssa"]["blocks"])
     return {"pending_machines":len(pending),"pending_sources":pending_locations,"instruction_frontiers":instruction_frontiers,
+            "retained_instruction_frontiers":retained_frontiers,"work_frontiers":work_frontiers,
             "byte_arrays":sorted(buffers),"stores":sorted(stores),
             "typed_reasons":[frontier["reason"] for frontier in report["frontiers"]]}
+
+
+def _runtime_boundary_negative_controls(report, entry):
+    """Reject plausible PC, phase, frame and fact misbindings on the actual report."""
+    nodes = {node["id"]: node for node in report["cfg"]}
+    if _runtime_boundary_profile(report, entry, nodes) is None:
+        return []
+    states = {state["state"]: state for state in report["states"]}
+    blocks = {block["state"]: block for block in report["ssa"]["blocks"]}
+    values = {value["id"]: value for value in report["ssa"]["values"]}
+    rejected = []
+
+    def reject(label, target, key, replacement):
+        original = target[key]
+        target[key] = replacement
+        try:
+            try:
+                layout_pending_machines(report, entry)
+            except AssertionError:
+                rejected.append(label)
+            else:
+                raise AssertionError(f"runtime boundary accepted corrupted {label}")
+        finally:
+            target[key] = original
+
+    for frontier in report["frontiers"]:
+        if frontier["from"] is None:
+            reject("unlocated-work-fabricated-pc", frontier, "pc", 16802)
+            reject("unlocated-work-wrong-reason", frontier, "reason", "SummaryWork")
+            continue
+        source = nodes[frontier["from"]]
+        block = blocks[source["id"]]
+        if frontier["pc"] != source["executed_pcs"][-1]:
+            reject("retained-mstore-wrong-pc", frontier, "pc", 3644)
+            continue
+        sid = source["id"]
+        step = block["instructions"][-1]
+        native = states[sid]["entry"]["frames"][0]
+        phi = block["phis"][0]
+        fact = next(fact for fact in values[phi["result"]]["facts"]
+                    if fact["scope"] == {"State": sid} and fact["source"] == "Entry")
+        label = f"{step['name']}@{step['pc']}"
+        reject(label + "-frontier-pc", frontier, "pc", step["pc"] + 1)
+        reject(label + "-source-state", frontier, "from", 0)
+        reject(label + "-native-prefix", source["executed_pcs"], -1, step["pc"] + 1)
+        reject(label + "-opcode", step, "opcode", 0x00)
+        reject(label + "-completed-phase", step, "progress", "Completed")
+        reject(label + "-fault", step, "fault", True)
+        reject(label + "-normal-result", step, "results", [report["ssa"]["value_count"]])
+        reject(label + "-operand-binding", step, "operands", [phi["result"]] * len(step["operands"]))
+        reject(label + "-effect", step, "effect_result", block["effect"])
+        reject(label + "-frame-owner", native, "code_address", "0x2222222222222222222222222222222222222222")
+        reject(label + "-source-owner", source, "storage_address", "0x2222222222222222222222222222222222222222")
+        reject(label + "-frame-context", native, "context", [])
+        reject(label + "-provenance", fact["value"], "origins", ["Storage"])
+        reject(label + "-fact-scope", fact, "scope", {"State": 0})
+    # Restoring every mutation must also restore the complete positive oracle.
+    layout_pending_machines(report, entry)
+    return rejected
 
 
 def layout_runtime_coverage(report, metadata):
@@ -419,6 +676,7 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         assert {block["state"] for block in report["ssa"]["blocks"]} == {node["id"] for node in report["cfg"]}
         assert report["status"] == entry["expected_status"]
         pending = layout_pending_machines(report,entry) if "product_oracle" in entry else None
+        boundary_controls = _runtime_boundary_negative_controls(report, entry) if "product_oracle" in entry else []
         if "minimum_native_states" in entry:
             assert len(report["cfg"]) >= entry["minimum_native_states"] and len(report["frontiers"]) == entry["expected_frontiers"]
         if name == "ethereum-uniswap-v2-router02":
@@ -518,7 +776,8 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         assert not errors,errors
         results[name]={"provenance":metadata,"request":request_evidence,"coverage_comparison":coverage,"status":report["status"],
                        "scene":scene,"native_scene":native_scene,"focused":focused,"frontiers":len(report["frontiers"]),
-                       "pending":pending,"ending_status":ending_status,"renderer":webgpu_evidence(page)}
+                       "pending":pending,"boundary_controls":boundary_controls,
+                       "ending_status":ending_status,"renderer":webgpu_evidence(page)}
         page.close()
     return results
 

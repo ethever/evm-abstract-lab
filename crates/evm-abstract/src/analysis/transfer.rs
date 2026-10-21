@@ -1,22 +1,26 @@
 //! Basic-block execution on a transaction-wide machine. Calls suspend a frame;
 //! returns resume it with the same transaction store and an explicit result.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
+use super::engine::policy::ContextPolicy;
 use super::{
     DiagnosticKind, EdgeKind, InvalidOpcodeDiagnostic,
     machine::{
-        ExecutionConfig, FrameCode, FrontierReason, MachineEdgeKind, MachineKey, MachinePayload,
+        EvmMachinePayload, ExecutionConfig, FrameCode, FrontierReason, MachineEdgeKind, MachineKey,
         OutcomeKind,
     },
 };
-use super::{InstructionProgress, InstructionValue};
+use super::{EvmInstructionValue, InstructionProgress};
+
 use crate::{
-    domain::{AbstractValue, Domain, provenance::Origin},
+    domain::{AlgebraRef, EvmValue, provenance::Origin},
     world::{
-        AbstractLog, AddressInput, ByteArray, Code, Entry, LogKey, LogSourceKind, Store, Symbol,
-        World,
+        AddressInput, Code, EvmByteArray, EvmEntry, EvmLog, EvmStore, EvmWorld, LogKey,
+        LogSourceKind, Symbol,
     },
 };
-use alloy_primitives::{Address, U256, keccak256};
+use alloy_primitives::{Address, U256};
 use revm_bytecode::opcode;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -28,30 +32,44 @@ fn identity_scope() -> Option<u64> {
         .ok()
 }
 
+#[cfg(test)]
+mod arithmetic_proof_tests;
 mod budget;
 mod calls;
+mod candidates;
+#[cfg(test)]
+mod clone_payment_tests;
 pub(super) mod create;
+mod dispatch;
+mod environment;
 mod errors;
 mod hash;
+#[cfg(test)]
+mod injection_tests;
 mod late_failure;
 mod precompile;
 pub(super) mod procedure;
+mod query;
 mod ranges;
 mod relations;
 #[cfg(test)]
+mod resource_tests;
+#[cfg(test)]
 mod scalar_retention_tests;
+#[cfg(test)]
+mod testing;
 
 pub(super) use crate::resource::WorkBudget;
-use budget::{byte_work, operation_work};
+use budget::{byte_work, operation_work_budgeted};
 use calls::{call, failure, finish};
 
-struct TransferContext<'a> {
+struct TransferContext<'a, D: EvmNumericAlgebra> {
     config: &'a ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'a, D>,
     budget: &'a mut WorkBudget,
     root_address: Option<(Address, AddressInput)>,
     input_scope: Option<u64>,
-    query_cache: relations::QueryCache,
+    query_cache: relations::QueryCache<D::Element>,
     /// Relative procedures finish without committing transaction lifecycle effects.
     procedure: bool,
     /// RPC discovery leaves concrete missing code for acquisition before abstraction.
@@ -65,33 +83,33 @@ pub(super) enum StorageReadPolicy {
     Discover,
 }
 
-pub(super) fn initial(
-    world: &World,
-    entry: &Entry,
-    domain: Domain,
-) -> Result<MachinePayload, FrontierReason> {
+pub(super) fn initial<D: EvmNumericAlgebra>(
+    world: &EvmWorld<D::Element>,
+    entry: &EvmEntry<D::Element>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<EvmMachinePayload<D::Element>, FrontierReason> {
     calls::initial(world, entry, domain)
 }
 
-pub(super) struct Successor {
-    pub payload: MachinePayload,
+pub(super) struct EvmSuccessor<N: WordElement> {
+    pub payload: EvmMachinePayload<N>,
     pub kind: MachineEdgeKind,
 }
-pub(super) struct Outcome {
+pub(super) struct EvmOutcome<N: WordElement> {
     pub kind: OutcomeKind,
-    pub data: ByteArray,
-    pub store: Store,
+    pub data: EvmByteArray<N>,
+    pub store: EvmStore<N>,
 }
-pub(super) struct Execution {
-    pub payload: MachinePayload,
+pub(super) struct EvmExecution<N: WordElement> {
+    pub payload: EvmMachinePayload<N>,
     pub executed_pcs: Vec<usize>,
     pub instruction_progress: Vec<InstructionProgress>,
-    pub instruction_values: Vec<InstructionValue>,
-    pub successors: Vec<Successor>,
+    pub instruction_values: Vec<EvmInstructionValue<N>>,
+    pub successors: Vec<EvmSuccessor<N>>,
     pub diagnostics: Vec<(usize, DiagnosticKind)>,
-    pub frontiers: Vec<ExecutionFrontier>,
-    pub outcomes: Vec<Outcome>,
-    pub completed_calls: Vec<CompletedCall>,
+    pub frontiers: Vec<EvmExecutionFrontier<N>>,
+    pub outcomes: Vec<EvmOutcome<N>>,
+    pub completed_calls: Vec<EvmCompletedCall<N>>,
     /// Raw finite retention failures, indexed into this execution's frontiers.
     /// Public reasons alone cannot distinguish identity exhaustion or semantics.
     pub retention_failures: Vec<(usize, RetentionCause)>,
@@ -103,8 +121,8 @@ pub(super) enum RetentionCause {
     State,
 }
 
-fn empty_execution(payload: MachinePayload) -> Execution {
-    Execution {
+fn empty_execution<N: WordElement>(payload: EvmMachinePayload<N>) -> EvmExecution<N> {
+    EvmExecution {
         payload,
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
@@ -119,16 +137,16 @@ fn empty_execution(payload: MachinePayload) -> Execution {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct ExecutionFrontier {
+pub(super) struct EvmExecutionFrontier<N: WordElement> {
     pub pc: usize,
     pub reason: FrontierReason,
     pub target: Option<MachineKey>,
-    pub range: Option<super::RangeWitness>,
+    pub range: Option<super::EvmRangeWitness<N>>,
     /// Relative procedure state left unexpanded, when a folded execution stops.
-    pub payload: Option<std::sync::Arc<MachinePayload>>,
+    pub payload: Option<std::sync::Arc<EvmMachinePayload<N>>>,
 }
 
-impl Execution {
+impl<N: WordElement> EvmExecution<N> {
     fn mark_instruction(&mut self, progress: InstructionProgress) {
         *self
             .instruction_progress
@@ -139,36 +157,60 @@ impl Execution {
 
 /// A specific child terminal before caller joins, with qualified world effects.
 #[derive(Clone, Debug)]
-pub(super) struct CompletedCall {
-    pub payload: MachinePayload,
+pub(super) struct EvmCompletedCall<N: WordElement> {
+    pub payload: EvmMachinePayload<N>,
     pub kind: OutcomeKind,
-    pub data: ByteArray,
-    pub output_store: Store,
+    pub data: EvmByteArray<N>,
+    pub output_store: EvmStore<N>,
     pub output_kind: OutcomeKind,
-    pub output_data: ByteArray,
+    pub output_data: EvmByteArray<N>,
 }
 
-pub(super) fn resume_summary(
-    payload: MachinePayload,
+// Concrete aliases keep existing default regression fixtures unambiguous.
+#[cfg(test)]
+pub(super) type Execution = EvmExecution<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(super) type Successor = EvmSuccessor<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(super) type Outcome = EvmOutcome<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(super) type ExecutionFrontier = EvmExecutionFrontier<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(super) type CompletedCall = EvmCompletedCall<crate::domain::NumericValue>;
+
+pub(super) fn resume_summary<D: EvmNumericAlgebra>(
+    payload: EvmMachinePayload<D::Element>,
     kind: OutcomeKind,
-    data: ByteArray,
+    data: EvmByteArray<D::Element>,
     config: &ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
-) -> Execution {
+) -> EvmExecution<D::Element> {
     resume_summary_inner(payload, kind, data, config, domain, budget, false)
 }
 
-fn resume_summary_inner(
-    payload: MachinePayload,
+fn resume_summary_inner<D: EvmNumericAlgebra>(
+    payload: EvmMachinePayload<D::Element>,
     kind: OutcomeKind,
-    data: ByteArray,
+    data: EvmByteArray<D::Element>,
     config: &ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
     procedure: bool,
-) -> Execution {
-    let mut result = Execution {
+) -> EvmExecution<D::Element> {
+    if let Err(error) = payload.pay_clone_with(budget) {
+        let pc = payload
+            .active()
+            .program
+            .as_ref()
+            .and_then(|program| program.blocks().get(payload.active().key.basic_block_index))
+            .and_then(|block| block.instructions.last())
+            .map_or(0, |instruction| instruction.pc);
+        let mut result = empty_execution(payload);
+        boundary(&mut result, pc, error.into());
+        return result;
+    }
+    let mut result = EvmExecution {
         payload: payload.clone(),
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
@@ -204,13 +246,13 @@ fn resume_summary_inner(
 fn address(value: U256) -> Address {
     Address::from_slice(&value.to_be_bytes::<32>()[12..])
 }
-fn constant(value: usize) -> AbstractValue {
-    AbstractValue::constant(U256::from(value))
+fn constant<N: WordElement>(value: usize) -> EvmValue<N> {
+    EvmValue::<N>::constant(U256::from(value))
 }
-fn zero() -> AbstractValue {
-    AbstractValue::constant(U256::ZERO)
+fn zero<N: WordElement>() -> EvmValue<N> {
+    EvmValue::<N>::constant(U256::ZERO)
 }
-fn boundary(result: &mut Execution, pc: usize, reason: FrontierReason) {
+fn boundary<N: WordElement>(result: &mut EvmExecution<N>, pc: usize, reason: FrontierReason) {
     boundary_on(result, pc, reason, result.payload.key());
 }
 
@@ -225,8 +267,13 @@ fn boundary_reason(reason: FrontierReason) -> FrontierReason {
     }
 }
 
-fn boundary_on(result: &mut Execution, pc: usize, reason: FrontierReason, target: MachineKey) {
-    result.frontiers.push(ExecutionFrontier {
+fn boundary_on<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    pc: usize,
+    reason: FrontierReason,
+    target: MachineKey,
+) {
+    result.frontiers.push(EvmExecutionFrontier {
         pc,
         reason: boundary_reason(reason),
         target: Some(target),
@@ -235,7 +282,11 @@ fn boundary_on(result: &mut Execution, pc: usize, reason: FrontierReason, target
     });
 }
 
-fn boundary_bytes(result: &mut Execution, pc: usize, error: crate::world::RangeError) {
+fn boundary_bytes<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    pc: usize,
+    error: crate::world::RangeError,
+) {
     let cause = errors::retention_bytes(&error);
     let index = result.frontiers.len();
     boundary(result, pc, errors::bytes(error));
@@ -244,7 +295,11 @@ fn boundary_bytes(result: &mut Execution, pc: usize, error: crate::world::RangeE
     }
 }
 
-fn boundary_store(result: &mut Execution, pc: usize, error: crate::world::StoreError) {
+fn boundary_store<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    pc: usize,
+    error: crate::world::StoreError,
+) {
     let cause = errors::retention_store(&error);
     let index = result.frontiers.len();
     boundary(result, pc, errors::store(error));
@@ -253,25 +308,25 @@ fn boundary_store(result: &mut Execution, pc: usize, error: crate::world::StoreE
     }
 }
 
-fn successor(
-    result: &mut Execution,
-    mut payload: MachinePayload,
+fn successor<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    mut payload: EvmMachinePayload<N>,
     basic_block_index: usize,
     kind: EdgeKind,
 ) {
     payload.active_mut().key.basic_block_index = basic_block_index;
     payload.normalize();
-    result.successors.push(Successor {
+    result.successors.push(EvmSuccessor {
         payload,
         kind: MachineEdgeKind::Intraprocedural(kind),
     });
 }
 
-fn touch_memory(
-    result: &mut Execution,
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    context: &mut TransferContext<'_>,
+fn touch_memory<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
     if !ranges::memory(result, offset, size, context, pc) {
@@ -280,11 +335,11 @@ fn touch_memory(
     expand_memory(result, offset, size, context, pc)
 }
 
-fn expand_memory(
-    result: &mut Execution,
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    context: &mut TransferContext<'_>,
+fn expand_memory<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
     let config = context.config;
@@ -298,72 +353,86 @@ fn expand_memory(
         boundary(result, pc, FrontierReason::Work);
         return false;
     }
-    if let Err(error) =
-        result
-            .payload
-            .active_mut()
-            .memory
-            .expand(offset, size, config.max_memory_bytes, domain)
-    {
+    if let Err(error) = result.payload.active_mut().memory.expand_with(
+        offset,
+        size,
+        config.max_memory_bytes,
+        domain,
+    ) {
         boundary_bytes(result, pc, error);
         return false;
     }
     true
 }
 
-fn code_bytes(store: &Store, target: Address) -> Option<Vec<u8>> {
+fn code_bytes<N: WordElement>(store: &EvmStore<N>, target: Address) -> Option<Vec<u8>> {
     store.raw_account_code(target)
 }
 
-fn environment_targets(
-    value: &AbstractValue,
-    domain: Domain,
-    entry: &Entry,
-    mut read: impl FnMut(Address) -> AbstractValue,
-) -> AbstractValue {
-    let symbolic_owner = entry.environment.to.as_concrete().is_none();
-    if symbolic_owner
-        && value.identity().same_identity(
-            entry
-                .environment
-                .address_value(entry.environment.to)
-                .identity(),
-        )
-    {
-        return read(entry.address);
-    }
-    let Some(values) = value.constants() else {
-        return AbstractValue::top();
-    };
-    values
-        .iter()
-        .map(|v| {
-            let target = address(*v);
-            if symbolic_owner && target == entry.address {
-                AbstractValue::top()
-            } else {
-                read(target)
-            }
-        })
-        .reduce(|a, b| domain.join(&a, &b))
-        .expect("AbstractValue constant sets are nonempty")
+fn environment_targets<D: EvmNumericAlgebra>(
+    value: &EvmValue<D::Element>,
+    values: Option<&candidates::Candidates<'_>>,
+    domain: AlgebraRef<'_, D>,
+    entry: &EvmEntry<D::Element>,
+    mut read: impl FnMut(Address) -> EvmValue<D::Element>,
+) -> EvmValue<D::Element> {
+    try_environment_targets(value, values, domain, entry, |target| {
+        Ok::<_, std::convert::Infallible>(read(target))
+    })
+    .unwrap_or_else(|never| match never {})
 }
 
-pub(super) fn execute(
-    world: &World,
-    entry: &Entry,
-    payload: MachinePayload,
+fn try_environment_targets<D: EvmNumericAlgebra, E>(
+    value: &EvmValue<D::Element>,
+    values: Option<&candidates::Candidates<'_>>,
+    domain: AlgebraRef<'_, D>,
+    entry: &EvmEntry<D::Element>,
+    mut read: impl FnMut(Address) -> Result<EvmValue<D::Element>, E>,
+) -> Result<EvmValue<D::Element>, E> {
+    let symbolic_owner = entry.environment.to.as_concrete().is_none();
+    if candidates::is_self(value, entry) {
+        return read(entry.address);
+    }
+    let Some(values) = values else {
+        return Ok(EvmValue::<D::Element>::top());
+    };
+    let mut output = None;
+    for word in values.iter() {
+        let target = address(*word);
+        let value = if symbolic_owner && target == entry.address {
+            EvmValue::<D::Element>::top()
+        } else {
+            read(target)?
+        };
+        output = Some(match output {
+            Some(previous) => domain.join(&previous, &value),
+            None => value,
+        });
+    }
+    Ok(output.expect("AbstractValue constant sets are nonempty"))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared metered transfer inputs and immutable context policy"
+)]
+pub(super) fn execute<D: EvmNumericAlgebra, C: ContextPolicy>(
+    world: &EvmWorld<D::Element>,
+    entry: &EvmEntry<D::Element>,
+    payload: EvmMachinePayload<D::Element>,
     config: &ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
+    context_policy: &C,
     budget: &mut WorkBudget,
     storage_reads: StorageReadPolicy,
-) -> Execution {
+) -> EvmExecution<D::Element> {
     execute_inner(
         world,
         entry,
         payload,
         config,
         domain,
+        context_policy,
         budget,
         storage_reads,
         false,
@@ -374,16 +443,17 @@ pub(super) fn execute(
     clippy::too_many_arguments,
     reason = "shared metered transfer inputs and relative-frame mode"
 )]
-fn execute_inner(
-    world: &World,
-    entry: &Entry,
-    payload: MachinePayload,
+fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
+    world: &EvmWorld<D::Element>,
+    entry: &EvmEntry<D::Element>,
+    payload: EvmMachinePayload<D::Element>,
     config: &ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
+    context_policy: &C,
     budget: &mut WorkBudget,
     storage_reads: StorageReadPolicy,
     procedure: bool,
-) -> Execution {
+) -> EvmExecution<D::Element> {
     let mut transfer_context = TransferContext {
         config,
         domain,
@@ -395,7 +465,7 @@ fn execute_inner(
         discover_code: storage_reads == StorageReadPolicy::Discover,
     };
     let context = &mut transfer_context;
-    let mut result = Execution {
+    let mut result = EvmExecution {
         payload,
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
@@ -412,14 +482,21 @@ fn execute_inner(
     }
     let scope = identity_scope();
     let mut definition = 0_u32;
-    for value in &mut result.payload.active_mut().stack {
-        value.forget_identity();
-        *value = relations::identify(value.clone(), config.analysis.relations.enabled);
-        if let Some(scope) = scope {
-            *value = value.clone().with_identity(scope, definition);
-        }
-        definition = definition.saturating_add(1);
-    }
+    // Metadata changes consume each owned value; neither operation needs a
+    // duplicate of N. Taking the Vec constructs no placeholder numeric value.
+    let stack = std::mem::take(&mut result.payload.active_mut().stack);
+    result.payload.active_mut().stack = stack
+        .into_iter()
+        .map(|mut value| {
+            value.forget_identity();
+            let mut value = relations::identify(value, config.analysis.relations.enabled);
+            if let Some(scope) = scope {
+                value = value.with_identity(scope, definition);
+            }
+            definition = definition.saturating_add(1);
+            value
+        })
+        .collect();
     let code = result.payload.active().code;
     if let FrameCode::Precompile(address) = code {
         precompile::execute(&mut result, world.fork(), address, context);
@@ -452,12 +529,16 @@ fn execute_inner(
         return result;
     }
     if code == FrameCode::Empty {
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(&mut result, 0, error.into());
+            return result;
+        }
         let payload = result.payload.clone();
         finish(
             &mut result,
             payload,
             OutcomeKind::Return,
-            ByteArray::empty(),
+            EvmByteArray::<D::Element>::empty(),
             context,
             0,
         );
@@ -472,12 +553,16 @@ fn execute_inner(
     let program = &program;
     let basic_block_index = result.payload.active().key.basic_block_index;
     let Some(block) = program.blocks().get(basic_block_index) else {
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(&mut result, program.byte_len(), error.into());
+            return result;
+        }
         let payload = result.payload.clone();
         finish(
             &mut result,
             payload,
             OutcomeKind::Return,
-            ByteArray::empty(),
+            EvmByteArray::<D::Element>::empty(),
             context,
             program.byte_len(),
         );
@@ -524,16 +609,37 @@ fn execute_inner(
             return result;
         }
         if let Some(value) = instruction.immediate {
-            stack.push(AbstractValue::constant(value));
-            result.instruction_values.push(InstructionValue::new(
-                result.executed_pcs.len() - 1,
-                stack.last().expect("PUSH produced its normal result"),
-            ));
+            let construction = domain.literal_quote_work(value);
+            if construction == usize::MAX || !context.budget.charge(construction) {
+                boundary(&mut result, pc, FrontierReason::Work);
+                return result;
+            }
+            let value = EvmValue::<D::Element>::constant(value);
+            // Preserve the separately paid receipt copy from the transfer
+            // resource lane; neither reservation publishes a partial result.
+            if !context.budget.charge(value.clone_work()) {
+                boundary(&mut result, pc, FrontierReason::Work);
+                return result;
+            }
+            result
+                .instruction_values
+                .push(EvmInstructionValue::<D::Element>::new(
+                    result.executed_pcs.len() - 1,
+                    &value,
+                ));
+            stack.push(value);
             result.mark_instruction(InstructionProgress::Completed);
             continue;
         }
         if (opcode::DUP1..=opcode::DUP16).contains(&op) {
             let depth = usize::from(op - opcode::DUP1 + 1);
+            if !context
+                .budget
+                .charge(stack[stack.len() - depth].clone_work())
+            {
+                boundary(&mut result, pc, FrontierReason::Work);
+                return result;
+            }
             stack.push(stack[stack.len() - depth].clone());
             result.mark_instruction(InstructionProgress::Completed);
             continue;
@@ -544,11 +650,13 @@ fn execute_inner(
             result.mark_instruction(InstructionProgress::Completed);
             continue;
         }
-        let mut args: Vec<AbstractValue> = stack.drain(stack.len() - inputs..).collect();
+        let mut args: Vec<EvmValue<D::Element>> = stack.drain(stack.len() - inputs..).collect();
         result.mark_instruction(InstructionProgress::OperandsConsumed);
         args.reverse();
         if config.analysis.relations.enabled
-            && args.iter().any(AbstractValue::symbolic_limit_reached)
+            && args
+                .iter()
+                .any(EvmValue::<D::Element>::symbolic_limit_reached)
         {
             boundary(
                 &mut result,
@@ -558,7 +666,9 @@ fn execute_inner(
         }
         // Refinement can make a flagged operand singleton. Its inherited
         // refusal must still be distinguished from this result's optional term.
-        let inherited_symbolic_limit = args.iter().any(AbstractValue::symbolic_limit_reached);
+        let inherited_symbolic_limit = args
+            .iter()
+            .any(EvmValue::<D::Element>::symbolic_limit_reached);
         for value in &mut args {
             match relations::refine(value, &result.payload.relations, context) {
                 Ok(false) => return result,
@@ -574,10 +684,16 @@ fn execute_inner(
             let owner = result.payload.active().key.address;
             // 不用抽象环境的内部占位地址向链上查询。
             let frame = result.payload.active();
-            let observed_owner = frame.address_operand.as_ref().map_or_else(
-                || frame.key.address_value.as_concrete(),
-                |value| value.singleton().map(address),
-            );
+            let observed_owner = match frame.address_operand.as_ref() {
+                None => frame.key.address_value.as_concrete(),
+                Some(value) => match query::singleton(value.numeric(), context.budget) {
+                    Ok(singleton) => singleton.map(address),
+                    Err(reason) => {
+                        boundary(&mut result, pc, reason);
+                        return result;
+                    }
+                },
+            };
             if observed_owner == Some(owner) {
                 let scan = args[0]
                     .work_size()
@@ -606,9 +722,7 @@ fn execute_inner(
             }
         }
         if matches!(op, opcode::MLOAD | opcode::CALLDATALOAD) {
-            let scan = args[0]
-                .constants()
-                .map_or(1, |s| s.len())
+            let scan = candidates::count(&args[0])
                 .saturating_mul(32)
                 .saturating_mul(domain.capacity().saturating_add(32));
             if !context.budget.charge(scan) {
@@ -616,9 +730,23 @@ fn execute_inner(
                 return result;
             }
         }
-        if !context.budget.charge(operation_work(
-            &result, op, &args, program, domain, config, entry,
-        )) {
+        let quote = match operation_work_budgeted(
+            &result,
+            op,
+            &args,
+            program,
+            domain,
+            config,
+            entry,
+            context.budget,
+        ) {
+            Ok(quote) => quote,
+            Err(reason) => {
+                boundary(&mut result, pc, reason);
+                return result;
+            }
+        };
+        if !context.budget.charge(quote.work) {
             boundary(&mut result, pc, FrontierReason::Work);
             return result;
         }
@@ -639,38 +767,60 @@ fn execute_inner(
         }
         match op {
             opcode::JUMP | opcode::JUMPI => {
-                let history_work = result
-                    .payload
-                    .active()
-                    .key
-                    .jump_history
-                    .len()
-                    .saturating_mul(2)
-                    .saturating_add(1);
+                let condition = args.get(1);
+                let truth = match condition
+                    .map(|condition| {
+                        dispatch::Truth::prepare(
+                            condition,
+                            crate::domain::SingletonProof::NotQueried,
+                            context.budget,
+                        )
+                    })
+                    .transpose()
+                {
+                    Ok(truth) => truth,
+                    Err(reason) => {
+                        boundary(&mut result, pc, reason);
+                        return result;
+                    }
+                };
+                // A zero JUMPI never observes its destination. Resolve a taken
+                // target before changing history or publishing either edge.
+                let targets = if truth.as_ref().is_none_or(|truth| truth.nonzero) {
+                    match candidates::prepare(&args[0], context.budget) {
+                        Ok((targets, _)) => targets,
+                        Err(reason) => {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
+                    }
+                } else {
+                    None
+                };
+                let history_work =
+                    context_policy.work(result.payload.active().key.jump_history.len());
                 if !context.budget.charge(history_work) {
                     boundary(&mut result, pc, FrontierReason::Work);
                     return result;
                 }
                 result.mark_instruction(InstructionProgress::Dispatched);
                 let frame = result.payload.active_mut();
-                // Only the most recent occurrence partitions analysis contexts.
-                // Repeated loop sources must reach the same key before the
-                // configured history window fills with duplicate iterations.
-                frame
-                    .key
-                    .jump_history
-                    .retain(|source| *source != block.start_pc);
-                frame.key.jump_history.push(block.start_pc);
-                let discard = frame
-                    .key
-                    .jump_history
-                    .len()
-                    .saturating_sub(config.analysis.context_depth);
-                frame.key.jump_history.drain(..discard);
-                let condition = args.get(1);
-                let constrained = if condition.is_none_or(AbstractValue::may_be_nonzero) {
+                // Ordinary and relative execution share this immutable policy.
+                context_policy.advance(
+                    &mut frame.key.jump_history,
+                    block.start_pc,
+                    config.analysis.context_depth,
+                );
+                let constrained = if truth.as_ref().is_none_or(|truth| truth.nonzero) {
                     if let Some(condition) = condition {
-                        relations::branch(&mut result, condition, true, context, pc)
+                        relations::branch_with_singleton(
+                            &mut result,
+                            condition,
+                            true,
+                            truth.as_ref().expect("JUMPI condition").singleton,
+                            context,
+                            pc,
+                        )
                     } else {
                         Some(result.payload.clone())
                     }
@@ -683,12 +833,15 @@ fn execute_inner(
                     } else {
                         EdgeKind::BranchTrue
                     };
-                    match args[0].constants() {
+                    match targets {
                         Some(targets) => {
-                            for target in targets {
+                            for target in targets.iter() {
                                 if !context.budget.charge(1) {
                                     boundary(&mut result, pc, FrontierReason::Work);
-                                    break;
+                                    // This visit owns the stop. Returning preserves
+                                    // completed alternatives and avoids reporting
+                                    // it again at the post-dispatch checkpoint.
+                                    return result;
                                 }
                                 let valid = usize::try_from(*target).ok().and_then(|target| {
                                     program.jumpdest_blocks().get(&target).copied()
@@ -705,23 +858,42 @@ fn execute_inner(
                             result.diagnostics.push((pc, DiagnosticKind::UnknownJump));
                             failure(&mut result, context, pc);
                             for (target_pc, target) in program.jumpdest_blocks() {
-                                if !args[0].contains(U256::from(*target_pc)) {
+                                let contains = match query::contains(
+                                    args[0].numeric(),
+                                    U256::from(*target_pc),
+                                    context.budget,
+                                ) {
+                                    Ok(contains) => contains,
+                                    Err(reason) => {
+                                        boundary(&mut result, pc, reason);
+                                        return result;
+                                    }
+                                };
+                                if !contains {
                                     continue;
                                 }
                                 if !context.budget.charge(1) {
                                     boundary(&mut result, pc, FrontierReason::Work);
-                                    break;
+                                    // This visit owns the stop. Returning preserves
+                                    // completed alternatives and avoids reporting
+                                    // it again at the post-dispatch checkpoint.
+                                    return result;
                                 }
                                 successor(&mut result, constrained.clone(), *target, kind);
                             }
                         }
                     }
                 }
-                if condition.is_some_and(AbstractValue::may_be_zero) {
-                    let Some(payload) = relations::branch(
+                if let Err(reason) = query::checkpoint(context.budget) {
+                    boundary(&mut result, pc, reason);
+                    return result;
+                }
+                if truth.as_ref().is_some_and(|truth| truth.zero) {
+                    let Some(payload) = relations::branch_with_singleton(
                         &mut result,
                         condition.expect("JUMPI condition"),
                         false,
+                        truth.as_ref().expect("JUMPI condition").singleton,
                         context,
                         pc,
                     ) else {
@@ -739,7 +911,7 @@ fn execute_inner(
                             &mut result,
                             payload,
                             OutcomeKind::Return,
-                            ByteArray::empty(),
+                            EvmByteArray::<D::Element>::empty(),
                             context,
                             pc,
                         );
@@ -749,24 +921,28 @@ fn execute_inner(
             }
             opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
                 result.mark_instruction(InstructionProgress::Dispatched);
-                result.payload.active_mut().returndata = ByteArray::empty();
+                result.payload.active_mut().returndata = EvmByteArray::<D::Element>::empty();
                 call(&mut result, world, op, &args, program, context, pc);
                 return result;
             }
             opcode::CREATE | opcode::CREATE2 => {
                 result.mark_instruction(InstructionProgress::Dispatched);
-                result.payload.active_mut().returndata = ByteArray::empty();
+                result.payload.active_mut().returndata = EvmByteArray::<D::Element>::empty();
                 create::create(&mut result, world, op, &args, program, context, pc);
                 return result;
             }
             opcode::STOP => {
+                if let Err(error) = result.payload.pay_clone_with(context.budget) {
+                    boundary(&mut result, pc, error.into());
+                    return result;
+                }
                 result.mark_instruction(InstructionProgress::Dispatched);
                 let payload = result.payload.clone();
                 finish(
                     &mut result,
                     payload,
                     OutcomeKind::Return,
-                    ByteArray::empty(),
+                    EvmByteArray::<D::Element>::empty(),
                     context,
                     pc,
                 );
@@ -776,7 +952,7 @@ fn execute_inner(
                 if !touch_memory(&mut result, &args[0], &args[1], context, pc) {
                     return result;
                 }
-                let data = match result.payload.active().memory.slice(
+                let data = match result.payload.active().memory.slice_with(
                     &args[0],
                     &args[1],
                     config.max_memory_bytes,
@@ -788,6 +964,10 @@ fn execute_inner(
                         return result;
                     }
                 };
+                if let Err(error) = result.payload.pay_clone_with(context.budget) {
+                    boundary(&mut result, pc, error.into());
+                    return result;
+                }
                 result.mark_instruction(InstructionProgress::Dispatched);
                 let payload = result.payload.clone();
                 finish(
@@ -818,13 +998,39 @@ fn execute_inner(
                     boundary(&mut result, pc, FrontierReason::UnknownTarget);
                     return result;
                 }
-                let Some(beneficiaries) = args[0].constants() else {
+                let beneficiaries = match candidates::prepare(&args[0], context.budget) {
+                    Ok((beneficiaries, _)) => beneficiaries,
+                    Err(reason) => {
+                        boundary(&mut result, pc, reason);
+                        return result;
+                    }
+                };
+                let Some(beneficiaries) = beneficiaries else {
                     boundary(&mut result, pc, FrontierReason::UnknownTarget);
                     return result;
                 };
                 let owner = result.payload.active().key.address;
+                let balance = result.payload.store.read_balance(owner);
+                let truth = if beneficiaries
+                    .iter()
+                    .any(|beneficiary| address(*beneficiary) != owner)
+                {
+                    match dispatch::Truth::prepare(
+                        &balance,
+                        crate::domain::SingletonProof::NotQueried,
+                        context.budget,
+                    ) {
+                        Ok(truth) => Some(truth),
+                        Err(reason) => {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
+                    }
+                } else {
+                    None
+                };
                 result.mark_instruction(InstructionProgress::Dispatched);
-                for beneficiary in beneficiaries {
+                for beneficiary in beneficiaries.iter() {
                     if !context
                         .budget
                         .charge(result.payload.work_size().saturating_add(1))
@@ -833,9 +1039,25 @@ fn execute_inner(
                         break;
                     }
                     let mut payload = result.payload.clone();
-                    payload
-                        .store
-                        .selfdestruct(owner, address(*beneficiary), domain);
+                    let update = payload.store.selfdestruct_with_balance_truth(
+                        owner,
+                        address(*beneficiary),
+                        domain,
+                        truth.as_ref().is_some_and(|truth| truth.zero),
+                        truth.as_ref().is_some_and(|truth| truth.nonzero),
+                        |value, proof| {
+                            let truth = dispatch::Truth::prepare(&value, proof, context.budget)?;
+                            Ok::<_, FrontierReason>((value, truth.zero, truth.nonzero))
+                        },
+                    );
+                    if let Err(reason) = update {
+                        boundary(&mut result, pc, reason);
+                        return result;
+                    }
+                    if let Err(reason) = query::checkpoint(context.budget) {
+                        boundary(&mut result, pc, reason);
+                        return result;
+                    }
                     if !late_failure::after_selfdestruct(&mut result, &payload, context, pc) {
                         break;
                     }
@@ -843,7 +1065,7 @@ fn execute_inner(
                         &mut result,
                         payload,
                         OutcomeKind::Return,
-                        ByteArray::empty(),
+                        EvmByteArray::<D::Element>::empty(),
                         context,
                         pc,
                     );
@@ -853,12 +1075,14 @@ fn execute_inner(
             opcode::SSTORE | opcode::TSTORE => {
                 let state_address = result.payload.active().key.address;
                 let write = if op == opcode::SSTORE {
-                    result
-                        .payload
-                        .store
-                        .write_checked(state_address, &args[0], &args[1], domain)
+                    result.payload.store.write_checked_with(
+                        state_address,
+                        &args[0],
+                        &args[1],
+                        domain,
+                    )
                 } else {
-                    result.payload.store.write_transient_checked(
+                    result.payload.store.write_transient_checked_with(
                         state_address,
                         &args[0],
                         &args[1],
@@ -877,7 +1101,7 @@ fn execute_inner(
                 }
                 let memory = &mut result.payload.active_mut().memory;
                 let write = if op == opcode::MSTORE {
-                    memory.write_word_budgeted(
+                    memory.write_word_budgeted_with(
                         &args[0],
                         &args[1],
                         config.max_memory_bytes,
@@ -885,7 +1109,7 @@ fn execute_inner(
                         context.budget,
                     )
                 } else {
-                    memory.write_byte_budgeted(
+                    memory.write_byte_budgeted_with(
                         &args[0],
                         &args[1],
                         config.max_memory_bytes,
@@ -917,7 +1141,7 @@ fn execute_inner(
             opcode::CALLDATACOPY | opcode::CODECOPY | opcode::RETURNDATACOPY | opcode::MCOPY => {
                 let source = match op {
                     opcode::CALLDATACOPY => result.payload.active().calldata.clone(),
-                    opcode::CODECOPY => ByteArray::exact(program.bytes()),
+                    opcode::CODECOPY => EvmByteArray::<D::Element>::exact(program.bytes()),
                     opcode::RETURNDATACOPY => result.payload.active().returndata.clone(),
                     _ => result.payload.active().memory.clone(),
                 };
@@ -944,7 +1168,7 @@ fn execute_inner(
                 if !admitted {
                     return result;
                 }
-                if let Err(error) = result.payload.active_mut().memory.copy_from(
+                if let Err(error) = result.payload.active_mut().memory.copy_from_with(
                     &args[0],
                     &source,
                     &args[1],
@@ -961,28 +1185,22 @@ fn execute_inner(
                     return result;
                 }
                 let symbolic_owner = entry.environment.to.as_concrete().is_none();
-                let exact_self = symbolic_owner
-                    && args[0].identity().same_identity(
-                        entry
-                            .environment
-                            .address_value(entry.environment.to)
-                            .identity(),
-                    );
+                let exact_self = candidates::is_self(&args[0], entry);
                 let source = if exact_self {
                     code_bytes(&result.payload.store, entry.address)
-                        .map(|bytes| ByteArray::exact(&bytes))
-                        .unwrap_or_else(ByteArray::unknown)
+                        .map(|bytes| EvmByteArray::<D::Element>::exact(&bytes))
+                        .unwrap_or_else(EvmByteArray::<D::Element>::unknown)
                 } else {
-                    match args[0].constants() {
+                    match quote.targets.as_ref() {
                         Some(targets) => {
                             let mut sources = targets.iter().map(|target| {
                                 let target = address(*target);
                                 if symbolic_owner && target == entry.address {
-                                    ByteArray::unknown()
+                                    EvmByteArray::<D::Element>::unknown()
                                 } else {
                                     code_bytes(&result.payload.store, target)
-                                        .map(|bytes| ByteArray::exact(&bytes))
-                                        .unwrap_or_else(ByteArray::unknown)
+                                        .map(|bytes| EvmByteArray::<D::Element>::exact(&bytes))
+                                        .unwrap_or_else(EvmByteArray::<D::Element>::unknown)
                                 }
                             });
                             let first = sources.next().expect("nonempty value");
@@ -992,7 +1210,7 @@ fn execute_inner(
                                         crate::domain::symbolic::StateError::IdentityExhausted,
                                     ),
                                 )?;
-                                left.join_guarded(
+                                left.join_guarded_with(
                                     &right,
                                     domain,
                                     selector,
@@ -1007,10 +1225,10 @@ fn execute_inner(
                                 }
                             }
                         }
-                        None => ByteArray::unknown(),
+                        None => EvmByteArray::<D::Element>::unknown(),
                     }
                 };
-                if let Err(error) = result.payload.active_mut().memory.copy_from(
+                if let Err(error) = result.payload.active_mut().memory.copy_from_with(
                     &args[1],
                     &source,
                     &args[2],
@@ -1026,7 +1244,7 @@ fn execute_inner(
                 if !touch_memory(&mut result, &args[0], &args[1], context, pc) {
                     return result;
                 }
-                let data = match result.payload.active().memory.slice(
+                let data = match result.payload.active().memory.slice_with(
                     &args[0],
                     &args[1],
                     config.max_memory_bytes,
@@ -1050,12 +1268,19 @@ fn execute_inner(
                     },
                     pc,
                 };
+                let topic_copy_work = args[2..].iter().fold(0usize, |work, value| {
+                    work.saturating_add(value.clone_work())
+                });
+                if !context.budget.charge(topic_copy_work) {
+                    boundary(&mut result, pc, FrontierReason::Work);
+                    return result;
+                }
                 if result
                     .payload
                     .store
-                    .emit_log(
+                    .emit_log_with(
                         source,
-                        AbstractLog {
+                        EvmLog {
                             topics: args[2..].to_vec(),
                             data,
                         },
@@ -1069,6 +1294,27 @@ fn execute_inner(
             }
             _ if outputs > 0 => {
                 let frame = result.payload.active();
+                let copied = match op {
+                    opcode::ADDRESS => frame.address_operand.as_ref(),
+                    opcode::CALLER => frame.caller_operand.as_ref(),
+                    opcode::CALLVALUE => Some(&frame.call_value),
+                    opcode::GASPRICE => Some(&entry.environment.gas_price),
+                    opcode::TIMESTAMP => Some(&entry.environment.timestamp),
+                    opcode::NUMBER => Some(&entry.environment.number),
+                    opcode::DIFFICULTY => Some(&entry.environment.prevrandao),
+                    opcode::GASLIMIT => Some(&entry.environment.gas_limit),
+                    opcode::CHAINID => entry.environment.chain_id.as_ref(),
+                    opcode::BASEFEE => Some(&entry.environment.base_fee),
+                    opcode::BLOBBASEFEE => Some(&entry.environment.blob_base_fee),
+                    opcode::CALLDATASIZE => Some(frame.calldata.len()),
+                    opcode::RETURNDATASIZE => Some(frame.returndata.len()),
+                    opcode::MSIZE => Some(frame.memory.len()),
+                    _ => None,
+                };
+                if copied.is_some_and(|value| !context.budget.charge(value.clone_work())) {
+                    boundary(&mut result, pc, FrontierReason::Work);
+                    return result;
+                }
                 let mut value = match op {
                     opcode::ADDRESS => frame.address_operand.clone().unwrap_or_else(|| {
                         entry.environment.address_value(frame.key.address_value)
@@ -1118,34 +1364,53 @@ fn execute_inner(
                         .blob_base_fee
                         .clone()
                         .with_symbol(Symbol::BlobBaseFee, entry.environment.input_scope.id()),
-                    opcode::BLOCKHASH => entry.environment.block_hash(&args[0], domain),
-                    opcode::BLOBHASH => entry.environment.blob_hashes.get(
+                    opcode::BLOCKHASH => match environment::block_hash(
+                        &entry.environment,
                         &args[0],
                         domain,
+                        context.budget,
+                    ) {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
+                    },
+                    opcode::BLOBHASH => match environment::blob_hash(
+                        &entry.environment.blob_hashes,
+                        &args[0],
                         entry.environment.input_scope.id(),
-                    ),
-                    opcode::GAS => entry.environment.gas.value(),
+                        domain,
+                        context.budget,
+                    ) {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
+                    },
+                    opcode::GAS => entry.environment.gas.value_with(),
                     opcode::PC => constant(pc),
                     opcode::CODESIZE => constant(program.byte_len()),
                     opcode::CALLDATASIZE => frame.calldata.len().clone(),
                     opcode::RETURNDATASIZE => frame.returndata.len().clone(),
                     opcode::MSIZE => frame.memory.len().clone(),
                     opcode::CALLDATALOAD => {
-                        let plan =
-                            match frame
-                                .calldata
-                                .prepare_word_read(&args[0], domain, context.budget)
-                            {
-                                Ok(Some(plan)) => plan,
-                                Ok(None) => {
-                                    boundary(&mut result, pc, FrontierReason::Work);
-                                    return result;
-                                }
-                                Err(error) => {
-                                    boundary_bytes(&mut result, pc, error);
-                                    return result;
-                                }
-                            };
+                        let plan = match frame.calldata.prepare_word_read_with(
+                            &args[0],
+                            domain,
+                            context.budget,
+                        ) {
+                            Ok(Some(plan)) => plan,
+                            Ok(None) => {
+                                boundary(&mut result, pc, FrontierReason::Work);
+                                return result;
+                            }
+                            Err(error) => {
+                                boundary_bytes(&mut result, pc, error);
+                                return result;
+                            }
+                        };
                         match plan.read_word_budgeted(context.budget) {
                             Ok(Some(value)) => value,
                             Ok(None) => {
@@ -1160,12 +1425,13 @@ fn execute_inner(
                     }
                     opcode::SLOAD | opcode::TLOAD => {
                         let read = if op == opcode::SLOAD {
-                            result
-                                .payload
-                                .store
-                                .read_checked(frame.key.address, &args[0], domain)
+                            result.payload.store.read_checked_with(
+                                frame.key.address,
+                                &args[0],
+                                domain,
+                            )
                         } else {
-                            result.payload.store.read_transient_checked(
+                            result.payload.store.read_transient_checked_with(
                                 frame.key.address,
                                 &args[0],
                                 domain,
@@ -1180,56 +1446,54 @@ fn execute_inner(
                         }
                     }
                     opcode::SELFBALANCE => result.payload.store.read_balance(frame.key.address),
-                    opcode::BALANCE => environment_targets(&args[0], domain, entry, |address| {
-                        result.payload.store.read_balance(address)
-                    }),
-                    opcode::EXTCODESIZE => environment_targets(&args[0], domain, entry, |target| {
-                        match result.payload.store.code(target) {
+                    opcode::BALANCE => environment_targets(
+                        &args[0],
+                        quote.targets.as_ref(),
+                        domain,
+                        entry,
+                        |address| result.payload.store.read_balance(address),
+                    ),
+                    opcode::EXTCODESIZE => environment_targets(
+                        &args[0],
+                        quote.targets.as_ref(),
+                        domain,
+                        entry,
+                        |target| match result.payload.store.code(target) {
                             Some(Code::Runtime(program)) => constant(program.byte_len()),
                             Some(Code::Delegation(_)) => constant(23),
                             Some(Code::Empty) => zero(),
-                            _ => AbstractValue::top(),
+                            _ => EvmValue::<D::Element>::top(),
+                        },
+                    ),
+                    opcode::EXTCODEHASH => match try_environment_targets(
+                        &args[0],
+                        quote.targets.as_ref(),
+                        domain,
+                        entry,
+                        |target| dispatch::code_hash(&result.payload.store, target, context),
+                    ) {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            boundary(&mut result, pc, reason);
+                            return result;
                         }
-                    }),
-                    opcode::EXTCODEHASH => environment_targets(&args[0], domain, entry, |target| {
-                        code_bytes(&result.payload.store, target)
-                            .map(|bytes| {
-                                let hash = AbstractValue::constant(U256::from_be_slice(
-                                    keccak256(&bytes).as_slice(),
-                                ));
-                                if !bytes.is_empty() {
-                                    return hash;
-                                }
-                                let balance = result.payload.store.read_balance(target);
-                                let nonce = result.payload.store.nonce(target);
-                                let may_be_empty = balance.may_be_zero() && nonce.may_be_zero();
-                                let may_exist = balance.may_be_nonzero() || nonce.may_be_nonzero();
-                                if may_be_empty && may_exist {
-                                    domain.join(&hash, &zero())
-                                } else if may_be_empty {
-                                    zero()
-                                } else {
-                                    hash
-                                }
-                            })
-                            .unwrap_or_else(AbstractValue::top)
-                    }),
+                    },
                     opcode::MLOAD => {
-                        let plan =
-                            match frame
-                                .memory
-                                .prepare_word_read(&args[0], domain, context.budget)
-                            {
-                                Ok(Some(plan)) => plan,
-                                Ok(None) => {
-                                    boundary(&mut result, pc, FrontierReason::Work);
-                                    return result;
-                                }
-                                Err(error) => {
-                                    boundary_bytes(&mut result, pc, error);
-                                    return result;
-                                }
-                            };
+                        let plan = match frame.memory.prepare_word_read_with(
+                            &args[0],
+                            domain,
+                            context.budget,
+                        ) {
+                            Ok(Some(plan)) => plan,
+                            Ok(None) => {
+                                boundary(&mut result, pc, FrontierReason::Work);
+                                return result;
+                            }
+                            Err(error) => {
+                                boundary_bytes(&mut result, pc, error);
+                                return result;
+                            }
+                        };
                         if !touch_memory(&mut result, &args[0], &constant(32), context, pc) {
                             return result;
                         }
@@ -1246,10 +1510,18 @@ fn execute_inner(
                         }
                     }
                     opcode::KECCAK256 => {
-                        if !touch_memory(&mut result, &args[0], &args[1], context, pc) {
+                        if !ranges::memory_after_size(
+                            &mut result,
+                            &args[0],
+                            &args[1],
+                            quote.size,
+                            context,
+                            pc,
+                        ) || !expand_memory(&mut result, &args[0], &args[1], context, pc)
+                        {
                             return result;
                         }
-                        match result.payload.active().memory.slice(
+                        match result.payload.active().memory.slice_with(
                             &args[0],
                             &args[1],
                             config.max_memory_bytes,
@@ -1269,7 +1541,12 @@ fn execute_inner(
                         if !matches!(op, 0x01..=0x0b | 0x10..=0x1e) {
                             result.diagnostics.push((pc, DiagnosticKind::OpaqueResult));
                         }
-                        let mut reduction = domain.apply_detailed(op, &args);
+                        let (mut reduction, proof) =
+                            domain.apply_detailed_with_singleton(op, &args);
+                        if let Err(reason) = query::checkpoint(context.budget) {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
                         if matches!(
                             reduction.symbolic_error,
                             Some(crate::domain::symbolic::ExprError::Limit { .. })
@@ -1301,10 +1578,29 @@ fn execute_inner(
                             crate::domain::ReductionStatus::RoundLimit
                                 | crate::domain::ReductionStatus::FactLimit
                                 | crate::domain::ReductionStatus::SymbolicLimit
+                                | crate::domain::ReductionStatus::WorkLimit
+                                | crate::domain::ReductionStatus::Cancelled
+                                | crate::domain::ReductionStatus::KernelFailure
                         ) {
                             result
                                 .diagnostics
                                 .push((pc, DiagnosticKind::FactExchangeLimited(reduction.status)));
+                        }
+                        if domain.spec().relations().enabled
+                            && matches!(op, 0x01..=0x0b | 0x10..=0x1e)
+                            && reduction.status == crate::domain::ReductionStatus::Stable
+                            && reduction.symbolic_error.is_none()
+                            && !reduction.value.symbolic_limit_reached()
+                            && reduction.value.expression().is_none()
+                            && reduction.value.identity().input().is_none()
+                            && let crate::domain::SingletonProof::Answer(Some(word)) = proof
+                        {
+                            // The operation paid for this result proof and its
+                            // expression envelope. Keep N and source metadata;
+                            // identify must not replace a proved result by Fresh.
+                            reduction
+                                .value
+                                .set_expression(crate::domain::symbolic::ExprId::constant(word));
                         }
                         reduction.value
                     }
@@ -1354,9 +1650,21 @@ fn execute_inner(
                         value.forget_identity();
                     }
                 }
+                // One numeric copy belongs to the receipt; repeat_n may make
+                // outputs - 1 further copies before moving the final value.
+                if !context
+                    .budget
+                    .charge(value.clone_work().saturating_mul(outputs))
+                {
+                    boundary(&mut result, pc, FrontierReason::Work);
+                    return result;
+                }
                 result
                     .instruction_values
-                    .push(InstructionValue::new(result.executed_pcs.len() - 1, &value));
+                    .push(EvmInstructionValue::<D::Element>::new(
+                        result.executed_pcs.len() - 1,
+                        &value,
+                    ));
                 result
                     .payload
                     .active_mut()
@@ -1376,12 +1684,16 @@ fn execute_inner(
             EdgeKind::Fallthrough,
         );
     } else {
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(&mut result, program.byte_len(), error.into());
+            return result;
+        }
         let payload = result.payload.clone();
         finish(
             &mut result,
             payload,
             OutcomeKind::Return,
-            ByteArray::empty(),
+            EvmByteArray::<D::Element>::empty(),
             context,
             program.byte_len(),
         );
@@ -1391,6 +1703,11 @@ fn execute_inner(
 
 #[cfg(test)]
 mod tests {
+    use crate::analysis::transfer::ExecutionFrontier;
+    use crate::domain::ValueAlgebra;
+    use crate::world::Entry;
+    use crate::world::World;
+
     use super::*;
     use crate::{Fork, world::Account};
 
@@ -1404,7 +1721,7 @@ mod tests {
         let entry = Entry::new(owner);
         let config = ExecutionConfig::default();
         let domain = config.domain().unwrap();
-        let input = initial(&world, &entry, domain).unwrap();
+        let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
         for cancelled in [false, true] {
             let control = crate::analysis::control::Control::new(Default::default());
             let (result, budget) = control.scope(|| {
@@ -1417,7 +1734,8 @@ mod tests {
                     &entry,
                     input.clone(),
                     &config,
-                    domain,
+                    ValueAlgebra::new(&domain),
+                    &crate::analysis::RecentDistinctJumps,
                     &mut budget,
                     StorageReadPolicy::Abstract,
                 );
@@ -1459,7 +1777,7 @@ mod tests {
         let entry = Entry::new(owner);
         let config = ExecutionConfig::default();
         let domain = config.domain().unwrap();
-        let mut payload = initial(&world, &entry, domain).unwrap();
+        let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
         // Exercise the defensive evidence boundary directly: ordinary validated
         // delegation facts normally provide the marker bytes at resolution.
         let frame = payload.active_mut();
@@ -1471,7 +1789,8 @@ mod tests {
             &entry,
             payload,
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut WorkBudget::new(config.max_work),
             StorageReadPolicy::Abstract,
         );

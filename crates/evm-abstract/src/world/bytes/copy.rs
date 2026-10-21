@@ -1,24 +1,26 @@
 //! COPY keeps a complete checked root and a separate, bounded presentation.
 
-use super::{ByteArray, COPY_FACT_LIMIT, RangeError, limits, zero};
+use super::{
+    COPY_FACT_LIMIT, EvmByteArray, RangeError, limits, ranges::numeric_singleton, zero_with,
+};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    AbstractValue, Domain,
+    EvmValue,
     provenance::MAX_ORIGINS,
     symbolic::{ByteStateKind, ExprError},
 };
 use alloy_primitives::U256;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn bounds(value: &AbstractValue) -> (U256, U256) {
-    value
-        .singleton()
-        .map_or_else(|| value.interval().unsigned_bounds(), |n| (n, n))
+fn bounds<N: WordElement>(value: &EvmValue<N>) -> (U256, U256) {
+    numeric_singleton(value).map_or_else(|| value.interval().unsigned_bounds(), |word| (word, word))
 }
 
 // Only literal leaves are display certificates. No retained expression, stale
 // cell or inactive implication is used to prove a number. The caller requires
 // an empty resulting operand/conditional context, including both snapshots.
-fn literal(array: &ByteArray, index: usize) -> Option<AbstractValue> {
+fn literal<N: WordElement>(array: &EvmByteArray<N>, index: usize) -> Option<EvmValue<N>> {
     let byte = match array.root.kind() {
         ByteStateKind::Zero => U256::ZERO,
         ByteStateKind::Exact(bytes) => U256::from(bytes.get(index).copied().unwrap_or(0)),
@@ -27,37 +29,40 @@ fn literal(array: &ByteArray, index: usize) -> Option<AbstractValue> {
         } => {
             // Use the captured root length, never the expandable wrapper.
             if U256::from(index) >= length.as_constant()? {
-                return Some(zero());
+                return Some(zero_with());
             }
             let at = bindings
                 .binary_search_by_key(&U256::from(index), |binding| binding.index)
                 .ok()?;
             let binding = &bindings[at];
             let byte = binding.value.as_constant()?;
-            if binding.numeric != *AbstractValue::constant(byte).numeric() {
+            if binding.numeric != EvmValue::<N>::constant(byte).numeric().observation() {
                 return None;
             }
             byte
         }
         _ => return None,
     };
-    (byte <= U256::from(255)).then(|| AbstractValue::constant(byte))
+    (byte <= U256::from(255)).then(|| EvmValue::<N>::constant(byte))
 }
 
-pub(super) fn project(
-    previous: &ByteArray,
-    source: &ByteArray,
-    destination: &AbstractValue,
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    complete: &ByteArray,
-) -> Result<BTreeMap<usize, AbstractValue>, RangeError> {
+pub(super) fn project<N: WordElement>(
+    previous: &EvmByteArray<N>,
+    source: &EvmByteArray<N>,
+    destination: &EvmValue<N>,
+    offset: &EvmValue<N>,
+    size: &EvmValue<N>,
+    complete: &EvmByteArray<N>,
+) -> Result<BTreeMap<usize, EvmValue<N>>, RangeError> {
     let (size_lo, size_hi) = bounds(size);
     let (dst_lo, dst_hi) = bounds(destination);
-    let starts = destination
-        .singleton()
+    // Prepared terms can locate candidate coordinates without certifying their
+    // displayed values. The independent numeric check below still owns that.
+    let destination_start = super::ranges::known_singleton(destination);
+    let source_start = super::ranges::known_singleton(offset);
+    let starts = destination_start
         .and_then(|at| usize::try_from(at).ok())
-        .zip(offset.singleton().and_then(|at| usize::try_from(at).ok()));
+        .zip(source_start.and_then(|at| usize::try_from(at).ok()));
     let mut old = previous.bytes.keys().take(COPY_FACT_LIMIT);
     let mut incoming = starts.map(|(_, start)| source.bytes.range(start..).take(COPY_FACT_LIMIT));
     let mut keys = BTreeSet::new();
@@ -96,7 +101,7 @@ pub(super) fn project(
             value
                 .expression()
                 .and_then(|term| term.as_constant())
-                .is_some_and(|literal| value.singleton() == Some(literal))
+                .is_some_and(|literal| numeric_singleton(value) == Some(literal))
         });
     let mut bytes = BTreeMap::new();
     for index in keys {
@@ -110,16 +115,16 @@ pub(super) fn project(
         } else if untouched {
             literal(previous, index)
         } else {
-            destination.singleton().and_then(|dst| {
+            destination_start.and_then(|dst| {
                 let delta = at.checked_sub(dst)?;
                 if delta >= size_lo {
                     return None;
                 }
-                let index = offset.singleton()?.checked_add(delta)?;
+                let index = source_start?.checked_add(delta)?;
                 literal(source, usize::try_from(index).ok()?)
             })
         };
-        bytes.insert(index, value.unwrap_or_else(AbstractValue::unknown_byte));
+        bytes.insert(index, value.unwrap_or_else(EvmValue::<N>::unknown_byte));
     }
     Ok(bytes)
 }
@@ -134,7 +139,7 @@ fn probes(entries: usize) -> usize {
     entries.min(height(entries).saturating_mul(12))
 }
 
-fn scalar_work(value: &AbstractValue) -> usize {
+fn scalar_work<N: WordElement>(value: &EvmValue<N>) -> usize {
     value
         .work_size()
         .saturating_add(value.expression().map_or_else(
@@ -153,8 +158,8 @@ struct SourceWork {
     nodes: usize,
 }
 
-impl From<&ByteArray> for SourceWork {
-    fn from(array: &ByteArray) -> Self {
+impl<N: WordElement> From<&EvmByteArray<N>> for SourceWork {
+    fn from(array: &EvmByteArray<N>) -> Self {
         Self {
             bytes: array.bytes.len(),
             operands: array.operands.len(),
@@ -166,12 +171,30 @@ impl From<&ByteArray> for SourceWork {
     }
 }
 
-fn work(
-    target: &ByteArray,
+fn work<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    target: &EvmByteArray<N>,
     source: SourceWork,
     ranges: usize,
     branches: usize,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
+) -> usize {
+    work_with_comparisons(
+        target,
+        source,
+        ranges,
+        branches,
+        limits(domain).max_nodes,
+        domain,
+    )
+}
+
+fn work_with_comparisons<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    target: &EvmByteArray<N>,
+    source: SourceWork,
+    ranges: usize,
+    branches: usize,
+    comparison_nodes: usize,
+    domain: AlgebraRef<'_, D>,
 ) -> usize {
     // Finite sets/expressions share handles; only bounded origin sets are deep
     // cloned. Numeric/provenance unions are componentwise, not capacity² tuples.
@@ -228,8 +251,7 @@ fn work(
         // policy-sized comparison shape without an unpaid census of keys.
         // State handles compare immutable IDs, never root histories.
         source.operands.saturating_mul(
-            limits(domain)
-                .max_nodes
+            comparison_nodes
                 .saturating_mul(2)
                 .saturating_add(1)
                 .saturating_mul(probes(facts).saturating_mul(2).saturating_add(4))
@@ -309,20 +331,20 @@ fn work(
         .saturating_add(projection)
 }
 
-fn alternatives(value: &AbstractValue) -> usize {
+fn alternatives<N: WordElement>(value: &EvmValue<N>) -> usize {
     value.constants().map_or(1, BTreeSet::len)
 }
 
-impl ByteArray {
+impl<N: WordElement> EvmByteArray<N> {
     /// Complete COPY fee, including the caller's captured source clone and the
     /// bounded presentation. No logical range or metadata discovery is scanned.
-    pub(crate) fn copy_work(
+    pub(crate) fn copy_work_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         source: &Self,
-        destination: &AbstractValue,
-        offset: &AbstractValue,
-        size: &AbstractValue,
-        domain: Domain,
+        destination: &EvmValue<N>,
+        offset: &EvmValue<N>,
+        size: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> usize {
         let ranges = scalar_work(&self.length)
             .saturating_add(scalar_work(destination))
@@ -337,14 +359,14 @@ impl ByteArray {
 
     /// Code sources are constructed after admission; lengths bound their exact
     /// maps, and the number of accounts bounds a possible selected source root.
-    pub(crate) fn copy_code_work(
+    pub(crate) fn copy_code_work_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         bytes: usize,
         accounts: usize,
-        destination: &AbstractValue,
-        offset: &AbstractValue,
-        size: &AbstractValue,
-        domain: Domain,
+        destination: &EvmValue<N>,
+        offset: &EvmValue<N>,
+        size: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> usize {
         let source = SourceWork {
             bytes,
@@ -386,21 +408,221 @@ impl ByteArray {
     /// CALL's requested allocation precedes COPY unless either size is proved
     /// zero. Quote only normalization for a zero request; an empty source still
     /// needs the complete target expansion/retention envelope.
-    pub(crate) fn copy_return_data_work(
+    pub(crate) fn copy_return_data_work_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         source: &Self,
-        destination: &AbstractValue,
-        requested: &AbstractValue,
-        domain: Domain,
+        destination: &EvmValue<N>,
+        requested: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> usize {
-        if requested.singleton() == Some(U256::ZERO) {
+        self.return_copy_work(
+            source,
+            destination,
+            requested,
+            limits(domain).max_nodes,
+            domain,
+        )
+    }
+
+    /// Prepare and fund the unchanged return-COPY body. Cached zero proofs,
+    /// key comparisons and native copies have separate paid census owners;
+    /// an ignored source never enters the zero-request native-copy inventory.
+    pub(crate) fn pay_return_copy_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        source: &Self,
+        destination: &EvmValue<N>,
+        requested: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, RangeError> {
+        use crate::resource::{CloneError, clone_payment::pay};
+        let funded = self
+            .return_copy_preparation(source, destination, requested, domain, budget)
+            .and_then(|work| pay(budget, work));
+        match funded {
+            Ok(()) => Ok(true),
+            Err(CloneError::Work) => Ok(false),
+            Err(CloneError::Cancelled) => Err(ExprError::Cancelled.into()),
+        }
+    }
+
+    fn return_copy_preparation<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        source: &Self,
+        destination: &EvmValue<N>,
+        requested: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<usize, crate::resource::CloneError> {
+        use crate::resource::clone_payment::{checkpoint, pay, value_work};
+        // Two cached finite/bit/interval zero checks and their fixed control
+        // work. This never invokes N::singleton, exports N, or scans a set.
+        pay(budget, 64)?;
+        let zero_request = super::ranges::known_singleton(requested) == Some(U256::ZERO);
+        checkpoint(budget)?;
+        let zero_source =
+            !zero_request && super::ranges::known_singleton(&source.length) == Some(U256::ZERO);
+        checkpoint(budget)?;
+        let normal = !zero_request && !zero_source;
+        let compare = normal && !self.operands.is_empty() && !source.operands.is_empty();
+        let mut comparison_nodes = limits(domain).max_nodes;
+        if compare {
+            let keys = self.operands.len().saturating_add(source.operands.len());
+            pay(budget, keys.saturating_add(1).saturating_mul(4))?;
+            comparison_nodes = 1;
+            for key in self.operands.keys().chain(source.operands.keys()) {
+                checkpoint(budget)?;
+                comparison_nodes = comparison_nodes.max(key.nodes());
+                #[cfg(test)]
+                return_payment_tests::key_seen(&budget.cancellation());
+            }
+        }
+        checkpoint(budget)?;
+        let target_values = if zero_request {
+            0
+        } else {
+            self.bytes
+                .len()
+                .saturating_add(self.operands.len())
+                .saturating_add(2)
+        };
+        let source_values = if normal { source.operands.len() } else { 0 };
+        let items = target_values
+            .saturating_add(source_values)
+            .saturating_add(if zero_request { 2 } else { 3 });
+        pay(budget, items.saturating_add(1))?;
+        let mut native = 0usize;
+        if !zero_request {
+            // Only the first stage still contains these original values. The
+            // second array and its possibly new MSIZE are priced after range
+            // construction, using those actual objects.
+            for value in self
+                .bytes
+                .values()
+                .chain(self.operands.values())
+                .chain([&self.length, &self.default])
+            {
+                native = native.saturating_add(value_work(value, budget)?);
+            }
+            native = native.saturating_add(value_work(&self.length, budget)?);
+        }
+        if normal {
+            // import_empty and remember each copy a source value once; the
+            // normalized clean value is moved into its first map entry.
+            for value in source.operands.values() {
+                native = native.saturating_add(value_work(value, budget)?);
+            }
+        }
+        // Counts follow the existing nested normalizations: no-op request1/1,
+        // empty-source expansion2/2, full COPY5/2. Copies of new min/length
+        // values have a separate post-construction owner below.
+        let destination_copies = if zero_request {
+            1
+        } else if zero_source {
+            2
+        } else {
+            5
+        };
+        let requested_copies = if zero_request { 1 } else { 2 };
+        native = native
+            .saturating_add(value_work(destination, budget)?.saturating_mul(destination_copies))
+            .saturating_add(value_work(requested, budget)?.saturating_mul(requested_copies));
+        checkpoint(budget)?;
+        #[cfg(test)]
+        return_payment_tests::quote_started(budget.used());
+        let work = if compare {
+            self.return_copy_work(source, destination, requested, comparison_nodes, domain)
+        } else {
+            self.copy_return_data_work_with(source, destination, requested, domain)
+        }
+        .saturating_add(native);
+        checkpoint(budget)?;
+        Ok(work)
+    }
+
+    /// Price only the actual second-stage values. The original structural fee
+    /// already owns map/header/root work; its input retention bound cannot own
+    /// a clone of an opaque numeric value produced by expansion or minimum.
+    pub(super) fn pay_return_copy_stage_with(
+        &self,
+        copied: &EvmValue<N>,
+        source_offset: &EvmValue<N>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, RangeError> {
+        use crate::resource::{CloneError, clone_payment::pay};
+        let funded = self
+            .return_copy_stage_preparation(copied, source_offset, budget)
+            .and_then(|work| pay(budget, work));
+        match funded {
+            Ok(()) => Ok(true),
+            Err(CloneError::Work) => Ok(false),
+            Err(CloneError::Cancelled) => Err(ExprError::Cancelled.into()),
+        }
+    }
+
+    fn return_copy_stage_preparation(
+        &self,
+        copied: &EvmValue<N>,
+        source_offset: &EvmValue<N>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<usize, crate::resource::CloneError> {
+        use crate::resource::clone_payment::{checkpoint, pay, value_work};
+        checkpoint(budget)?;
+        if super::ranges::known_singleton(copied) == Some(U256::ZERO) {
+            return Ok(0);
+        }
+        // Cached counts precede the value scan and all declared-price
+        // callbacks. No expression/root traversal or numeric query bids.
+        pay(budget, self.cloned_value_count().saturating_add(4))?;
+        let mut work = 0usize;
+        for value in self
+            .bytes
+            .values()
+            .chain(self.operands.values())
+            .chain([&self.length, &self.default])
+        {
+            work = work.saturating_add(value_work(value, budget)?);
+        }
+        // The inner expansion can retain MSIZE once more. Its allocation
+        // arguments, then remember's clean value, copy the actual min3 and
+        // zero source-offset2 times. Insertion itself moves the clean N.
+        work = work
+            .saturating_add(value_work(&self.length, budget)?)
+            .saturating_add(value_work(copied, budget)?.saturating_mul(3))
+            .saturating_add(value_work(source_offset, budget)?.saturating_mul(2));
+        checkpoint(budget)?;
+        Ok(work)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prepared_return_copy_work_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        source: &Self,
+        destination: &EvmValue<N>,
+        requested: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<usize, crate::resource::CloneError> {
+        self.return_copy_preparation(source, destination, requested, domain, budget)
+    }
+
+    fn return_copy_work<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        source: &Self,
+        destination: &EvmValue<N>,
+        requested: &EvmValue<N>,
+        comparison_nodes: usize,
+        domain: AlgebraRef<'_, D>,
+    ) -> usize {
+        let zero = |value: &EvmValue<N>| super::ranges::known_singleton(value) == Some(U256::ZERO);
+        if zero(requested) {
             // Both normalizations still run, including numeric-only sources.
             return scalar_work(destination)
                 .saturating_add(scalar_work(requested))
                 .saturating_add(8)
                 .saturating_mul(4);
         }
-        if source.length.singleton() == Some(U256::ZERO) {
+        if zero(&source.length) {
             let ranges = scalar_work(requested)
                 .saturating_add(scalar_work(&self.length))
                 .saturating_add(scalar_work(destination))
@@ -420,7 +642,7 @@ impl ByteArray {
                 conditional_work: 0,
                 nodes: 0,
             };
-            return work(self, source, ranges, branches, domain);
+            return work_with_comparisons(self, source, ranges, branches, comparison_nodes, domain);
         }
         let ranges = scalar_work(requested)
             .saturating_add(scalar_work(&source.length))
@@ -432,12 +654,76 @@ impl ByteArray {
             .saturating_mul(alternatives(destination))
             .saturating_mul(alternatives(requested))
             .saturating_mul(alternatives(&source.length));
-        work(self, source.into(), ranges, branches, domain)
-            .saturating_add(self.metadata_len().saturating_mul(12 + MAX_ORIGINS + 4))
+        work_with_comparisons(
+            self,
+            source.into(),
+            ranges,
+            branches,
+            comparison_nodes,
+            domain,
+        )
+        .saturating_add(self.metadata_len().saturating_mul(12 + MAX_ORIGINS + 4))
     }
 }
 
 #[cfg(test)]
 mod canonical_tests;
 #[cfg(test)]
+mod return_payment_tests;
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+impl EvmByteArray<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn copy_work(
+        &self,
+        source: &Self,
+        destination: &EvmValue<crate::domain::NumericValue>,
+        offset: &EvmValue<crate::domain::NumericValue>,
+        size: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> usize {
+        self.copy_work_with(
+            source,
+            destination,
+            offset,
+            size,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn copy_code_work(
+        &self,
+        bytes: usize,
+        accounts: usize,
+        destination: &EvmValue<crate::domain::NumericValue>,
+        offset: &EvmValue<crate::domain::NumericValue>,
+        size: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> usize {
+        self.copy_code_work_with(
+            bytes,
+            accounts,
+            destination,
+            offset,
+            size,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn copy_return_data_work(
+        &self,
+        source: &Self,
+        destination: &EvmValue<crate::domain::NumericValue>,
+        requested: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> usize {
+        self.copy_return_data_work_with(
+            source,
+            destination,
+            requested,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+}

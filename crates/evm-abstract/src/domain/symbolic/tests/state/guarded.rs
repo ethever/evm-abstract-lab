@@ -5,7 +5,7 @@ use super::{
     ByteStateId, ByteStateKind, ByteView, ExprId, ExprKind, GraphLimits, SlotStateId, SourceId,
     StateError, StateLimits, SymbolicGraph, SymbolicGraphNode, c, limits,
 };
-use crate::domain::NumericValue;
+use crate::domain::WordObservation;
 use alloy_primitives::U256;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -375,7 +375,7 @@ fn shared_observations_do_not_merge_source_namespaces_snapshots_old_writes_or_co
         let binding = StateBinding {
             index: U256::ZERO,
             value: c(7),
-            numeric: NumericValue::constant(U256::from(7)),
+            numeric: WordObservation::constant(U256::from(7)),
         };
         oracle
             .bytes

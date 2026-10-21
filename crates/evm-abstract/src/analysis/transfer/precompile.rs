@@ -2,15 +2,18 @@
 //! inputs have a pure, coarse Return/Revert/Failure summary. Admission reserves
 //! retained representation work, never the symbolic logical length or EVM gas.
 
-use super::{Execution, TransferContext, boundary, calls::finish};
+use crate::domain::EvmNumericAlgebra;
+
+use super::{EvmExecution, TransferContext, boundary, calls::finish};
+
 use crate::{
     Fork,
     analysis::{FrontierReason, OutcomeKind},
     domain::{
-        AbstractValue, Domain,
-        symbolic::{ByteStateKind, ExprId, ExprLimits, StateError},
+        AlgebraRef, EvmValue,
+        symbolic::{ByteStateKind, ByteView, ExprId, ExprLimits, StateError},
     },
-    world::{ByteArray, RangeError},
+    world::{EvmByteArray, RangeError},
 };
 use alloy_primitives::{Address, U256};
 use revm_precompile::{
@@ -23,6 +26,10 @@ use revm_precompile::{
 const MAX_EXACT_PRECOMPILE_WORK: usize = 16 * 1024 * 1024;
 const MAX_MATERIALIZATION_WORK: usize = 16 * 1024 * 1024;
 
+#[cfg(test)]
+mod completion_tests;
+#[cfg(test)]
+mod query_tests;
 mod root;
 #[cfg(test)]
 mod tests;
@@ -80,22 +87,22 @@ fn cost(address: Address, input: &[u8], max_bytes: usize) -> Option<usize> {
     Some(bytes.saturating_mul(multiplier))
 }
 
-pub(super) fn execute(
-    result: &mut Execution,
+pub(super) fn execute<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
     fork: Fork,
     address: Address,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) {
     execute_with(result, fork, address, context, |native, input| {
         native.execute(input, u64::MAX, 0)
     });
 }
 
-fn execute_with(
-    result: &mut Execution,
+fn execute_with<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
     fork: Fork,
     address: Address,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     run_native: impl FnOnce(&Precompile, &[u8]) -> PrecompileResult,
 ) {
     let input = &result.payload.active().calldata;
@@ -152,15 +159,18 @@ fn execute_with(
 
 /// None selects a semantic envelope before an unaffordable optional extraction.
 /// Typed errors from actual work remain analysis boundaries.
-fn materialize(
-    input: &ByteArray,
-    context: &mut TransferContext<'_>,
+fn materialize<D: EvmNumericAlgebra>(
+    input: &EvmByteArray<D::Element>,
+    context: &mut TransferContext<'_, D>,
 ) -> Result<Option<Vec<u8>>, FrontierReason> {
-    let Some(length) = input
-        .len()
-        .singleton()
-        .and_then(|n| usize::try_from(n).ok())
-    else {
+    super::query::checkpoint(context.budget)?;
+    // A retained literal expression already proves this length. Reuse that
+    // independent proof before asking an opaque numeric element to rediscover it.
+    let length = match input.len().expression().and_then(ExprId::as_constant) {
+        Some(length) => Some(length),
+        None => super::query::singleton(input.len().numeric(), context.budget)?,
+    };
+    let Some(length) = length.and_then(|n| usize::try_from(n).ok()) else {
         return Ok(None);
     };
     if length > context.config.max_memory_bytes {
@@ -182,7 +192,13 @@ fn materialize(
         if !context.budget.charge(work) {
             return Err(FrontierReason::Work);
         }
-        let view = input.view();
+        // Reuse the paid length proof. `input.view()` would discover the same
+        // opaque singleton again while constructing its length expression.
+        let view = ByteView::new(
+            input.state_root().clone(),
+            ExprId::constant(U256::ZERO),
+            ExprId::constant(U256::from(length)),
+        );
         let limits = ExprLimits {
             max_nodes: length
                 .saturating_mul(input.state_root().nodes().saturating_add(2))
@@ -205,9 +221,14 @@ fn materialize(
             return Err(FrontierReason::Work);
         }
         let value = input
-            .read_byte_checked(&AbstractValue::constant(U256::from(index)), context.domain)
+            .read_byte_checked_with(
+                &EvmValue::<D::Element>::constant(U256::from(index)),
+                context.domain,
+            )
             .map_err(super::errors::bytes)?;
-        let Some(byte) = value.singleton().and_then(|n| u8::try_from(n).ok()) else {
+        let Some(byte) = super::query::singleton(value.numeric(), context.budget)?
+            .and_then(|n| u8::try_from(n).ok())
+        else {
             return Ok(None);
         };
         bytes.try_reserve(1).map_err(|_| FrontierReason::Memory)?;
@@ -216,11 +237,11 @@ fn materialize(
     Ok(Some(bytes))
 }
 
-fn success_data(
-    input: &ByteArray,
+fn success_data<D: EvmNumericAlgebra>(
+    input: &EvmByteArray<D::Element>,
     id: &PrecompileId,
-    domain: Domain,
-) -> Result<ByteArray, RangeError> {
+    domain: AlgebraRef<'_, D>,
+) -> Result<EvmByteArray<D::Element>, RangeError> {
     // Match semantic identifiers, so fork-specific native functions still use
     // the provider table. All pinned fixed-output variants are covered here.
     let length = match id {
@@ -229,14 +250,14 @@ fn success_data(
             // These native successes return either no bytes or a full word.
             // Slice accepts concrete sizes, so join the two complete buffers
             // instead of asking it to enumerate a numeric range of lengths.
-            let word = ByteArray::unknown_checked()?.slice(
-                &AbstractValue::constant(U256::ZERO),
-                &AbstractValue::constant(U256::from(32)),
+            let word = EvmByteArray::<D::Element>::unknown_checked()?.slice_with(
+                &EvmValue::<D::Element>::constant(U256::ZERO),
+                &EvmValue::<D::Element>::constant(U256::from(32)),
                 32,
                 domain,
             )?;
             let selector = ExprId::fresh().ok_or(StateError::IdentityExhausted)?;
-            return ByteArray::empty().join_guarded(
+            return EvmByteArray::<D::Element>::empty().join_guarded_with(
                 &word,
                 domain,
                 selector,
@@ -246,26 +267,35 @@ fn success_data(
         PrecompileId::Sha256
         | PrecompileId::Ripemd160
         | PrecompileId::Bn254Pairing
-        | PrecompileId::Bls12Pairing => AbstractValue::constant(U256::from(32)),
+        | PrecompileId::Bls12Pairing => EvmValue::<D::Element>::constant(U256::from(32)),
         PrecompileId::Bn254Add
         | PrecompileId::Bn254Mul
         | PrecompileId::Blake2F
-        | PrecompileId::KzgPointEvaluation => AbstractValue::constant(U256::from(64)),
+        | PrecompileId::KzgPointEvaluation => EvmValue::<D::Element>::constant(U256::from(64)),
         PrecompileId::Bls12G1Add | PrecompileId::Bls12G1Msm | PrecompileId::Bls12MapFpToGp1 => {
-            AbstractValue::constant(U256::from(128))
+            EvmValue::<D::Element>::constant(U256::from(128))
         }
         PrecompileId::Bls12G2Add | PrecompileId::Bls12G2Msm | PrecompileId::Bls12MapFp2ToGp2 => {
-            AbstractValue::constant(U256::from(256))
+            EvmValue::<D::Element>::constant(U256::from(256))
         }
         // In particular, pre-Osaka modexp's modulus length is not bounded by
         // max_memory_bytes. General/future variants get no invented byte cap.
-        _ => return ByteArray::unknown_checked(),
+        _ => return EvmByteArray::<D::Element>::unknown_checked(),
     };
-    ByteArray::unknown_checked()?.slice(&AbstractValue::constant(U256::ZERO), &length, 256, domain)
+    EvmByteArray::<D::Element>::unknown_checked()?.slice_with(
+        &EvmValue::<D::Element>::constant(U256::ZERO),
+        &length,
+        256,
+        domain,
+    )
 }
 
-fn summarize(result: &mut Execution, id: &PrecompileId, context: &mut TransferContext<'_>) {
-    // Outcomes retain only Store/data. An actual native root has no creation
+fn summarize<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    id: &PrecompileId,
+    context: &mut TransferContext<'_, D>,
+) {
+    // Outcomes retain only EvmStore/data. An actual native root has no creation
     // continuation, so its frames and relations need no completion copies.
     if root::applicable(&result.payload) {
         root::summarize(result, id, context);
@@ -274,6 +304,7 @@ fn summarize(result: &mut Execution, id: &PrecompileId, context: &mut TransferCo
     // Each of three alternatives retains at most four payload-sized copies:
     // input, completion receipt, resumed payload and output store/data. The
     // fixed allowance pays for fresh roots, one bounded slice and empty data.
+    // Actual native copies retain separate typed payers at their clone sites.
     // No logical bytes are enumerated, allocated or charged by this summary.
     let work = result
         .payload
@@ -285,11 +316,23 @@ fn summarize(result: &mut Execution, id: &PrecompileId, context: &mut TransferCo
         boundary(result, 0, FrontierReason::Work);
         return;
     }
+    // Identity's successful buffer owns a separate calldata clone, before
+    // any completion input is copied. Retention is not its native-copy price.
+    if matches!(id, PrecompileId::Identity)
+        && let Err(error) = result
+            .payload
+            .active()
+            .calldata
+            .pay_clone_with(context.budget)
+    {
+        boundary(result, 0, error.into());
+        return;
+    }
     // Construct and validate all buffers before publishing any alternative.
     let data = (|| {
         let returned = success_data(&result.payload.active().calldata, id, context.domain)?;
-        let reverted = ByteArray::unknown_checked()?;
-        let failed = ByteArray::empty();
+        let reverted = EvmByteArray::<D::Element>::unknown_checked()?;
+        let failed = EvmByteArray::<D::Element>::empty();
         let limits = context.domain.spec().relations().expressions();
         for data in [&returned, &reverted, &failed] {
             data.check_existing(limits)?;
@@ -311,8 +354,8 @@ fn summarize(result: &mut Execution, id: &PrecompileId, context: &mut TransferCo
     .into_iter()
     .zip(data)
     {
-        if context.budget.exhausted() || !context.budget.charge(0) {
-            boundary(result, 0, FrontierReason::Work);
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(result, 0, error.into());
             return;
         }
         // Native operations are pure; the call layer owns touch metadata and
@@ -321,11 +364,11 @@ fn summarize(result: &mut Execution, id: &PrecompileId, context: &mut TransferCo
     }
 }
 
-fn finish_native(
-    result: &mut Execution,
+fn finish_native<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
     address: Address,
     output: PrecompileResult,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) {
     if !context.budget.charge(0) {
         boundary(result, 0, FrontierReason::Work);
@@ -360,9 +403,13 @@ fn finish_native(
         boundary(result, 0, FrontierReason::Work);
         return;
     }
-    let data = ByteArray::exact(&bytes);
+    let data = EvmByteArray::<D::Element>::exact(&bytes);
     if let Err(error) = data.check_existing(context.domain.spec().relations().expressions()) {
         boundary(result, 0, super::errors::bytes(error));
+        return;
+    }
+    if let Err(error) = result.payload.pay_clone_with(context.budget) {
+        boundary(result, 0, error.into());
         return;
     }
     let payload = result.payload.clone();

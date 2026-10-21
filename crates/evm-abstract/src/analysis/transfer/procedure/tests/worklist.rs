@@ -9,7 +9,8 @@ fn duplicate_and_growing_inputs_park_each_resume_partition_with_its_current_boun
     config.use_summaries = true;
     config.analysis.relations.enabled = false;
     let domain = config.domain().unwrap();
-    let mut payload = super::super::super::initial(&world, &entry, domain).unwrap();
+    let mut payload =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     payload.active_mut().stack = vec![word(7), word(1)];
     payload.normalize();
     let mut table = Table::default();
@@ -17,18 +18,16 @@ fn duplicate_and_growing_inputs_park_each_resume_partition_with_its_current_boun
     let mut counters = Counters::default();
     let (root, success, failure);
     {
-        let mut solver = Solver {
-            table: &mut table,
-            world: &world,
-            entry: &entry,
-            config: &config,
-            domain,
-            budget: &mut budget,
-            counters: &mut counters,
-            storage_reads: StorageReadPolicy::Abstract,
-        };
+        let mut solver = table.solver(
+            &world,
+            &entry,
+            &config,
+            &mut budget,
+            &mut counters,
+            StorageReadPolicy::Abstract,
+        );
         let procedure = solver.procedure(payload.clone()).unwrap();
-        root = solver.table.procedures[procedure].entry;
+        root = solver.table.procedures[procedure].first_body();
         success = solver
             .enqueue(procedure, payload.clone(), Some(true), root)
             .unwrap();
@@ -50,7 +49,7 @@ fn duplicate_and_growing_inputs_park_each_resume_partition_with_its_current_boun
         assert_eq!(solver.table.nodes.len(), 3);
         assert_eq!(solver.table.nodes[success].updates, 1);
         assert_eq!(
-            solver.table.worklist.in_order().collect::<Vec<_>>(),
+            solver.runtime.pending_body().collect::<Vec<_>>(),
             [root, success, failure],
         );
     }
@@ -70,7 +69,7 @@ fn duplicate_and_growing_inputs_park_each_resume_partition_with_its_current_boun
     assert_eq!(record.transfers, 0);
     assert_eq!(execution.frontiers.len(), 3);
     assert_eq!(
-        table.worklist.pending().collect::<Vec<_>>(),
+        table.runtime.pending_body().collect::<Vec<_>>(),
         [success, failure],
     );
     let inputs = execution

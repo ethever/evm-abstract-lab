@@ -1,11 +1,13 @@
 //! Transaction-wide abstract states. A suspended caller is part of a state, not
 //! a separate analysis whose result is reused for unrelated call inputs.
 
+use crate::domain::WordElement;
+
 use super::{Config, ConfigError, Diagnostic, EdgeKind, Limit, Status};
 use crate::{
     bytecode::Program,
-    domain::{AbstractValue, Domain},
-    world::{AddressInput, ByteArray, Entry, Store, World},
+    domain::{EvmValue, NumericValue},
+    world::{AddressInput, EvmByteArray, EvmEntry, EvmStore, EvmWorld},
 };
 use alloy_primitives::{Address, B256, U256};
 use serde::{Serialize, Serializer};
@@ -16,17 +18,25 @@ mod evidence;
 pub(in crate::analysis) mod fixtures;
 mod frame;
 mod join;
+mod payload;
 mod range;
 mod stack;
 mod symbolic;
 
-pub use evidence::{ExecutionEvidence, InstructionProgress, InstructionValue};
-pub use frame::{ChildFrame, FrameState, RootFrame};
-pub(in crate::analysis) use frame::{Frame, FrameByteKind, FrameMapOrder};
-pub(crate) use join::EntryAlternatives;
+pub use evidence::{
+    EvmExecutionEvidence, EvmInstructionValue, ExecutionEvidence, InstructionProgress,
+    InstructionValue,
+};
+pub use frame::{
+    ChildFrame, EvmChildFrame, EvmFrame, EvmFrameState, EvmRootFrame, FrameState, RootFrame,
+};
+pub(in crate::analysis) use frame::{FrameByteKind, FrameMapOrder};
+pub(crate) use join::EvmEntryAlternatives;
 pub use join::{JoinBoundary, MachineError};
-pub use range::{ByteRangeBoundary, RangeKind, RangeRequest, RangeWitness};
-pub use stack::CallStack;
+pub use range::{
+    ByteRangeBoundary, EvmRangeRequest, EvmRangeWitness, RangeKind, RangeRequest, RangeWitness,
+};
+pub use stack::{CallStack, EvmCallStack};
 
 /// One shared budget covers the root and every callee.
 #[derive(Clone, Debug, Serialize)]
@@ -62,7 +72,7 @@ impl Default for ExecutionConfig {
 }
 
 impl ExecutionConfig {
-    pub(crate) fn domain(&self) -> Result<Domain, ConfigError> {
+    pub(crate) fn domain(&self) -> Result<crate::domain::Domain, ConfigError> {
         let (_, domain) = self.analysis.clone().validate()?.into_parts();
         if self.max_work == 0 || self.max_call_depth == 0 || self.max_memory_bytes == 0 {
             return Err(ConfigError::Budget);
@@ -98,7 +108,9 @@ pub struct FrameKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-/// Structural identity of the entire call stack; payload values join only within this identity.
+/// Structural projection of the complete call stack and executable code.
+/// The default policy uses this identity; injected policies own their actual
+/// keys and establish a covering representation before grouping inputs.
 pub struct MachineKey {
     /// Oldest caller first, active frame last.
     pub frames: Vec<FrameKey>,
@@ -108,13 +120,13 @@ pub struct MachineKey {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 /// Caller destination and requested output range retained while a child executes.
-pub struct Continuation {
+pub struct EvmContinuation<N: WordElement> {
     /// Resume block; calls at end of code resume at a synthetic empty block.
     pub return_block: Option<usize>,
     /// Caller memory destination for the returned prefix.
-    pub output_offset: AbstractValue,
+    pub output_offset: EvmValue<N>,
     /// Requested output length; bytes beyond actual returndata stay unchanged.
-    pub output_size: AbstractValue,
+    pub output_size: EvmValue<N>,
     /// CREATE/CREATE2 deploy at this address and resume with an address result.
     pub creation: Option<Address>,
 }
@@ -138,16 +150,16 @@ pub enum FrameCode {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 /// Abstract values for all frames and the shared transaction effects.
-pub struct MachinePayload {
+pub struct EvmMachinePayload<N: WordElement> {
     /// Nonempty execution stack with one root and typed nested children.
-    pub call_stack: CallStack,
+    pub call_stack: EvmCallStack<N>,
     /// Shared transaction effects; reverted frames restore their saved snapshot.
-    pub store: Store,
+    pub store: EvmStore<N>,
     /// Joint constraints for the scoped values in this transaction state.
     pub relations: crate::domain::relational::RelationState,
 }
 
-impl MachinePayload {
+impl<N: WordElement> EvmMachinePayload<N> {
     pub(crate) fn normalize(&mut self) {
         self.call_stack.forget_identities();
         for frame in self.call_stack.iter_mut() {
@@ -170,10 +182,10 @@ impl MachinePayload {
         }
     }
     /// Common execution data of the active root or child.
-    pub fn active(&self) -> &FrameState {
+    pub fn active(&self) -> &EvmFrameState<N> {
         self.call_stack.active()
     }
-    pub(crate) fn active_mut(&mut self) -> &mut FrameState {
+    pub(crate) fn active_mut(&mut self) -> &mut EvmFrameState<N> {
         self.call_stack.active_mut()
     }
 
@@ -193,31 +205,31 @@ impl MachinePayload {
 
 #[derive(Clone, Debug, Serialize)]
 /// A reachable basic-block instance in the transaction-wide worklist.
-pub struct MachineState {
+pub struct EvmMachineState<N: WordElement> {
     /// Stable index in WorldAnalysis::states().
     pub id: usize,
     /// Structural identity used by the worklist.
     pub key: MachineKey,
     /// Joined abstract input payload for this structural state.
-    pub entry: MachinePayload,
+    pub entry: EvmMachinePayload<N>,
     /// Common payload after executed instructions and before control dispatch.
-    pub exit: Option<MachinePayload>,
+    pub exit: Option<EvmMachinePayload<N>>,
     /// Active stack after the last transfer, with deferred call results still absent.
-    pub exit_stack: Vec<AbstractValue>,
+    pub exit_stack: Vec<EvmValue<N>>,
     /// Instruction offsets actually visited in the last transfer.
     pub executed_pcs: Vec<usize>,
     /// Receipt for the latest transfer; stale after its entry changes.
     #[serde(skip)]
-    pub(crate) execution_evidence: Option<ExecutionEvidence>,
+    pub(crate) execution_evidence: Option<EvmExecutionEvidence<N>>,
     /// Call result partition retained only at its immediate continuation entry.
     /// It changes scheduling precision, not the public EVM frame identity.
     #[serde(skip)]
     pub(crate) resume_status: Option<bool>,
 }
 
-impl MachineState {
+impl<N: WordElement> EvmMachineState<N> {
     /// Phase and edge evidence for partial SSA, if this node was executed.
-    pub fn execution_evidence(&self) -> Option<&ExecutionEvidence> {
+    pub fn execution_evidence(&self) -> Option<&EvmExecutionEvidence<N>> {
         self.execution_evidence.as_ref()
     }
 
@@ -320,7 +332,7 @@ pub enum FrontierReason {
 
 #[derive(Clone, Debug, Serialize)]
 /// A path left unexpanded with its location and explicit resource or model reason.
-pub struct MachineFrontier {
+pub struct EvmMachineFrontier<N: WordElement> {
     /// Source state, or no source for the initial/pending worklist frontier.
     pub from: Option<usize>,
     /// Unexpanded structural state, when an identity is available.
@@ -330,11 +342,11 @@ pub struct MachineFrontier {
     /// Typed explanation for incomplete coverage.
     pub reason: FrontierReason,
     /// Conditional pre-effect evidence for a range boundary, when applicable.
-    pub range: Option<RangeWitness>,
+    pub range: Option<EvmRangeWitness<N>>,
     /// Complete incoming state left outside an entry join. Its immutable roots
     /// keep values, path conditions and rollback snapshots paired.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub payload: Option<std::sync::Arc<MachinePayload>>,
+    pub payload: Option<std::sync::Arc<EvmMachinePayload<N>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -350,38 +362,38 @@ pub enum OutcomeKind {
 
 #[derive(Clone, Debug, Serialize)]
 /// A possible outermost completion, including returndata and committed or restored effects.
-pub struct MachineOutcome {
+pub struct EvmMachineOutcome<N: WordElement> {
     /// State producing this possible outermost outcome.
     pub state: usize,
     /// Control reason or outermost termination category.
     pub kind: OutcomeKind,
     /// Full RETURN or REVERT bytes; exceptional failure has empty data.
-    pub data: ByteArray,
+    pub data: EvmByteArray<N>,
     /// Shared transaction effects; reverted frames restore their saved snapshot.
-    pub store: Store,
+    pub store: EvmStore<N>,
 }
 
 /// One numerical output of a caller-independent procedure relation.
 /// Templates are instantiated with independent symbolic state roots before execution.
 #[derive(Clone, Debug, Serialize)]
-pub struct ProcedureSummaryOutput {
+pub struct EvmProcedureSummaryOutput<N: WordElement> {
     /// Relative frame termination; failure effects are rolled back at each caller.
     pub kind: OutcomeKind,
     /// Bound on full return or revert data.
-    pub data: ByteArray,
+    pub data: EvmByteArray<N>,
     /// Bound on transaction effects at completion.
-    pub store: Store,
+    pub store: EvmStore<N>,
 }
 
 /// A procedure participating in the joint known/unknown fixed point.
 #[derive(Clone, Debug, Serialize)]
-pub struct ProcedureSummary {
+pub struct EvmProcedureSummary<N: WordElement> {
     /// Executable and context shape, independent of suspended caller stacks.
     pub frame: FrameKey,
     /// Whole-store numerical input invariant, including transient and lifecycle state.
-    pub input: Store,
+    pub input: EvmStore<N>,
     /// Growing output alternatives by termination category.
-    pub outputs: Vec<ProcedureSummaryOutput>,
+    pub outputs: Vec<EvmProcedureSummaryOutput<N>>,
     /// Procedures whose output growth replays retained return continuations.
     pub dependencies: Vec<usize>,
     /// Number of strict input expansions.
@@ -403,7 +415,7 @@ pub enum ProcedureSummaryKind {
 
 /// Coverage evidence for an entry and its recursive procedure system.
 #[derive(Clone, Debug, Serialize)]
-pub struct ProcedureSummaryRecord {
+pub struct EvmProcedureSummaryRecord<N: WordElement> {
     /// Main machine node whose execution requested this relation.
     pub source_state: usize,
     /// Actual source of the abstraction; known runtime remains known runtime.
@@ -413,7 +425,7 @@ pub struct ProcedureSummaryRecord {
     /// Every whole-payload invariant and dependency has stabilized, without a frontier.
     pub closed: bool,
     /// Known bytecode and unknown procedures solved together.
-    pub procedures: Vec<ProcedureSummary>,
+    pub procedures: Vec<EvmProcedureSummary<N>>,
     /// Relative block states retained by the shared worklist.
     pub state_count: usize,
     /// Metered block/environment transfers performed for this request.
@@ -428,30 +440,30 @@ pub struct ProcedureSummaryRecord {
 /// Replay shares retained reports while staging graph changes, never appending,
 /// and drops one owner before ordinary execution resumes. These report roots
 /// never supply executable procedure inputs or outputs.
-#[derive(Debug, Default)]
-pub(super) struct ProcedureEvidence(Arc<Vec<ProcedureSummaryRecord>>);
+#[derive(Debug)]
+pub(super) struct EvmProcedureEvidence<N: WordElement>(Arc<Vec<EvmProcedureSummaryRecord<N>>>);
 
-impl Clone for ProcedureEvidence {
+impl<N: WordElement> Clone for EvmProcedureEvidence<N> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
 }
 
-impl ProcedureEvidence {
-    fn as_slice(&self) -> &[ProcedureSummaryRecord] {
+impl<N: WordElement> EvmProcedureEvidence<N> {
+    fn as_slice(&self) -> &[EvmProcedureSummaryRecord<N>] {
         self.0.as_slice()
     }
 
-    pub(super) fn push(&mut self, record: ProcedureSummaryRecord) {
+    pub(super) fn push(&mut self, record: EvmProcedureSummaryRecord<N>) {
         // Replay never appends. Requiring the unique writer prevents an
-        // accidental copy-on-write clone of every retained Store and buffer.
+        // accidental copy-on-write clone of every retained store and buffer.
         Arc::get_mut(&mut self.0)
             .expect("procedure evidence is appended outside replay staging")
             .push(record);
     }
 }
 
-impl Serialize for ProcedureEvidence {
+impl<N: WordElement> Serialize for EvmProcedureEvidence<N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.as_slice().serialize(serializer)
     }
@@ -459,32 +471,32 @@ impl Serialize for ProcedureEvidence {
 
 #[derive(Clone, Debug, Serialize)]
 /// Read-only transaction-wide graph, effects, diagnostics and incomplete frontiers.
-pub struct WorldAnalysis {
-    pub(crate) world: World,
-    pub(crate) entry: Entry,
+pub struct EvmWorldAnalysis<N: WordElement> {
+    pub(crate) world: EvmWorld<N>,
+    pub(crate) entry: EvmEntry<N>,
     pub(crate) config: ExecutionConfig,
     pub(crate) schema_version: u16,
     pub(crate) domain_spec: crate::domain::DomainSpec,
-    pub(crate) states: Vec<MachineState>,
+    pub(crate) states: Vec<EvmMachineState<N>>,
     pub(crate) edges: Vec<MachineEdge>,
     pub(crate) diagnostics: Vec<Diagnostic>,
-    pub(crate) frontiers: Vec<MachineFrontier>,
-    pub(crate) outcomes: Vec<MachineOutcome>,
+    pub(crate) frontiers: Vec<EvmMachineFrontier<N>>,
+    pub(crate) outcomes: Vec<EvmMachineOutcome<N>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) root_terminal_coverage: Option<super::RootTerminalCoverage>,
+    pub(crate) root_terminal_coverage: Option<super::EvmRootTerminalCoverage<N>>,
     pub(crate) status: Status,
     pub(crate) transfers: usize,
     pub(crate) work: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) rpc_acquisition: Option<super::RpcAcquisition>,
     pub(crate) summary_stats: super::summary::SummaryStats,
-    pub(crate) summaries: Vec<super::summary::SummaryRecord>,
-    pub(super) procedure_summaries: ProcedureEvidence,
+    pub(crate) summaries: Vec<super::summary::EvmSummaryRecord<N>>,
+    pub(super) procedure_summaries: EvmProcedureEvidence<N>,
 }
 
-impl WorldAnalysis {
+impl<N: WordElement> EvmWorldAnalysis<N> {
     /// Separately prepaid terminal relation for the original entered root.
-    pub fn root_terminal_coverage(&self) -> Option<&super::RootTerminalCoverage> {
+    pub fn root_terminal_coverage(&self) -> Option<&super::EvmRootTerminalCoverage<N>> {
         self.root_terminal_coverage.as_ref()
     }
     /// Cumulative discovery evidence when this result was acquired through RPC.
@@ -501,19 +513,19 @@ impl WorldAnalysis {
         &self.summary_stats
     }
     /// Complete callee certificates and observed reuse sites.
-    pub fn summaries(&self) -> &[super::summary::SummaryRecord] {
+    pub fn summaries(&self) -> &[super::summary::EvmSummaryRecord<N>] {
         &self.summaries
     }
     /// Whole-state closure evidence for the unknown/known procedure worklist.
-    pub fn procedure_summaries(&self) -> &[ProcedureSummaryRecord] {
+    pub fn procedure_summaries(&self) -> &[EvmProcedureSummaryRecord<N>] {
         self.procedure_summaries.as_slice()
     }
     /// Fixed input world, including fork and snapshot provenance.
-    pub fn world(&self) -> &World {
+    pub fn world(&self) -> &EvmWorld<N> {
         &self.world
     }
     /// Supplied outermost execution context.
-    pub fn entry(&self) -> &Entry {
+    pub fn entry(&self) -> &EvmEntry<N> {
         &self.entry
     }
     /// Shared precision and resource parameters.
@@ -521,7 +533,7 @@ impl WorldAnalysis {
         &self.config
     }
     /// Reachable context-sensitive machine states.
-    pub fn states(&self) -> &[MachineState] {
+    pub fn states(&self) -> &[EvmMachineState<N>] {
         &self.states
     }
     /// Observed intraprocedural, call and return transitions.
@@ -533,11 +545,11 @@ impl WorldAnalysis {
         &self.diagnostics
     }
     /// Paths not fully expanded; a nonempty list makes the result incomplete.
-    pub fn frontiers(&self) -> &[MachineFrontier] {
+    pub fn frontiers(&self) -> &[EvmMachineFrontier<N>] {
         &self.frontiers
     }
     /// Possible root returns, reverts and exceptional failures.
-    pub fn outcomes(&self) -> &[MachineOutcome] {
+    pub fn outcomes(&self) -> &[EvmMachineOutcome<N>] {
         &self.outcomes
     }
     /// Whether the worklist closed with no model or resource frontier.
@@ -551,5 +563,38 @@ impl WorldAnalysis {
     /// Consumed shared work units; never exceeds max_work.
     pub fn work(&self) -> usize {
         self.work
+    }
+}
+
+/// Default numeric assembly for [`EvmContinuation`].
+pub type Continuation = EvmContinuation<NumericValue>;
+
+/// Default numeric assembly for [`EvmMachinePayload`].
+pub type MachinePayload = EvmMachinePayload<NumericValue>;
+
+/// Default numeric assembly for [`EvmMachineState`].
+pub type MachineState = EvmMachineState<NumericValue>;
+
+/// Default numeric assembly for [`EvmMachineFrontier`].
+pub type MachineFrontier = EvmMachineFrontier<NumericValue>;
+
+/// Default numeric assembly for [`EvmMachineOutcome`].
+pub type MachineOutcome = EvmMachineOutcome<NumericValue>;
+
+/// Default numeric assembly for [`EvmProcedureSummaryOutput`].
+pub type ProcedureSummaryOutput = EvmProcedureSummaryOutput<NumericValue>;
+
+/// Default numeric assembly for [`EvmProcedureSummary`].
+pub type ProcedureSummary = EvmProcedureSummary<NumericValue>;
+
+/// Default numeric assembly for [`EvmProcedureSummaryRecord`].
+pub type ProcedureSummaryRecord = EvmProcedureSummaryRecord<NumericValue>;
+
+/// Default numeric assembly for [`EvmWorldAnalysis`].
+pub type WorldAnalysis = EvmWorldAnalysis<NumericValue>;
+
+impl<N: WordElement> Default for EvmProcedureEvidence<N> {
+    fn default() -> Self {
+        Self(Arc::new(Vec::new()))
     }
 }

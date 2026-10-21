@@ -4,14 +4,16 @@
 //! Both retain this same representation policy, so reprojection cannot restore
 //! erased guarantees or leave coarse mode. Callers own admission and publication.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use super::{
-    Domain, MachineError, MachinePayload, PayloadSummary, WorkBudget, instantiate, join,
-    stack_alias::StackAliases,
+    AlgebraRef, EvmMachinePayload, EvmPayloadSummary, EvmValue, MachineError, WorkBudget,
+    instantiate, join, stack_alias::StackAliases,
 };
 
 #[derive(Clone)]
-pub(in crate::analysis) struct BoundedState {
-    layout: PayloadSummary,
+pub(in crate::analysis) struct EvmBoundedState<N: WordElement> {
+    layout: EvmPayloadSummary<N>,
     coarse: bool,
 }
 
@@ -27,9 +29,9 @@ pub(in crate::analysis) fn reserve(
     }
 }
 
-pub(super) fn erase_guarantees(
-    mut summary: PayloadSummary,
-) -> Result<PayloadSummary, MachineError> {
+pub(super) fn erase_guarantees<N: WordElement>(
+    mut summary: EvmPayloadSummary<N>,
+) -> Result<EvmPayloadSummary<N>, MachineError> {
     summary.storage_observations = Default::default();
     for frame in &mut summary.frames {
         frame.stack_aliases = StackAliases::form(&frame.stack, false)?;
@@ -38,28 +40,27 @@ pub(super) fn erase_guarantees(
     Ok(summary)
 }
 
-fn restrict(
-    mut summary: PayloadSummary,
-    layout: &PayloadSummary,
-    domain: Domain,
-) -> PayloadSummary {
-    summary.store = summary.store.project_to_layout(&layout.store, domain);
+fn restrict<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    mut summary: EvmPayloadSummary<N>,
+    layout: &EvmPayloadSummary<N>,
+    domain: AlgebraRef<'_, D>,
+) -> EvmPayloadSummary<N> {
+    summary.store = summary.store.project_to_layout_with(&layout.store, domain);
     for (frame, shape) in summary.frames.iter_mut().zip(&layout.frames) {
         for (bytes, shape) in frame.byte_arrays_mut().into_iter().zip(shape.byte_arrays()) {
-            *bytes = bytes.project_to_layout(shape, domain);
+            *bytes = bytes.project_to_layout_with(shape, domain);
         }
         frame.saved_store = frame
             .saved_store
-            .project_to_layout(&shape.saved_store, domain);
+            .project_to_layout_with(&shape.saved_store, domain);
     }
     summary
 }
 
-fn coarse(mut summary: PayloadSummary) -> PayloadSummary {
-    let scalar = |value: &mut crate::domain::AbstractValue| {
+fn coarse<N: WordElement>(mut summary: EvmPayloadSummary<N>) -> EvmPayloadSummary<N> {
+    let scalar = |value: &mut EvmValue<N>| {
         let (lower, upper) = value.interval().unsigned_bounds();
-        *value = crate::domain::AbstractValue::unsigned_range(lower, upper)
-            .expect("summary bounds are ordered");
+        *value = EvmValue::unsigned_range(lower, upper).expect("summary bounds are ordered");
     };
     summary.store = summary.store.forget_loop_numeric();
     for frame in &mut summary.frames {
@@ -76,14 +77,14 @@ fn coarse(mut summary: PayloadSummary) -> PayloadSummary {
     summary
 }
 
-impl BoundedState {
+impl<N: WordElement> EvmBoundedState<N> {
     /// The caller prepays construction and persistent retention. Self-projection
     /// bounds the layout itself instead of retaining an exact byte buffer solely
     /// for its coordinates. Coarse content never replaces these frozen keys.
-    pub(in crate::analysis) fn freeze(
-        layout: &PayloadSummary,
+    pub(in crate::analysis) fn freeze<D: EvmNumericAlgebra<Element = N>>(
+        layout: &EvmPayloadSummary<N>,
         coarse: bool,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<Self, MachineError> {
         Ok(Self {
             layout: erase_guarantees(restrict(layout.clone(), layout, domain))?,
@@ -100,15 +101,15 @@ impl BoundedState {
     }
 
     #[cfg(test)]
-    pub(in crate::analysis) fn layout(&self) -> &PayloadSummary {
+    pub(in crate::analysis) fn layout(&self) -> &EvmPayloadSummary<N> {
         &self.layout
     }
 
-    fn normalize(
+    fn normalize<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        summary: PayloadSummary,
-        domain: Domain,
-    ) -> Result<PayloadSummary, MachineError> {
+        summary: EvmPayloadSummary<N>,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmPayloadSummary<N>, MachineError> {
         MachineError::check_cancelled()?;
         let summary = restrict(summary, &self.layout, domain);
         let summary = if self.coarse {
@@ -122,14 +123,14 @@ impl BoundedState {
     /// Reserve the incoming normalization, joins, projection, persistent copy
     /// and equality traversal together. Feedback may widen the resulting union
     /// under this same reservation before materializing it.
-    pub(in crate::analysis) fn join(
+    pub(in crate::analysis) fn join<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        old: &PayloadSummary,
-        incoming: &PayloadSummary,
-        domain: Domain,
+        old: &EvmPayloadSummary<N>,
+        incoming: &EvmPayloadSummary<N>,
+        domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
         widen: bool,
-    ) -> Result<PayloadSummary, MachineError> {
+    ) -> Result<EvmPayloadSummary<N>, MachineError> {
         reserve(
             budget,
             self.work_size()
@@ -147,12 +148,12 @@ impl BoundedState {
     /// Consuming the policy stages a mode transition until its complete summary
     /// and independent roots succeed. The caller has prepaid normalization; each
     /// instantiation is reserved separately, including the one coarse fallback.
-    pub(in crate::analysis) fn materialize(
+    pub(in crate::analysis) fn materialize<D: EvmNumericAlgebra<Element = N>>(
         mut self,
-        summary: PayloadSummary,
-        domain: Domain,
+        summary: EvmPayloadSummary<N>,
+        domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
-    ) -> Result<(Self, PayloadSummary, MachinePayload), MachineError> {
+    ) -> Result<(Self, EvmPayloadSummary<N>, EvmMachinePayload<N>), MachineError> {
         let mut bound = self.normalize(summary, domain)?;
         reserve(budget, bound.work_size().saturating_mul(4))?;
         let payload = match instantiate(&bound, domain) {

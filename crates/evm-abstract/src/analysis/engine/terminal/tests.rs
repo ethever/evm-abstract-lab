@@ -3,14 +3,17 @@
 use super::*;
 use crate::{
     Fork,
-    analysis::{ChildFrame, Continuation, transfer},
+    analysis::{ChildFrame, Continuation},
     domain::{
         AbstractValue,
         symbolic::{ExprId, ExprKind, SlotStateId, SlotStateKind, SourceId, StateError},
     },
     world::{Account, Code, Existence},
 };
-use std::collections::BTreeMap;
+
+#[path = "../../../../tests/support/joint_witness.rs"]
+mod joint_witness;
+use joint_witness::JointWitness as JointInput;
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
@@ -72,61 +75,8 @@ fn ready(
 
 /// One narrow tuple witness assigns a shared source once. Unsupported graph
 /// forms decline the witness; numerical marginals cannot establish correlation.
-#[derive(Default)]
-struct JointInput {
-    words: BTreeMap<ExprId, U256>,
-    cells: BTreeMap<(SourceId, U256), U256>,
-}
-
 impl JointInput {
-    fn assign<K: Ord>(map: &mut BTreeMap<K, U256>, key: K, value: U256) -> bool {
-        match map.get(&key) {
-            Some(previous) => *previous == value,
-            None => {
-                map.insert(key, value);
-                true
-            }
-        }
-    }
-
-    fn expression(&mut self, expression: &ExprId, expected: U256) -> bool {
-        match expression.kind() {
-            ExprKind::Constant(value) => *value == expected,
-            ExprKind::Input(_) | ExprKind::Fresh(_) => {
-                Self::assign(&mut self.words, expression.clone(), expected)
-            }
-            ExprKind::SlotRead { state, key } => key
-                .as_constant()
-                .is_some_and(|key| self.slot(state, key, expected)),
-            _ => false,
-        }
-    }
-
-    fn slot(&mut self, state: &SlotStateId, key: U256, expected: U256) -> bool {
-        match state.kind() {
-            SlotStateKind::Zero => expected == U256::ZERO,
-            SlotStateKind::Input { source, bindings } => {
-                if let Some(binding) = bindings.iter().find(|binding| binding.index == key)
-                    && (!binding.numeric.contains(expected)
-                        || !self.expression(&binding.value, expected))
-                {
-                    return false;
-                }
-                Self::assign(&mut self.cells, (source.clone(), key), expected)
-            }
-            SlotStateKind::Store {
-                previous,
-                key: written,
-                value,
-            } => match written.as_constant() {
-                Some(written) if written == key => self.expression(value, expected),
-                Some(_) => self.slot(previous, key, expected),
-                None => false,
-            },
-            SlotStateKind::Ite { .. } => false,
-        }
-    }
-
+    // Private preparation probes require expression evidence even for singletons.
     fn storage(&mut self, store: &Store, owner: Address, expected: u64, domain: Domain) -> bool {
         let value = store.read_checked(owner, &word(8), domain).unwrap();
         let expected = U256::from(expected);
@@ -165,8 +115,16 @@ impl JointInput {
 fn capture_owns_the_actual_lifted_root_and_joint_return_effects() {
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
     let domain = config.domain().unwrap();
-    let original = transfer::initial(&world, &entry, domain).unwrap();
+    let original =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let unchanged = original.clone();
+    let exact = original
+        .store
+        .read_checked(address(3), &word(8), domain)
+        .unwrap();
+    assert_eq!(exact.singleton(), Some(U256::ZERO));
+    assert!(exact.expression().is_none());
+    assert!(!JointInput::default().storage(&original.store, address(3), 0, domain));
     let mut budget = WorkBudget::new(usize::MAX);
     let prepared = ready(&original, &world, &entry, &config, &facts, &mut budget).unwrap();
     let used = budget.used();
@@ -226,7 +184,9 @@ fn original_rollback_future_three_touch_and_static_data_share_one_input() {
         for is_static in [false, true] {
             let (world, entry, config, facts) = fixture(fork, is_static);
             let domain = config.domain().unwrap();
-            let original = transfer::initial(&world, &entry, domain).unwrap();
+            let original =
+                crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain)
+                    .unwrap();
             let coverage = ready(
                 &original,
                 &world,
@@ -305,7 +265,8 @@ fn static_return_covers_unlisted_owner_cleanup_under_one_input_valuation() {
         let d = address(0x998);
         assert!(!world.accounts().contains_key(&c));
         assert!(!world.accounts().contains_key(&d));
-        let original = transfer::initial(&world, &entry, domain).unwrap();
+        let original =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let unchanged = original.clone();
         let coverage = ready(
             &original,
@@ -392,7 +353,8 @@ fn static_return_covers_unlisted_owner_cleanup_under_one_input_valuation() {
 fn only_genuine_entry_shapes_and_real_identity_can_be_captured() {
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
     let domain = config.domain().unwrap();
-    let original = transfer::initial(&world, &entry, domain).unwrap();
+    let original =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut budget = WorkBudget::new(usize::MAX);
     assert!(matches!(
         prepare(
@@ -448,7 +410,12 @@ fn only_genuine_entry_shapes_and_real_identity_can_be_captured() {
 fn exact_total_fee_admits_and_fee_minus_one_declines_without_sticky_work() {
     for is_static in [false, true] {
         let (world, entry, config, facts) = fixture(Fork::Osaka, is_static);
-        let original = transfer::initial(&world, &entry, config.domain().unwrap()).unwrap();
+        let original = crate::analysis::transfer::procedure::testing::initial(
+            &world,
+            &entry,
+            config.domain().unwrap(),
+        )
+        .unwrap();
         let mut full = WorkBudget::new(usize::MAX);
         let prepared = ready(&original, &world, &entry, &config, &facts, &mut full).unwrap();
         let fee = full.used();
@@ -498,7 +465,12 @@ fn exact_total_fee_admits_and_fee_minus_one_declines_without_sticky_work() {
 #[test]
 fn prepaid_publish_survives_real_work_exhaustion_but_checks_payer_cancellation() {
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
-    let original = transfer::initial(&world, &entry, config.domain().unwrap()).unwrap();
+    let original = crate::analysis::transfer::procedure::testing::initial(
+        &world,
+        &entry,
+        config.domain().unwrap(),
+    )
+    .unwrap();
     let payer = Cancellation::new();
     let unrelated = Cancellation::new();
     unrelated.cancel();
@@ -537,7 +509,8 @@ fn prepaid_publish_survives_real_work_exhaustion_but_checks_payer_cancellation()
 fn checked_bytes_can_decline_after_paid_construction_without_mutating_input() {
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
     let domain = config.domain().unwrap();
-    let original = transfer::initial(&world, &entry, domain).unwrap();
+    let original =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let unchanged = original.clone();
     let mut budget = WorkBudget::new(usize::MAX);
     let cancellation = budget.cancellation();
@@ -579,7 +552,12 @@ fn raw_code_and_offline_label_growth_are_linear_fee_terms() {
         // World observations are immutable. Construct the intended code once
         // while retaining exactly the same balance, nonce and storage facts.
         let (world, entry, config, _) = fixture_with_code(Fork::Osaka, false, &"00".repeat(bytes));
-        let original = transfer::initial(&world, &entry, config.domain().unwrap()).unwrap();
+        let original = crate::analysis::transfer::procedure::testing::initial(
+            &world,
+            &entry,
+            config.domain().unwrap(),
+        )
+        .unwrap();
         for label_len in [8usize, 8192] {
             let facts = layers::StateFacts::new(layers::SnapshotId::offline("x".repeat(label_len)));
             let mut budget = WorkBudget::new(usize::MAX);
@@ -612,7 +590,8 @@ fn no_delete_finalizer_guard_funds_actual_owner_local_receipts() {
             }
             world.insert(address(0x400 + number), account).unwrap();
         }
-        let original = transfer::initial(&world, &entry, domain).unwrap();
+        let original =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let saved = &original.active().saved_store;
         let saved_shape = StoreShape::measure(saved.state()).unwrap();
         let owners = world.accounts().len() + 1;
@@ -655,7 +634,12 @@ fn no_delete_finalizer_guard_funds_actual_owner_local_receipts() {
 fn ordinary_small_root_preparation_fits_the_default_work_budget() {
     for is_static in [false, true] {
         let (world, entry, config, facts) = fixture(Fork::Osaka, is_static);
-        let original = transfer::initial(&world, &entry, config.domain().unwrap()).unwrap();
+        let original = crate::analysis::transfer::procedure::testing::initial(
+            &world,
+            &entry,
+            config.domain().unwrap(),
+        )
+        .unwrap();
         let mut budget = WorkBudget::new(config.max_work);
         assert!(ready(&original, &world, &entry, &config, &facts, &mut budget).is_ok());
         assert!(!budget.exhausted());

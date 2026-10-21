@@ -1,16 +1,23 @@
 //! CREATE/CREATE2 lifecycle. Initcode is a fresh frame of the shared machine;
 //! the destination's code remains empty until a successful RETURN installs it.
 
+use crate::domain::{EvmNumericAlgebra, SingletonProof, WordElement};
+
 use super::budget::{byte_work, maximum};
-use super::{Execution, Successor, TransferContext, boundary, touch_memory, zero};
+use super::{EvmExecution, EvmSuccessor, TransferContext, boundary, zero};
+use super::{candidates, query};
+
 use crate::{
     analysis::{
-        ChildFrame, Continuation, FrameCode, FrameKey, FrameState, FrontierReason, MachineEdgeKind,
-        MachinePayload, OutcomeKind,
+        EvmChildFrame, EvmContinuation, EvmFrameState, EvmMachinePayload, FrameCode, FrameKey,
+        FrontierReason, MachineEdgeKind, OutcomeKind,
     },
     bytecode::Program,
-    domain::AbstractValue,
-    world::{AddressInput, ByteArray, World},
+    domain::{
+        EvmValue,
+        symbolic::{ByteView, ExprId, ExprLimits},
+    },
+    world::{AddressInput, EvmByteArray, EvmWorld},
 };
 use alloy_primitives::{Address, U256, keccak256};
 use revm_bytecode::opcode;
@@ -39,23 +46,105 @@ pub enum CreationBoundary {
     ReservedAddress(Address),
 }
 
-fn incomplete(result: &mut Execution, pc: usize, reason: CreationBoundary) {
+fn incomplete<N: WordElement>(result: &mut EvmExecution<N>, pc: usize, reason: CreationBoundary) {
     boundary(result, pc, FrontierReason::Creation(reason));
 }
 
-fn immediate_failure(result: &mut Execution, mut payload: MachinePayload, next: usize) {
+fn write_balance_literal<N: WordElement>(
+    store: &mut crate::world::EvmStore<N>,
+    address: Address,
+    word: U256,
+) {
+    store.write_balance_with_truth(
+        address,
+        EvmValue::constant(word),
+        word.is_zero(),
+        !word.is_zero(),
+    );
+}
+
+/// Range admission already owns discovery. Allocation consumes the retained
+/// terms, literal certificates and finite views, including a negative answer,
+/// without asking the unchanged operands for another singleton.
+pub(super) fn expand_prepared<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
+) -> Result<(), FrontierReason> {
+    query::checkpoint(context.budget)?;
+    if size.expression().and_then(ExprId::as_constant) != Some(U256::ZERO) {
+        let length = result.payload.active().memory.len();
+        let (lower, upper) = length.interval().unsigned_bounds();
+        let independently_known = length.expression().and_then(ExprId::as_constant).is_some()
+            || length.constants().is_some_and(|values| values.len() == 1)
+            || length.known_bits().singleton().is_some()
+            || lower == upper;
+        if !independently_known
+            && let Some(word) = query::singleton(length.numeric(), context.budget)?
+        {
+            // Independent allocation also needs the unchanged old MSIZE.
+            // Retain its exact opaque answer without copying N. One constant
+            // leaf plus release of the previous term have their own owner.
+            let work = length
+                .expression()
+                .map_or(0, ExprId::work_size)
+                .saturating_add(2);
+            query::checkpoint(context.budget)?;
+            if work == usize::MAX || !context.budget.charge(work) {
+                return Err(FrontierReason::Work);
+            }
+            let expression = ExprId::constant(word);
+            query::checkpoint(context.budget)?;
+            result
+                .payload
+                .active_mut()
+                .memory
+                .retain_length_literal(expression);
+            query::checkpoint(context.budget)?;
+        }
+    }
+    let work = byte_work(
+        &[offset, size],
+        0,
+        result.payload.active().memory.work_size(),
+        context.domain,
+    );
+    if work == usize::MAX || !context.budget.charge(work) {
+        return Err(FrontierReason::Work);
+    }
+    query::checkpoint(context.budget)?;
+    result
+        .payload
+        .active_mut()
+        .memory
+        .expand_independent_with(
+            offset,
+            size,
+            context.config.max_memory_bytes,
+            context.domain,
+        )
+        .map_err(super::errors::bytes)?;
+    query::checkpoint(context.budget)
+}
+
+fn immediate_failure<N: WordElement>(
+    result: &mut EvmExecution<N>,
+    mut payload: EvmMachinePayload<N>,
+    next: usize,
+) {
     let caller = payload.active_mut();
     caller.stack.push(zero());
-    caller.returndata = ByteArray::empty();
+    caller.returndata = EvmByteArray::<N>::empty();
     caller.key.basic_block_index = next;
     payload.normalize();
-    result.successors.push(Successor {
+    result.successors.push(EvmSuccessor {
         payload,
         kind: MachineEdgeKind::Failure,
     });
 }
 
-fn reserved(world: &World, address: Address) -> bool {
+fn reserved<N: WordElement>(world: &EvmWorld<N>, address: Address) -> bool {
     let number = U256::from_be_slice(address.as_slice());
     (number > U256::ZERO
         && number
@@ -67,25 +156,114 @@ fn reserved(world: &World, address: Address) -> bool {
         || (world.fork() == crate::Fork::Osaka && number == U256::from(0x100))
 }
 
+/// A prefix can reject runtime code without materializing the unknown suffix.
+enum Materialized {
+    Bytes(Vec<u8>),
+    ForbiddenPrefix,
+    Unknown,
+}
+
+/// Consume the caller's existing extraction reservation and proved host extent.
+/// Constructing the view does not rediscover its numeric length.
+/// Each newly read opaque byte still needs its own independent query payment.
+fn materialize<D: EvmNumericAlgebra>(
+    data: &EvmByteArray<D::Element>,
+    length: usize,
+    forbidden_prefix: Option<u8>,
+    context: &mut TransferContext<'_, D>,
+) -> Result<Materialized, FrontierReason> {
+    query::checkpoint(context.budget)?;
+    data.check_existing(context.domain.spec().relations().expressions())
+        .map_err(super::errors::bytes)?;
+    let over_cap = length > context.config.max_memory_bytes;
+    if over_cap && forbidden_prefix.is_none() {
+        return Ok(Materialized::Unknown);
+    }
+    let view = ByteView::new(
+        data.state_root().clone(),
+        ExprId::constant(U256::ZERO),
+        ExprId::constant(U256::from(length)),
+    );
+    let limits = ExprLimits {
+        max_nodes: length
+            .saturating_mul(data.state_root().nodes().saturating_add(2))
+            .max(view.nodes()),
+        max_depth: data.state_root().depth().saturating_add(2),
+    };
+    if !over_cap {
+        let known = view.known_bytes(limits);
+        query::checkpoint(context.budget)?;
+        if let Some(bytes) = known.map_err(super::errors::expression)? {
+            return Ok(Materialized::Bytes(bytes));
+        }
+    }
+    let mut bytes = Vec::new();
+    // A forbidden first byte settles runtime rejection without extracting the
+    // unknown suffix, even above the full-buffer host cap. Reuse this actual
+    // byte's paid proof; the length proof cannot classify a different N.
+    let reads = if over_cap { 1 } else { length };
+    for index in 0..reads {
+        query::checkpoint(context.budget)?;
+        let value = data
+            .read_byte_checked_with(&EvmValue::constant(U256::from(index)), context.domain)
+            .map_err(super::errors::bytes)?;
+        query::checkpoint(context.budget)?;
+        let (_, mut proof) = candidates::prepare(&value, context.budget)?;
+        let Some(byte) = query::resolve(value.numeric(), &mut proof, context.budget)? else {
+            return Ok(Materialized::Unknown);
+        };
+        let Ok(byte) = u8::try_from(byte) else {
+            return Ok(Materialized::Unknown);
+        };
+        if index == 0 && forbidden_prefix == Some(byte) {
+            return Ok(Materialized::ForbiddenPrefix);
+        }
+        if over_cap {
+            return Ok(Materialized::Unknown);
+        }
+        bytes.push(byte);
+    }
+    Ok(Materialized::Bytes(bytes))
+}
+
 /// Suspend the caller and enter arbitrary concrete EVM initcode. Nonce bump
 /// precedes the child's savepoint: failed initcode keeps that bump, while an
 /// enclosing REVERT still restores it through the enclosing frame's savepoint.
-pub(super) fn create(
-    result: &mut Execution,
-    world: &World,
+pub(super) fn create<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    world: &EvmWorld<D::Element>,
     op: u8,
-    args: &[AbstractValue],
+    args: &[EvmValue<D::Element>],
     program: &Program,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) {
+    if let Err(reason) = create_prepared(result, world, op, args, program, context, pc) {
+        // Completed alternatives remain evidence for the original input:
+        // a later stop can follow a static-value fault, oversize initcode or
+        // an already completed gas-failure branch. Only the remaining path
+        // becomes a frontier; no partial child state is published after stop.
+        boundary(result, pc, reason);
+    }
+}
+
+fn create_prepared<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    world: &EvmWorld<D::Element>,
+    op: u8,
+    args: &[EvmValue<D::Element>],
+    program: &Program,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) -> Result<(), FrontierReason> {
     let config = context.config;
     let domain = context.domain;
     let next = result.payload.active().key.basic_block_index + 1;
     debug_assert!(next <= program.blocks().len());
-    let Some(sizes) = args[2].constants() else {
+    let (sizes, _) = candidates::prepare(&args[2], context.budget)?;
+    let Some(sizes) = sizes else {
         incomplete(result, pc, CreationBoundary::UnknownInitCode);
-        return;
+        return Ok(());
     };
     if sizes.iter().any(|size| *size > U256::from(49_152)) {
         // EIP-3860 oversize initcode faults the CREATE opcode's current frame.
@@ -96,106 +274,161 @@ pub(super) fn create(
         .filter(|size| **size <= U256::from(49_152))
         .copied()
         .collect();
-    let Some(memory_size) = sizes
+    let Some(mut memory_size) = sizes
         .iter()
         .copied()
-        .map(AbstractValue::constant)
+        .map(EvmValue::<D::Element>::constant)
         .reduce(|left, right| domain.join(&left, &right))
     else {
-        return;
+        return Ok(());
     };
-    let offsets = if sizes.iter().all(U256::is_zero) {
-        vec![U256::ZERO]
-    } else if let Some(offsets) = args[1].constants() {
-        offsets.iter().copied().collect()
+    let (offsets, offset_proof) = if sizes.iter().all(U256::is_zero) {
+        (vec![U256::ZERO], SingletonProof::NotQueried)
     } else {
-        incomplete(result, pc, CreationBoundary::UnknownInitCode);
-        return;
+        let (offsets, proof) = candidates::prepare(&args[1], context.budget)?;
+        let Some(offsets) = offsets else {
+            incomplete(result, pc, CreationBoundary::UnknownInitCode);
+            return Ok(());
+        };
+        (offsets.iter().copied().collect(), proof)
     };
-    if !touch_memory(result, &args[1], &memory_size, context, pc) {
-        return;
+    let size_proof = if sizes.len() == 1 {
+        // Carry the host literal into allocation too, rather than making the
+        // opaque element rediscover the word after range admission.
+        memory_size = memory_size.with_expression(ExprId::constant(sizes[0]));
+        SingletonProof::Answer(Some(sizes[0]))
+    } else {
+        SingletonProof::NotQueried
+    };
+    let proved_offset = if let SingletonProof::Answer(Some(word)) = offset_proof
+        && args[1].expression().and_then(ExprId::as_constant) != Some(word)
+    {
+        // Allocation's value API cannot consume SingletonProof directly. Keep
+        // the exact paid word on the same N as a literal term, with the copy
+        // reserved before construction rather than another numeric query.
+        query::checkpoint(context.budget)?;
+        let work = args[1].clone_work();
+        query::checkpoint(context.budget)?;
+        if work == usize::MAX || !context.budget.charge(work) {
+            return Err(FrontierReason::Work);
+        }
+        query::checkpoint(context.budget)?;
+        let value = args[1].clone().with_expression(ExprId::constant(word));
+        query::checkpoint(context.budget)?;
+        Some(value)
+    } else {
+        None
+    };
+    let memory_offset = proved_offset.as_ref().unwrap_or(&args[1]);
+    if !super::ranges::memory_after_queries(
+        result,
+        memory_offset,
+        &memory_size,
+        offset_proof,
+        size_proof,
+        context,
+        pc,
+    ) {
+        return Ok(());
     }
+    expand_prepared(result, memory_offset, &memory_size, context)?;
     // revm/Yellow-Paper depth starts at zero for the transaction entry. Child
     // depth equals the current frame count and must not exceed 1024.
     if result.payload.call_stack.depth() > 1024 {
         immediate_failure(result, result.payload.clone(), next);
-        return;
+        return Ok(());
     }
     if result.payload.call_stack.depth() >= config.max_call_depth {
         boundary(result, pc, FrontierReason::CallDepth);
-        return;
+        return Ok(());
     }
     // Abstract execution can carry an address expression beyond the fixed
     // environment vocabulary. Its storage namespace is not a concrete creator.
     let frame = result.payload.active();
     let caller_address = match &frame.address_operand {
-        Some(value) => value.singleton().map(super::address),
+        Some(value) => {
+            let (_, mut proof) = candidates::prepare(value, context.budget)?;
+            query::resolve(value.numeric(), &mut proof, context.budget)?.map(super::address)
+        }
         None => frame.key.address_value.as_concrete(),
     };
     let Some(caller_address) = caller_address else {
         incomplete(result, pc, CreationBoundary::UnknownCreator);
-        return;
+        return Ok(());
     };
     let nonce = result.payload.store.nonce(caller_address);
-    let Some(nonces) = nonce.constants() else {
+    let (nonces, _) = candidates::prepare(&nonce, context.budget)?;
+    let Some(nonces) = nonces else {
         incomplete(result, pc, CreationBoundary::UnknownNonce(caller_address));
-        return;
+        return Ok(());
     };
-    let Some(values) = args[0].constants() else {
+    let (values, _) = candidates::prepare(&args[0], context.budget)?;
+    let Some(values) = values else {
         incomplete(result, pc, CreationBoundary::UnknownEndowment);
-        return;
+        return Ok(());
     };
     let salts = if op == opcode::CREATE2 {
-        let Some(salts) = args[3].constants() else {
+        let (salts, _) = candidates::prepare(&args[3], context.budget)?;
+        let Some(salts) = salts else {
             incomplete(result, pc, CreationBoundary::UnknownSalt);
-            return;
+            return Ok(());
         };
         salts.iter().copied().collect::<Vec<_>>()
     } else {
         vec![U256::ZERO]
     };
     let balance = result.payload.store.read_balance(caller_address);
-    let balances = match balance.constants() {
-        Some(balances) => balances.iter().copied().map(Some).collect::<Vec<_>>(),
-        None if values.iter().all(U256::is_zero) => vec![None],
-        None => {
-            incomplete(result, pc, CreationBoundary::UnknownEndowment);
-            return;
+    let balances = if values.iter().all(U256::is_zero) {
+        // Zero endowment preserves the complete balance, including identities.
+        vec![None]
+    } else {
+        match candidates::prepare(&balance, context.budget)?.0 {
+            Some(balances) => balances.iter().copied().map(Some).collect::<Vec<_>>(),
+            None => {
+                incomplete(result, pc, CreationBoundary::UnknownEndowment);
+                return Ok(());
+            }
         }
     };
     for size in &sizes {
         for offset in &offsets {
             if !context.budget.charge(byte_work(
                 &[
-                    &AbstractValue::constant(*offset),
-                    &AbstractValue::constant(*size),
+                    &EvmValue::<D::Element>::constant(*offset),
+                    &EvmValue::<D::Element>::constant(*size),
                 ],
-                maximum(&AbstractValue::constant(*size)),
+                usize::try_from(*size).unwrap_or(usize::MAX),
                 result.payload.active().memory.work_size(),
                 domain,
             )) {
-                boundary(result, pc, FrontierReason::Work);
-                return;
+                return Err(FrontierReason::Work);
             }
-            let initcode = match result.payload.active().memory.slice(
-                &AbstractValue::constant(*offset),
-                &AbstractValue::constant(*size),
+            let initcode = match result.payload.active().memory.slice_with(
+                &EvmValue::<D::Element>::constant(*offset),
+                &EvmValue::<D::Element>::constant(*size),
                 config.max_memory_bytes,
                 domain,
             ) {
-                Ok(bytes) => match bytes.exact_bytes_bounded(config.max_memory_bytes) {
-                    Some(bytes) => bytes,
-                    None => {
-                        incomplete(result, pc, CreationBoundary::UnknownInitCode);
-                        continue;
+                Ok(bytes) => {
+                    match materialize(
+                        &bytes,
+                        usize::try_from(*size).expect("bounded initcode size"),
+                        None,
+                        context,
+                    )? {
+                        Materialized::Bytes(bytes) => bytes,
+                        Materialized::Unknown | Materialized::ForbiddenPrefix => {
+                            incomplete(result, pc, CreationBoundary::UnknownInitCode);
+                            continue;
+                        }
                     }
-                },
+                }
                 Err(error) => {
                     boundary(result, pc, super::errors::bytes(error));
                     continue;
                 }
             };
-            for nonce in nonces {
+            for nonce in nonces.iter() {
                 if *nonce > U256::from(u64::MAX) {
                     incomplete(result, pc, CreationBoundary::NonceOverflow(caller_address));
                     continue;
@@ -204,23 +437,22 @@ pub(super) fn create(
                     let mut payload = result.payload.clone();
                     payload
                         .store
-                        .write_nonce(caller_address, AbstractValue::constant(*nonce));
+                        .write_nonce(caller_address, EvmValue::<D::Element>::constant(*nonce));
                     immediate_failure(result, payload, next);
                     continue;
                 }
-                for value in values {
+                for value in values.iter() {
                     for balance in &balances {
                         if balance.is_some_and(|balance| *value > balance) {
                             let mut payload = result.payload.clone();
-                            payload
-                                .store
-                                .write_nonce(caller_address, AbstractValue::constant(*nonce));
-                            payload.store.write_balance(
+                            payload.store.write_nonce(
                                 caller_address,
-                                AbstractValue::constant(
-                                    balance
-                                        .expect("insufficient funds require an observed balance"),
-                                ),
+                                EvmValue::<D::Element>::constant(*nonce),
+                            );
+                            write_balance_literal(
+                                &mut payload.store,
+                                caller_address,
+                                balance.expect("insufficient funds require an observed balance"),
                             );
                             immediate_failure(result, payload, next);
                             continue;
@@ -233,8 +465,7 @@ pub(super) fn create(
                                     .saturating_add(initcode.len())
                                     .saturating_add(1),
                             ) {
-                                boundary(result, pc, FrontierReason::Work);
-                                return;
+                                return Err(FrontierReason::Work);
                             }
                             let destination = if op == opcode::CREATE {
                                 caller_address.create(nonce.to::<u64>())
@@ -244,17 +475,14 @@ pub(super) fn create(
                             };
                             let mut payload = result.payload.clone();
                             if let Some(balance) = balance {
-                                payload.store.write_balance(
-                                    caller_address,
-                                    AbstractValue::constant(*balance),
-                                );
+                                write_balance_literal(&mut payload.store, caller_address, *balance);
                             }
                             // The creator's nonce change survives a failed
                             // initcode child, but rolls back with its own frame.
                             payload.store.touch_account(caller_address);
                             payload.store.write_nonce(
                                 caller_address,
-                                AbstractValue::constant(*nonce + U256::from(1)),
+                                EvmValue::<D::Element>::constant(*nonce + U256::from(1)),
                             );
                             // Gas remains abstract, but insufficient initcode gas
                             // fails after the caller nonce has been incremented.
@@ -271,17 +499,15 @@ pub(super) fn create(
                             }
                             let destination_nonce = payload.store.nonce(destination);
                             let code = payload.store.raw_account_code(destination);
-                            if code.as_ref().is_some_and(|code| !code.is_empty())
-                                || destination_nonce.constants().is_some_and(|nonces| {
-                                    nonces.iter().all(|nonce| !nonce.is_zero())
-                                })
-                            {
+                            if code.as_ref().is_some_and(|code| !code.is_empty()) {
                                 // Either known fact alone proves a collision; the
                                 // other account observation need not be present.
                                 immediate_failure(result, payload, next);
                                 continue;
                             }
-                            let Some(destination_nonces) = destination_nonce.constants() else {
+                            let (destination_nonces, _) =
+                                candidates::prepare(&destination_nonce, context.budget)?;
+                            let Some(destination_nonces) = destination_nonces else {
                                 incomplete(
                                     result,
                                     pc,
@@ -289,6 +515,10 @@ pub(super) fn create(
                                 );
                                 continue;
                             };
+                            if destination_nonces.iter().all(|nonce| !nonce.is_zero()) {
+                                immediate_failure(result, payload, next);
+                                continue;
+                            }
                             let Some(code) = code else {
                                 incomplete(
                                     result,
@@ -314,14 +544,17 @@ pub(super) fn create(
                             let init_program = Program::decode_with_fork(&initcode, world.fork())
                                 .expect("EVM initcode with a non-EF first byte always decodes");
                             let recipient = payload.store.read_balance(destination);
-                            let recipients = match recipient.constants() {
-                                Some(balances) => {
-                                    balances.iter().copied().map(Some).collect::<Vec<_>>()
-                                }
-                                None if value.is_zero() => vec![None],
-                                None => {
-                                    incomplete(result, pc, CreationBoundary::UnknownEndowment);
-                                    continue;
+                            let recipients = if value.is_zero() {
+                                vec![None]
+                            } else {
+                                match candidates::prepare(&recipient, context.budget)?.0 {
+                                    Some(balances) => {
+                                        balances.iter().copied().map(Some).collect::<Vec<_>>()
+                                    }
+                                    None => {
+                                        incomplete(result, pc, CreationBoundary::UnknownEndowment);
+                                        continue;
+                                    }
                                 }
                             };
                             for recipient in recipients {
@@ -331,19 +564,18 @@ pub(super) fn create(
                                         immediate_failure(result, branch, next);
                                         continue;
                                     };
-                                    branch
-                                        .store
-                                        .write_balance(destination, AbstractValue::constant(total));
+                                    write_balance_literal(&mut branch.store, destination, total);
                                 }
                                 if let Some(balance) = balance {
-                                    branch.store.write_balance(
+                                    write_balance_literal(
+                                        &mut branch.store,
                                         caller_address,
-                                        AbstractValue::constant(*balance - *value),
+                                        *balance - *value,
                                     );
                                 }
                                 branch.store.begin_creation(destination);
-                                branch.call_stack.push_child(ChildFrame {
-                                    state: FrameState {
+                                branch.call_stack.push_child(EvmChildFrame {
+                                    state: EvmFrameState {
                                         key: FrameKey {
                                             mode: FrameCode::InitCode,
                                             code_address: destination,
@@ -359,24 +591,26 @@ pub(super) fn create(
                                         code: FrameCode::InitCode,
                                         program: Some(init_program.clone()),
                                         stack: Vec::new(),
-                                        memory: ByteArray::memory(),
-                                        calldata: ByteArray::empty(),
+                                        memory: EvmByteArray::<D::Element>::memory(),
+                                        calldata: EvmByteArray::<D::Element>::empty(),
                                         environment_calldata: false,
                                         address_operand: None,
                                         caller_operand: None,
-                                        returndata: ByteArray::empty(),
-                                        call_value: AbstractValue::constant(*value),
+                                        returndata: EvmByteArray::<D::Element>::empty(),
+                                        call_value: EvmValue::<D::Element>::constant(*value),
                                         saved_store: saved_store.clone(),
                                     },
-                                    continuation: Continuation {
+                                    continuation: EvmContinuation {
                                         return_block: Some(next),
                                         output_offset: zero(),
                                         output_size: zero(),
                                         creation: Some(destination),
                                     },
                                 });
+                                query::checkpoint(context.budget)?;
                                 branch.normalize();
-                                result.successors.push(Successor {
+                                query::checkpoint(context.budget)?;
+                                result.successors.push(EvmSuccessor {
                                     payload: branch,
                                     kind: MachineEdgeKind::Call,
                                 });
@@ -387,15 +621,17 @@ pub(super) fn create(
             }
         }
     }
+    query::checkpoint(context.budget)?;
+    Ok(())
 }
 
 /// Validate and deploy initcode's RETURN before normal frame completion. Invalid
 /// deployed code is child failure; unknown code leaves an explicit frontier.
-pub(super) fn finish_creation(
-    payload: &mut MachinePayload,
+pub(super) fn finish_creation<D: EvmNumericAlgebra>(
+    payload: &mut EvmMachinePayload<D::Element>,
     kind: &mut OutcomeKind,
-    data: &mut ByteArray,
-    context: &mut TransferContext<'_>,
+    data: &mut EvmByteArray<D::Element>,
+    context: &mut TransferContext<'_, D>,
     _pc: usize,
 ) -> Result<(), FrontierReason> {
     let Some(address) = payload
@@ -408,33 +644,37 @@ pub(super) fn finish_creation(
     if *kind != OutcomeKind::Return {
         return Ok(());
     }
-    if !context
-        .budget
-        .charge(data.work_size().saturating_add(maximum(data.len())))
-    {
+    let (lengths, mut proof) = candidates::prepare(data.len(), context.budget)?;
+    let work = data.work_size().saturating_add(maximum(lengths.as_ref()));
+    if work == usize::MAX || !context.budget.charge(work) {
         return Err(FrontierReason::Work);
     }
-    if data
-        .len()
-        .constants()
-        .is_some_and(|lengths| lengths.iter().all(|length| *length > U256::from(24_576)))
-        || data
-            .byte_at(0, context.domain)
-            .constants()
-            .is_some_and(|bytes| bytes.len() == 1 && bytes.contains(&U256::from(0xef)))
-    {
+    if lengths.is_some_and(|lengths| lengths.iter().all(|length| *length > U256::from(24_576))) {
         *kind = OutcomeKind::Failure;
-        *data = ByteArray::empty();
+        *data = EvmByteArray::<D::Element>::empty();
         return Ok(());
     }
-    let bytes = data
-        .exact_bytes_bounded(context.config.max_memory_bytes)
+    let length = query::resolve(data.len().numeric(), &mut proof, context.budget)?
+        .and_then(|length| usize::try_from(length).ok())
         .ok_or(FrontierReason::Creation(
             CreationBoundary::UnknownRuntimeCode,
         ))?;
+    let bytes = match materialize(data, length, Some(0xef), context)? {
+        Materialized::Bytes(bytes) => bytes,
+        Materialized::ForbiddenPrefix => {
+            *kind = OutcomeKind::Failure;
+            *data = EvmByteArray::<D::Element>::empty();
+            return Ok(());
+        }
+        Materialized::Unknown => {
+            return Err(FrontierReason::Creation(
+                CreationBoundary::UnknownRuntimeCode,
+            ));
+        }
+    };
     if bytes.len() > 24_576 || bytes.first() == Some(&0xef) {
         *kind = OutcomeKind::Failure;
-        *data = ByteArray::empty();
+        *data = EvmByteArray::<D::Element>::empty();
         return Ok(());
     }
     let runtime = Program::decode_with_fork(
@@ -449,12 +689,13 @@ pub(super) fn finish_creation(
     .expect("validated EVM runtime bytecode with a non-EF first byte always decodes");
     payload.store.deploy_code(address, runtime);
     // Successful CREATE never exposes its runtime as RETURNDATA in the caller.
-    *data = ByteArray::empty();
+    *data = EvmByteArray::<D::Element>::empty();
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::reserved;
     use crate::{Fork, world::World};
     use alloy_primitives::{Address, U256};

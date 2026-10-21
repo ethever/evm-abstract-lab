@@ -7,7 +7,7 @@ use evm_abstract::{
         ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status, WorldAnalysis,
         analyze_world,
     },
-    domain::{AbstractValue, Domain, provenance::Origin},
+    domain::{AbstractValue, Domain, provenance::Origin, symbolic::ExprId},
     world::{Account, ByteArray, Code, Entry, World},
 };
 
@@ -240,9 +240,10 @@ fn another_call_clears_the_suspended_callers_previous_return_buffer() {
         .collect();
     assert!(!children.is_empty());
     for child in children {
+        // Clearing constructs an empty buffer with its exact zero-length proof.
         assert_eq!(
             *child.entry.call_stack.root().state.returndata.len(),
-            AbstractValue::constant(U256::ZERO)
+            AbstractValue::constant(U256::ZERO).with_expression(ExprId::constant(U256::ZERO))
         );
     }
 }
@@ -357,6 +358,7 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
             resumed.active().returndata.len().provenance(),
             length.provenance()
         );
+        // The complete word read retains the child's stored constant proof of 42.
         assert_eq!(
             child
                 .exit
@@ -366,6 +368,7 @@ fn child_revert_restores_storage_transient_balances_and_logs() {
                 .memory
                 .read_word(&zero, domain),
             AbstractValue::constant(U256::from(42))
+                .with_expression(ExprId::constant(U256::from(42)))
         );
         let copied = resumed.active().memory.read_word(&zero, domain);
         let expected_copy = domain
@@ -528,6 +531,9 @@ fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
     assert!(config.root_terminal_coverage);
     assert_eq!(config.max_work, 20_000_000);
     let mut detailed_config = config.clone();
+    // This functional closure includes every native candidate and unknown-code
+    // reentry. Default-ledger terminal coverage is exercised separately below.
+    detailed_config.max_work = 100_000_000;
     detailed_config.root_terminal_coverage = false;
     let analysis = analyze_world(world.clone(), entry.clone(), detailed_config).unwrap();
     // The known self target now closes through a relative procedure instead
@@ -548,13 +554,15 @@ fn unknown_target_keeps_known_candidates_and_models_the_remainder() {
             .any(|s| s.key.frames.len() == 2 && s.active().code_address == addr(0x200))
     );
     assert!(!analysis.config().root_terminal_coverage);
+    assert_eq!(analysis.config().max_work, 100_000_000);
     assert!(analysis.root_terminal_coverage().is_none());
     let mut detailed_policy = serde_json::to_value(analysis.config()).unwrap();
     detailed_policy["root_terminal_coverage"] = true.into();
+    detailed_policy["max_work"] = config.max_work.into();
     assert_eq!(detailed_policy, serde_json::to_value(&config).unwrap());
 
-    // Only the coverage switch differs: its preparation shares the original
-    // 20M ledger, so terminal coverage must leave detailed exhaustion honest.
+    // The coverage run keeps the original default 20M ledger. Its preparation
+    // shares that ledger, so detailed exhaustion must remain visible.
     let mut session =
         AnalysisSession::from_world(world.clone(), entry.clone(), config.clone()).unwrap();
     let snapshot = session.facts().snapshot().clone();

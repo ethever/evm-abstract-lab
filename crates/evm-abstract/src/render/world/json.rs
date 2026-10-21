@@ -1,8 +1,12 @@
 //! Streaming augmentation of the native evidence shape, without to_value trees.
 use super::observation;
 use crate::{
-    analysis::{MachineOutcome, RootTerminalCoverage, RootTerminalOutcome, WorldAnalysis},
-    world::{FingerprintError, Store, World},
+    analysis::{
+        EvmMachineOutcome, EvmRootTerminalCoverage, EvmRootTerminalOutcome, EvmWorldAnalysis,
+        WorldAnalysis,
+    },
+    domain::{NumericValue, WordElement},
+    world::{EvmStore, EvmWorld, FingerprintError},
 };
 use alloy_primitives::B256;
 use serde::{
@@ -11,42 +15,61 @@ use serde::{
 };
 
 /// Borrowed native report plus computed account observations and snapshot hashes.
-pub struct JsonEvidence<'a> {
-    analysis: &'a WorldAnalysis,
+pub struct EvmJsonEvidence<'a, N: WordElement> {
+    analysis: &'a EvmWorldAnalysis<N>,
     fingerprint: B256,
 }
 /// Capture the same native JSON fields and evidence without allocating a JSON tree.
 /// The exact snapshot fingerprint is computed before any report output is emitted.
 pub fn evidence(analysis: &WorldAnalysis) -> Result<JsonEvidence<'_>, FingerprintError> {
-    Ok(JsonEvidence {
+    evidence_with(analysis)
+}
+
+/// Native evidence for the default numeric assembly.
+pub type JsonEvidence<'a> = EvmJsonEvidence<'a, NumericValue>;
+
+/// Capture custom-element evidence without converting its execution state.
+pub fn evidence_with<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+) -> Result<EvmJsonEvidence<'_, N>, FingerprintError> {
+    Ok(EvmJsonEvidence {
         analysis,
         fingerprint: analysis.world().fingerprint()?,
     })
 }
-#[derive(Clone, Copy)]
-enum Extra<'a> {
-    Analysis(&'a WorldAnalysis, B256),
-    World(&'a World, B256),
-    Outcome(&'a MachineOutcome),
-    TerminalCoverage(&'a RootTerminalCoverage),
-    TerminalOutcome(&'a RootTerminalOutcome),
-    Store(&'a Store),
+
+enum Extra<'a, N: WordElement> {
+    Analysis(&'a EvmWorldAnalysis<N>, B256),
+    World(&'a EvmWorld<N>, B256),
+    Outcome(&'a EvmMachineOutcome<N>),
+    TerminalCoverage(&'a EvmRootTerminalCoverage<N>),
+    TerminalOutcome(&'a EvmRootTerminalOutcome<N>),
+    Store(&'a EvmStore<N>),
 }
-struct Augment<'a, S> {
+// Only borrowed handles are copied. Deriving Copy would require the numeric
+// element itself to be Copy, excluding valid independently owned domains.
+impl<N: WordElement> Copy for Extra<'_, N> {}
+impl<N: WordElement> Clone for Extra<'_, N> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+struct Augment<'a, S, N: WordElement> {
     inner: S,
-    extra: Extra<'a>,
+    extra: Extra<'a, N>,
 }
-struct Fields<'a, S> {
+struct Fields<'a, S, N: WordElement> {
     inner: S,
-    extra: Extra<'a>,
+    extra: Extra<'a, N>,
 }
-struct Evidence<'a>(Extra<'a>);
-impl Serialize for JsonEvidence<'_> {
+struct Evidence<'a, N: WordElement>(Extra<'a, N>);
+impl<N: WordElement> Serialize for EvmJsonEvidence<'_, N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         Evidence(Extra::Analysis(self.analysis, self.fingerprint)).serialize(serializer)
     }
 }
-impl Serialize for Evidence<'_> {
+impl<N: WordElement> Serialize for Evidence<'_, N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let serializer = Augment {
             inner: serializer,
@@ -62,8 +85,8 @@ impl Serialize for Evidence<'_> {
         }
     }
 }
-struct Outcomes<'a>(&'a WorldAnalysis);
-impl Serialize for Outcomes<'_> {
+struct Outcomes<'a, N: WordElement>(&'a EvmWorldAnalysis<N>);
+impl<N: WordElement> Serialize for Outcomes<'_, N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut seq = serializer.serialize_seq(Some(self.0.outcomes().len()))?;
         for outcome in self.0.outcomes() {
@@ -72,9 +95,9 @@ impl Serialize for Outcomes<'_> {
         seq.end()
     }
 }
-struct CodeHashes<'a>(&'a World);
-struct TerminalOutcomes<'a>(&'a [RootTerminalOutcome; 3]);
-impl Serialize for TerminalOutcomes<'_> {
+struct CodeHashes<'a, N: WordElement>(&'a EvmWorld<N>);
+struct TerminalOutcomes<'a, N: WordElement>(&'a [EvmRootTerminalOutcome<N>; 3]);
+impl<N: WordElement> Serialize for TerminalOutcomes<'_, N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
         for outcome in self.0 {
@@ -83,7 +106,7 @@ impl Serialize for TerminalOutcomes<'_> {
         seq.end()
     }
 }
-impl Serialize for CodeHashes<'_> {
+impl<N: WordElement> Serialize for CodeHashes<'_, N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(self.0.accounts().len()))?;
         for address in self.0.accounts().keys() {
@@ -92,8 +115,8 @@ impl Serialize for CodeHashes<'_> {
         map.end()
     }
 }
-struct Observations<'a>(&'a Store);
-impl Serialize for Observations<'_> {
+struct Observations<'a, N: WordElement>(&'a EvmStore<N>);
+impl<N: WordElement> Serialize for Observations<'_, N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let addresses = self.0.addresses();
         let mut seq = serializer.serialize_seq(Some(addresses.len()))?;
@@ -104,7 +127,7 @@ impl Serialize for Observations<'_> {
         seq.end()
     }
 }
-impl<S: SerializeStruct> SerializeStruct for Fields<'_, S> {
+impl<S: SerializeStruct, N: WordElement> SerializeStruct for Fields<'_, S, N> {
     type Ok = S::Ok;
     type Error = S::Error;
     fn serialize_field<T: Serialize + ?Sized>(
@@ -157,7 +180,7 @@ impl<S: SerializeStruct> SerializeStruct for Fields<'_, S> {
         self.inner.end()
     }
 }
-impl<'a, S: Serializer> Serializer for Augment<'a, S> {
+impl<'a, S: Serializer, N: WordElement> Serializer for Augment<'a, S, N> {
     type Ok = S::Ok;
     type Error = S::Error;
     type SerializeSeq = S::SerializeSeq;
@@ -165,7 +188,7 @@ impl<'a, S: Serializer> Serializer for Augment<'a, S> {
     type SerializeTupleStruct = S::SerializeTupleStruct;
     type SerializeTupleVariant = S::SerializeTupleVariant;
     type SerializeMap = S::SerializeMap;
-    type SerializeStruct = Fields<'a, S::SerializeStruct>;
+    type SerializeStruct = Fields<'a, S::SerializeStruct, N>;
     type SerializeStructVariant = S::SerializeStructVariant;
     fn serialize_bool(self, v: bool) -> Result<Self::Ok, Self::Error> {
         self.inner.serialize_bool(v)

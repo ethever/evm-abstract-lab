@@ -1,5 +1,11 @@
 //! Optional scalar terms may be forgotten only after their numeric transfer.
 
+use crate::domain::AbstractValue;
+use crate::domain::ValueAlgebra;
+use crate::world::ByteArray;
+use crate::world::Entry;
+use crate::world::World;
+
 use super::*;
 use crate::{
     Fork,
@@ -45,7 +51,7 @@ fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
         reduction.status,
         ReductionStatus::RoundLimit | ReductionStatus::FactLimit | ReductionStatus::SymbolicLimit
     ));
-    let mut payload = initial(&world, &entry, domain).unwrap();
+    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     payload.active_mut().stack = vec![input, constant(5)];
     let mut budget = WorkBudget::new(config.max_work);
     let result = execute(
@@ -53,7 +59,8 @@ fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
         &entry,
         payload,
         &config,
-        domain,
+        ValueAlgebra::new(&domain),
+        &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
     );
@@ -86,7 +93,7 @@ fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
     assert!(!budget.exhausted());
 
     for concrete in [2, 3] {
-        let mut payload = initial(&world, &entry, domain).unwrap();
+        let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
         payload.active_mut().stack = vec![constant(concrete), constant(5)];
         let mut budget = WorkBudget::new(config.max_work);
         let control = execute(
@@ -94,7 +101,8 @@ fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
             &entry,
             payload,
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
@@ -118,7 +126,7 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
                 .unwrap(),
         )
     };
-    let mut payload = initial(&world, &entry, domain).unwrap();
+    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     payload.active_mut().stack = vec![deep(), deep()];
     let mut budget = WorkBudget::new(config.max_work);
     let prefix = execute(
@@ -126,7 +134,8 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
         &entry,
         payload,
         &config,
-        domain,
+        ValueAlgebra::new(&domain),
+        &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
     );
@@ -148,7 +157,8 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
         &entry,
         prefix.successors.into_iter().next().unwrap().payload,
         &config,
-        domain,
+        ValueAlgebra::new(&domain),
+        &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
     );
@@ -188,7 +198,7 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
 
     // Equal and unequal independent concrete inputs witness the two edges.
     for (b, edge) in [(0, EdgeKind::BranchTrue), (1, EdgeKind::BranchFalse)] {
-        let mut payload = initial(&world, &entry, domain).unwrap();
+        let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
         payload.active_mut().stack = vec![constant(b), zero()];
         let mut budget = WorkBudget::new(config.max_work);
         let prefix = execute(
@@ -196,7 +206,8 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
             &entry,
             payload,
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
@@ -206,7 +217,8 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
             &entry,
             prefix.successors.into_iter().next().unwrap().payload,
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
@@ -227,7 +239,7 @@ fn inherited_scalar_limit_still_records_a_frontier_and_keeps_its_marker() {
         .unwrap()
         .with_symbol(Symbol::CallValue, Some(7))
         .with_symbolic_limit();
-    let mut payload = initial(&world, &entry, domain).unwrap();
+    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     payload.active_mut().stack = vec![input, constant(5)];
     let mut budget = WorkBudget::new(config.max_work);
     let result = execute(
@@ -235,7 +247,8 @@ fn inherited_scalar_limit_still_records_a_frontier_and_keeps_its_marker() {
         &entry,
         payload,
         &config,
-        domain,
+        ValueAlgebra::new(&domain),
+        &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
     );

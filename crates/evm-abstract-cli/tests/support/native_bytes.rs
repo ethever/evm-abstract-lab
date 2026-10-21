@@ -5,7 +5,7 @@
 
 use alloy_primitives::U256;
 use evm_abstract::domain::{
-    NumericValue,
+    NumericValue, WordObservation,
     symbolic::{
         ByteStateId, ByteView, ExprId, ExprLimits, SlotStateId, SlotStateKind, SourceId,
         StateBinding,
@@ -194,7 +194,7 @@ impl Graph {
                         if !indices.insert(binding.index) {
                             return None;
                         }
-                        let numeric = NumericValue::constant(word(&nodes, binding.value)?);
+                        let numeric = WordObservation::constant(word(&nodes, binding.value)?);
                         if binding.numeric != serde_json::to_value(&numeric).ok()? {
                             return None;
                         }
@@ -445,8 +445,8 @@ pub fn word_matches(data: &Json, expected: U256) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ByteStateId, ByteView, ExprId, ExprLimits, Json, NumericValue, SlotStateId, SourceId,
-        StateBinding, U256, word_matches,
+        ByteStateId, ByteView, ExprId, ExprLimits, Json, SlotStateId, SourceId, StateBinding, U256,
+        WordObservation, word_matches,
     };
     use evm_abstract::{domain::AbstractValue, world::ByteArray};
     use serde_json::json;
@@ -583,7 +583,7 @@ mod tests {
                 vec![StateBinding {
                     index: U256::ZERO,
                     value: ExprId::constant(value),
-                    numeric: NumericValue::constant(value),
+                    numeric: WordObservation::constant(value),
                 }],
                 limits.into(),
             )

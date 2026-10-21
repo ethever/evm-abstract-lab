@@ -7,6 +7,7 @@ use crate::{
     },
     domain::{AbstractValue, relational::QueryReason},
     ssa::{self, SsaError, SsaInvariantKind as Kind},
+    test_instrumentation::work_boundary,
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
 use revm_bytecode::opcode;
@@ -64,21 +65,14 @@ fn pending_mload() -> WorldAnalysis {
     // In this acyclic prefix, the first budget admitting MLOAD's visit pays
     // for operand consumption but cannot also pay its positive read-scan fee.
     // Derive that cutoff from actual work, including root admission fees.
-    let (mut minimum, mut maximum) = (1, complete.work());
-    while minimum < maximum {
-        let midpoint = minimum + (maximum - minimum) / 2;
-        config.max_work = midpoint;
+    let minimum = work_boundary::first_work_reaching(complete.work(), |allowance| {
+        config.max_work = allowance;
         let candidate = run(CODE, config.clone());
-        if candidate
+        candidate
             .states()
             .iter()
             .any(|state| state.executed_pcs.contains(&4))
-        {
-            maximum = midpoint;
-        } else {
-            minimum = midpoint + 1;
-        }
-    }
+    });
     config.max_work = minimum;
     let analysis = run(CODE, config);
     assert_eq!(analysis.status(), Status::Incomplete);
@@ -390,7 +384,7 @@ fn completed_fault_has_no_fabricated_operands_or_results() {
 #[test]
 fn optional_expression_limit_preserves_completion_and_a_separate_real_work_frontier() {
     let mut config = config();
-    // complete.work() - 1 must isolate the mandatory STOP finalization fee.
+    // Isolate the semantic STOP boundary from shared Kernel bookkeeping.
     config.root_terminal_coverage = false;
     config.analysis.relations.enabled = true;
     config.analysis.relations.max_nodes = 2;
@@ -410,9 +404,28 @@ fn optional_expression_limit_preserves_completion_and_a_separate_real_work_front
         .verify(&complete)
         .unwrap();
 
-    // Refuse the last root-finalization charge, after ADD and STOP. This is a
-    // genuine coverage gap, separately from ADD's optional precision diagnostic.
-    config.max_work = complete.work().checked_sub(1).unwrap();
+    // This straight-line leaf has one normal Return, produced by STOP. Locate
+    // its first budget independently of the later Kernel finish/closure fees;
+    // total consumed work minus one may already include that Return.
+    let minimum = work_boundary::first_work_reaching(config.max_work, |allowance| {
+        config.max_work = allowance;
+        let candidate = run_with_value("3460010100", config.clone(), AbstractValue::top());
+        candidate
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == OutcomeKind::Return)
+    });
+    config.max_work = minimum;
+    let returned = run_with_value("3460010100", config.clone(), AbstractValue::top());
+    assert!(
+        returned
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == OutcomeKind::Return)
+    );
+    // One unit below this semantic boundary still dispatches STOP but refuses
+    // its mandatory finalization, separately from ADD's optional proof refusal.
+    config.max_work = minimum.checked_sub(1).unwrap();
     let refused = run_with_value("3460010100", config, AbstractValue::top());
     assert_eq!(refused.status(), Status::Incomplete);
     let [frontier] = refused.frontiers() else {

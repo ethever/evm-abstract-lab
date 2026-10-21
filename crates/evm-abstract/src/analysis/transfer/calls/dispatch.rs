@@ -1,35 +1,53 @@
 //! Guarded target partitioning leaves caller roots and their identities intact.
 
-use super::{AbstractValue, Execution, FrontierReason, MachinePayload, TransferContext, boundary};
+use crate::domain::{EvmNumericAlgebra, SingletonProof, WordElement};
+
+use super::{EvmExecution, EvmMachinePayload, EvmValue, FrontierReason, TransferContext, boundary};
+
 use crate::{
     analysis::DiagnosticKind,
-    domain::{
-        NumericValue,
-        relational::{CheckResult, QueryReason},
-    },
+    domain::relational::{CheckResult, QueryReason},
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
-pub(super) fn target_guard(
-    result: &mut Execution,
-    payload: &MachinePayload,
-    projected: &AbstractValue,
-    candidate: &AbstractValue,
+pub(super) fn target_guard<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    payload: &EvmMachinePayload<D::Element>,
+    projected: &EvmValue<D::Element>,
+    candidate: &EvmValue<D::Element>,
     equal: bool,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
-) -> Option<MachinePayload> {
+) -> Option<EvmMachinePayload<D::Element>> {
+    if !context.budget.charge(
+        projected
+            .clone_work()
+            .saturating_add(candidate.clone_work()),
+    ) {
+        boundary(result, pc, FrontierReason::Work);
+        return None;
+    }
     let operands = [projected.clone(), candidate.clone()];
     if !context
         .budget
-        .charge(context.domain.operation_work(&operands))
+        .charge(context.domain.operation_work_for(opcode::EQ, &operands))
     {
         boundary(result, pc, FrontierReason::Work);
         return None;
     }
-    let condition = context.domain.apply(opcode::EQ, &operands);
-    if equal && !condition.may_be_nonzero() || !equal && !condition.may_be_zero() {
+    let (reduced, proof) = context
+        .domain
+        .apply_detailed_with_singleton(opcode::EQ, &operands);
+    let condition = reduced.value;
+    let truth = match super::Truth::prepare(&condition, proof, context.budget) {
+        Ok(truth) => truth,
+        Err(reason) => {
+            boundary(result, pc, reason);
+            return None;
+        }
+    };
+    if equal && !truth.nonzero || !equal && !truth.zero {
         return None;
     }
     if !context.budget.charge(payload.work_size()) {
@@ -38,10 +56,10 @@ pub(super) fn target_guard(
     }
     let mut guarded = payload.clone();
     let limits = context.config.analysis.relations;
-    if !limits.enabled || condition.singleton().is_some() {
+    if !limits.enabled || matches!(truth.singleton, SingletonProof::Answer(Some(_))) {
         return Some(guarded);
     }
-    let Some(expression) = condition.symbolic_expression() else {
+    let Some(expression) = condition.expression().cloned() else {
         return Some(guarded);
     };
     let observed = guarded
@@ -76,16 +94,19 @@ pub(super) fn target_guard(
         if let Err(reason) =
             guarded
                 .relations
-                .observe(&expression, &NumericValue::constant(U256::ZERO), &limits)
+                .observe(&expression, &D::Element::constant(U256::ZERO), &limits)
         {
             boundary(result, pc, FrontierReason::Relations(reason));
         }
         return Some(guarded);
     }
-    let answer =
-        guarded
-            .relations
-            .assume_checked_budgeted(&expression, true, &limits, context.budget);
+    let answer = guarded.relations.assume_checked_budgeted_with(
+        &expression,
+        true,
+        &limits,
+        context.budget,
+        context.domain,
+    );
     if context.budget.exhausted() {
         boundary(result, pc, FrontierReason::Work);
         return None;

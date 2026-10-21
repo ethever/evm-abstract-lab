@@ -1,12 +1,16 @@
 //! Fold a known child only after a structural call edge repeats on the active stack.
 
-use crate::analysis::{ChildFrame, FrameCode, FrameState, MachinePayload};
+use crate::domain::WordElement;
+
+use crate::analysis::{EvmChildFrame, EvmFrameState, EvmMachinePayload, FrameCode};
 
 /// A repeated callee alone can be a leaf self-call with unrelated calldata.
 /// Waiting for a repeated active edge keeps that first child on the ordinary
 /// executor. Completed children have been popped and cannot trigger folding.
 /// CALLER/calldata/value remain inputs of the relative root, not its identity.
-pub(in crate::analysis) fn is_recursive_entry(payload: &MachinePayload) -> bool {
+pub(in crate::analysis) fn is_recursive_entry<N: WordElement>(
+    payload: &EvmMachinePayload<N>,
+) -> bool {
     let stack = &payload.call_stack;
     let Some((child, ancestors)) = stack.children().split_last() else {
         return false;
@@ -30,11 +34,11 @@ pub(in crate::analysis) fn is_recursive_entry(payload: &MachinePayload) -> bool 
     false
 }
 
-fn same_edge(
-    parent: &FrameState,
-    child: &ChildFrame,
-    other_parent: &FrameState,
-    other_child: &ChildFrame,
+fn same_edge<N: WordElement>(
+    parent: &EvmFrameState<N>,
+    child: &EvmChildFrame<N>,
+    other_parent: &EvmFrameState<N>,
+    other_child: &EvmChildFrame<N>,
 ) -> bool {
     // CALL-family instructions terminate their basic block, and the suspended
     // parent stays at that block. Its immutable program identity, block index,
@@ -47,7 +51,7 @@ fn same_edge(
         && same_context(&child.state, &other_child.state)
 }
 
-fn same_context(frame: &FrameState, other: &FrameState) -> bool {
+fn same_context<N: WordElement>(frame: &EvmFrameState<N>, other: &EvmFrameState<N>) -> bool {
     let key = &frame.key;
     let other_key = &other.key;
     frame.code == other.code

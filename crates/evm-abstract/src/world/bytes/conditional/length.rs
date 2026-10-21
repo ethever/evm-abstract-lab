@@ -1,14 +1,15 @@
 //! Distribute a proved composite length bound without selecting any guard.
 
 use super::{Branch, ConditionalFacts, Facts, Scope, normalize};
+use crate::domain::WordElement;
 use crate::{
     domain::{
-        AbstractValue,
+        EvmValue,
         relational::QueryReason,
         symbolic::{ExprError, ExprId, ExprKind, ExprLimits},
     },
     resource::WorkBudget,
-    world::ByteArray,
+    world::EvmByteArray,
 };
 use alloy_primitives::U256;
 use std::sync::Arc;
@@ -22,17 +23,17 @@ fn cancelled() -> Result<(), QueryReason> {
     Ok(())
 }
 
-fn empty() -> Scope {
+fn empty<N: WordElement>() -> Scope<N> {
     Scope {
-        facts: Facts::new(),
-        conditional: ConditionalFacts::default(),
+        facts: Facts::<N>::new(),
+        conditional: ConditionalFacts::<N>::default(),
     }
 }
 
 /// F proves the whole expression belongs to bound. For an ITE this proves
 /// each arm's bound only under that arm's selector and all ancestor selectors.
 /// Non-ITE definitions are opaque: there is no inference about their operands.
-fn distribute(expression: &ExprId, bound: &AbstractValue) -> Scope {
+fn distribute<N: WordElement>(expression: &ExprId, bound: &EvmValue<N>) -> Scope<N> {
     if let ExprKind::Ite {
         condition,
         then_value,
@@ -40,8 +41,8 @@ fn distribute(expression: &ExprId, bound: &AbstractValue) -> Scope {
     } = expression.kind()
     {
         Scope {
-            facts: Facts::new(),
-            conditional: ConditionalFacts::from_branches(vec![Arc::new(Branch {
+            facts: Facts::<N>::new(),
+            conditional: ConditionalFacts::<N>::from_branches(vec![Arc::new(Branch {
                 condition: condition.clone(),
                 then_facts: distribute(then_value, bound),
                 else_facts: distribute(else_value, bound),
@@ -49,19 +50,19 @@ fn distribute(expression: &ExprId, bound: &AbstractValue) -> Scope {
         }
     } else {
         Scope {
-            facts: Facts::from([(expression.clone(), bound.clone())]),
-            conditional: ConditionalFacts::default(),
+            facts: Facts::<N>::from([(expression.clone(), bound.clone())]),
+            conditional: ConditionalFacts::<N>::default(),
         }
     }
 }
 
-impl ByteArray {
+impl<N: WordElement> EvmByteArray<N> {
     /// Import only caller-proved numeric bounds of this frame's exact length
     /// expression. Content roots, allocations, source handles and frozen reads
     /// are untouched. False means an optional update was declined atomically.
     pub(crate) fn import_length_bound(
         &mut self,
-        length: &AbstractValue,
+        length: &EvmValue<N>,
         limits: ExprLimits,
         budget: &mut WorkBudget,
     ) -> Result<bool, QueryReason> {
@@ -112,7 +113,7 @@ impl ByteArray {
         let mut scope = distribute(expression, &bound);
         // Compare the entire prefix and implication tree, including an older
         // unfactored import. A whole-R fact alone is not a composite stamp.
-        let stamped = |conditional: &ConditionalFacts| {
+        let stamped = |conditional: &ConditionalFacts<N>| {
             self.conditional.branches.iter().any(|branch| {
                 branch.condition.as_constant() == Some(U256::ONE)
                     && branch.else_facts.facts.is_empty()
@@ -187,7 +188,7 @@ impl ByteArray {
             then_facts: scope,
             else_facts: empty(),
         }));
-        let out = ConditionalFacts::from_branches(branches);
+        let out = ConditionalFacts::<N>::from_branches(branches);
         match out.check(limits) {
             Err(ExprError::Cancelled) => return Err(QueryReason::Cancelled),
             Err(_) => return Ok(false),

@@ -1,0 +1,14 @@
+[package]
+name                   = "analysis-kernel"
+description            = "Typed cooperative abstract analysis with tracked joint fixed points"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

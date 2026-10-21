@@ -85,13 +85,20 @@ fn busy_x_closes_repeated_callbacks_at_zero_one_two_and_preserves_busy() {
 }
 
 #[test]
-fn busy_x_keeps_precision_with_nested_unknown_known_unknown_interactions() {
-    check_busy_x(true, true);
-}
-
-#[test]
-fn nested_busy_x_keeps_the_same_precision_and_closure_without_summary_cache() {
-    check_busy_x(true, false);
+fn nested_busy_x_keeps_precision_and_closure_in_each_cache_mode() {
+    for (case, use_summaries) in [
+        (
+            "busy_x_keeps_precision_with_nested_unknown_known_unknown_interactions",
+            true,
+        ),
+        (
+            "nested_busy_x_keeps_the_same_precision_and_closure_without_summary_cache",
+            false,
+        ),
+    ] {
+        eprintln!("case={case}");
+        check_busy_x(true, use_summaries);
+    }
 }
 
 #[test]
@@ -106,7 +113,7 @@ fn unknown_can_call_nonparent_c_and_new_reads_do_not_refresh_old_stack_value() {
         entry(ByteArray::empty()),
         evm_abstract::analysis::ExecutionConfig {
             root_terminal_coverage: false,
-            ..Default::default()
+            ..callback_closure_config()
         },
     );
     complete_unknown(&analysis);
@@ -133,12 +140,27 @@ fn actual_c_entry_guard_prevents_unknown_interaction_from_writing_nine() {
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[(0, 5), (1, 0)]);
-    let analysis = run(world, entry(ByteArray::empty()));
+    let analysis = run_config(world, entry(ByteArray::empty()), callback_closure_config());
     complete_unknown(&analysis);
     for outcome in returns(&analysis) {
         only(&output_word(outcome, 0), &[5]);
         only(&output_word(outcome, 32), &[5]);
         only(&read(&outcome.store, C, 0), &[5]);
         only(&read(&outcome.store, C, 1), &[0]);
+    }
+}
+
+#[test]
+fn guarded_cell_callbacks_keep_default_ledger_root_coverage() {
+    for enabled in [0, 1] {
+        let mut world = new_world();
+        insert(&mut world, A, &fixtures::external_reader(false), &[]);
+        insert(
+            &mut world,
+            C,
+            &fixtures::external_cell(),
+            &[(0, 5), (1, enabled)],
+        );
+        default_callback_coverage(world, entry(ByteArray::empty()));
     }
 }

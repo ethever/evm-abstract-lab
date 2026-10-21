@@ -24,7 +24,7 @@ fn scoped_word(domain: Domain) -> ByteArray {
         (&right, &empty),
         &memory.operands,
         ExprId::constant(U256::ONE),
-        limits(domain),
+        limits(crate::domain::ValueAlgebra::new(&domain)),
     )
     .unwrap();
     memory
@@ -50,12 +50,12 @@ fn context_tree(depth: usize, domain: Domain) -> ByteArray {
             &context_tree(depth - 1, domain),
             domain,
             ExprId::fresh().unwrap(),
-            limits(domain),
+            limits(crate::domain::ValueAlgebra::new(&domain)),
         )
         .unwrap()
 }
 
-fn prepare(memory: &ByteArray, domain: Domain, budget: &mut WorkBudget) -> Plan {
+fn prepare(memory: &ByteArray, domain: Domain, budget: &mut WorkBudget) -> Plan<'static> {
     let plan = memory
         .prepare_word_read(&zero(), domain, budget)
         .unwrap()
@@ -65,7 +65,7 @@ fn prepare(memory: &ByteArray, domain: Domain, budget: &mut WorkBudget) -> Plan 
     assert_eq!(plan.facts, memory.operands);
     assert_eq!(plan.conditional, memory.conditional);
     assert_eq!(plan.offset, zero());
-    assert_eq!(plan.domain.spec(), domain.spec());
+    assert_eq!(plan.policy.view().spec(), domain.spec());
     assert_eq!(
         plan.fallback_work,
         memory.word_numeric_work(&zero(), domain)
@@ -103,15 +103,15 @@ fn trial(mut plan: Plan, budget: &mut WorkBudget) -> Trial {
         &mut plan.facts,
         offset.clone(),
         &plan.offset,
-        plan.domain,
-        limits(plan.domain),
+        plan.policy.view(),
+        limits(plan.policy.view()),
     )
     .unwrap();
-    plan.conditional.check(limits(plan.domain)).unwrap();
+    plan.conditional.check(limits(plan.policy.view())).unwrap();
     let context = conditional::Context::budgeted(
         &plan.facts,
         &plan.conditional,
-        plan.domain,
+        plan.policy.view(),
         plan.preparation.as_ref().unwrap(),
         budget,
     )
@@ -122,7 +122,7 @@ fn trial(mut plan: Plan, budget: &mut WorkBudget) -> Trial {
         plan.length.as_ref(),
         &offset,
         &context,
-        plan.domain,
+        plan.policy.view(),
     )
     .unwrap();
     context.check().unwrap();
@@ -205,7 +205,7 @@ fn an_unpaid_final_reader_or_returns_work_without_paying_or_starting_legacy_fall
         .write_byte(
             ExprId::constant(U256::ZERO),
             key.clone(),
-            limits(domain).into(),
+            limits(crate::domain::ValueAlgebra::new(&domain)).into(),
         )
         .unwrap();
     memory.operands.insert(key, value);
@@ -288,7 +288,7 @@ fn a_work_stopped_trial_does_not_attach_a_result_or_mutate_its_frozen_plan_paylo
         let context = conditional::Context::budgeted(
             &plan.facts,
             &plan.conditional,
-            domain,
+            crate::domain::ValueAlgebra::new(&domain),
             plan.preparation.as_ref().unwrap(),
             &mut budget,
         )
@@ -300,7 +300,7 @@ fn a_work_stopped_trial_does_not_attach_a_result_or_mutate_its_frozen_plan_paylo
                 None,
                 &expr(&plan.offset).unwrap(),
                 &context,
-                domain
+                crate::domain::ValueAlgebra::new(&domain)
             )
             .unwrap(),
             None
@@ -314,7 +314,7 @@ fn a_work_stopped_trial_does_not_attach_a_result_or_mutate_its_frozen_plan_paylo
                 None,
                 &expr(&plan.offset).unwrap(),
                 &context,
-                domain
+                crate::domain::ValueAlgebra::new(&domain)
             )
             .unwrap(),
             None

@@ -168,16 +168,30 @@ fn guarded_equal_numbers_keep_independent_sources_and_identity_meet() {
                     .operands
                     .contains_key(original.expression().unwrap())
             );
-            let context = conditional::Context::new(&current.operands, Some(&current.conditional))
-                .branch(&guard, nonzero);
+            let context = conditional::Context::new(
+                &current.operands,
+                Some(&current.conditional),
+                crate::domain::ValueAlgebra::new(&domain),
+            )
+            .branch(&guard, nonzero);
             assert_eq!(
-                context.value(original.expression().unwrap(), domain),
+                context.value(
+                    original.expression().unwrap(),
+                    crate::domain::ValueAlgebra::new(&domain)
+                ),
                 Some(original.clone())
             );
             assert_eq!(
-                conditional::Context::new(&current.operands, Some(&current.conditional))
-                    .branch(&guard, !nonzero)
-                    .value(original.expression().unwrap(), domain),
+                conditional::Context::new(
+                    &current.operands,
+                    Some(&current.conditional),
+                    crate::domain::ValueAlgebra::new(&domain)
+                )
+                .branch(&guard, !nonzero)
+                .value(
+                    original.expression().unwrap(),
+                    crate::domain::ValueAlgebra::new(&domain)
+                ),
                 None
             );
             let mut selected = relations.clone();

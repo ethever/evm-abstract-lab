@@ -261,7 +261,7 @@ fn explicit_opt_out_and_default_converged_none_preserve_honest_detail() {
 fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input() {
     let (native, request) = fixture(true, false, false);
     let report = project(&native, &request);
-    assert_eq!(report.schema_version, 15);
+    assert_eq!(report.schema_version, 16);
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(!report.ssa.complete);
     assert_eq!(report.cfg.len(), native.states().len());
@@ -321,8 +321,10 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     );
     let domain = source.input().domain_spec();
     assert_eq!(binding.domain_spec.schema_version, domain.schema_version());
+    assert_eq!(binding.domain_spec.schema_version, 2);
     assert_eq!(binding.domain_spec.word_bits, domain.word_bits());
     assert_eq!(binding.domain_spec.cost_version, domain.cost_version());
+    assert_eq!(binding.domain_spec.cost_version, 6);
     assert_eq!(
         binding.domain_spec.provenance_policy,
         domain.provenance_policy()
@@ -1034,10 +1036,10 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         );
     }
     let mut invalid = report;
-    invalid.schema_version = 14;
+    invalid.schema_version = 15;
     assert_eq!(
         invalid.validate(),
-        Err(api::ReportValidationFailure::Schema(14))
+        Err(api::ReportValidationFailure::Schema(15))
     );
 }
 

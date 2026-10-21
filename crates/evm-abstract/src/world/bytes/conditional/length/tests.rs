@@ -120,16 +120,28 @@ fn a_stale_source_cannot_narrow_a_new_copy_and_a_contradictory_arm_keeps_its_sib
         joined.import_length_bound(&proof, limits, &mut budget),
         Ok(true)
     );
-    let context = super::super::Context::new(&joined.operands, Some(&joined.conditional));
+    let context = super::super::Context::new(
+        &joined.operands,
+        Some(&joined.conditional),
+        crate::domain::ValueAlgebra::new(&domain),
+    );
     let yes = context.branch(&selector, true);
     let no = context.branch(&selector, false);
     assert!(
-        !super::super::super::numeric::scalar_in(&yes_minimum, &yes, domain).contains(U256::ONE)
+        !super::super::super::numeric::scalar_in(
+            &yes_minimum,
+            &yes,
+            crate::domain::ValueAlgebra::new(&domain)
+        )
+        .contains(U256::ONE)
     );
     assert_eq!(
-        no.value(possible_revert.len().expression().unwrap(), domain)
-            .unwrap()
-            .singleton(),
+        no.value(
+            possible_revert.len().expression().unwrap(),
+            crate::domain::ValueAlgebra::new(&domain)
+        )
+        .unwrap()
+        .singleton(),
         Some(U256::ONE)
     );
     assert!(
@@ -214,21 +226,29 @@ fn nested_length_proof_follows_the_derived_content_selector_without_changing_his
     assert_eq!(output.state_root(), history.state_root());
     assert_eq!(output.len(), history.len());
     assert_eq!(output.fresh_leaves(), history.fresh_leaves());
-    let context = super::super::Context::new(&output.operands, Some(&output.conditional));
+    let context = super::super::Context::new(
+        &output.operands,
+        Some(&output.conditional),
+        crate::domain::ValueAlgebra::new(&domain),
+    );
     let source_length = source.len().expression().unwrap();
     assert_eq!(
         context
             .branch(&q, false)
-            .value(source_length, domain)
+            .value(source_length, crate::domain::ValueAlgebra::new(&domain))
             .unwrap()
             .singleton(),
         Some(U256::ONE)
     );
-    assert!(context.value(source_length, domain).is_none());
+    assert!(
+        context
+            .value(source_length, crate::domain::ValueAlgebra::new(&domain))
+            .is_none()
+    );
     assert!(
         context
             .branch(&q, true)
-            .value(source_length, domain)
+            .value(source_length, crate::domain::ValueAlgebra::new(&domain))
             .is_none()
     );
     for at in 1..32 {

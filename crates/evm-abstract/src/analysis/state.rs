@@ -4,57 +4,70 @@
 //! without executable source identities. Instantiation always creates fresh
 //! roots. Scheduling, retry admission and publication remain with callers.
 
-use super::machine::{Frame, FrameByteKind, FrameMapOrder};
+use crate::domain::{WordElement, provenance::Origin};
+
+use super::machine::{EvmFrame, FrameByteKind, FrameMapOrder};
 use crate::{
-    analysis::{
-        CallStack, ChildFrame, Continuation, FrameCode, MachineError, MachineKey, MachinePayload,
-        RootFrame,
+    analysis::machine::{
+        EvmCallStack, EvmChildFrame, EvmContinuation, EvmMachinePayload, EvmRootFrame, FrameCode,
+        MachineError, MachineKey,
     },
-    domain::{AbstractValue, Domain, NumericValue, relational::RelationState, symbolic::ExprId},
+    domain::{AlgebraRef, EvmValue, relational::RelationState, symbolic::ExprId},
     resource::WorkBudget,
-    world::{ByteArray, ByteArraySummary, Entry, Snapshot, StoreSummary},
+    world::{EvmByteArray, EvmByteArraySummary, EvmEntry, EvmSnapshot, EvmStoreSummary},
 };
 use alloy_primitives::Address;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) mod bounded;
+#[cfg(test)]
+mod carrier_tests;
 pub(super) mod context;
 pub(super) mod loop_bound;
 pub(super) mod payload;
+mod policy;
 pub(super) mod projection;
+pub(super) mod query;
 pub(super) mod stack_alias;
 pub(super) mod storage_observations;
+#[cfg(test)]
+mod tests;
 mod transform;
 
-pub(super) use loop_bound::LoopBound;
-pub(super) use payload::{form, instantiate, join, semantic_eq};
+pub(super) use loop_bound::EvmLoopBound;
+#[cfg(test)]
+pub(super) use payload::form;
+pub(super) use payload::{form_normalized, instantiate, join, semantic_eq};
+pub use policy::ProcedureOutput;
 pub(super) use transform::StatePart;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct FrameSummary {
-    pub(super) frame: Frame<ByteArraySummary, StoreSummary, AbstractValue>,
+pub(super) struct EvmFrameSummary<N: WordElement> {
+    pub(super) frame: EvmFrame<N, EvmByteArraySummary<N>, EvmStoreSummary<N>, EvmValue<N>>,
     pub(super) stack_aliases: stack_alias::StackAliases,
 }
 
-impl std::ops::Deref for FrameSummary {
-    type Target = Frame<ByteArraySummary, StoreSummary, AbstractValue>;
+impl<N: WordElement> std::ops::Deref for EvmFrameSummary<N> {
+    type Target = EvmFrame<N, EvmByteArraySummary<N>, EvmStoreSummary<N>, EvmValue<N>>;
     fn deref(&self) -> &Self::Target {
         &self.frame
     }
 }
 
-impl std::ops::DerefMut for FrameSummary {
+impl<N: WordElement> std::ops::DerefMut for EvmFrameSummary<N> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.frame
     }
 }
 
+/// Opaque independent numerical template for a complete relative machine state.
+/// Use the metered policy operations to project, join and instantiate it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct PayloadSummary {
-    pub(super) frames: Vec<FrameSummary>,
-    pub(super) continuations: Vec<Continuation>,
-    pub(super) store: StoreSummary,
-    pub(super) storage_observations: storage_observations::StorageObservations,
+pub struct EvmPayloadSummary<N: WordElement> {
+    pub(super) frames: Vec<EvmFrameSummary<N>>,
+    pub(super) continuations: Vec<EvmContinuation<N>>,
+    pub(super) store: EvmStoreSummary<N>,
+    pub(super) storage_observations: storage_observations::EvmStorageObservations<N>,
     /// Canonical retained-object and independent-instantiation charge.
     pub(super) work: usize,
     /// Procedure location only; this is never a witness for the joined invariant.
@@ -62,13 +75,29 @@ pub(super) struct PayloadSummary {
 }
 
 /// Establish a runtime value without equating separate executions of a PC.
-pub(super) fn identify(value: AbstractValue, enabled: bool) -> AbstractValue {
-    if enabled
-        && value.singleton().is_none()
-        && value.expression().is_none()
-        && let Some(expression) = ExprId::fresh()
-    {
+/// Keep cached canonical literal proofs usable by literal-only consumers.
+/// Exact observations and inputs still get independent expressions; optional
+/// identification never discovers an opaque numeric singleton.
+pub(super) fn identify<N: WordElement>(value: EvmValue<N>, enabled: bool) -> EvmValue<N> {
+    if !enabled || value.expression().is_some() {
+        return value;
+    }
+    let literal = value.identity().input().is_none()
+        && !value.symbolic_limit_reached()
+        && !value.provenance().is_code_address()
+        && value
+            .provenance()
+            .origins()
+            .sources()
+            .is_some_and(|sources| sources.len() == 1 && sources.contains(&Origin::Constant))
+        && (value.constants().is_some_and(|values| values.len() == 1)
+            || value.known_bits().singleton().is_some()
+            || value.interval().singleton().is_some());
+    if !literal && let Some(expression) = ExprId::fresh() {
         return value.with_expression(expression);
     }
     value
 }
+
+#[cfg(test)]
+pub(in crate::analysis) type PayloadSummary = EvmPayloadSummary<crate::domain::NumericValue>;

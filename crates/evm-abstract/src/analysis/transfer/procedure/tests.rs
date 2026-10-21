@@ -7,8 +7,10 @@ use alloy_primitives::U256;
 use std::collections::VecDeque;
 
 mod context;
+mod policy;
 mod projection;
 mod relation_boundary_probe;
+mod resume_status;
 mod stack_alias;
 mod storage_observations;
 mod worklist;
@@ -32,7 +34,10 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
     let domain = config.domain().unwrap();
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
-    let mut queue = VecDeque::from([super::super::initial(&world, &entry, domain).unwrap()]);
+    let mut queue = VecDeque::from([crate::analysis::transfer::procedure::testing::initial(
+        &world, &entry, domain,
+    )
+    .unwrap()]);
     let recursive = loop {
         let payload = queue.pop_front().expect("known cycle must be reachable");
         if is_recursive_entry(&payload) {
@@ -92,13 +97,24 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
             world.clone(),
             entry.clone(),
             crate::analysis::ExecutionConfig {
+                // This is a semantic copy/rollback regression. Work-frontier
+                // cuts are checked separately against the selected policies.
+                max_work: 100_000_000,
                 use_summaries,
                 root_terminal_coverage: false,
                 ..Default::default()
             },
         )
         .unwrap();
-        assert_eq!(result.status, crate::analysis::Status::Converged);
+        assert_eq!(
+            result.status,
+            crate::analysis::Status::Converged,
+            "summaries={use_summaries} work={} states={} transfers={} frontiers={}",
+            result.work,
+            result.states.len(),
+            result.transfers,
+            result.frontiers.len()
+        );
         assert!(result.frontiers.is_empty());
         assert!(!result.procedure_summaries().is_empty());
         assert!(
@@ -143,7 +159,8 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
 fn parked_joined_summary_contains_the_current_bound() {
     let domain = Domain::default();
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut input = super::super::initial(&world, &entry, domain).unwrap();
+    let mut input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     input
         .store
         .write(address(0x101), &word(0), &word(0), domain);
@@ -157,16 +174,14 @@ fn parked_joined_summary_contains_the_current_bound() {
     let config = crate::analysis::ExecutionConfig::default();
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
-    let mut solver = Solver {
-        table: &mut table,
-        world: &world,
-        entry: &entry,
-        config: &config,
-        domain,
-        budget: &mut budget,
-        counters: &mut counters,
-        storage_reads: StorageReadPolicy::Abstract,
-    };
+    let mut solver = table.solver(
+        &world,
+        &entry,
+        &config,
+        &mut budget,
+        &mut counters,
+        StorageReadPolicy::Abstract,
+    );
     solver.frontier_summary(joined, FrontierReason::Budget(Limit::Transfers), 0);
     let frontier = &table.frontiers[0];
     assert_eq!(frontier.reason, FrontierReason::Budget(Limit::Transfers));
@@ -184,22 +199,21 @@ fn parked_joined_summary_contains_the_current_bound() {
 fn exhausted_ledger_does_not_replace_current_summary_with_an_old_input() {
     let domain = Domain::default();
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let input = super::super::initial(&world, &entry, domain).unwrap();
+    let input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let summary = form(&input, &entry, domain).unwrap();
     let mut table = Table::default();
     let config = crate::analysis::ExecutionConfig::default();
     let mut budget = WorkBudget::new(0);
     let mut counters = Counters::default();
-    let mut solver = Solver {
-        table: &mut table,
-        world: &world,
-        entry: &entry,
-        config: &config,
-        domain,
-        budget: &mut budget,
-        counters: &mut counters,
-        storage_reads: StorageReadPolicy::Abstract,
-    };
+    let mut solver = table.solver(
+        &world,
+        &entry,
+        &config,
+        &mut budget,
+        &mut counters,
+        StorageReadPolicy::Abstract,
+    );
     solver.frontier_summary(summary, FrontierReason::Work, 0);
     assert!(table.frontiers[0].payload.is_none());
     assert_eq!(table.frontiers[0].target.as_ref(), Some(&input.key()));
@@ -211,7 +225,8 @@ fn exhausted_ledger_does_not_replace_current_summary_with_an_old_input() {
 fn symbolic_owner_namespace_is_never_used_for_storage_discovery() {
     let domain = Domain::default();
     let (world, entry) = fixture(&[(0x101, "5f5400")]);
-    let mut payload = super::super::initial(&world, &entry, domain).unwrap();
+    let mut payload =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let namespace = owner_namespace(&world, &payload.store);
     let frame = payload.active_mut();
     frame.key.address = namespace;
@@ -245,7 +260,8 @@ fn equal_exit_buffers_share_one_invocation_source_but_later_calls_are_fresh() {
     let (world, entry) = fixture(&[]);
     let config = crate::analysis::ExecutionConfig::default();
     let domain = config.domain().unwrap();
-    let payload = super::super::initial(&world, &entry, domain).unwrap();
+    let payload =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     assert_eq!(payload.active().code, FrameCode::Unknown);
     let mut table = Table::default();
     let mut budget = WorkBudget::new(config.max_work);
@@ -303,7 +319,8 @@ fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
     entry.environment.is_static = true;
     let config = crate::analysis::ExecutionConfig::default();
     let domain = config.domain().unwrap();
-    let mut payload = super::super::initial(&world, &entry, domain).unwrap();
+    let mut payload =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     payload
         .store
         .write(address(0x102), &word(0), &word(42), domain);
@@ -337,17 +354,16 @@ fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
     let mut table = Table::default();
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
-    let result = Solver {
-        table: &mut table,
-        world: &world,
-        entry: &entry,
-        config: &config,
-        domain,
-        budget: &mut budget,
-        counters: &mut counters,
-        storage_reads: StorageReadPolicy::Abstract,
-    }
-    .environment(payload.clone());
+    let result = table
+        .solver(
+            &world,
+            &entry,
+            &config,
+            &mut budget,
+            &mut counters,
+            StorageReadPolicy::Abstract,
+        )
+        .environment(payload.clone());
     assert!(result.frontiers.is_empty());
     assert!(result.successors.is_empty());
     assert_eq!(result.payload, touched_payload);
@@ -402,20 +418,19 @@ fn static_environment_keeps_a_typed_frontier_when_envelope_work_is_unavailable()
     entry.environment.is_static = true;
     let config = crate::analysis::ExecutionConfig::default();
     let domain = config.domain().unwrap();
-    let payload = super::super::initial(&world, &entry, domain).unwrap();
+    let payload =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut table = Table::default();
     let mut budget = WorkBudget::new(0);
     let mut counters = Counters::default();
-    let mut solver = Solver {
-        table: &mut table,
-        world: &world,
-        entry: &entry,
-        config: &config,
-        domain,
-        budget: &mut budget,
-        counters: &mut counters,
-        storage_reads: StorageReadPolicy::Abstract,
-    };
+    let mut solver = table.solver(
+        &world,
+        &entry,
+        &config,
+        &mut budget,
+        &mut counters,
+        StorageReadPolicy::Abstract,
+    );
     let result = solver.environment(payload.clone());
     assert_eq!(result.payload, payload);
     assert!(result.outcomes.is_empty());
@@ -425,3 +440,5 @@ fn static_environment_keeps_a_typed_frontier_when_envelope_work_is_unavailable()
     assert_eq!(result.frontiers[0].target.as_ref(), Some(&payload.key()));
     assert_eq!(budget.used(), 0);
 }
+
+mod cooperation;

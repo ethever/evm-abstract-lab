@@ -17,7 +17,7 @@ fn callee_subscription_projects_the_actual_target_guard_before_erasing_relations
         engine::Counters,
         transfer::{
             StorageReadPolicy,
-            procedure::{Solver, Table, payload::instantiate},
+            procedure::{Table, instantiate},
         },
     };
     let (world, entry) = fixture(&[(0x101, "00")]);
@@ -27,18 +27,16 @@ fn callee_subscription_projects_the_actual_target_guard_before_erasing_relations
     let mut table = Table::default();
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
-    let mut solver = Solver {
-        table: &mut table,
-        world: &world,
-        entry: &entry,
-        config: &config,
-        domain,
-        budget: &mut budget,
-        counters: &mut counters,
-        storage_reads: StorageReadPolicy::Abstract,
-    };
+    let mut solver = table.solver(
+        &world,
+        &entry,
+        &config,
+        &mut budget,
+        &mut counters,
+        StorageReadPolicy::Abstract,
+    );
     let parent = solver.procedure(input.clone()).unwrap();
-    let from = solver.table.procedures[parent].entry;
+    let from = solver.table.procedures[parent].first_body();
     let expression = ExprId::fresh().unwrap();
     input.store.write(
         address(0x101),
@@ -79,7 +77,7 @@ fn callee_subscription_projects_the_actual_target_guard_before_erasing_relations
     let callee = solver.table.subscribers[0].callee;
     assert_ne!(callee, parent);
     let replay = instantiate(
-        &solver.table.nodes[solver.table.procedures[callee].entry].payload,
+        &solver.table.nodes[solver.table.procedures[callee].first_body()].payload,
         domain,
     )
     .unwrap();

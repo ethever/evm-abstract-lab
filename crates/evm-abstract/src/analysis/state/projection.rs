@@ -4,17 +4,18 @@
 //! Summary import memoizes numerical upper bounds; branch metadata keeps its
 //! feasibility checks and precision diagnostics. Both share query accounting.
 
+use crate::domain::EvmNumericAlgebra;
+
 use super::{
-    AbstractValue, ByteArray, Domain, MachineError, MachinePayload, NumericValue, RelationState,
-    WorkBudget,
+    AlgebraRef, EvmByteArray, EvmMachinePayload, EvmValue, MachineError, RelationState, WorkBudget,
 };
 use crate::domain::{
-    relational::{QueryReason, RelationLimits, ScalarQuery},
+    relational::{EvmScalarQuery, QueryReason, RelationLimits},
     symbolic::{ExprId, ExprKind},
 };
 use crate::{
     analysis::{DiagnosticKind, state::StatePart},
-    world::Store,
+    world::EvmStore,
 };
 use std::collections::BTreeMap;
 
@@ -31,24 +32,26 @@ pub(in crate::analysis) enum Policy<'a> {
     },
 }
 
-pub(in crate::analysis) struct Projection<'a> {
+type ProjectionCache<N> = BTreeMap<ExprId, Vec<(N, Option<N>)>>;
+
+pub(in crate::analysis) struct Projection<'a, D: EvmNumericAlgebra> {
     relations: &'a RelationState,
     relations_work_size: Option<usize>,
     #[cfg(test)]
     relations_work_size_scans: usize,
-    domain: Domain,
+    domain: AlgebraRef<'a, D>,
     limits: &'a RelationLimits,
     budget: &'a mut WorkBudget,
-    cache: BTreeMap<ExprId, Vec<(NumericValue, Option<NumericValue>)>>,
+    cache: ProjectionCache<D::Element>,
     policy: Policy<'a>,
     /// False is a proved infeasible branch; summary import never rejects a path.
     outcome: Result<bool, MachineError>,
 }
 
-impl<'a> Projection<'a> {
+impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
     pub(in crate::analysis) fn new(
         relations: &'a RelationState,
-        domain: Domain,
+        domain: AlgebraRef<'a, D>,
         limits: &'a RelationLimits,
         budget: &'a mut WorkBudget,
         policy: Policy<'a>,
@@ -88,8 +91,10 @@ impl<'a> Projection<'a> {
         !matches!(self.outcome, Ok(true))
     }
 
-    fn expression(&mut self, expression: &ExprId, value: &mut AbstractValue) {
-        if self.stopped() || value.singleton().is_some() || self.relations.is_empty() {
+    fn expression(&mut self, expression: &ExprId, value: &mut EvmValue<D::Element>) {
+        // A retained literal is already a proof about this source. Numeric
+        // singleton discovery is a different, separately priced operation.
+        if self.stopped() || expression.as_constant().is_some() || self.relations.is_empty() {
             return;
         }
         let summary = matches!(&self.policy, Policy::Summary);
@@ -98,7 +103,9 @@ impl<'a> Projection<'a> {
             && let Some((_, refined)) = cached.iter().find(|(old, _)| old == value.numeric())
         {
             if let Some(refined) = refined {
-                *value = value.clone().with_numeric(refined.clone());
+                *value = value
+                    .clone()
+                    .with_numeric_after_singleton(refined.clone(), None);
             }
             return;
         }
@@ -117,26 +124,41 @@ impl<'a> Projection<'a> {
         } else {
             self.relations.relevant(expression)
         };
-        if !relevant || !self.reserve(self.domain.refinement_work(value, self.relations.len())) {
+        if !relevant {
             return;
         }
-        let old = summary.then(|| value.numeric().clone());
-        let refined = match self.relations.refine_numeric(
+        let answer = match self.relations.refine_numeric_budgeted_with(
             expression,
-            value.numeric(),
+            value,
             self.domain,
             self.limits,
+            self.budget,
         ) {
-            ScalarQuery::Refined { numeric, .. } => Some(*numeric),
-            ScalarQuery::Infeasible if !summary => {
+            Ok(answer) => answer,
+            Err(_) => {
+                self.outcome = Err(if summary {
+                    MachineError::work_failure()
+                } else {
+                    MachineError::Work
+                });
+                return;
+            }
+        };
+        // The import/whole reservation precedes this optional cache copy too.
+        let old = summary.then(|| value.numeric().clone());
+        let refined = match answer {
+            EvmScalarQuery::Refined { numeric, .. } => Some(*numeric),
+            EvmScalarQuery::Infeasible if !summary => {
                 self.outcome = Ok(false);
                 return;
             }
-            ScalarQuery::Unknown(QueryReason::Cancelled) => {
+            EvmScalarQuery::Unknown(QueryReason::Cancelled) => {
                 self.outcome = Err(MachineError::Relations(QueryReason::Cancelled));
                 return;
             }
-            ScalarQuery::Unknown(reason) if !summary && reason != QueryReason::ScalarFactLimit => {
+            EvmScalarQuery::Unknown(reason)
+                if !summary && reason != QueryReason::ScalarFactLimit =>
+            {
                 if let Policy::Branch { diagnostics, pc } = &mut self.policy {
                     diagnostics.push((*pc, DiagnosticKind::RelationalPrecisionLost(reason)));
                 }
@@ -144,10 +166,16 @@ impl<'a> Projection<'a> {
             }
             // Contradictory or unsupported optional summary import keeps the old
             // upper bound. Branch metadata alone may reject an infeasible path.
-            ScalarQuery::Infeasible | ScalarQuery::Unchanged | ScalarQuery::Unknown(_) => None,
+            EvmScalarQuery::Infeasible | EvmScalarQuery::Unchanged | EvmScalarQuery::Unknown(_) => {
+                None
+            }
         };
         if let Some(refined) = &refined {
-            *value = value.clone().with_numeric(refined.clone());
+            // The refinement operation owns any discovery. Applying its bound,
+            // including a cached one, must not run an opaque metadata query.
+            *value = value
+                .clone()
+                .with_numeric_after_singleton(refined.clone(), None);
         }
         if let Some(old) = old {
             let cache = self.cache.entry(expression.clone()).or_default();
@@ -160,13 +188,13 @@ impl<'a> Projection<'a> {
         }
     }
 
-    pub(in crate::analysis) fn value(&mut self, value: &mut AbstractValue) {
+    pub(in crate::analysis) fn value(&mut self, value: &mut EvmValue<D::Element>) {
         if let Some(expression) = value.expression().cloned() {
             self.expression(&expression, value);
         }
     }
 
-    pub(in crate::analysis) fn bytes(&mut self, bytes: &mut ByteArray) {
+    pub(in crate::analysis) fn bytes(&mut self, bytes: &mut EvmByteArray<D::Element>) {
         let summary = matches!(&self.policy, Policy::Summary);
         bytes.update_values(&mut |value| {
             if summary
@@ -188,7 +216,7 @@ impl<'a> Projection<'a> {
         }
     }
 
-    pub(in crate::analysis) fn store(&mut self, store: &mut Store) {
+    pub(in crate::analysis) fn store(&mut self, store: &mut EvmStore<D::Element>) {
         store.update_values(&mut |value| self.value(value));
         store.refine_operands(&mut |expression, value| self.expression(expression, value));
     }
@@ -199,7 +227,7 @@ impl<'a> Projection<'a> {
 
     pub(in crate::analysis) fn payload(
         &mut self,
-        payload: &mut MachinePayload,
+        payload: &mut EvmMachinePayload<D::Element>,
     ) -> Result<(), MachineError> {
         self.store(&mut payload.store);
         payload.call_stack.transform(&mut |part| {

@@ -47,7 +47,8 @@ fn relation_boundary_probe() {
     ] {
         let (world, mut entry) = fixture(&[(0x101, code)]);
         entry.environment.calldata = ByteArray::unknown();
-        let input = super::super::super::initial(&world, &entry, domain).unwrap();
+        let input =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let mut table = Table::default();
         let mut table_budget = WorkBudget::new(config.max_work);
         let mut counters = Counters::default();
@@ -152,7 +153,8 @@ fn relation_boundary_probe_same_numeric_different_alias_inputs() {
     entry.environment.calldata = ByteArray::unknown();
     let config = crate::analysis::ExecutionConfig::default();
     let domain = config.domain().unwrap();
-    let initial = super::super::super::initial(&world, &entry, domain).unwrap();
+    let initial =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut preparation_budget = WorkBudget::new(config.max_work);
     let preparation = execute_inner(
         &world,
@@ -278,7 +280,8 @@ fn storage_observation_known_delegatecall_write_replaces_current_snapshot() {
         let (world, entry) = fixture(&[(0x101, parent), (0x201, child)]);
         let config = crate::analysis::ExecutionConfig::default();
         let domain = config.domain().unwrap();
-        let input = super::super::super::initial(&world, &entry, domain).unwrap();
+        let input =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let mut table = Table::default();
         let mut budget = WorkBudget::new(config.max_work);
         let mut counters = Counters::default();
@@ -365,7 +368,8 @@ fn storage_duplicate_default_work_probe() {
         println!("STORAGE_DUPLICATE_CODE copies={copies} jumps=20 hex={hex}");
         let (world, mut entry) = fixture(&[(0x101, hex.as_str())]);
         entry.environment.calldata = ByteArray::unknown();
-        let input = super::super::super::initial(&world, &entry, domain).unwrap();
+        let input =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let mut table = Table::default();
         let mut budget = WorkBudget::new(config.max_work);
         let mut counters = Counters::default();

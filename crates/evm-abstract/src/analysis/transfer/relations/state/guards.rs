@@ -3,16 +3,19 @@
 //! An unproved guard keeps both historical alternatives. The callback memoizes
 //! only within the same immutable relation state and never changes a guard.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use super::super::super::errors;
 use super::super::TransferContext;
+
 use crate::{
-    analysis::{DiagnosticKind, FrontierReason, MachinePayload},
+    analysis::{DiagnosticKind, EvmMachinePayload, FrontierReason},
     domain::{
-        AbstractValue, Domain,
-        relational::{QueryReason, RelationState, ScalarQuery},
+        AlgebraRef, EvmValue,
+        relational::{EvmScalarQuery, QueryReason, RelationState},
         symbolic::{ExprId, ExprLimits},
     },
-    world::{GuardRefinementError, Snapshot},
+    world::{EvmSnapshot, GuardRefinementError},
 };
 use std::collections::BTreeMap;
 
@@ -25,24 +28,24 @@ fn failure(error: GuardRefinementError<FrontierReason>) -> FrontierReason {
     }
 }
 
-pub(super) fn refine(
-    payload: &mut MachinePayload,
+pub(super) fn refine<D: EvmNumericAlgebra>(
+    payload: &mut EvmMachinePayload<D::Element>,
     relations: &RelationState,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     diagnostics: &mut Vec<(usize, DiagnosticKind)>,
     pc: usize,
-    policy: (Domain, ExprLimits),
+    policy: (AlgebraRef<'_, D>, ExprLimits),
 ) -> Result<bool, FrontierReason> {
     apply(payload, relations, context, diagnostics, pc, policy)
 }
 
-fn apply(
-    payload: &mut MachinePayload,
+fn apply<D: EvmNumericAlgebra>(
+    payload: &mut EvmMachinePayload<D::Element>,
     relations: &RelationState,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     diagnostics: &mut Vec<(usize, DiagnosticKind)>,
     pc: usize,
-    policy: (Domain, ExprLimits),
+    policy: (AlgebraRef<'_, D>, ExprLimits),
 ) -> Result<bool, FrontierReason> {
     let (domain, limits) = policy;
     let mut known = BTreeMap::new();
@@ -59,20 +62,18 @@ fn apply(
         {
             return Err(FrontierReason::Work);
         }
-        let value = AbstractValue::top();
-        if !context
-            .budget
-            .charge(domain.refinement_work(&value, relations.len()))
+        let value = EvmValue::<D::Element>::top();
+        let truth = match relations
+            .refine_numeric_budgeted_with(
+                condition,
+                &value,
+                domain,
+                &context.config.analysis.relations,
+                context.budget,
+            )
+            .map_err(|_| FrontierReason::Work)?
         {
-            return Err(FrontierReason::Work);
-        }
-        let truth = match relations.refine_numeric(
-            condition,
-            value.numeric(),
-            domain,
-            &context.config.analysis.relations,
-        ) {
-            ScalarQuery::Refined { numeric, .. } => {
+            EvmScalarQuery::Refined { numeric, .. } => {
                 if !numeric.may_be_zero() {
                     Some(true)
                 } else if !numeric.may_be_nonzero() {
@@ -81,23 +82,23 @@ fn apply(
                     None
                 }
             }
-            ScalarQuery::Infeasible => {
+            EvmScalarQuery::Infeasible => {
                 infeasible = true;
                 None
             }
-            ScalarQuery::Unchanged => None,
-            ScalarQuery::Unknown(reason) if reason != QueryReason::Cancelled => {
+            EvmScalarQuery::Unchanged => None,
+            EvmScalarQuery::Unknown(reason) if reason != QueryReason::Cancelled => {
                 diagnostics.push((pc, DiagnosticKind::RelationalPrecisionLost(reason)));
                 None
             }
-            ScalarQuery::Unknown(reason) => return Err(FrontierReason::Relations(reason)),
+            EvmScalarQuery::Unknown(reason) => return Err(FrontierReason::Relations(reason)),
         };
         known.insert(condition.clone(), truth);
         Ok(truth)
     };
     if !payload
         .store
-        .refine_guards(domain, limits, &mut proof)
+        .refine_guards_with(domain, limits, &mut proof)
         .map_err(failure)?
     {
         return Ok(false);
@@ -109,7 +110,7 @@ fn apply(
             &mut frame.returndata,
         ] {
             if !bytes
-                .refine_guards(domain, limits, &mut proof)
+                .refine_guards_with(domain, limits, &mut proof)
                 .map_err(failure)?
             {
                 return Ok(false);
@@ -117,12 +118,12 @@ fn apply(
         }
         let mut saved = frame.saved_store.state().clone();
         if !saved
-            .refine_guards(domain, limits, &mut proof)
+            .refine_guards_with(domain, limits, &mut proof)
             .map_err(failure)?
         {
             return Ok(false);
         }
-        frame.saved_store = Snapshot::from_state(saved);
+        frame.saved_store = EvmSnapshot::<D::Element>::from_state(saved);
     }
     Ok(!infeasible)
 }

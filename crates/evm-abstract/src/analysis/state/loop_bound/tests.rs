@@ -1,10 +1,12 @@
 //! Production projection/replay, independent snapshots and non-layout effects.
 
-use super::super::instantiate;
+use crate::domain::ValueAlgebra;
+
+use super::super::{form, instantiate};
 use super::*;
 use crate::{
     analysis::{machine::fixtures, transfer},
-    domain::{AbstractValue, symbolic::ExprId},
+    domain::{AbstractValue, Domain, symbolic::ExprId},
 };
 use alloy_primitives::U256;
 
@@ -13,14 +15,23 @@ fn hybrid_loop_replay_joins_implicit_operands_and_keeps_shape_checks() {
     let domain = Domain::default();
     let (world, mut entry) = fixtures::fixture(&[(0x101, "00")]);
     entry.environment.to = crate::world::AddressInput::unknown_to();
-    let old = transfer::initial(&world, &entry, domain).unwrap();
+    let old = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let mut budget = WorkBudget::new(1_000_000_000_000);
-    let (_, mut live) = LoopBound::new(&old, &old, &entry, domain, &mut budget).unwrap();
+    let (_, mut live) = LoopBound::new(
+        &old,
+        &old,
+        &entry,
+        ValueAlgebra::new(domain).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     // One replay branch narrows ADDRESS. The implicit branch still admits all
     // 160-bit addresses, independently of its concrete storage-owner namespace.
     live.active_mut().address_operand = Some(fixtures::word(7));
     for (left, right) in [(&old, &live), (&live, &old)] {
-        let joined = left.join(right, domain).unwrap();
+        let joined = left
+            .join(right, ValueAlgebra::new(domain).borrowed())
+            .unwrap();
         assert_eq!(joined.key(), old.key());
         let address = joined.active().address_operand.as_ref().unwrap();
         assert!(address.contains(U256::ZERO));
@@ -34,13 +45,13 @@ fn hybrid_loop_replay_joins_implicit_operands_and_keeps_shape_checks() {
     let mut incompatible = live.clone();
     incompatible.active_mut().key.caller = fixtures::address(0x901).into();
     assert!(matches!(
-        old.join(&incompatible, domain),
+        old.join(&incompatible, ValueAlgebra::new(domain).borrowed()),
         Err(MachineError::Shape)
     ));
     incompatible = live;
     incompatible.active_mut().program = None;
     assert!(matches!(
-        old.join(&incompatible, domain),
+        old.join(&incompatible, ValueAlgebra::new(domain).borrowed()),
         Err(MachineError::Shape)
     ));
 }
@@ -49,7 +60,7 @@ fn hybrid_loop_replay_joins_implicit_operands_and_keeps_shape_checks() {
 fn materializing_a_canonical_loop_bound_is_idempotent_without_reusing_sources() {
     let domain = Domain::default();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
-    let mut old = transfer::initial(&world, &entry, domain).unwrap();
+    let mut old = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     old.active_mut().stack = vec![AbstractValue::top().with_expression(ExprId::fresh().unwrap())];
     old.store
         .write_checked(
@@ -69,14 +80,26 @@ fn materializing_a_canonical_loop_bound_is_idempotent_without_reusing_sources() 
         )
         .unwrap();
     let mut budget = WorkBudget::new(1_000_000_000_000);
-    let (bound, live) = LoopBound::new(&old, &next, &entry, domain, &mut budget).unwrap();
+    let (bound, live) = LoopBound::new(
+        &old,
+        &next,
+        &entry,
+        ValueAlgebra::new(domain).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     assert!(
         bound
-            .update(&live, &entry, domain, &mut budget)
+            .update(
+                &live,
+                &entry,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut budget
+            )
             .unwrap()
             .is_none()
     );
-    let sibling = instantiate(&bound.bound, domain).unwrap();
+    let sibling = instantiate(&bound.bound, ValueAlgebra::new(domain).borrowed()).unwrap();
     assert_ne!(
         live.store
             .slot_root(fixtures::address(0x101), false)
@@ -112,19 +135,31 @@ fn materializing_a_canonical_loop_bound_is_idempotent_without_reusing_sources() 
 fn later_locations_flow_into_defaults_and_do_not_grow_the_loop_layout() {
     let domain = Domain::default();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
-    let old = transfer::initial(&world, &entry, domain).unwrap();
+    let old = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let mut next = old.clone();
     let owner = fixtures::address(0x101);
     next.store
         .write_checked(owner, &fixtures::word(0), &fixtures::word(7), domain)
         .unwrap();
     let mut budget = WorkBudget::new(1_000_000_000_000);
-    let (bound, mut live) = LoopBound::new(&old, &next, &entry, domain, &mut budget).unwrap();
+    let (bound, mut live) = LoopBound::new(
+        &old,
+        &next,
+        &entry,
+        ValueAlgebra::new(domain).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     live.store
         .write_checked(owner, &fixtures::word(999), &fixtures::word(99), domain)
         .unwrap();
     let (wider, live) = bound
-        .update(&live, &entry, domain, &mut budget)
+        .update(
+            &live,
+            &entry,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+        )
         .unwrap()
         .unwrap();
     assert!(
@@ -143,7 +178,12 @@ fn later_locations_flow_into_defaults_and_do_not_grow_the_loop_layout() {
         .unwrap();
     assert!(
         wider
-            .update(&another, &entry, domain, &mut budget)
+            .update(
+                &another,
+                &entry,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut budget
+            )
             .unwrap()
             .is_none()
     );
@@ -158,13 +198,25 @@ fn later_locations_flow_into_defaults_and_do_not_grow_the_loop_layout() {
 fn rejected_loop_projection_leaves_inputs_and_old_bound_unchanged() {
     let domain = Domain::default();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
-    let old = transfer::initial(&world, &entry, domain).unwrap();
+    let old = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let mut budget = WorkBudget::new(1_000_000_000_000);
-    let (bound, live) = LoopBound::new(&old, &old, &entry, domain, &mut budget).unwrap();
+    let (bound, live) = LoopBound::new(
+        &old,
+        &old,
+        &entry,
+        ValueAlgebra::new(domain).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     let before = bound.bound.clone();
     let mut budget = WorkBudget::new(0);
     assert!(matches!(
-        bound.update(&live, &entry, domain, &mut budget),
+        bound.update(
+            &live,
+            &entry,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget
+        ),
         Err(MachineError::Work)
     ));
     assert!(semantic_eq(&bound.bound, &before));
@@ -182,7 +234,7 @@ fn rejected_loop_projection_leaves_inputs_and_old_bound_unchanged() {
 fn memory_and_transient_bounds_keep_both_inputs_and_roundtrip_stably() {
     let domain = Domain::default();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
-    let mut old = transfer::initial(&world, &entry, domain).unwrap();
+    let mut old = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let owner = fixtures::address(0x101);
     old.active_mut()
         .memory
@@ -200,7 +252,14 @@ fn memory_and_transient_bounds_keep_both_inputs_and_roundtrip_stably() {
         .write_transient_checked(owner, &fixtures::word(0), &fixtures::word(9), domain)
         .unwrap();
     let mut budget = WorkBudget::new(1_000_000_000_000);
-    let (bound, live) = LoopBound::new(&old, &next, &entry, domain, &mut budget).unwrap();
+    let (bound, live) = LoopBound::new(
+        &old,
+        &next,
+        &entry,
+        ValueAlgebra::new(domain).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     let memory = live.active().memory.read_word(&fixtures::word(0), domain);
     let transient = live.store.read_transient(owner, &fixtures::word(0), domain);
     for value in [7, 9] {
@@ -209,7 +268,12 @@ fn memory_and_transient_bounds_keep_both_inputs_and_roundtrip_stably() {
     }
     assert!(
         bound
-            .update(&live, &entry, domain, &mut budget)
+            .update(
+                &live,
+                &entry,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut budget
+            )
             .unwrap()
             .is_none()
     );
@@ -227,7 +291,7 @@ fn memory_and_transient_bounds_keep_both_inputs_and_roundtrip_stably() {
 fn unknown_alias_writes_weaken_retained_cells_as_well_as_the_default() {
     let domain = Domain::default();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
-    let mut old = transfer::initial(&world, &entry, domain).unwrap();
+    let mut old = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let owner = fixtures::address(0x101);
     old.store
         .write_checked(owner, &fixtures::word(0), &fixtures::word(7), domain)
@@ -237,13 +301,25 @@ fn unknown_alias_writes_weaken_retained_cells_as_well_as_the_default() {
         .write_checked(owner, &fixtures::word(0), &fixtures::word(9), domain)
         .unwrap();
     let mut budget = WorkBudget::new(1_000_000_000_000);
-    let (bound, mut live) = LoopBound::new(&old, &next, &entry, domain, &mut budget).unwrap();
+    let (bound, mut live) = LoopBound::new(
+        &old,
+        &next,
+        &entry,
+        ValueAlgebra::new(domain).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     let key = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
     live.store
         .write_checked(owner, &key, &fixtures::word(99), domain)
         .unwrap();
     let (_, live) = bound
-        .update(&live, &entry, domain, &mut budget)
+        .update(
+            &live,
+            &entry,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+        )
         .unwrap()
         .unwrap();
     for value in [7, 9, 99] {
@@ -273,9 +349,16 @@ fn out_of_layout_touches_and_log_sources_enter_complete_envelopes() {
     use crate::world::{AbstractLog, ByteArray, LogKey, LogSourceKind};
     let domain = Domain::default();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
-    let old = transfer::initial(&world, &entry, domain).unwrap();
+    let old = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let mut budget = WorkBudget::new(1_000_000_000_000);
-    let (bound, mut live) = LoopBound::new(&old, &old, &entry, domain, &mut budget).unwrap();
+    let (bound, mut live) = LoopBound::new(
+        &old,
+        &old,
+        &entry,
+        ValueAlgebra::new(domain).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     let owner = fixtures::address(0x101);
     let other = fixtures::address(0x200);
     let code_hash = live.active().key.code_hash;
@@ -297,7 +380,12 @@ fn out_of_layout_touches_and_log_sources_enter_complete_envelopes() {
         )
         .unwrap();
     let (_, mut live) = bound
-        .update(&live, &entry, domain, &mut budget)
+        .update(
+            &live,
+            &entry,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+        )
         .unwrap()
         .unwrap();
     assert_ne!(live.store.touched_in_transaction(other), Some(false));
@@ -316,7 +404,7 @@ fn expression_retention_refusal_retries_a_complete_coarse_bound() {
     use crate::domain::relational::RelationLimits;
     let domain = Domain::default();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
-    let mut old = transfer::initial(&world, &entry, domain).unwrap();
+    let mut old = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let owner = fixtures::address(0x101);
     let value = AbstractValue::unsigned_range(U256::from(7), U256::from(9)).unwrap();
     for key in 0..8 {
@@ -328,13 +416,20 @@ fn expression_retention_refusal_retries_a_complete_coarse_bound() {
         max_nodes: 24,
         ..domain.spec().relations()
     }));
-    let summary = form(&old, &entry, smaller).unwrap();
+    let summary = form(&old, &entry, ValueAlgebra::new(smaller).borrowed()).unwrap();
     assert!(
-        instantiate(&summary, smaller).is_err(),
+        instantiate(&summary, ValueAlgebra::new(smaller).borrowed()).is_err(),
         "fixture must exercise retained expression refusal"
     );
     let mut budget = WorkBudget::new(1_000_000_000_000);
-    let (bound, live) = LoopBound::new(&old, &old, &entry, smaller, &mut budget).unwrap();
+    let (bound, live) = LoopBound::new(
+        &old,
+        &old,
+        &entry,
+        ValueAlgebra::new(smaller).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     for key in 0..8 {
         for value in [7, 8, 9] {
             assert!(
@@ -348,7 +443,12 @@ fn expression_retention_refusal_retries_a_complete_coarse_bound() {
     assert!(live.store.logs_unknown());
     assert!(
         bound
-            .update(&live, &entry, smaller, &mut budget)
+            .update(
+                &live,
+                &entry,
+                ValueAlgebra::new(smaller).borrowed(),
+                &mut budget
+            )
             .unwrap()
             .is_none()
     );
@@ -362,7 +462,8 @@ fn feedback_fallback_and_runtime_retry_keep_the_same_whole_state_normalization()
     let domain = Domain::default();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
     let owner = fixtures::address(0x101);
-    let mut input = transfer::initial(&world, &entry, domain).unwrap();
+    let mut input =
+        transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let saved = domain.join(&fixtures::word(3), &fixtures::word(5));
     let current = domain.join(&fixtures::word(7), &fixtures::word(9));
     for key in 0..8 {
@@ -391,14 +492,20 @@ fn feedback_fallback_and_runtime_retry_keep_the_same_whole_state_normalization()
         max_nodes: 24,
         ..domain.spec().relations()
     }));
-    let original = form(&input, &entry, smaller).unwrap();
+    let original = form(&input, &entry, ValueAlgebra::new(smaller).borrowed()).unwrap();
     let before = input.clone();
     assert!(original.active().stack_aliases.same_class(0, 1));
-    assert!(instantiate(&original, smaller).is_err());
+    assert!(instantiate(&original, ValueAlgebra::new(smaller).borrowed()).is_err());
 
     let mut budget = WorkBudget::new(1_000_000_000_000);
-    let (feedback, feedback_live) =
-        LoopBound::new(&input, &input, &entry, smaller, &mut budget).unwrap();
+    let (feedback, feedback_live) = LoopBound::new(
+        &input,
+        &input,
+        &entry,
+        ValueAlgebra::new(smaller).borrowed(),
+        &mut budget,
+    )
+    .unwrap();
     let (runtime, runtime_bound, runtime_live) =
         prepare_runtime_retry(&original, smaller, &mut budget).unwrap();
     assert!(semantic_eq(&feedback.bound, &runtime_bound));
@@ -453,20 +560,34 @@ fn feedback_fallback_and_runtime_retry_keep_the_same_whole_state_normalization()
             .write_checked(owner, &key, &fixtures::word(11), domain)
             .unwrap();
         incoming.active_mut().stack = vec![key.clone(), key];
-        let summary = form(&incoming, &entry, smaller).unwrap();
+        let summary = form(&incoming, &entry, ValueAlgebra::new(smaller).borrowed()).unwrap();
         assert!(summary.active().stack_aliases.same_class(0, 1));
         assert_ne!(summary.storage_observations, Default::default());
         let joined = runtime
-            .join(&runtime_bound, &summary, smaller, &mut budget, false)
+            .join(
+                &runtime_bound,
+                &summary,
+                ValueAlgebra::new(smaller).borrowed(),
+                &mut budget,
+                false,
+            )
             .unwrap();
         assert!(semantic_eq(&runtime_bound, &joined));
         assert!(
             feedback
-                .update(&incoming, &entry, smaller, &mut budget)
+                .update(
+                    &incoming,
+                    &entry,
+                    ValueAlgebra::new(smaller).borrowed(),
+                    &mut budget
+                )
                 .unwrap()
                 .is_none()
         );
     }
     assert_eq!(input, before);
-    assert_eq!(form(&input, &entry, smaller).unwrap(), original);
+    assert_eq!(
+        form(&input, &entry, ValueAlgebra::new(smaller).borrowed()).unwrap(),
+        original
+    );
 }

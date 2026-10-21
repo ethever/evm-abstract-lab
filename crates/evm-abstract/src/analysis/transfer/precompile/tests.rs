@@ -1,6 +1,12 @@
 //! Finite provider comparisons and production transfer/continuation regressions.
 //! Byte/length inclusion checks are not a proof of the complete EVM engine.
 
+use crate::analysis::transfer::Execution;
+use crate::domain::AbstractValue;
+use crate::domain::Domain;
+use crate::domain::ValueAlgebra;
+use crate::world::ByteArray;
+
 use super::*;
 use crate::{
     analysis::{
@@ -36,7 +42,7 @@ fn fixture(
 ) -> (World, Entry, MachinePayload) {
     let world = World::new(fork, "pure precompile fallback");
     let entry = Entry::concrete(target, address(0x900), value(0), input);
-    let payload = initial(&world, &entry, config.domain().unwrap()).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&config.domain().unwrap())).unwrap();
     (world, entry, payload)
 }
 
@@ -52,24 +58,14 @@ fn run(
         entry,
         payload,
         config,
-        config.domain().unwrap(),
+        ValueAlgebra::new(&config.domain().unwrap()),
+        &crate::analysis::RecentDistinctJumps,
         budget,
         StorageReadPolicy::Abstract,
     )
 }
 
-fn context<'a>(config: &'a ExecutionConfig, budget: &'a mut WorkBudget) -> TransferContext<'a> {
-    TransferContext {
-        config,
-        domain: config.domain().unwrap(),
-        budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    }
-}
+use crate::analysis::transfer::testing::context;
 
 fn assert_boundary(result: &Execution, reason: FrontierReason) {
     assert_eq!(result.frontiers.len(), 1);
@@ -362,7 +358,7 @@ fn signature_success_buffers_cover_empty_and_word_and_report_typed_limits() {
     let config = config();
     let input = ByteArray::unknown();
     for id in [PrecompileId::EcRec, PrecompileId::P256Verify] {
-        let data = success_data(&input, &id, config.domain().unwrap()).unwrap();
+        let data = success_data(&input, &id, ValueAlgebra::new(&config.domain().unwrap())).unwrap();
         assert!(data.len().contains(U256::ZERO));
         assert!(data.len().contains(U256::from(32)));
         assert_contains(&data, &[], config.domain().unwrap());
@@ -374,7 +370,11 @@ fn signature_success_buffers_cover_empty_and_word_and_report_typed_limits() {
         summarize(
             &mut result,
             &id,
-            &mut context(&limited, &mut WorkBudget::new(limited.max_work)),
+            &mut context(
+                &limited,
+                &mut WorkBudget::new(limited.max_work),
+                ValueAlgebra::new(&limited.domain().unwrap()),
+            ),
         );
         assert_boundary(
             &result,
@@ -401,6 +401,7 @@ fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() 
     observed
         .write_byte(&value(1), &value(42), 3, domain)
         .expect("observed: retain the original byte fact");
+    let mut common_copy_work = None;
     for (case, input) in [
         ("unknown", unknown),
         ("huge", huge),
@@ -413,8 +414,36 @@ fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() 
         eprintln!("identity case={case}");
         let (world, entry, payload) = fixture(address(4), input, Fork::Osaka, &config);
         let expected = payload.active().calldata.clone();
-        let mut budget = WorkBudget::new(config.max_work);
-        let result = run(&world, &entry, payload, &config, &mut budget);
+        // Each of Return/Revert/Failure stages one ordinary Store; the latter
+        // two additionally restore its checkpoint. Fund those actual new copy
+        // owners without changing the original 50k bound on the other work.
+        let mut copies = WorkBudget::new(usize::MAX);
+        for _ in 0..3 {
+            payload.store.pay_clone_with(&mut copies).unwrap();
+        }
+        for _ in 0..2 {
+            payload
+                .active()
+                .saved_store
+                .state()
+                .pay_clone_with(&mut copies)
+                .unwrap();
+        }
+        let copy_work = copies.used();
+        if let Some(common) = common_copy_work {
+            assert_eq!(
+                copy_work, common,
+                "logical input length cannot change Store copy work"
+            );
+        }
+        common_copy_work = Some(copy_work);
+        let funded = ExecutionConfig {
+            max_work: config.max_work.checked_add(copy_work).unwrap(),
+            ..config.clone()
+        };
+        let limited_input = payload.clone();
+        let mut budget = WorkBudget::new(funded.max_work);
+        let result = run(&world, &entry, payload, &funded, &mut budget);
         let diagnostics = format!(
             "{case}: budget={budget:?}, frontiers={:?}",
             result.frontiers
@@ -430,7 +459,48 @@ fn identity_keeps_full_symbolic_content_and_huge_length_without_materializing() 
             returned.data, expected,
             "{diagnostics}: preserve source, length and all facts"
         );
-        assert!(budget.used() < 50_000, "{diagnostics}");
+        assert!(
+            budget
+                .used()
+                .checked_sub(copy_work)
+                .expect("new copy owners were paid")
+                < 50_000,
+            "{diagnostics}: copy_work={copy_work}"
+        );
+
+        // The same whole input still exercises the original 50k ledger. A
+        // resource stop may retain a valid finalized prefix; cheaper complete
+        // execution must still return the complete original Identity buffer.
+        let mut original_budget = WorkBudget::new(config.max_work);
+        let original = run(&world, &entry, limited_input, &config, &mut original_budget);
+        assert!(original_budget.used() <= 50_000);
+        assert!(original.successors.is_empty() && original.completed_calls.is_empty());
+        if original.frontiers.is_empty() {
+            assert!(
+                original
+                    .outcomes
+                    .iter()
+                    .any(|outcome| outcome.kind == OutcomeKind::Return)
+            );
+        } else {
+            assert!(
+                original
+                    .frontiers
+                    .iter()
+                    .all(|frontier| frontier.reason == FrontierReason::Work)
+            );
+            assert!(original_budget.exhausted());
+        }
+        for returned in original
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome.kind == OutcomeKind::Return)
+        {
+            assert_eq!(
+                returned.data, expected,
+                "{case}: original-ledger prefix is exact"
+            );
+        }
     }
 }
 
@@ -507,7 +577,7 @@ fn entered_child(target: u64, config: &ExecutionConfig) -> (World, Entry, Machin
     callee.balance = value(50);
     world.insert(address(target), callee).unwrap();
     let entry = Entry::concrete(owner, address(0x900), value(0), ByteArray::unknown());
-    let payload = initial(&world, &entry, config.domain().unwrap()).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&config.domain().unwrap())).unwrap();
     let result = run(
         &world,
         &entry,
@@ -824,7 +894,11 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
     let mut entry_budget = WorkBudget::new(config.max_work);
     assert!(super::super::late_failure::at_block_entry(
         &mut entry_execution,
-        &mut context(&config, &mut entry_budget),
+        &mut context(
+            &config,
+            &mut entry_budget,
+            ValueAlgebra::new(&config.domain().unwrap())
+        ),
     ));
     assert_eq!(entry_execution.payload, payload);
     assert!(entry_execution.frontiers.is_empty());
@@ -862,7 +936,8 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         .iter()
         .map(|kind| root_finalization_work(&payload, *kind, &config))
         .sum::<usize>();
-    let prefix = entry_work + retained_input;
+    let retained_prefix = entry_work + retained_input;
+    let prefix = retained_prefix + payload.active().calldata.len().singleton_work();
     assert_eq!(
         full_budget.used(),
         prefix + receipts.validation_ready + finalization_work
@@ -875,6 +950,7 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         // Input preflight precedes the optimized summary and keeps its receipt.
         (entry_work, entry_work, original_key.clone()),
         (entry_work + scan, entry_work + scan, original_key.clone()),
+        (retained_prefix, retained_prefix, original_key.clone()),
         (prefix + receipts.key_census - 1, prefix, None),
         (
             prefix + receipts.key_admitted - 1,
@@ -968,7 +1044,11 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
     summarize(
         &mut result,
         &PrecompileId::Bn254Add,
-        &mut context(&limited, &mut budget),
+        &mut context(
+            &limited,
+            &mut budget,
+            ValueAlgebra::new(&limited.domain().unwrap()),
+        ),
     );
     assert_boundary(
         &result,
@@ -987,7 +1067,11 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
         summarize(
             &mut result,
             &PrecompileId::Bn254Add,
-            &mut context(&config, &mut budget),
+            &mut context(
+                &config,
+                &mut budget,
+                ValueAlgebra::new(&config.domain().unwrap()),
+            ),
         );
         assert_boundary(&result, FrontierReason::Relations(QueryReason::Cancelled));
         assert_eq!(result.payload, payload);
@@ -1017,7 +1101,7 @@ fn summary_completion_refusal_keeps_only_the_finalized_root_prefix() {
         .unwrap();
     world.insert(empty, Account::empty()).unwrap();
     world.insert(created, Account::absent()).unwrap();
-    let mut payload = initial(&world, &entry, domain).unwrap();
+    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     payload
         .store
         .write_checked(owner, &value(0), &value(11), domain)
@@ -1137,7 +1221,11 @@ fn huge_native_and_materialization_work_use_summaries_even_with_a_large_ledger()
     assert_eq!(
         materialize(
             &concrete,
-            &mut context(&config, &mut WorkBudget::new(config.max_work)),
+            &mut context(
+                &config,
+                &mut WorkBudget::new(config.max_work),
+                ValueAlgebra::new(&config.domain().unwrap())
+            ),
         )
         .unwrap(),
         Some(blake)
@@ -1150,7 +1238,11 @@ fn huge_native_and_materialization_work_use_summaries_even_with_a_large_ledger()
             &mut result,
             Fork::Osaka,
             address(target),
-            &mut context(&config, &mut budget),
+            &mut context(
+                &config,
+                &mut budget,
+                ValueAlgebra::new(&config.domain().unwrap()),
+            ),
             |_, _| panic!("an over-quantum native must not execute"),
         );
         assert!(result.frontiers.is_empty());
@@ -1174,7 +1266,11 @@ fn exact_native_admission_keeps_cheap_computation_and_sticky_resource_refusal() 
         &mut result,
         Fork::Osaka,
         address(2),
-        &mut context(&config, &mut WorkBudget::new(config.max_work)),
+        &mut context(
+            &config,
+            &mut WorkBudget::new(config.max_work),
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
         |native, input| {
             called = true;
             native.execute(input, u64::MAX, 0)
@@ -1190,7 +1286,11 @@ fn exact_native_admission_keeps_cheap_computation_and_sticky_resource_refusal() 
         &mut result,
         Fork::Osaka,
         address(2),
-        &mut context(&config, &mut budget),
+        &mut context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
         |_, _| panic!("a refused ledger must not execute native work"),
     );
     assert_boundary(&result, FrontierReason::Work);
@@ -1268,7 +1368,11 @@ fn fatal_backend_and_output_retention_errors_never_turn_into_native_failure() {
         &mut result,
         address(6),
         Err(PrecompileError::Fatal("backend refused".into())),
-        &mut context(&config, &mut WorkBudget::new(config.max_work)),
+        &mut context(
+            &config,
+            &mut WorkBudget::new(config.max_work),
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
     );
     assert_boundary(&result, FrontierReason::Precompile(address(6)));
     let mut result = empty_execution(payload.clone());
@@ -1276,7 +1380,11 @@ fn fatal_backend_and_output_retention_errors_never_turn_into_native_failure() {
         &mut result,
         address(6),
         Ok(PrecompileOutput::new(0, vec![7; 64].into(), 0)),
-        &mut context(&config, &mut WorkBudget::new(0)),
+        &mut context(
+            &config,
+            &mut WorkBudget::new(0),
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
     );
     assert_boundary(&result, FrontierReason::Work);
     let limited = ExecutionConfig {
@@ -1288,7 +1396,11 @@ fn fatal_backend_and_output_retention_errors_never_turn_into_native_failure() {
         &mut result,
         address(6),
         Ok(PrecompileOutput::new(0, vec![7; 64].into(), 0)),
-        &mut context(&limited, &mut WorkBudget::new(limited.max_work)),
+        &mut context(
+            &limited,
+            &mut WorkBudget::new(limited.max_work),
+            ValueAlgebra::new(&limited.domain().unwrap()),
+        ),
     );
     assert_boundary(&result, FrontierReason::Memory);
     let mut result = empty_execution(payload.clone());
@@ -1296,7 +1408,11 @@ fn fatal_backend_and_output_retention_errors_never_turn_into_native_failure() {
         &mut result,
         address(6),
         Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0)),
-        &mut context(&config, &mut WorkBudget::new(config.max_work)),
+        &mut context(
+            &config,
+            &mut WorkBudget::new(config.max_work),
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
     );
     assert!(result.frontiers.is_empty());
     assert_eq!(result.outcomes.len(), 1);
@@ -1307,7 +1423,11 @@ fn fatal_backend_and_output_retention_errors_never_turn_into_native_failure() {
         &mut result,
         address(6),
         Ok(PrecompileOutput::revert(0, vec![7; 64].into(), 0)),
-        &mut context(&config, &mut WorkBudget::new(config.max_work)),
+        &mut context(
+            &config,
+            &mut WorkBudget::new(config.max_work),
+            ValueAlgebra::new(&config.domain().unwrap()),
+        ),
     );
     assert!(result.frontiers.is_empty());
     assert_eq!(result.outcomes.len(), 1);

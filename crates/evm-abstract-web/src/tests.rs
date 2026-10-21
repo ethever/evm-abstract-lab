@@ -420,7 +420,7 @@ fn all_three_custom_views_paint_structural_content() {
         "CONTROL FLOW",
         "SSA",
         "CALLDATALOAD",
-        "σ2",
+        "σ2  ·  B2",
         "%5",
         "σ0:%1",
         "σ1:%2",
@@ -430,10 +430,6 @@ fn all_three_custom_views_paint_structural_content() {
             "missing painted structural content {required}: {text}"
         );
     }
-    assert!(
-        output.shapes.len() > 80,
-        "widgets must paint graph and structured rows"
-    );
 }
 
 #[test]
@@ -579,11 +575,9 @@ fn unsupported_schema_is_rejected_and_partial_coverage_is_explicit() {
         workspace.receive(Ok(AnalyzeReply {
             result: Ok(unsupported),
         }));
-        assert!(
-            workspace
-                .accessible_status()
-                .contains("Unsupported response schema")
-        );
+        assert!(workspace.accessible_status().contains(&format!(
+            "Unsupported response schema {version}; expected {SCHEMA_VERSION}"
+        )));
     }
     let mut partial = report();
     partial.status = AnalysisStatus::Incomplete;

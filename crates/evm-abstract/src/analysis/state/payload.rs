@@ -1,25 +1,24 @@
-//! Canonical numerical bounds, finite stack aliases and independent instances.
+//! Numerical bounds, finite stack aliases and independent instances.
+
+use crate::domain::{EvmNumericAlgebra, WordElement};
 
 use super::{
-    AbstractValue, ByteArray, CallStack, ChildFrame, Continuation, Domain, Entry, FrameByteKind,
-    FrameCode, FrameMapOrder, FrameSummary, MachineError, MachinePayload, NumericValue,
-    PayloadSummary, RelationState, RootFrame, Snapshot, identify, stack_alias::StackAliases,
+    AlgebraRef, EvmByteArray, EvmCallStack, EvmChildFrame, EvmContinuation, EvmEntry,
+    EvmFrameSummary, EvmMachinePayload, EvmPayloadSummary, EvmRootFrame, EvmSnapshot, EvmValue,
+    FrameByteKind, FrameCode, FrameMapOrder, MachineError, RelationState, identify,
+    stack_alias::StackAliases,
 };
 
-fn scalar(value: &AbstractValue) -> AbstractValue {
-    AbstractValue::from_numeric(
-        value
-            .singleton()
-            .map_or_else(|| value.numeric().clone(), NumericValue::constant),
-    )
+fn scalar<N: WordElement>(value: &EvmValue<N>) -> EvmValue<N> {
+    EvmValue::from_numeric(value.numeric().clone())
 }
 
-fn join_scalar(
-    old: &AbstractValue,
-    next: &AbstractValue,
-    domain: Domain,
+fn join_scalar<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    old: &EvmValue<N>,
+    next: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
     widen: bool,
-) -> AbstractValue {
+) -> EvmValue<N> {
     let joined = scalar(&domain.join(old, next));
     if widen {
         scalar(&domain.widen_procedure(old, &joined))
@@ -28,11 +27,19 @@ fn join_scalar(
     }
 }
 
-impl PayloadSummary {
-    pub(in crate::analysis) fn active(&self) -> &FrameSummary {
+impl<N: WordElement> EvmPayloadSummary<N> {
+    fn check_shape(&self) -> Result<(), MachineError> {
+        if self.frames.len().checked_sub(1) != Some(self.continuations.len()) {
+            return Err(MachineError::Shape);
+        }
+        Ok(())
+    }
+
+    pub(in crate::analysis) fn active(&self) -> &EvmFrameSummary<N> {
         self.frames.last().expect("nonempty relative stack")
     }
-    pub(in crate::analysis) fn work_size(&self) -> usize {
+    /// Conservative logical charge for retained data and independent replay.
+    pub fn work_size(&self) -> usize {
         self.work
     }
 
@@ -70,7 +77,9 @@ impl PayloadSummary {
 /// Tree lookup/allocation and numeric Eq are reserved before alias formation.
 /// Numeric Eq short-circuits unequal finite lengths; equal bounds have equal
 /// numeric traversal sizes. Source expression comparison is never required.
-pub(in crate::analysis) fn alias_form_work(payload: &MachinePayload) -> usize {
+pub(in crate::analysis) fn alias_form_work<N: WordElement>(
+    payload: &EvmMachinePayload<N>,
+) -> usize {
     payload.call_stack.iter().fold(0usize, |work, frame| {
         if frame.code == FrameCode::Unknown {
             work
@@ -83,14 +92,35 @@ pub(in crate::analysis) fn alias_form_work(payload: &MachinePayload) -> usize {
     })
 }
 
-pub(in crate::analysis) fn form(
-    payload: &MachinePayload,
-    entry: &Entry,
-    domain: Domain,
-) -> Result<PayloadSummary, MachineError> {
+#[cfg(test)]
+pub(in crate::analysis) fn form<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    payload: &EvmMachinePayload<N>,
+    entry: &EvmEntry<N>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<EvmPayloadSummary<N>, MachineError> {
+    form_with_history(payload, entry, domain, true)
+}
+
+/// Form a bound after the caller applies its immutable context policy. Keeping
+/// these histories unchanged prevents a default canonicalizer from overriding
+/// a custom context. Unknown-environment roots still erase private context.
+pub(in crate::analysis) fn form_normalized<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    payload: &EvmMachinePayload<N>,
+    entry: &EvmEntry<N>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<EvmPayloadSummary<N>, MachineError> {
+    form_with_history(payload, entry, domain, false)
+}
+
+fn form_with_history<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    payload: &EvmMachinePayload<N>,
+    entry: &EvmEntry<N>,
+    domain: AlgebraRef<'_, D>,
+    canonicalize: bool,
+) -> Result<EvmPayloadSummary<N>, MachineError> {
     MachineError::check_cancelled()?;
     let storage_observations =
-        super::storage_observations::StorageObservations::form(payload, domain)?;
+        super::storage_observations::EvmStorageObservations::form(payload, domain)?;
     let frames = payload
         .call_stack
         .iter()
@@ -98,8 +128,10 @@ pub(in crate::analysis) fn form(
             let unknown = frame.code == FrameCode::Unknown;
             let history = if unknown {
                 Vec::new()
-            } else {
+            } else if canonicalize {
                 super::context::canonical(&frame.key.jump_history)?
+            } else {
+                frame.key.jump_history.clone()
             };
             let stack = if unknown {
                 Vec::new()
@@ -123,22 +155,22 @@ pub(in crate::analysis) fn form(
                 |bytes, _, kind| {
                     Ok(if unknown {
                         match kind {
-                            FrameByteKind::Memory => ByteArray::memory(),
-                            _ => ByteArray::empty(),
+                            FrameByteKind::Memory => EvmByteArray::memory(),
+                            _ => EvmByteArray::empty(),
                         }
-                        .summary_projection(domain)?
+                        .summary_projection_with(domain)?
                     } else {
-                        bytes.summary_projection(domain)?
+                        bytes.summary_projection_with(domain)?
                     })
                 },
-                |saved, _| Ok(saved.state().summary_projection(domain)?),
+                |saved, _| Ok(saved.state().summary_projection_with(domain)?),
             )?;
             summary.key.jump_history = history;
             summary.key.stack_height = summary.stack.len();
             if unknown {
                 summary.key.basic_block_index = 0;
             }
-            Ok(FrameSummary {
+            Ok(EvmFrameSummary {
                 frame: summary,
                 stack_aliases,
             })
@@ -148,16 +180,16 @@ pub(in crate::analysis) fn form(
         .call_stack
         .children()
         .iter()
-        .map(|child| Continuation {
+        .map(|child| EvmContinuation {
             output_offset: scalar(&child.continuation.output_offset),
             output_size: scalar(&child.continuation.output_size),
             ..child.continuation.clone()
         })
         .collect();
-    let mut summary = PayloadSummary {
+    let mut summary = EvmPayloadSummary {
         frames,
         continuations,
-        store: payload.store.summary_projection(domain)?,
+        store: payload.store.summary_projection_with(domain)?,
         storage_observations,
         work: 0,
         location: payload.key(),
@@ -167,24 +199,26 @@ pub(in crate::analysis) fn form(
     Ok(summary)
 }
 
-pub(in crate::analysis) fn join(
-    old: &PayloadSummary,
-    next: &PayloadSummary,
-    domain: Domain,
+pub(in crate::analysis) fn join<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    old: &EvmPayloadSummary<N>,
+    next: &EvmPayloadSummary<N>,
+    domain: AlgebraRef<'_, D>,
     widen: bool,
-) -> Result<PayloadSummary, MachineError> {
+) -> Result<EvmPayloadSummary<N>, MachineError> {
     MachineError::check_cancelled()?;
+    old.check_shape()?;
+    next.check_shape()?;
     if old.frames.len() != next.frames.len() || old.continuations.len() != next.continuations.len()
     {
         return Err(MachineError::Shape);
     }
-    let store = old.store.join(&next.store, domain, widen);
+    let store = old.store.join_with(&next.store, domain, widen);
     let storage_observations =
         old.storage_observations
             .join(&next.storage_observations, domain, widen)?;
     let mut frames = Vec::with_capacity(old.frames.len());
     for (left, right) in old.frames.iter().zip(&next.frames) {
-        if !left.same_shape(right) {
+        if !left.same_shape(right) || left.environment_calldata != right.environment_calldata {
             return Err(MachineError::Shape);
         }
         let stack = left
@@ -194,15 +228,15 @@ pub(in crate::analysis) fn join(
             .map(|(left, right)| join_scalar(left, right, domain, widen))
             .collect();
         let stack_aliases = left.stack_aliases.intersect(&right.stack_aliases)?;
-        frames.push(FrameSummary {
+        frames.push(EvmFrameSummary {
             frame: left.try_zip(
                 right,
                 stack,
                 FrameMapOrder::ScalarsFirst,
                 |left, right| Ok(join_scalar(left, right, domain, widen)),
                 |left, right, _| Ok(join_scalar(left, right, domain, widen)),
-                |left, right, _| Ok(left.join(right, domain, widen)),
-                |left, right| Ok(left.join(right, domain, widen)),
+                |left, right, _| Ok(left.join_with(right, domain, widen)),
+                |left, right| Ok(left.join_with(right, domain, widen)),
             )?,
             stack_aliases,
         });
@@ -220,7 +254,7 @@ pub(in crate::analysis) fn join(
             join_scalar(&left.output_offset, &right.output_offset, domain, widen);
         output.output_size = join_scalar(&left.output_size, &right.output_size, domain, widen);
     }
-    let mut out = PayloadSummary {
+    let mut out = EvmPayloadSummary {
         frames,
         continuations,
         store,
@@ -235,7 +269,10 @@ pub(in crate::analysis) fn join(
     Ok(out)
 }
 
-pub(in crate::analysis) fn semantic_eq(left: &PayloadSummary, right: &PayloadSummary) -> bool {
+pub(in crate::analysis) fn semantic_eq<N: WordElement>(
+    left: &EvmPayloadSummary<N>,
+    right: &EvmPayloadSummary<N>,
+) -> bool {
     left.frames == right.frames
         && left.continuations == right.continuations
         && left.store == right.store
@@ -244,10 +281,12 @@ pub(in crate::analysis) fn semantic_eq(left: &PayloadSummary, right: &PayloadSum
 
 /// Summaries are not executable arrays. Each invocation gets independent source
 /// variables; only its own retained stack classes share scalar expressions.
-pub(in crate::analysis) fn instantiate(
-    payload: &PayloadSummary,
-    domain: Domain,
-) -> Result<MachinePayload, MachineError> {
+pub(in crate::analysis) fn instantiate<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    payload: &EvmPayloadSummary<N>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<EvmMachinePayload<N>, MachineError> {
+    MachineError::check_cancelled()?;
+    payload.check_shape()?;
     let frames = payload
         .frames
         .iter()
@@ -259,25 +298,25 @@ pub(in crate::analysis) fn instantiate(
                 FrameMapOrder::BytesFirst,
                 |value, _| Ok(identify(value.clone(), enabled)),
                 |value, _, _| Ok(Some(identify(value.clone(), enabled))),
-                |bytes, _, _| Ok(bytes.instantiate(domain)?),
-                |saved, _| Ok(Snapshot::from_state(saved.instantiate(domain)?)),
+                |bytes, _, _| Ok(bytes.instantiate_with(domain)?),
+                |saved, _| Ok(EvmSnapshot::from_state(saved.instantiate_with(domain)?)),
             )
         })
         .collect::<Result<Vec<_>, MachineError>>()?;
     let mut frames = frames.into_iter();
-    let root = RootFrame {
+    let root = EvmRootFrame {
         state: frames.next().expect("nonempty procedure stack"),
     };
     let children = frames
         .zip(&payload.continuations)
-        .map(|(state, continuation)| ChildFrame {
+        .map(|(state, continuation)| EvmChildFrame {
             state,
             continuation: continuation.clone(),
         })
         .collect();
-    let mut output = MachinePayload {
-        call_stack: CallStack::from_parts(root, children),
-        store: payload.store.instantiate(domain)?,
+    let mut output = EvmMachinePayload {
+        call_stack: EvmCallStack::from_parts(root, children),
+        store: payload.store.instantiate_with(domain)?,
         relations: RelationState::default(),
     };
     payload

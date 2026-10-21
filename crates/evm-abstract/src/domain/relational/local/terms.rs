@@ -2,6 +2,7 @@
 //! mathematical non-overflow; unknown overlap keeps the original expression.
 
 use super::{Engine, LocalResult, QueryReason, Stop};
+use crate::domain::WordElement;
 use crate::domain::symbolic::{
     ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, ExprKind, SlotStateId, SlotStateKind,
 };
@@ -16,7 +17,7 @@ pub(super) fn denied(error: ExprError) -> Stop {
     })
 }
 
-impl Engine<'_, '_> {
+impl<D: crate::domain::EvmNumericAlgebra> Engine<'_, '_, '_, D> {
     fn operation(&mut self, code: u8, args: &[ExprId]) -> LocalResult<ExprId> {
         self.work.charge(args.len().saturating_add(1))?;
         self.work.prepay(args.iter().fold(1usize, |n, expression| {

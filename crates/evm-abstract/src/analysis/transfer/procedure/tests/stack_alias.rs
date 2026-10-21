@@ -18,7 +18,8 @@ fn wider_alias_input_reexecutes_instead_of_replaying_a_narrow_result() {
     let config = ExecutionConfig::default();
     let domain = config.domain().unwrap();
     let (world, entry) = fixture(&[(0x101, "185f5260205ff3")]);
-    let mut input = super::super::super::initial(&world, &entry, domain).unwrap();
+    let mut input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let x = fresh();
     input.active_mut().stack = vec![x.clone(), x];
     let mut table = Table::default();
@@ -68,11 +69,12 @@ fn wider_alias_input_reexecutes_instead_of_replaying_a_narrow_result() {
 
 #[test]
 fn formation_is_prepaid_and_cancellation_does_not_install_a_partial_entry() {
-    use super::super::{Counters, Solver, StorageReadPolicy, Table, WorkBudget};
+    use super::super::{Counters, StorageReadPolicy, Table, WorkBudget};
     let config = ExecutionConfig::default();
     let domain = config.domain().unwrap();
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut input = super::super::super::initial(&world, &entry, domain).unwrap();
+    let mut input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let x = fresh();
     input.active_mut().stack = vec![x.clone(), x];
     let first_fee = input.work_size().saturating_mul(4);
@@ -83,17 +85,16 @@ fn formation_is_prepaid_and_cancellation_does_not_install_a_partial_entry() {
         let mut table = Table::default();
         let mut budget = WorkBudget::new(maximum);
         let mut counters = Counters::default();
-        let result = Solver {
-            table: &mut table,
-            world: &world,
-            entry: &entry,
-            config: &config,
-            domain,
-            budget: &mut budget,
-            counters: &mut counters,
-            storage_reads: StorageReadPolicy::Abstract,
-        }
-        .procedure(input.clone());
+        let result = table
+            .solver(
+                &world,
+                &entry,
+                &config,
+                &mut budget,
+                &mut counters,
+                StorageReadPolicy::Abstract,
+            )
+            .procedure(input.clone());
         assert_eq!(
             result.unwrap_err().frontier_reason(),
             crate::analysis::FrontierReason::Work,

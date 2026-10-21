@@ -1,8 +1,10 @@
 //! Demand-local guard choices select only their corresponding operand facts.
 
 use super::{ConditionalFacts, Facts};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    AbstractValue, Domain,
+    EvmValue,
     relational::intersect_numeric,
     symbolic::{ExprError, ExprId},
 };
@@ -10,51 +12,219 @@ use crate::resource::WorkBudget;
 use alloy_primitives::U256;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
+mod bindings;
 mod memo;
+pub(in crate::world::bytes) use bindings::BindingBudget;
 pub(in crate::world::bytes) use memo::{CONTEXTS, Preparation, preparation};
 
 /// Resolve the active metadata scopes once per guard environment. Scalar
 /// lookups then inspect only their own key in those maps, never the fact DAG.
 /// Clones share a complete-value memo; changed choices start a separate memo.
 /// The shared demand owns no snapshots and dies before its borrowed facts.
-#[derive(Clone)]
-pub(in crate::world::bytes) struct Context<'a> {
-    facts: &'a Facts,
-    conditional: Option<&'a ConditionalFacts>,
+pub(in crate::world) struct Context<
+    'a,
+    N: WordElement = crate::domain::NumericValue,
+    D: EvmNumericAlgebra<Element = N> = crate::domain::Domain,
+> {
+    domain: AlgebraRef<'a, D>,
+    facts: &'a Facts<N>,
+    conditional: Option<&'a ConditionalFacts<N>>,
     choices: Rc<BTreeMap<ExprId, bool>>,
-    active: Rc<Vec<&'a Facts>>,
-    memo: Rc<RefCell<memo::Memo<'a>>>,
-    demand: Option<Rc<memo::Demand<'a>>>,
+    active: Rc<Vec<&'a Facts<N>>>,
+    memo: Rc<RefCell<memo::Memo<'a, N, D>>>,
+    demand: Option<Rc<memo::Demand<'a, D>>>,
+    binding_budget: Option<&'a BindingBudget<'a>>,
+    retained_words: bool,
 }
 
-impl<'a> Context<'a> {
-    pub(in crate::world::bytes) fn new(
-        facts: &'a Facts,
-        conditional: Option<&'a ConditionalFacts>,
+impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
+    pub(in crate::world) fn new(
+        facts: &'a Facts<N>,
+        conditional: Option<&'a ConditionalFacts<N>>,
+        domain: AlgebraRef<'a, D>,
     ) -> Self {
         let mut out = Self {
+            domain,
             facts,
             conditional,
             choices: Rc::new(BTreeMap::new()),
             active: Rc::new(Vec::new()),
-            memo: Rc::new(RefCell::new(memo::Memo::default())),
+            memo: Rc::new(RefCell::new(memo::Memo::<N, D>::default())),
             demand: None,
+            binding_budget: None,
+            retained_words: conditional.is_some_and(|facts| facts.retained_words),
         };
+        out.retained_words |= facts.iter().any(|(expression, value)| {
+            matches!(
+                expression.kind(),
+                crate::domain::symbolic::ExprKind::WordRead { .. }
+            ) && value.numeric().requires_retained_binding()
+        });
         out.select();
         out
+    }
+
+    #[cfg(test)]
+    pub(in crate::world::bytes) fn algebra(&self) -> AlgebraRef<'a, D> {
+        self.domain
+    }
+
+    pub(in crate::world::bytes) fn prepaid(
+        facts: &'a Facts<N>,
+        conditional: Option<&'a ConditionalFacts<N>>,
+        domain: AlgebraRef<'a, D>,
+        binding_budget: &'a BindingBudget<'a>,
+    ) -> Self {
+        let mut out = Self::new(facts, conditional, domain);
+        out.binding_budget = Some(binding_budget);
+        out
+    }
+
+    /// Retention follows the expression association, never equality of exports.
+    pub(in crate::world) fn has_binding_value(&self, expression: &ExprId) -> bool {
+        self.fact(self.facts, expression).is_some()
+            || self
+                .active
+                .iter()
+                .any(|facts| self.fact(facts, expression).is_some())
+    }
+
+    pub(in crate::world) fn pay_binding(
+        &self,
+        numeric: &N,
+        observation: &crate::domain::WordObservation,
+    ) -> bool {
+        self.pay_extra(numeric.import_binding_work(observation))
+    }
+
+    /// An additional singleton proof beyond a failed optional interval view.
+    /// The quote is inspected and paid before the custom query is invoked.
+    pub(in crate::world::bytes) fn prove_singleton(&self, value: &EvmValue<N>) -> Option<U256> {
+        self.pay_extra(value.singleton_work())
+            .then(|| value.singleton())
+            .flatten()
+    }
+
+    pub(in crate::world::bytes) fn retained_word(
+        &self,
+        expression: &ExprId,
+        domain: AlgebraRef<'_, D>,
+    ) -> Option<EvmValue<N>> {
+        if !self.retained_words {
+            return None;
+        }
+        if let crate::domain::symbolic::ExprKind::Ite {
+            condition,
+            then_value,
+            else_value,
+        } = expression.kind()
+        {
+            let selected = super::super::numeric::scalar_in(condition, self, domain);
+            if !selected.may_be_zero() {
+                return self
+                    .branch(condition, true)
+                    .retained_word(then_value, domain);
+            }
+            if !selected.may_be_nonzero() {
+                return self
+                    .branch(condition, false)
+                    .retained_word(else_value, domain);
+            }
+            let left = self
+                .branch(condition, true)
+                .retained_word(then_value, domain)?;
+            let right = self
+                .branch(condition, false)
+                .retained_word(else_value, domain)?;
+            return Some(self.join_with(domain, &left, &right));
+        }
+        if expression.as_constant().is_some() {
+            return Some(super::super::numeric::scalar_in(expression, self, domain));
+        }
+        if !matches!(
+            expression.kind(),
+            crate::domain::symbolic::ExprKind::WordRead { .. }
+        ) {
+            return None;
+        }
+        let mut work = 0usize;
+        let mut retained = false;
+        for facts in std::iter::once(self.facts).chain(self.active.iter().copied()) {
+            if let Some(value) = self.fact(facts, expression) {
+                retained |= value.numeric().requires_retained_binding();
+                work = work.saturating_add(value.clone_work());
+            }
+        }
+        // Quote every actual payload copy before resolve/memo can clone it.
+        // The ordinary context still selects/intersects the same active scopes.
+        (retained && self.pay_extra(work))
+            .then(|| self.value(expression, domain))
+            .flatten()
+    }
+
+    fn pay_extra(&self, work: usize) -> bool {
+        if self.stopped() {
+            return false;
+        }
+        // Zero is the old raw NumericValue materialization already funded by
+        // the caller. Do not add a payment/cancellation receipt for that case.
+        if work == 0 {
+            return true;
+        }
+        if let Some(demand) = &self.demand {
+            demand.pay_reader(|| work)
+        } else {
+            self.binding_budget.is_none_or(|budget| budget.pay(work))
+        }
+    }
+
+    /// The pack quote owns certification and result construction, even when
+    /// the hook declines. Both metered paths retain that trial on their original
+    /// ledger; the no-ledger library path keeps its pure, unmetered contract.
+    pub(in crate::world::bytes) fn pack_word_numeric(
+        &self,
+        domain: AlgebraRef<'_, D>,
+        bytes: &[&N; 32],
+    ) -> Option<N> {
+        if self.stopped()
+            || self
+                .demand
+                .as_ref()
+                .is_some_and(|demand| !demand.policy(domain))
+        {
+            return None;
+        }
+        if self.demand.is_some() || self.binding_budget.is_some() {
+            let work = domain.pack_word_work(bytes);
+            if self.stopped() {
+                return None;
+            }
+            let work = work?;
+            if !self.pay_extra(work) {
+                return None;
+            }
+        }
+        // A quote/payment or a custom hook can observe cancellation. Neither
+        // its result nor an ordinary fallback may escape that shared stop.
+        if self.stopped() {
+            return None;
+        }
+        let value = domain.pack_word_numeric(bytes);
+        if self.stopped() { None } else { value }
     }
 
     /// Metadata and numeric actions share the original ledger. Fixed setup is
     /// funded before constructing its first Rc; refusal creates no Context.
     /// Facts and budget share only this trial's lifetime.
     pub(in crate::world::bytes) fn budgeted(
-        facts: &'a Facts,
-        conditional: &'a ConditionalFacts,
-        domain: Domain,
+        facts: &'a Facts<N>,
+        conditional: &'a ConditionalFacts<N>,
+        domain: AlgebraRef<'a, D>,
         preparation: &Preparation,
         budget: &'a mut WorkBudget,
     ) -> Result<Option<Self>, ExprError> {
-        let demand = memo::Demand::new(domain, preparation, conditional.largest_expression, budget);
+        let demand =
+            memo::Demand::<D>::new(domain, preparation, conditional.largest_expression, budget);
         if !demand.pay_metadata(memo::DEMAND_LIFETIME_WORK + memo::CONTEXT_LIFETIME_WORK) {
             demand.check()?;
             return Ok(None);
@@ -66,15 +236,15 @@ impl<'a> Context<'a> {
     /// prepared reads can only use budgeted, which installs the original payer.
     #[cfg(test)]
     pub(in crate::world::bytes) fn prepared(
-        facts: &'a Facts,
-        conditional: &'a ConditionalFacts,
-        domain: Domain,
+        facts: &'a Facts<N>,
+        conditional: &'a ConditionalFacts<N>,
+        domain: AlgebraRef<'a, D>,
         nodes: usize,
     ) -> Self {
         Self::with_demand(
             facts,
             conditional,
-            Rc::new(memo::Demand::oracle(
+            Rc::new(memo::Demand::<D>::oracle(
                 domain,
                 nodes,
                 conditional.largest_expression,
@@ -83,31 +253,41 @@ impl<'a> Context<'a> {
     }
 
     fn with_demand(
-        facts: &'a Facts,
-        conditional: &'a ConditionalFacts,
-        demand: Rc<memo::Demand<'a>>,
+        facts: &'a Facts<N>,
+        conditional: &'a ConditionalFacts<N>,
+        demand: Rc<memo::Demand<'a, D>>,
     ) -> Self {
         let mut out = Self {
+            domain: demand.domain,
             facts,
             conditional: Some(conditional),
             choices: Rc::new(BTreeMap::new()),
             active: Rc::new(Vec::new()),
-            memo: Rc::new(RefCell::new(memo::Memo::default())),
+            memo: Rc::new(RefCell::new(memo::Memo::<N, D>::default())),
             demand: Some(demand),
+            binding_budget: None,
+            retained_words: conditional.retained_words,
         };
         // Immutable source keys are sized once, before any prepared lookups.
         // All fixed scaffolding above was funded before its first allocation.
         let demand = out.demand.as_deref().expect("prepared context");
         if demand.reserve(facts.len().saturating_add(1)) {
-            for key in facts.keys() {
+            for (key, value) in facts {
                 demand.source_key(key.work_size());
+                out.retained_words |= matches!(
+                    key.kind(),
+                    crate::domain::symbolic::ExprKind::WordRead { .. }
+                ) && value.numeric().requires_retained_binding();
             }
             out.select();
         }
         out
     }
 
-    pub(in crate::world::bytes) fn check(&self) -> Result<(), ExprError> {
+    pub(in crate::world) fn check(&self) -> Result<(), ExprError> {
+        if let Some(budget) = self.binding_budget {
+            budget.check()?;
+        }
         if let Some(demand) = &self.demand {
             // Latch cancellation in the shared trial before its dynamic scope
             // can end; every existing Context/Reader clone then stays stopped.
@@ -129,6 +309,7 @@ impl<'a> Context<'a> {
         self.demand
             .as_ref()
             .is_some_and(|demand| demand.work_exhausted())
+            || self.binding_budget.is_some_and(BindingBudget::exhausted)
     }
 
     #[cfg(test)]
@@ -152,12 +333,12 @@ impl<'a> Context<'a> {
     /// A refused action yields only the checked demand's private stop sentinel.
     pub(in crate::world::bytes) fn apply(
         &self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         op: u8,
-        args: &[AbstractValue],
-    ) -> AbstractValue {
+        args: &[EvmValue<N>],
+    ) -> EvmValue<N> {
         if !self.pay_apply(domain, args) {
-            return AbstractValue::top();
+            return EvmValue::<N>::top();
         }
         domain.apply(op, args)
     }
@@ -167,17 +348,17 @@ impl<'a> Context<'a> {
     /// alternate payer is introduced when the domain omits optional reduction.
     pub(in crate::world::bytes) fn observe_byte(
         &self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         op: u8,
-        args: &[AbstractValue],
-    ) -> AbstractValue {
+        args: &[EvmValue<N>],
+    ) -> EvmValue<N> {
         if !self.pay_apply(domain, args) {
-            return AbstractValue::top();
+            return EvmValue::<N>::top();
         }
         domain.observe_byte(op, args)
     }
 
-    fn pay_apply(&self, domain: Domain, args: &[AbstractValue]) -> bool {
+    fn pay_apply(&self, domain: AlgebraRef<'_, D>, args: &[EvmValue<N>]) -> bool {
         if self.stopped()
             || self.demand.as_ref().is_some_and(|demand| {
                 !demand.policy(domain) || !demand.pay_reader(|| domain.operation_work(args))
@@ -198,7 +379,7 @@ impl<'a> Context<'a> {
     /// The owned scalar moves its metadata; the ordinary apply pays its own
     /// transfer. None is a pure library path; prepaid analysis callers retain
     /// their old envelope, and the reference oracle owes no Reader fees.
-    pub(in crate::world::bytes) fn pay_byte_image(&self, domain: Domain) -> bool {
+    pub(in crate::world::bytes) fn pay_byte_image(&self, domain: AlgebraRef<'_, D>) -> bool {
         !self.stopped()
             && self
                 .demand
@@ -207,19 +388,19 @@ impl<'a> Context<'a> {
     }
 
     /// This join is separate from resolve's already-paid source metadata join.
-    pub(in crate::world::bytes) fn join(
+    pub(in crate::world::bytes) fn join_with(
         &self,
-        domain: Domain,
-        left: &AbstractValue,
-        right: &AbstractValue,
-    ) -> AbstractValue {
+        domain: AlgebraRef<'_, D>,
+        left: &EvmValue<N>,
+        right: &EvmValue<N>,
+    ) -> EvmValue<N> {
         if self.stopped()
             || self.demand.as_ref().is_some_and(|demand| {
                 !demand.policy(domain)
                     || !demand.pay_reader(|| memo::join_work(domain, left, right))
             })
         {
-            return AbstractValue::top();
+            return EvmValue::<N>::top();
         }
         #[cfg(test)]
         if let Some(demand) = &self.demand {
@@ -238,9 +419,9 @@ impl<'a> Context<'a> {
 
     #[cfg(test)]
     pub(in crate::world::bytes) fn reader_join_work(
-        domain: Domain,
-        left: &AbstractValue,
-        right: &AbstractValue,
+        domain: AlgebraRef<'_, D>,
+        left: &EvmValue<N>,
+        right: &EvmValue<N>,
     ) -> usize {
         memo::join_work(domain, left, right)
     }
@@ -273,7 +454,7 @@ impl<'a> Context<'a> {
                 .is_none_or(|demand| demand.reserve_owned(nodes, release, 0))
     }
 
-    fn fact<'b>(&self, facts: &'b Facts, expression: &ExprId) -> Option<&'b AbstractValue> {
+    fn fact<'b>(&self, facts: &'b Facts<N>, expression: &ExprId) -> Option<&'b EvmValue<N>> {
         if self.demand.is_none() {
             return facts.get(expression);
         }
@@ -302,10 +483,10 @@ impl<'a> Context<'a> {
     }
 
     fn select(&mut self) {
-        fn selected<'a>(
-            conditional: &'a ConditionalFacts,
-            context: &Context<'_>,
-            active: &mut Vec<&'a Facts>,
+        fn selected<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+            conditional: &'a ConditionalFacts<N>,
+            context: &Context<'_, N, D>,
+            active: &mut Vec<&'a Facts<N>>,
         ) {
             for branch in &conditional.branches {
                 if !context.reserve(1) {
@@ -365,7 +546,7 @@ impl<'a> Context<'a> {
         }
     }
 
-    pub(in crate::world::bytes) fn branch(&self, condition: &ExprId, nonzero: bool) -> Self {
+    pub(in crate::world) fn branch(&self, condition: &ExprId, nonzero: bool) -> Self {
         if !self.reserve(1) || self.choice(condition) == Some(nonzero) {
             return self.clone();
         }
@@ -407,12 +588,15 @@ impl<'a> Context<'a> {
         let mut choices = (*self.choices).clone();
         choices.insert(condition.clone(), nonzero);
         let mut out = Self {
+            domain: self.domain,
             facts: self.facts,
             conditional: self.conditional,
             choices: Rc::new(choices),
             active: Rc::new(Vec::new()),
-            memo: Rc::new(RefCell::new(memo::Memo::default())),
+            memo: Rc::new(RefCell::new(memo::Memo::<N, D>::default())),
             demand: self.demand.as_ref().map(Rc::clone),
+            binding_budget: self.binding_budget,
+            retained_words: self.retained_words,
         };
         out.select();
         // The unchanged construction envelope above already funded this
@@ -434,11 +618,21 @@ impl<'a> Context<'a> {
         out
     }
 
+    /// Slot roots previously evaluated selectors without selecting scalar
+    /// assumptions. Preserve that path when no retained branch facts exist.
+    pub(in crate::world) fn branch_when_scoped(&self, condition: &ExprId, nonzero: bool) -> Self {
+        if self.conditional.is_none_or(|facts| facts.has_no_scopes()) {
+            self.clone()
+        } else {
+            self.branch(condition, nonzero)
+        }
+    }
+
     pub(in crate::world::bytes) fn value(
         &self,
         expression: &ExprId,
-        domain: Domain,
-    ) -> Option<AbstractValue> {
+        domain: AlgebraRef<'_, D>,
+    ) -> Option<EvmValue<N>> {
         if !self.reserve(1)
             || self
                 .demand
@@ -453,7 +647,7 @@ impl<'a> Context<'a> {
         if let Some(value) = self
             .memo
             .borrow()
-            .get(expression, domain, demand, &|nodes| self.reserve(nodes))
+            .get_with(expression, domain, demand, &|nodes| self.reserve(nodes))
         {
             return value;
         }
@@ -472,7 +666,7 @@ impl<'a> Context<'a> {
         (!self.stopped()).then_some(out).flatten()
     }
 
-    fn resolve(&self, expression: &ExprId, domain: Domain) -> Option<AbstractValue> {
+    fn resolve(&self, expression: &ExprId, domain: AlgebraRef<'_, D>) -> Option<EvmValue<N>> {
         let mut out = match self.fact(self.facts, expression) {
             Some(value) if self.reserve(value.work_size()) => Some(value.clone()),
             _ => None,
@@ -490,7 +684,7 @@ impl<'a> Context<'a> {
                     .saturating_mul(2)
                     .saturating_add(
                         out.as_ref()
-                            .map_or(0, AbstractValue::work_size)
+                            .map_or(0, EvmValue::<N>::work_size)
                             .saturating_mul(3),
                     )
                     .saturating_add(domain.capacity())
@@ -533,16 +727,16 @@ impl<'a> Context<'a> {
             if !self.reserve(
                 32usize.saturating_add(
                     out.as_ref()
-                        .map_or(0, AbstractValue::work_size)
+                        .map_or(0, EvmValue::<N>::work_size)
                         .saturating_mul(2),
                 ),
             ) {
                 return None;
             }
             let truth = if nonzero {
-                AbstractValue::unsigned_range(U256::ONE, U256::MAX).expect("nonempty range")
+                EvmValue::<N>::unsigned_range(U256::ONE, U256::MAX).expect("nonempty range")
             } else {
-                AbstractValue::constant(U256::ZERO)
+                EvmValue::<N>::constant(U256::ZERO)
             };
             out = Some(match out {
                 Some(value) => {
@@ -566,10 +760,10 @@ impl<'a> Context<'a> {
     pub(in crate::world::bytes) fn write_lower_bound(
         &self,
         destination: &ExprId,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
     ) -> Option<U256> {
         self.value(destination, domain)
-            .map(|value| value.interval().unsigned_bounds().0)
+            .map(|value| crate::world::unsigned_bounds(&value).0)
     }
 }
 
@@ -578,3 +772,19 @@ mod tests;
 
 #[cfg(test)]
 mod payer_tests;
+
+impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Clone for Context<'a, N, D> {
+    fn clone(&self) -> Self {
+        Self {
+            domain: self.domain,
+            facts: self.facts,
+            conditional: self.conditional,
+            choices: Rc::clone(&self.choices),
+            active: Rc::clone(&self.active),
+            memo: Rc::clone(&self.memo),
+            demand: self.demand.clone(),
+            binding_budget: self.binding_budget,
+            retained_words: self.retained_words,
+        }
+    }
+}

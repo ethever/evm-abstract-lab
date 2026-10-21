@@ -1,61 +1,83 @@
 //! Fixed demands may use complete facts from their own immutable snapshot.
 
 use super::{conditional::Context, numeric};
-use crate::domain::{
-    Domain,
-    symbolic::{ByteStateKind, ByteView, ExprError, ExprId, ExprLimits},
-};
+use crate::domain::AlgebraRef;
+use crate::domain::symbolic::{ByteStateKind, ByteView, ExprError, ExprId, ExprLimits};
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use alloy_primitives::U256;
+
+/// The optional interval view may omit an exact custom singleton. Preserve the
+/// old sufficient proof and fee first; only a new numeric proof pays extra.
+pub(super) fn nonwrapping_word<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    at: &ExprId,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
+) -> bool {
+    let value = numeric::scalar_in(at, context, domain);
+    let last_start = U256::MAX - U256::from(31);
+    value.interval().unsigned_bounds().1 <= last_start
+        || at
+            .as_constant()
+            .or_else(|| context.prove_singleton(&value))
+            .is_some_and(|offset| offset <= last_start)
+}
 
 /// Resolve a complete word demand without constructing wrapping ADD terms.
 /// All bounds belong to the caller's current guard environment. Returning None
 /// preserves the view for bytewise evaluation of partial or padded windows.
-pub(super) fn view_word_offset(
+pub(super) fn view_word_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     view: &ByteView,
     at: &ExprId,
-    context: &Context<'_>,
-    domain: Domain,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
 ) -> Option<ExprId> {
-    let domain = numeric::numeric_domain(domain);
+    let domain = numeric::numeric_domain_with(domain);
     let relative = numeric::scalar_in(at, context, domain);
     let offset = numeric::scalar_in(&view.offset, context, domain);
     let length = numeric::scalar_in(&view.length, context, domain);
-    let last = relative
-        .interval()
-        .unsigned_bounds()
-        .1
-        .checked_add(U256::from(31))?;
-    if last >= length.interval().unsigned_bounds().0 {
+    let upper = at
+        .as_constant()
+        .unwrap_or_else(|| relative.interval().unsigned_bounds().1);
+    let last = upper.checked_add(U256::from(31))?;
+    let length_lower = view
+        .length
+        .as_constant()
+        .unwrap_or_else(|| crate::world::unsigned_bounds(&length).0);
+    if last >= length_lower {
         return None;
     }
-    offset.interval().unsigned_bounds().1.checked_add(last)?;
-    if relative.singleton() == Some(U256::ZERO) {
+    view.offset
+        .as_constant()
+        .unwrap_or_else(|| crate::world::unsigned_bounds(&offset).1)
+        .checked_add(last)?;
+    if at.as_constant().or_else(|| relative.singleton()) == Some(U256::ZERO) {
         Some(view.offset.clone())
-    } else if offset.singleton() == Some(U256::ZERO) {
+    } else if view.offset.as_constant().or_else(|| offset.singleton()) == Some(U256::ZERO) {
         Some(at.clone())
     } else {
         Some(ExprId::constant(
-            offset.singleton()?.checked_add(relative.singleton()?)?,
+            view.offset
+                .as_constant()
+                .or_else(|| offset.singleton())?
+                .checked_add(at.as_constant().or_else(|| relative.singleton())?)?,
         ))
     }
 }
 
 /// Both the destination copy and the captured source view must cover all 32
 /// bytes. In particular, a short CALL output never replaces its old suffix.
-pub(super) fn copy_word_offset(
+pub(super) fn copy_word_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     destination: &ExprId,
     source: &ByteView,
     length: &ExprId,
     at: &ExprId,
-    context: &Context<'_>,
-    domain: Domain,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
 ) -> Option<ExprId> {
-    let domain = numeric::numeric_domain(domain);
+    let domain = numeric::numeric_domain_with(domain);
     let offset = numeric::scalar_in(at, context, domain);
-    offset
-        .interval()
-        .unsigned_bounds()
-        .1
+    at.as_constant()
+        .unwrap_or_else(|| offset.interval().unsigned_bounds().1)
         .checked_add(U256::from(31))?;
     let relative = if at == destination {
         U256::ZERO
@@ -64,38 +86,42 @@ pub(super) fn copy_word_offset(
             .singleton()?
             .checked_sub(numeric::scalar_in(destination, context, domain).singleton()?)?
     };
-    if relative.checked_add(U256::from(31))?
-        >= numeric::scalar_in(length, context, domain)
-            .interval()
-            .unsigned_bounds()
-            .0
+    let end = relative.checked_add(U256::from(31))?;
+    let length_value = numeric::scalar_in(length, context, domain);
+    if end
+        >= length
+            .as_constant()
+            .unwrap_or_else(|| length_value.interval().unsigned_bounds().0)
     {
         return None;
     }
     view_word_offset(source, &ExprId::constant(relative), context, domain)
 }
 
-pub(super) fn same_offset(
+pub(super) fn same_offset<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     left: &ExprId,
     right: &ExprId,
-    context: &Context<'_>,
-    domain: Domain,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
 ) -> bool {
     left == right
-        || numeric::scalar_in(left, context, numeric::numeric_domain(domain))
+        || numeric::scalar_in(left, context, numeric::numeric_domain_with(domain))
             .singleton()
-            .zip(numeric::scalar_in(right, context, numeric::numeric_domain(domain)).singleton())
+            .zip(
+                numeric::scalar_in(right, context, numeric::numeric_domain_with(domain))
+                    .singleton(),
+            )
             .is_some_and(|(left, right)| left == right)
 }
 
 /// Normalize each whole-word alternative using only facts selected by that
 /// snapshot's guard. The public constructor's global callback cannot express
 /// different destination bounds in the two children of the same state ITE.
-pub(super) fn word_expression(
+pub(super) fn word_expression<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     mut view: ByteView,
     at: ExprId,
-    context: &Context<'_>,
-    domain: Domain,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
     limits: ExprLimits,
 ) -> Result<ExprId, ExprError> {
     view = view.canonicalize();

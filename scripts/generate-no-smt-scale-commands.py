@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Bind the frozen offline corpus to an explicitly selected no-SMT CLI source.
 
-Only writes a command profile and optional wire 15 requests; never builds or
+Only writes a command profile and optional wire 16 requests; never builds or
 runs analysis. Keep outputs separate from frozen baselines. Regenerate the
 profile for the final build's exact source commit.
+
+The current interface requires native 11 / wire 16 / cost 6. Historical cost 4/5
+profiles stay bound to their frozen source and generator; they are not upgraded.
 """
 
 import argparse
@@ -26,12 +29,12 @@ def generate(repository, source):
         "cost": "crates/evm-abstract/src/domain/spec.rs",
     }
     texts = {key: (source / path).read_text() for key, path in witnesses.items()}
-    for key, expected in [("native", 10), ("wire", 15)]:
+    for key, expected in [("native", 11), ("wire", 16)]:
         match = re.search(r"pub const SCHEMA_VERSION: u16 = (\d+);", texts[key])
         if match is None or int(match[1]) != expected:
             raise ValueError(f"expected {key} schema {expected}")
-    if not re.search(r"cost_version:\s*4\s*,", texts["cost"]):
-        raise ValueError("expected logical cost version 4")
+    if not re.search(r"cost_version:\s*6\s*,", texts["cost"]):
+        raise ValueError("expected logical cost version 6")
     if re.search(r"smt_provider|smt_rlimit|embedded_smt", texts["relations"]):
         raise ValueError("selected CLI still exposes native solver policy")
     commit = subprocess.check_output(
@@ -39,7 +42,7 @@ def generate(repository, source):
     profile["interface"] = {
         "name": "no-smt-cli-world",
         "source_commit": commit,
-        "versions": {"native": 10, "wire": 15, "cost": 4},
+        "versions": {"native": 11, "wire": 16, "cost": 6},
         "source_witnesses": {
             path: hashlib.sha256((source / path).read_bytes()).hexdigest()
             for path in witnesses.values()
@@ -68,7 +71,7 @@ def generate(repository, source):
     return profile
 
 
-def derive_wire15_request(original):
+def derive_wire16_request(original):
     """Keep every frozen wire 14 input and limit, explicitly disabling coverage."""
     request = deepcopy(original)
     request["limits"]["root_terminal_coverage"] = False
@@ -80,7 +83,7 @@ def main():
     parser.add_argument("--interface-source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--request-output-dir", type=Path,
-                        help="write separate wire 15 WETH/USDC requests with the frozen 1T/off policy")
+                        help="write separate wire 16 WETH/USDC requests with the frozen 1T/off policy")
     arguments = parser.parse_args()
     repository = Path(__file__).resolve().parents[1]
     profile = generate(repository, arguments.interface_source.resolve(strict=True))
@@ -89,8 +92,8 @@ def main():
         arguments.request_output_dir.mkdir(parents=True, exist_ok=True)
         for name in ("weth", "usdc"):
             original = repository / f"examples/no-smt-scale/wire14/{name}-original-request.json"
-            request = derive_wire15_request(json.loads(original.read_bytes()))
-            output = arguments.request_output_dir / f"{name}-wire15-request.json"
+            request = derive_wire16_request(json.loads(original.read_bytes()))
+            output = arguments.request_output_dir / f"{name}-wire16-request.json"
             output.write_text(json.dumps(request, indent=2) + "\n")
 
 

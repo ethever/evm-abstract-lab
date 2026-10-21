@@ -1,4 +1,3 @@
-use super::pack;
 use crate::domain::{
     AbstractValue, Domain, DomainSpec, NumericValue, Profile,
     facts::{FiniteSet, UnaryPredicate, WordBounds},
@@ -7,9 +6,39 @@ use crate::domain::{
     relational::RelationLimits,
     symbolic::{ByteStateId, ByteView, ExprId, ExprKind, ExprLimits, SourceId},
 };
+use crate::domain::{AlgebraRef, EvmNumericAlgebra, EvmValue, WordElement};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::{collections::BTreeSet, num::NonZeroUsize};
+
+// Existing direct probes exercise the pure library contract without a ledger.
+fn pack<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    bytes: &[EvmValue<N>],
+    domain: AlgebraRef<'_, D>,
+) -> Option<EvmValue<N>> {
+    let facts = super::super::Facts::new();
+    let context = super::super::Context::new(&facts, None, domain);
+    super::pack(bytes, domain, &context)
+}
+
+mod cubes;
+mod payer;
+
+#[test]
+fn declining_custom_packing_hook_borrows_all_heavy_elements() {
+    use crate::world::bytes::carrier_tests::{HEAVY_CLONES, HeavyWords, heavy_value};
+    let _scope = HEAVY_CLONES.scope();
+    let algebra = crate::domain::ValueAlgebra::new(HeavyWords::default());
+    let bytes: [_; 32] = std::array::from_fn(|_| heavy_value(64 * 1024));
+    HEAVY_CLONES.replace(0);
+    assert!(pack(&bytes, algebra.borrowed().without_relations()).is_none());
+    assert_eq!(algebra.numeric_algebra().packs.get(), 1);
+    assert_eq!(
+        HEAVY_CLONES.replace(0),
+        0,
+        "declining hook deep-cloned its inputs"
+    );
+}
 
 const SOURCES: [Origin; 11] = [
     Origin::Calldata,
@@ -103,6 +132,19 @@ fn assert_sources(value: &AbstractValue) {
     assert_eq!(value.provenance().origins().sources(), Some(&expected));
 }
 
+fn unknown_pack(bytes: &[AbstractValue], domain: Domain) -> AbstractValue {
+    let packed = pack(bytes, crate::domain::ValueAlgebra::new(&domain));
+    let spec = domain.spec();
+    assert_eq!(
+        packed.is_some(),
+        spec.profile() == Profile::Product
+            && spec.reduction_rounds() >= 4
+            && spec.fact_limit() >= spec.capacity() + 8,
+        "unsupported cooperation controls must decline"
+    );
+    packed.unwrap_or_else(|| original(bytes, domain))
+}
+
 #[test]
 fn concrete_big_endian_words_match_full_original_across_profiles_and_metadata() {
     let mut first = [0_u8; 32];
@@ -132,7 +174,7 @@ fn concrete_big_endian_words_match_full_original_across_profiles_and_metadata() 
                 .map(|(i, b)| operand(NumericValue::constant(U256::from(b)), i))
                 .collect::<Vec<_>>();
             bytes[31] = bytes[31].clone().with_symbolic_limit();
-            let packed = pack(&bytes, domain).unwrap();
+            let packed = pack(&bytes, crate::domain::ValueAlgebra::new(&domain)).unwrap();
             assert_eq!(packed, original(&bytes, domain));
             assert_eq!(packed.numeric(), &NumericValue::constant(expected));
             assert_sources(&packed);
@@ -141,8 +183,16 @@ fn concrete_big_endian_words_match_full_original_across_profiles_and_metadata() 
 
             // Top source metadata absorbs the complete known source union.
             bytes[0] = AbstractValue::from_numeric(bytes[0].numeric().clone());
-            assert_eq!(pack(&bytes, domain).unwrap(), original(&bytes, domain));
-            assert!(pack(&bytes, domain).unwrap().provenance().is_top());
+            assert_eq!(
+                pack(&bytes, crate::domain::ValueAlgebra::new(&domain)).unwrap(),
+                original(&bytes, domain)
+            );
+            assert!(
+                pack(&bytes, crate::domain::ValueAlgebra::new(&domain))
+                    .unwrap()
+                    .provenance()
+                    .is_top()
+            );
         }
     }
 }
@@ -151,8 +201,8 @@ fn concrete_big_endian_words_match_full_original_across_profiles_and_metadata() 
 fn plain_unknowns_match_full_original_and_keep_caller_word_dependency() {
     for domain in policies(false) {
         let plain = vec![AbstractValue::unknown_byte(); 32];
-        assert_eq!(pack(&plain, domain).unwrap(), original(&plain, domain));
-        assert_eq!(pack(&plain, domain).unwrap(), AbstractValue::top());
+        assert_eq!(unknown_pack(&plain, domain), original(&plain, domain));
+        assert_eq!(unknown_pack(&plain, domain), AbstractValue::top());
 
         let mut bytes = (0..32)
             .map(|i| operand(NumericValue::unknown_byte(), i))
@@ -164,7 +214,7 @@ fn plain_unknowns_match_full_original_and_keep_caller_word_dependency() {
         assert!(bytes[0].provenance().is_code_address());
         bytes[1] = bytes[2].clone();
         assert!(bytes[1].same_identity(&bytes[2]));
-        let packed = pack(&bytes, domain).unwrap();
+        let packed = unknown_pack(&bytes, domain);
         assert_eq!(packed, original(&bytes, domain));
         assert_eq!(packed.numeric(), &NumericValue::top());
         assert_sources(&packed);
@@ -172,7 +222,7 @@ fn plain_unknowns_match_full_original_and_keep_caller_word_dependency() {
         assert!(!packed.symbolic_limit_reached());
 
         bytes[31] = bytes[31].clone().with_symbolic_limit();
-        let packed = pack(&bytes, domain).unwrap();
+        let packed = unknown_pack(&bytes, domain);
         assert_eq!(packed, original(&bytes, domain));
         assert!(packed.symbolic_limit_reached());
 
@@ -199,7 +249,7 @@ fn plain_unknowns_match_full_original_and_keep_caller_word_dependency() {
 
         // A Top source encountered early must not mask a later limit marker.
         bytes[0] = AbstractValue::unknown_byte();
-        let packed = pack(&bytes, domain).unwrap();
+        let packed = unknown_pack(&bytes, domain);
         assert_eq!(packed, original(&bytes, domain));
         assert!(packed.provenance().is_top());
         assert!(packed.symbolic_limit_reached());
@@ -214,21 +264,30 @@ fn mixed_informative_malformed_and_wrong_length_inputs_fall_back() {
             FiniteSet::new(BTreeSet::from([U256::ZERO, U256::from(255)])).unwrap(),
         )])
         .unwrap();
-    let odd = Domain::default()
-        .from_facts(&[
-            UnaryPredicate::UnsignedBounds(WordBounds::new(U256::ZERO, U256::from(255)).unwrap()),
-            UnaryPredicate::congruent(U256::from(2), U256::from(1)).unwrap(),
-        ])
-        .unwrap();
     let nonzero = Domain::default()
         .from_facts(&[
             UnaryPredicate::UnsignedBounds(WordBounds::new(U256::ZERO, U256::from(255)).unwrap()),
             UnaryPredicate::NonZero,
         ])
         .unwrap();
+    let odd = Domain::default()
+        .from_facts(&[
+            UnaryPredicate::UnsignedBounds(WordBounds::new(U256::ZERO, U256::from(255)).unwrap()),
+            UnaryPredicate::congruent(U256::from(2), U256::from(1)).unwrap(),
+        ])
+        .unwrap();
     for special in [
         AbstractValue::constant(U256::ZERO),
         AbstractValue::constant(U256::from(255)),
+    ] {
+        let mut bytes = vec![AbstractValue::unknown_byte(); 32];
+        bytes[17] = special;
+        assert_eq!(
+            pack(&bytes, crate::domain::ValueAlgebra::new(&domain)).unwrap(),
+            original(&bytes, domain)
+        );
+    }
+    for special in [
         AbstractValue::constant(U256::from(256)),
         AbstractValue::constant(U256::MAX),
         AbstractValue::top(),
@@ -240,29 +299,50 @@ fn mixed_informative_malformed_and_wrong_length_inputs_fall_back() {
     ] {
         let mut bytes = vec![AbstractValue::unknown_byte(); 32];
         bytes[17] = special;
-        assert!(pack(&bytes, domain).is_none());
+        assert!(pack(&bytes, crate::domain::ValueAlgebra::new(&domain)).is_none());
     }
     for length in [0, 1, 31, 33, 64] {
-        assert!(pack(&vec![AbstractValue::unknown_byte(); length], domain).is_none());
-        assert!(pack(&vec![AbstractValue::constant(U256::ZERO); length], domain).is_none());
+        assert!(
+            pack(
+                &vec![AbstractValue::unknown_byte(); length],
+                crate::domain::ValueAlgebra::new(&domain)
+            )
+            .is_none()
+        );
+        assert!(
+            pack(
+                &vec![AbstractValue::constant(U256::ZERO); length],
+                crate::domain::ValueAlgebra::new(&domain)
+            )
+            .is_none()
+        );
     }
     for domain in policies(false) {
         for wider in [U256::from(256), U256::MAX] {
             let mut bytes = vec![AbstractValue::constant(U256::ZERO); 32];
             bytes[17] = AbstractValue::constant(wider);
-            assert!(pack(&bytes, domain).is_none());
+            assert!(pack(&bytes, crate::domain::ValueAlgebra::new(&domain)).is_none());
         }
     }
     for domain in policies(true) {
-        assert!(pack(&vec![AbstractValue::unknown_byte(); 32], domain).is_none());
+        assert!(
+            pack(
+                &vec![AbstractValue::unknown_byte(); 32],
+                crate::domain::ValueAlgebra::new(&domain)
+            )
+            .is_none()
+        );
     }
 
     // ConstantsOnly must not promote a singleton absent from finite candidates.
     let interval_singleton = AbstractValue::unsigned_range(U256::from(7), U256::from(7)).unwrap();
     let bytes = vec![interval_singleton; 32];
     assert!(bytes[0].constants().is_none());
-    assert_eq!(pack(&bytes, domain).unwrap(), original(&bytes, domain));
+    assert_eq!(
+        pack(&bytes, crate::domain::ValueAlgebra::new(&domain)).unwrap(),
+        original(&bytes, domain)
+    );
     let constants = super::super::numeric_domain(Domain::new(NonZeroUsize::new(8).unwrap()));
-    assert!(pack(&bytes, constants).is_none());
+    assert!(pack(&bytes, crate::domain::ValueAlgebra::new(&constants)).is_none());
     assert_eq!(original(&bytes, constants).numeric(), &NumericValue::top());
 }

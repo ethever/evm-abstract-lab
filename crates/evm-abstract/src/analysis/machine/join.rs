@@ -2,10 +2,12 @@
 //! a subset of fields. Scheduling retains complete represented alternatives,
 //! rather than treating a numeric widening as a symbolic state fixed point.
 
-use super::{ByteRangeBoundary, FrontierReason, MachinePayload};
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
+use super::{ByteRangeBoundary, EvmMachinePayload, FrontierReason};
 use crate::{
     domain::{
-        AbstractValue, Domain,
+        AlgebraRef, EvmValue,
         relational::QueryReason,
         symbolic::{ExprError, ExprId, ExprLimits, StateError},
     },
@@ -208,40 +210,71 @@ pub(super) fn checkpoint() -> Result<(), MachineError> {
     MachineError::check_cancelled()
 }
 
-pub(super) fn join_value(
-    left: &AbstractValue,
-    right: &AbstractValue,
-    domain: Domain,
+pub(super) fn join_value<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    left: &EvmValue<N>,
+    right: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
     selector: &ExprId,
     limits: ExprLimits,
-) -> Result<AbstractValue, MachineError> {
+) -> Result<EvmValue<N>, MachineError> {
     checkpoint()?;
     if domain.spec().relations().enabled {
-        Ok(left.join_guarded(right, domain, selector.clone(), limits)?)
+        Ok(left.join_guarded_with(right, domain, selector.clone(), limits)?)
     } else {
         Ok(domain.join(left, right))
     }
 }
 
-impl MachinePayload {
-    /// Comparison-only normalization removes redundant singleton terms and
-    /// ephemeral copy labels. It never rewrites a source, byte/slot root, path
-    /// guard or historical read. The executable payload keeps its expressions.
+impl<N: WordElement> EvmMachinePayload<N> {
+    /// Conservative whole-machine retention/traversal quote for semantic
+    /// policies. Owned copying requires its separate declared clone payment.
+    pub fn policy_work_size(&self) -> usize {
+        self.work_size()
+    }
+
+    /// Copy a complete input under the run's shared work and cancellation token.
+    pub fn copy_for_policy<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        cx: &mut crate::analysis::engine::policy::PolicyContext<'_, D>,
+    ) -> Result<Self, MachineError> {
+        cx.reserve(self.policy_work_size().saturating_mul(2))?;
+        self.pay_clone_with(cx.budget)?;
+        let copied = self.clone();
+        cx.reserve(0)?;
+        Ok(copied)
+    }
+
+    /// Cover this input while forgetting optional histories of every suspended
+    /// and active frame. The returned payload supplies the coarser actual key.
+    pub fn forget_jump_history<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        cx: &mut crate::analysis::engine::policy::PolicyContext<'_, D>,
+    ) -> Result<Self, MachineError> {
+        let mut prepared = self.copy_for_policy(cx)?;
+        for frame in prepared.call_stack.iter_mut() {
+            frame.key.jump_history.clear();
+        }
+        cx.reserve(0)?;
+        Ok(prepared)
+    }
+
+    /// Comparison-only normalization removes ephemeral copy labels. Retained
+    /// expressions remain evidence even around numeric Top; this traversal has
+    /// no independent numeric-query budget to prove any term redundant.
     pub(crate) fn content_form(&self) -> Result<Self, MachineError> {
         checkpoint()?;
         let mut content = self.clone();
-        let mut normalize = |value: &mut AbstractValue| {
-            value.forget_identity();
-            if value.singleton().is_some() {
-                value.forget_expression();
-            }
-        };
+        let mut normalize = |value: &mut EvmValue<N>| value.forget_identity();
         content.update_values(&mut normalize)?;
         checkpoint()?;
         Ok(content)
     }
 
-    pub(crate) fn join(&self, other: &Self, domain: Domain) -> Result<Self, MachineError> {
+    pub(crate) fn join<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        other: &Self,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<Self, MachineError> {
         checkpoint()?;
         if self == other {
             return Ok(self.clone());
@@ -256,9 +289,9 @@ impl MachinePayload {
         result.call_stack =
             self.call_stack
                 .join_guarded(&other.call_stack, domain, selector.clone(), limits)?;
-        result.store = self
-            .store
-            .join_guarded(&other.store, domain, selector.clone(), limits)?;
+        result.store =
+            self.store
+                .join_guarded_with(&other.store, domain, selector.clone(), limits)?;
         result.relations = if policy.enabled {
             self.relations
                 .join_guarded(&other.relations, selector, &policy)
@@ -277,15 +310,15 @@ impl MachinePayload {
 /// An equality match is a coverage proof; a digest or an unchanged Fresh leaf
 /// alone is never used as one. No list is preallocated from its configured cap.
 #[derive(Clone)]
-pub(crate) struct EntryAlternatives {
-    represented: Vec<Arc<MachinePayload>>,
+pub(crate) struct EvmEntryAlternatives<N: WordElement> {
+    represented: Vec<Arc<EvmMachinePayload<N>>>,
     cycle_widened: bool,
-    loop_bound: Option<crate::analysis::state::LoopBound>,
+    loop_bound: Option<crate::analysis::state::EvmLoopBound<N>>,
 }
 
-impl EntryAlternatives {
+impl<N: WordElement> EvmEntryAlternatives<N> {
     /// The caller charges the payload copy before retaining it.
-    pub(crate) fn new(payload: &MachinePayload) -> Self {
+    pub(crate) fn new(payload: &EvmMachinePayload<N>) -> Self {
         Self {
             represented: vec![Arc::new(payload.clone())],
             cycle_widened: false,
@@ -306,12 +339,9 @@ impl EntryAlternatives {
         self.loop_bound.is_some()
     }
 
-    pub(crate) fn can_widen_loop(&self) -> bool {
-        self.has_loop_bound() || self.represented.len() >= 2
-    }
-
-    /// Shared policy for propagation and staged replay. Exact acyclic retention
-    /// gets the first attempt; only a typed precision refusal can promote it.
+    /// Shared policy for propagation and staged replay. Exact retention gets
+    /// the first attempt unless the separate scheduler requests acceleration;
+    /// a typed precision refusal may promote a Join without numeric widening.
     /// Failed attempts keep metadata and both operands intact, but never refund
     /// work. The persistent bounded representation owns the paid materialization
     /// fallback, independently of this admission and publication policy.
@@ -319,23 +349,27 @@ impl EntryAlternatives {
         clippy::too_many_arguments,
         reason = "whole-entry policy shares the execution environment, selectors and ledger"
     )]
-    pub(crate) fn join_entry(
+    pub(crate) fn join_entry<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
-        entry: &MachinePayload,
-        incoming: &MachinePayload,
-        environment: &crate::world::Entry,
-        domain: Domain,
+        entry: &EvmMachinePayload<N>,
+        incoming: &EvmMachinePayload<N>,
+        environment: &crate::world::EvmEntry<N>,
+        domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
         selectors: &BTreeSet<ExprId>,
-        cyclic: bool,
-    ) -> Result<Option<MachinePayload>, MachineError> {
-        if self.has_loop_bound() || cyclic && self.can_widen_loop() {
-            return self.join_loop(entry, incoming, environment, domain, budget);
-        }
-        match self.join_cyclic(entry, incoming, domain, budget, selectors, cyclic) {
-            Err(error) if !cyclic && error.permits_bounded_promotion() => {
-                checkpoint()?;
+        accelerate: bool,
+    ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
+        if self.has_loop_bound() || accelerate {
+            return if accelerate {
                 self.join_loop(entry, incoming, environment, domain, budget)
+            } else {
+                self.join_loop_scheduled(entry, incoming, environment, domain, budget, false)
+            };
+        }
+        match self.join_cyclic(entry, incoming, domain, budget, selectors, accelerate) {
+            Err(error) if error.permits_bounded_promotion() => {
+                checkpoint()?;
+                self.join_loop_scheduled(entry, incoming, environment, domain, budget, accelerate)
             }
             result => result,
         }
@@ -343,23 +377,50 @@ impl EntryAlternatives {
 
     /// Retain one canonical bound instead of historical complete alternatives.
     /// Admission belongs to join_entry; publication follows full construction.
-    pub(crate) fn join_loop(
+    pub(crate) fn join_loop<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
-        entry: &MachinePayload,
-        incoming: &MachinePayload,
-        environment: &crate::world::Entry,
-        domain: Domain,
+        entry: &EvmMachinePayload<N>,
+        incoming: &EvmMachinePayload<N>,
+        environment: &crate::world::EvmEntry<N>,
+        domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
-    ) -> Result<Option<MachinePayload>, MachineError> {
+    ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
+        self.join_loop_scheduled(entry, incoming, environment, domain, budget, true)
+    }
+
+    /// Bound promotion is a covering representation change; only the explicit
+    /// schedule may widen scalar fields, including updates after promotion.
+    pub(crate) fn join_loop_scheduled<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        entry: &EvmMachinePayload<N>,
+        incoming: &EvmMachinePayload<N>,
+        environment: &crate::world::EvmEntry<N>,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
+        widen: bool,
+    ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
         let updated = if let Some(bound) = &self.loop_bound {
-            bound.update(incoming, environment, domain, budget)?
-        } else {
-            Some(crate::analysis::state::LoopBound::new(
+            if widen {
+                bound.update(incoming, environment, domain, budget)?
+            } else {
+                bound.update_scheduled(incoming, environment, domain, budget, false)?
+            }
+        } else if widen {
+            Some(crate::analysis::state::EvmLoopBound::new(
                 entry,
                 incoming,
                 environment,
                 domain,
                 budget,
+            )?)
+        } else {
+            Some(crate::analysis::state::EvmLoopBound::new_scheduled(
+                entry,
+                incoming,
+                environment,
+                domain,
+                budget,
+                false,
             )?)
         };
         let Some((bound, payload)) = updated else {
@@ -378,25 +439,25 @@ impl EntryAlternatives {
     /// None means the whole incoming payload is already covered. Metadata is
     /// committed separately, after every field of the join has succeeded.
     #[cfg(test)]
-    pub(crate) fn join(
+    pub(crate) fn join<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
-        entry: &MachinePayload,
-        incoming: &MachinePayload,
-        domain: Domain,
+        entry: &EvmMachinePayload<N>,
+        incoming: &EvmMachinePayload<N>,
+        domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
-    ) -> Result<Option<MachinePayload>, MachineError> {
+    ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
         self.join_cyclic(entry, incoming, domain, budget, &BTreeSet::new(), false)
     }
 
-    pub(crate) fn join_cyclic(
+    pub(crate) fn join_cyclic<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
-        entry: &MachinePayload,
-        incoming: &MachinePayload,
-        domain: Domain,
+        entry: &EvmMachinePayload<N>,
+        incoming: &EvmMachinePayload<N>,
+        domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
         selectors: &BTreeSet<ExprId>,
         cyclic: bool,
-    ) -> Result<Option<MachinePayload>, MachineError> {
+    ) -> Result<Option<EvmMachinePayload<N>>, MachineError> {
         let mut incoming_content = None;
         for previous in std::iter::once(entry).chain(self.represented.iter().map(Arc::as_ref)) {
             if !coverage::same_byte_roots(previous, incoming, budget)? {
@@ -424,11 +485,17 @@ impl EntryAlternatives {
                 return Ok(None);
             }
         }
-        if !self.cycle_widened
-            && self.represented.len() >= 2
-            && let Some(widened) = widening::stack(entry, incoming, domain)?
-        {
-            return Ok((widened.content_form()? != entry.content_form()?).then_some(widened));
+        if cyclic && !self.cycle_widened && self.represented.len() >= 2 {
+            let cost = entry
+                .work_size()
+                .saturating_add(incoming.work_size())
+                .saturating_mul(8);
+            if cost == usize::MAX || !budget.charge(cost) {
+                return Err(MachineError::work_failure());
+            }
+            if let Some(widened) = widening::stack(entry, incoming, domain)? {
+                return Ok((widened.content_form()? != entry.content_form()?).then_some(widened));
+            }
         }
         let unconstrained = entry.relations.is_empty() && incoming.relations.is_empty();
         if self.cycle_widened && !cyclic && !unconstrained {
@@ -481,7 +548,7 @@ impl EntryAlternatives {
         Ok(Some(entry.join(incoming, domain)?))
     }
 
-    pub(crate) fn retain(&mut self, incoming: MachinePayload) {
+    pub(crate) fn retain(&mut self, incoming: EvmMachinePayload<N>) {
         if !self.cycle_widened && !self.has_loop_bound() {
             self.represented.push(Arc::new(incoming));
         }
@@ -490,3 +557,6 @@ impl EntryAlternatives {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) type EntryAlternatives = EvmEntryAlternatives<crate::domain::NumericValue>;

@@ -12,6 +12,7 @@ default = []
 imbl    = ["snapshot-state/imbl"]
 
 [dependencies]
+analysis-kernel = { path = "../analysis-kernel" }
 evm-abstract-notation = { path = "../evm-abstract-notation" }
 snapshot-state = { path = "../snapshot-state" }
 symbolic-structure = { path = "../symbolic-structure", features = ["serde"] }

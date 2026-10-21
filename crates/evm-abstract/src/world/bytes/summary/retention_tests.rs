@@ -6,6 +6,39 @@ use crate::domain::{
 };
 use std::{collections::BTreeSet, num::NonZeroUsize};
 
+#[test]
+fn complete_default_observations_need_no_nonliteral_cell_sidecars() {
+    let domain = Domain::default();
+    let mut left = super::super::ByteArray::memory();
+    let mut right = super::super::ByteArray::memory();
+    for (memory, word) in [(&mut left, 1), (&mut right, 2)] {
+        memory
+            .write_word(
+                &AbstractValue::constant(U256::ZERO),
+                &AbstractValue::constant(U256::from(word)),
+                4096,
+                domain,
+            )
+            .unwrap();
+    }
+    assert!(!left.len().numeric().requires_retained_binding());
+    let summary = left.summary_projection(domain).unwrap().join(
+        &right.summary_projection(domain).unwrap(),
+        domain,
+        false,
+    );
+    let replay = summary.instantiate(domain).unwrap();
+    assert!(
+        replay
+            .symbolic_facts()
+            .all(|(expression, _)| expression.as_constant().is_some())
+    );
+    let read = replay.read_word(&AbstractValue::constant(U256::ZERO), domain);
+    for word in [1, 2] {
+        assert!(read.contains(U256::from(word)));
+    }
+}
+
 fn domain(profile: Profile) -> Domain {
     Domain::from_spec(
         DomainSpec::new(
@@ -27,7 +60,7 @@ fn finite(domain: Domain, values: impl IntoIterator<Item = u64>) -> AbstractValu
         .into_iter()
         .map(|value| AbstractValue::constant(U256::from(value)))
         .reduce(|left, right| domain.join(&left, &right))
-        .map(|value| scalar(&value, domain))
+        .map(|value| scalar(&value, crate::domain::ValueAlgebra::new(&domain)))
         .unwrap()
 }
 
@@ -38,6 +71,7 @@ fn producer_shape(domain: Domain) -> ByteArraySummary {
     ByteArraySummary {
         length: AbstractValue::from_numeric(NumericValue::constant(U256::from(64))),
         memory: false,
+        words: Default::default(),
         content: Content::Cells(
             (0..64)
                 .map(|index| {
@@ -65,7 +99,7 @@ fn old_root(summary: &ByteArraySummary, policy: StateLimits) -> Result<ByteState
             .map(|(index, value)| StateBinding {
                 index: U256::from(*index),
                 value: ExprId::fresh().unwrap(),
-                numeric: value.numeric().clone(),
+                numeric: value.numeric().clone().into(),
             })
             .collect(),
         policy,
@@ -92,7 +126,7 @@ fn actual_shallow_observed_constructor_admits_compact_64_binding_carrier_only() 
     let summary = producer_shape(domain);
     let frozen = summary.clone();
     let original_work = summary.work_size();
-    let policy: StateLimits = limits(domain).into();
+    let policy: StateLimits = limits(crate::domain::ValueAlgebra::new(&domain)).into();
     assert_eq!(policy.max_nodes, 16_384);
     assert_eq!(
         old_root(&summary, policy),
@@ -138,7 +172,10 @@ fn actual_shallow_observed_constructor_admits_compact_64_binding_carrier_only() 
             );
         }
     }
-    assert_eq!(retained[63].numeric, *cells[&63].numeric());
+    assert_eq!(
+        retained[63].numeric,
+        crate::domain::WordElement::observation(cells[&63].numeric())
+    );
     assert_eq!(summary, frozen);
     assert_eq!(summary.work_size(), original_work);
     assert_eq!(replay.bytes, *cells);
@@ -152,10 +189,14 @@ fn actual_84_binding_dense_carrier_shrinks_without_changing_the_policy() {
     let summary = ByteArraySummary {
         length: AbstractValue::from_numeric(NumericValue::constant(U256::from(84))),
         memory: false,
+        words: Default::default(),
         content: Content::Cells((0..84).map(|index| (index, dense.clone())).collect()),
     };
     assert_eq!(
-        old_root(&summary, limits(domain).into()),
+        old_root(
+            &summary,
+            limits(crate::domain::ValueAlgebra::new(&domain)).into()
+        ),
         Err(StateError::Limit {
             nodes: 22_599,
             depth: 2
@@ -200,6 +241,7 @@ fn future_byte_and_word_reads_include_values_and_keep_exact_known_controls() {
     let controlled = ByteArraySummary {
         length: AbstractValue::constant(U256::from(32)),
         memory: false,
+        words: Default::default(),
         content: Content::Cells(
             (0..32)
                 .map(|index| {
@@ -237,6 +279,7 @@ fn repeated_projection_join_and_instantiation_keep_canonical_cells_and_work_stab
         let mut inputs = vec![ByteArraySummary {
             length: finite(domain, [1, 3]),
             memory: false,
+            words: Default::default(),
             content: Content::Cells(BTreeMap::from([
                 (0, finite(domain, 0..=255)),
                 (1, finite(domain, 0..=127)),
@@ -259,7 +302,7 @@ fn repeated_projection_join_and_instantiation_keep_canonical_cells_and_work_stab
                     .map(|(index, value)| StateBinding {
                         index: U256::from(*index),
                         value: ExprId::fresh().unwrap(),
-                        numeric: value.numeric().clone(),
+                        numeric: value.numeric().clone().into(),
                     })
                     .collect(),
                 StateLimits {
@@ -406,11 +449,16 @@ fn projection_to_a_smaller_capacity_cannot_resurrect_a_discarded_finite_componen
     let summary = ByteArraySummary {
         length: AbstractValue::constant(U256::from(1)),
         memory: false,
+        words: Default::default(),
         content: Content::Cells(BTreeMap::from([(0, finite(domain, 0..=255))])),
     };
     let compact = summary.instantiate(domain).unwrap();
     let mut original = compact.clone();
-    original.root = old_root(&summary, limits(domain).into()).unwrap();
+    original.root = old_root(
+        &summary,
+        limits(crate::domain::ValueAlgebra::new(&domain)).into(),
+    )
+    .unwrap();
     for smaller in [
         Domain::default(),
         Domain::new(NonZeroUsize::new(8).unwrap()),
@@ -441,6 +489,7 @@ fn projection_checks_current_root_before_using_a_stale_or_missing_presentation_c
         let summary = ByteArraySummary {
             length: AbstractValue::constant(U256::from(1)),
             memory: false,
+            words: Default::default(),
             content: Content::Cells(BTreeMap::from([(0, previous.clone())])),
         };
         let mut replay = summary.instantiate(domain).unwrap();
@@ -450,9 +499,9 @@ fn projection_checks_current_root_before_using_a_stale_or_missing_presentation_c
             vec![StateBinding {
                 index: U256::ZERO,
                 value: ExprId::fresh().unwrap(),
-                numeric: current.numeric().clone(),
+                numeric: current.numeric().clone().into(),
             }],
-            limits(domain).into(),
+            limits(crate::domain::ValueAlgebra::new(&domain)).into(),
         )
         .unwrap();
         let projected = replay.summary_projection(domain).unwrap();

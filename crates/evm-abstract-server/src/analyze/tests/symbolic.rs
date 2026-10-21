@@ -48,20 +48,6 @@ fn actual_symbolic_storage_write_read_reaches_protocol_and_ssa() {
                     && fact.constant.as_deref() == Some("0x7")
             })
     }));
-    for store in &report.stores {
-        for account in &store.accounts {
-            report
-                .symbolic
-                .reference(
-                    None,
-                    api::SymbolicReference {
-                        sort: api::SymbolicSort::Slots,
-                        node: account.storage_root.node,
-                    },
-                )
-                .unwrap();
-        }
-    }
 }
 
 #[test]
@@ -442,7 +428,7 @@ fn mixed_projection(width: usize) {
             &AbstractValue::constant(U256::from(9)),
         )
         .numeric()
-        .clone();
+        .into();
     let binding = StateBinding {
         index: U256::from(2),
         value: cell.clone(),

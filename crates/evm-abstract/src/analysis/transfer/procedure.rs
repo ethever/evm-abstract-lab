@@ -5,30 +5,51 @@
 //! summary invocation gets independent symbolic state roots. A caller subscription keeps
 //! its own continuation and rollback checkpoint. Known bytecode, repeated environment
 //! interactions, and their mutually recursive calls therefore use the same worklist.
+//!
+//! Frozen state policies own finite entry/body/subscriber identities, covering
+//! relative/output admission and acceleration schedules. Report frame keys do
+//! not constrain those identities. Retained feedback metadata publishes through
+//! the same native slots as payload growth, including after a consumer settles.
+
+use crate::analysis::engine::policy::{KeyIndex, PolicyKey};
+use crate::analysis::engine::{
+    ContextPolicy, EnginePolicies, PartitionPolicy, ProcedureOutput, StatePolicy,
+};
+use crate::analysis::{
+    cooperation::InputTasks,
+    engine::cooperation::{Composition, Cooperation},
+};
+use crate::domain::{EvmNumericAlgebra, WordElement};
 
 use super::{
-    Execution, ExecutionFrontier, StorageReadPolicy, Successor, TransferContext, WorkBudget,
-    boundary_on, calls, execute_inner, resume_summary_inner, zero,
+    EvmExecution, EvmExecutionFrontier, EvmSuccessor, StorageReadPolicy, TransferContext,
+    WorkBudget, boundary_on, calls, execute_inner as execute_inner_with, resume_summary_inner,
+    zero,
 };
 use crate::{
     analysis::{
-        CallStack, ChildFrame, Continuation, DiagnosticKind, FrameCode, FrameKey, FrameState,
-        FrontierReason, Limit, MachineEdgeKind, MachineError, MachinePayload, OutcomeKind,
-        RootFrame,
+        DiagnosticKind, EvmCallStack, EvmChildFrame, EvmContinuation, EvmFrameState,
+        EvmMachinePayload, EvmRootFrame, FrameCode, FrameKey, FrontierReason, Limit,
+        MachineEdgeKind, MachineError, OutcomeKind,
         engine::Counters,
         machine::{
-            ProcedureSummary, ProcedureSummaryKind, ProcedureSummaryOutput, ProcedureSummaryRecord,
+            EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord,
+            ProcedureSummaryKind,
         },
-        worklist::{Worklist, transfer_stop},
+        worklist::{kernel_failure, runtime::Runtime, transfer_stop},
     },
-    domain::{AbstractValue, Domain},
-    world::{AddressInput, ByteArray, ByteArraySummary, Code, Entry, Store, StoreSummary, World},
+    domain::{AlgebraRef, EvmValue},
+    world::{AddressInput, Code, EvmByteArray, EvmByteArraySummary, EvmEntry, EvmStore, EvmWorld},
 };
 use alloy_primitives::{Address, keccak256};
+use analysis_kernel::{Availability, RunningJob, SlotMeta, Version};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod admission;
 mod coarse_retry;
+mod cooperation;
+use cooperation::Producer;
 mod cycles;
 mod environment;
 mod recursion;
@@ -36,20 +57,22 @@ mod solver;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-use crate::analysis::state::stack_alias;
 use crate::analysis::state::{
-    PayloadSummary, context,
-    payload::{self, form, instantiate, join, semantic_eq},
+    EvmPayloadSummary,
+    payload::{self, instantiate as instantiate_with, semantic_eq},
     projection, storage_observations,
 };
 #[cfg(test)]
+use crate::analysis::state::{context, stack_alias};
+#[cfg(test)]
 pub(in crate::analysis) use coarse_retry::prepare as prepare_runtime_retry;
+#[cfg(test)]
+use payload::join as join_with;
 pub(in crate::analysis) use recursion::is_recursive_entry;
 
 /// This is an internal owner namespace, never an observed account address.
 /// All unknown-owner effects are abstracted together, including possible aliases.
-pub(super) fn owner_namespace(world: &World, store: &Store) -> Address {
+pub(super) fn owner_namespace<N: WordElement>(world: &EvmWorld<N>, store: &EvmStore<N>) -> Address {
     let mut bytes = [0xff; 20];
     loop {
         let candidate = Address::from(bytes);
@@ -72,26 +95,38 @@ pub(super) fn owner_namespace(world: &World, store: &Store) -> Address {
     }
 }
 
-struct Node {
+struct EvmNode<N: WordElement> {
     procedure: usize,
-    payload: PayloadSummary,
+    payload: EvmPayloadSummary<N>,
+    input: SlotMeta<EvmPayloadSummary<N>>,
     updates: usize,
     /// Local control-flow edges, including return to a CALL continuation.
     /// Callee entries stay in the separate procedure dependency graph.
     successors: BTreeSet<usize>,
     loop_head: bool,
+    /// Feedback already admitted and published to this body's input readers.
+    feedback: bool,
     /// Promotion belongs to the node, across incoming joins and fresh roots.
-    runtime_retry: coarse_retry::RuntimeRetry,
+    runtime_retry: coarse_retry::EvmRuntimeRetry<N>,
+    excluded: bool,
 }
 
-struct Procedure {
+struct EvmProcedure<N: WordElement, Key: PolicyKey> {
+    namespace: usize,
     frame: FrameKey,
-    entry: usize,
-    // A real CALL continuation keeps success/failure separate for one block.
-    // No arbitrary scalar or physical depth becomes part of this finite key.
-    nodes: BTreeMap<(FrameKey, Option<bool>), usize>,
-    outputs: BTreeMap<OutcomeKind, Output>,
-    subscribers: Vec<usize>,
+    /// Procedure preparation and body preparation may choose different keys.
+    /// Retain the actual entry bound rather than borrowing the first body.
+    entry_payload: EvmPayloadSummary<N>,
+    entry_updates: usize,
+    entry_feedback: bool,
+    entry_revision: usize,
+    entry_source: SlotMeta<usize>,
+    entries: BTreeSet<usize>,
+    // The injected partition owns the complete body identity. The representative
+    // frame above is retained solely for reporting.
+    nodes: KeyIndex<Key>,
+    outputs: BTreeMap<OutcomeKind, EvmOutput<N>>,
+    output: SlotMeta<BTreeMap<OutcomeKind, EvmOutput<N>>>,
     dependencies: BTreeSet<usize>,
     recursive: bool,
     local_cycle: bool,
@@ -99,75 +134,178 @@ struct Procedure {
     covered_blocks: BTreeSet<usize>,
 }
 
-#[derive(Clone)]
-struct Output {
-    data: ByteArraySummary,
-    store: StoreSummary,
-    work: usize,
-    generation: usize,
+/// A procedure's actual input anchor, independently of all selected Body keys.
+/// The revision slot changes atomically with the payload and semantic metadata.
+pub(in crate::analysis) struct ProcedureEntrySource<'a, N: WordElement> {
+    pub namespace: usize,
+    pub payload: &'a EvmPayloadSummary<N>,
+    pub revision: &'a usize,
+    pub slot: &'a SlotMeta<usize>,
 }
 
-struct Subscriber {
+#[cfg(test)]
+impl<N: WordElement, Key: PolicyKey> EvmProcedure<N, Key> {
+    fn first_body(&self) -> usize {
+        *self.entries.first().expect("admitted procedure has a body")
+    }
+}
+
+#[derive(Clone)]
+struct EvmOutput<N: WordElement> {
+    summary: ProcedureOutput<N>,
+    work: usize,
+    generation: usize,
+    /// Semantic content updates, independent of delivery/schedule invalidation.
+    updates: usize,
+}
+
+struct EvmSubscriber<N: WordElement> {
     from: usize,
     callee: usize,
     /// A relative parent plus one child; each child retains its pre-entry snapshot.
-    payload: PayloadSummary,
+    payload: EvmPayloadSummary<N>,
+    input: SlotMeta<EvmPayloadSummary<N>>,
     updates: usize,
-    delivered: BTreeMap<OutcomeKind, usize>,
+    feedback: bool,
+    delivered: BTreeMap<OutcomeKind, (Version, usize)>,
 }
 
 /// One shared relation table can grow across multiple relative entries of a
 /// transaction. The optional graph-certificate cache is independent of this
 /// semantic fixed point and cannot replace it for recursive calls.
-#[derive(Default)]
-pub(in crate::analysis) struct Table {
-    procedures: Vec<Procedure>,
-    procedures_by_key: BTreeMap<FrameKey, usize>,
-    nodes: Vec<Node>,
-    subscribers: Vec<Subscriber>,
-    subscribers_by_key: BTreeMap<(usize, usize), usize>,
-    worklist: Worklist,
-    frontiers: Vec<ExecutionFrontier>,
+pub(in crate::analysis) struct EvmTable<
+    N: WordElement,
+    Key: PolicyKey = (crate::analysis::MachineKey, Option<bool>),
+> {
+    procedures: Vec<EvmProcedure<N, Key>>,
+    procedures_by_key: KeyIndex<(usize, Key)>,
+    nodes: Vec<EvmNode<N>>,
+    subscribers: Vec<EvmSubscriber<N>>,
+    // Each continuation/callee pair scopes the injected finite vocabulary.
+    // Subscriber cardinality is bounded by bodies x procedures x policy keys;
+    // every allocation consumes the same transaction work ledger.
+    subscribers_by_key: KeyIndex<(usize, usize, Key)>,
+    frontiers: Vec<EvmExecutionFrontier<N>>,
+    // Moving deferred frontier payloads to the outer result does not erase the
+    // relation's incompleteness or make its native completion observation true.
+    incomplete: bool,
     /// Query precision losses in this relation, reported at the outer summary
     /// site instead of assigning callback PCs to an invented Unknown opcode.
     precision_losses: BTreeSet<DiagnosticKind>,
     propagations: usize,
     reused: usize,
+    exchange_inputs: BTreeMap<
+        (
+            u8,
+            usize,
+            u8,
+            crate::analysis::MachineKey,
+            MachineEdgeKind,
+            usize,
+        ),
+        usize,
+    >,
 }
 
-struct Solver<'a> {
-    table: &'a mut Table,
-    world: &'a World,
-    entry: &'a Entry,
+impl<N: WordElement, Key: PolicyKey> Default for EvmTable<N, Key> {
+    fn default() -> Self {
+        Self {
+            procedures: Vec::new(),
+            procedures_by_key: KeyIndex::new(),
+            nodes: Vec::new(),
+            subscribers: Vec::new(),
+            subscribers_by_key: KeyIndex::new(),
+            frontiers: Vec::new(),
+            incomplete: false,
+            precision_losses: BTreeSet::new(),
+            propagations: 0,
+            reused: 0,
+            exchange_inputs: BTreeMap::new(),
+        }
+    }
+}
+
+struct EvmSolver<
+    'a,
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element, E>,
+    E,
+> {
+    table: &'a mut EvmTable<D::Element, S::Key>,
+    world: &'a EvmWorld<D::Element>,
+    entry: &'a EvmEntry<D::Element>,
     config: &'a crate::analysis::ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'a, D>,
+    policies: &'a EnginePolicies<C, P, S>,
     budget: &'a mut WorkBudget,
     counters: &'a mut Counters,
     storage_reads: StorageReadPolicy,
+    runtime: &'a mut Runtime<<X as InputTasks>::Task>,
+    cooperation: &'a mut Cooperation<D::Element, X, E>,
+    active: Option<RunningJob>,
+    caller: Option<&'a mut RunningJob>,
+    namespace: usize,
+    producer: Option<Producer>,
+    deferred: bool,
+    consumed: Option<crate::analysis::cooperation::Subject>,
 }
 
-impl Table {
+impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
+    /// Give cooperation an explicit native source; callers need not infer an
+    /// entry Body index or reinterpret a Body input under another payload.
+    pub(in crate::analysis) fn entry_source(
+        &self,
+        procedure: usize,
+    ) -> Option<ProcedureEntrySource<'_, N>> {
+        self.procedures
+            .get(procedure)
+            .map(|entry| ProcedureEntrySource {
+                namespace: entry.namespace,
+                payload: &entry.entry_payload,
+                revision: &entry.entry_revision,
+                slot: &entry.entry_source,
+            })
+    }
     #[expect(
         clippy::too_many_arguments,
         reason = "one transaction ledger and fixed execution inputs"
     )]
-    pub(in crate::analysis) fn execute(
+    pub(in crate::analysis) fn execute_with<
+        D: EvmNumericAlgebra<Element = N>,
+        C: ContextPolicy,
+        P: PartitionPolicy,
+        S: StatePolicy<D, P::Class, Key = Key>,
+        X: Composition<N, E>,
+        E,
+    >(
         &mut self,
         source_state: usize,
-        world: &World,
-        entry: &Entry,
-        payload: MachinePayload,
+        world: &EvmWorld<N>,
+        entry: &EvmEntry<N>,
+        payload: EvmMachinePayload<N>,
         config: &crate::analysis::ExecutionConfig,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
+        policies: &EnginePolicies<C, P, S>,
         budget: &mut WorkBudget,
         counters: &mut Counters,
         storage_reads: StorageReadPolicy,
-    ) -> (Execution, ProcedureSummaryRecord) {
+        runtime: &mut Runtime<<X as InputTasks>::Task>,
+        caller: &mut RunningJob,
+        cooperation: &mut Cooperation<N, X, E>,
+    ) -> (EvmExecution<N>, EvmProcedureSummaryRecord<N>) {
         // Recursive closure is mandatory. This option only controls reuse
         // between distinct entries from the outer transaction worklist.
-        if !config.use_summaries {
-            *self = Self::default();
-        }
+        // Without optional reuse, each outer input owns a separate relation.
+        // Keep its jobs live across revisits instead of dropping graph handles
+        // and stranding the caller's output subscriptions.
+        let namespace = if config.use_summaries {
+            0
+        } else {
+            source_state.saturating_add(1)
+        };
         let start_transfers = counters.transfers;
         let start_propagations = self.propagations;
         let start_reused = self.reused;
@@ -177,18 +315,27 @@ impl Table {
             ProcedureSummaryKind::KnownRecursion
         };
         let mut result = super::empty_execution(payload.clone());
-        let mut solver = Solver {
+        let mut solver = EvmSolver {
             table: self,
             world,
             entry,
             config,
             domain,
+            policies,
             budget,
             counters,
             storage_reads,
+            runtime,
+            cooperation,
+            active: None,
+            caller: Some(caller),
+            namespace,
+            producer: None,
+            deferred: false,
+            consumed: None,
         };
-        let detached = MachinePayload {
-            call_stack: CallStack::new(RootFrame {
+        let detached = EvmMachinePayload {
+            call_stack: EvmCallStack::new(EvmRootFrame {
                 state: payload.active().clone(),
             }),
             store: payload.store.clone(),
@@ -201,26 +348,82 @@ impl Table {
                 None
             }
         };
+        if let Some(root) = root
+            && let Err(error) = solver.observe_origin(
+                crate::analysis::cooperation::Point {
+                    namespace: 0,
+                    kind: crate::analysis::cooperation::PointKind::World,
+                    index: source_state,
+                },
+                root,
+            )
+        {
+            super::boundary(&mut result, 0, error.frontier_reason());
+        }
         solver.run();
+        let relative_closed = match solver.runtime.relative_closed(solver.budget) {
+            Ok(closed) => closed,
+            Err(error) => {
+                super::boundary(&mut result, 0, error.frontier_reason());
+                false
+            }
+        };
         if kind == ProcedureSummaryKind::KnownRecursion
             && let Some(root) = root
             && solver.table.procedures[root].outputs.is_empty()
-            && solver.table.worklist.is_empty()
+            && solver.table.procedures[root]
+                .entries
+                .iter()
+                .any(|id| !solver.table.nodes[*id].excluded)
+            && relative_closed
             && solver.table.frontiers.is_empty()
+            && !solver.table.incomplete
         {
             // Folding physical depth cannot certify empty finite behavior.
             // CALL rejection normally supplies real continuation-derived exits;
             // when none reaches a terminal, retain the unmodeled termination.
-            let current = solver.table.procedures[root].entry;
-            solver.frontier_summary(
-                solver.table.nodes[current].payload.clone(),
-                FrontierReason::RecursiveNoTerminal,
-                0,
-            );
+            let current = solver.table.procedures[root]
+                .entries
+                .iter()
+                .copied()
+                .find(|id| !solver.table.nodes[*id].excluded)
+                .expect("a reachable entry checked above");
+            solver.frontier_node(current, FrontierReason::RecursiveNoTerminal, 0);
         }
         if let Some(root) = root {
-            let outputs = solver.table.procedures[root].outputs.clone();
-            let mut data_sources: Vec<(ByteArraySummary, ByteArray)> = Vec::new();
+            let procedure = &solver.table.procedures[root];
+            let entry_source = solver
+                .table
+                .entry_source(root)
+                .expect("retained root procedure");
+            debug_assert_eq!(entry_source.namespace, namespace);
+            let output_work = procedure
+                .outputs
+                .values()
+                .fold(1usize, |work, output| work.saturating_add(output.work));
+            // Reading even an empty output relation retains the outer consumer.
+            // A later callee publication then wakes this exact World job.
+            let outputs = solver.runtime.with_run(
+                solver.caller.as_deref_mut().expect("outer caller"),
+                solver.budget,
+                |run| {
+                    run.read_slot(entry_source.slot, entry_source.revision, 1)
+                        .map_err(kernel_failure)?;
+                    run.read_slot(&procedure.output, &procedure.outputs, output_work)
+                        .map_err(kernel_failure)
+                },
+            );
+            let outputs = match outputs {
+                Ok(answer) => match answer.state {
+                    Availability::Value(outputs) => outputs,
+                    _ => unreachable!("initialized output relation"),
+                },
+                Err(error) => {
+                    solver.frontier(payload.clone(), error.frontier_reason(), 0);
+                    BTreeMap::new()
+                }
+            };
+            let mut data_sources: Vec<(EvmByteArraySummary<N>, EvmByteArray<N>)> = Vec::new();
             for (kind, output) in outputs {
                 if let Err(error) = solver.reserve(
                     payload
@@ -235,23 +438,28 @@ impl Table {
                 // Static execution preserves data and historical read roots,
                 // while nested zero-value calls can add EIP-161 touches.
                 let output_store = if payload.active().key.is_static {
-                    Ok(output.store.apply_static_touches(&payload.store))
+                    Ok(output.summary.store.apply_static_touches(&payload.store))
                 } else {
-                    output.store.instantiate(domain)
+                    output.summary.store.instantiate_with(domain)
                 };
                 // Equal numerical byte bounds on mutually exclusive exits of
                 // this invocation describe the same unconstrained observable
                 // buffer. Give them one fresh source so a return-status join
                 // does not manufacture separate length identities. This cache
                 // is local to one invocation; later calls remain independent.
-                let output_data = if let Some((_, data)) =
-                    data_sources.iter().find(|(bound, _)| *bound == output.data)
+                let output_data = if let Some((_, data)) = data_sources
+                    .iter()
+                    .find(|(bound, _)| *bound == output.summary.data)
                 {
                     Ok(data.clone())
                 } else {
-                    output.data.instantiate(domain).inspect(|data| {
-                        data_sources.push((output.data.clone(), data.clone()));
-                    })
+                    output
+                        .summary
+                        .data
+                        .instantiate_with(domain)
+                        .inspect(|data| {
+                            data_sources.push((output.summary.data.clone(), data.clone()));
+                        })
                 };
                 let (store, data) = match (output_store, output_data) {
                     (Ok(store), Ok(data)) => (store, data),
@@ -293,19 +501,21 @@ impl Table {
         }
         // Every frontier retains its actual numerical and relational procedure state;
         // successful discovered outputs remain useful on an interrupted solve.
-        result.frontiers.extend(
-            solver
-                .table
-                .frontiers
-                .iter()
-                .map(|frontier| ExecutionFrontier {
-                    pc: frontier.pc,
-                    reason: frontier.reason.clone(),
-                    target: frontier.target.clone(),
-                    range: frontier.range.clone(),
-                    payload: frontier.payload.clone(),
-                }),
-        );
+        result
+            .frontiers
+            .extend(
+                solver
+                    .table
+                    .frontiers
+                    .iter()
+                    .map(|frontier| EvmExecutionFrontier {
+                        pc: frontier.pc,
+                        reason: frontier.reason.clone(),
+                        target: frontier.target.clone(),
+                        range: frontier.range.clone(),
+                        payload: frontier.payload.clone(),
+                    }),
+            );
         result.diagnostics.extend(
             solver
                 .table
@@ -320,15 +530,10 @@ impl Table {
             .iter()
             .fold(0usize, |work, procedure| {
                 procedure.outputs.values().fold(
-                    work.saturating_add(
-                        solver.table.nodes[procedure.entry]
-                            .payload
-                            .store
-                            .work_size(),
-                    )
-                    .saturating_add(procedure.covered_blocks.len())
-                    .saturating_add(procedure.dependencies.len())
-                    .saturating_add(1),
+                    work.saturating_add(procedure.entry_payload.store.work_size())
+                        .saturating_add(procedure.covered_blocks.len())
+                        .saturating_add(procedure.dependencies.len())
+                        .saturating_add(1),
                     |work, output| work.saturating_add(output.work),
                 )
             });
@@ -339,26 +544,25 @@ impl Table {
                     .table
                     .procedures
                     .iter()
-                    .map(|procedure| {
-                        Ok(ProcedureSummary {
+                    .enumerate()
+                    .map(|(id, procedure)| {
+                        let input = solver.table.entry_source(id).expect("retained procedure");
+                        Ok(EvmProcedureSummary {
                             frame: procedure.frame.clone(),
-                            input: solver.table.nodes[procedure.entry]
-                                .payload
-                                .store
-                                .instantiate(domain)?,
+                            input: input.payload.store.instantiate_with(domain)?,
                             outputs: procedure
                                 .outputs
                                 .iter()
                                 .map(|(kind, output)| {
-                                    Ok(ProcedureSummaryOutput {
+                                    Ok(EvmProcedureSummaryOutput {
                                         kind: *kind,
-                                        data: output.data.instantiate(domain)?,
-                                        store: output.store.instantiate(domain)?,
+                                        data: output.summary.data.instantiate_with(domain)?,
+                                        store: output.summary.store.instantiate_with(domain)?,
                                     })
                                 })
                                 .collect::<Result<Vec<_>, MachineError>>()?,
                             dependencies: procedure.dependencies.iter().copied().collect(),
-                            input_updates: solver.table.nodes[procedure.entry].updates,
+                            input_updates: procedure.entry_updates,
                             output_updates: procedure.output_updates,
                             covered_blocks: procedure.covered_blocks.iter().copied().collect(),
                         })
@@ -372,8 +576,8 @@ impl Table {
                 Vec::new()
             }
         };
-        let closed = solver.table.worklist.is_empty() && result.frontiers.is_empty();
-        let record = ProcedureSummaryRecord {
+        let closed = relative_closed && result.frontiers.is_empty() && !solver.table.incomplete;
+        let record = EvmProcedureSummaryRecord {
             source_state,
             kind,
             root_procedure: root.filter(|root| *root < procedures.len()),
@@ -387,3 +591,17 @@ impl Table {
         (result, record)
     }
 }
+
+#[cfg(test)]
+pub(in crate::analysis) mod testing;
+#[cfg(test)]
+use crate::{
+    analysis::{ChildFrame, Continuation, MachinePayload},
+    domain::{AbstractValue, Domain, NumericValue},
+    world::{ByteArray, World},
+};
+#[cfg(test)]
+use testing::{Solver, Table, execute_inner, form, instantiate, join};
+
+#[cfg(test)]
+use super::{Execution, ExecutionFrontier};

@@ -1,8 +1,10 @@
 //! Receipt of the latest block transfer, separate from accumulated graph edges.
 //! A changed entry invalidates the receipt until that entry is executed again.
 
+use crate::domain::WordElement;
+
 use super::MachineEdgeKind;
-use crate::domain::{AbstractValue, NumericValue, provenance::Provenance};
+use crate::domain::{EvmValue, provenance::Provenance};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -27,14 +29,14 @@ pub enum InstructionProgress {
 /// current receipt. Stack aliases and deferred dispatch results have no record.
 /// Keeping only these layers avoids retaining symbolic terms or machine states.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InstructionValue {
+pub struct EvmInstructionValue<N: WordElement> {
     instruction_index: usize,
-    numeric: NumericValue,
+    numeric: N,
     provenance: Provenance,
 }
 
-impl InstructionValue {
-    pub(crate) fn new(instruction_index: usize, value: &AbstractValue) -> Self {
+impl<N: WordElement> EvmInstructionValue<N> {
+    pub(crate) fn new(instruction_index: usize, value: &EvmValue<N>) -> Self {
         Self {
             instruction_index,
             numeric: value.numeric().clone(),
@@ -48,7 +50,7 @@ impl InstructionValue {
     }
 
     /// Constraints observed for the normal result, independently of its source.
-    pub fn numeric(&self) -> &NumericValue {
+    pub fn numeric(&self) -> &N {
         &self.numeric
     }
 
@@ -61,19 +63,19 @@ impl InstructionValue {
 /// Current-input execution evidence used by partial SSA. This internal receipt
 /// does not change the existing analysis JSON's numeric or graph contracts.
 #[derive(Clone, Debug)]
-pub struct ExecutionEvidence {
+pub struct EvmExecutionEvidence<N: WordElement> {
     pub(crate) current: bool,
     pub(crate) instructions: Vec<InstructionProgress>,
     /// Sparse, ordered normal definitions. Summary certificates share these
     /// immutable projections; no fresh-expression renaming is required.
-    pub(crate) instruction_values: Arc<[InstructionValue]>,
+    pub(crate) instruction_values: Arc<[EvmInstructionValue<N>]>,
     pub(crate) successors: Vec<(usize, MachineEdgeKind)>,
 }
 
-impl ExecutionEvidence {
+impl<N: WordElement> EvmExecutionEvidence<N> {
     pub(crate) fn new(
         instructions: Vec<InstructionProgress>,
-        instruction_values: impl Into<Arc<[InstructionValue]>>,
+        instruction_values: impl Into<Arc<[EvmInstructionValue<N>]>>,
     ) -> Self {
         Self {
             current: true,
@@ -95,7 +97,7 @@ impl ExecutionEvidence {
 
     /// Sparse normal-result observations in instruction order. A changed entry
     /// makes every old observation unavailable until the state executes again.
-    pub fn instruction_values(&self) -> Option<&[InstructionValue]> {
+    pub fn instruction_values(&self) -> Option<&[EvmInstructionValue<N>]> {
         self.current.then_some(self.instruction_values.as_ref())
     }
 
@@ -108,3 +110,9 @@ impl ExecutionEvidence {
 
 #[cfg(test)]
 mod tests;
+
+/// Default numeric assembly for [`EvmInstructionValue`].
+pub type InstructionValue = EvmInstructionValue<crate::domain::NumericValue>;
+
+/// Default numeric assembly for [`EvmExecutionEvidence`].
+pub type ExecutionEvidence = EvmExecutionEvidence<crate::domain::NumericValue>;

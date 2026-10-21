@@ -44,8 +44,8 @@ fn assert_owner(left: &Store, right: &Store, owner: Address, domain: Domain) {
         );
         for key in [word(1), word(2), word(5), word(99)] {
             assert_eq!(
-                a.read_checked(owner, &key, domain),
-                b.read_checked(owner, &key, domain)
+                a.read_checked_with(owner, &key, crate::domain::ValueAlgebra::new(&domain)),
+                b.read_checked_with(owner, &key, crate::domain::ValueAlgebra::new(&domain))
             );
         }
     }
@@ -76,7 +76,9 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
     world.insert(owner, account).unwrap();
     world.insert(other, Account::empty()).unwrap();
     let mut old = Store::new(&world);
-    let historical = old.read_checked(owner, &word(5), domain).unwrap();
+    let historical = old
+        .read_checked_with(owner, &word(5), crate::domain::ValueAlgebra::new(&domain))
+        .unwrap();
     // This write retains an old read variable in the unchanged operand facts.
     old.write_checked(other, &word(5), &historical, domain)
         .unwrap();
@@ -127,7 +129,11 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
     let expected = reference(&old, owner, domain, selector.clone());
     let mut local = old.clone();
     local
-        .join_deleted_guarded(owner, domain, selector.clone())
+        .join_deleted_guarded(
+            owner,
+            crate::domain::ValueAlgebra::new(&domain),
+            selector.clone(),
+        )
         .unwrap();
     local.check_existing(limits).unwrap();
 
@@ -148,8 +154,12 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
         assert!(a.operands.contains_key(historical.expression().unwrap()));
         for key in [&finite, &open] {
             assert_eq!(
-                a.read_checked(owner, key, domain),
-                reference_plane.read_checked(owner, key, domain)
+                a.read_checked_with(owner, key, crate::domain::ValueAlgebra::new(&domain)),
+                reference_plane.read_checked_with(
+                    owner,
+                    key,
+                    crate::domain::ValueAlgebra::new(&domain)
+                )
             );
         }
     }
@@ -166,7 +176,10 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
     assert_eq!(old, frozen);
     assert_eq!(saved.state(), &saved_state);
     assert_eq!(
-        saved.state().read_checked(owner, &word(5), domain).unwrap(),
+        saved
+            .state()
+            .read_checked_with(owner, &word(5), crate::domain::ValueAlgebra::new(&domain))
+            .unwrap(),
         historical
     );
 
@@ -192,11 +205,20 @@ fn same_selector_matches_full_join_with_aliases_history_and_unaffected_owners() 
                 &old.persistent
             };
             for key in [word(1), word(2), word(99), finite.clone(), open.clone()] {
-                let actual = plane.read_checked(owner, &key, domain).unwrap();
+                let actual = plane
+                    .read_checked_with(owner, &key, crate::domain::ValueAlgebra::new(&domain))
+                    .unwrap();
                 if retain {
                     assert_eq!(
                         actual.numeric(),
-                        before.read_checked(owner, &key, domain).unwrap().numeric()
+                        before
+                            .read_checked_with(
+                                owner,
+                                &key,
+                                crate::domain::ValueAlgebra::new(&domain)
+                            )
+                            .unwrap()
+                            .numeric()
                     );
                 } else {
                     assert_eq!(actual.singleton(), Some(U256::ZERO));
@@ -241,7 +263,9 @@ fn implicit_owner_keeps_global_defaults_other_sources_and_prior_must_facts() {
     let selector = ExprId::fresh().unwrap();
     let expected = reference(&old, owner, domain, selector.clone());
     let mut local = old.clone();
-    local.join_deleted_guarded(owner, domain, selector).unwrap();
+    local
+        .join_deleted_guarded(owner, crate::domain::ValueAlgebra::new(&domain), selector)
+        .unwrap();
     for address in [owner, other, address(0x999)] {
         assert_owner(&local, &expected, address, domain);
     }
@@ -291,7 +315,13 @@ fn code_presence_and_lifecycle_flags_match_full_reference_before_cleanup() {
                 let selector = ExprId::fresh().unwrap();
                 let expected = reference(&old, owner, domain, selector.clone());
                 let mut local = old.clone();
-                local.join_deleted_guarded(owner, domain, selector).unwrap();
+                local
+                    .join_deleted_guarded(
+                        owner,
+                        crate::domain::ValueAlgebra::new(&domain),
+                        selector,
+                    )
+                    .unwrap();
                 assert_owner(&local, &expected, owner, domain);
                 assert_eq!(local.pending_destruction, old.pending_destruction);
                 assert_eq!(local.created, old.created);

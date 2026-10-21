@@ -1,9 +1,15 @@
 //! Paid, optional word metadata memoization for the two EVM load consumers.
 
-use super::{ByteArray, RangeError, conditional, expr, limits, numeric, operands, reads};
+use super::{EvmByteArray, RangeError, conditional, expr, limits, numeric, operands, reads};
+use crate::domain::AlgebraRef;
+#[cfg(test)]
+use crate::domain::{AbstractValue, Domain, ValueAlgebra};
+use crate::domain::{EvmNumericAlgebra, WordElement};
+#[cfg(test)]
+use crate::world::ByteArray;
 use crate::{
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         symbolic::{
             ByteStateId, ByteStateKind, ByteView, ExprError, ExprId, ExprKind, SlotStateId,
             SlotStateKind, StateBinding,
@@ -21,16 +27,37 @@ const PLANNING_QUANTUM: usize = 4096;
 /// Non-Clone and demand-local: the same owned source, offset and entire domain
 /// policy determine admission, payment and execution. No pointer-only owner key
 /// or borrowed mutable ByteArray survives preparation.
-pub(crate) struct Plan {
+pub(crate) struct Plan<
+    'a,
+    N: WordElement = crate::domain::NumericValue,
+    D: EvmNumericAlgebra<Element = N> = crate::domain::Domain,
+> {
     root: ByteStateId,
-    length: Option<AbstractValue>,
-    facts: BTreeMap<ExprId, AbstractValue>,
-    conditional: conditional::ConditionalFacts,
-    offset: AbstractValue,
-    domain: Domain,
+    length: Option<EvmValue<N>>,
+    facts: BTreeMap<ExprId, EvmValue<N>>,
+    conditional: conditional::ConditionalFacts<N>,
+    offset: EvmValue<N>,
+    policy: PlanPolicy<'a, D>,
     failure: Option<RangeError>,
     preparation: Option<conditional::Preparation>,
     fallback_work: usize,
+}
+
+// Production plans borrow the original D. Private default-carrier test helpers
+// own their small Domain policy for deferred reads.
+enum PlanPolicy<'a, D: EvmNumericAlgebra> {
+    Borrowed(AlgebraRef<'a, D>),
+    #[cfg(test)]
+    Owned(ValueAlgebra<D>),
+}
+impl<D: EvmNumericAlgebra> PlanPolicy<'_, D> {
+    fn view(&self) -> AlgebraRef<'_, D> {
+        match self {
+            Self::Borrowed(domain) => *domain,
+            #[cfg(test)]
+            Self::Owned(domain) => domain.borrowed(),
+        }
+    }
 }
 
 fn charge(budget: &mut WorkBudget, work: usize) -> Result<bool, RangeError> {
@@ -40,23 +67,24 @@ fn charge(budget: &mut WorkBudget, work: usize) -> Result<bool, RangeError> {
     Ok(budget.charge(work))
 }
 
-fn fact_work(facts: &BTreeMap<ExprId, AbstractValue>) -> usize {
+fn fact_work<N: WordElement>(facts: &BTreeMap<ExprId, EvmValue<N>>) -> usize {
     facts.iter().fold(0usize, |work, (key, value)| {
         work.saturating_add(key.work_size())
             .saturating_add(value.work_size())
     })
 }
 
-impl ByteArray {
+impl<N: WordElement> EvmByteArray<N> {
     /// The caller still pays its original byte_work. Only the selected word
     /// fee moves here. Planning, snapshot copies and the selected algorithm
     /// each have a reservation before their own work or allocations.
-    pub(crate) fn prepare_word_read(
+    fn prepare_word_read_policy<'a, D: EvmNumericAlgebra<Element = N>>(
         &self,
-        offset: &AbstractValue,
-        domain: Domain,
+        offset: &EvmValue<N>,
+        policy: PlanPolicy<'a, D>,
         budget: &mut WorkBudget,
-    ) -> Result<Option<Plan>, RangeError> {
+    ) -> Result<Option<Plan<'a, N, D>>, RangeError> {
+        let domain = policy.view();
         let length_work = if self.memory {
             0
         } else {
@@ -95,7 +123,7 @@ impl ByteArray {
         } else {
             None
         };
-        let fallback_work = self.word_numeric_work(offset, domain);
+        let fallback_work = self.word_numeric_work_with(offset, domain);
         let full_work = preparation.as_ref().map_or(fallback_work, |_| {
             self.root
                 .work_size()
@@ -135,7 +163,7 @@ impl ByteArray {
             facts: self.operands.clone(),
             conditional: self.conditional.clone(),
             offset: offset.clone(),
-            domain,
+            policy,
             failure: self.failure.clone(),
             preparation,
             fallback_work,
@@ -143,7 +171,7 @@ impl ByteArray {
     }
 }
 
-impl Plan {
+impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Plan<'a, N, D> {
     /// MLOAD executes this only after its original touch_memory. Expansion
     /// changes length/allocations, neither of which participates in a memory
     /// word read. The content/fact snapshot here is the exact prepared owner.
@@ -151,45 +179,36 @@ impl Plan {
     pub(crate) fn read_word_budgeted(
         mut self,
         budget: &mut WorkBudget,
-    ) -> Result<Option<AbstractValue>, RangeError> {
+    ) -> Result<Option<EvmValue<N>>, RangeError> {
+        let domain = self.policy.view();
         if let Some(error) = self.failure {
             return Err(error);
         }
-        crate::domain::symbolic::state_check(
-            self.root.nodes(),
-            self.root.depth(),
-            limits(self.domain),
-        )?;
+        crate::domain::symbolic::state_check(self.root.nodes(), self.root.depth(), limits(domain))?;
         let offset = expr(&self.offset)?;
         operands::remember(
             &mut self.facts,
             offset.clone(),
             &self.offset,
-            self.domain,
-            limits(self.domain),
+            domain,
+            limits(domain),
         )?;
-        self.conditional.check(limits(self.domain))?;
+        self.conditional.check(limits(domain))?;
         if let Some(preparation) = self.preparation {
             // The entire Context/Memo/Reader graph dies in this block, ending
             // the original budget borrow before a complete fallback can pay.
             let (value, work_exhausted) = {
-                let Some(context) = conditional::Context::budgeted(
+                let Some(context) = conditional::Context::<N, D>::budgeted(
                     &self.facts,
                     &self.conditional,
-                    self.domain,
+                    domain,
                     &preparation,
                     budget,
                 )?
                 else {
                     return Ok(None);
                 };
-                let value = evaluate(
-                    &self.root,
-                    self.length.as_ref(),
-                    &offset,
-                    &context,
-                    self.domain,
-                )?;
+                let value = evaluate(&self.root, self.length.as_ref(), &offset, &context, domain)?;
                 context.check()?;
                 (value, context.work_exhausted())
             };
@@ -205,31 +224,78 @@ impl Plan {
                 return Ok(None);
             }
         }
-        let context = conditional::Context::new(&self.facts, Some(&self.conditional));
-        evaluate(
-            &self.root,
-            self.length.as_ref(),
-            &offset,
-            &context,
-            self.domain,
-        )
+        // The original full-read fee is already paid. Keep the same ledger
+        // available for additional custom binding work, including after an
+        // optional prepared-cache refusal, without charging old actions twice.
+        let binding_budget = conditional::BindingBudget::new(budget);
+        let context = conditional::Context::<N, D>::prepaid(
+            &self.facts,
+            Some(&self.conditional),
+            domain,
+            &binding_budget,
+        );
+        evaluate(&self.root, self.length.as_ref(), &offset, &context, domain)
     }
 }
 
 /// Shared complete symbolic/numeric algorithm. Only a private prepared Context
 /// can return None for mandatory Work or optional refusal; true expression
 /// limits and cancellation remain errors.
-pub(super) fn evaluate(
+pub(super) fn evaluate<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     root: &ByteStateId,
-    length: Option<&AbstractValue>,
+    length: Option<&EvmValue<N>>,
     offset: &ExprId,
-    context: &conditional::Context<'_>,
-    domain: Domain,
-) -> Result<Option<AbstractValue>, RangeError> {
+    context: &conditional::Context<'a, N, D>,
+    domain: AlgebraRef<'a, D>,
+) -> Result<Option<EvmValue<N>>, RangeError> {
     context.check()?;
     if context.stopped() {
         return Ok(None);
     }
+    let expression = expression(root, length, offset, context, domain);
+    context.check()?;
+    if context.stopped() {
+        return Ok(None);
+    }
+    let expression = expression?;
+    // A summary may retain an unsupported whole-word predicate for precisely
+    // this normalized read. Different roots, padding and overlapping writes
+    // produce different terms and cannot use the old guarantee.
+    let retained = context.retained_word(&expression, domain);
+    context.check()?;
+    if context.stopped() {
+        return Ok(None);
+    }
+    if let Some(value) = retained {
+        return Ok(Some(attach_word(value, expression)));
+    }
+    let numeric = numeric::Reader::<N, D>::with_context(context.clone(), domain).word(root, offset);
+    context.check()?;
+    if context.stopped() {
+        return Ok(None);
+    }
+    Ok(Some(attach_word(numeric, expression)))
+}
+
+fn attach_word<N: WordElement>(value: EvmValue<N>, expression: ExprId) -> EvmValue<N> {
+    // This content proof was computed by the paid read. Retain literal terms
+    // too: runtime identification must not replace them with an unrelated Fresh
+    // whose path-local numeric bound can disappear at a later store join.
+    let value = if let Some(word) = expression.as_constant() {
+        value.with_numeric(N::constant(word))
+    } else {
+        value
+    };
+    value.with_expression(expression)
+}
+
+pub(super) fn expression<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    root: &ByteStateId,
+    length: Option<&EvmValue<N>>,
+    offset: &ExprId,
+    context: &conditional::Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<ExprId, RangeError> {
     let view = if let Some(length) = length {
         ByteView::new(
             root.clone(),
@@ -250,28 +316,19 @@ pub(super) fn evaluate(
             ExprId::constant(U256::from(32)),
         )
     };
-    let expression = reads::word_expression(
+    Ok(reads::word_expression(
         view,
         ExprId::constant(U256::ZERO),
         context,
         domain,
         limits(domain),
-    );
-    context.check()?;
-    if context.stopped() {
-        return Ok(None);
-    }
-    let expression = expression?;
-    let numeric = numeric::Reader::with_context(context.clone(), domain).word(root, offset);
-    context.check()?;
-    if context.stopped() {
-        return Ok(None);
-    }
-    Ok(Some(numeric::attach(numeric, expression)))
+    )?)
 }
 
 #[cfg(test)]
 mod payer_tests;
+#[cfg(test)]
+mod proof_tests;
 
 // Bound the paid preflight scan by occurrences, including source views, scalar
 // offsets and bindings even where the numeric evaluator treats a read as opaque.
@@ -314,11 +371,11 @@ impl<'a> Census<'a> {
         true
     }
 
-    fn fits(
+    fn fits<N: WordElement>(
         &mut self,
         root: &'a ByteStateId,
-        offset: &'a AbstractValue,
-        length: Option<&'a AbstractValue>,
+        offset: &'a EvmValue<N>,
+        length: Option<&'a EvmValue<N>>,
     ) -> bool {
         if !self.push(Node::Bytes(root)) {
             return false;
@@ -448,6 +505,28 @@ impl<'a> Census<'a> {
     }
 }
 
+impl<N: WordElement> EvmByteArray<N> {
+    pub(crate) fn prepare_word_read_with<'a, D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        offset: &EvmValue<N>,
+        domain: AlgebraRef<'a, D>,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<Plan<'a, N, D>>, RangeError> {
+        self.prepare_word_read_policy(offset, PlanPolicy::Borrowed(domain), budget)
+    }
+}
+#[cfg(test)]
+impl EvmByteArray<crate::domain::NumericValue> {
+    pub(crate) fn prepare_word_read(
+        &self,
+        offset: &crate::domain::AbstractValue,
+        domain: crate::domain::Domain,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<Plan<'static>>, RangeError> {
+        self.prepare_word_read_policy(offset, PlanPolicy::Owned(ValueAlgebra::new(domain)), budget)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,7 +555,7 @@ mod tests {
                 &guarded_tree(depth - 1, domain),
                 domain,
                 ExprId::fresh().unwrap(),
-                limits(domain),
+                limits(crate::domain::ValueAlgebra::new(&domain)),
             )
             .unwrap()
     }
@@ -497,11 +576,18 @@ mod tests {
         let context = conditional::Context::prepared(
             &plan.facts,
             &plan.conditional,
-            domain,
+            crate::domain::ValueAlgebra::new(&domain),
             preparation.nodes,
         );
         assert_eq!(
-            evaluate(&plan.root, None, &expr(&zero()).unwrap(), &context, domain).unwrap(),
+            evaluate(
+                &plan.root,
+                None,
+                &expr(&zero()).unwrap(),
+                &context,
+                crate::domain::ValueAlgebra::new(&domain)
+            )
+            .unwrap(),
             Some(expected.clone())
         );
         assert!(!context.cache_refused());
@@ -574,11 +660,18 @@ mod tests {
         let context = conditional::Context::prepared(
             &plan.facts,
             &plan.conditional,
-            domain,
+            crate::domain::ValueAlgebra::new(&domain),
             preparation.nodes,
         );
         assert_eq!(
-            evaluate(&plan.root, None, &expr(&zero()).unwrap(), &context, domain).unwrap(),
+            evaluate(
+                &plan.root,
+                None,
+                &expr(&zero()).unwrap(),
+                &context,
+                crate::domain::ValueAlgebra::new(&domain)
+            )
+            .unwrap(),
             Some(expected.clone())
         );
         assert!(!context.cache_refused());
@@ -624,10 +717,10 @@ mod tests {
                 .map(|index| StateBinding {
                     index: U256::from(index),
                     value: ExprId::constant(U256::from(7)),
-                    numeric: value.numeric().clone(),
+                    numeric: value.numeric().observation(),
                 })
                 .collect(),
-            limits(domain).into(),
+            limits(crate::domain::ValueAlgebra::new(&domain)).into(),
         )
         .unwrap();
         let mut branches = [ByteArray::memory(), ByteArray::memory()];
@@ -636,7 +729,7 @@ mod tests {
                 ExprId::slot_read(
                     source.clone(),
                     ExprId::constant(U256::from(index)),
-                    limits(domain),
+                    limits(crate::domain::ValueAlgebra::new(&domain)),
                 )
                 .unwrap(),
             );
@@ -647,7 +740,7 @@ mod tests {
                 &branches[1],
                 domain,
                 ExprId::fresh().unwrap(),
-                limits(domain),
+                limits(crate::domain::ValueAlgebra::new(&domain)),
             )
             .unwrap();
         assert!(

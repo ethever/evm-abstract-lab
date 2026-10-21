@@ -1,11 +1,15 @@
 //! Conservative metadata form for explicitly selected whole-case cycle widening.
 
 use super::{
-    ByteArray, RangeError,
+    EvmByteArray, RangeError,
     refinement::{Node, walk},
 };
+use crate::domain::AlgebraRef;
+#[cfg(test)]
+use crate::domain::ValueAlgebra;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    AbstractValue, Domain,
+    EvmValue,
     symbolic::{ByteStateKind, ExprError, ExprId, ExprLimits, SlotStateKind},
 };
 use alloy_primitives::U256;
@@ -13,22 +17,20 @@ use std::collections::BTreeMap;
 
 /// Constant folding after the caller's registered-selector projection is an
 /// authoritative proof, while nonconstant external/manual symbols stay intact.
-pub(in crate::world) fn refresh_constant(value: &mut AbstractValue) {
-    if let Some(constant) = value.expression().and_then(ExprId::as_constant) {
-        *value = value
-            .clone()
-            .with_numeric(crate::domain::NumericValue::constant(constant));
+pub(in crate::world) fn refresh_constant<N: WordElement>(value: &mut EvmValue<N>) {
+    if let Some(constant_with) = value.expression().and_then(ExprId::as_constant) {
+        *value = value.clone().with_numeric(N::constant(constant_with));
     }
 }
 
 /// Retain guarantees consumed by the authoritative graph, including guarantees
 /// referenced by another retained fact. Singleton provenance remains essential
 /// even when Zero/Exact normalization removes the original write expression.
-pub(in crate::world) fn retained_facts(
+pub(in crate::world) fn retained_facts<N: WordElement>(
     pending: Vec<Node>,
-    facts: &BTreeMap<ExprId, AbstractValue>,
+    facts: &BTreeMap<ExprId, EvmValue<N>>,
     limits: ExprLimits,
-) -> Result<BTreeMap<ExprId, AbstractValue>, ExprError> {
+) -> Result<BTreeMap<ExprId, EvmValue<N>>, ExprError> {
     let mut retained = BTreeMap::new();
     let mut work = 0usize;
     let nodes = walk(pending, limits, &mut |node, pending| {
@@ -101,12 +103,12 @@ pub(in crate::world) fn retained_facts(
     Ok(retained)
 }
 
-impl ByteArray {
+impl<N: WordElement> EvmByteArray<N> {
     /// Canonicalize disposable cycle metadata without rewriting immutable
     /// content, external operand guarantees, source identity, or logical length.
-    pub(crate) fn widening_form(
+    pub(crate) fn widening_form_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        _domain: Domain,
+        _domain: AlgebraRef<'_, D>,
         limits: ExprLimits,
     ) -> Result<Self, RangeError> {
         self.check_existing(limits)?;
@@ -117,7 +119,7 @@ impl ByteArray {
         let mut out = Self {
             length: self.length.clone(),
             bytes: BTreeMap::new(),
-            default: AbstractValue::unknown_byte(),
+            default: EvmValue::<N>::unknown_byte(),
             memory: self.memory,
             root: self.root.clone(),
             allocations: Default::default(),
@@ -130,5 +132,17 @@ impl ByteArray {
         refresh_constant(&mut out.length);
         out.check_existing(limits)?;
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+impl EvmByteArray<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub(crate) fn widening_form(
+        &self,
+        _domain: crate::domain::Domain,
+        limits: ExprLimits,
+    ) -> Result<Self, RangeError> {
+        self.widening_form_with(ValueAlgebra::new(_domain).borrowed(), limits)
     }
 }

@@ -15,7 +15,13 @@ fn reference(
 ) -> Result<BTreeMap<ExprId, AbstractValue>, ExprError> {
     let mut facts = BTreeMap::new();
     for (expression, value) in source {
-        remember(&mut facts, expression.clone(), value, domain, limits)?;
+        remember(
+            &mut facts,
+            expression.clone(),
+            value,
+            crate::domain::ValueAlgebra::new(&domain),
+            limits,
+        )?;
     }
     Ok(facts)
 }
@@ -26,7 +32,7 @@ fn compare(
     limits: ExprLimits,
 ) -> Result<BTreeMap<ExprId, AbstractValue>, ExprError> {
     let before = source.clone();
-    let actual = import_empty(source, domain, limits);
+    let actual = import_empty(source, crate::domain::ValueAlgebra::new(&domain), limits);
     assert_eq!(actual, reference(source, domain, limits));
     assert_eq!(*source, before);
     actual
@@ -65,7 +71,12 @@ fn empty_import_cleans_literals_and_retains_nonliteral_guarantees() {
             },
         )),
     ] {
-        let imported = compare(&source, current, limits(current)).unwrap();
+        let imported = compare(
+            &source,
+            current,
+            limits(crate::domain::ValueAlgebra::new(&current)),
+        )
+        .unwrap();
         assert!(!imported.contains_key(&ExprId::constant(U256::ZERO)));
         let mut expected = observed.clone();
         expected.forget_identity();
@@ -97,7 +108,7 @@ fn empty_import_counts_only_retained_processed_entries() {
     source.insert(retained.clone(), constant(9));
     let policy = ExprLimits {
         max_nodes: 1,
-        ..limits(domain)
+        ..limits(crate::domain::ValueAlgebra::new(&domain))
     };
     assert_eq!(
         compare(&source, domain, policy).unwrap(),
@@ -149,7 +160,7 @@ fn empty_import_preserves_current_value_key_and_cancellation_priority() {
         small,
         ExprLimits {
             max_depth: 1,
-            ..limits(domain)
+            ..limits(crate::domain::ValueAlgebra::new(&domain))
         },
     ] {
         let expected = Err(ExprError::Limit {
@@ -197,8 +208,8 @@ fn copy_import_preserves_nonempty_merges_and_atomic_failures() {
                 &mut expected,
                 expression.clone(),
                 value,
-                domain,
-                limits(domain),
+                crate::domain::ValueAlgebra::new(&domain),
+                limits(crate::domain::ValueAlgebra::new(&domain)),
             )
             .unwrap();
         }
@@ -207,8 +218,8 @@ fn copy_import_preserves_nonempty_merges_and_atomic_failures() {
                 &mut expected,
                 expr(&value).unwrap(),
                 &value,
-                domain,
-                limits(domain),
+                crate::domain::ValueAlgebra::new(&domain),
+                limits(crate::domain::ValueAlgebra::new(&domain)),
             )
             .unwrap();
         }

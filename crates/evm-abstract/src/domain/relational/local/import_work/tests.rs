@@ -25,7 +25,11 @@ fn unary(predicate: UnaryPredicate) -> Fact {
 
 // This is the previous Engine::import sequence. Both sides execute the same
 // real FactLattice/reduce::import/learn mathematics; only their quote differs.
-fn legacy_import(engine: &mut Engine<'_, '_>, expression: &ExprId, fact: Fact) -> LocalResult<()> {
+fn legacy_import(
+    engine: &mut Engine<'_, '_, '_, Domain>,
+    expression: &ExprId,
+    fact: Fact,
+) -> LocalResult<()> {
     let known = engine.known(expression)?;
     let input = AbstractValue::from_numeric(known);
     engine
@@ -68,7 +72,7 @@ struct Entries {
     terms: Vec<Option<ExprId>>,
 }
 
-fn entries(engine: &Engine<'_, '_>, expression: &ExprId, sentinel: &ExprId) -> Entries {
+fn entries(engine: &Engine<'_, '_, '_, Domain>, expression: &ExprId, sentinel: &ExprId) -> Entries {
     let keys = [expression, sentinel];
     Entries {
         facts: keys
@@ -111,7 +115,8 @@ fn run(
         cancellation: analysis_control::Cancellation::default(),
         ledger: None,
     };
-    let mut engine = Engine::new(&mut work, &limits, domain);
+    let algebra = crate::domain::ValueAlgebra::new(domain);
+    let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
     if !initial.is_top() {
         engine
             .facts
@@ -457,7 +462,8 @@ fn cancelled_import_never_reserves_or_installs() {
         cancellation: token.clone(),
         ledger: Some(&mut budget),
     };
-    let mut engine = Engine::new(&mut work, &limits, Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+    let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
     let expression = ExprId::fresh().unwrap();
     token.cancel();
     assert!(matches!(
@@ -495,7 +501,8 @@ fn bounded_import(maximum: usize, local: usize) -> Outcome {
         cancellation: analysis_control::Cancellation::default(),
         ledger: Some(&mut budget),
     };
-    let mut engine = Engine::new(&mut work, &limits, Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(Domain::default());
+    let mut engine = Engine::new(&mut work, &limits, algebra.borrowed());
     let expression = ExprId::fresh().unwrap();
     let sentinel = ExprId::constant(U256::MAX);
     let before = entries(&engine, &expression, &sentinel);

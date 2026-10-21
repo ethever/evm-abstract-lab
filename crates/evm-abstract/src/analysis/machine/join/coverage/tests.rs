@@ -1,5 +1,7 @@
 //! Coverage may discard an incoming alternative only after a complete proof.
 
+use crate::domain::ValueAlgebra;
+
 use super::{MachineError, covers, same_byte_roots, shape};
 use crate::{
     analysis::{Continuation, MachinePayload, RootFrame, machine::fixtures},
@@ -43,7 +45,15 @@ fn direct_coverage_proofs_pay_local_work_and_preserve_both_inputs() {
     let mut budget = WorkBudget::new(100_000_000);
     for _ in 0..2 {
         let before = budget.used();
-        assert!(covers(&previous, &incoming, domain, &mut budget).unwrap());
+        assert!(
+            covers(
+                &previous,
+                &incoming,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut budget
+            )
+            .unwrap()
+        );
         assert!(budget.used() > before);
         assert_eq!(previous, old_previous);
         assert_eq!(incoming, old_incoming);
@@ -69,11 +79,24 @@ fn unknown_coverage_keeps_the_complete_incoming_alternative() {
     let before_previous = previous.clone();
     let before_incoming = incoming.clone();
     let mut budget = WorkBudget::new(100_000_000);
-    assert!(!covers(&previous, &incoming, domain, &mut budget).unwrap());
+    assert!(
+        !covers(
+            &previous,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget
+        )
+        .unwrap()
+    );
 
     let mut alternatives = super::super::EntryAlternatives::new(&previous);
     let joined = alternatives
-        .join(&previous, &incoming, domain, &mut budget)
+        .join(
+            &previous,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget,
+        )
         .unwrap()
         .expect("an undecided coverage check must retain the incoming alternative");
     let retained = joined.fresh_leaves();
@@ -89,20 +112,41 @@ fn unknown_coverage_keeps_the_complete_incoming_alternative() {
 fn guardless_and_cancelled_coverage_cannot_reuse_a_warm_proof() {
     let (domain, previous, incoming, _, _) = pair(true);
     let mut budget = WorkBudget::new(100_000_000);
-    assert!(covers(&previous, &incoming, domain, &mut budget).unwrap());
+    assert!(
+        covers(
+            &previous,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget
+        )
+        .unwrap()
+    );
 
     let mut guardless = previous.clone();
     guardless.active_mut().stack[0].forget_expression();
     guardless.active_mut().stack[0].forget_identity();
     let before_guardless = guardless.clone();
     let before_incoming = incoming.clone();
-    assert!(!covers(&guardless, &incoming, domain, &mut budget).unwrap());
+    assert!(
+        !covers(
+            &guardless,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut budget
+        )
+        .unwrap()
+    );
 
     let token = Cancellation::new();
     token.cancel();
     with_cancellation(&token, || {
         assert_eq!(
-            covers(&previous, &incoming, domain, &mut budget),
+            covers(
+                &previous,
+                &incoming,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut budget
+            ),
             Err(MachineError::Relations(QueryReason::Cancelled))
         );
     });
@@ -111,7 +155,12 @@ fn guardless_and_cancelled_coverage_cannot_reuse_a_warm_proof() {
     assert_eq!(incoming, before_incoming);
     let mut empty = WorkBudget::new(0);
     assert_eq!(
-        covers(&previous, &incoming, domain, &mut empty),
+        covers(
+            &previous,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut empty
+        ),
         Err(MachineError::Work)
     );
     assert_eq!(empty.used(), 0);
@@ -152,7 +201,15 @@ fn every_frame_byte_plane_mismatch_rejects_before_the_full_shape_fee() {
                 incoming.content_form().unwrap()
             );
             let mut budget = WorkBudget::new(8);
-            assert!(!covers(&previous, &incoming, domain, &mut budget).unwrap());
+            assert!(
+                !covers(
+                    &previous,
+                    &incoming,
+                    ValueAlgebra::new(domain).borrowed(),
+                    &mut budget
+                )
+                .unwrap()
+            );
             assert_eq!(budget.used(), 8);
             assert!(!budget.exhausted());
             assert_eq!((&previous, &incoming), (&before.0, &before.1));
@@ -161,7 +218,15 @@ fn every_frame_byte_plane_mismatch_rejects_before_the_full_shape_fee() {
     let mut shorter = previous.clone();
     shorter.call_stack.pop_child().unwrap();
     let mut metadata_only = WorkBudget::new(2);
-    assert!(!covers(&previous, &shorter, domain, &mut metadata_only).unwrap());
+    assert!(
+        !covers(
+            &previous,
+            &shorter,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut metadata_only
+        )
+        .unwrap()
+    );
     assert_eq!(metadata_only.used(), 2);
     assert!(!metadata_only.exhausted());
 }
@@ -179,13 +244,26 @@ fn matching_byte_roots_still_pay_for_and_compare_the_complete_shape() {
     let before = (previous.clone(), incoming.clone());
     let mut short = WorkBudget::new(5 + full_fee - 1);
     assert_eq!(
-        covers(&previous, &incoming, domain, &mut short),
+        covers(
+            &previous,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut short
+        ),
         Err(MachineError::Work)
     );
     assert_eq!(short.used(), 5);
     assert!(short.exhausted());
     let mut paid = WorkBudget::new(5 + full_fee);
-    assert!(!covers(&previous, &incoming, domain, &mut paid).unwrap());
+    assert!(
+        !covers(
+            &previous,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut paid
+        )
+        .unwrap()
+    );
     assert_eq!(paid.used(), 5 + full_fee);
     assert!(!paid.exhausted());
     assert_eq!((&previous, &incoming), (&before.0, &before.1));
@@ -199,7 +277,12 @@ fn byte_root_rejection_requires_payment_and_preserves_typed_interruptions() {
     for maximum in [0, 1, 2, 4] {
         let mut budget = WorkBudget::new(maximum);
         assert_eq!(
-            covers(&previous, &incoming, domain, &mut budget),
+            covers(
+                &previous,
+                &incoming,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut budget
+            ),
             Err(MachineError::Work)
         );
         assert_eq!(budget.used(), if maximum < 2 { 0 } else { 2 });
@@ -208,7 +291,12 @@ fn byte_root_rejection_requires_payment_and_preserves_typed_interruptions() {
     let mut exhausted = WorkBudget::new(100);
     assert!(!exhausted.charge(101));
     assert_eq!(
-        covers(&previous, &incoming, domain, &mut exhausted),
+        covers(
+            &previous,
+            &incoming,
+            ValueAlgebra::new(domain).borrowed(),
+            &mut exhausted
+        ),
         Err(MachineError::Work)
     );
     assert_eq!(exhausted.used(), 0);
@@ -226,7 +314,12 @@ fn byte_root_rejection_requires_payment_and_preserves_typed_interruptions() {
     token.cancel();
     with_cancellation(&token, || {
         assert_eq!(
-            covers(&previous, &incoming, domain, &mut warm),
+            covers(
+                &previous,
+                &incoming,
+                ValueAlgebra::new(domain).borrowed(),
+                &mut warm
+            ),
             Err(MachineError::Relations(QueryReason::Cancelled))
         );
     });

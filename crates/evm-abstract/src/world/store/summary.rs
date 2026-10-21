@@ -4,12 +4,13 @@
 //! correlations is intentional here and never changes ordinary Store execution.
 
 use super::{
-    AbstractLog, InitialIndependence, LogKey, OrderedMap, Plane, Store, StoreError, lifecycle,
-    sparse,
+    EvmLog, EvmStore, InitialIndependence, LogKey, OrderedMap, Plane, StoreError, lifecycle, sparse,
 };
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::{
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         symbolic::{ExprId, SlotStateId, SlotStateKind, SourceId, StateBinding},
     },
     world::{
@@ -17,7 +18,8 @@ use crate::{
         bytes::{
             numeric,
             summary::{
-                ByteArraySummary, instantiate_scalar, join_scalar, scalar, scalar_expression_work,
+                EvmByteArraySummary, instantiate_scalar, join_scalar, scalar,
+                scalar_expression_work,
             },
         },
     },
@@ -28,30 +30,30 @@ use std::collections::{BTreeMap, BTreeSet};
 mod layout;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SummaryPlane {
-    slots: OrderedMap<(Address, U256), AbstractValue>,
-    defaults: OrderedMap<Address, AbstractValue>,
-    global_default: AbstractValue,
+struct SummaryPlane<N: WordElement> {
+    slots: OrderedMap<(Address, U256), EvmValue<N>>,
+    defaults: OrderedMap<Address, EvmValue<N>>,
+    global_default: EvmValue<N>,
     initial_independence: InitialIndependence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SummaryLog {
-    topics: Vec<AbstractValue>,
-    data: ByteArraySummary,
+struct SummaryLog<N: WordElement> {
+    topics: Vec<EvmValue<N>>,
+    data: EvmByteArraySummary<N>,
 }
 
 /// Complete canonical procedure payload. Symbolic history and input-output
 /// correlations are forgotten; independent instantiations recover executable
 /// roots constrained by every retained numerical fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StoreSummary {
-    persistent: SummaryPlane,
-    transient: SummaryPlane,
-    balances: OrderedMap<Address, AbstractValue>,
-    balance_default: AbstractValue,
+pub struct EvmStoreSummary<N: WordElement> {
+    persistent: SummaryPlane<N>,
+    transient: SummaryPlane<N>,
+    balances: OrderedMap<Address, EvmValue<N>>,
+    balance_default: EvmValue<N>,
     codes: OrderedMap<Address, Code>,
-    nonces: OrderedMap<Address, AbstractValue>,
+    nonces: OrderedMap<Address, EvmValue<N>>,
     existence: OrderedMap<Address, Existence>,
     created: OrderedMap<Address, Option<bool>>,
     created_default: Option<bool>,
@@ -59,13 +61,17 @@ pub struct StoreSummary {
     pending_destruction_default: Option<bool>,
     touched: OrderedMap<Address, Option<bool>>,
     touched_default: Option<bool>,
-    possible_logs: OrderedMap<LogKey, SummaryLog>,
+    possible_logs: OrderedMap<LogKey, SummaryLog<N>>,
     logs_unknown: bool,
 }
 
 /// Concrete keys may occur in a root even when no presentation cache retained
 /// them. Their numeric facts must still participate in the summary abstraction.
-fn constant_keys(plane: &Plane, root: &SlotStateId, domain: Domain) -> BTreeSet<U256> {
+fn constant_keys<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    plane: &Plane<N>,
+    root: &SlotStateId,
+    domain: AlgebraRef<'_, D>,
+) -> BTreeSet<U256> {
     let mut pending = vec![root.clone()];
     let mut seen = BTreeSet::new();
     let mut keys = BTreeSet::new();
@@ -79,8 +85,9 @@ fn constant_keys(plane: &Plane, root: &SlotStateId, domain: Domain) -> BTreeSet<
                 keys.extend(bindings.iter().map(|binding| binding.index));
             }
             SlotStateKind::Store { previous, key, .. } => {
-                if let Some(constants) = numeric::scalar(key, &plane.operands, domain).constants() {
-                    keys.extend(constants);
+                let value = numeric::scalar(key, &plane.operands, domain);
+                if let Some(constants) = crate::world::candidates(&value) {
+                    keys.extend(constants.iter());
                 }
                 pending.push(previous.clone());
             }
@@ -96,13 +103,13 @@ fn constant_keys(plane: &Plane, root: &SlotStateId, domain: Domain) -> BTreeSet<
 
 /// Bound unlisted cells separately: writes whose entire key set is explicit
 /// cannot affect the remaining default. Unknown aliases can affect it.
-fn remaining_upper(
-    plane: &Plane,
+fn remaining_upper<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    plane: &Plane<N>,
     root: &SlotStateId,
     keys: &BTreeSet<U256>,
-    domain: Domain,
-    memo: &mut BTreeMap<SlotStateId, AbstractValue>,
-) -> Result<AbstractValue, StoreError> {
+    domain: AlgebraRef<'_, D>,
+    memo: &mut BTreeMap<SlotStateId, EvmValue<N>>,
+) -> Result<EvmValue<N>, StoreError> {
     if analysis_control::current_cancellation().is_cancelled() {
         return Err(crate::domain::symbolic::ExprError::Cancelled.into());
     }
@@ -110,8 +117,8 @@ fn remaining_upper(
         return Ok(value.clone());
     }
     let value = match root.kind() {
-        SlotStateKind::Zero => scalar(&AbstractValue::constant(U256::ZERO), domain),
-        SlotStateKind::Input { .. } => AbstractValue::top(),
+        SlotStateKind::Zero => scalar(&EvmValue::<N>::constant(U256::ZERO), domain),
+        SlotStateKind::Input { .. } => EvmValue::<N>::top(),
         SlotStateKind::Store {
             previous,
             key,
@@ -119,10 +126,7 @@ fn remaining_upper(
         } => {
             let old = remaining_upper(plane, previous, keys, domain, memo)?;
             let key = numeric::scalar(key, &plane.operands, domain);
-            if key
-                .constants()
-                .is_some_and(|written| written.is_subset(keys))
-            {
+            if crate::world::candidates(&key).is_some_and(|written| written.is_subset(keys)) {
                 old
             } else {
                 join_scalar(
@@ -159,16 +163,22 @@ fn remaining_upper(
 
 // The foundation has zero and unconstrained default arrays. A nonzero bounded
 // uniform default is conservatively forgotten, never encoded as a fake zero.
-fn representable_default(value: &AbstractValue, domain: Domain) -> AbstractValue {
+fn representable_default<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    value: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
+) -> EvmValue<N> {
     if value.singleton() == Some(U256::ZERO) {
         scalar(value, domain)
     } else {
-        AbstractValue::top()
+        EvmValue::<N>::top()
     }
 }
 
-impl Plane {
-    fn summary_projection(&self, domain: Domain) -> Result<SummaryPlane, StoreError> {
+impl<N: WordElement> Plane<N> {
+    fn summary_projection_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<SummaryPlane<N>, StoreError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -215,10 +225,14 @@ impl Plane {
             }
             for key in keys {
                 let value = scalar(
-                    &super::slots::read_numeric(
+                    &super::slots::read_numeric_in(
                         &root,
                         &ExprId::constant(key),
-                        &self.operands,
+                        &crate::world::bytes::conditional::Context::new(
+                            &self.operands,
+                            Some(&self.conditional),
+                            domain,
+                        ),
                         domain,
                     ),
                     domain,
@@ -232,12 +246,12 @@ impl Plane {
     }
 }
 
-impl SummaryPlane {
-    fn default_at(&self, owner: Address) -> &AbstractValue {
+impl<N: WordElement> SummaryPlane<N> {
+    fn default_at(&self, owner: Address) -> &EvmValue<N> {
         self.defaults.get(&owner).unwrap_or(&self.global_default)
     }
 
-    fn at(&self, owner: Address, key: U256) -> &AbstractValue {
+    fn at(&self, owner: Address, key: U256) -> &EvmValue<N> {
         self.slots
             .get(&(owner, key))
             .unwrap_or_else(|| self.default_at(owner))
@@ -266,13 +280,13 @@ impl SummaryPlane {
                     .range((owner, U256::ZERO)..=(owner, U256::MAX))
                     .map(|(_, value)| value)
                     .collect::<Vec<_>>();
-                let zero = self.default_at(owner).singleton() == Some(U256::ZERO);
+                let zero_with = self.default_at(owner).singleton() == Some(U256::ZERO);
                 let observed = values.iter().fold(2usize, |nodes, value| {
                     nodes
                         .saturating_add(if value.singleton().is_some() { 1 } else { 4 })
                         .saturating_add(value.numeric().work_size())
                 });
-                let root = if zero {
+                let root = if zero_with {
                     values.iter().fold(1usize, |nodes, value| {
                         nodes
                             .saturating_add(2)
@@ -288,7 +302,7 @@ impl SummaryPlane {
                 values
                     .iter()
                     .fold(work.saturating_add(root), |work, value| {
-                        if !zero || value.singleton().is_some() {
+                        if !zero_with || value.singleton().is_some() {
                             return work;
                         }
                         let numeric = value.numeric().work_size();
@@ -299,7 +313,12 @@ impl SummaryPlane {
         )
     }
 
-    fn join(&self, other: &Self, domain: Domain, widen: bool) -> Self {
+    fn join_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        other: &Self,
+        domain: AlgebraRef<'_, D>,
+        widen: bool,
+    ) -> Self {
         let (defaults, global_default) = sparse::combine(
             (&self.defaults, &self.global_default),
             (&other.defaults, &other.global_default),
@@ -339,7 +358,7 @@ impl SummaryPlane {
                     if out.global_default.numeric().is_top() {
                         out.defaults.remove(&owner);
                     } else {
-                        out.defaults.insert(owner, AbstractValue::top());
+                        out.defaults.insert(owner, EvmValue::<N>::top());
                     }
                     out.slots.retain(|(address, key), value| {
                         *address != owner || (previous.contains(key) && !value.numeric().is_top())
@@ -353,9 +372,12 @@ impl SummaryPlane {
         out
     }
 
-    fn instantiate(&self, domain: Domain) -> Result<Plane, StoreError> {
+    fn instantiate_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<Plane<N>, StoreError> {
         let limits = domain.spec().relations().expressions();
-        let mut out = Plane::new(self.global_default.clone(), true);
+        let mut out = Plane::<N>::new(self.global_default.clone(), true);
         out.slots = self.slots.clone();
         out.defaults = self.defaults.clone();
         out.initial_independence = self.initial_independence.clone();
@@ -372,8 +394,8 @@ impl SummaryPlane {
                 let mut root = SlotStateId::zero();
                 for ((_, key), value) in self.slots.range((owner, U256::ZERO)..=(owner, U256::MAX))
                 {
-                    let expression = if let Some(constant) = value.singleton() {
-                        ExprId::constant(constant)
+                    let expression = if let Some(constant_with) = value.singleton() {
+                        ExprId::constant(constant_with)
                     } else {
                         let observed = SlotStateId::observed(
                             source.clone(),
@@ -384,7 +406,7 @@ impl SummaryPlane {
                                     ExprId::constant(*key),
                                     limits,
                                 )?,
-                                numeric: value.numeric().clone(),
+                                numeric: value.numeric().observation(),
                             }],
                             limits.into(),
                         )?;
@@ -408,17 +430,25 @@ impl SummaryPlane {
                     .map(|((_, key), value)| {
                         Ok(StateBinding {
                             index: *key,
-                            value: if let Some(constant) = value.singleton() {
-                                ExprId::constant(constant)
+                            value: if let Some(constant_with) = value.singleton() {
+                                ExprId::constant(constant_with)
                             } else {
                                 ExprId::slot_read(plain.clone(), ExprId::constant(*key), limits)?
                             },
-                            numeric: value.numeric().clone(),
+                            numeric: value.numeric().observation(),
                         })
                     })
                     .collect::<Result<Vec<_>, StoreError>>()?;
                 // The observed root already carries these numeric constraints;
                 // caching an outer read for every cell duplicates that root.
+                for binding in &bindings {
+                    if let Some(value) = self.slots.get(&(owner, binding.index)) {
+                        out.operands.insert(
+                            binding.value.clone(),
+                            value.clone().with_expression(binding.value.clone()),
+                        );
+                    }
+                }
                 SlotStateId::observed(source, bindings, limits.into())?
             };
             out.roots.insert(owner, root);
@@ -427,9 +457,12 @@ impl SummaryPlane {
     }
 }
 
-impl Store {
+impl<N: WordElement> EvmStore<N> {
     /// Sound whole-payload projection for unknown procedure fixed points.
-    pub fn summary_projection(&self, domain: Domain) -> Result<StoreSummary, StoreError> {
+    pub fn summary_projection_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmStoreSummary<N>, StoreError> {
         if analysis_control::current_cancellation().is_cancelled() {
             return Err(crate::domain::symbolic::ExprError::Cancelled.into());
         }
@@ -447,21 +480,21 @@ impl Store {
                             .iter()
                             .map(|topic| scalar(topic, domain))
                             .collect(),
-                        data: log.data.summary_projection(domain)?,
+                        data: log.data.summary_projection_with(domain)?,
                     },
                 ))
             })
             .collect::<Result<_, StoreError>>()?;
         let balance_default = scalar(&self.balance_default, domain);
-        Ok(StoreSummary {
-            persistent: self.persistent.summary_projection(domain)?,
-            transient: self.transient.summary_projection(domain)?,
+        Ok(EvmStoreSummary {
+            persistent: self.persistent.summary_projection_with(domain)?,
+            transient: self.transient.summary_projection_with(domain)?,
             balances: sparse::map((&self.balances, &balance_default), |value| {
                 scalar(value, domain)
             }),
             balance_default,
             codes: sparse::map((&self.codes, &Code::Unknown), Clone::clone),
-            nonces: sparse::map((&self.nonces, &AbstractValue::top()), |value| {
+            nonces: sparse::map((&self.nonces, &EvmValue::<N>::top()), |value| {
                 scalar(value, domain)
             }),
             existence: sparse::map((&self.existence, &Existence::Unknown), |value| *value),
@@ -484,7 +517,7 @@ impl Store {
     }
 }
 
-impl StoreSummary {
+impl<N: WordElement> EvmStoreSummary<N> {
     /// Retained numerical payload plus a conservative independent replay bound.
     /// No cost from discarded source identities or write history survives reuse.
     pub fn work_size(&self) -> usize {
@@ -532,7 +565,12 @@ impl StoreSummary {
     }
 
     /// Union all state components; fresh identities cannot create new entries.
-    pub fn join(&self, other: &Self, domain: Domain, widen: bool) -> Self {
+    pub fn join_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        other: &Self,
+        domain: AlgebraRef<'_, D>,
+        widen: bool,
+    ) -> Self {
         let codes = self
             .codes
             .iter()
@@ -559,7 +597,7 @@ impl StoreSummary {
                     for (topic, value) in previous.topics.iter_mut().zip(&incoming.topics) {
                         *topic = join_scalar(topic, value, domain, widen);
                     }
-                    previous.data = previous.data.join(&incoming.data, domain, widen);
+                    previous.data = previous.data.join_with(&incoming.data, domain, widen);
                 } else {
                     logs.insert(key.clone(), incoming.clone());
                 }
@@ -569,15 +607,15 @@ impl StoreSummary {
             logs.clear();
         }
         let join_numeric =
-            |left: &AbstractValue, right: &AbstractValue| join_scalar(left, right, domain, widen);
+            |left: &EvmValue<N>, right: &EvmValue<N>| join_scalar(left, right, domain, widen);
         let (balances, balance_default) = sparse::combine(
             (&self.balances, &self.balance_default),
             (&other.balances, &other.balance_default),
             join_numeric,
         );
         let (nonces, _) = sparse::combine(
-            (&self.nonces, &AbstractValue::top()),
-            (&other.nonces, &AbstractValue::top()),
+            (&self.nonces, &EvmValue::<N>::top()),
+            (&other.nonces, &EvmValue::<N>::top()),
             join_numeric,
         );
         let (created, created_default) = sparse::combine(
@@ -599,8 +637,8 @@ impl StoreSummary {
             lifecycle::join,
         );
         Self {
-            persistent: self.persistent.join(&other.persistent, domain, widen),
-            transient: self.transient.join(&other.transient, domain, widen),
+            persistent: self.persistent.join_with(&other.persistent, domain, widen),
+            transient: self.transient.join_with(&other.transient, domain, widen),
             balances,
             balance_default,
             codes,
@@ -618,14 +656,18 @@ impl StoreSummary {
     }
 
     /// Whole-payload subsumption, including defaults, lifecycle and events.
-    pub fn covers(&self, other: &Self, domain: Domain) -> bool {
-        self.join(other, domain, false) == *self
+    pub fn covers_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        other: &Self,
+        domain: AlgebraRef<'_, D>,
+    ) -> bool {
+        self.join_with(other, domain, false) == *self
     }
 
     /// Apply the only persistent bookkeeping effect of a static invocation.
     /// Data and immutable read roots retain the caller's exact identities.
     /// Existing must-touches cannot be undone by a widened callee summary.
-    pub fn apply_static_touches(&self, input: &Store) -> Store {
+    pub fn apply_static_touches(&self, input: &EvmStore<N>) -> EvmStore<N> {
         let mut out = input.clone();
         (out.touched, out.touched_default) = sparse::combine(
             (&input.touched, &input.touched_default),
@@ -637,16 +679,19 @@ impl StoreSummary {
 
     /// Independent symbolic state for one procedure execution or result replay.
     /// Instantiating twice never equates either result with historical reads.
-    pub fn instantiate(&self, domain: Domain) -> Result<Store, StoreError> {
-        let instantiate_map = |values: &OrderedMap<Address, AbstractValue>| {
+    pub fn instantiate_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmStore<N>, StoreError> {
+        let instantiate_map = |values: &OrderedMap<Address, EvmValue<N>>| {
             values
                 .iter()
                 .map(|(owner, value)| Ok((*owner, instantiate_scalar(value, domain)?)))
                 .collect::<Result<_, StoreError>>()
         };
-        let store = Store {
-            persistent: self.persistent.instantiate(domain)?,
-            transient: self.transient.instantiate(domain)?,
+        let store = EvmStore {
+            persistent: self.persistent.instantiate_with(domain)?,
+            transient: self.transient.instantiate_with(domain)?,
             balances: instantiate_map(&self.balances)?,
             // An unspecified account default denotes independent balances for
             // different addresses, never one shared symbolic balance word.
@@ -666,13 +711,13 @@ impl StoreSummary {
                 .map(|(key, log)| {
                     Ok((
                         key.clone(),
-                        AbstractLog {
+                        EvmLog {
                             topics: log
                                 .topics
                                 .iter()
                                 .map(|topic| instantiate_scalar(topic, domain))
                                 .collect::<Result<_, _>>()?,
-                            data: log.data.instantiate(domain)?,
+                            data: log.data.instantiate_with(domain)?,
                         },
                     ))
                 })
@@ -681,5 +726,40 @@ impl StoreSummary {
         };
         store.check_existing(domain.spec().relations().expressions())?;
         Ok(store)
+    }
+}
+
+/// Default numeric-carrier compatibility alias.
+pub type StoreSummary = EvmStoreSummary<crate::domain::NumericValue>;
+
+impl EvmStore<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub fn summary_projection(
+        &self,
+        domain: crate::domain::Domain,
+    ) -> Result<EvmStoreSummary<crate::domain::NumericValue>, StoreError> {
+        self.summary_projection_with(crate::domain::ValueAlgebra::new(domain).borrowed())
+    }
+}
+
+impl EvmStoreSummary<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub fn join(&self, other: &Self, domain: crate::domain::Domain, widen: bool) -> Self {
+        self.join_with(
+            other,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+            widen,
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub fn covers(&self, other: &Self, domain: crate::domain::Domain) -> bool {
+        self.covers_with(other, crate::domain::ValueAlgebra::new(domain).borrowed())
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub fn instantiate(
+        &self,
+        domain: crate::domain::Domain,
+    ) -> Result<EvmStore<crate::domain::NumericValue>, StoreError> {
+        self.instantiate_with(crate::domain::ValueAlgebra::new(domain).borrowed())
     }
 }

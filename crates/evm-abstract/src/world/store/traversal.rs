@@ -1,16 +1,31 @@
 //! Summary renaming covers slot bases, account roots, and event byte views.
 
-use super::{Store, StoreError};
+use super::{EvmStore, OrderedMap, StoreError};
+use crate::domain::AlgebraRef;
+use crate::domain::EvmNumericAlgebra;
+use crate::domain::WordElement;
 use crate::domain::{
-    AbstractValue,
+    EvmValue,
     symbolic::{ExprId, ExprLimits},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-impl Store {
+fn try_update_values<K: Ord + Clone, V: Clone>(
+    values: &mut OrderedMap<K, V>,
+    mut update: impl FnMut(&mut V) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    // Collect only keys so fallible mutation uses either backend's COW-aware API.
+    let keys: Vec<_> = values.keys().cloned().collect();
+    for key in keys {
+        update(values.get_mut(&key).expect("collected key remains present"))?;
+    }
+    Ok(())
+}
+
+impl<N: WordElement> EvmStore<N> {
     /// Import proved numeric guarantees using the immutable original term keys.
     /// Compact operand values need not retain an optional expression themselves.
-    pub(crate) fn refine_operands(&mut self, update: &mut impl FnMut(&ExprId, &mut AbstractValue)) {
+    pub(crate) fn refine_operands(&mut self, update: &mut impl FnMut(&ExprId, &mut EvmValue<N>)) {
         for plane in [&mut self.persistent, &mut self.transient] {
             for (expression, value) in &mut plane.operands {
                 update(expression, value);
@@ -35,39 +50,25 @@ impl Store {
         out
     }
     /// Apply one map to the whole store. Any error leaves the savepoint untouched.
-    pub fn rename_fresh(
+    pub fn rename_fresh_with<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         map: &BTreeMap<ExprId, ExprId>,
         limits: ExprLimits,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
         let mut out = self.clone();
+        let rename_value = |value: &mut EvmValue<N>| {
+            value.rename_fresh(map, limits)?;
+            Ok(())
+        };
         for plane in [&mut out.persistent, &mut out.transient] {
             plane.base = plane.base.rename_fresh(map, limits)?;
-            let mut roots = super::OrderedMap::new();
-            for (address, root) in &plane.roots {
-                roots.insert(*address, root.rename_fresh(map, limits)?);
-            }
-            plane.roots = roots;
-            for (key, value) in plane
-                .slots
-                .iter()
-                .map(|(key, value)| (*key, value.clone()))
-                .collect::<Vec<_>>()
-            {
-                let mut value = value;
-                value.rename_fresh(map, limits)?;
-                plane.slots.insert(key, value);
-            }
-            for (key, value) in plane
-                .defaults
-                .iter()
-                .map(|(key, value)| (*key, value.clone()))
-                .collect::<Vec<_>>()
-            {
-                let mut value = value;
-                value.rename_fresh(map, limits)?;
-                plane.defaults.insert(key, value);
-            }
+            try_update_values(&mut plane.roots, |root| {
+                *root = root.rename_fresh(map, limits)?;
+                Ok(())
+            })?;
+            try_update_values(&mut plane.slots, rename_value)?;
+            try_update_values(&mut plane.defaults, rename_value)?;
             plane.global_default.rename_fresh(map, limits)?;
             let previous = std::mem::take(&mut plane.operands);
             for (e, v) in previous {
@@ -77,45 +78,29 @@ impl Store {
                     &mut plane.operands,
                     e.rename_fresh(map, limits)?,
                     &v,
-                    crate::domain::Domain::default(),
+                    domain,
                     limits,
                 )?;
             }
+            plane.conditional = plane.conditional.map(domain, &mut |expression, value| {
+                let mut value = value.cloned();
+                if let Some(value) = &mut value {
+                    value.rename_fresh(map, limits)?;
+                }
+                Ok((expression.rename_fresh(map, limits)?, value))
+            })?;
+            plane.conditional.check(limits)?;
         }
-        for (address, value) in out
-            .balances
-            .iter()
-            .map(|(a, v)| (*a, v.clone()))
-            .collect::<Vec<_>>()
-        {
-            let mut v = value;
-            v.rename_fresh(map, limits)?;
-            out.balances.insert(address, v);
-        }
-        for (address, value) in out
-            .nonces
-            .iter()
-            .map(|(a, v)| (*a, v.clone()))
-            .collect::<Vec<_>>()
-        {
-            let mut v = value;
-            v.rename_fresh(map, limits)?;
-            out.nonces.insert(address, v);
-        }
+        try_update_values(&mut out.balances, rename_value)?;
+        try_update_values(&mut out.nonces, rename_value)?;
         out.balance_default.rename_fresh(map, limits)?;
-        for (key, log) in out
-            .possible_logs
-            .iter()
-            .map(|(k, l)| (k.clone(), l.clone()))
-            .collect::<Vec<_>>()
-        {
-            let mut log = log;
+        try_update_values(&mut out.possible_logs, |log| {
             for topic in &mut log.topics {
-                topic.rename_fresh(map, limits)?;
+                rename_value(topic)?;
             }
-            log.data.rename_fresh(map, limits)?;
-            out.possible_logs.insert(key, log);
-        }
+            log.data.rename_fresh_with(map, limits, domain)?;
+            Ok(())
+        })?;
         *self = out;
         Ok(())
     }
@@ -124,5 +109,20 @@ impl Store {
         let mut failed = self.persistent.failure.is_some() || self.transient.failure.is_some();
         self.visit_values(&mut |value| failed |= value.symbolic_limit_reached());
         failed
+    }
+}
+
+impl EvmStore<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub fn rename_fresh(
+        &mut self,
+        map: &BTreeMap<ExprId, ExprId>,
+        limits: ExprLimits,
+    ) -> Result<(), StoreError> {
+        self.rename_fresh_with(
+            map,
+            limits,
+            crate::domain::ValueAlgebra::new(crate::domain::Domain::default()).borrowed(),
+        )
     }
 }

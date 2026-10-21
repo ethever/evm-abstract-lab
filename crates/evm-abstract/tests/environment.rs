@@ -807,7 +807,13 @@ fn bytecode_without_a_concrete_creator_retains_a_creation_frontier() {
 
 #[test]
 fn symbolic_targets_and_unbounded_lazy_copy_sizes_keep_their_success_domains() {
-    for (code, expected_target) in [("5f5f5f5f5f5f356207a120f100", true), ("365f5f3700", false)] {
+    // Detailed unknown CALL includes reentry into the known root and native
+    // candidates. Fund its complete fixed point independently of the default
+    // root terminal relation, which has its own regression below.
+    for (code, expected_target, max_work) in [
+        ("5f5f5f5f5f5f356207a120f100", true, 100_000_000),
+        ("365f5f3700", false, ExecutionConfig::default().max_work),
+    ] {
         let result = analysis::analyze_with_execution_config(
             Program::from_hex(code).unwrap(),
             ExecutionConfig {
@@ -815,6 +821,7 @@ fn symbolic_targets_and_unbounded_lazy_copy_sizes_keep_their_success_domains() {
                     domain_profile: Profile::Product,
                     ..Config::default()
                 },
+                max_work,
                 root_terminal_coverage: false,
                 ..ExecutionConfig::default()
             },
@@ -852,6 +859,51 @@ fn symbolic_targets_and_unbounded_lazy_copy_sizes_keep_their_success_domains() {
             );
         }
     }
+}
+
+#[path = "support/terminal_coverage.rs"]
+mod terminal_coverage;
+
+#[test]
+fn symbolic_call_default_budget_keeps_its_original_root_terminal_relation() {
+    let program = Program::from_hex("5f5f5f5f5f5f356207a120f100").unwrap();
+    let config = ExecutionConfig {
+        analysis: Config {
+            domain_profile: Profile::Product,
+            ..Config::default()
+        },
+        ..ExecutionConfig::default()
+    };
+    assert!(config.root_terminal_coverage);
+    let result = analysis::analyze_with_execution_config(
+        program.clone(),
+        config.clone(),
+        EvmEnvironment::default(),
+    )
+    .unwrap();
+    let execution = result.execution();
+    assert_eq!(execution.config().max_work, config.max_work);
+    assert!(execution.work() <= config.max_work);
+    if result.status() == Status::Converged {
+        // A future cheaper complete execution also satisfies default coverage.
+        assert!(execution.frontiers().is_empty());
+        assert!(!execution.outcomes().is_empty());
+        assert!(
+            execution
+                .procedure_summaries()
+                .iter()
+                .all(|record| record.closed)
+        );
+        return;
+    }
+    assert_eq!(result.status(), Status::Incomplete);
+    assert!(!execution.frontiers().is_empty());
+    assert!(execution.frontiers().iter().all(|frontier| matches!(
+        frontier.reason,
+        FrontierReason::Work | FrontierReason::SummaryWork
+    )));
+    let coverage = terminal_coverage::assert_original_work_coverage(execution, &config);
+    assert_eq!(coverage.input().program(), &program);
 }
 
 #[test]

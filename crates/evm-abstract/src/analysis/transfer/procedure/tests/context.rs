@@ -1,4 +1,4 @@
-use crate::analysis::{machine::fixtures::fixture, transfer};
+use crate::analysis::machine::fixtures::fixture;
 
 #[test]
 fn context_depth_zero_stays_empty_during_actual_loop_execution_and_replay() {
@@ -14,7 +14,8 @@ fn context_depth_zero_stays_empty_during_actual_loop_execution_and_replay() {
     config.analysis.max_constants = 512;
     config.analysis.relations.enabled = false;
     let domain = config.domain().unwrap();
-    let input = transfer::initial(&world, &entry, domain).unwrap();
+    let input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut table = Table::default();
     let mut counters = Counters::default();
     let mut budget = WorkBudget::new(config.max_work);

@@ -1,12 +1,12 @@
 //! Optional consequences for the active frame's one returndata length.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use super::super::super::TransferContext;
+
 use crate::{
-    analysis::{FrontierReason, MachinePayload},
-    domain::{
-        NumericValue,
-        relational::{QueryReason, RelationState, ValueQuery},
-    },
+    analysis::{EvmMachinePayload, FrontierReason},
+    domain::relational::{EvmValueQuery, QueryReason, RelationState},
     resource::WorkBudget,
 };
 
@@ -24,10 +24,10 @@ fn cancelled() -> Result<(), FrontierReason> {
 #[cfg(test)]
 mod tests;
 
-pub(super) fn refine(
-    payload: &mut MachinePayload,
+pub(super) fn refine<D: EvmNumericAlgebra>(
+    payload: &mut EvmMachinePayload<D::Element>,
     relations: &RelationState,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
 ) -> Result<(), FrontierReason> {
     cancelled()?;
     let limits = context.config.analysis.relations;
@@ -58,11 +58,11 @@ pub(super) fn refine(
             cancelled()?;
             return Ok(());
         }
-        if !context.budget.charge(work) {
-            cancelled()?;
-            return Ok(());
-        }
-        let answer = if let Some(answer) = context.query_cache.get(relations, expression, &limits) {
+        let answer = if let Some(answer) =
+            context
+                .query_cache
+                .get(relations, expression, &limits, context.budget)
+        {
             answer
         } else {
             if !context.budget.can_afford(QUERY_WORK) {
@@ -76,7 +76,12 @@ pub(super) fn refine(
             // The owner pays the entire admitted quantum, including an
             // unsuccessful attempt. Never share a private refusal with it.
             let mut private = WorkBudget::new(QUERY_WORK);
-            let answer = relations.local_value_budgeted(expression, &limits, &mut private);
+            let answer = relations.local_value_budgeted_with(
+                expression,
+                &limits,
+                &mut private,
+                context.domain,
+            );
             cancelled()?;
             // The private precision quantum is not part of the shared cache
             // identity. A refused optional query must not poison a later paid
@@ -84,18 +89,22 @@ pub(super) fn refine(
             if private.exhausted() {
                 return Ok(());
             }
-            if !matches!(&answer, ValueQuery::Undetermined(_)) {
-                context
-                    .query_cache
-                    .remember(relations, expression, &limits, &answer);
+            if !matches!(&answer, EvmValueQuery::Undetermined(_)) {
+                context.query_cache.remember(
+                    relations,
+                    expression,
+                    &limits,
+                    &answer,
+                    context.budget,
+                );
             }
             answer
         };
         cancelled()?;
         proved = match answer {
-            ValueQuery::Exact(exact) => proved.with_numeric(NumericValue::constant(exact)),
-            ValueQuery::Bounds(bounds) if !bounds.is_top() => proved.with_numeric(*bounds),
-            ValueQuery::Undetermined(QueryReason::Cancelled) => {
+            EvmValueQuery::Exact(exact) => proved.with_numeric(D::Element::constant(exact)),
+            EvmValueQuery::Bounds(bounds) if !bounds.is_top() => proved.with_numeric(*bounds),
+            EvmValueQuery::Undetermined(QueryReason::Cancelled) => {
                 return Err(FrontierReason::Relations(QueryReason::Cancelled));
             }
             // This optional import never decides global feasibility.

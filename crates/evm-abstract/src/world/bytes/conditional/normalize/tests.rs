@@ -273,28 +273,40 @@ fn unknown_selector_and_inactive_contradiction_never_promote_global_facts() {
     let out = joined(&original, limits()).unwrap();
     let guard = &out.branches[0].condition;
     let global = Facts::new();
-    let context = Context::new(&global, Some(&out));
-    assert_eq!(context.value(&key, domain), None);
+    let context = Context::new(
+        &global,
+        Some(&out),
+        crate::domain::ValueAlgebra::new(&domain),
+    );
     assert_eq!(
-        context.branch(guard, true).value(&key, domain),
+        context.value(&key, crate::domain::ValueAlgebra::new(&domain)),
+        None
+    );
+    assert_eq!(
+        context
+            .branch(guard, true)
+            .value(&key, crate::domain::ValueAlgebra::new(&domain)),
         Some(word(7))
     );
     assert!(global.is_empty());
     let mapped = out
-        .map(&mut |term, value| {
-            assert_ne!(
-                term, &inactive,
-                "inactive scopes cannot invoke the callback"
-            );
-            Ok((
-                if term == guard {
-                    constant(1)
-                } else {
-                    term.clone()
-                },
-                value.cloned(),
-            ))
-        })
+        .map(
+            crate::domain::ValueAlgebra::new(&domain),
+            &mut |term, value| {
+                assert_ne!(
+                    term, &inactive,
+                    "inactive scopes cannot invoke the callback"
+                );
+                Ok((
+                    if term == guard {
+                        constant(1)
+                    } else {
+                        term.clone()
+                    },
+                    value.cloned(),
+                ))
+            },
+        )
         .unwrap();
     // The selected fact prefix keeps its true stamp rather than becoming a
     // separate unconditional fact; the original contradictory scope is intact.

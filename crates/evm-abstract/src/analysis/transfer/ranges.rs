@@ -3,17 +3,22 @@
 //! Subtraction is guarded by the offset bound. This expresses a checked sum
 //! without allowing EVM's modular arithmetic to wrap an invalid range to zero.
 
-use crate::domain::{AbstractValue, Domain};
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
+#[cfg(test)]
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmValue, SingletonProof, symbolic::ExprId};
+#[cfg(test)]
 use revm_bytecode::opcode;
 use std::sync::Arc;
 
-use super::{Execution, ExecutionFrontier, TransferContext, finish};
+use super::{EvmExecution, EvmExecutionFrontier, TransferContext, finish};
 use crate::{
     analysis::{
-        FrontierReason, MachinePayload, OutcomeKind, RangeKind, RangeRequest, RangeWitness,
+        EvmMachinePayload, EvmRangeRequest, EvmRangeWitness, FrontierReason, OutcomeKind, RangeKind,
     },
     domain::relational::{CheckResult, QueryReason},
-    world::ByteArray,
+    world::EvmByteArray,
 };
 
 mod guard;
@@ -22,18 +27,114 @@ mod retention;
 
 use retention::{Failure, GuardRetention};
 
-struct Partition {
-    allowed: Option<MachinePayload>,
-    excluded: Option<MachinePayload>,
+#[derive(Clone, Copy, Default)]
+pub(super) struct RangeQueries {
+    offset: SingletonProof,
+    size: SingletonProof,
 }
 
-struct Constrained {
-    payload: Option<MachinePayload>,
+impl RangeQueries {
+    /// Own the continuation's existing copies and retain only answers obtained
+    /// for these unchanged numeric operands. Metadata never replaces N or its
+    /// provenance/input identity, and a negative answer adds no literal.
+    pub(super) fn prepare<N: WordElement>(
+        self,
+        offset: &EvmValue<N>,
+        size: &EvmValue<N>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<(EvmValue<N>, EvmValue<N>), FrontierReason> {
+        super::query::checkpoint(budget)?;
+        let operands = [(offset, self.offset), (size, self.size)];
+        let work = operands.iter().fold(0usize, |work, (value, proof)| {
+            let metadata = match proof {
+                SingletonProof::Answer(Some(word))
+                    if value.expression().and_then(ExprId::as_constant) != Some(*word) =>
+                {
+                    // A new literal and its release, plus the displaced term.
+                    value
+                        .expression()
+                        .map_or(0, ExprId::work_size)
+                        .saturating_add(2)
+                }
+                _ => 0,
+            };
+            work.saturating_add(value.clone_work())
+                .saturating_add(metadata)
+        });
+        super::query::checkpoint(budget)?;
+        if work == usize::MAX || !budget.charge(work) {
+            return Err(FrontierReason::Work);
+        }
+        super::query::checkpoint(budget)?;
+        let retain = |value: &EvmValue<N>, proof| {
+            let mut value = value.clone();
+            if let SingletonProof::Answer(Some(word)) = proof
+                && value.expression().and_then(ExprId::as_constant) != Some(word)
+            {
+                value.set_expression(ExprId::constant(word));
+            }
+            value
+        };
+        let values = (retain(offset, self.offset), retain(size, self.size));
+        super::query::checkpoint(budget)?;
+        Ok(values)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Truth {
+    zero: bool,
+    nonzero: bool,
+}
+
+struct Condition<'a, N: WordElement> {
+    value: &'a EvmValue<N>,
+    truth: Truth,
+}
+
+impl<'a, N: WordElement> Condition<'a, N> {
+    /// Range predicates are independently Boolean. Membership in 0 and 1
+    /// preserves opaque exclusions without invoking default may_be_nonzero's
+    /// hidden singleton query. Reuse a complete operation's result proof first.
+    fn prepare(
+        value: &'a EvmValue<N>,
+        proof: SingletonProof,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<Self, FrontierReason> {
+        super::query::checkpoint(budget)?;
+        let truth = if let SingletonProof::Answer(Some(word)) = proof {
+            Truth {
+                zero: word == crate::U256::ZERO,
+                nonzero: word != crate::U256::ZERO,
+            }
+        } else {
+            let work = value.numeric().work_size().saturating_mul(2);
+            if work == usize::MAX || !budget.charge(work) {
+                return Err(FrontierReason::Work);
+            }
+            let truth = Truth {
+                zero: value.contains(crate::U256::ZERO),
+                nonzero: value.contains(crate::U256::ONE),
+            };
+            super::query::checkpoint(budget)?;
+            truth
+        };
+        Ok(Self { value, truth })
+    }
+}
+
+struct Partition<N: WordElement> {
+    allowed: Option<EvmMachinePayload<N>>,
+    excluded: Option<EvmMachinePayload<N>>,
+}
+
+struct Constrained<N: WordElement> {
+    payload: Option<EvmMachinePayload<N>>,
     precision_loss: Option<QueryReason>,
 }
 
-impl Constrained {
-    fn exact(payload: Option<MachinePayload>) -> Self {
+impl<N: WordElement> Constrained<N> {
+    fn exact(payload: Option<EvmMachinePayload<N>>) -> Self {
         Self {
             payload,
             precision_loss: None,
@@ -43,27 +144,93 @@ impl Constrained {
 
 /// Admit a logical extent and a conservative gas-failure alternative before
 /// this instruction changes memory. Host extraction limits are unrelated.
-pub(super) fn memory(
-    result: &mut Execution,
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    context: &mut TransferContext<'_>,
+pub(super) fn memory<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) -> bool {
+    memory_after_size(
+        result,
+        offset,
+        size,
+        SingletonProof::NotQueried,
+        context,
+        pc,
+    )
+}
+
+/// Reuse the exact same size discovery made by operation quotation.
+pub(super) fn memory_after_size<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    proof: SingletonProof,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) -> bool {
+    memory_after_queries(
+        result,
+        offset,
+        size,
+        SingletonProof::NotQueried,
+        proof,
+        context,
+        pc,
+    )
+}
+
+/// CREATE has already prepared the unchanged offset and selected size cover.
+/// Their proofs survive guard metadata attachment and feed range admission.
+pub(super) fn memory_after_queries<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    offset_proof: SingletonProof,
+    size_proof: SingletonProof,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
     if !logical::failure(result, context, pc) {
         return false;
     }
-    allow_memory(result, offset, size, context, pc)
+    allow_memory_with_queries(
+        result,
+        offset,
+        size,
+        &mut RangeQueries {
+            offset: offset_proof,
+            size: size_proof,
+        },
+        context,
+        pc,
+    )
+}
+
+/// CALL retains the actual paid range answers for its unchanged continuation
+/// operands. Guard construction may discover an offset after an unknown size.
+pub(super) fn memory_with_queries<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) -> Option<RangeQueries> {
+    let mut queries = RangeQueries::default();
+    (logical::failure(result, context, pc)
+        && allow_memory_with_queries(result, offset, size, &mut queries, context, pc))
+    .then_some(queries)
 }
 
 /// MCOPY checks both endpoints against the captured, pre-instruction state.
 /// One unguarded gas failure covers either endpoint without duplicate unwinds.
-pub(super) fn memory_copy(
-    result: &mut Execution,
-    source: &AbstractValue,
-    destination: &AbstractValue,
-    size: &AbstractValue,
-    context: &mut TransferContext<'_>,
+pub(super) fn memory_copy<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    source: &EvmValue<D::Element>,
+    destination: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
     logical::failure(result, context, pc)
@@ -76,43 +243,31 @@ pub(super) fn memory_copy(
 const LITERAL_MEMORY_METADATA_WORK: usize = 32 * 4;
 const LITERAL_MEMORY_BOUNDS_WORK: usize = 32 * 4;
 
-/// Quote the original singleton query from metadata only, after paying for this
-/// quote. No candidate, set iteration, expression traversal or operand copy.
-fn literal_memory_singleton_work(value: &AbstractValue) -> usize {
-    let limbs = 4;
-    let finite = value.finite_constants().cardinality().map_or(0, |len| {
-        // A nonleaf root has >= 2 children; other internal nodes have >= 6
-        // (hence >= 4). For h levels, len >= 2 * 4^(h-1) - 1. Use ceil(len/2)
-        // without overflowing len+1; its base-4 log bounds the height. Below
-        // eleven keys the tree must be a leaf. len=1 visits one level/one key.
-        let levels = if len < 11 {
-            1
-        } else {
-            1 + (len / 2 + len % 2).ilog2() as usize / 2
-        };
-        // NumericValue::singleton uses first() only at len=1, then contains()
-        // validates the candidate, including when another component supplied it.
-        let first = if len == 1 { 8 * limbs } else { 0 };
-        let contains = levels * (len.min(11) * (6 * limbs + 8) + 8 * limbs);
-        first + contains
-    });
-    // Top returns Some((1, 0)); Exact returns None. Only Modulo executes `%`.
-    let modulo = !value.congruence().is_top() && value.congruence().modulus_residue().is_some();
-    // 128 actions/limb cover all other singleton selection/validation, copied
-    // scalar words and the zero test. Each tree comparison costs <= 6/limb + 8,
-    // plus 8/limb per node. Only Modulo needs the pinned ruint 256*limbs^2
-    // remainder bound (normalization, reciprocal, quotient/carry corrections).
-    128 * limbs + finite + usize::from(modulo) * 256 * limbs * limbs
+/// The domain owns numeric query tariffs; the caller prepays before querying.
+#[cfg(test)]
+fn literal_memory_singleton_work<N: WordElement>(value: &EvmValue<N>) -> usize {
+    value.singleton_work()
 }
 
 /// Inspect only bounded scalar facts; retained graphs and payloads stay shared.
 /// Inherited refusals and invalid operand roots keep their original guard path.
-fn literal_memory_range(
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    context: &mut TransferContext<'_>,
+#[cfg(test)]
+fn literal_memory_range<D: EvmNumericAlgebra>(
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
 ) -> Result<Option<bool>, FrontierReason> {
-    if context.budget.exhausted() || !context.budget.charge(LITERAL_MEMORY_METADATA_WORK) {
+    literal_memory_range_with_queries(offset, size, &mut RangeQueries::default(), context)
+}
+
+fn literal_memory_range_with_queries<D: EvmNumericAlgebra>(
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    queries: &mut RangeQueries,
+    context: &mut TransferContext<'_, D>,
+) -> Result<Option<bool>, FrontierReason> {
+    super::query::checkpoint(context.budget)?;
+    if !context.budget.charge(LITERAL_MEMORY_METADATA_WORK) {
         return Err(FrontierReason::Work);
     }
     let limits = context.config.analysis.relations;
@@ -124,10 +279,8 @@ fn literal_memory_range(
     }) {
         return Ok(None);
     }
-    if !context.budget.charge(literal_memory_singleton_work(size)) {
-        return Err(FrontierReason::Work);
-    }
-    let Some(size) = size.singleton() else {
+    let Some(size) = super::query::resolve(size.numeric(), &mut queries.size, context.budget)?
+    else {
         return Ok(None);
     };
     if size == crate::U256::ZERO {
@@ -138,10 +291,9 @@ fn literal_memory_range(
     if !context.budget.charge(LITERAL_MEMORY_METADATA_WORK) {
         return Err(FrontierReason::Work);
     }
-    if !context.budget.charge(literal_memory_singleton_work(offset)) {
-        return Err(FrontierReason::Work);
-    }
-    let Some(offset) = offset.singleton() else {
+    let Some(offset) =
+        super::query::resolve(offset.numeric(), &mut queries.offset, context.budget)?
+    else {
         return Ok(None);
     };
     if !context.budget.charge(LITERAL_MEMORY_BOUNDS_WORK) {
@@ -152,14 +304,32 @@ fn literal_memory_range(
     ))
 }
 
-fn allow_memory(
-    result: &mut Execution,
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    context: &mut TransferContext<'_>,
+fn allow_memory<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
-    match literal_memory_range(offset, size, context) {
+    allow_memory_with_queries(
+        result,
+        offset,
+        size,
+        &mut RangeQueries::default(),
+        context,
+        pc,
+    )
+}
+
+fn allow_memory_with_queries<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    queries: &mut RangeQueries,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) -> bool {
+    match literal_memory_range_with_queries(offset, size, queries, context) {
         Ok(Some(allowed)) => return allowed,
         Ok(None) => {}
         Err(reason) => {
@@ -171,17 +341,25 @@ fn allow_memory(
         request,
         condition,
         retention,
-    } = match guard::build(offset, size, context) {
+        singleton,
+    } = match guard::build_after_queries(offset, size, queries, context) {
         Ok(guard) => guard,
-        Err(_) => {
-            super::boundary(result, pc, FrontierReason::Work);
+        Err(reason) => {
+            super::boundary(result, pc, reason);
             return false;
         }
     };
-    if !condition.may_be_zero() {
+    let condition = match Condition::prepare(&condition, singleton, context.budget) {
+        Ok(condition) => condition,
+        Err(reason) => {
+            super::boundary(result, pc, reason);
+            return false;
+        }
+    };
+    if !condition.truth.zero {
         return true;
     }
-    let Some(partition) = partition(result, &request, &condition, Some(&retention), context, pc)
+    let Some(partition) = partition(result, &request, condition, Some(&retention), context, pc)
     else {
         return false;
     };
@@ -197,36 +375,37 @@ fn allow_memory(
 
 /// Returndata source overflow is an execution failure, independently of the
 /// destination-memory analysis policy. Empty copies still check the source.
-pub(super) fn returndata(
-    result: &mut Execution,
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    length: &AbstractValue,
-    context: &mut TransferContext<'_>,
+pub(super) fn returndata<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    length: &EvmValue<D::Element>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
 ) -> bool {
-    let request = RangeRequest {
-        kind: RangeKind::ReturnData,
-        offset: super::relations::identify(
-            offset.clone(),
-            context.config.analysis.relations.enabled,
-        ),
-        size: super::relations::identify(size.clone(), context.config.analysis.relations.enabled),
-        limit: super::relations::identify(
-            length.clone(),
-            context.config.analysis.relations.enabled,
-        ),
+    let guard::PreparedGuard {
+        request,
+        condition,
+        singleton,
+        ..
+    } = match guard::sequence(offset, size, length, context) {
+        Ok(guard) => guard,
+        Err(reason) => {
+            super::boundary(result, pc, reason);
+            return false;
+        }
     };
-    let condition = sequence_condition(
-        &request.offset,
-        &request.size,
-        &request.limit,
-        context.domain,
-    );
-    if !condition.may_be_zero() {
+    let condition = match Condition::prepare(&condition, singleton, context.budget) {
+        Ok(condition) => condition,
+        Err(reason) => {
+            super::boundary(result, pc, reason);
+            return false;
+        }
+    };
+    if !condition.truth.zero {
         return true;
     }
-    let Some(partition) = partition(result, &request, &condition, None, context, pc) else {
+    let Some(partition) = partition(result, &request, condition, None, context, pc) else {
         return false;
     };
     if let Some(payload) = partition.excluded {
@@ -234,7 +413,7 @@ pub(super) fn returndata(
             result,
             payload,
             OutcomeKind::Failure,
-            ByteArray::empty(),
+            EvmByteArray::<D::Element>::empty(),
             context,
             pc,
         );
@@ -246,14 +425,18 @@ pub(super) fn returndata(
     true
 }
 
-fn partition(
-    result: &mut Execution,
-    request: &RangeRequest,
-    condition: &AbstractValue,
+fn partition<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    request: &EvmRangeRequest<D::Element>,
+    condition: Condition<'_, D::Element>,
     retention: Option<&GuardRetention>,
-    context: &mut TransferContext<'_>,
+    context: &mut TransferContext<'_, D>,
     pc: usize,
-) -> Option<Partition> {
+) -> Option<Partition<D::Element>> {
+    let Condition {
+        value: condition,
+        truth,
+    } = condition;
     let cost = result
         .payload
         .work_size()
@@ -265,7 +448,7 @@ fn partition(
     }
     let mut input = result.payload.clone();
     let checked = (|| {
-        if condition.may_be_zero() && condition.may_be_nonzero() {
+        if truth.zero && truth.nonzero {
             let limits = context.config.analysis.relations;
             for value in [&request.offset, &request.size, &request.limit] {
                 if let Some(expression) = value.expression() {
@@ -276,8 +459,8 @@ fn partition(
                 }
             }
         }
-        let allowed = constrained(&input, condition, true, retention, context)?;
-        let excluded = constrained(&input, condition, false, retention, context)?;
+        let allowed = constrained(&input, condition, truth, true, retention, context)?;
+        let excluded = constrained(&input, condition, truth, false, retention, context)?;
         for reason in [allowed.precision_loss, excluded.precision_loss]
             .into_iter()
             .flatten()
@@ -309,26 +492,24 @@ fn partition(
     }
 }
 
-fn constrained(
-    input: &MachinePayload,
-    condition: &AbstractValue,
+fn constrained<D: EvmNumericAlgebra>(
+    input: &EvmMachinePayload<D::Element>,
+    condition: &EvmValue<D::Element>,
+    truth: Truth,
     nonzero: bool,
     retention: Option<&GuardRetention>,
-    context: &mut TransferContext<'_>,
-) -> Result<Constrained, Failure> {
-    if !(if nonzero {
-        condition.may_be_nonzero()
-    } else {
-        condition.may_be_zero()
-    }) {
-        return Ok(Constrained::exact(None));
+    context: &mut TransferContext<'_, D>,
+) -> Result<Constrained<D::Element>, Failure> {
+    if !(if nonzero { truth.nonzero } else { truth.zero }) {
+        return Ok(Constrained::<D::Element>::exact(None));
     }
     let mut payload = input.clone();
-    if condition.singleton().is_some() {
-        return Ok(Constrained::exact(Some(payload)));
+    if !(truth.zero && truth.nonzero) {
+        return Ok(Constrained::<D::Element>::exact(Some(payload)));
     }
     let expression = condition
-        .symbolic_expression()
+        .expression()
+        .cloned()
         .ok_or_else(|| Failure::missing_expression(retention))?;
     let limits = context.config.analysis.relations;
     let cost = payload
@@ -338,16 +519,19 @@ fn constrained(
     if !context.budget.charge(cost) {
         return Err(Failure::plain(FrontierReason::Work));
     }
-    let answer =
-        payload
-            .relations
-            .assume_checked_budgeted(&expression, nonzero, &limits, context.budget);
+    let answer = payload.relations.assume_checked_budgeted_with(
+        &expression,
+        nonzero,
+        &limits,
+        context.budget,
+        context.domain,
+    );
     if context.budget.exhausted() {
         return Err(Failure::plain(FrontierReason::Work));
     }
     match answer {
-        Ok(CheckResult::ProvenImpossible) => Ok(Constrained::exact(None)),
-        Ok(CheckResult::MayBeFeasible) => Ok(Constrained::exact(Some(payload))),
+        Ok(CheckResult::ProvenImpossible) => Ok(Constrained::<D::Element>::exact(None)),
+        Ok(CheckResult::MayBeFeasible) => Ok(Constrained::<D::Element>::exact(Some(payload))),
         Err(reason) | Ok(CheckResult::Undetermined(reason @ QueryReason::Cancelled)) => {
             Err(Failure::plain(FrontierReason::Relations(reason)))
         }
@@ -360,22 +544,22 @@ fn constrained(
     }
 }
 
-fn pending(
-    result: &mut Execution,
+fn pending<N: WordElement>(
+    result: &mut EvmExecution<N>,
     pc: usize,
     failure: Failure,
-    request: RangeRequest,
-    condition: AbstractValue,
+    request: EvmRangeRequest<N>,
+    condition: EvmValue<N>,
     nonzero: Option<bool>,
-    payload: MachinePayload,
+    payload: EvmMachinePayload<N>,
 ) {
     let index = result.frontiers.len();
-    result.frontiers.push(ExecutionFrontier {
+    result.frontiers.push(EvmExecutionFrontier {
         pc,
         reason: super::boundary_reason(failure.reason),
         target: Some(payload.key()),
         payload: None,
-        range: Some(RangeWitness {
+        range: Some(EvmRangeWitness {
             request,
             condition,
             nonzero,
@@ -390,12 +574,12 @@ fn pending(
 /// A nonempty access must have a word-rounded U256 end. Empty accesses never
 /// expand memory, including offset MAX. The subtraction stays guarded.
 #[cfg(test)]
-pub(super) fn memory_condition(
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    domain: Domain,
-) -> AbstractValue {
-    let limit = AbstractValue::constant(logical::MAX_END);
+pub(super) fn memory_condition<D: EvmNumericAlgebra>(
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    domain: AlgebraRef<'_, D>,
+) -> EvmValue<D::Element> {
+    let limit = EvmValue::<D::Element>::constant(logical::MAX_END);
     let empty = domain.apply(opcode::ISZERO, std::slice::from_ref(size));
     let fits = sequence_condition(offset, size, &limit, domain);
     domain.apply(opcode::OR, &[empty, fits])
@@ -403,22 +587,30 @@ pub(super) fn memory_condition(
 
 /// A returndata read must fit even for size zero: an offset beyond the end is
 /// exceptional. The predicate also rejects an overflowing offset + size.
-pub(super) fn sequence_condition(
-    offset: &AbstractValue,
-    size: &AbstractValue,
-    length: &AbstractValue,
-    domain: Domain,
-) -> AbstractValue {
+#[cfg(test)]
+pub(super) fn sequence_condition<D: EvmNumericAlgebra>(
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    length: &EvmValue<D::Element>,
+    domain: AlgebraRef<'_, D>,
+) -> EvmValue<D::Element> {
     let offset_fits = at_most(offset, length, domain);
     let remaining = domain.apply(opcode::SUB, &[length.clone(), offset.clone()]);
     let size_fits = at_most(size, &remaining, domain);
     domain.apply(opcode::AND, &[offset_fits, size_fits])
 }
 
-fn at_most(left: &AbstractValue, right: &AbstractValue, domain: Domain) -> AbstractValue {
+#[cfg(test)]
+fn at_most<D: EvmNumericAlgebra>(
+    left: &EvmValue<D::Element>,
+    right: &EvmValue<D::Element>,
+    domain: AlgebraRef<'_, D>,
+) -> EvmValue<D::Element> {
     let greater = domain.apply(opcode::GT, &[left.clone(), right.clone()]);
     domain.apply(opcode::ISZERO, &[greater])
 }
 
+#[cfg(test)]
+mod query_tests;
 #[cfg(test)]
 mod tests;

@@ -12,7 +12,7 @@ use super::{
     SourceId, StateBinding,
     structure::{Borrowed, Handle as Key, Mapper, Node, Postorder, Representation},
 };
-use crate::domain::NumericValue;
+use crate::domain::WordObservation;
 use alloy_primitives::U256;
 use serde::Serialize;
 use std::{
@@ -83,7 +83,7 @@ pub struct GraphBinding {
     /// Graph-local expression index.
     pub value: usize,
     /// Observed numeric guarantees.
-    pub numeric: NumericValue,
+    pub numeric: WordObservation,
 }
 /// Typed references and native payloads in a flat exported graph.
 #[derive(Clone, Debug)]

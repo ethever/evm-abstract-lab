@@ -1,8 +1,42 @@
 use super::super::{form, instantiate, join, semantic_eq};
 use super::*;
+use crate::analysis::MachinePayload;
 use crate::analysis::machine::fixtures::{fixture, word};
-use crate::domain::symbolic::ExprId;
+use crate::domain::ValueAlgebra;
+use crate::domain::{AbstractValue, Domain, NumericValue, symbolic::ExprId};
 use alloy_primitives::U256;
+
+#[test]
+fn optional_key_evidence_uses_retained_literals_and_nodes_without_discovery() {
+    use crate::analysis::state::query::tests::carrier::{Probe, Word};
+    use std::rc::Rc;
+
+    for fee in [61, usize::MAX] {
+        let probe = Rc::new(Probe::new(fee));
+        let numeric = EvmValue::from_numeric(Word::constant(U256::from(7)).watched(&probe));
+        let seven = ExprId::constant(U256::from(7));
+        let nine = ExprId::constant(U256::from(9));
+        assert_eq!(key_work(&numeric), None);
+        assert!(key_expression(&numeric).is_none());
+        assert!(!same_key(&seven, &numeric));
+
+        // Two independently retained literals suffice even if the carrier's
+        // numeric view is Top; retaining this source is also valid evidence.
+        let literal = EvmValue::from_numeric(Word::top().watched(&probe))
+            .with_expression(ExprId::constant(U256::from(7)));
+        assert_eq!(key_work(&literal), Some(1));
+        assert_eq!(key_expression(&literal), Some(seven.clone()));
+        assert!(same_key(&seven, &literal));
+        assert!(!same_key(&nine, &literal));
+
+        let fresh = ExprId::fresh().unwrap();
+        let same_node = numeric.clone().with_expression(fresh.clone());
+        assert!(same_key(&fresh, &same_node));
+        assert!(!same_key(&ExprId::fresh().unwrap(), &same_node));
+        assert!(!same_key(&seven, &same_node));
+        assert_eq!(probe.counts(), (0, 0, 0));
+    }
+}
 
 fn written_input() -> (
     crate::world::World,
@@ -12,7 +46,9 @@ fn written_input() -> (
 ) {
     let domain = Domain::default();
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut input = crate::analysis::transfer::initial(&world, &entry, domain).unwrap();
+    let mut input =
+        crate::analysis::transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed())
+            .unwrap();
     let key = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
     input.active_mut().stack = vec![key.clone()];
     let owner = input.active().key.address;
@@ -26,7 +62,7 @@ fn written_input() -> (
 #[test]
 fn missing_observation_drops_on_join_and_changes_semantics() {
     let (_, entry, input, domain) = written_input();
-    let left = form(&input, &entry, domain).unwrap();
+    let left = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     assert_eq!(left.storage_observations.0.len(), 1);
     assert_eq!(
         left.storage_observations.0[0].numeric.singleton(),
@@ -36,12 +72,12 @@ fn missing_observation_drops_on_join_and_changes_semantics() {
     missing.storage_observations = Default::default();
     assert!(!semantic_eq(&left, &missing));
     for widen in [false, true] {
-        let joined = join(&left, &missing, domain, widen).unwrap();
+        let joined = join(&left, &missing, ValueAlgebra::new(domain).borrowed(), widen).unwrap();
         assert!(joined.storage_observations.0.is_empty());
         assert!(!semantic_eq(&left, &joined));
         assert!(semantic_eq(&missing, &joined));
         assert!(
-            join(&missing, &left, domain, widen)
+            join(&missing, &left, ValueAlgebra::new(domain).borrowed(), widen)
                 .unwrap()
                 .storage_observations
                 .0
@@ -53,20 +89,20 @@ fn missing_observation_drops_on_join_and_changes_semantics() {
 #[test]
 fn joined_finite_read_is_recovered_from_the_exact_instantiated_root() {
     let (_, entry, input, domain) = written_input();
-    let left = form(&input, &entry, domain).unwrap();
+    let left = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let mut next = input.clone();
     let key = next.active().stack[0].clone();
     next.store
         .write_checked(next.active().key.address, &key, &word(9), domain)
         .unwrap();
-    let right = form(&next, &entry, domain).unwrap();
-    let joined = join(&left, &right, domain, false).unwrap();
+    let right = form(&next, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
+    let joined = join(&left, &right, ValueAlgebra::new(domain).borrowed(), false).unwrap();
     assert_eq!(
         joined.storage_observations.0[0].numeric.constants(),
         Some(&[U256::from(7), U256::from(9)].into())
     );
-    let restored = instantiate(&joined, domain).unwrap();
-    let again = form(&restored, &entry, domain).unwrap();
+    let restored = instantiate(&joined, ValueAlgebra::new(domain).borrowed()).unwrap();
+    let again = form(&restored, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     assert_eq!(again.storage_observations, joined.storage_observations);
 }
 
@@ -75,7 +111,7 @@ fn equal_alias_observations_install_once_but_keep_every_position_and_numeric_fee
     let (_, entry, mut input, domain) = written_input();
     let key = input.active().stack[0].clone();
     input.active_mut().stack = vec![key; MAX_POSITIONS];
-    let summary = form(&input, &entry, domain).unwrap();
+    let summary = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let observations = &summary.storage_observations;
     let frame = summary.active();
     assert_eq!(observations.0.len(), MAX_POSITIONS);
@@ -86,7 +122,7 @@ fn equal_alias_observations_install_once_but_keep_every_position_and_numeric_fee
         );
         assert_eq!(observations.0[index].stack_position, index);
     }
-    let single = StorageObservations(vec![observations.0[0].clone()]);
+    let single = EvmStorageObservations(vec![observations.0[0].clone()]);
     let numeric_fee = observations.0[0]
         .numeric
         .work_size()
@@ -96,10 +132,10 @@ fn equal_alias_observations_install_once_but_keep_every_position_and_numeric_fee
         observations.work_size(&frame.stack, &frame.stack_aliases),
         single.work_size(&frame.stack, &frame.stack_aliases) + (MAX_POSITIONS - 1) * numeric_fee
     );
-    let restored = instantiate(&summary, domain).unwrap();
+    let restored = instantiate(&summary, ValueAlgebra::new(domain).borrowed()).unwrap();
     assert_eq!(restored.relations.len(), 1);
     assert_eq!(
-        form(&restored, &entry, domain)
+        form(&restored, &entry, ValueAlgebra::new(domain).borrowed())
             .unwrap()
             .storage_observations,
         summary.storage_observations
@@ -111,7 +147,7 @@ fn same_alias_with_different_compatible_read_bounds_installs_both() {
     let (_, entry, mut input, domain) = written_input();
     let key = input.active().stack[0].clone();
     input.active_mut().stack.push(key);
-    let mut summary = form(&input, &entry, domain).unwrap();
+    let mut summary = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     for (observation, (lower, upper)) in summary
         .storage_observations
         .0
@@ -128,7 +164,7 @@ fn same_alias_with_different_compatible_read_bounds_installs_both() {
     assert!(summary.active().stack_aliases.same_class(0, 1));
     assert!(observations.needs_install(0, &summary.active().stack_aliases));
     assert!(observations.needs_install(1, &summary.active().stack_aliases));
-    let restored = instantiate(&summary, domain).unwrap();
+    let restored = instantiate(&summary, ValueAlgebra::new(domain).borrowed()).unwrap();
     let owner = restored.active().key.address;
     let root = restored.store.slot_root(owner, false).unwrap();
     let key = &restored.active().stack[0];
@@ -147,15 +183,15 @@ fn joined_alias_split_and_new_leader_use_the_current_partition() {
     let (_, entry, mut input, domain) = written_input();
     let key = input.active().stack[0].clone();
     input.active_mut().stack = vec![key.clone(); 4];
-    let left = form(&input, &entry, domain).unwrap();
+    let left = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let other = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
     input.active_mut().stack = vec![key, other.clone(), other.clone(), other];
-    let mut right = form(&input, &entry, domain).unwrap();
+    let mut right = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     // Supply compatible per-position read guarantees independently of aliases.
     right.storage_observations = left.storage_observations.clone();
     right.work = right.measure_work();
     for widen in [false, true] {
-        let joined = join(&left, &right, domain, widen).unwrap();
+        let joined = join(&left, &right, ValueAlgebra::new(domain).borrowed(), widen).unwrap();
         let observations = &joined.storage_observations;
         let aliases = &joined.active().stack_aliases;
         assert_eq!(observations.0.len(), 4);
@@ -171,15 +207,27 @@ fn joined_alias_split_and_new_leader_use_the_current_partition() {
                     .storage_observations
                     .work_size(&left.active().stack, &left.active().stack_aliases,)
         );
-        assert_eq!(instantiate(&joined, domain).unwrap().relations.len(), 2);
+        assert_eq!(
+            instantiate(&joined, ValueAlgebra::new(domain).borrowed())
+                .unwrap()
+                .relations
+                .len(),
+            2
+        );
 
         let mut missing = right.clone();
         missing.storage_observations.0.remove(0);
-        let dropped = join(&left, &missing, domain, widen).unwrap();
+        let dropped = join(&left, &missing, ValueAlgebra::new(domain).borrowed(), widen).unwrap();
         assert!(!semantic_eq(&joined, &dropped));
         assert_eq!(dropped.storage_observations.0.len(), 3);
         assert_eq!(dropped.storage_observations.0[0].stack_position, 1);
-        assert_eq!(instantiate(&dropped, domain).unwrap().relations.len(), 1);
+        assert_eq!(
+            instantiate(&dropped, ValueAlgebra::new(domain).borrowed())
+                .unwrap()
+                .relations
+                .len(),
+            1
+        );
     }
 }
 
@@ -188,21 +236,27 @@ fn independent_equal_numeric_keys_and_mixed_bound_alias_splits_install_separatel
     let (_, entry, mut input, domain) = written_input();
     let key = input.active().stack[0].clone();
     input.active_mut().stack.push(key.clone());
-    let aliased = form(&input, &entry, domain).unwrap();
+    let aliased = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let independent = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
     let narrow = key
         .clone()
         .with_numeric(NumericValue::unsigned_range(U256::from(2), U256::from(9)).unwrap());
     for other in [independent, narrow] {
         input.active_mut().stack = vec![key.clone(), other];
-        let mut summary = form(&input, &entry, domain).unwrap();
+        let mut summary = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
         summary.storage_observations = aliased.storage_observations.clone();
         summary.work = summary.measure_work();
         let aliases = &summary.active().stack_aliases;
         assert!(!aliases.same_class(0, 1));
         assert!(summary.storage_observations.needs_install(0, aliases));
         assert!(summary.storage_observations.needs_install(1, aliases));
-        assert_eq!(instantiate(&summary, domain).unwrap().relations.len(), 2);
+        assert_eq!(
+            instantiate(&summary, ValueAlgebra::new(domain).borrowed())
+                .unwrap()
+                .relations
+                .len(),
+            2
+        );
     }
     let mut owners = aliased.storage_observations.clone();
     owners.0[1].owner = crate::analysis::machine::fixtures::address(0x202);
@@ -212,19 +266,20 @@ fn independent_equal_numeric_keys_and_mixed_bound_alias_splits_install_separatel
 #[test]
 fn observation_cost_ignores_code_and_caps_optional_root_work() {
     let (_, _, mut input, domain) = written_input();
-    let fee = form_work(&input, domain);
+    let fee = form_work(&input, ValueAlgebra::new(domain).borrowed());
     let store_work = input.store.work_size();
     input.store.deploy_code(
         crate::analysis::machine::fixtures::address(0x202),
         crate::bytecode::Program::from_hex(&"00".repeat(24_576)).unwrap(),
     );
     assert!(input.store.work_size() >= store_work + 24_576);
-    assert_eq!(form_work(&input, domain), fee);
+    assert_eq!(form_work(&input, ValueAlgebra::new(domain).borrowed()), fee);
     let key = input.active().stack[0].clone();
     input.active_mut().stack = vec![AbstractValue::top(); MAX_POSITIONS + 2];
     input.active_mut().stack[0] = key.clone();
     input.active_mut().stack[MAX_POSITIONS + 1] = key;
-    let observations = StorageObservations::form(&input, domain).unwrap();
+    let observations =
+        StorageObservations::form(&input, ValueAlgebra::new(domain).borrowed()).unwrap();
     assert_eq!(observations.0.len(), 1);
     assert_eq!(observations.0[0].stack_position, MAX_POSITIONS + 1);
     for _ in 0..32 {
@@ -242,9 +297,9 @@ fn observation_cost_ignores_code_and_caps_optional_root_work() {
             .nodes()
             > MAX_ROOT_WORK
     );
-    assert_eq!(form_work(&input, domain), 0);
+    assert_eq!(form_work(&input, ValueAlgebra::new(domain).borrowed()), 0);
     assert!(
-        StorageObservations::form(&input, domain)
+        StorageObservations::form(&input, ValueAlgebra::new(domain).borrowed())
             .unwrap()
             .0
             .is_empty()
@@ -255,9 +310,9 @@ fn observation_cost_ignores_code_and_caps_optional_root_work() {
 fn symbolic_logical_owner_is_outside_current_scope() {
     let (_, _, mut input, domain) = written_input();
     input.active_mut().key.address_value = crate::world::AddressInput::unknown_to();
-    assert_eq!(form_work(&input, domain), 0);
+    assert_eq!(form_work(&input, ValueAlgebra::new(domain).borrowed()), 0);
     assert!(
-        StorageObservations::form(&input, domain)
+        StorageObservations::form(&input, ValueAlgebra::new(domain).borrowed())
             .unwrap()
             .0
             .is_empty()
@@ -267,8 +322,8 @@ fn symbolic_logical_owner_is_outside_current_scope() {
 #[test]
 fn repeated_projection_preserves_only_current_snapshot_guarantees() {
     let (_, entry, input, domain) = written_input();
-    let summary = form(&input, &entry, domain).unwrap();
-    let mut restored = instantiate(&summary, domain).unwrap();
+    let summary = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
+    let mut restored = instantiate(&summary, ValueAlgebra::new(domain).borrowed()).unwrap();
     let owner = restored.active().key.address;
     let key = restored.active().stack[0].clone();
     let old_read = restored.store.read_checked(owner, &key, domain).unwrap();
@@ -277,7 +332,7 @@ fn repeated_projection_preserves_only_current_snapshot_guarantees() {
             .relations
             .has_direct_numeric_guarantee(old_read.expression().unwrap())
     );
-    let again = form(&restored, &entry, domain).unwrap();
+    let again = form(&restored, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     assert_eq!(again.storage_observations, summary.storage_observations);
     // This is a replacement Store, as on a completed child call. The old read's
     // immutable fact must not attach to the new current snapshot.
@@ -301,7 +356,7 @@ fn repeated_projection_preserves_only_current_snapshot_guarantees() {
             .relations
             .has_direct_numeric_guarantee(old_read.expression().unwrap())
     );
-    let changed = form(&restored, &entry, domain).unwrap();
+    let changed = form(&restored, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     assert_eq!(
         changed.storage_observations.0[0].numeric.singleton(),
         Some(U256::from(9))
@@ -315,7 +370,7 @@ fn independent_key_and_later_maybe_aliasing_write_do_not_reuse_the_old_read() {
     let other = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
     input.active_mut().stack[0] = other.clone();
     assert!(
-        StorageObservations::form(&input, domain)
+        StorageObservations::form(&input, ValueAlgebra::new(domain).borrowed())
             .unwrap()
             .0
             .is_empty()
@@ -328,7 +383,7 @@ fn independent_key_and_later_maybe_aliasing_write_do_not_reuse_the_old_read() {
     // literal proof, and this optional extractor must not walk back to the 7.
     input.active_mut().stack[0] = original;
     assert!(
-        StorageObservations::form(&input, domain)
+        StorageObservations::form(&input, ValueAlgebra::new(domain).borrowed())
             .unwrap()
             .0
             .is_empty()

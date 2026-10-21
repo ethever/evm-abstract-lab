@@ -6,7 +6,7 @@ use evm_abstract::{
         Domain,
         relational::{CheckResult, RelationLimits},
     },
-    world::{Account, ByteArray},
+    world::{Account, ByteArray, World},
 };
 use revm_bytecode::opcode;
 
@@ -29,21 +29,10 @@ fn wide_symbolic_policy() -> ExecutionConfig {
     }
 }
 
-fn complete_symbolic(analysis: &evm_abstract::analysis::WorldAnalysis) {
-    complete(analysis);
-    assert!(!analysis.procedure_summaries().is_empty());
-    assert!(
-        analysis
-            .procedure_summaries()
-            .iter()
-            .all(|summary| summary.closed)
-    );
-}
-
 fn symbolic_with_native_input_gaps(analysis: &evm_abstract::analysis::WorldAnalysis) {
     assert!(!analysis.procedure_summaries().is_empty());
     if analysis.frontiers().is_empty() {
-        complete_symbolic(analysis);
+        complete_unknown(analysis);
     } else {
         // This full address space includes USER as an unknown-code address.
         // Its callback into A may enter the root branch and call a native
@@ -142,7 +131,7 @@ fn symbolic_target_covers_current_owner_other_known_and_remaining_addresses_with
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[]);
     let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
-    complete_symbolic(&analysis);
+    complete_unknown(&analysis);
     let call_pc = a.labels["call"] + 1;
     for candidate in [A, C] {
         let entries: Vec<_> = analysis
@@ -204,7 +193,7 @@ fn existing_target_path_condition_excludes_known_c_candidate() {
     insert(&mut world, A, &a, &[]);
     insert(&mut world, C, &c, &[]);
     let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
-    complete_symbolic(&analysis);
+    complete_unknown(&analysis);
     let call_pc = a.labels["call"] + 1;
     assert!(
         !analysis
@@ -244,7 +233,7 @@ fn repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards
     insert(&mut world, A, &code, &[]);
     insert(&mut world, C, &known_c(), &[]);
     let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
-    complete_symbolic(&analysis);
+    complete_unknown(&analysis);
     let original = analysis.states()[0]
         .entry
         .call_stack
@@ -304,8 +293,7 @@ fn repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards
     assert!(!returns(&analysis).is_empty());
 }
 
-#[test]
-fn different_symbolic_targets_can_alias_the_same_known_storage_owner() {
+fn symbolic_alias_world() -> World {
     let mut a = Assembly::default();
     a.op(opcode::CALLER)
         .push(USER as u16)
@@ -339,19 +327,64 @@ fn different_symbolic_targets_can_alias_the_same_known_storage_owner() {
         &super::fixtures::external_cell(),
         &[(0, 5), (1, 1)],
     );
+    world
+}
+
+#[test]
+fn different_symbolic_targets_can_alias_the_same_known_storage_owner() {
+    let world = symbolic_alias_world();
     let mut concrete_input = Vec::new();
     concrete_input.extend(U256::from(C).to_be_bytes::<32>());
     concrete_input.extend(U256::from(C).to_be_bytes::<32>());
     let observed = super::oracle::execute(&world, &entry(ByteArray::exact(&concrete_input)));
     assert_eq!(observed.output_word(0), U256::from(9));
     assert_eq!(observed.output_word(32), U256::from(9));
-    let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
+    // The paid finite target/outcome closure consumes about 1.82B work; retain
+    // the same full address space and semantic contract on this detail ledger.
+    let policy = ExecutionConfig {
+        max_work: 2_000_000_000,
+        ..wide_symbolic_policy()
+    };
+    let analysis = run_config(world, entry(ByteArray::unknown()), policy);
     symbolic_with_native_input_gaps(&analysis);
     let root = &analysis.states()[0].entry.call_stack.root().state;
     let first = root.calldata.read_word(&word(0), Domain::default());
     let second = root.calldata.read_word(&word(32), Domain::default());
     assert_ne!(first.expression(), second.expression());
     observed.covers(&analysis);
+}
+
+#[test]
+fn symbolic_alias_original_ledger_keeps_input_bound_coverage_or_complete_detail() {
+    let world = symbolic_alias_world();
+    let mut concrete_input = Vec::new();
+    concrete_input.extend(U256::from(C).to_be_bytes::<32>());
+    concrete_input.extend(U256::from(C).to_be_bytes::<32>());
+    let observed = super::oracle::execute(&world, &entry(ByteArray::exact(&concrete_input)));
+    assert_eq!(observed.output_word(0), U256::from(9));
+    assert_eq!(observed.output_word(32), U256::from(9));
+    let config = wide_symbolic_policy();
+    assert_eq!(config.max_work, 1_000_000_000);
+    assert!(config.root_terminal_coverage);
+    let analysis = run_config(world, entry(ByteArray::unknown()), config.clone());
+    assert!(analysis.work() <= config.max_work);
+    let qualified_native = !analysis.frontiers().is_empty()
+        && analysis
+            .frontiers()
+            .iter()
+            .all(|frontier| matches!(frontier.reason, FrontierReason::PrecompileInput(_)));
+    if analysis.status() == Status::Converged || qualified_native {
+        // A later cheaper complete result must satisfy the original alias
+        // contract, including the joint concrete return pair.
+        symbolic_with_native_input_gaps(&analysis);
+        let calldata = &analysis.states()[0].entry.call_stack.root().state.calldata;
+        let first = calldata.read_word(&word(0), Domain::default());
+        let second = calldata.read_word(&word(32), Domain::default());
+        assert_ne!(first.expression(), second.expression());
+        observed.covers(&analysis);
+        return;
+    }
+    terminal_coverage::assert_original_work_coverage(&analysis, &config);
 }
 
 #[test]

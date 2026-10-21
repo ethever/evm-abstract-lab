@@ -8,6 +8,9 @@ use evm_abstract::{
     world::{Account, ByteArray, Entry, Store, World},
 };
 use revm_bytecode::opcode;
+
+#[path = "../support/terminal_coverage.rs"]
+pub(super) mod terminal_coverage;
 use std::{collections::BTreeMap, time::Instant};
 
 pub(super) const A: u64 = 0x101;
@@ -165,6 +168,31 @@ pub(super) fn entry(calldata: ByteArray) -> Entry {
 
 pub(super) fn calldata(selector: u64) -> ByteArray {
     ByteArray::exact(&U256::from(selector).to_be_bytes::<32>())
+}
+
+/// Selected nested/cell/rollback functional fixtures need 20.15M..24.89M
+/// under the complete tariffs. Their default-ledger coverage runs stay separate.
+pub(super) fn callback_closure_config() -> ExecutionConfig {
+    ExecutionConfig {
+        max_work: 100_000_000,
+        ..ExecutionConfig::default()
+    }
+}
+
+/// Check the original root relation on the real default ledger, independently
+/// of funding a functional closure. A cheaper complete execution is also valid.
+pub(super) fn default_callback_coverage(world: World, entry: Entry) {
+    let config = ExecutionConfig::default();
+    assert_eq!(config.max_work, 20_000_000);
+    assert!(config.root_terminal_coverage);
+    let analysis = run_config(world, entry, config.clone());
+    assert_eq!(analysis.config().max_work, config.max_work);
+    assert!(analysis.work() <= config.max_work);
+    if analysis.status() == Status::Converged {
+        complete_unknown(&analysis);
+        return;
+    }
+    terminal_coverage::assert_original_work_coverage(&analysis, &config);
 }
 
 pub(super) fn run(world: World, entry: Entry) -> WorldAnalysis {

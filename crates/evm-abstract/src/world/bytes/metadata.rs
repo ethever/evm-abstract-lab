@@ -1,8 +1,9 @@
 //! Read-only retention metadata for bounded native snapshot consumers.
-use super::ByteArray;
+use super::EvmByteArray;
+use crate::domain::WordElement;
 use crate::domain::symbolic::ExprId;
 
-impl ByteArray {
+impl<N: WordElement> EvmByteArray<N> {
     /// O(1) census before inspecting the values whose OriginSets Clone owns.
     pub(crate) fn cloned_value_count(&self) -> usize {
         self.bytes

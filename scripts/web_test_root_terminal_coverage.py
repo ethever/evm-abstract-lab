@@ -70,6 +70,61 @@ def _zero(value):
     assert int(value["unsigned"]["lower"], 16) == int(value["unsigned"]["upper"], 16) == 0
 
 
+def _empty_data(report, data, expected):
+    # Empty constructors can retain an extra length certificate. Admit only a
+    # typed zero proof; every other scalar, source and byte-array field stays exact.
+    for value in [data["length"], expected["length"], data["default"], expected["default"]]:
+        _zero(value)
+        if value["expression"] is not None:
+            assert _node(report, value["expression"], "Constant") == "0x0", value
+    assert data == {**expected, "length": {**expected["length"],
+                                          "expression": data["length"]["expression"]}}, (data, expected)
+
+
+def _empty_data_controls(report, data, expected):
+    """Exercise proof-layout equivalence and semantic refusals on real tuples."""
+    zero = _node(report, data["symbolic"], "View")["length"]
+    for actual_proof in [None, zero]:
+        for expected_proof in [None, zero]:
+            actual, template = deepcopy(data), deepcopy(expected)
+            actual["length"] = {**actual["length"], "expression": actual_proof}
+            template["length"] = {**template["length"], "expression": expected_proof}
+            _empty_data(report, actual, template)
+    nodes = report["symbolic"]["nodes"]
+    fresh = next({"node": index} for index, node in enumerate(nodes)
+                 if type(node) is dict and set(node) == {"Fresh"})
+    one = {"node": len(nodes)}
+    control = {**report, "symbolic": {**report["symbolic"], "nodes": [*nodes, {"Constant": "0x1"}]}}
+    invalid_fields = [
+        ("length", "constants", ["0x1"]), ("length", "known_one", "0x1"),
+        ("length", "origins", ["Memory"]), ("length", "identity", {"scope": "0"}),
+        ("length", "expression", one), ("length", "expression", fresh),
+        ("length", "expression", {"node": True}),
+        ("default", "constants", ["0x1"]), ("default", "origins", ["Memory"]),
+        ("default", "expression", one), (None, "symbolic", fresh),
+        (None, "cells", [{"offset": "0x0"}]), (None, "memory", True),
+        (None, "unexpected", True),
+    ]
+    for container, field, value in invalid_fields:
+        invalid = deepcopy(data)
+        if container is None:
+            invalid[field] = value
+        else:
+            invalid[container] = {**invalid[container], field: value}
+        try:
+            _empty_data(control, invalid, expected)
+        except AssertionError:
+            continue
+        raise AssertionError(("accepted invalid empty data", container, field, value))
+    invalid_expected = deepcopy(expected)
+    invalid_expected["length"] = {**invalid_expected["length"], "expression": one}
+    try:
+        _empty_data(control, data, invalid_expected)
+    except AssertionError:
+        return {"positive": 4, "negative": len(invalid_fields) + 1}
+    raise AssertionError("accepted a contradictory expected length proof")
+
+
 def _stores(report):
     # These are required on ordinary reports too. Equal base refs remain
     # owner-scoped templates; this check never equates two account values.
@@ -116,7 +171,7 @@ def _binding(report, request, *, is_static):
     assert config["root_terminal_coverage"] is True
     assert binding["domain_spec"] == {
         "schema_version": 2, "word_bits": 256, "profile": "Product", "capacity": 512,
-        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 4,
+        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 6,
         "widening_after_updates": 2, "provenance_policy": "scoped-expressions-and-value-identities-v3",
         "relations": config["relations"]}
     original = next(state for state in report["states"] if state["state"] == 0)["entry"]
@@ -251,6 +306,7 @@ def _tuples(report, binding):
             assert _node(report, view["state"], "BytesExact") == "0x"
             expected = {**calldata, "length": saved["transient_default"],
                         "default": saved["transient_default"], "symbolic": data["symbolic"]}
+            _empty_data(report, data, expected)
         else:
             _top(data["length"])
             assert data["cells"] == []
@@ -262,7 +318,7 @@ def _tuples(report, binding):
                                [view["length"], source["source"]["token"]])
             expected = {**calldata, "length": {**calldata["length"], "expression": view["length"]},
                         "symbolic": data["symbolic"]}
-        assert data == expected, (outcome["kind"], data, expected)
+            assert data == expected, (outcome["kind"], data, expected)
     returned, reverted, failed = [_pool(report, "stores", item["store"]) for item in outcomes]
     # Static uses the same deliberately coarse Return upper bound. Its actual
     # input.static remains true; no identity/feasibility claim is made here.
@@ -324,7 +380,7 @@ def _observed_failures(report, independent=()):
         assert _node(report, view["state"], "BytesExact") == "0x"
         expected = {**calldata, "length": saved["transient_default"],
                     "default": saved["transient_default"], "symbolic": data["symbolic"]}
-        assert data == expected, (data, expected)
+        _empty_data(report, data, expected)
         store = _pool(report, "stores", outcome["store"])
         # Engine's pre-entry Failure clones the whole saved Store. Every other
         # observed Failure must match the complete independently finalized root.
@@ -334,6 +390,7 @@ def _observed_failures(report, independent=()):
             assert _rollback_store(report, binding, store) not in independent
             finalized += 1
     assert pre_entry > 0 and finalized > 0, (pre_entry, finalized)
+    _empty_data_controls(report, data, expected)
 
 
 def _detail(report):
@@ -515,14 +572,14 @@ def _schema_control(page, canvas, output, expected_request):
         response = route.fetch()
         native_text = response.text()
         envelope = json.loads(native_text)
-        assert envelope["result"]["Ok"]["schema_version"] == 15
-        envelope["result"]["Ok"]["schema_version"] = 14
+        assert envelope["result"]["Ok"]["schema_version"] == 16
+        envelope["result"]["Ok"]["schema_version"] = 15
         replacement = json.dumps(envelope)
         headers = dict(response.headers)
         headers.pop("content-encoding", None)
         headers.pop("content-length", None)
         # This body is a deliberately invalid client control, never evidence
-        # of a live native schema-14 report or of an attached certificate.
+        # of a live native schema-15 report or of an attached certificate.
         (output / "coverage-schema-control-native.json").write_text(native_text + "\n")
         (output / "coverage-schema-control-mutated.json").write_text(replacement + "\n")
         route.fulfill(status=response.status, headers=headers, body=replacement)
@@ -539,7 +596,7 @@ def _schema_control(page, canvas, output, expected_request):
         assert json.loads(submitted.value.request.post_data) == expected_request
         current_id = _decimal_identity(str(submitted.value.json()["result"]["Ok"]["id"]))
         try:
-            expect(status).to_contain_text("Unsupported response schema 14; expected 15", timeout=60000)
+            expect(status).to_contain_text("Unsupported response schema 15; expected 16", timeout=60000)
         finally:
             canvas.screenshot(path=str(output / "coverage-schema-rejected.png"))
         after_status = status.text_content()
@@ -551,7 +608,7 @@ def _schema_control(page, canvas, output, expected_request):
         evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
         assert intercepted == [True], intercepted
         assert len(posts) == 1 and json.loads(posts[0]) == expected_request, posts
-        assert after_status.startswith("Error: Unsupported response schema 14; expected 15; "), after_status
+        assert after_status.startswith("Error: Unsupported response schema 15; expected 16; "), after_status
         current_ids = re.findall(r"(?:^|; )Current Job ID: ([^;]+)(?=;|$)", after_status)
         retained_ids = re.findall(r"(?:^|; )Result Job ID: ([^;]+)(?=;|$)", after_status)
         assert len(current_ids) == len(retained_ids) == 1, after_status
@@ -587,7 +644,7 @@ def root_terminal_coverage_interactions(context):
     assert defaults["limits"] == LAYOUT_DEFAULT_LIMITS
     assert defaults["limits"]["root_terminal_coverage"] is True
     ordinary = first.json()["result"]["Ok"]
-    assert ordinary["schema_version"] == 15 and ordinary["root_terminal_coverage"] is None
+    assert ordinary["schema_version"] == 16 and ordinary["root_terminal_coverage"] is None
     assert ordinary["status"] == "Converged" and ordinary["ssa"]["complete"] is True
     assert ordinary["frontiers"] == []
     _stores(ordinary)
@@ -712,7 +769,7 @@ def root_terminal_coverage_interactions(context):
                                "root_terminal_coverage": enabled}}
         assert request == expected, (name, request, expected)
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 15 and report["metadata"]["limits"] == expected["limits"]
+        assert report["schema_version"] == 16 and report["metadata"]["limits"] == expected["limits"]
         assert report["fork"] == request["fork"] == "Osaka"
         (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report, request

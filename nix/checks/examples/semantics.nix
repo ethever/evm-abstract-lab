@@ -44,7 +44,7 @@ let
                   node($write.WriteWord.offset) == {"Constant": "0x0"} and
                   node($write.WriteWord.value) == {"Constant": "0x2a"}
                 ) catch false;
-              .analysis.schema_version == 10 and .analysis.status == "Converged" and
+              .analysis.schema_version == 11 and .analysis.status == "Converged" and
               .analysis.frontiers == [] and .ssa.complete and
               (.analysis.procedure_summaries | length) > 0 and
               all(.analysis.procedure_summaries[];
@@ -130,7 +130,7 @@ let
         ) catch false;
       . as $report |
       {"Precompile": "0x0000000000000000000000000000000000000004"} as $native |
-      .schema_version == 10 and .status == "Converged" and .frontiers == [] and
+      .schema_version == 11 and .status == "Converged" and .frontiers == [] and
       any(.states[]; .key.frames[-1].mode == $native) and
       any(.outcomes[];
         . as $outcome |

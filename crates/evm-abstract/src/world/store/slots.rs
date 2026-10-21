@@ -1,18 +1,23 @@
 //! Ordered slot roots and numeric upper bounds, partitioned by actual account.
 
-use super::{Plane, Store, StoreError};
+use super::{EvmStore, Plane, StoreError};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    AbstractValue, Domain,
+    EvmValue,
     symbolic::{ExprId, ExprLimits, SlotStateId, SlotStateKind, SourceId, StateBinding},
 };
-use crate::world::bytes::{numeric, operands};
+use crate::world::bytes::{
+    conditional::{ConditionalFacts, Context},
+    numeric, operands,
+};
 use alloy_primitives::{Address, U256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-fn limits(domain: Domain) -> ExprLimits {
+fn limits<D: EvmNumericAlgebra>(domain: AlgebraRef<'_, D>) -> ExprLimits {
     domain.spec().relations().expressions()
 }
-fn expression(value: &AbstractValue) -> Result<ExprId, StoreError> {
+fn expression<N: WordElement>(value: &EvmValue<N>) -> Result<ExprId, StoreError> {
     crate::world::bytes::expr(value).map_err(|error| match error {
         crate::world::RangeError::Expression(error) => StoreError::Expression(error),
         crate::world::RangeError::State(error) => StoreError::State(error),
@@ -41,9 +46,9 @@ fn account_base(root: &SlotStateId, address: Address) -> Result<SlotStateId, Sto
         _ => root.clone(),
     })
 }
-fn key_disjoint(a: &AbstractValue, b: &AbstractValue) -> bool {
-    let (alo, ahi) = a.interval().unsigned_bounds();
-    let (blo, bhi) = b.interval().unsigned_bounds();
+fn key_disjoint<N: WordElement>(a: &EvmValue<N>, b: &EvmValue<N>) -> bool {
+    let (alo, ahi) = crate::world::unsigned_bounds(a);
+    let (blo, bhi) = crate::world::unsigned_bounds(b);
     ahi < blo
         || bhi < alo
         || match (a.constants(), b.constants()) {
@@ -51,31 +56,36 @@ fn key_disjoint(a: &AbstractValue, b: &AbstractValue) -> bool {
             _ => false,
         }
 }
-pub(super) fn read_numeric(
+pub(super) fn read_numeric_in<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     root: &SlotStateId,
     key: &ExprId,
-    facts: &BTreeMap<ExprId, AbstractValue>,
-    domain: Domain,
-) -> AbstractValue {
-    let domain = numeric::numeric_domain(domain);
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
+) -> EvmValue<N> {
+    let domain = numeric::numeric_domain_with(domain);
     match root.kind() {
-        SlotStateKind::Zero => numeric::scalar(&ExprId::constant(U256::ZERO), facts, domain),
+        SlotStateKind::Zero => numeric::scalar_in(&ExprId::constant(U256::ZERO), context, domain),
         SlotStateKind::Input { bindings, .. } => {
-            let key = numeric::scalar(key, facts, domain);
-            if let Some(keys) = key.constants() {
+            let key = numeric::scalar_in(key, context, domain);
+            if let Some(keys) = crate::world::candidates(&key) {
                 let mut out = None;
-                for k in keys {
+                for k in keys.iter() {
                     let value = bindings.iter().find(|b| b.index == *k).map_or_else(
-                        AbstractValue::top,
+                        EvmValue::<N>::top,
                         |b| {
-                            numeric::scalar(&b.value, facts, domain).with_numeric(b.numeric.clone())
+                            let value = numeric::scalar_in(&b.value, context, domain);
+                            let retained = context.has_binding_value(&b.value);
+                            if retained && !context.pay_binding(value.numeric(), &b.numeric) {
+                                return EvmValue::<N>::top();
+                            }
+                            numeric::bound(value, retained, &b.numeric)
                         },
                     );
                     out = Some(out.map_or_else(|| value.clone(), |old| domain.join(&old, &value)));
                 }
-                out.unwrap_or_else(AbstractValue::top)
+                out.unwrap_or_else(EvmValue::<N>::top)
             } else {
-                AbstractValue::top()
+                EvmValue::<N>::top()
             }
         }
         SlotStateKind::Store {
@@ -84,23 +94,23 @@ pub(super) fn read_numeric(
             value,
         } => {
             if key == written {
-                return numeric::scalar(value, facts, domain);
+                return numeric::scalar_in(value, context, domain);
             }
-            let requested = numeric::scalar(key, facts, domain);
-            let stored = numeric::scalar(written, facts, domain);
+            let requested = numeric::scalar_in(key, context, domain);
+            let stored = numeric::scalar_in(written, context, domain);
             if let (Some(requested), Some(stored)) = (requested.singleton(), stored.singleton()) {
                 return if requested == stored {
-                    numeric::scalar(value, facts, domain)
+                    numeric::scalar_in(value, context, domain)
                 } else {
-                    read_numeric(previous, key, facts, domain)
+                    read_numeric_in(previous, key, context, domain)
                 };
             }
             if key_disjoint(&requested, &stored) {
-                read_numeric(previous, key, facts, domain)
+                read_numeric_in(previous, key, context, domain)
             } else {
                 domain.join(
-                    &read_numeric(previous, key, facts, domain),
-                    &numeric::scalar(value, facts, domain),
+                    &read_numeric_in(previous, key, context, domain),
+                    &numeric::scalar_in(value, context, domain),
                 )
             }
         }
@@ -109,15 +119,35 @@ pub(super) fn read_numeric(
             then_state,
             else_state,
         } => {
-            let c = numeric::scalar(condition, facts, domain);
+            let c = numeric::scalar_in(condition, context, domain);
             if !c.may_be_zero() {
-                read_numeric(then_state, key, facts, domain)
+                read_numeric_in(
+                    then_state,
+                    key,
+                    &context.branch_when_scoped(condition, true),
+                    domain,
+                )
             } else if !c.may_be_nonzero() {
-                read_numeric(else_state, key, facts, domain)
+                read_numeric_in(
+                    else_state,
+                    key,
+                    &context.branch_when_scoped(condition, false),
+                    domain,
+                )
             } else {
                 domain.join(
-                    &read_numeric(then_state, key, facts, domain),
-                    &read_numeric(else_state, key, facts, domain),
+                    &read_numeric_in(
+                        then_state,
+                        key,
+                        &context.branch_when_scoped(condition, true),
+                        domain,
+                    ),
+                    &read_numeric_in(
+                        else_state,
+                        key,
+                        &context.branch_when_scoped(condition, false),
+                        domain,
+                    ),
                 )
             }
         }
@@ -158,14 +188,18 @@ pub(super) fn expressions(root: &SlotStateId) -> Vec<ExprId> {
     }
     out
 }
-impl Plane {
+impl<N: WordElement> Plane<N> {
     pub(super) fn root_at(&self, address: Address) -> Result<SlotStateId, StoreError> {
         self.roots
             .get(&address)
             .cloned()
             .map_or_else(|| account_base(&self.base, address), Ok)
     }
-    pub(super) fn initialize_roots(&mut self, limits: ExprLimits) {
+    pub(super) fn initialize_roots<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        limits: ExprLimits,
+        domain: AlgebraRef<'_, D>,
+    ) {
         for address in self.defaults.keys().copied().collect::<Vec<_>>() {
             let complete = self.default_at(address).singleton() == Some(U256::ZERO);
             let mut root = if complete {
@@ -195,7 +229,7 @@ impl Plane {
                     &mut self.operands,
                     value_expr.clone(),
                     value,
-                    Domain::default(),
+                    domain,
                     limits,
                 ) {
                     self.failure = Some(error.into());
@@ -221,7 +255,7 @@ impl Plane {
                             vec![StateBinding {
                                 index: *key,
                                 value: value_expr,
-                                numeric: value.numeric().clone(),
+                                numeric: value.numeric().observation(),
                             }],
                             limits.into(),
                         ) {
@@ -237,7 +271,7 @@ impl Plane {
                                     &mut self.operands,
                                     expression.clone(),
                                     value,
-                                    Domain::default(),
+                                    domain,
                                     limits,
                                 ) {
                                     self.failure = Some(error.into());
@@ -264,7 +298,7 @@ impl Plane {
                     bindings.push(StateBinding {
                         index: *key,
                         value: value_expr,
-                        numeric: value.numeric().clone(),
+                        numeric: value.numeric().observation(),
                     });
                 }
             }
@@ -280,12 +314,12 @@ impl Plane {
             self.roots.insert(address, root);
         }
     }
-    pub(super) fn read_checked(
+    pub(super) fn read_checked_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         address: Address,
-        key: &AbstractValue,
-        domain: Domain,
-    ) -> Result<AbstractValue, StoreError> {
+        key: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmValue<N>, StoreError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -294,8 +328,13 @@ impl Plane {
         let mut facts = self.operands.clone();
         operands::remember(&mut facts, key_expr.clone(), key, domain, limits(domain))?;
         let expr = ExprId::slot_read(root.clone(), key_expr.clone(), limits(domain))?;
-        let mut value = read_numeric(&root, &key_expr, &facts, domain);
-        if key.constants().is_some() && value.identity().input().is_none() {
+        let mut value = read_numeric_in(
+            &root,
+            &key_expr,
+            &Context::new(&facts, Some(&self.conditional), domain),
+            domain,
+        );
+        if crate::world::candidates(key).is_some() && value.identity().input().is_none() {
             // The pointwise cache keeps possible sources from either branch,
             // even when A1 drops a one-sided unconditional operand guarantee.
             // Only merge metadata: every numeric component comes from this
@@ -303,29 +342,30 @@ impl Plane {
             // operand metadata; do not erase that identity with a wider cache.
             // Finite keys use cache lookups, without another root traversal.
             let numeric = value.numeric().clone();
-            value = numeric::numeric_domain(domain)
+            value = numeric::numeric_domain_with(domain)
                 .join(&value, &self.read_numeric_cache(address, key, domain))
                 .with_numeric(numeric);
         }
         Ok(numeric::attach(value, expr))
     }
-    pub(super) fn read(
+    pub(super) fn read_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         address: Address,
-        key: &AbstractValue,
-        domain: Domain,
-    ) -> AbstractValue {
-        self.read_checked(address, key, domain).unwrap_or_else(|_| {
-            self.read_numeric_cache(address, key, domain)
-                .with_symbolic_limit()
-        })
+        key: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
+    ) -> EvmValue<N> {
+        self.read_checked_with(address, key, domain)
+            .unwrap_or_else(|_| {
+                self.read_numeric_cache(address, key, domain)
+                    .with_symbolic_limit()
+            })
     }
-    fn write_checked(
+    fn write_checked_with<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         address: Address,
-        key: &AbstractValue,
-        value: &AbstractValue,
-        domain: Domain,
+        key: &EvmValue<N>,
+        value: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
@@ -349,6 +389,9 @@ impl Plane {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
+        if !self.conditional.has_no_scopes() {
+            self.conditional.check(limits)?;
+        }
         for root in std::iter::once(&self.base).chain(self.roots.values()) {
             root.join_guarded(root, ExprId::constant(U256::ZERO), limits.into())?;
         }
@@ -363,10 +406,10 @@ impl Plane {
         }
         Ok(())
     }
-    fn join_guarded(
+    fn join_guarded_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         selector: ExprId,
         limits: ExprLimits,
     ) -> Result<Self, StoreError> {
@@ -383,6 +426,13 @@ impl Plane {
             .base
             .join_guarded(&other.base, selector.clone(), limits.into())?;
         out.operands = operands::join_common(&self.operands, &other.operands, domain);
+        out.conditional = ConditionalFacts::join_retained(
+            (&self.operands, &self.conditional),
+            (&other.operands, &other.conditional),
+            &out.operands,
+            selector.clone(),
+            limits,
+        )?;
         let addresses = self
             .roots
             .keys()
@@ -406,7 +456,7 @@ impl Plane {
     }
 }
 
-impl Store {
+impl<N: WordElement> EvmStore<N> {
     /// Persistent slot root at an actual storage owner, including unknown accounts.
     pub fn slot_root(&self, address: Address, transient: bool) -> Result<SlotStateId, StoreError> {
         if transient {
@@ -416,42 +466,44 @@ impl Store {
         }
     }
     /// Read persistent storage with an immutable state term or typed failure.
-    pub fn read_checked(
+    pub fn read_checked_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         address: Address,
-        key: &AbstractValue,
-        domain: Domain,
-    ) -> Result<AbstractValue, StoreError> {
-        self.persistent.read_checked(address, key, domain)
+        key: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmValue<N>, StoreError> {
+        self.persistent.read_checked_with(address, key, domain)
     }
     /// Read transient storage with its independently scoped state term.
-    pub fn read_transient_checked(
+    pub fn read_transient_checked_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         address: Address,
-        key: &AbstractValue,
-        domain: Domain,
-    ) -> Result<AbstractValue, StoreError> {
-        self.transient.read_checked(address, key, domain)
+        key: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<EvmValue<N>, StoreError> {
+        self.transient.read_checked_with(address, key, domain)
     }
     /// Typed construction failure leaves all transaction state unchanged.
-    pub fn write_checked(
+    pub fn write_checked_with<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         address: Address,
-        key: &AbstractValue,
-        value: &AbstractValue,
-        domain: Domain,
+        key: &EvmValue<N>,
+        value: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
-        self.persistent.write_checked(address, key, value, domain)
+        self.persistent
+            .write_checked_with(address, key, value, domain)
     }
     /// Append an atomic transaction-local transient slot write.
-    pub fn write_transient_checked(
+    pub fn write_transient_checked_with<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         address: Address,
-        key: &AbstractValue,
-        value: &AbstractValue,
-        domain: Domain,
+        key: &EvmValue<N>,
+        value: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
-        self.transient.write_checked(address, key, value, domain)
+        self.transient
+            .write_checked_with(address, key, value, domain)
     }
     pub(crate) fn check_existing(&self, limits: ExprLimits) -> Result<(), StoreError> {
         self.persistent.check_existing(limits)?;
@@ -469,10 +521,10 @@ impl Store {
         Ok(())
     }
     /// A single selector pairs both storage planes, scalar accounts, and logs.
-    pub fn join_guarded(
+    pub fn join_guarded_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
-        domain: Domain,
+        domain: AlgebraRef<'_, D>,
         selector: ExprId,
         limits: ExprLimits,
     ) -> Result<Self, StoreError> {
@@ -482,16 +534,19 @@ impl Store {
             return Ok(self.clone());
         }
         let mut out = self.join_numeric_cache(other, domain);
-        out.persistent =
-            self.persistent
-                .join_guarded(&other.persistent, domain, selector.clone(), limits)?;
+        out.persistent = self.persistent.join_guarded_with(
+            &other.persistent,
+            domain,
+            selector.clone(),
+            limits,
+        )?;
         out.transient =
             self.transient
-                .join_guarded(&other.transient, domain, selector.clone(), limits)?;
+                .join_guarded_with(&other.transient, domain, selector.clone(), limits)?;
         for address in self.addresses().union(&other.addresses()).copied() {
             out.balances.insert(
                 address,
-                self.read_balance(address).join_guarded(
+                self.read_balance(address).join_guarded_with(
                     &other.read_balance(address),
                     domain,
                     selector.clone(),
@@ -500,7 +555,7 @@ impl Store {
             );
             out.nonces.insert(
                 address,
-                self.nonce(address).join_guarded(
+                self.nonce(address).join_guarded_with(
                     &other.nonce(address),
                     domain,
                     selector.clone(),
@@ -508,7 +563,7 @@ impl Store {
                 )?,
             );
         }
-        out.balance_default = self.balance_default.join_guarded(
+        out.balance_default = self.balance_default.join_guarded_with(
             &other.balance_default,
             domain,
             selector.clone(),
@@ -522,13 +577,13 @@ impl Store {
                     .topics
                     .iter()
                     .zip(&right.topics)
-                    .map(|(a, b)| a.join_guarded(b, domain, selector.clone(), limits))
+                    .map(|(a, b)| a.join_guarded_with(b, domain, selector.clone(), limits))
                     .collect::<Result<_, _>>()?;
                 out.possible_logs.insert(
                     key.clone(),
-                    super::AbstractLog {
+                    super::EvmLog {
                         topics,
-                        data: left.data.join_guarded(
+                        data: left.data.join_guarded_with(
                             &right.data,
                             domain,
                             selector.clone(),
@@ -541,18 +596,100 @@ impl Store {
         Ok(out)
     }
     /// Sound union of complete stores; identical stores keep their existing root.
-    pub fn join(&self, other: &Self, domain: Domain) -> Self {
+    pub fn join_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        other: &Self,
+        domain: AlgebraRef<'_, D>,
+    ) -> Self {
         if self == other {
             return self.clone();
         }
         let numeric = self.join_numeric_cache(other, domain);
-        let result = expression(&AbstractValue::top())
-            .and_then(|guard| self.join_guarded(other, domain, guard, limits(domain)));
+        let result = expression(&EvmValue::<N>::top())
+            .and_then(|guard| self.join_guarded_with(other, domain, guard, limits(domain)));
         result.unwrap_or_else(|error| {
             let mut out = numeric;
             out.persistent.failure = Some(error.clone());
             out.transient.failure = Some(error);
             out
         })
+    }
+}
+
+impl EvmStore<crate::domain::NumericValue> {
+    /// Default numeric-policy compatibility wrapper.
+    pub fn read_checked(
+        &self,
+        address: Address,
+        key: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> Result<EvmValue<crate::domain::NumericValue>, StoreError> {
+        self.read_checked_with(
+            address,
+            key,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub fn read_transient_checked(
+        &self,
+        address: Address,
+        key: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> Result<EvmValue<crate::domain::NumericValue>, StoreError> {
+        self.read_transient_checked_with(
+            address,
+            key,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub fn write_checked(
+        &mut self,
+        address: Address,
+        key: &EvmValue<crate::domain::NumericValue>,
+        value: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> Result<(), StoreError> {
+        self.write_checked_with(
+            address,
+            key,
+            value,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub fn write_transient_checked(
+        &mut self,
+        address: Address,
+        key: &EvmValue<crate::domain::NumericValue>,
+        value: &EvmValue<crate::domain::NumericValue>,
+        domain: crate::domain::Domain,
+    ) -> Result<(), StoreError> {
+        self.write_transient_checked_with(
+            address,
+            key,
+            value,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub fn join_guarded(
+        &self,
+        other: &Self,
+        domain: crate::domain::Domain,
+        selector: ExprId,
+        limits: ExprLimits,
+    ) -> Result<Self, StoreError> {
+        self.join_guarded_with(
+            other,
+            crate::domain::ValueAlgebra::new(domain).borrowed(),
+            selector,
+            limits,
+        )
+    }
+    /// Default numeric-policy compatibility wrapper.
+    pub fn join(&self, other: &Self, domain: crate::domain::Domain) -> Self {
+        self.join_with(other, crate::domain::ValueAlgebra::new(domain).borrowed())
     }
 }

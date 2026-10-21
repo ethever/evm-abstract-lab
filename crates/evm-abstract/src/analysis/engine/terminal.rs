@@ -1,19 +1,21 @@
 //! Prepare the original root's terminal relation before detailed execution.
 //!
 //! This module is reachable only from the engine's paid `initial()` seam. The
-//! owned anchor is authority from that seam, not a Store/World equality test or
+//! owned anchor is authority from that seam, not an `EvmStore<N>`/`EvmWorld<N>` equality test or
 //! a hash recovered from a later state. Every optional stage checks its complete
 //! fee before charging, and every actual finalizer uses the original ledger.
 
+use crate::domain::{AlgebraRef, EvmNumericAlgebra, WordElement};
+
 use crate::{
     analysis::{
-        ExecutionConfig, FrameCode, FrontierReason, MachinePayload, OutcomeKind,
-        RootTerminalCoverage, RootTerminalInputBinding, RootTerminalOutcome, RootTerminalScope,
-        RootTerminalTrigger, layers,
+        EvmMachinePayload, EvmRootTerminalCoverage, EvmRootTerminalInputBinding,
+        EvmRootTerminalOutcome, ExecutionConfig, FrameCode, FrontierReason, OutcomeKind,
+        RootTerminalScope, RootTerminalTrigger, layers,
     },
-    domain::{Domain, symbolic::ByteStateKind},
+    domain::symbolic::ByteStateKind,
     resource::{AdmissionStop, CompletionPermit, WorkBudget},
-    world::{ByteArray, Entry, RangeError, SnapshotIdentity, Store, StoreError, World},
+    world::{EvmByteArray, EvmEntry, EvmStore, EvmWorld, RangeError, SnapshotIdentity, StoreError},
 };
 use alloy_primitives::{Address, U256};
 use analysis_control::Cancellation;
@@ -69,21 +71,24 @@ impl From<RangeError> for PrepareError {
 }
 
 /// Neither this authority nor the ready publication capability can be cloned.
-/// Captured Stores include all World assumptions without cloning the World.
-struct RootAnchor {
-    input: Box<RootTerminalInputBinding>,
+/// Captured Stores include all `EvmWorld<N>` assumptions without cloning the `EvmWorld<N>`.
+struct EvmRootAnchor<N: WordElement> {
+    input: Box<EvmRootTerminalInputBinding<N>>,
 }
 
 /// Entirely constructed, finalized and lifetime-funded before detail starts.
-pub(super) struct ReadyRoot {
-    anchor: RootAnchor,
-    outcomes: Box<[RootTerminalOutcome; 3]>,
+pub(super) struct EvmReadyRoot<N: WordElement> {
+    anchor: EvmRootAnchor<N>,
+    outcomes: Box<[EvmRootTerminalOutcome<N>; 3]>,
     permit: CompletionPermit,
 }
 
-impl ReadyRoot {
+impl<N: WordElement> EvmReadyRoot<N> {
     /// No walks, allocations, charges, refunds or ledger access after detail.
-    pub(super) fn publish(self, trigger: RootTerminalTrigger) -> Option<RootTerminalCoverage> {
+    pub(super) fn publish(
+        self,
+        trigger: RootTerminalTrigger,
+    ) -> Option<EvmRootTerminalCoverage<N>> {
         let Self {
             anchor,
             outcomes,
@@ -94,7 +99,7 @@ impl ReadyRoot {
         if !permit.publish_allowed() {
             return None;
         }
-        Some(RootTerminalCoverage {
+        Some(EvmRootTerminalCoverage {
             scope: RootTerminalScope::AllInputStates,
             input: anchor.input,
             outcomes,
@@ -103,21 +108,21 @@ impl ReadyRoot {
     }
 }
 
-/// Called only between the real paid root initialization and states[0] install.
-pub(super) fn prepare(
-    initial: &MachinePayload,
-    world: &World,
-    entry: &Entry,
+/// Called only between the real paid root initialization and `states[0]` install.
+pub(super) fn prepare_with<D: EvmNumericAlgebra>(
+    initial: &EvmMachinePayload<D::Element>,
+    world: &EvmWorld<D::Element>,
+    entry: &EvmEntry<D::Element>,
     config: &ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
     identity: Option<(&layers::SnapshotId, layers::FactRevision)>,
     budget: &mut WorkBudget,
-) -> Result<ReadyRoot, PrepareError> {
+) -> Result<EvmReadyRoot<D::Element>, PrepareError> {
     let cancellation = budget.cancellation();
     // Checked byte/state APIs and the real finalizer consult cancellation TLS.
     // Bind them to the payer too, rather than trusting the caller's current scope.
     analysis_control::with_cancellation(&cancellation, || {
-        prepare_with_bytes(
+        prepare_with_bytes_algebra(
             initial,
             world,
             entry,
@@ -126,7 +131,7 @@ pub(super) fn prepare(
             identity,
             budget,
             &cancellation,
-            ByteArray::unknown_checked,
+            EvmByteArray::unknown_checked,
         )
     })
 }
@@ -182,7 +187,7 @@ fn tree_work(entries: usize) -> usize {
 }
 
 /// Base calldata only: quoting a view must not first walk its unpaid DAG.
-fn input_headers(bytes: &ByteArray) -> Result<(usize, usize), PrepareError> {
+fn input_headers<N: WordElement>(bytes: &EvmByteArray<N>) -> Result<(usize, usize), PrepareError> {
     let physical = match bytes.state_root().kind() {
         ByteStateKind::Exact(bytes) => bytes.len(),
         ByteStateKind::Input { .. } => 0,
@@ -205,7 +210,7 @@ struct StoreShape {
 }
 
 impl StoreShape {
-    fn measure(store: &Store) -> Result<Self, PrepareError> {
+    fn measure<N: WordElement>(store: &EvmStore<N>) -> Result<Self, PrepareError> {
         let code_bytes = finite(store.code_identity_bytes())?;
         let work = finite(store.work_size())?;
         let fields = store
@@ -223,9 +228,9 @@ impl StoreShape {
     }
 }
 
-/// The genuine initial Store has no pending destruction. Its sole definite
+/// The genuine initial `EvmStore<N>` has no pending destruction. Its sole definite
 /// touch belongs to nonempty runtime/delegating code. Future address-3 touch
-/// adds MAY cleanup only; the independent Return Store has no explicit owners.
+/// adds MAY cleanup only; the independent Return `EvmStore<N>` has no explicit owners.
 /// Thus the finalizer uses its owner-local no-delete plan: fields and candidate
 /// unions are visited once, plus fixed per-owner zero/root/selector metadata
 /// and ordered-map heights.
@@ -252,17 +257,17 @@ fn finalization_bound(current: StoreShape, saved: Option<StoreShape>, owners: us
     clippy::too_many_arguments,
     reason = "private original-entry preparation and local checked-byte injection"
 )]
-fn prepare_with_bytes(
-    initial: &MachinePayload,
-    world: &World,
-    entry: &Entry,
+fn prepare_with_bytes_algebra<D: EvmNumericAlgebra>(
+    initial: &EvmMachinePayload<D::Element>,
+    world: &EvmWorld<D::Element>,
+    entry: &EvmEntry<D::Element>,
     config: &ExecutionConfig,
-    domain: Domain,
+    domain: AlgebraRef<'_, D>,
     identity: Option<(&layers::SnapshotId, layers::FactRevision)>,
     budget: &mut WorkBudget,
     cancellation: &Cancellation,
-    mut bytes: impl FnMut() -> Result<ByteArray, RangeError>,
-) -> Result<ReadyRoot, PrepareError> {
+    mut bytes: impl FnMut() -> Result<EvmByteArray<D::Element>, RangeError>,
+) -> Result<EvmReadyRoot<D::Element>, PrepareError> {
     let (snapshot, revision) = identity.ok_or(PrepareError::MissingIdentity)?;
     reserve(budget, cancellation, 1)?;
     if initial.call_stack.active_child().is_some() {
@@ -303,8 +308,9 @@ fn prepare_with_bytes(
         return Err(PrepareError::Unsupported(UnsupportedRoot::NotEntry));
     }
     if config
-        .domain()
-        .map_or(true, |configured| configured.spec() != domain.spec())
+        .analysis
+        .validated_spec()
+        .map_or(true, |configured| configured != domain.spec())
     {
         return Err(PrepareError::Unsupported(UnsupportedRoot::Configuration));
     }
@@ -315,7 +321,7 @@ fn prepare_with_bytes(
         SnapshotIdentity::Offline { label } => label.len(),
         SnapshotIdentity::Chain { .. } => 0,
     };
-    // Only O(1) headers above. Pay before Store/value/byte metadata walks or any
+    // Only O(1) headers above. Pay before EvmStore<D::Element>/value/byte metadata walks or any
     // owned clone; offline labels are unbounded strings and are paid linearly.
     let headers = initial
         .store
@@ -362,10 +368,10 @@ fn prepare_with_bytes(
             .saturating_add(8192),
     )?;
 
-    // Sole authority mint. No recomputed initial Store, input lift or equality
+    // Sole authority mint. No recomputed initial EvmStore<D::Element>, input lift or equality
     // check can substitute for the real initialization call at the engine seam.
-    let anchor = RootAnchor {
-        input: Box::new(RootTerminalInputBinding {
+    let anchor = EvmRootAnchor {
+        input: Box::new(EvmRootTerminalInputBinding {
             snapshot: snapshot.clone(),
             revision,
             storage_source: world.storage_source_token(),
@@ -384,7 +390,7 @@ fn prepare_with_bytes(
     };
     // Static suffixes can also delete touched, omitted empty owners at cleanup.
     // Independent all-account effects cover those changes under the same input.
-    let mut returned = Store::root_terminal_all_effects_checked(domain)?;
+    let mut returned = EvmStore::root_terminal_all_effects_checked_with(domain)?;
     let return_data = bytes()?;
     return_data.check_existing(domain.spec().relations().expressions())?;
     let revert_data = bytes()?;
@@ -404,7 +410,7 @@ fn prepare_with_bytes(
         let current = StoreShape::measure(store)?;
         let guard = finalization_bound(current, rollback.map(|_| saved_shape), branch_owners);
         available(budget, cancellation, guard)?;
-        let finalized = store.finalize_transaction_checked(domain, rollback, budget);
+        let finalized = store.finalize_transaction_checked_with(domain, rollback, budget);
         if let Err(error) = finalized {
             return Err(if cancellation.is_cancelled() || error.is_cancelled() {
                 PrepareError::Admission(AdmissionStop::Cancelled)
@@ -417,19 +423,19 @@ fn prepare_with_bytes(
         guards[index] = guard;
     }
     let outcomes = Box::new([
-        RootTerminalOutcome {
+        EvmRootTerminalOutcome {
             kind: OutcomeKind::Return,
             data: return_data,
             store: returned,
         },
-        RootTerminalOutcome {
+        EvmRootTerminalOutcome {
             kind: OutcomeKind::Revert,
             data: revert_data,
             store: reverted,
         },
-        RootTerminalOutcome {
+        EvmRootTerminalOutcome {
             kind: OutcomeKind::Failure,
-            data: ByteArray::empty(),
+            data: EvmByteArray::empty(),
             store: failed,
         },
     ]);
@@ -455,9 +461,69 @@ fn prepare_with_bytes(
         .saturating_add(64)
         .max(guards.into_iter().max().unwrap_or(0));
     let permit = budget.try_completion_escrow(lifetime)?;
-    Ok(ReadyRoot {
+    Ok(EvmReadyRoot {
         anchor,
         outcomes,
         permit,
     })
 }
+
+#[cfg(test)]
+type ReadyRoot = EvmReadyRoot<crate::domain::NumericValue>;
+
+#[cfg(test)]
+pub(super) fn prepare(
+    initial: &crate::analysis::MachinePayload,
+    world: &crate::world::World,
+    entry: &crate::world::Entry,
+    config: &ExecutionConfig,
+    domain: crate::domain::Domain,
+    identity: Option<(&layers::SnapshotId, layers::FactRevision)>,
+    budget: &mut WorkBudget,
+) -> Result<ReadyRoot, PrepareError> {
+    prepare_with(
+        initial,
+        world,
+        entry,
+        config,
+        crate::domain::ValueAlgebra::new(domain).borrowed(),
+        identity,
+        budget,
+    )
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "default admission fixture preserves the existing byte constructor injection"
+)]
+fn prepare_with_bytes(
+    initial: &crate::analysis::MachinePayload,
+    world: &crate::world::World,
+    entry: &crate::world::Entry,
+    config: &ExecutionConfig,
+    domain: crate::domain::Domain,
+    identity: Option<(&layers::SnapshotId, layers::FactRevision)>,
+    budget: &mut WorkBudget,
+    cancellation: &Cancellation,
+    bytes: impl FnMut() -> Result<crate::world::ByteArray, RangeError>,
+) -> Result<ReadyRoot, PrepareError> {
+    prepare_with_bytes_algebra(
+        initial,
+        world,
+        entry,
+        config,
+        crate::domain::ValueAlgebra::new(domain).borrowed(),
+        identity,
+        budget,
+        cancellation,
+        bytes,
+    )
+}
+
+#[cfg(test)]
+use crate::{
+    analysis::MachinePayload,
+    domain::Domain,
+    world::{ByteArray, Entry, Store, World},
+};

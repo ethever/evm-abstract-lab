@@ -24,13 +24,14 @@ fn finite(values: impl IntoIterator<Item = u64>) -> AbstractValue {
         .map(|value| AbstractValue::constant(U256::from(value)))
         .reduce(|left, right| domain.join(&left, &right))
         .unwrap();
-    scalar(&value, domain)
+    scalar(&value, crate::domain::ValueAlgebra::new(&domain))
 }
 
 fn cells(length: AbstractValue, values: BTreeMap<usize, AbstractValue>) -> ByteArraySummary {
     ByteArraySummary {
         length,
         memory: false,
+        words: Default::default(),
         content: Content::Cells(values),
     }
 }
@@ -51,7 +52,7 @@ fn compare(
     refresh_with(
         &mut fresh,
         bare_cells,
-        domain,
+        crate::domain::ValueAlgebra::new(&domain),
         |root, index, facts, domain| {
             reads += 1;
             numeric::read(root, index, facts, domain)
@@ -63,10 +64,13 @@ fn compare(
             &reference.root,
             &ExprId::constant(U256::from(*index)),
             &reference.operands,
-            domain,
+            crate::domain::ValueAlgebra::new(&domain),
         );
         let value = restore_presentation(value, Some(previous));
-        reference.bytes.insert(*index, scalar(&value, domain));
+        reference.bytes.insert(
+            *index,
+            scalar(&value, crate::domain::ValueAlgebra::new(&domain)),
+        );
     }
     assert_eq!(reads, expected_reads);
     // Includes complete AV metadata, root/bindings, length, operands, defaults,
@@ -128,7 +132,10 @@ fn definite_bounds_reuse_full_carriers_before_restoration_and_current_policy() {
                 };
                 if profile == Profile::Product {
                     assert!(bindings[0].numeric.constants().is_none());
-                    assert_eq!(bindings[1].numeric, *values[&2].numeric());
+                    assert_eq!(
+                        bindings[1].numeric,
+                        crate::domain::WordElement::observation(values[&2].numeric())
+                    );
                 }
                 for value in out.bytes.values() {
                     assert_eq!(value, &AbstractValue::from_numeric(value.numeric().clone()));
@@ -185,18 +192,18 @@ fn current_binding_and_instantiated_length_environment_are_authoritative() {
     let mut bindings = bindings.clone();
     // Old finite is redundant, but its other components are not current facts.
     let carrier = NumericValue::unsigned_range(U256::from(4), U256::from(7)).unwrap();
-    bindings[0].numeric = carrier.clone();
+    bindings[0].numeric = carrier.clone().into();
     fresh.root = ByteStateId::observed(
         source.clone(),
         length.clone(),
         bindings,
-        limits(domain).into(),
+        limits(crate::domain::ValueAlgebra::new(&domain)).into(),
     )
     .unwrap();
     let refreshed = compare(fresh.clone(), original.clone(), true, domain, 0);
     let expected = scalar(
         &restore_presentation(AbstractValue::from_numeric(carrier), original.get(&0)),
-        domain,
+        crate::domain::ValueAlgebra::new(&domain),
     );
     assert_eq!(refreshed.bytes[&0], expected);
     fresh
@@ -226,6 +233,7 @@ fn chunks_exact_zero_and_nonbyte_content_keep_the_original_reader_paths() {
         let summary = ByteArraySummary {
             length: finite([0]),
             memory: false,
+            words: Default::default(),
             content,
         };
         let reads = if matches!(summary.content, Content::Exact(_)) {
@@ -234,7 +242,10 @@ fn chunks_exact_zero_and_nonbyte_content_keep_the_original_reader_paths() {
             0
         };
         let out = check(&summary, domain, reads);
-        assert_eq!(out.default, scalar(&zero(), domain));
+        assert_eq!(
+            out.default,
+            scalar(&zero(), crate::domain::ValueAlgebra::new(&domain))
+        );
         if matches!(summary.content, Content::Exact(_)) {
             assert_eq!(out.bytes[&0].singleton(), Some(U256::from(7)));
         }
@@ -268,14 +279,14 @@ fn missing_bindings_nonfresh_bindings_and_unsupported_roots_fall_back() {
             source.clone(),
             length.clone(),
             nonfresh,
-            limits(domain).into(),
+            limits(crate::domain::ValueAlgebra::new(&domain)).into(),
         )
         .unwrap(),
         ByteStateId::observed(
             source.clone(),
             length.clone(),
             missing,
-            limits(domain).into(),
+            limits(crate::domain::ValueAlgebra::new(&domain)).into(),
         )
         .unwrap(),
         fresh
@@ -283,7 +294,7 @@ fn missing_bindings_nonfresh_bindings_and_unsupported_roots_fall_back() {
             .slice(
                 ExprId::constant(U256::from(1)),
                 ExprId::constant(U256::from(1)),
-                limits(domain).into(),
+                limits(crate::domain::ValueAlgebra::new(&domain)).into(),
             )
             .unwrap(),
     ] {
@@ -316,10 +327,15 @@ fn original_retention_and_cancellation_errors_remain_checked() {
             Err(RangeError::State(StateError::Cancelled))
         );
         let mut reads = 0;
-        let result = refresh_with(&mut fresh, true, domain, |root, index, facts, domain| {
-            reads += 1;
-            numeric::read(root, index, facts, domain)
-        });
+        let result = refresh_with(
+            &mut fresh,
+            true,
+            crate::domain::ValueAlgebra::new(&domain),
+            |root, index, facts, domain| {
+                reads += 1;
+                numeric::read(root, index, facts, domain)
+            },
+        );
         assert_eq!(result, Err(RangeError::Expression(ExprError::Cancelled)));
         assert_eq!(reads, 0);
     });

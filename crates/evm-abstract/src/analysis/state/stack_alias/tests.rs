@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::ValueAlgebra;
 use crate::{
     analysis::machine::fixtures::fixture,
     domain::{Domain, symbolic::ExprId},
@@ -67,21 +68,23 @@ fn payload_join_and_widen_drop_only_unshared_guarantees() {
     use super::super::{form, instantiate, join, semantic_eq};
     let domain = Domain::default();
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut input = crate::analysis::transfer::initial(&world, &entry, domain).unwrap();
+    let mut input =
+        crate::analysis::transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed())
+            .unwrap();
     let x = fresh();
     let y = fresh();
     input.active_mut().stack = vec![x.clone(), x, y.clone(), y];
-    let left = form(&input, &entry, domain).unwrap();
+    let left = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let a = fresh();
     let b = fresh();
     input.active_mut().stack = vec![a, b.clone(), b.clone(), b];
-    let right = form(&input, &entry, domain).unwrap();
+    let right = form(&input, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     assert!(!semantic_eq(&left, &right));
     for widen in [false, true] {
-        let joined = join(&left, &right, domain, widen).unwrap();
+        let joined = join(&left, &right, ValueAlgebra::new(domain).borrowed(), widen).unwrap();
         assert_eq!(joined.active().stack_aliases.0, [0, 1, 2, 2]);
-        let first = instantiate(&joined, domain).unwrap();
-        let second = instantiate(&joined, domain).unwrap();
+        let first = instantiate(&joined, ValueAlgebra::new(domain).borrowed()).unwrap();
+        let second = instantiate(&joined, ValueAlgebra::new(domain).borrowed()).unwrap();
         let a = &first.active().stack;
         let b = &second.active().stack;
         assert_eq!(a[2].expression(), a[3].expression());

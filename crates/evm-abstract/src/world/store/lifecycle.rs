@@ -3,9 +3,10 @@
 //! `Option<bool>` denotes {false}, {true}, or both. A touch is monotone during
 //! forward execution, but ordinary child rollback restores the captured facts.
 
-use super::Store;
+use super::EvmStore;
+use crate::domain::WordElement;
 use crate::{
-    domain::AbstractValue,
+    domain::EvmValue,
     world::{Code, Existence},
 };
 use alloy_primitives::{Address, U256};
@@ -30,7 +31,7 @@ pub(super) fn or(left: Option<bool>, right: Option<bool>) -> Option<bool> {
     }
 }
 
-fn is_zero(value: &AbstractValue) -> Option<bool> {
+fn is_zero<N: WordElement>(value: &EvmValue<N>) -> Option<bool> {
     if !value.may_be_zero() {
         Some(false)
     } else if !value.may_be_nonzero() {
@@ -40,7 +41,7 @@ fn is_zero(value: &AbstractValue) -> Option<bool> {
     }
 }
 
-impl Store {
+impl<N: WordElement> EvmStore<N> {
     /// Transaction touch guarantee for every address without an explicit entry.
     /// None includes both touched and untouched accounts, even when unlisted.
     pub fn touched_default(&self) -> Option<bool> {
@@ -89,7 +90,7 @@ impl Store {
         if code_empty == Some(false) {
             return Some(false);
         }
-        let unknown = AbstractValue::top();
+        let unknown = EvmValue::<N>::top();
         and(
             code_empty,
             and(
@@ -104,9 +105,9 @@ impl Store {
         self.transient.reset_account(address);
         self.codes.insert(address, Code::Empty);
         self.nonces
-            .insert(address, AbstractValue::constant(U256::ZERO));
+            .insert(address, EvmValue::<N>::constant(U256::ZERO));
         self.balances
-            .insert(address, AbstractValue::constant(U256::ZERO));
+            .insert(address, EvmValue::<N>::constant(U256::ZERO));
         self.existence.insert(address, Existence::Absent);
     }
 }

@@ -1,23 +1,27 @@
 //! Capture-avoiding traversal includes immutable byte/slot roots and source
 //! tokens. Numeric visit_values is intentionally insufficient for this job.
 
-use super::{FrameState, MachineError, MachinePayload, join::checkpoint};
+#[cfg(test)]
+use crate::domain::ValueAlgebra;
+use crate::domain::{AlgebraRef, EvmNumericAlgebra, WordElement};
+
+use super::{EvmFrameState, EvmMachinePayload, MachineError, join::checkpoint};
 use crate::{
     analysis::state::StatePart,
     domain::{
-        AbstractValue,
+        EvmValue,
         symbolic::{ExprId, ExprLimits},
     },
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-fn collect_value(value: &AbstractValue, leaves: &mut BTreeSet<ExprId>) {
+fn collect_value<N: WordElement>(value: &EvmValue<N>, leaves: &mut BTreeSet<ExprId>) {
     if let Some(expression) = value.expression() {
         leaves.extend(expression.fresh_leaves());
     }
 }
 
-impl FrameState {
+impl<N: WordElement> EvmFrameState<N> {
     pub(crate) fn fresh_leaves(&self) -> BTreeSet<ExprId> {
         let mut leaves = self.saved_store.state().fresh_leaves();
         for bytes in self.byte_arrays() {
@@ -30,7 +34,7 @@ impl FrameState {
     }
 }
 
-impl MachinePayload {
+impl<N: WordElement> EvmMachinePayload<N> {
     pub(crate) fn fresh_leaves(&self) -> BTreeSet<ExprId> {
         let mut leaves = self.relations.fresh_leaves();
         leaves.extend(self.store.fresh_leaves());
@@ -46,10 +50,11 @@ impl MachinePayload {
 
     /// The same map renames every occurrence of one local source/selector. A
     /// failed traversal leaves the original payload and its history untouched.
-    pub(crate) fn rename_fresh(
+    pub(crate) fn rename_fresh_with<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         map: &BTreeMap<ExprId, ExprId>,
         limits: ExprLimits,
+        domain: AlgebraRef<'_, D>,
     ) -> Result<(), MachineError> {
         checkpoint()?;
         let mut renamed = self.clone();
@@ -60,15 +65,29 @@ impl MachinePayload {
                     value.forget_identity();
                     value.rename_fresh(map, limits)?;
                 }
-                StatePart::Bytes(bytes) => bytes.rename_fresh(map, limits)?,
-                StatePart::Store(store) => store.to_mut().rename_fresh(map, limits)?,
+                StatePart::Bytes(bytes) => bytes.rename_fresh_with(map, limits, domain)?,
+                StatePart::Store(store) => store.to_mut().rename_fresh_with(map, limits, domain)?,
             }
             Ok(())
         })?;
-        renamed.store.rename_fresh(map, limits)?;
+        renamed.store.rename_fresh_with(map, limits, domain)?;
         renamed.relations = renamed.relations.rename_fresh(map, limits)?;
         checkpoint()?;
         *self = renamed;
         Ok(())
+    }
+}
+
+// Default regression fixtures retain their scalar-free call syntax.
+// Executable paths carry their run's algebra into `_with`.
+#[cfg(test)]
+impl super::MachinePayload {
+    pub(crate) fn rename_fresh(
+        &mut self,
+        map: &BTreeMap<ExprId, ExprId>,
+        limits: ExprLimits,
+    ) -> Result<(), MachineError> {
+        let numeric = crate::domain::Domain::default();
+        self.rename_fresh_with(map, limits, ValueAlgebra::new(numeric).borrowed())
     }
 }

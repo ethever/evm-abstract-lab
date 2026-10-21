@@ -1,5 +1,7 @@
 //! Bounds that add no facts preserve the complete value without reduction work.
 
+use crate::domain::{EvmNumericAlgebra, ValueAlgebra, WordElement};
+
 use super::context;
 use crate::{
     analysis::{ExecutionConfig, FrontierReason, transfer::WorkBudget},
@@ -43,7 +45,7 @@ fn top_and_equal_bounds_preserve_every_value_layer_with_only_comparison_work() {
             assert_eq!(
                 super::super::finish_refine(
                     &mut value,
-                    &mut context(&config, &mut budget),
+                    &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                     ValueQuery::Bounds(Box::new(bounds)),
                 ),
                 Ok(true)
@@ -66,13 +68,39 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
     for (lower, upper, feasible) in [(3, 5, true), (10, 12, false)] {
         let bounds = NumericValue::unsigned_range(U256::from(lower), U256::from(upper)).unwrap();
         let comparison = before.numeric().work_size() + bounds.work_size();
-        let fee = comparison + domain.refinement_work(&before, 1);
+        let algebra = ValueAlgebra::new(domain);
+        let finite = before
+            .numeric()
+            .constants()
+            .map_or(0, |values| values.len())
+            + bounds.constants().map_or(0, |values| values.len());
+        let import = domain
+            .refinement_import_work(before.numeric(), 1, finite, 0)
+            .unwrap()
+            + before.work_size()
+            - before.numeric().work_size();
+        // Independent detached scalar meet, not a measured finish_refine run.
+        let closure = before
+            .numeric()
+            .constrain(&bounds.observation())
+            .map_or(0, |numeric| algebra.numeric_reduction_work(&numeric));
+        // Clearing an inherited symbolic limit is an independent query on the
+        // actual refined result; import/closure does not prepay that decision.
+        let singleton_work = if feasible {
+            let expected = domain
+                .reduce(&AbstractValue::unsigned_range(U256::from(3), U256::from(5)).unwrap());
+            domain.project(&expected.value).singleton_work()
+        } else {
+            0
+        };
+        let import_and_closure = comparison + import + closure;
+        let fee = import_and_closure + singleton_work;
         let mut budget = WorkBudget::new(fee);
         let mut value = before.clone();
         assert_eq!(
             super::super::finish_refine(
                 &mut value,
-                &mut context(&config, &mut budget),
+                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                 ValueQuery::Bounds(Box::new(bounds.clone())),
             ),
             Ok(feasible)
@@ -98,19 +126,36 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
         assert_eq!(budget.used(), fee);
         assert!(!budget.exhausted());
 
-        let mut budget = WorkBudget::new(fee - 1);
+        let mut budget = WorkBudget::new(import_and_closure - 1);
         let mut value = before.clone();
         assert_eq!(
             super::super::finish_refine(
                 &mut value,
-                &mut context(&config, &mut budget),
-                ValueQuery::Bounds(Box::new(bounds)),
+                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
+                ValueQuery::Bounds(Box::new(bounds.clone())),
             ),
             Err(FrontierReason::Work)
         );
         assert_eq!(value, before);
-        assert_eq!(budget.used(), comparison);
+        let paid_prefix = comparison + if feasible { import } else { 0 };
+        assert_eq!(budget.used(), paid_prefix);
         assert!(budget.exhausted());
+
+        if feasible {
+            let mut budget = WorkBudget::new(fee - 1);
+            let mut value = before.clone();
+            assert_eq!(
+                super::super::finish_refine(
+                    &mut value,
+                    &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
+                    ValueQuery::Bounds(Box::new(bounds)),
+                ),
+                Err(FrontierReason::Work)
+            );
+            assert_eq!(value, before);
+            assert_eq!(budget.used(), import_and_closure);
+            assert!(budget.exhausted());
+        }
     }
 }
 
@@ -127,7 +172,7 @@ fn comparison_refusal_preserves_original_value_and_prior_paid_work() {
     assert_eq!(
         super::super::finish_refine(
             &mut value,
-            &mut context(&config, &mut budget),
+            &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
             ValueQuery::Bounds(Box::new(bounds)),
         ),
         Err(FrontierReason::Work)
@@ -145,7 +190,7 @@ fn comparison_refusal_preserves_original_value_and_prior_paid_work() {
         assert_eq!(
             super::super::finish_refine(
                 &mut value,
-                &mut context(&config, &mut budget),
+                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                 ValueQuery::Bounds(Box::new(NumericValue::top())),
             ),
             Err(FrontierReason::Work)

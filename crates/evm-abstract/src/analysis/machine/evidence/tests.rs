@@ -1,11 +1,14 @@
 use super::{InstructionProgress, InstructionValue};
+use crate::domain::ValueAlgebra;
 use crate::{
     Address, Fork, U256,
     analysis::{
         self, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind, Status, WorldAnalysis,
+        engine::policy::RecentDistinctJumps,
         transfer::{self, StorageReadPolicy, WorkBudget},
     },
     domain::{AbstractValue, provenance::Origin},
+    test_instrumentation::work_boundary,
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
 
@@ -61,21 +64,14 @@ fn pending_mload() -> WorldAnalysis {
     // Locate the first budget that visits MLOAD in this acyclic prefix. Its
     // visit consumes the offset, then the positive read-scan fee is refused.
     // The upper bound is measured under the unchanged successful policy.
-    let (mut minimum, mut maximum) = (1, complete.work());
-    while minimum < maximum {
-        let midpoint = minimum + (maximum - minimum) / 2;
-        config.max_work = midpoint;
+    let minimum = work_boundary::first_work_reaching(complete.work(), |allowance| {
+        config.max_work = allowance;
         let candidate = run(CODE, config.clone());
-        if candidate
+        candidate
             .states()
             .iter()
             .any(|state| state.executed_pcs.contains(&4))
-        {
-            maximum = midpoint;
-        } else {
-            minimum = midpoint + 1;
-        }
-    }
+    });
     config.max_work = minimum;
     run(CODE, config)
 }
@@ -210,7 +206,8 @@ fn result_observations_preserve_small_work_budget_receipts() {
                 entry,
                 input.clone(),
                 &config,
-                domain,
+                ValueAlgebra::new(domain).borrowed(),
+                &RecentDistinctJumps,
                 &mut budget,
                 StorageReadPolicy::Abstract,
             );
@@ -221,15 +218,9 @@ fn result_observations_preserve_small_work_budget_receipts() {
         // private entry reservation formula into this receipt regression.
         let (full, _) = probe(config.max_work);
         assert_eq!(full.executed_pcs.first(), Some(&0));
-        let (mut minimum, mut maximum) = (1, config.max_work);
-        while minimum < maximum {
-            let midpoint = minimum + (maximum - minimum) / 2;
-            if probe(midpoint).0.executed_pcs.is_empty() {
-                minimum = midpoint + 1;
-            } else {
-                maximum = midpoint;
-            }
-        }
+        let minimum = work_boundary::first_work_reaching(config.max_work, |allowance| {
+            !probe(allowance).0.executed_pcs.is_empty()
+        });
         let admission = minimum.checked_sub(1).unwrap();
         assert!(admission > 0);
         for maximum in [0, admission - 1, admission] {
@@ -260,16 +251,33 @@ fn result_observations_preserve_small_work_budget_receipts() {
     };
 
     let (world, entry) = fixture(&[(0x101, "600200")]);
-    let initial = transfer::initial(&world, &entry, domain).unwrap();
+    let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let admission = admission_work(&world, &entry, &initial);
-    // Keep the original semantic deltas separate from entry admission: PUSH
-    // costs one visit, STOP one visit plus its operation. Its dispatch still
-    // needs checked transaction finalization before it can install an outcome.
-    for (semantic_work, expected_pcs, expected_progress) in [
-        (0, vec![], vec![]),
-        (1, vec![0], vec![InstructionProgress::Completed]),
+    let pushed = U256::from(2);
+    let push_setup_work = ValueAlgebra::new(domain)
+        .literal_quote_work(pushed)
+        .saturating_add(AbstractValue::constant(pushed).clone_work());
+    let mut stop_payload = initial.clone();
+    stop_payload
+        .active_mut()
+        .stack
+        .push(AbstractValue::constant(pushed));
+    // Price STOP's actual owned input independently of a successful transfer.
+    // Its clone payer includes census work that stays paid on later refusal.
+    let mut stop_copy_budget = WorkBudget::new(config.max_work);
+    stop_payload.pay_clone_with(&mut stop_copy_budget).unwrap();
+    let stop_copy_work = stop_copy_budget.used();
+    assert!(stop_copy_work > 0);
+    // Keep the declared PUSH factory/receipt setup separate from entry
+    // admission and semantic visits. STOP costs one visit plus its operation,
+    // then pays the owned input copy before dispatch and checked finalization
+    // before installing an outcome. Neither copy refusal reaches Dispatched.
+    for (semantic_work, copy_allowance, expected_pcs, expected_progress) in [
+        (0, 0, vec![], vec![]),
+        (1, 0, vec![0], vec![InstructionProgress::Completed]),
         (
             2,
+            0,
             vec![0, 2],
             vec![
                 InstructionProgress::Completed,
@@ -278,6 +286,25 @@ fn result_observations_preserve_small_work_budget_receipts() {
         ),
         (
             3,
+            0,
+            vec![0, 2],
+            vec![
+                InstructionProgress::Completed,
+                InstructionProgress::OperandsConsumed,
+            ],
+        ),
+        (
+            3,
+            stop_copy_work - 1,
+            vec![0, 2],
+            vec![
+                InstructionProgress::Completed,
+                InstructionProgress::OperandsConsumed,
+            ],
+        ),
+        (
+            3,
+            stop_copy_work,
             vec![0, 2],
             vec![
                 InstructionProgress::Completed,
@@ -285,20 +312,35 @@ fn result_observations_preserve_small_work_budget_receipts() {
             ],
         ),
     ] {
-        let maximum = admission + semantic_work;
+        let setup_work = if semantic_work == 0 {
+            0
+        } else {
+            push_setup_work
+        };
+        let mut copy_budget = WorkBudget::new(copy_allowance);
+        if semantic_work == 3 {
+            assert_eq!(
+                stop_payload.pay_clone_with(&mut copy_budget).is_ok(),
+                copy_allowance == stop_copy_work
+            );
+        }
+        let maximum = admission + setup_work + semantic_work + copy_allowance;
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
             &entry,
             initial.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
+            &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
         assert!(budget.exhausted());
-        assert_eq!(budget.used(), maximum);
-        assert_eq!(budget.used() - admission, semantic_work);
+        assert_eq!(
+            budget.used(),
+            admission + setup_work + semantic_work + copy_budget.used()
+        );
         assert_eq!(execution.executed_pcs, expected_pcs);
         assert_eq!(execution.instruction_progress, expected_progress);
         assert!(execution.successors.is_empty());
@@ -342,6 +384,9 @@ fn result_observations_preserve_small_work_budget_receipts() {
             }
         );
         assert_eq!(execution.payload.store, initial.store);
+        if semantic_work > 0 {
+            assert_eq!(execution.payload, stop_payload);
+        }
     }
 
     // Derive the cleanup fee from the checked lifecycle path used by STOP,
@@ -362,17 +407,19 @@ fn result_observations_preserve_small_work_budget_receipts() {
             .finalize_transaction_checked(domain, None, &mut cleanup_budget)
             .is_ok();
         assert_eq!(completed, remaining == finalization_work);
-        let mut budget = WorkBudget::new(admission + 3 + remaining);
+        let dispatched_work = admission + push_setup_work + 3 + stop_copy_work;
+        let mut budget = WorkBudget::new(dispatched_work + remaining);
         let execution = transfer::execute(
             &world,
             &entry,
             initial.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
+            &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
-        assert_eq!(budget.used(), admission + 3 + cleanup_budget.used());
+        assert_eq!(budget.used(), dispatched_work + cleanup_budget.used());
         assert_eq!(budget.exhausted(), !completed);
         assert_eq!(execution.executed_pcs, vec![0, 2]);
         assert_eq!(
@@ -420,24 +467,29 @@ fn result_observations_preserve_small_work_budget_receipts() {
     }
 
     let (world, entry) = fixture(&[(0x101, "6003565b00")]);
-    let initial = transfer::initial(&world, &entry, domain).unwrap();
+    let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let admission = admission_work(&world, &entry, &initial);
+    let pushed = U256::from(3);
+    let push_setup_work = ValueAlgebra::new(domain)
+        .literal_quote_work(pushed)
+        .saturating_add(AbstractValue::constant(pushed).clone_work());
     // JUMP pays its history-navigation work before dispatch, then reserves a
     // separate successor visit. Neither refusal may invent a completed edge.
     for semantic_work in [3, 4, 5] {
-        let maximum = admission + semantic_work;
+        let maximum = admission + push_setup_work + semantic_work;
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
             &entry,
             initial.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
+            &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
         assert_eq!(budget.used(), maximum);
-        assert_eq!(budget.used() - admission, semantic_work);
+        assert_eq!(budget.used() - admission - push_setup_work, semantic_work);
         assert_eq!(budget.exhausted(), semantic_work < 5);
         assert_eq!(execution.executed_pcs, vec![0, 2]);
         assert_eq!(
@@ -492,8 +544,12 @@ fn result_observations_preserve_small_work_budget_receipts() {
     }
 
     let (world, entry) = fixture(&[(0x101, "5f3500")]);
-    let initial = transfer::initial(&world, &entry, domain).unwrap();
+    let initial = transfer::initial(&world, &entry, ValueAlgebra::new(domain).borrowed()).unwrap();
     let admission = admission_work(&world, &entry, &initial);
+    let pushed = U256::from(0);
+    let push_setup_work = ValueAlgebra::new(domain)
+        .literal_quote_work(pushed)
+        .saturating_add(AbstractValue::constant(pushed).clone_work());
     let initial_snapshots = serde_json::to_value((
         &initial.store,
         &initial.active().calldata,
@@ -505,25 +561,26 @@ fn result_observations_preserve_small_work_budget_receipts() {
     // but cannot pay the complete word plan. Retain its popped-operand phase,
     // without an output value or any installed state change.
     for semantic_work in [1, 10_000] {
-        let maximum = admission + semantic_work;
+        let maximum = admission + push_setup_work + semantic_work;
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
             &entry,
             initial.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(domain).borrowed(),
+            &RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
         let before_load = semantic_work == 1;
         assert!(budget.exhausted());
         if before_load {
-            assert_eq!(budget.used() - admission, 1);
+            assert_eq!(budget.used() - admission - push_setup_work, 1);
         } else {
             let scalar_scan = 32 * (domain.capacity() + 32);
-            assert!(budget.used() - admission > 2 + scalar_scan);
-            assert!(budget.used() - admission <= semantic_work);
+            assert!(budget.used() - admission - push_setup_work > 2 + scalar_scan);
+            assert!(budget.used() - admission - push_setup_work <= semantic_work);
         }
         assert_eq!(
             execution.executed_pcs,

@@ -1,14 +1,17 @@
 //! Cancellation and real exhaustion retain every queued input with its cause.
 
-use super::{Cache, Counters, Engine, SummaryAttempt, Worklist, run_world};
+use super::{Cache, Counters, Engine, SummaryAttempt, run_world};
 use crate::{
     analysis::{FrontierReason, Status, WorldAnalysis, machine::fixtures, summary::Certificate},
     domain::relational::QueryReason,
     resource::WorkBudget,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 mod bounded_promotion;
 mod decided_cache;
+mod feedback;
+mod installation;
+mod interruption;
 mod loop_bound;
 mod replay_evidence;
 
@@ -96,21 +99,38 @@ fn engine<'a>(
     child: usize,
     budget: &'a mut WorkBudget,
     counters: &'a mut Counters,
+    domain: &'a crate::domain::ValueAlgebra<crate::domain::Domain>,
+    policies: &'a super::EnginePolicies,
 ) -> Engine<'a> {
-    let ids: BTreeMap<_, _> = result
-        .states
-        .iter()
-        .map(|state| ((state.key.clone(), state.resume_status), state.id))
-        .collect();
-    let worklist = (0..result.states.len()).filter(|id| *id != child).collect();
+    let mut setup = WorkBudget::new(usize::MAX);
+    let mut ids = super::KeyIndex::new();
+    for state in &result.states {
+        ids.insert_with((state.key.clone(), state.resume_status), &mut setup, |_| {
+            Ok(state.id)
+        })
+        .unwrap();
+    }
     let alternatives = result
         .states
         .iter()
-        .map(|state| super::EntryAlternatives::new(&state.entry))
+        .map(|state| {
+            super::WholeStateMetadata::initialize(
+                &state.entry,
+                &mut super::PolicyContext::new(domain.borrowed(), &result.entry, &mut setup),
+            )
+            .unwrap()
+        })
         .collect();
     let count = result.states.len();
-    Engine {
-        domain: result.config.domain().unwrap(),
+    let partitions = result
+        .states
+        .iter()
+        .map(|state| state.resume_status)
+        .collect();
+    let runtime = super::Runtime::new(&mut setup).unwrap();
+    let mut engine = Engine {
+        domain: domain.borrowed(),
+        policies,
         result,
         budget,
         counters,
@@ -118,15 +138,26 @@ fn engine<'a>(
         alternatives,
         selectors: BTreeSet::new(),
         ids,
-        worklist,
+        runtime,
+        cooperation: Some(super::Cooperation::new(super::Empty::default())),
+        inputs: Vec::new(),
+        active: None,
+        active_node: None,
+        test_driver: None,
+        partitions,
+        updates: vec![0; count],
+        feedback: vec![false; count],
         edges: BTreeSet::new(),
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new(); count],
         cache: None,
-        procedures: super::transfer::procedure::Table::default(),
+        procedures: super::transfer::procedure::EvmTable::default(),
         reuse: None,
         terminal_boundary: super::TerminalBoundary::default(),
-    }
+    };
+    let order: Vec<_> = (0..count).filter(|id| *id != child).collect();
+    engine.reset_pending(&order);
+    engine
 }
 
 fn assert_pending(engine: &Engine<'_>, child: usize, reason: &FrontierReason) {
@@ -140,8 +171,8 @@ fn assert_pending(engine: &Engine<'_>, child: usize, reason: &FrontierReason) {
         })
         .collect();
     let mut expected: Vec<_> = engine
-        .worklist
-        .pending()
+        .runtime
+        .pending_world()
         .chain(std::iter::once(child))
         .map(|id| engine.result.states[id].key.clone())
         .collect();
@@ -169,7 +200,18 @@ fn cancelled_summary_and_replay_preserve_the_cause_for_every_queued_input() {
         analysis_control::with_cancellation(&token, || {
             let mut budget = WorkBudget::new(100_000_000);
             let mut counters = Counters::default();
-            let mut engine = engine(result, child, &mut budget, &mut counters);
+            let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+            let precision_policies: super::EnginePolicies = Default::default();
+
+            let mut engine = engine(
+                result,
+                child,
+                &mut budget,
+                &mut counters,
+                &numeric_policy,
+                &precision_policies,
+            );
             let mut cache = Cache::new();
             cache.call_entries.insert(child);
             token.cancel();
@@ -215,7 +257,18 @@ fn actual_summary_registration_exhaustion_remains_summary_work() {
     let input = cache.input(&result, child, &mut measure).unwrap().unwrap();
     let mut budget = WorkBudget::new(measure.used() + input.work_size() - 1);
     let mut counters = Counters::default();
-    let mut engine = engine(result, child, &mut budget, &mut counters);
+    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+    let precision_policies: super::EnginePolicies = Default::default();
+
+    let mut engine = engine(
+        result,
+        child,
+        &mut budget,
+        &mut counters,
+        &numeric_policy,
+        &precision_policies,
+    );
     let SummaryAttempt::Interrupted(reason) = engine.try_summary(child, &mut cache) else {
         panic!("registration exceeded the actual remaining work");
     };
@@ -252,8 +305,19 @@ fn pending_frames_prefer_deeper_calls_and_keep_fifo_within_a_depth() {
     let shallow: Vec<_> = (0..result.states.len()).filter(|id| *id != child).collect();
     let mut budget = WorkBudget::new(100_000_000);
     let mut counters = Counters::default();
-    let mut engine = engine(result, child, &mut budget, &mut counters);
-    engine.worklist.enqueue(child);
+    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+    let precision_policies: super::EnginePolicies = Default::default();
+
+    let mut engine = engine(
+        result,
+        child,
+        &mut budget,
+        &mut counters,
+        &numeric_policy,
+        &precision_policies,
+    );
+    engine.test_enqueue(child);
     assert_eq!(engine.next_pending().unwrap(), Some(child));
     for id in shallow {
         assert_eq!(engine.next_pending().unwrap(), Some(id));
@@ -270,9 +334,20 @@ fn interrupted_queue_scan_retains_every_input_and_its_exact_cause() {
         analysis_control::with_cancellation(&token, || {
             let mut budget = WorkBudget::new(if cancelled { 100_000_000 } else { 0 });
             let mut counters = Counters::default();
-            let mut engine = engine(result, child, &mut budget, &mut counters);
-            engine.worklist.enqueue(child);
-            let worklist = engine.worklist.clone();
+            let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+            let precision_policies: super::EnginePolicies = Default::default();
+
+            let mut engine = engine(
+                result,
+                child,
+                &mut budget,
+                &mut counters,
+                &numeric_policy,
+                &precision_policies,
+            );
+            engine.test_enqueue(child);
+            let worklist = engine.runtime.queue_snapshot();
             let entries: Vec<_> = engine
                 .result
                 .states
@@ -284,7 +359,7 @@ fn interrupted_queue_scan_retains_every_input_and_its_exact_cause() {
             }
             engine.run();
             assert_eq!(engine.result.status(), Status::Incomplete);
-            assert_eq!(engine.worklist, worklist);
+            assert_eq!(engine.runtime.queue_snapshot(), worklist);
             assert_eq!(engine.result.frontiers.len(), entries.len());
             let expected = if cancelled {
                 FrontierReason::Relations(QueryReason::Cancelled)
@@ -303,5 +378,146 @@ fn interrupted_queue_scan_retains_every_input_and_its_exact_cause() {
             }
             assert_eq!(engine.result.summary_stats.imported_states, 0);
         });
+    }
+}
+
+impl Engine<'_> {
+    fn reset_pending(&mut self, order: &[usize]) {
+        let mut setup = WorkBudget::new(usize::MAX);
+        let mut runtime = super::Runtime::new(&mut setup).unwrap();
+        let scope = runtime.world;
+        let mut inputs = Vec::new();
+        for _ in &self.result.states {
+            inputs.push(
+                runtime
+                    .kernel()
+                    .slot(scope, &mut super::MachineMeter(&mut setup))
+                    .unwrap(),
+            );
+        }
+        for &id in order {
+            runtime
+                .register_world(
+                    id,
+                    self.result.states[id].entry.call_stack.depth(),
+                    &mut setup,
+                )
+                .unwrap();
+        }
+        for state in &self.result.states {
+            if !order.contains(&state.id) {
+                runtime
+                    .register_world(state.id, state.entry.call_stack.depth(), &mut setup)
+                    .unwrap();
+                runtime
+                    .satisfy_world(
+                        state.id,
+                        &inputs[state.id],
+                        &state.entry,
+                        state.entry.work_size(),
+                        &mut setup,
+                    )
+                    .unwrap();
+            }
+        }
+        let (driver, token) = runtime.test_driver(&mut setup).unwrap();
+        self.runtime = runtime;
+        self.inputs = inputs;
+        self.active = Some(token);
+        self.active_node = None;
+        self.test_driver = Some(driver);
+    }
+
+    fn test_enqueue(&mut self, id: usize) {
+        self.runtime
+            .requeue_world(id, &mut WorkBudget::new(usize::MAX))
+            .unwrap();
+    }
+
+    fn next_pending(&mut self) -> Result<Option<usize>, crate::analysis::MachineError> {
+        let Some((task, token)) = self.runtime.next(false, self.budget)? else {
+            return Ok(None);
+        };
+        let super::TaskKind::World { node, .. } = &task.0 else {
+            return Ok(None);
+        };
+        let node = *node;
+        self.runtime.finish(token, self.budget)?;
+        Ok(Some(node))
+    }
+}
+
+#[test]
+fn popped_input_work_refusal_keeps_its_own_frontier() {
+    let (result, child) = interrupted_fixture();
+    let policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+    let policies: super::EnginePolicies = Default::default();
+    let mut budget = WorkBudget::new(100_000_000);
+    let mut counters = Counters::default();
+    let mut engine = engine(
+        result,
+        child,
+        &mut budget,
+        &mut counters,
+        &policy,
+        &policies,
+    );
+    engine.reset_pending(&[child]);
+    let scan = engine.runtime.scan_work();
+    *engine.budget = WorkBudget::new(scan + 2); // task handle + begin fit, input read does not.
+    engine.run();
+    assert_eq!(engine.result.status(), Status::Incomplete);
+    assert_eq!(engine.result.frontiers.len(), 1);
+    assert_eq!(
+        engine.result.frontiers[0].target.as_ref(),
+        Some(&engine.result.states[child].key)
+    );
+    assert_eq!(engine.result.frontiers[0].reason, FrontierReason::Work);
+    assert!(!engine.runtime.closed());
+}
+
+#[test]
+fn covered_successors_preserve_admission_history_and_execution_receipts() {
+    let (result, child) = interrupted_fixture();
+    let policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+    let policies: super::EnginePolicies = Default::default();
+    let mut budget = WorkBudget::new(100_000_000);
+    let mut counters = Counters::default();
+    let mut engine = engine(
+        result,
+        child,
+        &mut budget,
+        &mut counters,
+        &policy,
+        &policies,
+    );
+    let history = engine.alternatives[child].work_size();
+    let entry = engine.result.states[child].entry.clone();
+    let receipt = engine.result.states[child]
+        .execution_evidence()
+        .unwrap()
+        .is_current();
+    for _ in 0..4 {
+        assert_eq!(
+            engine.successor(
+                0,
+                super::Successor {
+                    payload: entry.clone(),
+                    kind: crate::analysis::MachineEdgeKind::Call
+                },
+                FrontierReason::Work
+            ),
+            Some(child)
+        );
+        assert_eq!(engine.alternatives[child].work_size(), history);
+        assert_eq!(engine.result.states[child].entry, entry);
+        assert_eq!(
+            engine.result.states[child]
+                .execution_evidence()
+                .unwrap()
+                .is_current(),
+            receipt
+        );
+        assert!(!engine.runtime.contains_world(&child));
     }
 }

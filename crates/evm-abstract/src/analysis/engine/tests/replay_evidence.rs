@@ -63,6 +63,7 @@ fn certificate(result: &WorldAnalysis, child: usize) -> Certificate {
         nodes: vec![Node {
             entry: relative(&state.entry),
             resume_status: state.resume_status,
+            partition: state.resume_status,
             exit: relative(state.exit.as_ref().unwrap()),
             exit_stack: state.exit_stack.clone(),
             executed_pcs: state.executed_pcs.clone(),
@@ -101,7 +102,18 @@ fn retained_native_reports_share_clone_work_and_keep_the_serialized_array() {
     let (result, child, _) = fixture();
     let mut counters = counters(&result);
     let mut budget = WorkBudget::new(100_000_000);
-    let mut engine = engine(result, child, &mut budget, &mut counters);
+    let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+    let precision_policies: super::super::EnginePolicies = Default::default();
+
+    let mut engine = engine(
+        result,
+        child,
+        &mut budget,
+        &mut counters,
+        &numeric_policy,
+        &precision_policies,
+    );
     let retained = std::mem::take(&mut engine.result.procedure_summaries);
     let empty_cost = engine.replay_copy_cost().unwrap();
     engine.result.procedure_summaries = retained;
@@ -138,6 +150,7 @@ fn replay_commit_and_partial_import_refusal_release_the_evidence_writer() {
         for status in [Some(true), Some(false)] {
             let mut node = certificate.nodes[0].clone();
             node.resume_status = status;
+            node.partition = status;
             certificate.nodes.push(node);
         }
         if refuse {
@@ -145,10 +158,21 @@ fn replay_commit_and_partial_import_refusal_release_the_evidence_writer() {
         }
         let mut counters = counters(&result);
         let mut budget = WorkBudget::new(100_000_000);
-        let mut engine = engine(result, child, &mut budget, &mut counters);
+        let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+        let precision_policies: super::super::EnginePolicies = Default::default();
+
+        let mut engine = engine(
+            result,
+            child,
+            &mut budget,
+            &mut counters,
+            &numeric_policy,
+            &precision_policies,
+        );
         let snapshot = engine.result.clone();
         let reports = serde_json::to_value(snapshot.procedure_summaries()).unwrap();
-        let worklist = engine.worklist.clone();
+        let worklist = engine.runtime.queue_snapshot();
         let ids = engine.ids.clone();
         let copy_cost = engine.replay_copy_cost().unwrap();
         let outcome = engine.replay(child, &certificate);
@@ -169,8 +193,12 @@ fn replay_commit_and_partial_import_refusal_release_the_evidence_writer() {
                 assert_eq!(receipt.instruction_values(), before.instruction_values());
                 assert_eq!(receipt.successors(), before.successors());
             }
-            assert_eq!(engine.worklist, worklist);
-            assert_eq!(engine.ids, ids);
+            assert_eq!(engine.runtime.queue_snapshot(), worklist);
+            assert_eq!(
+                engine.ids.iter().collect::<Vec<_>>(),
+                ids.iter().collect::<Vec<_>>()
+            );
+            assert_eq!(engine.ids.work_size(), ids.work_size());
             assert_eq!(engine.result.summary_stats().imported_states, 0);
             assert_eq!(engine.counters.states, original_count + 1);
             let frontier = engine.result.frontiers().last().unwrap();
@@ -188,7 +216,7 @@ fn replay_commit_and_partial_import_refusal_release_the_evidence_writer() {
         // staging owner are gone, ordinary procedure execution can append again.
         drop(snapshot);
         let count = engine.result.procedure_summaries().len();
-        engine.worklist = [unknown].into_iter().collect();
+        engine.reset_pending(&[unknown]);
         engine.run();
         assert!(engine.result.procedure_summaries().len() > count);
         assert_eq!(
@@ -210,7 +238,18 @@ fn replay_admission_and_cancellation_leave_retained_reports_and_inputs_untouched
         let token = analysis_control::Cancellation::new();
         let (after, snapshot) = analysis_control::with_cancellation(&token, || {
             let mut budget = WorkBudget::new(100_000_000);
-            let mut engine = engine(result, child, &mut budget, &mut counters);
+            let numeric_policy = crate::domain::ValueAlgebra::new(result.config.domain().unwrap());
+
+            let precision_policies: super::super::EnginePolicies = Default::default();
+
+            let mut engine = engine(
+                result,
+                child,
+                &mut budget,
+                &mut counters,
+                &numeric_policy,
+                &precision_policies,
+            );
             let snapshot = engine.result.clone();
             if cancelled {
                 token.cancel();

@@ -1,23 +1,45 @@
 //! One persistent whole-entry retention promotion per real Runtime node.
 //!
-//! The bound lives in Node.payload; BoundedState owns its persistent policy.
+//! The bound lives in `EvmNode<N>.payload`; `EvmBoundedState<N>` owns its persistent policy.
 //! This adapter admits retries and reconciles complete execution phases.
 
+use crate::domain::{EvmNumericAlgebra, WordElement};
+
 use super::{
-    Domain, Execution, FrameCode, FrontierReason, MachineError, MachinePayload, PayloadSummary,
+    AlgebraRef, EvmExecution, EvmPayloadSummary, FrameCode, FrontierReason, MachineError,
     WorkBudget,
 };
-use crate::analysis::state::bounded::{BoundedState, reserve};
+use crate::analysis::state::bounded::{EvmBoundedState, reserve};
+
+/// The injected summary strategy owns the admitted result. A persistent retry
+/// can execute it only when its frozen coordinate/guarantee closure leaves it
+/// unchanged. Refuse incompatibility instead of replacing policy output.
+pub(super) fn check_closed<D: EvmNumericAlgebra>(
+    representation: &EvmBoundedState<D::Element>,
+    bound: &EvmPayloadSummary<D::Element>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<(), MachineError> {
+    let normalized = representation.join(bound, bound, domain, budget, false)?;
+    reserve(
+        budget,
+        bound.work_size().saturating_add(normalized.work_size()),
+    )?;
+    if !super::semantic_eq(bound, &normalized) {
+        return Err(MachineError::Shape);
+    }
+    MachineError::check_cancelled()
+}
 
 #[cfg(test)]
 mod tests;
 
 #[derive(Default)]
-pub(super) enum RuntimeRetry {
+pub(super) enum EvmRuntimeRetry<N: WordElement> {
     #[default]
     Fresh,
     Attempted,
-    Coarse(Box<BoundedState>),
+    Coarse(Box<EvmBoundedState<N>>),
 }
 
 /// Use the same raw producer policy as post-execute retention receipts, before
@@ -41,22 +63,14 @@ pub(super) fn interruption(reason: &FrontierReason) -> bool {
     )
 }
 
-/// Publication uses one phase's receipts. A failed coarse transfer cannot
-/// invalidate legal alternatives or obligations from the precise attempt.
-pub(super) fn reconcile(mut first: Execution, mut retry: Execution) -> Execution {
+/// The caller admits only executions whose every frontier is a raw retention
+/// refusal. A complete retry replaces that whole phase; a failed retry cannot
+/// invalidate its legal alternatives or receipts.
+pub(super) fn reconcile<N: WordElement>(
+    mut first: EvmExecution<N>,
+    mut retry: EvmExecution<N>,
+) -> EvmExecution<N> {
     if retry.frontiers.is_empty() {
-        let superseded = first
-            .retention_failures
-            .iter()
-            .map(|(index, _)| *index)
-            .collect::<std::collections::BTreeSet<_>>();
-        retry.frontiers.extend(
-            first
-                .frontiers
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, frontier)| (!superseded.contains(&index)).then_some(frontier)),
-        );
         retry.diagnostics.extend(first.diagnostics);
         retry
     } else {
@@ -72,7 +86,7 @@ pub(super) fn reconcile(mut first: Execution, mut retry: Execution) -> Execution
     }
 }
 
-pub(super) fn supports(original: &PayloadSummary) -> bool {
+pub(super) fn supports<N: WordElement>(original: &EvmPayloadSummary<N>) -> bool {
     original.active().code == FrameCode::Runtime
         && original.active().program.is_some()
         && !original
@@ -81,11 +95,24 @@ pub(super) fn supports(original: &PayloadSummary) -> bool {
             .any(|frame| frame.code == FrameCode::Unknown)
 }
 
-pub(in crate::analysis) fn prepare(
-    original: &PayloadSummary,
-    domain: Domain,
+pub(super) struct Prepared<N: WordElement> {
+    pub representation: Box<EvmBoundedState<N>>,
+    pub bound: EvmPayloadSummary<N>,
+}
+
+/// Fully admitted and reified input, before the retry consumes a transfer or
+/// publishes its retained representation. Tests quote this same production step.
+pub(super) struct Admitted<N: WordElement> {
+    pub representation: Box<EvmBoundedState<N>>,
+    pub preparation: analysis_kernel::algebra::Prepared<EvmPayloadSummary<N>, usize>,
+    pub payload: crate::analysis::EvmMachinePayload<N>,
+}
+
+pub(in crate::analysis) fn prepare_with<D: EvmNumericAlgebra>(
+    original: &EvmPayloadSummary<D::Element>,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
-) -> Result<(Box<BoundedState>, PayloadSummary, MachinePayload), MachineError> {
+) -> Result<Prepared<D::Element>, MachineError> {
     if !supports(original) {
         return Err(MachineError::Shape);
     }
@@ -104,8 +131,40 @@ pub(in crate::analysis) fn prepare(
             .saturating_add(layout_lifetime_work)
             .saturating_add(box_lifetime_work),
     )?;
-    let representation = BoundedState::freeze(original, true, domain)?;
-    let (representation, bound, payload) =
-        representation.materialize(original.clone(), domain, budget)?;
-    Ok((Box::new(representation), bound, payload))
+    let representation = EvmBoundedState::freeze(original, true, domain)?;
+    // Produce a covering closed candidate without instantiating it first. The
+    // injected admission may still change this representation or refuse it;
+    // only its accepted result owns a fresh executable input.
+    let bound = representation.join(original, original, domain, budget, false)?;
+    Ok(Prepared {
+        representation: Box::new(representation),
+        bound,
+    })
 }
+
+#[cfg(test)]
+type RuntimeRetry = EvmRuntimeRetry<crate::domain::NumericValue>;
+
+#[cfg(test)]
+pub(in crate::analysis) fn prepare(
+    original: &crate::analysis::state::PayloadSummary,
+    domain: crate::domain::Domain,
+    budget: &mut WorkBudget,
+) -> Result<
+    (
+        Box<crate::analysis::state::bounded::EvmBoundedState<crate::domain::NumericValue>>,
+        crate::analysis::state::PayloadSummary,
+        crate::analysis::MachinePayload,
+    ),
+    MachineError,
+> {
+    let algebra = crate::domain::ValueAlgebra::new(domain);
+    let prepared = prepare_with(original, algebra.borrowed(), budget)?;
+    reserve(budget, prepared.bound.work_size().saturating_mul(4))?;
+    let payload = super::instantiate_with(&prepared.bound, algebra.borrowed())?;
+    MachineError::check_cancelled()?;
+    Ok((prepared.representation, prepared.bound, payload))
+}
+
+#[cfg(test)]
+use super::{Domain, Execution};

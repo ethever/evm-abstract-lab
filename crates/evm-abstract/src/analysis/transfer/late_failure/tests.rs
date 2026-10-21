@@ -1,4 +1,8 @@
 use super::*;
+use crate::analysis::MachinePayload;
+use crate::analysis::transfer::Execution;
+use crate::domain::ValueAlgebra;
+use crate::world::ByteArray;
 use crate::{
     Fork,
     analysis::{
@@ -9,12 +13,15 @@ use crate::{
     domain::{
         AbstractValue, Domain,
         provenance::Origin,
-        relational::{QueryReason, RelationLimits, RelationState},
+        relational::{Constraint, QueryReason, RelationLimits, RelationState},
         symbolic::ExprId,
     },
     world::{AbstractLog, Account, Entry, Existence, LogKey, LogSourceKind, World},
 };
 use std::num::NonZeroUsize;
+
+mod clone_invoice;
+mod root_restore;
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
@@ -39,7 +46,7 @@ fn fixture() -> (World, Entry, ExecutionConfig, Domain, MachinePayload) {
     let mut config = ExecutionConfig::default();
     config.analysis.relations.enabled = false;
     let domain = config.domain().unwrap();
-    let payload = initial(&world, &entry, domain).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     (world, entry, config, domain, payload)
 }
 
@@ -64,7 +71,8 @@ fn relative_failure_restores_effects_without_finalizing_and_normal_execution_con
             &entry,
             input.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
             true,
@@ -103,14 +111,15 @@ fn relative_failure_restores_effects_without_finalizing_and_normal_execution_con
 fn precompile_root_has_a_post_touch_failure_before_native_dispatch() {
     let (world, _, config, domain, _) = fixture();
     let entry = Entry::concrete(address(3), address(0x1000), word(0), ByteArray::empty());
-    let input = initial(&world, &entry, domain).unwrap();
+    let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     assert_eq!(input.store.touched_in_transaction(address(3)), Some(true));
     let result = execute_inner(
         &world,
         &entry,
         input,
         &config,
-        domain,
+        ValueAlgebra::new(&domain),
+        &crate::analysis::RecentDistinctJumps,
         &mut WorkBudget::new(config.max_work),
         StorageReadPolicy::Abstract,
         false,
@@ -154,7 +163,8 @@ fn metered_inspection_refusal_and_sticky_exhaustion_leave_input_unchanged() {
             &entry,
             input.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
             false,
@@ -176,13 +186,15 @@ fn checked_completion_refusal_cannot_install_the_extra_failure() {
     let mut admitted = WorkBudget::new(usize::MAX);
     reserve(&mut admitted, TOUCH_QUERY_WORK).unwrap();
     reserve_failure(&input, false, &mut admitted).unwrap();
+    input.pay_clone_with(&mut admitted).unwrap();
     let mut budget = WorkBudget::new(admitted.used());
     let result = execute_inner(
         &world,
         &entry,
         input.clone(),
         &config,
-        domain,
+        ValueAlgebra::new(&domain),
+        &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
         false,
@@ -204,7 +216,8 @@ fn cancellation_stays_typed_and_never_becomes_an_evm_failure() {
             &entry,
             input.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
             false,
@@ -221,6 +234,17 @@ fn cancellation_stays_typed_and_never_becomes_an_evm_failure() {
 fn reserved_work(payload: &MachinePayload, procedure: bool) -> usize {
     let mut budget = WorkBudget::new(usize::MAX);
     reserve_failure(payload, procedure, &mut budget).unwrap();
+    // The common failure boundary now owns this one input snapshot.
+    payload.pay_clone_with(&mut budget).unwrap();
+    if procedure && payload.call_stack.active_child().is_none() {
+        // finish_root_store owns the relative root's actual restoration.
+        payload
+            .active()
+            .saved_store
+            .state()
+            .pay_clone_with(&mut budget)
+            .unwrap();
+    }
     budget.used()
 }
 
@@ -313,10 +337,14 @@ fn shared_retention_is_not_clone_work_and_error_keys_still_pay_raw_code_hashing(
     );
     let mut long_code = short_code.clone();
     long_code.deploy_code(address(0x101), program);
-    let short = store_work(&short_code, true, &mut WorkBudget::new(usize::MAX)).unwrap();
-    let long = store_work(&long_code, true, &mut WorkBudget::new(usize::MAX)).unwrap();
-    assert_eq!(short.clone, long.clone);
-    assert!(long.key_error > short.key_error);
+    let short = store_error_work(&short_code, &mut WorkBudget::new(usize::MAX)).unwrap();
+    let long = store_error_work(&long_code, &mut WorkBudget::new(usize::MAX)).unwrap();
+    let mut short_clone = WorkBudget::new(usize::MAX);
+    let mut long_clone = WorkBudget::new(usize::MAX);
+    short_code.pay_clone_with(&mut short_clone).unwrap();
+    long_code.pay_clone_with(&mut long_clone).unwrap();
+    assert_eq!(short_clone.used(), long_clone.used());
+    assert!(long > short);
     let mut long_input = small.clone();
     long_input.store = long_code;
     let mut short_input = small;
@@ -426,10 +454,12 @@ fn owned_metadata_members_origins_and_top_level_branches_increase_the_fee() {
     )
     .unwrap();
     assert_eq!(two.cloned_conditional_branches(), 2);
-    let one_work = array_work(&one, &mut WorkBudget::new(usize::MAX)).unwrap();
-    let two_work = array_work(&two, &mut WorkBudget::new(usize::MAX)).unwrap();
+    let mut one_work = WorkBudget::new(usize::MAX);
+    let mut two_work = WorkBudget::new(usize::MAX);
+    one.pay_clone_with(&mut one_work).unwrap();
+    two.pay_clone_with(&mut two_work).unwrap();
     assert!(
-        two_work > one_work,
+        two_work.used() > one_work.used(),
         "the top-level conditional Vec is copied"
     );
 
@@ -500,16 +530,11 @@ fn exact_reservation_admits_failure_and_one_short_keeps_input_and_prior_debits()
         let mut budget = WorkBudget::new(maximum);
         assert!(budget.charge(prior));
         let mut result = super::super::empty_execution(input.clone());
-        let mut context = TransferContext {
-            config: &config,
-            domain,
-            budget: &mut budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: true,
-            discover_code: false,
-        };
+        let mut context = crate::analysis::transfer::testing::procedure_context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&domain),
+        );
         assert_eq!(at_block_entry(&mut result, &mut context), accepted);
         assert_eq!(
             result.payload, input,

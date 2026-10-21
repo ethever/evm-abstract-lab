@@ -1,6 +1,8 @@
 //! Exact reuse remains scoped, bounded and independent of numeric candidates.
 
 use super::{MAX_ENTRIES, QueryCache};
+use crate::resource::WorkBudget;
+mod payload;
 use crate::domain::{
     NumericValue,
     relational::{CheckResult, QueryReason, RelationLimits, RelationState, ValueQuery},
@@ -52,12 +54,26 @@ fn complete_snapshot_and_policy_changes_invalidate_answers() {
             &expression,
             &limits,
             &ValueQuery::Bounds(Box::new(NumericValue::top())),
+            &mut WorkBudget::new(usize::MAX),
         );
         assert_eq!(
-            cache.get(&state.clone(), &expression.clone(), &limits),
+            cache.get(
+                &state.clone(),
+                &expression.clone(),
+                &limits,
+                &mut WorkBudget::new(usize::MAX)
+            ),
             Some(ValueQuery::Bounds(Box::new(NumericValue::top())))
         );
-        assert_eq!(cache.get(changed, &expression, &limits), None);
+        assert_eq!(
+            cache.get(
+                changed,
+                &expression,
+                &limits,
+                &mut WorkBudget::new(usize::MAX)
+            ),
+            None
+        );
         assert!(cache.values.is_empty());
     }
     for changed in [
@@ -84,8 +100,17 @@ fn complete_snapshot_and_policy_changes_invalidate_answers() {
             &expression,
             &limits,
             &ValueQuery::Bounds(Box::new(NumericValue::top())),
+            &mut WorkBudget::new(usize::MAX),
         );
-        assert_eq!(cache.get(&state, &expression, &changed), None);
+        assert_eq!(
+            cache.get(
+                &state,
+                &expression,
+                &changed,
+                &mut WorkBudget::new(usize::MAX)
+            ),
+            None
+        );
     }
 }
 
@@ -102,16 +127,30 @@ fn structurally_equal_expressions_reuse_only_the_same_source_identity() {
         &expression,
         &limits,
         &ValueQuery::Bounds(Box::new(NumericValue::top())),
+        &mut WorkBudget::new(usize::MAX),
     );
     assert_eq!(
-        cache.get(&relations, &read(source), &limits),
+        cache.get(
+            &relations,
+            &read(source),
+            &limits,
+            &mut WorkBudget::new(usize::MAX)
+        ),
         Some(ValueQuery::Bounds(Box::new(NumericValue::top())))
     );
     for source in [
         SourceId::fresh().unwrap(),
         SourceId::scoped(token, U256::ONE),
     ] {
-        assert_eq!(cache.get(&relations, &read(source), &limits), None);
+        assert_eq!(
+            cache.get(
+                &relations,
+                &read(source),
+                &limits,
+                &mut WorkBudget::new(usize::MAX)
+            ),
+            None
+        );
     }
 }
 
@@ -131,8 +170,17 @@ fn unknown_answers_are_never_retained() {
             &expression,
             &limits,
             &ValueQuery::Undetermined(reason),
+            &mut WorkBudget::new(usize::MAX),
         );
-        assert_eq!(cache.get(&state, &expression, &limits), None);
+        assert_eq!(
+            cache.get(
+                &state,
+                &expression,
+                &limits,
+                &mut WorkBudget::new(usize::MAX)
+            ),
+            None
+        );
         assert!(cache.snapshot.is_none());
         assert_eq!(cache.retained_work, 0);
     }
@@ -142,8 +190,22 @@ fn unknown_answers_are_never_retained() {
         ValueQuery::ProvenImpossible,
     ] {
         let mut cache = QueryCache::default();
-        cache.remember(&state, &expression, &limits, &answer);
-        assert_eq!(cache.get(&state, &expression, &limits), Some(answer));
+        cache.remember(
+            &state,
+            &expression,
+            &limits,
+            &answer,
+            &mut WorkBudget::new(usize::MAX),
+        );
+        assert_eq!(
+            cache.get(
+                &state,
+                &expression,
+                &limits,
+                &mut WorkBudget::new(usize::MAX)
+            ),
+            Some(answer)
+        );
     }
 }
 
@@ -154,7 +216,10 @@ fn entry_and_retained_work_bounds_evict_only_optional_proofs() {
         (RelationLimits::default(), MAX_ENTRIES + 1),
         (
             RelationLimits {
-                max_nodes: 6,
+                max_nodes: state.work_size()
+                    + 2 * (1
+                        + 1
+                        + super::answer_work(&ValueQuery::Bounds(Box::new(NumericValue::top())))),
                 ..RelationLimits::default()
             },
             3,
@@ -168,21 +233,49 @@ fn entry_and_retained_work_bounds_evict_only_optional_proofs() {
                 expression,
                 &limits,
                 &ValueQuery::Bounds(Box::new(NumericValue::top())),
+                &mut WorkBudget::new(usize::MAX),
             );
             assert!(cache.values.len() <= MAX_ENTRIES);
             assert!(cache.retained_work <= limits.max_nodes);
         }
-        assert_eq!(cache.get(&state, &expressions[0], &limits), None);
         assert_eq!(
-            cache.get(&state, expressions.last().unwrap(), &limits),
+            cache.get(
+                &state,
+                &expressions[0],
+                &limits,
+                &mut WorkBudget::new(usize::MAX)
+            ),
+            None
+        );
+        assert_eq!(
+            cache.get(
+                &state,
+                expressions.last().unwrap(),
+                &limits,
+                &mut WorkBudget::new(usize::MAX)
+            ),
             Some(ValueQuery::Bounds(Box::new(NumericValue::top())))
         );
         // A missed proof is obtained from the original query again, then fits
         // exactly the same bounded cache without changing the query policy.
         let answer = state.local_value(&expressions[0], &limits);
         assert_eq!(answer, ValueQuery::Bounds(Box::new(NumericValue::top())));
-        cache.remember(&state, &expressions[0], &limits, &answer);
-        assert_eq!(cache.get(&state, &expressions[0], &limits), Some(answer));
+        cache.remember(
+            &state,
+            &expressions[0],
+            &limits,
+            &answer,
+            &mut WorkBudget::new(usize::MAX),
+        );
+        assert_eq!(
+            cache.get(
+                &state,
+                &expressions[0],
+                &limits,
+                &mut WorkBudget::new(usize::MAX)
+            ),
+            Some(answer)
+        );
     }
     let mut cache = QueryCache::default();
     let expression = ExprId::fresh().unwrap();
@@ -195,7 +288,16 @@ fn entry_and_retained_work_bounds_evict_only_optional_proofs() {
         &expression,
         &too_small,
         &ValueQuery::Bounds(Box::new(NumericValue::top())),
+        &mut WorkBudget::new(usize::MAX),
     );
     assert!(cache.snapshot.is_none());
-    assert_eq!(cache.get(&state, &expression, &too_small), None);
+    assert_eq!(
+        cache.get(
+            &state,
+            &expression,
+            &too_small,
+            &mut WorkBudget::new(usize::MAX)
+        ),
+        None
+    );
 }

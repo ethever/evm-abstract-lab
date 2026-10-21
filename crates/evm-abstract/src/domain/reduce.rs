@@ -1,7 +1,7 @@
 //! 临时规约只传播当前 product 蕴含的事实。每轮事务式导出/导入，
 //! FactLattice 对同一语义槽取 meet；重复回馈不会生成新的日志条目。
 use super::{
-    AbstractValue, Domain,
+    AbstractValue, Domain, EvmValue, NumericReduction, NumericValue, WordElement, WordObservation,
     congruence::Congruence,
     facts::{
         BitConstraints, Fact, FactChange, FactError, FactLattice, FiniteSet, Symbol, UnaryFact,
@@ -22,7 +22,7 @@ pub enum ReductionStatus {
     Stable,
     /// 已证明的信息保留，尚未声称闭包。
     RoundLimit,
-    /// 事实原子容量不足，保留此前完整轮的安全结果。
+    /// 事实原子容量不足，保留此前完整导入的安全结果。
     FactLimit,
     /// 数值约束已证明相互矛盾；不表示资源中断。
     Empty,
@@ -30,32 +30,31 @@ pub enum ReductionStatus {
     OriginConflict,
     /// Numeric facts remain sound, but an operation expression exceeded its policy.
     SymbolicLimit,
+    /// The prepaid closure work allowance or a resource counter was exhausted.
+    WorkLimit,
+    /// The captured operation cancellation was observed during closure.
+    Cancelled,
+    /// A kernel protocol failure prevented closure without proving bottom.
+    KernelFailure,
 }
 /// 数值结果及可核对的交换计数。
 #[derive(Clone, Debug)]
-pub struct Reduction {
+pub struct EvmReduction<N: WordElement> {
     /// 覆盖全部具体执行结果的约束。
-    pub value: AbstractValue,
+    pub value: EvmValue<N>,
     /// 终止边界。
     pub status: ReductionStatus,
-    /// 实际执行的完整轮数。
+    /// 策略报告的已完成数值规约次数。默认协作 product 计数 scalar
+    /// 事实导出/导入的完整执行；其他依赖任务是否稳定由 `status` 表示。
     pub rounds: usize,
     /// 已接纳的严格增强事实次数。
     pub strengthened: usize,
     /// Additional typed expression-retention failure, independent of numeric exchange status.
     pub symbolic_error: Option<super::symbolic::ExprError>,
 }
-impl Reduction {
-    pub(super) fn unchanged(value: AbstractValue) -> Self {
-        Self {
-            value,
-            status: ReductionStatus::Stable,
-            rounds: 0,
-            strengthened: 0,
-            symbolic_error: None,
-        }
-    }
-}
+/// Concrete default-domain compatibility reduction.
+pub type Reduction = EvmReduction<super::NumericValue>;
+
 fn insert(
     lattice: &mut FactLattice,
     predicate: UnaryPredicate,
@@ -141,37 +140,6 @@ pub(super) fn export(
     if value.singleton() == Some(U256::ZERO) {
         insert(lattice, UnaryPredicate::IsZero, changes)?;
     }
-    // 位摘要给 unsigned 界；界的共同前缀再反馈位摘要。
-    let (lo, hi) = value.numeric.bits.unsigned_bounds();
-    insert(
-        lattice,
-        UnaryPredicate::UnsignedBounds(WordBounds::new(lo, hi)?),
-        changes,
-    )?;
-    let mut inferred_bits = None;
-    let mut inferred_bounds = None;
-    for (lo, hi) in value.numeric.interval.segments() {
-        let bits = KnownBits::from_unsigned_bounds(lo, hi);
-        inferred_bits = Some(inferred_bits.map_or(bits, |old: KnownBits| old.join(&bits)));
-        // 同余先给安全端点，digit DP 在这些端点之间找 mask 的可行 min/max。
-        if let Some((first, last)) = value
-            .numeric
-            .congruence
-            .first_last(lo, hi)
-            .and_then(|(a, b)| query::mask_bounds(a, b, value.numeric.bits))
-        {
-            let interval = Interval::new_unsigned(first, last).expect("ordered endpoints");
-            inferred_bounds =
-                Some(inferred_bounds.map_or(interval, |old: Interval| old.join(&interval)));
-        }
-    }
-    if let Some(bits) = inferred_bits {
-        emit_bits(lattice, bits, changes)?;
-    }
-    let bounds = inferred_bounds.ok_or(FactError::Contradiction {
-        subject: Symbol::THIS,
-    })?;
-    emit_bounds(lattice, bounds, changes)?;
     // 连续低位事实等价于模 2^k；不能把任意不连续 mask 当作一个同余。
     let known = value.numeric.bits.zero() | value.numeric.bits.one();
     let k = (0..256).take_while(|bit| known.bit(*bit)).count();
@@ -208,63 +176,17 @@ pub(super) fn export(
     }
     Ok(())
 }
-pub(super) fn import(
-    value: &AbstractValue,
+pub(super) fn import<N: WordElement>(
+    value: &EvmValue<N>,
     lattice: &FactLattice,
-) -> Result<AbstractValue, FactError> {
+) -> Result<EvmValue<N>, FactError> {
     let Some(facts) = lattice.scalar(Symbol::THIS) else {
         return Ok(value.clone());
     };
     let mut out = value.clone();
-    if let Some(bits) = facts.known_bits() {
-        out.numeric.bits = out
-            .numeric
-            .bits
-            .meet(&KnownBits::new(bits.zero(), bits.one()).expect("validated fact masks"))
-            .ok_or(FactError::Contradiction {
-                subject: Symbol::THIS,
-            })?;
-    }
-    if let Some(bounds) = facts.unsigned_bounds() {
-        out.numeric.interval = out
-            .numeric
-            .interval
-            .meet(
-                &Interval::new_unsigned(bounds.lower(), bounds.upper()).expect("validated bounds"),
-            )
-            .ok_or(FactError::Contradiction {
-                subject: Symbol::THIS,
-            })?;
-    }
-    if let Some(bounds) = facts.signed_bounds() {
-        out.numeric.interval = out
-            .numeric
-            .interval
-            .meet(&Interval::new_signed(bounds.lower(), bounds.upper()).expect("validated bounds"))
-            .ok_or(FactError::Contradiction {
-                subject: Symbol::THIS,
-            })?;
-    }
-    if let Some(congruence) = facts.congruence() {
-        out.numeric.congruence =
-            out.numeric
-                .congruence
-                .meet(congruence)
-                .ok_or(FactError::Contradiction {
-                    subject: Symbol::THIS,
-                })?;
-    }
-    out.numeric.nonzero |= facts.nonzero();
-    if facts.is_address() {
-        let high = U256::MAX << 160usize;
-        out.numeric.bits = out
-            .numeric
-            .bits
-            .meet(&KnownBits::new(high, U256::ZERO).unwrap())
-            .ok_or(FactError::Contradiction {
-                subject: Symbol::THIS,
-            })?;
-    }
+    out.numeric = out
+        .numeric
+        .constrain(&WordObservation::from_scalar(facts)?)?;
     if let Some(origins) = facts.possible_origins() {
         let origins =
             out.provenance
@@ -281,100 +203,25 @@ pub(super) fn import(
     if facts.is_code_address() {
         out.provenance = out.provenance.with_code_address_role();
     }
-    if !facts.finite_constants().is_top() {
-        out.numeric.finite = out
-            .numeric
-            .finite
-            .meet(facts.finite_constants())
-            .map_err(|_| FactError::Contradiction {
-                subject: Symbol::THIS,
-            })?;
-    }
-    if !out.numeric.finite.is_top() {
-        let filtered = out
-            .numeric
-            .finite
-            .filter(|v| out.contains(v))
-            .map_err(|_| FactError::Contradiction {
-                subject: Symbol::THIS,
-            })?;
-        let values = filtered
-            .as_values()
-            .expect("a filtered finite set remains finite");
-        out.numeric.bits = out
-            .numeric
-            .bits
-            .meet(&KnownBits::from_values(values))
-            .ok_or(FactError::Contradiction {
-                subject: Symbol::THIS,
-            })?;
-        out.numeric.interval = out
-            .numeric
-            .interval
-            .meet(&Interval::from_values(values))
-            .ok_or(FactError::Contradiction {
-                subject: Symbol::THIS,
-            })?;
-        out.numeric.congruence = out
-            .numeric
-            .congruence
-            .meet(&Congruence::from_values(values))
-            .ok_or(FactError::Contradiction {
-                subject: Symbol::THIS,
-            })?;
-        out.numeric.finite = filtered;
-    }
     Ok(out)
 }
-pub(super) fn reduce(domain: Domain, mut value: AbstractValue) -> Reduction {
-    let mut lattice = FactLattice::new(domain.spec().fact_limit());
-    let mut changes = 0;
-    for round in 0..domain.spec().reduction_rounds() {
-        if let Err(error) = export(domain, &value, &mut lattice, &mut changes) {
-            return Reduction {
-                value,
-                status: error_status(&error),
-                rounds: round,
-                strengthened: changes,
-                symbolic_error: None,
-            };
-        }
-        let next = match import(&value, &lattice) {
-            Ok(next) => next,
-            Err(error) => {
-                return Reduction {
-                    value,
-                    status: error_status(&error),
-                    rounds: round,
-                    strengthened: changes,
-                    symbolic_error: None,
-                };
-            }
-        };
-        if next == value {
-            return Reduction {
-                value: next,
-                status: ReductionStatus::Stable,
-                rounds: round + 1,
-                strengthened: changes,
-                symbolic_error: None,
-            };
-        }
-        value = next;
-    }
-    Reduction {
-        value,
-        status: ReductionStatus::RoundLimit,
-        rounds: domain.spec().reduction_rounds(),
-        strengthened: changes,
-        symbolic_error: None,
-    }
+
+pub(super) fn numeric(domain: Domain, value: NumericValue) -> NumericReduction<NumericValue> {
+    super::cooperation::close(domain, value)
 }
 
-fn error_status(error: &FactError) -> ReductionStatus {
+pub(super) fn error_status(error: &FactError) -> ReductionStatus {
     match error {
         FactError::Capacity { .. } => ReductionStatus::FactLimit,
         FactError::OriginContradiction { .. } => ReductionStatus::OriginConflict,
-        _ => ReductionStatus::Empty,
+        FactError::Contradiction { .. }
+        | FactError::EmptyFiniteSet
+        | FactError::ConflictingBits
+        | FactError::InvalidBounds => ReductionStatus::Empty,
+        // Optional/unsupported rule imports are not proofs about this universe.
+        FactError::InvalidBitIndex(_)
+        | FactError::InvalidModulus
+        | FactError::UnsupportedOperation(_)
+        | FactError::InvalidOperation { .. } => ReductionStatus::RoundLimit,
     }
 }

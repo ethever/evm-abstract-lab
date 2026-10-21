@@ -1,34 +1,21 @@
+use crate::domain::ValueAlgebra;
 use crate::{
     analysis::{
         ChildFrame, Continuation, ExecutionConfig, FrontierReason, MachineEdgeKind, OutcomeKind,
         machine::fixtures::{address, fixture, word},
-        transfer::{
-            StorageReadPolicy, TransferContext, WorkBudget, empty_execution, execute, finish,
-            initial,
-        },
+        transfer::{StorageReadPolicy, WorkBudget, empty_execution, execute, finish, initial},
     },
     domain::{Domain, relational::QueryReason},
     world::{AbstractLog, Account, ByteArray, Existence, LogKey, LogSourceKind},
 };
 
-fn context<'a>(config: &'a ExecutionConfig, budget: &'a mut WorkBudget) -> TransferContext<'a> {
-    TransferContext {
-        config,
-        domain: Domain::default(),
-        budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: true,
-        discover_code: false,
-    }
-}
+use crate::analysis::transfer::testing::procedure_context as context;
 
 #[test]
 fn failure_after_prefix_rolls_back_storage_value_and_logs_but_keeps_address_three_touch() {
     let (world, entry) = fixture(&[(0x101, "00"), (3, "00")]);
     let domain = Domain::default();
-    let mut result = empty_execution(initial(&world, &entry, domain).unwrap());
+    let mut result = empty_execution(initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap());
     let saved = result.payload.active().saved_store.state().clone();
     result.payload.store.touch_account(address(3));
     result
@@ -66,7 +53,7 @@ fn failure_after_prefix_rolls_back_storage_value_and_logs_but_keeps_address_thre
         &mut result,
         &word(0),
         &word(1),
-        &mut context(&config, &mut budget),
+        &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
         9
     ));
     assert_eq!(
@@ -100,7 +87,7 @@ fn failure_after_prefix_rolls_back_storage_value_and_logs_but_keeps_address_thre
 fn mcopy_has_one_pre_effect_failure_and_resumes_the_childs_parent_with_empty_data() {
     let (world, entry) = fixture(&[(0x101, "00"), (0x200, "00"), (3, "00")]);
     let domain = Domain::default();
-    let mut payload = initial(&world, &entry, domain).unwrap();
+    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     payload
         .active_mut()
         .memory
@@ -142,7 +129,7 @@ fn mcopy_has_one_pre_effect_failure_and_resumes_the_childs_parent_with_empty_dat
         &word(32),
         &word(0),
         &word(7),
-        &mut context(&config, &mut budget),
+        &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
         8
     ));
     assert_eq!(result.payload, before);
@@ -196,7 +183,9 @@ fn mcopy_has_one_pre_effect_failure_and_resumes_the_childs_parent_with_empty_dat
 fn rejected_work_and_cancellation_leave_the_pre_instruction_state_intact() {
     for cancelled in [false, true] {
         let (world, entry) = fixture(&[(0x101, "00")]);
-        let mut result = empty_execution(initial(&world, &entry, Domain::default()).unwrap());
+        let mut result = empty_execution(
+            initial(&world, &entry, ValueAlgebra::new(&Domain::default())).unwrap(),
+        );
         let before = result.payload.clone();
         let cancellation = analysis_control::Cancellation::new();
         if cancelled {
@@ -209,7 +198,7 @@ fn rejected_work_and_cancellation_leave_the_pre_instruction_state_intact() {
                 &mut result,
                 &word(0),
                 &word(7),
-                &mut context(&config, &mut budget),
+                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                 4
             ));
         });
@@ -244,7 +233,7 @@ fn large_deployed_code_first_mstore_keeps_failure_and_success_at_default_budget(
         let config = ExecutionConfig::default();
         assert_eq!(config.max_work, 20_000_000);
         let domain = config.domain().unwrap();
-        let input = initial(&world, &entry, domain).unwrap();
+        let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
         assert_eq!(input.store.addresses().len(), accounts.len());
         let mut budget = WorkBudget::new(config.max_work);
         let result = execute(
@@ -252,7 +241,8 @@ fn large_deployed_code_first_mstore_keeps_failure_and_success_at_default_budget(
             &entry,
             input.clone(),
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
@@ -300,7 +290,7 @@ fn root_return_revert_and_failure_plan_the_correct_prefix_and_sticky_touch() {
         world.insert(address(3), Account::empty()).unwrap();
         world.insert(address(0x200), Account::empty()).unwrap();
         let domain = Domain::default();
-        let mut payload = initial(&world, &entry, domain).unwrap();
+        let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
         let saved = payload.active().saved_store.clone();
         payload.store.touch_account(address(3));
         payload.store.touch_account(address(0x200));
@@ -336,7 +326,8 @@ fn root_return_revert_and_failure_plan_the_correct_prefix_and_sticky_touch() {
         };
         let config = ExecutionConfig::default();
         let mut budget = WorkBudget::new(config.max_work);
-        let mut transfer = context(&config, &mut budget);
+        let transfer_algebra = ValueAlgebra::new(Domain::default());
+        let mut transfer = context(&config, &mut budget, transfer_algebra.borrowed());
         transfer.procedure = false;
         let mut result = empty_execution(payload.clone());
         finish(
@@ -396,7 +387,8 @@ fn root_return_revert_and_failure_plan_the_correct_prefix_and_sticky_touch() {
                 if cancelled {
                     cancellation.cancel();
                 }
-                let mut transfer = context(&config, &mut small);
+                let transfer_algebra = ValueAlgebra::new(Domain::default());
+                let mut transfer = context(&config, &mut small, transfer_algebra.borrowed());
                 transfer.procedure = false;
                 finish(
                     &mut refused,
@@ -441,7 +433,7 @@ fn root_may_delete_retention_refusal_emits_a_typed_frontier_without_an_outcome()
             },
         )
         .unwrap();
-    let mut payload = initial(&world, &entry, domain).unwrap();
+    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     payload.store.touch_account(address(0x200));
     payload
         .store
@@ -449,8 +441,9 @@ fn root_may_delete_retention_refusal_emits_a_typed_frontier_without_an_outcome()
         .unwrap();
     let mut result = empty_execution(payload.clone());
     let mut budget = WorkBudget::new(config.max_work);
-    let mut transfer = context(&config, &mut budget);
-    transfer.domain = domain;
+    let transfer_algebra = ValueAlgebra::new(Domain::default());
+    let mut transfer = context(&config, &mut budget, transfer_algebra.borrowed());
+    transfer.domain = ValueAlgebra::new(&domain);
     transfer.procedure = false;
     finish(
         &mut result,
@@ -478,7 +471,7 @@ fn literal_boundary_keeps_pre_effect_gas_failure_and_live_payload_on_either_deci
     let (world, entry) = fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
     let domain = config.domain().unwrap();
-    let mut payload = initial(&world, &entry, domain).unwrap();
+    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     let saved = payload.active().saved_store.state().clone();
     payload
         .active_mut()
@@ -492,7 +485,8 @@ fn literal_boundary_keeps_pre_effect_gas_failure_and_live_payload_on_either_deci
     let bound = super::MAX_END;
     let mut covered = empty_execution(payload.clone());
     let mut gas_budget = WorkBudget::new(config.max_work);
-    let mut transfer = context(&config, &mut gas_budget);
+    let transfer_algebra = ValueAlgebra::new(Domain::default());
+    let mut transfer = context(&config, &mut gas_budget, transfer_algebra.borrowed());
     transfer.procedure = false;
     assert!(super::failure(&mut covered, &mut transfer, 9));
     let gas_work = gas_budget.used();
@@ -507,7 +501,8 @@ fn literal_boundary_keeps_pre_effect_gas_failure_and_live_payload_on_either_deci
     ] {
         let mut result = empty_execution(payload.clone());
         let mut budget = WorkBudget::new(config.max_work);
-        let mut transfer = context(&config, &mut budget);
+        let transfer_algebra = ValueAlgebra::new(Domain::default());
+        let mut transfer = context(&config, &mut budget, transfer_algebra.borrowed());
         transfer.procedure = false;
         assert_eq!(
             super::super::memory(
@@ -548,12 +543,12 @@ fn literal_boundary_keeps_pre_effect_gas_failure_and_live_payload_on_either_deci
 fn preflight_refusal_preserves_the_already_emitted_gas_failure() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
-    let payload = initial(&world, &entry, config.domain().unwrap()).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&Domain::default())).unwrap();
     let mut covered = empty_execution(payload.clone());
     let mut full = WorkBudget::new(config.max_work);
     assert!(super::failure(
         &mut covered,
-        &mut context(&config, &mut full),
+        &mut context(&config, &mut full, ValueAlgebra::new(&Domain::default())),
         9
     ));
     assert!(covered.frontiers.is_empty());
@@ -571,7 +566,7 @@ fn preflight_refusal_preserves_the_already_emitted_gas_failure() {
             if cancelled {
                 assert!(super::failure(
                     &mut result,
-                    &mut context(&config, &mut budget),
+                    &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                     9,
                 ));
                 cancellation.cancel();
@@ -579,7 +574,7 @@ fn preflight_refusal_preserves_the_already_emitted_gas_failure() {
                     &mut result,
                     &word(0),
                     &word(0),
-                    &mut context(&config, &mut budget),
+                    &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                     9,
                 ));
             } else {
@@ -587,7 +582,7 @@ fn preflight_refusal_preserves_the_already_emitted_gas_failure() {
                     &mut result,
                     &word(0),
                     &word(0),
-                    &mut context(&config, &mut budget),
+                    &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                     9,
                 ));
             }
@@ -633,7 +628,7 @@ fn nonwrapping_literal_return_range_stops_without_a_return_or_successor() {
         (U256::MAX - U256::ONE, U256::from(2)),
         (U256::MAX, U256::ONE),
     ] {
-        let mut payload = initial(&world, &entry, domain).unwrap();
+        let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
         let saved = payload.active().saved_store.state().clone();
         payload
             .store
@@ -649,7 +644,8 @@ fn nonwrapping_literal_return_range_stops_without_a_return_or_successor() {
             &entry,
             payload,
             &config,
-            domain,
+            ValueAlgebra::new(&domain),
+            &crate::analysis::RecentDistinctJumps,
             &mut budget,
             StorageReadPolicy::Abstract,
         );
@@ -682,7 +678,7 @@ fn zero_length_return_does_not_clear_an_inherited_literal_expression_limit() {
     let (world, entry) = fixture(&[(0x101, "f3")]);
     let config = ExecutionConfig::default();
     let domain = config.domain().unwrap();
-    let mut payload = initial(&world, &entry, domain).unwrap();
+    let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     payload.active_mut().stack = vec![word(0), word(0).with_symbolic_limit()];
     let mut budget = WorkBudget::new(config.max_work);
     let result = execute(
@@ -690,7 +686,8 @@ fn zero_length_return_does_not_clear_an_inherited_literal_expression_limit() {
         &entry,
         payload,
         &config,
-        domain,
+        ValueAlgebra::new(&domain),
+        &crate::analysis::RecentDistinctJumps,
         &mut budget,
         StorageReadPolicy::Abstract,
     );
@@ -716,7 +713,7 @@ fn empty_returndata_copy_still_checks_the_original_source_bound() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
     let domain = config.domain().unwrap();
-    let payload = initial(&world, &entry, domain).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
     for (offset, allowed) in [
         (word(0), true),
         (word(1), false),
@@ -733,7 +730,7 @@ fn empty_returndata_copy_still_checks_the_original_source_bound() {
                 &offset,
                 &word(0),
                 &word(0),
-                &mut context(&config, &mut budget),
+                &mut context(&config, &mut budget, ValueAlgebra::new(&Domain::default())),
                 9,
             ),
             allowed
@@ -752,7 +749,7 @@ fn empty_returndata_copy_still_checks_the_original_source_bound() {
 #[test]
 fn zero_size_literal_does_not_bypass_an_invalid_root_in_failure_completion() {
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let payload = initial(&world, &entry, Domain::default()).unwrap();
+    let payload = initial(&world, &entry, ValueAlgebra::new(&Domain::default())).unwrap();
     let mut config = ExecutionConfig::default();
     config.analysis.relations.max_nodes = 1;
     let domain = config.domain().unwrap();
@@ -766,8 +763,9 @@ fn zero_size_literal_does_not_bypass_an_invalid_root_in_failure_completion() {
     );
     let mut result = empty_execution(payload.clone());
     let mut budget = WorkBudget::new(config.max_work);
-    let mut transfer = context(&config, &mut budget);
-    transfer.domain = domain;
+    let transfer_algebra = ValueAlgebra::new(Domain::default());
+    let mut transfer = context(&config, &mut budget, transfer_algebra.borrowed());
+    transfer.domain = ValueAlgebra::new(&domain);
     transfer.procedure = false;
     assert!(!super::super::memory(
         &mut result,

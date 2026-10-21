@@ -1,9 +1,11 @@
 //! Reader reuse belongs only to one staged refresh with immutable read inputs.
 
-use super::{ByteArray, RangeError, conditional::Context, constant, numeric};
+use super::{EvmByteArray, RangeError, conditional::Context, constant_with, numeric};
+use crate::domain::AlgebraRef;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::{
     domain::{
-        AbstractValue, Domain,
+        EvmValue,
         provenance::MAX_ORIGINS,
         symbolic::{ExprError, StateError},
     },
@@ -32,14 +34,16 @@ pub(super) fn charge(budget: &mut WorkBudget, work: usize) -> Result<bool, Range
     Ok(paid)
 }
 
-fn compatible(result: Result<AbstractValue, RangeError>) -> Result<AbstractValue, RangeError> {
+fn compatible<N: WordElement>(
+    result: Result<EvmValue<N>, RangeError>,
+) -> Result<EvmValue<N>, RangeError> {
     match result {
         Err(
             error @ (RangeError::Expression(ExprError::Cancelled)
             | RangeError::State(StateError::Cancelled)),
         ) => Err(error),
         // Preserve byte_at's existing compatibility marker for checked failures.
-        Err(_) => Ok(AbstractValue::unknown_byte().with_symbolic_limit()),
+        Err(_) => Ok(EvmValue::<N>::unknown_byte().with_symbolic_limit()),
         Ok(value) => Ok(value),
     }
 }
@@ -53,7 +57,7 @@ fn compatible(result: Result<AbstractValue, RangeError>) -> Result<AbstractValue
 // A constant-key join can add one candidate to a nonempty finite set:
 // n + 1 <= 2 * n, including n == 1. Top stays Top. The factor of two also
 // covers this literal-remember corner without scanning candidates to quote it.
-fn equality_work(array: &ByteArray) -> usize {
+fn equality_work<N: WordElement>(array: &EvmByteArray<N>) -> usize {
     array.operands.values().fold(8usize, |work, value| {
         work.saturating_add(
             value
@@ -69,9 +73,9 @@ fn equality_work(array: &ByteArray) -> usize {
 // Optional admission is read-only. Only this already-funded original path may
 // run after a decline; a failed actual charge never reaches it. Final checking
 // turns any mid-loop cancellation into an atomic abort at the write boundary.
-fn original(
-    array: &mut ByteArray,
-    domain: Domain,
+fn original<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    array: &mut EvmByteArray<N>,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
 ) -> Result<bool, RangeError> {
     if !charge(budget, 0)? {
@@ -84,9 +88,9 @@ fn original(
 /// Only the caller's unpublished staged array may be mutated. Original per-cell
 /// snapshots, Context construction/selection, expressions and Reader work keep
 /// their original bulk owner. New census/equality/bookkeeping pays separately.
-pub(super) fn run(
-    array: &mut ByteArray,
-    domain: Domain,
+pub(super) fn run<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    array: &mut EvmByteArray<N>,
+    domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
 ) -> Result<bool, RangeError> {
     if !charge(budget, 0)? {
@@ -118,7 +122,7 @@ pub(super) fn run(
     }
     let indices = array.bytes.keys().copied().collect::<Vec<_>>();
     let (first, rest) = indices.split_first().expect("nonempty staged coordinates");
-    let (first_offset, facts) = match array.prepare_byte_read(&constant(*first), domain) {
+    let (first_offset, facts) = match array.prepare_byte_read(&constant_with(*first), domain) {
         Ok(prepared) => prepared,
         Err(error) => {
             array.bytes.insert(*first, compatible(Err(error))?);
@@ -126,7 +130,8 @@ pub(super) fn run(
                 if !charge(budget, 0)? {
                     return Ok(false);
                 }
-                let value = compatible(array.read_byte_checked(&constant(*index), domain))?;
+                let value =
+                    compatible(array.read_byte_checked_with(&constant_with(*index), domain))?;
                 array.bytes.insert(*index, value);
             }
             return charge(budget, 0);
@@ -137,8 +142,8 @@ pub(super) fn run(
     // Context::new has no demand/payer or sticky cache-refusal state; its memo
     // is unused. Only cancellation can stop it. Both its own checks and the
     // original per-index checks stay live.
-    let context = Context::new(&facts, Some(&array.conditional));
-    let mut reader = numeric::Reader::with_context(context.clone(), domain);
+    let context = Context::<N, D>::new(&facts, Some(&array.conditional), domain);
+    let mut reader = numeric::Reader::<N, D>::with_context(context.clone(), domain);
     #[cfg(test)]
     tests::EPOCHS.update(|stats| stats.epochs += 1);
     let first_value =
@@ -164,8 +169,9 @@ pub(super) fn run(
         // The checks precede equality and Reader.read, including cache hits.
         context.check()?;
         let value = (|| {
-            let (offset, current_facts) = array.prepare_byte_read(&constant(*index), domain)?;
-            let current = Context::new(&current_facts, Some(&array.conditional));
+            let (offset, current_facts) =
+                array.prepare_byte_read(&constant_with(*index), domain)?;
+            let current = Context::<N, D>::new(&current_facts, Some(&array.conditional), domain);
             let same = current_facts == facts;
             array.read_byte_prepared(&offset, &current, domain, || {
                 #[cfg(test)]
@@ -180,7 +186,7 @@ pub(super) fn run(
                 } else {
                     #[cfg(test)]
                     tests::EPOCHS.update(|stats| stats.fresh += 1);
-                    numeric::Reader::with_context(current.clone(), domain)
+                    numeric::Reader::<N, D>::with_context(current.clone(), domain)
                         .read(&array.root, &offset)
                 }
             })

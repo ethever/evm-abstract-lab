@@ -20,7 +20,7 @@ fn wide_observations_share_children_across_walk_rename_and_export() {
         .map(|index| StateBinding {
             index: U256::from(index),
             value: cell.clone(),
-            numeric: numeric.clone(),
+            numeric: numeric.clone().into(),
         })
         .collect();
     let bytes = ByteStateId::observed(

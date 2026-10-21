@@ -16,6 +16,7 @@
 
 mod config;
 pub mod control;
+pub mod cooperation;
 mod engine;
 pub mod layers;
 mod machine;
@@ -28,12 +29,29 @@ mod terminal;
 mod transfer;
 mod worklist;
 
+#[cfg(test)]
+mod compatibility;
+
 use crate::{bytecode::Program, domain::AbstractValue};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use std::fmt;
 
 pub use crate::bytecode::InvalidOpcodeReason;
 pub use config::{Config, ConfigError, ValidatedConfig};
+pub use cooperation::{
+    analyze_world_cooperating, analyze_world_cooperating_with_control,
+    analyze_world_cooperating_with_observer,
+};
+pub use engine::{
+    Acceleration, AccelerationInput, AccelerationPolicy, Arrival, BoundedJoin, CoarseSummaries,
+    ContextInsensitive, ContextPolicy, CorrelatedJoin, EagerAcceleration, EnginePolicies,
+    FeedbackAcceleration, FirstResumeStatus, ForgetJumpHistory, MachinePartition,
+    MergeResumeStatus, NoAcceleration, PartitionPolicy, PartitionRefusal, PartitionResult,
+    Partitioned, PartitionedRelative, PolicyContext, PolicyKey, PolicySite, ProcedureOutput,
+    ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey, RecentDistinctJumps,
+    RelativePartitionResult, RelativeState, SemanticPolicies, StatePolicy, StructuralPartition,
+    WholeStateMetadata, WholeStatePolicy,
+};
 pub use machine::{
     ByteRangeBoundary, CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence,
     FrameCode, FrameKey, FrameState, FrontierReason, InstructionProgress, InstructionValue,
@@ -42,21 +60,32 @@ pub use machine::{
     ProcedureSummaryKind, ProcedureSummaryOutput, ProcedureSummaryRecord, RangeKind, RangeRequest,
     RangeWitness, RootFrame, WorldAnalysis,
 };
+pub use machine::{
+    EvmCallStack, EvmChildFrame, EvmContinuation, EvmExecutionEvidence, EvmFrame, EvmFrameState,
+    EvmInstructionValue, EvmMachineFrontier, EvmMachineOutcome, EvmMachinePayload, EvmMachineState,
+    EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord, EvmRangeRequest,
+    EvmRangeWitness, EvmRootFrame, EvmWorldAnalysis,
+};
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
     analyze_rpc_with_control, analyze_rpc_with_observer,
 };
-pub use summary::{SummaryInput, SummaryOutput, SummaryRecord, SummaryStats};
+pub use summary::{
+    EvmSummaryInput, EvmSummaryOutput, EvmSummaryRecord, SummaryInput, SummaryOutput,
+    SummaryRecord, SummaryStats,
+};
 pub use terminal::{
+    EvmRootTerminalCoverage, EvmRootTerminalInputBinding, EvmRootTerminalOutcome,
     RootTerminalCoverage, RootTerminalInputBinding, RootTerminalOutcome, RootTerminalRetention,
     RootTerminalScope, RootTerminalTrigger,
 };
 pub use transfer::create::CreationBoundary;
 
-/// Serialized EVM analysis format. Version 10 adds optional separate root
-/// terminal coverage with owned original input binding and finalized tuples.
-/// The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 10;
+/// Serialized EVM analysis format. Version 11 distinguishes reduction work
+/// exhaustion, cancellation and kernel failure from the local round limit.
+/// Version 10 introduced optional root terminal coverage with owned original
+/// input binding and finalized tuples. The domain-policy schema is independent.
+pub const SCHEMA_VERSION: u16 = 11;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -347,6 +376,80 @@ pub fn analyze_world(
     engine::run_world(world, entry, config)
 }
 
+/// Analyze with an explicitly selected numeric algebra and execution policies.
+///
+/// The algebra and its static analyzer/reduction bundle are borrowed for the
+/// whole run. All executable values, including memory, saved rollback state and
+/// recursive summaries, retain `D::Element` in the returned native analysis.
+/// The default observation/session adapter is not part of this entrypoint.
+///
+/// Context and partition policies are the same contracts used by ordinary
+/// propagation and relative procedure execution. They are immutable during the
+/// run and need not implement `Copy` or `Clone`. The public facade is borrowed
+/// once at the engine boundary; recursive execution forwards that same cheap
+/// view over the original numeric policy.
+/// [`EnginePolicies::with_state`] accepts a [`SemanticPolicies`] assembly of
+/// [`MachinePartition`], [`WholeStatePolicy`], [`AccelerationPolicy`] and
+/// [`ProcedureSummaryPolicy`]. The selected keys and returned covering states
+/// drive ordinary execution, recursive bodies, continuations and outputs.
+///
+/// ```
+/// use evm_abstract::{Address, Fork, analysis, domain::{Domain, ValueAlgebra}, world};
+/// let address = Address::repeat_byte(0x11);
+/// let mut world = world::World::new(Fork::Osaka, "explicit composition");
+/// world.insert(address, world::Account::from_hex("00", Fork::Osaka).unwrap()).unwrap();
+/// let algebra = ValueAlgebra::new(Domain::default());
+/// let policies = analysis::EnginePolicies::new(
+///     analysis::ContextInsensitive, analysis::MergeResumeStatus,
+/// );
+/// let result = analysis::analyze_world_with(
+///     world, world::Entry::new(address), analysis::ExecutionConfig::default(),
+///     &algebra, &policies,
+/// ).unwrap();
+/// assert_eq!(result.status(), analysis::Status::Converged);
+/// ```
+pub fn analyze_world_with<D, C, P, S>(
+    world: crate::world::EvmWorld<D::Element>,
+    entry: crate::world::EvmEntry<D::Element>,
+    config: ExecutionConfig,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    policies: &EnginePolicies<C, P, S>,
+) -> Result<EvmWorldAnalysis<D::Element>, ConfigError>
+where
+    D: crate::domain::EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: engine::StatePolicy<D, P::Class>,
+{
+    analyze_world_with_components_observer(
+        world,
+        entry,
+        config,
+        algebra,
+        policies,
+        &progress::Observer::default(),
+    )
+}
+
+/// Analyze a custom numeric element while publishing bounded observations.
+/// Creates one borrowed algebra view for the engine to forward by value.
+pub fn analyze_world_with_components_observer<D, C, P, S>(
+    world: crate::world::EvmWorld<D::Element>,
+    entry: crate::world::EvmEntry<D::Element>,
+    config: ExecutionConfig,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    policies: &EnginePolicies<C, P, S>,
+    observer: &progress::Observer,
+) -> Result<EvmWorldAnalysis<D::Element>, ConfigError>
+where
+    D: crate::domain::EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: engine::StatePolicy<D, P::Class>,
+{
+    engine::run_world_with(world, entry, config, algebra.borrowed(), policies, observer)
+}
+
 /// Analyze a world while publishing bounded, discrete execution observations.
 pub fn analyze_world_with_observer(
     world: crate::world::World,
@@ -380,6 +483,44 @@ pub fn analyze_world_with_control(
         .map_err(|_| ControlledAnalysisError::Cancelled)?;
     let result =
         control.scope(|| engine::run_world_with_observer(world, entry, config, control.observer()));
+    control
+        .checkpoint()
+        .map_err(|_| ControlledAnalysisError::Cancelled)?;
+    result.map_err(ControlledAnalysisError::Config)
+}
+
+/// Run a custom composition under the application's cancellation scope.
+///
+/// A cancelled run never publishes a partial report. The policies are borrowed
+/// only within the synchronous control scope; no snapshot or policy reference
+/// is retained in an application task after the call returns.
+pub fn analyze_world_with_components_control<D, C, P, S>(
+    world: crate::world::EvmWorld<D::Element>,
+    entry: crate::world::EvmEntry<D::Element>,
+    config: ExecutionConfig,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    policies: &EnginePolicies<C, P, S>,
+    control: &control::Control,
+) -> Result<EvmWorldAnalysis<D::Element>, ControlledAnalysisError>
+where
+    D: crate::domain::EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: engine::StatePolicy<D, P::Class>,
+{
+    control
+        .checkpoint()
+        .map_err(|_| ControlledAnalysisError::Cancelled)?;
+    let result = control.scope(|| {
+        analyze_world_with_components_observer(
+            world,
+            entry,
+            config,
+            algebra,
+            policies,
+            control.observer(),
+        )
+    });
     control
         .checkpoint()
         .map_err(|_| ControlledAnalysisError::Cancelled)?;

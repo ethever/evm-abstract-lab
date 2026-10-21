@@ -21,7 +21,7 @@ fn observed(length: AbstractValue) -> ByteArray {
         vec![StateBinding {
             index: U256::from(7),
             value: ExprId::constant(U256::from(0xaa)),
-            numeric: constant(0xaa).numeric().clone(),
+            numeric: constant(0xaa).numeric().clone().into(),
         }],
         StateLimits::default(),
     )
@@ -235,9 +235,18 @@ fn changed_facts_do_not_certify_stale_numeric_or_promote_branch_facts() {
     assert!(!output.operands.contains_key(&value_expr));
     assert_eq!(output.conditional, joined.conditional);
     for nonzero in [false, true] {
-        let context = conditional::Context::new(&output.operands, Some(&output.conditional))
-            .branch(&guard, nonzero);
-        assert_eq!(context.value(&value_expr, domain).is_some(), nonzero);
+        let context = conditional::Context::new(
+            &output.operands,
+            Some(&output.conditional),
+            crate::domain::ValueAlgebra::new(&domain),
+        )
+        .branch(&guard, nonzero);
+        assert_eq!(
+            context
+                .value(&value_expr, crate::domain::ValueAlgebra::new(&domain))
+                .is_some(),
+            nonzero
+        );
     }
     for (nonzero, expected) in [(true, 20), (false, 9)] {
         let mut selected = output.clone();

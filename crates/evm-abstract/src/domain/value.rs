@@ -1,9 +1,9 @@
 //! An abstract value separates numeric constraints, source metadata and identity.
 
 use super::{
-    NumericValue,
+    AlgebraRef, EvmNumericAlgebra, NumericValue, ValueAlgebra, WordElement,
     identity::{InputIdentity, RuntimeIdentity, Symbol, ValueIdentity},
-    provenance::{Origin, Provenance},
+    provenance::{Origin, OriginSet, Provenance},
     symbolic::{ExprError, ExprId, ExprLimits},
 };
 use alloy_primitives::U256;
@@ -16,17 +16,17 @@ use std::{
 /// Machine value whose independent layers have explicit accessors.
 /// Neither equal sources nor equal numeric summaries create an identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AbstractValue {
-    pub(super) numeric: NumericValue,
+pub struct EvmValue<N: WordElement> {
+    pub(super) numeric: N,
     pub(super) provenance: Provenance,
     pub(super) identity: ValueIdentity,
     pub(super) expression: Option<ExprId>,
     pub(super) symbolic_limit: bool,
 }
 
-impl AbstractValue {
+impl<N: WordElement> EvmValue<N> {
     /// Numeric value with unknown source and no identity or expression.
-    pub fn from_numeric(numeric: NumericValue) -> Self {
+    pub fn from_numeric(numeric: N) -> Self {
         Self {
             numeric,
             provenance: Provenance::top(),
@@ -37,40 +37,92 @@ impl AbstractValue {
     }
     /// Exact word; its source is a supplied constant.
     pub fn constant(value: U256) -> Self {
-        let mut out = Self::from_numeric(NumericValue::constant(value));
+        let mut out = Self::from_numeric(N::constant(value));
         out.provenance = Provenance::constant();
         out
     }
     /// No numeric constraints, source facts, identity or expression.
     pub fn top() -> Self {
-        Self::from_numeric(NumericValue::top())
+        Self::from_numeric(N::top())
     }
     /// Unknown byte with the format's numeric width guarantee.
     pub fn unknown_byte() -> Self {
-        Self::from_numeric(NumericValue::unknown_byte())
+        Self::from_numeric(N::unknown_byte())
     }
     /// Unsigned interval with no source or identity assertion.
     pub fn unsigned_range(lower: U256, upper: U256) -> Option<Self> {
-        NumericValue::unsigned_range(lower, upper).map(Self::from_numeric)
+        N::unsigned_range(lower, upper).map(Self::from_numeric)
     }
     /// Unknown address with a numeric width guarantee and Address source label.
     pub fn unknown_address() -> Self {
-        let mut value = Self::from_numeric(NumericValue::unknown_address());
+        let mut value = Self::from_numeric(N::unknown_address());
         value.provenance = Provenance::source(Origin::Address);
         value
     }
     /// Numeric constraints; callers must explicitly select this layer.
-    pub fn numeric(&self) -> &NumericValue {
+    pub fn numeric(&self) -> &N {
         &self.numeric
+    }
+    /// Complete value-copy envelope, retaining shared expression handles. Numeric
+    /// deep copies use the actual carrier quote, not the default product tariff.
+    pub fn clone_work(&self) -> usize {
+        8usize
+            .saturating_add(self.numeric.clone_work())
+            .saturating_add(self.provenance.origins().work_size().saturating_mul(4))
+    }
+    /// Numeric singleton-query quote; evaluating an expression is separate work.
+    pub fn singleton_work(&self) -> usize {
+        self.numeric.singleton_work()
     }
     /// Replace numeric facts after a caller has proved a sound refinement; all
     /// source, identity and expression layers retain the same semantic value.
-    pub(crate) fn with_numeric(mut self, numeric: NumericValue) -> Self {
+    pub(crate) fn with_numeric(mut self, numeric: N) -> Self {
         self.numeric = numeric;
-        if self.singleton().is_some() {
+        // Clearing optional diagnostics does not justify opaque discovery.
+        // Callers with a proof about this replacement use the variant below.
+        self
+    }
+    /// Install a replacement using an already obtained singleton answer for
+    /// that exact numeric element. Reuse the proof instead of querying again.
+    /// `None` may conservatively retain an inherited symbolic limit.
+    pub(crate) fn with_numeric_after_singleton(
+        mut self,
+        numeric: N,
+        singleton: Option<U256>,
+    ) -> Self {
+        self.numeric = numeric;
+        if singleton.is_some() {
             self.symbolic_limit = false;
         }
         self
+    }
+    /// Copy metadata around an already owned replacement without cloning and
+    /// discarding the old numeric payload.
+    pub(super) fn copy_metadata(&self, numeric: N) -> Self {
+        Self {
+            numeric,
+            provenance: self.provenance.clone(),
+            identity: self.identity,
+            expression: self.expression.clone(),
+            symbolic_limit: self.symbolic_limit,
+        }
+    }
+    /// Construct only the result union, without cloning operand provenance into
+    /// a temporary vector. Arithmetic discards the operands' must-address role.
+    pub(super) fn transfer_provenance(args: &[Self]) -> Provenance {
+        if args.iter().any(|value| value.provenance.origins().is_top()) {
+            return Provenance::top();
+        }
+        let sources = std::iter::once(Origin::Arithmetic).chain(args.iter().flat_map(|value| {
+            value
+                .provenance
+                .origins()
+                .sources()
+                .expect("known operand origins")
+                .iter()
+                .copied()
+        }));
+        Provenance::from_origins(OriginSet::from_sources(sources).expect("arithmetic origin"))
     }
     /// Possible sources and a code-address role, without equality identities.
     pub fn provenance(&self) -> &Provenance {
@@ -88,6 +140,12 @@ impl AbstractValue {
     pub fn with_expression(mut self, expression: ExprId) -> Self {
         self.expression = Some(expression);
         self
+    }
+
+    /// Install an already proved and budgeted term without copying numeric,
+    /// source or identity fields. The caller also owns the old term's release.
+    pub(crate) fn set_expression(&mut self, expression: ExprId) {
+        self.expression = Some(expression);
     }
     /// Rename only a retained term; numeric facts and immutable input identity
     /// survive unchanged. A refused term leaves the complete value untouched.
@@ -121,10 +179,10 @@ impl AbstractValue {
     /// Numeric join plus a symbolic ITE using the machine's shared branch guard.
     /// Equal values keep their original representation. Anonymous values retain
     /// numeric facts while their missing symbolic correlation remains explicit.
-    pub fn join_guarded(
+    pub fn join_guarded_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
-        domain: super::Domain,
+        domain: AlgebraRef<'_, D>,
         selector: ExprId,
         limits: ExprLimits,
     ) -> Result<Self, ExprError> {
@@ -183,7 +241,8 @@ impl AbstractValue {
     pub fn contains(&self, value: U256) -> bool {
         self.numeric.contains(value)
     }
-    /// Exact numeric singleton, regardless of the finite component.
+    /// Exact numeric singleton, regardless of the finite component. Pure and
+    /// caller-funded; copying/retaining this value does not fund the query.
     pub fn singleton(&self) -> Option<U256> {
         self.numeric.singleton()
     }
@@ -195,7 +254,8 @@ impl AbstractValue {
     pub fn may_be_nonzero(&self) -> bool {
         self.numeric.may_be_nonzero()
     }
-    /// Numeric copy cost plus source metadata and a cached expression-traversal bound.
+    /// Numeric structural bound plus source metadata and a cached expression
+    /// traversal bound. Independent singleton queries use `singleton_work`.
     pub fn work_size(&self) -> usize {
         self.numeric
             .work_size()
@@ -212,9 +272,9 @@ impl AbstractValue {
         self.provenance.set_origin(origin);
     }
     pub(crate) fn with_symbol(mut self, symbol: Symbol, scope: Option<u64>) -> Self {
-        if self.singleton().is_none()
-            && let Some(scope) = scope
-        {
+        // An explicit immutable-input binding is valid even when N is exact.
+        // Numeric discovery is neither needed nor funded by this metadata step.
+        if let Some(scope) = scope {
             self.identity = self.identity.with_input(InputIdentity::new(scope, symbol));
             if self.expression.is_none() {
                 self.expression = Some(ExprId::input(scope, symbol));
@@ -235,9 +295,10 @@ impl AbstractValue {
         self.numeric.is_top()
     }
 }
-impl Serialize for AbstractValue {
+impl<N: WordElement> Serialize for EvmValue<N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.numeric_top()
+        if !N::SERIALIZE_NATIVE_PAYLOAD
+            && self.numeric_top()
             && self.provenance == Provenance::top()
             && self.identity.persistent_empty()
             && self.expression.is_none()
@@ -246,14 +307,17 @@ impl Serialize for AbstractValue {
             return serializer.serialize_str("Top");
         }
         let mut map = serializer.serialize_map(None)?;
-        if let Some(constants) = self.numeric.finite.as_values() {
+        if N::SERIALIZE_NATIVE_PAYLOAD {
+            map.serialize_entry("numeric", &self.numeric)?;
+        }
+        if let Some(constants) = self.numeric.constants() {
             map.serialize_entry("Constants", constants)?;
         }
-        map.serialize_entry("known_bits", &self.numeric.bits)?;
-        map.serialize_entry("interval", &self.numeric.interval)?;
-        map.serialize_entry("congruence", &self.numeric.congruence)?;
+        map.serialize_entry("known_bits", self.numeric.known_bits())?;
+        map.serialize_entry("interval", self.numeric.interval())?;
+        map.serialize_entry("congruence", self.numeric.congruence())?;
         map.serialize_entry("provenance", &self.provenance)?;
-        map.serialize_entry("nonzero", &self.numeric.nonzero)?;
+        map.serialize_entry("nonzero", &self.numeric.observation().nonzero())?;
         if !self.identity.persistent_empty() {
             map.serialize_entry("identity", &self.identity)?;
         }
@@ -266,9 +330,30 @@ impl Serialize for AbstractValue {
         map.end()
     }
 }
-impl fmt::Display for AbstractValue {
+impl<N: WordElement> fmt::Display for EvmValue<N> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.numeric.fmt(formatter)
+        std::fmt::Display::fmt(&self.numeric, formatter)
+    }
+}
+
+/// Default executable value, preserving legacy constructor inference.
+pub type AbstractValue = EvmValue<NumericValue>;
+
+impl EvmValue<NumericValue> {
+    /// Default-domain compatibility entrypoint for a shared guarded join.
+    pub fn join_guarded(
+        &self,
+        other: &Self,
+        domain: super::Domain,
+        selector: ExprId,
+        limits: ExprLimits,
+    ) -> Result<Self, ExprError> {
+        self.join_guarded_with(
+            other,
+            ValueAlgebra::new(domain).borrowed(),
+            selector,
+            limits,
+        )
     }
 }
 

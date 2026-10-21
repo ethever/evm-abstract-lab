@@ -4,7 +4,7 @@
 //! node kind, so a hash collision cannot create an equality claim.
 
 use super::{ExprError, ExprId, ExprLimits};
-use crate::domain::{NumericValue, identity::Symbol};
+use crate::domain::{WordObservation, identity::Symbol};
 use alloy_primitives::U256;
 use serde::Serialize;
 use std::{
@@ -145,7 +145,7 @@ pub struct StateBinding {
     /// Bound expression for the observed cell.
     pub value: ExprId,
     /// Sound scalar guarantees which constrain that same expression and cell.
-    pub numeric: NumericValue,
+    pub numeric: WordObservation,
 }
 impl Hash for StateBinding {
     fn hash<H: Hasher>(&self, state: &mut H) {
