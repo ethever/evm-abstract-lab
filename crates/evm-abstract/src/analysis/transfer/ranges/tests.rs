@@ -732,7 +732,7 @@ mod literal_memory {
                 );
                 // Builder stages replaced the blanket reservation. Quote their
                 // owners from reference arguments, independently of budget.used().
-                let queries = RangeQueries {
+                let mut queries = RangeQueries {
                     size: SingletonProof::Answer(size.singleton()),
                     offset: if size.singleton().is_some() {
                         SingletonProof::Answer(offset.singleton())
@@ -821,7 +821,7 @@ mod literal_memory {
                 let _guard = super::super::guard::build_after_queries(
                     &offset,
                     &size,
-                    queries,
+                    &mut queries,
                     &mut context(
                         &config,
                         &mut guard_budget,

@@ -54,14 +54,14 @@ impl<D: EvmNumericAlgebra> Builder<'_, D> {
         enabled: bool,
         fresh: impl FnOnce() -> Option<ExprId>,
     ) -> Result<(EvmValue<D::Element>, bool), FrontierReason> {
-        self.identify_after_proof(value, enabled, SingletonProof::NotQueried, fresh)
+        self.identify_after_proof(value, enabled, &mut SingletonProof::NotQueried, fresh)
     }
 
     fn identify_after_proof(
         &mut self,
         value: &EvmValue<D::Element>,
         enabled: bool,
-        mut proof: SingletonProof,
+        proof: &mut SingletonProof,
         fresh: impl FnOnce() -> Option<ExprId>,
     ) -> Result<(EvmValue<D::Element>, bool), FrontierReason> {
         self.pay(QUOTE_WORK)?;
@@ -70,7 +70,7 @@ impl<D: EvmNumericAlgebra> Builder<'_, D> {
         self.pay(value_copy_work(value).saturating_add(2))?;
         let needs_identity = enabled
             && value.expression().is_none()
-            && query::resolve(value.numeric(), &mut proof, self.budget)?.is_none();
+            && query::resolve(value.numeric(), proof, self.budget)?.is_none();
         let value = value.clone();
         query::checkpoint(self.budget)?;
         if needs_identity {
@@ -186,7 +186,7 @@ pub(super) fn build<D: EvmNumericAlgebra>(
 pub(super) fn build_after_queries<D: EvmNumericAlgebra>(
     offset: &EvmValue<D::Element>,
     size: &EvmValue<D::Element>,
-    queries: RangeQueries,
+    queries: &mut RangeQueries,
     context: &mut TransferContext<'_, D>,
 ) -> Result<PreparedGuard<D::Element>, FrontierReason> {
     build_with_queries(offset, size, queries, context, ExprId::fresh)
@@ -199,13 +199,13 @@ fn build_with_allocator<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
     fresh: impl FnMut() -> Option<ExprId>,
 ) -> Result<PreparedGuard<D::Element>, FrontierReason> {
-    build_with_queries(offset, size, RangeQueries::default(), context, fresh)
+    build_with_queries(offset, size, &mut RangeQueries::default(), context, fresh)
 }
 
 fn build_with_queries<D: EvmNumericAlgebra>(
     offset: &EvmValue<D::Element>,
     size: &EvmValue<D::Element>,
-    queries: RangeQueries,
+    queries: &mut RangeQueries,
     context: &mut TransferContext<'_, D>,
     mut fresh: impl FnMut() -> Option<ExprId>,
 ) -> Result<PreparedGuard<D::Element>, FrontierReason> {
@@ -221,9 +221,9 @@ fn build_with_queries<D: EvmNumericAlgebra>(
     };
     let enabled = context.config.analysis.relations.enabled;
     let (offset, offset_identity_failed) =
-        builder.identify_after_proof(offset, enabled, queries.offset, &mut fresh)?;
+        builder.identify_after_proof(offset, enabled, &mut queries.offset, &mut fresh)?;
     let (size, size_identity_failed) =
-        builder.identify_after_proof(size, enabled, queries.size, &mut fresh)?;
+        builder.identify_after_proof(size, enabled, &mut queries.size, &mut fresh)?;
     builder.retention = GuardRetention::new(&offset, &size);
     // A declined fresh identity leaves the value unmarked. Its explicit veto
     // must survive any later finite operation error in this guard.
@@ -276,12 +276,24 @@ pub(super) fn sequence<D: EvmNumericAlgebra>(
     };
     builder.pay(QUOTE_WORK)?;
     let enabled = context.config.analysis.relations.enabled;
-    let (offset, _) =
-        builder.identify_after_proof(offset, enabled, SingletonProof::NotQueried, ExprId::fresh)?;
-    let (size, _) =
-        builder.identify_after_proof(size, enabled, SingletonProof::NotQueried, ExprId::fresh)?;
-    let (limit, _) =
-        builder.identify_after_proof(length, enabled, SingletonProof::NotQueried, ExprId::fresh)?;
+    let (offset, _) = builder.identify_after_proof(
+        offset,
+        enabled,
+        &mut SingletonProof::NotQueried,
+        ExprId::fresh,
+    )?;
+    let (size, _) = builder.identify_after_proof(
+        size,
+        enabled,
+        &mut SingletonProof::NotQueried,
+        ExprId::fresh,
+    )?;
+    let (limit, _) = builder.identify_after_proof(
+        length,
+        enabled,
+        &mut SingletonProof::NotQueried,
+        ExprId::fresh,
+    )?;
     let request = EvmRangeRequest {
         kind: RangeKind::ReturnData,
         offset,
