@@ -3,7 +3,7 @@
 use super::super::*;
 use crate::{
     Fork,
-    domain::{EvmValue, ValueAlgebra, WordElement, provenance::Origin, symbolic::ExprId},
+    domain::{EvmValue, ValueAlgebra, provenance::Origin, symbolic::ExprId},
     resource::clone_payment::tests::{Policy, RECEIPT, Receipt, Word, reset},
     world::{EvmAccount, EvmWorld},
 };
