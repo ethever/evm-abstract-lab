@@ -121,13 +121,20 @@ fn plain_native_and_world_ssa_json_forward_only_core_owned_coverage() {
         vec!["--format", "json"],
         vec!["--format", "json", "--ssa", "--allow-partial-ssa"],
     ] {
+        let with_ssa = extra.contains(&"--ssa");
         let mut arguments = vec!["--max-transfers", "1"];
         arguments.extend(extra);
         let report = report(&analyze("call-return-branch", &arguments), 2);
-        let analysis = report.get("analysis").unwrap_or(&report);
+        let analysis = if with_ssa {
+            &report["analysis"]
+        } else {
+            &report
+        };
         assert_certificate(analysis);
         assert_eq!(analysis["config"]["root_terminal_coverage"], true);
-        if let Some(partial) = report.get("partial_ssa") {
+        if with_ssa {
+            let partial = &report["partial_ssa"];
+            assert_eq!(partial["status"], "Incomplete");
             assert_eq!(partial["frontiers"], analysis["frontiers"]);
             assert!(report.get("root_terminal_coverage").is_none());
             assert!(report.get("ssa").is_none());

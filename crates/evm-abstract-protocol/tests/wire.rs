@@ -34,7 +34,6 @@ fn bytecode_and_rpc_requests_roundtrip() {
 #[test]
 fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
     let count = 9_007_199_254_740_993_u64;
-    assert!(count > u64::from(u32::MAX));
     let limits = AnalysisLimits {
         max_states: count,
         max_transfers: count,
@@ -57,6 +56,8 @@ fn limits_roundtrip_above_old_caps_without_losing_large_integer_precision() {
         rpc_max_response_bytes: count,
         rpc_timeout_ms: count,
     };
+    let encoded = serde_json::to_value(&limits).unwrap();
+    assert_eq!(encoded["max_work"].as_u64(), Some(9_007_199_254_740_993));
     roundtrip(AnalyzeRequest {
         limits,
         ..AnalyzeRequest::default()

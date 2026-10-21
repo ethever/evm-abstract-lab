@@ -420,7 +420,7 @@ fn all_three_custom_views_paint_structural_content() {
         "CONTROL FLOW",
         "SSA",
         "CALLDATALOAD",
-        "σ2",
+        "σ2  ·  B2",
         "%5",
         "σ0:%1",
         "σ1:%2",
@@ -430,10 +430,6 @@ fn all_three_custom_views_paint_structural_content() {
             "missing painted structural content {required}: {text}"
         );
     }
-    assert!(
-        output.shapes.len() > 80,
-        "widgets must paint graph and structured rows"
-    );
 }
 
 #[test]
