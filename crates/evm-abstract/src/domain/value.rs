@@ -141,6 +141,12 @@ impl<N: WordElement> EvmValue<N> {
         self.expression = Some(expression);
         self
     }
+
+    /// Install an already proved and budgeted term without copying numeric,
+    /// source or identity fields. The caller also owns the old term's release.
+    pub(crate) fn set_expression(&mut self, expression: ExprId) {
+        self.expression = Some(expression);
+    }
     /// Rename only a retained term; numeric facts and immutable input identity
     /// survive unchanged. A refused term leaves the complete value untouched.
     pub(crate) fn rename_fresh(
