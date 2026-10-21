@@ -22,8 +22,11 @@ fn later_matching_content_keeps_its_full_fee_after_root_mismatches() {
     incoming.active_mut().stack[0] =
         fixtures::word(7).with_expression(ExprId::constant(U256::from(7)));
     let mut matching = incoming.clone();
-    matching.active_mut().stack[0].forget_expression();
-    assert_ne!(matching, incoming);
+    matching.active_mut().stack[0] = matching.active().stack[0].clone().with_identity(42, 1);
+    // Runtime labels can prove copies during transfer but are deliberately
+    // excluded from retained equality and its complete coverage certificate.
+    assert_eq!(matching, incoming);
+    assert!(!matching.active().stack[0].same_identity(&incoming.active().stack[0]));
     assert_eq!(
         matching.content_form().unwrap(),
         incoming.content_form().unwrap()

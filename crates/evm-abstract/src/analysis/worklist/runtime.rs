@@ -347,11 +347,6 @@ impl<T> Runtime<T> {
     }
 
     #[cfg(test)]
-    pub fn queue_work_size(&self) -> usize {
-        self.graph.view().worklist().work_size()
-    }
-
-    #[cfg(test)]
     pub fn scan_work(&self) -> usize {
         self.graph.view().worklist().records() * 2 + 1
     }

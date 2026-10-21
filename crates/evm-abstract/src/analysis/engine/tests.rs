@@ -6,9 +6,10 @@ use crate::{
     domain::relational::QueryReason,
     resource::WorkBudget,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 mod bounded_promotion;
 mod decided_cache;
+mod feedback;
 mod installation;
 mod interruption;
 mod loop_bound;
@@ -101,15 +102,24 @@ fn engine<'a>(
     domain: &'a crate::domain::ValueAlgebra<crate::domain::Domain>,
     policies: &'a super::EnginePolicies,
 ) -> Engine<'a> {
-    let ids: BTreeMap<_, _> = result
-        .states
-        .iter()
-        .map(|state| ((state.key.clone(), state.resume_status), state.id))
-        .collect();
+    let mut setup = WorkBudget::new(usize::MAX);
+    let mut ids = super::KeyIndex::new();
+    for state in &result.states {
+        ids.insert_with((state.key.clone(), state.resume_status), &mut setup, |_| {
+            Ok(state.id)
+        })
+        .unwrap();
+    }
     let alternatives = result
         .states
         .iter()
-        .map(|state| super::EntryAlternatives::new(&state.entry))
+        .map(|state| {
+            super::WholeStateMetadata::initialize(
+                &state.entry,
+                &mut super::PolicyContext::new(domain.borrowed(), &result.entry, &mut setup),
+            )
+            .unwrap()
+        })
         .collect();
     let count = result.states.len();
     let partitions = result
@@ -117,7 +127,6 @@ fn engine<'a>(
         .iter()
         .map(|state| state.resume_status)
         .collect();
-    let mut setup = WorkBudget::new(usize::MAX);
     let runtime = super::Runtime::new(&mut setup).unwrap();
     let mut engine = Engine {
         domain: domain.borrowed(),
@@ -136,6 +145,8 @@ fn engine<'a>(
         active_node: None,
         test_driver: None,
         partitions,
+        updates: vec![0; count],
+        feedback: vec![false; count],
         edges: BTreeSet::new(),
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new(); count],

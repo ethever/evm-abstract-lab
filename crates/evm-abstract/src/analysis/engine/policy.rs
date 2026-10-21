@@ -1,11 +1,39 @@
-//! Immutable context and optional precision partitions for one execution run.
+//! Frozen context selection and composable complete-state semantic policies.
 //!
-//! Mandatory machine shape is independent of these policies. A policy can
-//! combine optional contexts, but cannot combine differently shaped stacks,
-//! executable modes, storage owners or continuation kinds. Policies stay fixed
-//! while inputs, summaries and certificates from the run are retained.
+//! Partition preparation establishes the covering representation on which its
+//! own key is valid. Policies stay fixed while inputs and summaries are retained.
 
 use std::collections::BTreeSet;
+
+use crate::analysis::{MachineEdgeKind, OutcomeKind};
+
+mod key;
+mod ownership;
+mod semantic;
+
+pub(in crate::analysis) use key::{KeyIndex, checkpoint as key_checkpoint, classify, clone_key};
+pub use key::{PolicyKey, QuotedKey};
+pub use ownership::{PartitionRefusal, PartitionResult, RelativePartitionResult};
+
+/// The producer's typed CALL outcome already proves its boolean result. Users
+/// of this projection must establish that the edge resumes CALL, not CREATE.
+pub(in crate::analysis) fn call_result(kind: MachineEdgeKind) -> Option<bool> {
+    match kind {
+        MachineEdgeKind::Return | MachineEdgeKind::Summary(OutcomeKind::Return) => Some(true),
+        MachineEdgeKind::Revert
+        | MachineEdgeKind::Failure
+        | MachineEdgeKind::Summary(OutcomeKind::Revert | OutcomeKind::Failure) => Some(false),
+        _ => None,
+    }
+}
+
+pub use semantic::{
+    Acceleration, AccelerationInput, AccelerationPolicy, BoundedJoin, CoarseSummaries,
+    CorrelatedJoin, EagerAcceleration, FeedbackAcceleration, ForgetJumpHistory, MachinePartition,
+    NoAcceleration, Partitioned, PartitionedRelative, PolicyContext, PolicySite, ProcedureOutput,
+    ProcedureSummaryPolicy, ProjectedSummaries, RelativeState, SemanticPolicies, StatePolicy,
+    StructuralPartition, WholeStateMetadata, WholeStatePolicy,
+};
 
 /// Intraprocedural context selection, shared by ordinary and relative execution.
 ///
@@ -94,10 +122,17 @@ pub struct Arrival {
 /// a classification is never evidence that an input is unreachable.
 pub trait PartitionPolicy {
     /// Internal precision identity; it does not replace public machine shape.
-    type Class: Clone + Ord;
+    type Class: PolicyKey;
 
     /// Select the precision class for an incoming state.
     fn classify(&self, arrival: Arrival) -> Self::Class;
+
+    /// Conservative quote for classification, without executing it. The engine
+    /// reserves this work before calling `classify` and checks cancellation
+    /// around both operations. Opaque legacy classifiers refuse by default.
+    fn classification_work(&self, _: Arrival) -> usize {
+        usize::MAX
+    }
 }
 
 /// Keep immediate CALL success and failure apart for one resumed block.
@@ -110,9 +145,13 @@ impl PartitionPolicy for FirstResumeStatus {
     fn classify(&self, arrival: Arrival) -> Self::Class {
         arrival.resume_status
     }
+
+    fn classification_work(&self, _: Arrival) -> usize {
+        1
+    }
 }
 
-/// Combine immediate CALL results at the same mandatory machine shape.
+/// Supply one arrival class, leaving complete identity to the semantic policy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MergeResumeStatus;
 
@@ -120,21 +159,47 @@ impl PartitionPolicy for MergeResumeStatus {
     type Class = ();
 
     fn classify(&self, _: Arrival) -> Self::Class {}
+
+    fn classification_work(&self, _: Arrival) -> usize {
+        1
+    }
 }
 
 /// Frozen, statically selected precision policies for one EVM execution.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EnginePolicies<C = RecentDistinctJumps, P = FirstResumeStatus> {
+pub struct EnginePolicies<C = RecentDistinctJumps, P = FirstResumeStatus, S = SemanticPolicies> {
     /// Intraprocedural context policy used by every transfer path.
     pub context: C,
     /// Optional precision partition used by ordinary and relative admission.
     pub partition: P,
+    /// Covering preparation, whole-state admission, acceleration and summaries.
+    pub state: S,
 }
 
 impl<C, P> EnginePolicies<C, P> {
     /// Compose policies without changing instruction dispatch or the solver.
     pub const fn new(context: C, partition: P) -> Self {
-        Self { context, partition }
+        Self {
+            context,
+            partition,
+            state: SemanticPolicies::new(
+                StructuralPartition,
+                CorrelatedJoin,
+                FeedbackAcceleration,
+                ProjectedSummaries,
+            ),
+        }
+    }
+}
+
+impl<C, P, S> EnginePolicies<C, P, S> {
+    /// Replace the complete-state assembly without requiring clonable policies.
+    pub fn with_state<T>(self, state: T) -> EnginePolicies<C, P, T> {
+        EnginePolicies {
+            context: self.context,
+            partition: self.partition,
+            state,
+        }
     }
 }
 

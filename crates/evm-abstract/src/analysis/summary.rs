@@ -7,6 +7,7 @@
 //! executor. Reuse materializes the certified graph for the new caller so the
 //! instruction graph and world SSA retain every call and return boundary.
 
+use crate::analysis::engine::policy::{PolicyKey, key_checkpoint};
 use crate::domain::{NumericValue, WordElement};
 
 use super::{
@@ -26,17 +27,24 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(test)]
+mod cancellation;
 mod replay;
 #[cfg(test)]
 pub(super) use replay::Prepared;
 pub(super) use replay::{EvmPrepared, EvmReplay};
 
 fn reserve(budget: &mut WorkBudget, cost: usize) -> bool {
-    cost != usize::MAX && budget.charge(cost)
+    key_checkpoint(budget).is_ok()
+        && cost != usize::MAX
+        && budget.charge(cost)
+        && key_checkpoint(budget).is_ok()
 }
 
-pub(super) fn summary_boundary() -> FrontierReason {
-    if analysis_control::current_cancellation().is_cancelled() {
+pub(super) fn summary_boundary(budget: &WorkBudget) -> FrontierReason {
+    if analysis_control::current_cancellation().is_cancelled()
+        || budget.cancellation().is_cancelled()
+    {
         FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
     } else {
         FrontierReason::SummaryWork
@@ -137,7 +145,7 @@ pub struct SummaryStats {
 }
 
 #[derive(Clone)]
-pub(super) struct EvmNode<N: WordElement, Tag: Clone + Ord = Option<bool>> {
+pub(super) struct EvmNode<N: WordElement, Tag: PolicyKey = Option<bool>> {
     pub entry: EvmMachinePayload<N>,
     pub resume_status: Option<bool>,
     pub partition: Tag,
@@ -150,7 +158,7 @@ pub(super) struct EvmNode<N: WordElement, Tag: Clone + Ord = Option<bool>> {
     pub completed_calls: Vec<EvmCompletedCall<N>>,
 }
 
-impl<N: WordElement, Tag: Clone + Ord> EvmNode<N, Tag> {
+impl<N: WordElement, Tag: PolicyKey> EvmNode<N, Tag> {
     pub fn work_size(&self) -> usize {
         let cost = self
             .entry
@@ -158,7 +166,8 @@ impl<N: WordElement, Tag: Clone + Ord> EvmNode<N, Tag> {
             .saturating_add(self.exit.work_size())
             .saturating_add(self.executed_pcs.len())
             .saturating_add(self.instruction_progress.len())
-            .saturating_add(self.diagnostics.len());
+            .saturating_add(self.diagnostics.len())
+            .saturating_add(self.partition.key_work());
         let cost = self
             .exit_stack
             .iter()
@@ -202,7 +211,7 @@ impl<N: WordElement> EvmTerminal<N> {
 }
 
 #[derive(Clone)]
-pub(super) struct EvmCertificate<N: WordElement, Tag: Clone + Ord = Option<bool>> {
+pub(super) struct EvmCertificate<N: WordElement, Tag: PolicyKey = Option<bool>> {
     pub record: usize,
     pub nodes: Vec<EvmNode<N, Tag>>,
     pub edges: Vec<MachineEdge>,
@@ -214,15 +223,16 @@ struct EvmCandidate<N: WordElement> {
     input: EvmSummaryInput<N>,
 }
 
-pub(super) struct EvmCache<N: WordElement, Tag: Clone + Ord = Option<bool>> {
+pub(super) struct EvmCache<N: WordElement, Tag: PolicyKey = Option<bool>> {
     fingerprint: Option<B256>,
     fingerprint_unavailable: bool,
     pub call_entries: BTreeSet<usize>,
     candidates: Vec<EvmCandidate<N>>,
     certificates: Vec<EvmCertificate<N, Tag>>,
+    stop_reason: Option<FrontierReason>,
 }
 
-impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
+impl<N: WordElement, Tag: PolicyKey> EvmCache<N, Tag> {
     pub fn new() -> Self {
         Self {
             fingerprint: None,
@@ -230,7 +240,19 @@ impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
             call_entries: BTreeSet::new(),
             candidates: Vec::new(),
             certificates: Vec::new(),
+            stop_reason: None,
         }
+    }
+
+    pub fn stop_reason(&self) -> Option<FrontierReason> {
+        self.stop_reason.clone()
+    }
+
+    fn stop(&mut self, reason: FrontierReason) -> bool {
+        if self.stop_reason.is_none() {
+            self.stop_reason = Some(reason);
+        }
+        false
     }
 
     pub fn input(
@@ -240,7 +262,7 @@ impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
         budget: &mut WorkBudget,
     ) -> Result<Option<EvmSummaryInput<N>>, FrontierReason> {
         if analysis_control::current_cancellation().is_cancelled() {
-            return Err(summary_boundary());
+            return Err(summary_boundary(budget));
         }
         if self.fingerprint_unavailable {
             return Ok(None);
@@ -262,7 +284,7 @@ impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
                 .saturating_add(analysis.entry.environment.work_size())
                 .saturating_add(1),
         ) {
-            return Err(summary_boundary());
+            return Err(summary_boundary(budget));
         }
         let fingerprint = if let Some(fingerprint) = self.fingerprint {
             fingerprint
@@ -278,7 +300,7 @@ impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
                 .saturating_add(analysis.world.accounts().len().saturating_mul(64))
                 .saturating_add(analysis.world.provenance().len());
             if !reserve(budget, namespace_cost) {
-                return Err(summary_boundary());
+                return Err(summary_boundary(budget));
             }
             let fingerprint = match analysis.world.fingerprint() {
                 Ok(fingerprint) => fingerprint,
@@ -420,10 +442,11 @@ impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
                     analysis.summary_stats.rejected_incomplete += 1;
                     continue;
                 }
-                Err(_) => {
+                Err(reason) => {
+                    self.stop_reason = Some(reason);
                     self.candidates.push(candidate);
                     self.candidates.extend(iter);
-                    return false;
+                    return self.stop(summary_boundary(budget));
                 }
             };
             if !reserve(
@@ -434,7 +457,7 @@ impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
             ) {
                 self.candidates.push(candidate);
                 self.candidates.extend(iter);
-                return false;
+                return self.stop(summary_boundary(budget));
             }
             if current != candidate.input {
                 analysis.summary_stats.rejected_incomplete += 1;
@@ -454,10 +477,11 @@ impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
                 EvmCapture::Uncertifiable => {
                     analysis.summary_stats.rejected_incomplete += 1;
                 }
-                EvmCapture::Work => {
+                EvmCapture::Stopped(reason) => {
+                    self.stop_reason = Some(reason);
                     self.candidates.push(candidate);
                     self.candidates.extend(iter);
-                    return false;
+                    return self.stop(summary_boundary(budget));
                 }
                 EvmCapture::Complete(mut certificate) => {
                     // Another call may have closed the same exact relation.
@@ -473,7 +497,7 @@ impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
                         ) {
                             self.candidates.push(candidate);
                             self.candidates.extend(iter);
-                            return false;
+                            return self.stop(summary_boundary(budget));
                         }
                         if record.input == candidate.input {
                             duplicate = true;
@@ -491,7 +515,7 @@ impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
                     if !reserve(budget, outputs_work) {
                         self.candidates.push(candidate);
                         self.candidates.extend(iter);
-                        return false;
+                        return self.stop(summary_boundary(budget));
                     }
                     let record = analysis.summaries.len();
                     analysis.summaries.push(EvmSummaryRecord {
@@ -523,9 +547,9 @@ impl<N: WordElement, Tag: Clone + Ord> EvmCache<N, Tag> {
     }
 }
 
-enum EvmCapture<N: WordElement, Tag: Clone + Ord = Option<bool>> {
+enum EvmCapture<N: WordElement, Tag: PolicyKey = Option<bool>> {
     Pending,
-    Work,
+    Stopped(FrontierReason),
     Uncertifiable,
     Complete(EvmCertificate<N, Tag>),
 }
@@ -547,7 +571,7 @@ fn relative<N: WordElement>(payload: &EvmMachinePayload<N>, prefix: usize) -> Ev
     clippy::too_many_arguments,
     reason = "complete certificate evidence and precision partition"
 )]
-fn capture<N: WordElement, Tag: Clone + Ord, T>(
+fn capture<N: WordElement, Tag: PolicyKey, T>(
     analysis: &EvmWorldAnalysis<N>,
     edges: &BTreeSet<MachineEdge>,
     worklist: &Runtime<T>,
@@ -573,7 +597,7 @@ fn capture<N: WordElement, Tag: Clone + Ord, T>(
                 .saturating_add(analysis.frontiers.len())
                 .saturating_add(1),
         ) {
-            return EvmCapture::Work;
+            return EvmCapture::Stopped(summary_boundary(budget));
         }
         if worklist.contains_world(&id)
             || analysis.states[id].exit.is_none()
@@ -621,6 +645,7 @@ fn capture<N: WordElement, Tag: Clone + Ord, T>(
                 .saturating_add(state.entry.work_size())
                 .saturating_add(state.exit.as_ref().map_or(0, EvmMachinePayload::work_size))
                 .saturating_add(state.executed_pcs.len())
+                .saturating_add(partitions[*id].key_work())
                 .saturating_add(diagnostics.len())
                 .saturating_add(
                     state
@@ -644,49 +669,55 @@ fn capture<N: WordElement, Tag: Clone + Ord, T>(
         },
     );
     if !reserve(budget, cost) {
-        return EvmCapture::Work;
+        return EvmCapture::Stopped(summary_boundary(budget));
     }
-    let nodes = ordered
-        .iter()
-        .map(|id| {
-            let state = &analysis.states[*id];
-            EvmNode {
-                entry: relative(&state.entry, depth - 1),
-                resume_status: state.resume_status,
-                partition: partitions[*id].clone(),
-                exit: relative(
-                    state.exit.as_ref().expect("closure checked exit"),
-                    depth - 1,
-                ),
-                exit_stack: state.exit_stack.clone(),
-                executed_pcs: state.executed_pcs.clone(),
-                instruction_progress: state
+    let mut nodes = Vec::new();
+    for id in &ordered {
+        if !reserve(budget, 0) {
+            return EvmCapture::Stopped(summary_boundary(budget));
+        }
+        // The complete capture reservation above owns this class clone.
+        let partition = partitions[*id].clone();
+        if !reserve(budget, 0) {
+            return EvmCapture::Stopped(summary_boundary(budget));
+        }
+        let state = &analysis.states[*id];
+        nodes.push(EvmNode {
+            entry: relative(&state.entry, depth - 1),
+            resume_status: state.resume_status,
+            partition,
+            exit: relative(
+                state.exit.as_ref().expect("closure checked exit"),
+                depth - 1,
+            ),
+            exit_stack: state.exit_stack.clone(),
+            executed_pcs: state.executed_pcs.clone(),
+            instruction_progress: state
+                .execution_evidence()
+                .expect("closed node has execution evidence")
+                .instructions()
+                .to_vec(),
+            instruction_values: Arc::clone(
+                &state
                     .execution_evidence()
                     .expect("closed node has execution evidence")
-                    .instructions()
-                    .to_vec(),
-                instruction_values: Arc::clone(
-                    &state
-                        .execution_evidence()
-                        .expect("closed node has execution evidence")
-                        .instruction_values,
-                ),
-                diagnostics: diagnostics
-                    .iter()
-                    .filter(|diagnostic| diagnostic.state == *id)
-                    .cloned()
-                    .collect(),
-                completed_calls: completed_calls[*id]
-                    .iter()
-                    .cloned()
-                    .map(|mut call| {
-                        call.payload = relative(&call.payload, depth - 1);
-                        call
-                    })
-                    .collect(),
-            }
-        })
-        .collect();
+                    .instruction_values,
+            ),
+            diagnostics: diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.state == *id)
+                .cloned()
+                .collect(),
+            completed_calls: completed_calls[*id]
+                .iter()
+                .cloned()
+                .map(|mut call| {
+                    call.payload = relative(&call.payload, depth - 1);
+                    call
+                })
+                .collect(),
+        });
+    }
     let edges = internal
         .into_iter()
         .map(|edge| MachineEdge {

@@ -66,7 +66,7 @@ fn caller_growth_redelivers_an_unchanged_callee_generation() {
         StorageReadPolicy::Abstract,
     );
     let caller = solver.procedure(payload.clone()).unwrap();
-    let from = solver.table.procedures[caller].entry;
+    let from = solver.table.procedures[caller].first_body();
     let mut child = payload.active().clone();
     child.key.basic_block_index = 1;
     child.stack.clear();
@@ -87,7 +87,12 @@ fn caller_growth_redelivers_an_unchanged_callee_generation() {
         "{:?}",
         solver.table.frontiers
     );
-    let subscriber = solver.table.subscribers_by_key[&(from, 1)];
+    let subscriber = solver
+        .table
+        .subscribers_by_key
+        .iter()
+        .find_map(|((source, callee, _), id)| (*source == from && *callee == 1).then_some(*id))
+        .unwrap();
     let callee = solver.table.subscribers[subscriber].callee;
     let generation = solver.table.procedures[callee].outputs[&OutcomeKind::Return].generation;
     let delivered = solver.table.propagations;
@@ -130,4 +135,70 @@ fn caller_growth_redelivers_an_unchanged_callee_generation() {
                     |value| value.contains(U256::from(7)) && value.contains(U256::from(9))
                 ))
     );
+}
+
+#[test]
+fn late_feedback_redelivers_an_unchanged_template_and_callee_output() {
+    let (world, entry) = fixture(&[(0x101, "005b00")]);
+    let config = crate::analysis::machine::fixtures::config();
+    let domain = config.domain().unwrap();
+    let mut payload = super::super::testing::initial(&world, &entry, domain).unwrap();
+    payload.active_mut().stack = vec![word(7)];
+    payload.normalize();
+    let mut table = Table::default();
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut counters = Counters::default();
+    let mut solver = table.solver(
+        &world,
+        &entry,
+        &config,
+        &mut budget,
+        &mut counters,
+        StorageReadPolicy::Abstract,
+    );
+    let caller = solver.procedure(payload.clone()).unwrap();
+    let from = solver.table.procedures[caller].first_body();
+    let mut child = payload.active().clone();
+    child.key.basic_block_index = 1;
+    child.stack.clear();
+    payload.call_stack.push_child(ChildFrame {
+        state: child,
+        continuation: Continuation {
+            return_block: Some(1),
+            output_offset: word(0),
+            output_size: word(0),
+            creation: None,
+        },
+    });
+    payload.normalize();
+    solver.subscribe(from, payload).unwrap();
+    solver.run();
+    assert!(solver.runtime.relative_closed());
+    let subscriber = 0;
+    let template = solver.table.subscribers[subscriber].payload.clone();
+    let receipt = solver.table.subscribers[subscriber].delivered[&OutcomeKind::Return];
+    let delivered = solver.table.propagations;
+
+    solver.node_edge(from, from).unwrap();
+    assert!(semantic_eq(
+        &template,
+        &solver.table.subscribers[subscriber].payload
+    ));
+    assert!(
+        solver
+            .runtime
+            .pending_relative()
+            .any(|task| task == TaskKind::Resume(subscriber))
+    );
+    solver.run();
+    let next = solver.table.subscribers[subscriber].delivered[&OutcomeKind::Return];
+    assert_ne!(receipt.0, next.0);
+    assert_eq!(receipt.1, next.1);
+    assert!(solver.table.propagations > delivered);
+    assert!(
+        solver.table.frontiers.is_empty(),
+        "{:?}",
+        solver.table.frontiers
+    );
+    assert!(solver.runtime.relative_closed());
 }

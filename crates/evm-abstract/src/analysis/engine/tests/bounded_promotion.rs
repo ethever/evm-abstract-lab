@@ -13,6 +13,7 @@ use crate::{
     world::ByteArray,
 };
 use alloy_primitives::U256;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 fn with_word(base: &MachinePayload, word: u64, domain: Domain) -> MachinePayload {
@@ -127,7 +128,7 @@ fn successor_promotes_invalidates_reexecutes_and_keeps_canonical_roots_bounded()
         ),
         Some(target)
     );
-    assert!(!engine.alternatives[target].has_loop_bound());
+    assert!(!engine.alternatives[target].has_bound());
     engine.run();
     assert!(
         engine.result.states[target]
@@ -147,7 +148,7 @@ fn successor_promotes_invalidates_reexecutes_and_keeps_canonical_roots_bounded()
         ),
         Some(target)
     );
-    assert!(engine.alternatives[target].has_loop_bound());
+    assert!(engine.alternatives[target].has_bound());
     assert!(has_initial_dependency(&engine, target));
     assert_eq!(engine.selectors, selectors);
     assert!(
@@ -233,14 +234,31 @@ fn replay_keeps_same_key_resume_partitions_and_reexecutes_incompatible_certifica
     };
     engine.install_replay(&certificate, prepared).unwrap();
     let key = first.key();
-    let success = engine.ids[&(key.clone(), Some(true))];
-    let failure = engine.ids[&(key.clone(), Some(false))];
-    assert_eq!(engine.ids[&(key, None)], target);
+    let success = engine
+        .ids
+        .get(&(key.clone(), Some(true)), &mut WorkBudget::new(usize::MAX))
+        .unwrap()
+        .unwrap();
+    let failure = engine
+        .ids
+        .get(
+            &(key.clone(), Some(false)),
+            &mut WorkBudget::new(usize::MAX),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        engine
+            .ids
+            .get(&(key, None), &mut WorkBudget::new(usize::MAX))
+            .unwrap(),
+        Some(target)
+    );
     assert_ne!(success, failure);
     assert_ne!(success, target);
-    assert!(engine.alternatives[success].has_loop_bound());
-    assert!(!engine.alternatives[failure].has_loop_bound());
-    assert!(!engine.alternatives[target].has_loop_bound());
+    assert!(engine.alternatives[success].has_bound());
+    assert!(!engine.alternatives[failure].has_bound());
+    assert!(!engine.alternatives[target].has_bound());
     assert_eq!(engine.result.states[failure].entry, failed);
     assert_eq!(engine.result.states[target].entry, first);
     assert!(has_initial_dependency(&engine, success));
@@ -310,7 +328,7 @@ fn successor_work_refusal_keeps_old_entry_proof_and_full_incoming_frontier() {
         );
         assert_eq!(engine.result.states[target].entry, first);
         assert_eq!(engine.alternatives[target].work_size(), before);
-        assert!(!engine.alternatives[target].has_loop_bound());
+        assert!(!engine.alternatives[target].has_bound());
         assert_eq!(engine.runtime.queue_snapshot(), worklist);
         assert!(engine.edges.is_empty());
         let frontier = engine.result.frontiers.last().unwrap();
@@ -367,7 +385,15 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
             &precision_policies,
         );
         engine.reuse = Some(&mut reuse);
-        engine.alternatives[child] = super::super::EntryAlternatives::new(&first);
+        engine.alternatives[child] = super::super::WholeStateMetadata::initialize(
+            &first,
+            &mut super::super::PolicyContext::new(
+                engine.domain,
+                &engine.result.entry,
+                &mut WorkBudget::new(usize::MAX),
+            ),
+        )
+        .unwrap();
         engine.alternatives[child].retain(second);
         let before_work = engine.alternatives[child].work_size();
         let worklist = engine.runtime.queue_snapshot();
@@ -381,7 +407,7 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
             );
             assert_eq!(engine.result.states[child].entry, exact);
             assert_eq!(engine.alternatives[child].work_size(), before_work);
-            assert!(!engine.alternatives[child].has_loop_bound());
+            assert!(!engine.alternatives[child].has_bound());
             assert!(!has_initial_dependency(&engine, child));
             assert_eq!(engine.runtime.queue_snapshot(), worklist);
             assert_eq!(engine.result.summary_stats.imported_states, 0);
@@ -391,7 +417,7 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
             );
         } else {
             engine.replay(child, &certificate).unwrap();
-            assert!(engine.alternatives[child].has_loop_bound());
+            assert!(engine.alternatives[child].has_bound());
             assert!(has_initial_dependency(&engine, child));
             assert!(engine.runtime.contains_world(&child));
             assert_ne!(engine.result.states[child].executed_pcs, vec![usize::MAX]);
@@ -413,7 +439,7 @@ fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success(
 }
 
 #[test]
-fn replay_satisfaction_then_growth_keeps_fifo_position_cost_and_stop_coverage() {
+fn replay_satisfaction_then_growth_retains_live_work_cost_and_stop_coverage() {
     let (result, target, [first, second, _]) = fixture();
     let mut budget = WorkBudget::new(100_000_000);
     let mut counters = Counters::default();
@@ -438,7 +464,7 @@ fn replay_satisfaction_then_growth_keeps_fifo_position_cost_and_stop_coverage() 
     };
     engine.install_replay(&certificate, prepared).unwrap();
     assert!(!engine.runtime.contains_world(&target));
-    assert_eq!(engine.runtime.queue_work_size(), 4);
+    assert_eq!(engine.runtime.pending_world().collect::<Vec<_>>(), [0]);
     assert_eq!(
         engine.successor(
             0,
@@ -456,17 +482,27 @@ fn replay_satisfaction_then_growth_keeps_fifo_position_cost_and_stop_coverage() 
             .unwrap()
             .is_current()
     );
-    // Reactivation makes the older record eligible again. Neither compacting
-    // it nor moving it behind state 0 preserves the established schedule/fee.
-    assert_eq!(engine.runtime.queue_work_size(), 6);
-    let scan = engine.runtime.scan_work();
+    assert_eq!(
+        engine.runtime.pending_world().collect::<BTreeSet<_>>(),
+        BTreeSet::from([0, target])
+    );
+    // Price the actual scheduler protocol in an unpublished fork. Retired
+    // history and generation bookkeeping must not become hardcoded fees.
+    let mut setup = WorkBudget::new(usize::MAX);
+    let mut probe = engine.runtime.fork(&mut setup).unwrap();
+    let mut quote = WorkBudget::new(usize::MAX);
+    let (task, token) = probe.next(false, &mut quote).unwrap().unwrap();
+    let crate::analysis::worklist::runtime::TaskKind::World { node: quoted, .. } = &task.0 else {
+        panic!("world work")
+    };
+    let quoted = *quoted;
+    probe.finish(token, &mut quote).unwrap();
     let used = engine.budget.used();
-    assert_eq!(engine.next_pending().unwrap(), Some(target));
-    // The scan includes stale records and the fixture's retained driver. Four
-    // additional actions retain the task handle, begin, resume and finish the selected kernel job.
-    assert_eq!(engine.budget.used() - used, scan + 4);
+    let popped = engine.next_pending().unwrap().unwrap();
+    assert_eq!(popped, quoted);
+    assert_eq!(engine.budget.used() - used, quote.used());
     let reason = FrontierReason::Budget(crate::analysis::Limit::Transfers);
-    engine.stop_pending(target, reason.clone());
+    engine.stop_pending(popped, reason.clone());
     assert_eq!(engine.result.frontiers.len(), 2);
     assert_eq!(
         engine
@@ -478,10 +514,14 @@ fn replay_satisfaction_then_growth_keeps_fifo_position_cost_and_stop_coverage() 
                 assert_eq!(frontier.from, None);
                 frontier.target.clone().unwrap()
             })
-            .collect::<Vec<_>>(),
-        [target, 0].map(|id| engine.result.states[id].key.clone()),
+            .collect::<BTreeSet<_>>(),
+        [target, 0]
+            .map(|id| engine.result.states[id].key.clone())
+            .into_iter()
+            .collect(),
     );
-    assert_eq!(engine.next_pending().unwrap(), Some(0));
+    let remaining = if popped == target { 0 } else { target };
+    assert_eq!(engine.next_pending().unwrap(), Some(remaining));
     let used = engine.budget.used();
     assert_eq!(engine.next_pending().unwrap(), None);
     assert_eq!(engine.budget.used(), used);

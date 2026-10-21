@@ -13,6 +13,7 @@ pub(super) type Solver<'a> = EvmSolver<
     Domain,
     crate::analysis::engine::RecentDistinctJumps,
     crate::analysis::engine::FirstResumeStatus,
+    crate::analysis::engine::SemanticPolicies,
     crate::analysis::engine::cooperation::Empty,
     std::convert::Infallible,
 >;

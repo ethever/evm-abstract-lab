@@ -42,7 +42,7 @@ fn input(solver: &Solver<'_>, block: usize, value: u64) -> MachinePayload {
 fn four_acyclic_callers_keep_all_finite_return_addresses() {
     with_solver(|solver| {
         let procedure = solver.procedure(input(solver, 0, 0)).unwrap();
-        let entry = solver.table.procedures[procedure].entry;
+        let entry = solver.table.procedures[procedure].first_body();
         let mut helper = None;
         for (arm, return_pc) in [256, 272, 288, 304].into_iter().enumerate() {
             let caller = solver
@@ -71,7 +71,7 @@ fn four_acyclic_callers_keep_all_finite_return_addresses() {
 fn actual_local_feedback_still_accelerates_a_growing_counter() {
     with_solver(|solver| {
         let procedure = solver.procedure(input(solver, 0, 0)).unwrap();
-        let entry = solver.table.procedures[procedure].entry;
+        let entry = solver.table.procedures[procedure].first_body();
         let head = solver
             .enqueue(procedure, input(solver, 1, 0), None, entry)
             .unwrap();
@@ -97,7 +97,7 @@ fn mutual_procedure_feedback_accelerates_entry_without_marking_local_nodes() {
         let first = solver.procedure(input(solver, 0, 0)).unwrap();
         let second = solver.procedure(input(solver, 1, 0)).unwrap();
         let third = solver.procedure(input(solver, 2, 0)).unwrap();
-        let entries = [first, second, third].map(|id| solver.table.procedures[id].entry);
+        let entries = [first, second, third].map(|id| solver.table.procedures[id].first_body());
         solver.call_dependency(entries[0], second).unwrap();
         solver.call_dependency(entries[1], third).unwrap();
         assert!(solver.table.procedures.iter().all(|p| !p.recursive));
@@ -119,7 +119,7 @@ fn mutual_procedure_feedback_accelerates_entry_without_marking_local_nodes() {
 fn graph_discovery_charges_work_and_refuses_a_partial_backedge() {
     with_solver(|solver| {
         let procedure = solver.procedure(input(solver, 0, 0)).unwrap();
-        let entry = solver.table.procedures[procedure].entry;
+        let entry = solver.table.procedures[procedure].first_body();
         let before = solver.budget.used();
         let next = solver
             .enqueue(procedure, input(solver, 1, 0), None, entry)
@@ -142,7 +142,7 @@ fn graph_discovery_charges_work_and_refuses_a_partial_backedge() {
 fn unavailable_new_edge_keeps_the_real_input_frontier_without_installing_a_node() {
     with_solver(|solver| {
         let procedure = solver.procedure(input(solver, 0, 0)).unwrap();
-        let entry = solver.table.procedures[procedure].entry;
+        let entry = solver.table.procedures[procedure].first_body();
         let payload = input(solver, 1, 7);
         let summary = super::super::payload::form(&payload, solver.entry, solver.domain).unwrap();
         let mut insufficient = WorkBudget::new(summary.work_size());
@@ -158,5 +158,63 @@ fn unavailable_new_edge_keeps_the_real_input_frontier_without_installing_a_node(
         let frontier = solver.table.frontiers.last().unwrap();
         assert_eq!(frontier.target.as_ref(), Some(&payload.key()));
         assert_eq!(frontier.payload.as_deref(), Some(&payload));
+    });
+}
+
+#[test]
+fn discovering_feedback_after_execution_wakes_body_and_output_readers_once() {
+    use crate::analysis::worklist::runtime::TaskKind;
+
+    with_solver(|solver| {
+        let procedure = solver.procedure(input(solver, 0, 7)).unwrap();
+        let entry = solver.table.procedures[procedure].first_body();
+        solver.run();
+        assert!(solver.runtime.relative_closed());
+        let version = solver.track_input(entry).unwrap();
+        let before = solver.table.nodes[entry].payload.clone();
+        let outputs = solver.table.procedures[procedure]
+            .outputs
+            .iter()
+            .map(|(kind, output)| (*kind, (output.summary.clone(), output.generation)))
+            .collect::<Vec<_>>();
+        assert!(!outputs.is_empty());
+
+        solver.node_edge(entry, entry).unwrap();
+        assert!(super::super::semantic_eq(
+            &before,
+            &solver.table.nodes[entry].payload
+        ));
+        assert_ne!(version, solver.track_input(entry).unwrap());
+        assert!(
+            solver
+                .runtime
+                .pending_relative()
+                .any(|task| task == TaskKind::Body(entry))
+        );
+        for (kind, (summary, generation)) in &outputs {
+            let output = &solver.table.procedures[procedure].outputs[kind];
+            assert_eq!(output.summary, *summary);
+            assert!(output.generation > *generation);
+        }
+
+        solver.run();
+        assert!(solver.runtime.relative_closed());
+        let version = solver.track_input(entry).unwrap();
+        let generations = solver.table.procedures[procedure]
+            .outputs
+            .values()
+            .map(|output| output.generation)
+            .collect::<Vec<_>>();
+        solver.node_edge(entry, entry).unwrap();
+        assert_eq!(version, solver.track_input(entry).unwrap());
+        assert_eq!(
+            generations,
+            solver.table.procedures[procedure]
+                .outputs
+                .values()
+                .map(|output| output.generation)
+                .collect::<Vec<_>>()
+        );
+        assert!(solver.runtime.relative_closed());
     });
 }

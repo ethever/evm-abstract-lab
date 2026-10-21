@@ -1,4 +1,4 @@
-//! Canonical numerical bounds, finite stack aliases and independent instances.
+//! Numerical bounds, finite stack aliases and independent instances.
 
 use crate::domain::{EvmNumericAlgebra, WordElement};
 
@@ -10,11 +10,7 @@ use super::{
 };
 
 fn scalar<N: WordElement>(value: &EvmValue<N>) -> EvmValue<N> {
-    EvmValue::from_numeric(
-        value
-            .singleton()
-            .map_or_else(|| value.numeric().clone(), N::constant),
-    )
+    EvmValue::from_numeric(value.numeric().clone())
 }
 
 fn join_scalar<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
@@ -42,7 +38,8 @@ impl<N: WordElement> EvmPayloadSummary<N> {
     pub(in crate::analysis) fn active(&self) -> &EvmFrameSummary<N> {
         self.frames.last().expect("nonempty relative stack")
     }
-    pub(in crate::analysis) fn work_size(&self) -> usize {
+    /// Conservative logical charge for retained data and independent replay.
+    pub fn work_size(&self) -> usize {
         self.work
     }
 

@@ -7,8 +7,10 @@ use alloy_primitives::U256;
 use std::collections::VecDeque;
 
 mod context;
+mod policy;
 mod projection;
 mod relation_boundary_probe;
+mod resume_status;
 mod stack_alias;
 mod storage_observations;
 mod worklist;
@@ -95,6 +97,9 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
             world.clone(),
             entry.clone(),
             crate::analysis::ExecutionConfig {
+                // This is a semantic copy/rollback regression. Work-frontier
+                // cuts are checked separately against the selected policies.
+                max_work: 100_000_000,
                 use_summaries,
                 root_terminal_coverage: false,
                 ..Default::default()

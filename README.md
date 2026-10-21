@@ -55,6 +55,8 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 未知目标、重复回调与共享状态的完整例子见 [18：世界未知部分的抽象执行](docs/18-unknown-world.md)。它连接符号状态、已知代码执行、交互摘要和可见的覆盖报告；[已知代码自身递归](docs/18-unknown-world.md#已知代码自身递归也进入同一过程表)也使用共同更新的过程关系。
 
+库调用者可以组合[整机状态策略](docs/state-policies.md)，选择实际分区键、完整输入合并、加速调度和过程摘要。该页提供公开 API 示例，并链接普通执行、递归与未知回调的具体执行见证测试。
+
 [代码与初始事实分层](docs/18-layered-analysis.md)介绍如何先只提供代码，再向同一快照注入观察并继续分析。可检查的数学性质及其与生产代码的对应边界见[形式化证明](docs/proofs/README.md)。
 
 要用 Rust 组合自己的数值域或独立分析组件，读[公开 Trait 协作指南](docs/trait-cooperation.md)。它从可运行的离线客户端开始，说明强类型事实、自动依赖调度、代际收缩和生产 EVM 反馈怎样共用同一个内核与工作预算。

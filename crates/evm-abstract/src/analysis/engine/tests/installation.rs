@@ -13,7 +13,7 @@ use crate::{
     domain::{NumericValue, ValueAlgebra},
     resource::WorkBudget,
 };
-use analysis_kernel::{Change, LocalClosure, SlotMeta, Version};
+use analysis_kernel::{Change, LocalClosure, Version};
 use std::sync::Arc;
 
 mod words;
@@ -30,22 +30,17 @@ fn version(engine: &mut Engine<'_>, target: usize) -> Version {
         .unwrap()
 }
 
-/// Bind the same readers to a scalar fee probe and to the native input. The
-/// existing Kernel prices version/fanout independent of the slot's value type.
+/// Bind real readers, then price the native slot's publication in an
+/// unpublished fork. Generation/retirement discovery belongs to the kernel,
+/// so neither successful nor rejected prefixes are hardcoded here.
 fn publication_overhead(engine: &mut Engine<'_>, target: usize) -> usize {
-    let scope = engine.runtime.world;
-    let probe: SlotMeta<usize> = engine
-        .runtime
-        .kernel()
-        .slot(scope, &mut MachineMeter(engine.budget))
-        .unwrap();
-    let mut probe_value = 0;
     engine.runtime.requeue_world(target, engine.budget).unwrap();
     let (_, mut reader) = engine.runtime.next(false, engine.budget).unwrap().unwrap();
+    let entry = &engine.result.states[target].entry;
     engine
         .runtime
         .with_run(&mut reader, engine.budget, |run| {
-            run.read_slot(&probe, &probe_value, 1)
+            run.read_slot(&engine.inputs[target], entry, entry.work_size())
                 .map_err(kernel_failure)?;
             Ok(())
         })
@@ -59,27 +54,39 @@ fn publication_overhead(engine: &mut Engine<'_>, target: usize) -> usize {
         .register(scope, Task(TaskKind::Body(usize::MAX)), &mut meter)
         .unwrap();
     let mut run = engine.runtime.kernel().begin(job, &mut meter).unwrap();
-    let entry = &engine.result.states[target].entry;
     run.read_slot(&engine.inputs[target], entry, entry.work_size())
         .unwrap();
-    run.read_slot(&probe, &probe_value, 1).unwrap();
     run.finish(LocalClosure::Stable).unwrap();
     assert!(engine.runtime.pending_world().next().is_none());
     assert!(engine.runtime.pending_relative().next().is_none());
-
-    // Execute ONLY the scalar publication in an unpublished fork, then discard
-    // it. One paid scalar assignment isolates the real resume/version/wake fee
-    // without duplicating any private kernel price formula or mutating live data.
     let mut staged = engine.runtime.fork(engine.budget).unwrap();
     let before = engine.budget.used();
     staged
         .with_run(engine.active.as_mut().unwrap(), engine.budget, |run| {
-            run.publish_prepared(&probe, &mut probe_value, 1, Change::Changed, 1)
+            run.publish_prepared_with(&engine.inputs[target], Change::Changed, 1, || {})
                 .map_err(kernel_failure)?;
             Ok(())
         })
         .unwrap();
     engine.budget.used() - before - 1
+}
+
+fn rejected_publication_work(
+    engine: &mut Engine<'_>,
+    target: usize,
+    installation: usize,
+    allowance: usize,
+) -> usize {
+    let mut staged = engine.runtime.fork(engine.budget).unwrap();
+    let mut quote = WorkBudget::new(allowance);
+    let result = staged.with_run(engine.active.as_mut().unwrap(), &mut quote, |run| {
+        run.publish_prepared_with(&engine.inputs[target], Change::Changed, installation, || {})
+            .map_err(kernel_failure)?;
+        Ok(())
+    });
+    assert_eq!(result, Err(MachineError::Work));
+    assert!(quote.exhausted());
+    quote.used()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -131,14 +138,16 @@ fn admission_pays_preparation_and_actual_replacement_separately_and_atomically()
             incoming.active_mut().call_value = fixtures::word(1);
             let mut alternatives = engine.alternatives[0].clone();
             let joined = alternatives
-                .join_entry(
+                .admit_correlated(
                     &old,
                     &incoming,
-                    &engine.result.entry,
-                    engine.domain,
-                    engine.budget,
+                    crate::analysis::Acceleration::Join,
                     &engine.selectors,
-                    false,
+                    &mut crate::analysis::PolicyContext::new(
+                        engine.domain,
+                        &engine.result.entry,
+                        engine.budget,
+                    ),
                 )
                 .unwrap()
                 .unwrap();
@@ -156,6 +165,16 @@ fn admission_pays_preparation_and_actual_replacement_separately_and_atomically()
                 Gate::Preparation => costs.preparation - 1,
                 Gate::Publication => needed - 1,
                 Gate::Exact | Gate::Cancel => needed,
+            };
+            let rejected_prefix = if matches!(gate, Gate::Publication) {
+                rejected_publication_work(
+                    &mut engine,
+                    0,
+                    costs.installation,
+                    allowance - costs.preparation,
+                )
+            } else {
+                0
             };
             assert!(
                 engine
@@ -225,7 +244,7 @@ fn admission_pays_preparation_and_actual_replacement_separately_and_atomically()
                         before_wakes
                     );
                     let prefix = if matches!(gate, Gate::Publication) {
-                        costs.preparation + 1
+                        costs.preparation + rejected_prefix
                     } else {
                         0
                     };

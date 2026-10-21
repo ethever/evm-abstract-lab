@@ -733,7 +733,14 @@ mod literal_memory {
                         copy_work(input.work_size().saturating_add(1))
                             .saturating_add(literal_memory_singleton_work(input)),
                     );
-                    identify(input.clone(), config.analysis.relations.enabled)
+                    // The guard builder owns the singleton fee above and
+                    // reuses that proof. State identification deliberately
+                    // performs no discovery, including on exact opaque words.
+                    if input.singleton().is_some() {
+                        input.clone()
+                    } else {
+                        identify(input.clone(), config.analysis.relations.enabled)
+                    }
                 });
                 receipts.push(copy_work(14).saturating_mul(2));
                 let mut operations = 0;

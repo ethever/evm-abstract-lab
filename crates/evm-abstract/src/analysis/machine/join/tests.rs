@@ -1028,11 +1028,12 @@ fn scalar_counter_widening_covers_immutable_input_with_independent_roots() {
     ] {
         let operand = operand.as_ref().expect("canonical frame operand");
         assert_eq!(operand.singleton(), Some(U256::from(value)));
-        assert!(
-            operand
-                .expression()
-                .is_none_or(|expression| expression.as_constant() == Some(U256::from(value)))
-        );
+        if let Some(expression) = operand.expression() {
+            assert!(!independent.contains(expression));
+            if let Some(literal) = expression.as_constant() {
+                assert_eq!(literal, U256::from(value));
+            }
+        }
     }
     assert!(header.entry.active().stack[1].contains(U256::ZERO));
     assert!(header.entry.active().stack[1].contains(U256::MAX));

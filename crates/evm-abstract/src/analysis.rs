@@ -43,8 +43,14 @@ pub use cooperation::{
     analyze_world_cooperating_with_observer,
 };
 pub use engine::{
-    Arrival, ContextInsensitive, ContextPolicy, EnginePolicies, FirstResumeStatus,
-    MergeResumeStatus, PartitionPolicy, RecentDistinctJumps,
+    Acceleration, AccelerationInput, AccelerationPolicy, Arrival, BoundedJoin, CoarseSummaries,
+    ContextInsensitive, ContextPolicy, CorrelatedJoin, EagerAcceleration, EnginePolicies,
+    FeedbackAcceleration, FirstResumeStatus, ForgetJumpHistory, MachinePartition,
+    MergeResumeStatus, NoAcceleration, PartitionPolicy, PartitionRefusal, PartitionResult,
+    Partitioned, PartitionedRelative, PolicyContext, PolicyKey, PolicySite, ProcedureOutput,
+    ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey, RecentDistinctJumps,
+    RelativePartitionResult, RelativeState, SemanticPolicies, StatePolicy, StructuralPartition,
+    WholeStateMetadata, WholeStatePolicy,
 };
 pub use machine::{
     ByteRangeBoundary, CallStack, ChildFrame, Continuation, ExecutionConfig, ExecutionEvidence,
@@ -381,6 +387,10 @@ pub fn analyze_world(
 /// run and need not implement `Copy` or `Clone`. The public facade is borrowed
 /// once at the engine boundary; recursive execution forwards that same cheap
 /// view over the original numeric policy.
+/// [`EnginePolicies::with_state`] accepts a [`SemanticPolicies`] assembly of
+/// [`MachinePartition`], [`WholeStatePolicy`], [`AccelerationPolicy`] and
+/// [`ProcedureSummaryPolicy`]. The selected keys and returned covering states
+/// drive ordinary execution, recursive bodies, continuations and outputs.
 ///
 /// ```
 /// use evm_abstract::{Address, Fork, analysis, domain::{Domain, ValueAlgebra}, world};
@@ -397,17 +407,18 @@ pub fn analyze_world(
 /// ).unwrap();
 /// assert_eq!(result.status(), analysis::Status::Converged);
 /// ```
-pub fn analyze_world_with<D, C, P>(
+pub fn analyze_world_with<D, C, P, S>(
     world: crate::world::EvmWorld<D::Element>,
     entry: crate::world::EvmEntry<D::Element>,
     config: ExecutionConfig,
     algebra: &crate::domain::ValueAlgebra<D>,
-    policies: &EnginePolicies<C, P>,
+    policies: &EnginePolicies<C, P, S>,
 ) -> Result<EvmWorldAnalysis<D::Element>, ConfigError>
 where
     D: crate::domain::EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
+    S: engine::StatePolicy<D, P::Class>,
 {
     analyze_world_with_components_observer(
         world,
@@ -421,18 +432,19 @@ where
 
 /// Analyze a custom numeric element while publishing bounded observations.
 /// Creates one borrowed algebra view for the engine to forward by value.
-pub fn analyze_world_with_components_observer<D, C, P>(
+pub fn analyze_world_with_components_observer<D, C, P, S>(
     world: crate::world::EvmWorld<D::Element>,
     entry: crate::world::EvmEntry<D::Element>,
     config: ExecutionConfig,
     algebra: &crate::domain::ValueAlgebra<D>,
-    policies: &EnginePolicies<C, P>,
+    policies: &EnginePolicies<C, P, S>,
     observer: &progress::Observer,
 ) -> Result<EvmWorldAnalysis<D::Element>, ConfigError>
 where
     D: crate::domain::EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
+    S: engine::StatePolicy<D, P::Class>,
 {
     engine::run_world_with(world, entry, config, algebra.borrowed(), policies, observer)
 }
@@ -481,18 +493,19 @@ pub fn analyze_world_with_control(
 /// A cancelled run never publishes a partial report. The policies are borrowed
 /// only within the synchronous control scope; no snapshot or policy reference
 /// is retained in an application task after the call returns.
-pub fn analyze_world_with_components_control<D, C, P>(
+pub fn analyze_world_with_components_control<D, C, P, S>(
     world: crate::world::EvmWorld<D::Element>,
     entry: crate::world::EvmEntry<D::Element>,
     config: ExecutionConfig,
     algebra: &crate::domain::ValueAlgebra<D>,
-    policies: &EnginePolicies<C, P>,
+    policies: &EnginePolicies<C, P, S>,
     control: &control::Control,
 ) -> Result<EvmWorldAnalysis<D::Element>, ControlledAnalysisError>
 where
     D: crate::domain::EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
+    S: engine::StatePolicy<D, P::Class>,
 {
     control
         .checkpoint()

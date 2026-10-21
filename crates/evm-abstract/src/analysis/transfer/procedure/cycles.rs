@@ -4,16 +4,26 @@
 //! retain finite return addresses; only proven feedback needs acceleration.
 
 use super::Composition;
-use crate::analysis::engine::{ContextPolicy, PartitionPolicy};
+use crate::analysis::engine::{
+    ContextPolicy, PartitionPolicy, PolicyContext, PolicySite, StatePolicy,
+};
+use crate::analysis::worklist::kernel_failure;
 use crate::domain::EvmNumericAlgebra;
+use analysis_kernel::Change;
 
-use super::{BTreeMap, BTreeSet, EvmSolver, MachineError};
+use super::{BTreeMap, BTreeSet, EvmOutput, EvmSolver, MachineError};
 
 #[cfg(test)]
 mod tests;
 
-impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<D::Element, E>, E>
-    EvmSolver<'_, D, C, P, X, E>
+impl<
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element, E>,
+    E,
+> EvmSolver<'_, D, C, P, S, X, E>
 {
     pub(super) fn node_edge(&mut self, from: usize, to: usize) -> Result<(), MachineError> {
         if self.table.nodes[from].procedure != self.table.nodes[to].procedure {
@@ -25,9 +35,11 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
         self.reserve(1)?;
         let cyclic = self.joins_node_cycle(to, from)?;
         if cyclic {
-            self.table.nodes[to].loop_head = true;
+            self.reserve(self.table.nodes[to].payload.work_size())?;
+            let payload = self.table.nodes[to].payload.clone();
+            self.admit_node(to, &payload, true, true, None)?;
             let procedure = self.table.nodes[to].procedure;
-            self.table.procedures[procedure].local_cycle = true;
+            self.refresh_procedure_feedback(procedure, false, true)?;
         }
         self.table.nodes[from].successors.insert(to);
         Ok(())
@@ -96,7 +108,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 pending.extend(predecessors.iter().copied());
             }
             for id in recursive {
-                self.table.procedures[id].recursive = true;
+                self.refresh_procedure_feedback(id, true, false)?;
             }
         }
         self.table.procedures[caller].dependencies.insert(callee);
@@ -106,6 +118,121 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
     pub(super) fn node_feedback(&self, id: usize) -> bool {
         let node = &self.table.nodes[id];
         let procedure = &self.table.procedures[node.procedure];
-        node.loop_head || (id == procedure.entry && procedure.recursive)
+        node.loop_head || (procedure.entries.contains(&id) && procedure.recursive)
+    }
+
+    /// Feedback is a semantic scheduling input. Already settled consumers must
+    /// observe its publication even if self-admission leaves their values equal.
+    /// All work uses existing Body/Resume/output slots in the shared kernel.
+    fn refresh_procedure_feedback(
+        &mut self,
+        procedure: usize,
+        recursive: bool,
+        local_cycle: bool,
+    ) -> Result<(), MachineError> {
+        self.feedback_outputs(procedure, recursive, local_cycle)?;
+        self.refresh_entry(procedure)?;
+        self.reserve(self.table.procedures[procedure].entries.len())?;
+        let entries = self.table.procedures[procedure]
+            .entries
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for id in entries {
+            let feedback = self.node_feedback(id);
+            if feedback != self.table.nodes[id].feedback {
+                self.reserve(self.table.nodes[id].payload.work_size())?;
+                let payload = self.table.nodes[id].payload.clone();
+                self.admit_node(id, &payload, feedback, false, None)?;
+            }
+        }
+        self.reserve(self.table.subscribers.len())?;
+        for id in 0..self.table.subscribers.len() {
+            let subscriber = &self.table.subscribers[id];
+            let feedback = self.node_feedback(subscriber.from)
+                || self.table.procedures[subscriber.callee].recursive;
+            if feedback != subscriber.feedback {
+                self.reserve(subscriber.payload.work_size())?;
+                let payload = self.table.subscribers[id].payload.clone();
+                self.admit_subscriber(id, &payload)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stage every outcome separately, including empty relations. Generations
+    /// advance on schedule changes so delivery receipts cannot hide a wakeup.
+    /// A failed admission/publication leaves each retained output and its flags
+    /// intact. Earlier successful slot publications remain sound on interruption.
+    fn feedback_outputs(
+        &mut self,
+        procedure: usize,
+        recursive: bool,
+        local_cycle: bool,
+    ) -> Result<(), MachineError> {
+        let old = &self.table.procedures[procedure];
+        let recursive = recursive || old.recursive;
+        let local_cycle = local_cycle || old.local_cycle;
+        if recursive == old.recursive && local_cycle == old.local_cycle {
+            return Ok(());
+        }
+        let mut outputs = BTreeMap::new();
+        let mut install_work = 1usize;
+        for (kind, output) in &old.outputs {
+            let acceleration =
+                self.acceleration(PolicySite::Output, recursive || local_cycle, output.updates);
+            let summary = self.policies.state.admit_output(
+                Some(&output.summary),
+                &output.summary,
+                acceleration,
+                &mut PolicyContext::new(self.domain, self.entry, self.budget),
+            )?;
+            let work = summary.work_size();
+            PolicyContext::new(self.domain, self.entry, self.budget)
+                .reserve(work.saturating_add(output.work).saturating_add(1))?;
+            let updates = if summary == output.summary {
+                output.updates
+            } else {
+                output
+                    .updates
+                    .checked_add(1)
+                    .ok_or(MachineError::IdentityExhausted)?
+            };
+            install_work = install_work
+                .saturating_add(work)
+                .saturating_add(output.work);
+            let generation = output
+                .generation
+                .checked_add(1)
+                .ok_or(MachineError::IdentityExhausted)?;
+            outputs.insert(
+                *kind,
+                EvmOutput {
+                    summary,
+                    work,
+                    generation,
+                    updates,
+                },
+            );
+        }
+        let updates = old
+            .output_updates
+            .checked_add(1)
+            .ok_or(MachineError::IdentityExhausted)?;
+        let old = &mut self.table.procedures[procedure];
+        self.runtime.with_run(
+            self.active.as_mut().unwrap_or(self.caller),
+            self.budget,
+            |run| {
+                run.publish_prepared_with(&old.output, Change::Changed, install_work, || {
+                    old.outputs = outputs;
+                    old.output_updates = updates;
+                    old.recursive = recursive;
+                    old.local_cycle = local_cycle;
+                })
+                .map_err(kernel_failure)
+            },
+        )?;
+        Ok(())
     }
 }

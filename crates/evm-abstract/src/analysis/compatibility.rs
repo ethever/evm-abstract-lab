@@ -45,6 +45,10 @@ struct PartitionProbe<'a>(&'a Cell<usize>);
 impl PartitionPolicy for PartitionProbe<'_> {
     type Class = ();
 
+    fn classification_work(&self, _: Arrival) -> usize {
+        1
+    }
+
     fn classify(&self, _: Arrival) {
         self.0.set(self.0.get() + 1);
     }

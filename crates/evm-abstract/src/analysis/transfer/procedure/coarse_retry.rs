@@ -6,10 +6,30 @@
 use crate::domain::{EvmNumericAlgebra, WordElement};
 
 use super::{
-    AlgebraRef, EvmExecution, EvmMachinePayload, EvmPayloadSummary, FrameCode, FrontierReason,
-    MachineError, WorkBudget,
+    AlgebraRef, EvmExecution, EvmPayloadSummary, FrameCode, FrontierReason, MachineError,
+    WorkBudget,
 };
 use crate::analysis::state::bounded::{EvmBoundedState, reserve};
+
+/// The injected summary strategy owns the admitted result. A persistent retry
+/// can execute it only when its frozen coordinate/guarantee closure leaves it
+/// unchanged. Refuse incompatibility instead of replacing policy output.
+pub(super) fn check_closed<D: EvmNumericAlgebra>(
+    representation: &EvmBoundedState<D::Element>,
+    bound: &EvmPayloadSummary<D::Element>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<(), MachineError> {
+    let normalized = representation.join(bound, bound, domain, budget, false)?;
+    reserve(
+        budget,
+        bound.work_size().saturating_add(normalized.work_size()),
+    )?;
+    if !super::semantic_eq(bound, &normalized) {
+        return Err(MachineError::Shape);
+    }
+    MachineError::check_cancelled()
+}
 
 #[cfg(test)]
 mod tests;
@@ -89,7 +109,14 @@ pub(super) fn supports<N: WordElement>(original: &EvmPayloadSummary<N>) -> bool 
 pub(super) struct Prepared<N: WordElement> {
     pub representation: Box<EvmBoundedState<N>>,
     pub bound: EvmPayloadSummary<N>,
-    pub payload: EvmMachinePayload<N>,
+}
+
+/// Fully admitted and reified input, before the retry consumes a transfer or
+/// publishes its retained representation. Tests quote this same production step.
+pub(super) struct Admitted<N: WordElement> {
+    pub representation: Box<EvmBoundedState<N>>,
+    pub preparation: analysis_kernel::algebra::Prepared<EvmPayloadSummary<N>, usize>,
+    pub payload: crate::analysis::EvmMachinePayload<N>,
 }
 
 pub(in crate::analysis) fn prepare_with<D: EvmNumericAlgebra>(
@@ -116,12 +143,13 @@ pub(in crate::analysis) fn prepare_with<D: EvmNumericAlgebra>(
             .saturating_add(box_lifetime_work),
     )?;
     let representation = EvmBoundedState::freeze(original, true, domain)?;
-    let (representation, bound, payload) =
-        representation.materialize(original.clone(), domain, budget)?;
+    // Produce a covering closed candidate without instantiating it first. The
+    // injected admission may still change this representation or refuse it;
+    // only its accepted result owns a fresh executable input.
+    let bound = representation.join(original, original, domain, budget, false)?;
     Ok(Prepared {
         representation: Box::new(representation),
         bound,
-        payload,
     })
 }
 
@@ -141,12 +169,12 @@ pub(in crate::analysis) fn prepare(
     ),
     MachineError,
 > {
-    prepare_with(
-        original,
-        crate::domain::ValueAlgebra::new(domain).borrowed(),
-        budget,
-    )
-    .map(|prepared| (prepared.representation, prepared.bound, prepared.payload))
+    let algebra = crate::domain::ValueAlgebra::new(domain);
+    let prepared = prepare_with(original, algebra.borrowed(), budget)?;
+    reserve(budget, prepared.bound.work_size().saturating_mul(4))?;
+    let payload = super::instantiate_with(&prepared.bound, algebra.borrowed())?;
+    MachineError::check_cancelled()?;
+    Ok((prepared.representation, prepared.bound, payload))
 }
 
 #[cfg(test)]

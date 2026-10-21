@@ -6,7 +6,7 @@
 
 use super::{
     Composition, ContextPolicy, DiagnosticKind, EvmMachinePayload, EvmSolver, MachineEdgeKind,
-    MachineError, PartitionPolicy,
+    MachineError, PartitionPolicy, StatePolicy,
 };
 use crate::{analysis::worklist::kernel_failure, domain::EvmNumericAlgebra};
 use analysis_kernel::Version;
@@ -20,8 +20,14 @@ pub(super) struct Producer {
     pub(super) other: Option<Version>,
 }
 
-impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<D::Element, E>, E>
-    EvmSolver<'_, D, C, P, X, E>
+impl<
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element, E>,
+    E,
+> EvmSolver<'_, D, C, P, S, X, E>
 {
     pub(super) fn cooperative_input(
         &mut self,

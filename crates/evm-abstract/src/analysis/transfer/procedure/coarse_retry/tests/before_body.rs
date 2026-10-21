@@ -309,13 +309,29 @@ fn before_body_failed_preparation_or_transfer_keeps_first_frontier_and_metadata(
             &h.table.nodes[0].runtime_retry,
             RuntimeRetry::Attempted
         ));
-        assert_eq!(h.table.frontiers.len(), 1);
-        assert_eq!(h.table.frontiers[0].reason, reason);
+        let expected = if cap == 1 {
+            // Rehydration of the replacement itself is refused, leaving both
+            // the original Input obligation and the rejected retry obligation.
+            vec![
+                reason,
+                FrontierReason::Relations(QueryReason::ExpressionLimit),
+            ]
+        } else {
+            vec![reason]
+        };
         assert_eq!(
-            h.table.frontiers[0].target.as_ref(),
-            Some(&original.location)
+            h.table
+                .frontiers
+                .iter()
+                .map(|frontier| frontier.reason.clone())
+                .collect::<Vec<_>>(),
+            expected
         );
-        assert!(h.table.frontiers[0].payload.is_none());
+        for frontier in &h.table.frontiers {
+            assert_eq!(frontier.pc, 0);
+            assert_eq!(frontier.target.as_ref(), Some(&original.location));
+            assert!(frontier.payload.is_none());
+        }
         assert!(h.table.procedures[0].outputs.is_empty());
         assert!(h.table.precision_losses.is_empty());
         assert_eq!(h.counters.transfers, usize::from(cap != 1));
@@ -450,9 +466,7 @@ fn prebody_work_cancel_and_transfer_refusals_keep_original_evidence() {
         let mut h = harness("525b00", 64, 8, &[0, 1, 3]);
         let error = raw_failure(&h);
         let original = h.table.nodes[0].payload.clone();
-        let mut quote = WorkBudget::new(h.config.max_work);
-        prepare(&original, h.config.domain().unwrap(), &mut quote).unwrap();
-        let allowance = quote.used() - usize::from(!finish_preparation);
+        let allowance = h.preparation_work() - usize::from(!finish_preparation);
         let remaining = h.config.max_work - h.budget.used();
         assert!(h.budget.charge(remaining - allowance));
         let spent = h.budget.used();
@@ -537,6 +551,8 @@ fn prebody_coarse_mode_and_frozen_layout_survive_fresh_incoming_ids() {
         RuntimeRetry::Coarse(coarse) => coarse.layout().clone(),
         _ => panic!("must have promoted before the body"),
     };
+    let domain = h.config.domain().unwrap();
+    let mut grown = None;
     for _ in 0..3 {
         let mut incoming = original.clone();
         incoming.frames[0].stack[0] = word(9).with_expression(ExprId::fresh().unwrap());
@@ -550,7 +566,7 @@ fn prebody_coarse_mode_and_frozen_layout_survive_fresh_incoming_ids() {
             panic!("incoming identities renewed Fresh")
         };
         assert!(semantic_eq(&layout, coarse.layout()));
-        let live = instantiate(&node.payload, h.config.domain().unwrap()).unwrap();
+        let live = instantiate(&node.payload, domain).unwrap();
         let ByteStateKind::Input { bindings, .. } = live.active().calldata.state_root().kind()
         else {
             panic!("coarse join must not restore content bindings")
@@ -558,6 +574,16 @@ fn prebody_coarse_mode_and_frozen_layout_survive_fresh_incoming_ids() {
         assert!(bindings.is_empty());
         assert!(live.active().stack[0].contains(U256::from(7)));
         assert!(live.active().stack[0].contains(U256::from(9)));
+        assert_eq!(
+            live.active().stack[0].interval().unsigned_bounds(),
+            (U256::from(7), U256::from(9))
+        );
+        assert_eq!(live.active().stack[1].singleton(), Some(U256::ZERO));
+        if let Some(previous) = &grown {
+            assert!(semantic_eq(previous, &node.payload));
+        } else {
+            grown = Some(node.payload.clone());
+        }
         let bound = node.payload.clone();
         assert!(
             h.solver()
@@ -571,5 +597,4 @@ fn prebody_coarse_mode_and_frozen_layout_survive_fresh_incoming_ids() {
         ));
     }
     assert_eq!(h.table.nodes.len(), 1);
-    assert_eq!(h.table.nodes[0].updates, 1);
 }
