@@ -21,7 +21,7 @@ nix develop --no-update-lock-file --command cargo run --offline --locked \
 
 任意 256 位的 `x` 与 1 按位或后都不为零，因此 `g=0`。示例故意选择较粗的有限常量集合策略：[生产者](../crates/evm-abstract/examples/cooperative/producer.rs)检查输入表达式，发布客户端定义的 `ZeroGuards`；[消费者](../crates/evm-abstract/examples/cooperative/consumer.rs)只懂这份事实词汇，将它变成解释器消费的栈保证。消费者不需要重做生产者的表达式证明。
 
-示例源码断言并打印以下对照：
+以下输出及后文的客户端测试结论均描述源码中的断言；本次文档核对未运行示例或测试。示例断言并打印：
 
 ```text
 both: Converged, impossible branch reached = false
@@ -58,7 +58,7 @@ imports、错误类型和三个对照的完整代码在示例中。[contracts.rs
 
 `ValueAlgebra<D>` 在数值策略外处理值身份、来源和表达式；`EvmValue<N>`、`EvmByteArray<N>`、`EvmStore<N>`、`EvmWorld<N>`、`EvmEntry<N>` 及 `EvmWorldAnalysis<N>` 保留实际载体。`AbstractValue`、`World` 等名字是默认 `NumericValue` 的具体别名。泛型原生报告入口见 [`render::world`](../crates/evm-abstract/src/render/world.rs)；跨表示边界时仍需检查具体事实是否被保留。
 
-`analyze_world_with` 接收数值和状态策略；接入独立组件使用 `analyze_world_cooperating`。冻结策略按引用传入，一般入口不要求策略实现 `Clone` 或 `Copy`。配置中的 `DomainSpec` 必须与传入数值策略一致；默认入口使用同一生产内核的空扩展。
+[`analyze_world_with`](../crates/evm-abstract/src/analysis.rs) 接收数值和状态策略；接入独立组件使用 [`analyze_world_cooperating`](../crates/evm-abstract/src/analysis/cooperation/entry.rs)。后者将状态策略与组件任务计划作为独立泛型参数传递。冻结策略按引用传入，一般入口不要求策略实现 `Clone` 或 `Copy`。配置中的 `DomainSpec` 必须与传入数值策略一致；默认入口使用同一生产内核的空扩展。
 
 ## 状态策略决定可执行的完整表示
 
@@ -72,6 +72,10 @@ imports、错误类型和三个对照的完整代码在示例中。[contracts.rs
 | `ProcedureSummaryPolicy` | 对相对输入和终态输出实施覆盖性的准入，包括首个输出及运行时重试 |
 
 普通节点与相对过程映射直接使用策略的 `S::Key`。冻结策略的键须确定、在有限上下文词汇下有有限基数，准备操作须幂等并覆盖输入。`MachineKey` 是结构形状及报告投影；自定义键可以改变分组，准备后的 payload 也必须成为实际保留和执行的输入。只删除键中的代码、owner、栈或 continuation 坐标，而没有支持这些执行形状的覆盖表示，会破坏契约；无法支持的合并应返回类型化拒绝并留下未完成义务。
+
+有限种键不意味着键操作便宜。`MachinePartition::Key` 和 `PartitionPolicy::Class` 都要求实现 [`PolicyKey`](../crates/evm-abstract/src/analysis/engine/policy/key.rs)：`key_work` 要覆盖键的完整复制和释放，两个键的比较由双方报价之和覆盖。报价只读缓存或结构元数据，不能先运行待报价的 `Clone`、`Ord` 或语义查询。`QuotedKey<K>` 可为现有键附加可信缓存报价，报价本身不参与相等或排序。到达分类还有独立的 `PartitionPolicy::classification_work`，不能把分类构造费用藏在 payload 报价中。执行器内部的 `KeyIndex` 缓存键费用上界与保留总量，在查找、插入和复制前付款；这些缓存不改变实际 `S::Key` 的身份。
+
+准入先通过 `prepare_owned` / `prepare_relative_owned` 准备拥有的输入，再用实际键查找节点、分阶段构造覆盖结果和元数据。预付安装、版本更新与唤醒工作后，将这次可执行输入和覆盖元数据随版本更新一起原子安装。首个输入同样需要初始化或摘要准入。`PartitionRefusal` 保留原输入；错误、费用拒绝或取消不能把尚未安装的执行义务变成已覆盖。`WholeStatePolicy::admit` 的 `None` 必须表示完整流入状态已被覆盖，且没有待发布的语义元数据变化；字段相同但覆盖元数据变化时，仍须发布以唤醒读者。`metadata_work` 负责元数据复制/比较的报价。这是单次准入的分阶段安装契约，不承诺整次分析回滚。
 
 例如两条路径分别到达 `(栈值, memory[0])=(11,11)` 和 `(22,22)`。保留完整替代项能知道二者相等；逐字段合并可能还包含 `(11,22)`，使后续 `XOR` 无法保持恒零。[完整状态客户端](../crates/evm-abstract/tests/state_policy/join.rs)正是用真实 `MSTORE` / `MLOAD` / `XOR` 检查这种精度差异，同时用具体执行见证检查覆盖。状态策略因而影响实际值和效果。
 
@@ -111,9 +115,11 @@ let policies = EnginePolicies::new(ContextInsensitive, MergeResumeStatus).with_s
 | `Analyzer<Cx>` | 定义组件自己的 `Task`、`Error` 和一次求值 |
 | `Reduction<Cx>`、`Registered<R>` | 显式接受固定输入下降规约的语义契约，作为普通任务调度 |
 
-`Pair` 用 `Either` 保留两侧各自的任务和错误类型。`PairedTasks` 组合相应注册计划；`PerInput` 为每个新输入代际播种一次任务，后续重跑由真实读取依赖决定。组件无需持有另一个组件的内部表示。
+`Pair` 用 `Either` 保留两侧各自的任务和错误类型。`PairedTasks` 组合相应注册计划；`PerInput` 为每个新的可执行输入代际播种一次任务，后续重跑由真实读取依赖决定。只读过程入口不注册这些任务。组件无需持有另一个组件的内部表示。
 
 `Discover` 适合找出目前可处理的点、边或提供者。发现集合尚未完成时，不能据其缺项推出必然保证；如果结论确实依赖某个值，应使用 `Read` 建立必需读取。同一任务对同一事实的必需读取会升级此前的可选发现。已知值为空也不自动证明开放目录已经穷尽。
+
+channel 通常用 [`Ascending<JoinPolicy>` 或 `Descending<RefinePolicy>`](../crates/analysis-kernel/src/algebra.rs)声明发布顺序。直接实现 `PublicationPolicy` 时，`preserves_guarantees` 必须保证此前合法接纳的所有语义保证仍成立，其分类工作包含在 `work` 报价中。它只控制这次值更新的语义前提失效；版本、唤醒、写权限及来源/拓扑变化的独立失效规则仍然生效。
 
 ## 区分共享存储与代际存储
 
@@ -122,16 +128,18 @@ let policies = EnginePolicies::new(ContextInsensitive, MergeResumeStatus).with_s
 | 路由 | 查询/存储 | 键的作用域与寿命 |
 | --- | --- | --- |
 | `InputRoute = Here` | `Inputs<N>` | `Subject.scope` 下的只读、单次初始化输入 |
-| `RefinementRoute = There<Here>` | `Refinements` | 同一 scope 下合取的 `StackFacts` |
+| `RefinementRoute = There<Here>` | `Refinements` | 可执行 World/Body 的同一 scope 下合取 `StackFacts`；只读入口不提供可消费反馈 |
 | `There<There<P>>` | 客户端 `ExtraStores` 的第 `P` 个提供者 | 每个输入代际重建的本地 tail |
 | `SharedRoute<P>` | 客户端 `SharedStores` 的第 `P` 个提供者 | 整次分析只创建一次；跨点上升事实使用 `Input::universe()` |
 | `PointsRoute`、`GenerationRoute`、`TopologyRoute` | 内建点目录、当前代际与控制流关系 | 分析级 universe 下的共享观察 |
 | `CalleeRoute`、`ProcedureEntryRoute`、`ProcedureRoute` | 调用来源到过程、入口描述符、过程目录 | 分析级 universe 下的共享观察 |
-| `SummaryRoute`、`SubscriptionRoute`、`ContinuationRoute` | 过程输出、订阅目录、调用者模板 | 分析级 universe 下的共享观察 |
+| `SummaryRoute` | `Summaries<N>` 的增量 MAY 快照 | 分析级 universe；已发现输出，不证明完整性 |
+| `SummaryClosureRoute` | `SummaryClosures` 的闭合证书 | 绑定 native 输出代际，受整表证明的来源有效性保护 |
+| `SubscriptionRoute`、`ContinuationRoute` | 订阅目录、调用者模板 | 分析级 universe 下的共享观察 |
 
 [工厂接口](../crates/evm-abstract/src/analysis/cooperation/composition.rs)使用传入的同一个 `Kernel` 和 `Meter`。`with_stores(factory)` 将 `ExtraStores` 接到本地 tail；`with_shared_stores(factory)` 复用 `ExtraStores` 工厂装配分析级 `SharedStores`，并要求共享提供者支持 `ReclaimScope`。可同时选择两种存储。不要在工厂内创建另一份预算、启动另一次 `solve` 或复制旧代已收缩的保证。
 
-共享内建 `Inputs` 与 `Refinements` 可以按 scope 查询外部点；查询外部 scope 不会切换当前组件所持有的本地 `ExtraStores`。跨点自定义事实应显式放入共享 channel。共享寿命也不赋予旧事实新的有效性：其作用域、发布顺序与来源前提仍须正确。
+共享内建 `Inputs` 可以按 scope 查询外部点，可执行 World/Body 还可读取相应的 `Refinements`；查询外部 scope 不会切换当前组件所持有的本地 `ExtraStores`。跨点自定义事实应显式放入共享 channel。共享寿命也不赋予旧事实新的有效性：其作用域、发布顺序与来源前提仍须正确。
 
 类型和路由共同确定提供者。同一事实族可以有多个提供者，客户端分别读取或实现有明确语义的聚合器；内核不会按类型暗中选择第一个答案。缺少所需路由会使 Trait 约束不成立。
 
@@ -141,13 +149,21 @@ let policies = EnginePolicies::new(ContextInsensitive, MergeResumeStatus).with_s
 
 读取另一点的当前输入，应保存它的 `Point`，唤醒后重新调用 [`current_input`](../crates/evm-abstract/src/analysis/cooperation/query.rs)。这个函数依次跟踪 `Generations`、`ReadGeneration::current_generation` 和共享 `Inputs<N>`。旧 `Subject` 只指向历史代际。尚未注册的点、未播种或已失效的选择保留显式 `Pending`，不能拿旧 payload 补答。`Answer.version` 也不能单独充当有效性证书：提供者失效可以使答案变回 `Pending` 而不改变发布计数。
 
+同一模块的 `discover_input` 仅把最初的点目录查询改成可选发现。找到生产者以后，代际有效性与实际输入仍是必需读取；它不能将一个失效的已知输入当作可用值，也不能靠“可选”标记证明路径不存在。
+
 [跨点客户端](../crates/evm-abstract/tests/cooperation/global.rs)给出一个实际例子：来源点保留一个排除 `42` 的字，下一块计算 `g=(x==42)`，再把 `g` 带入执行 `JUMPI` 的块。提供者在共享 channel 发布来源字的覆盖性排除信息；消费者经 `Topology` 找到前驱，用 `current_input` 读取其当前输入并核对表达式身份，然后将 `g=0` 发布到本代反馈。测试用两种组件顺序及关闭反馈的对照检查真实 CFG。该证明还使用这段字节码的全部贡献来源，不能推广为“目前只发现一个前驱，所以其他前驱不存在”。
 
 `Topology` 的发现集合向上增长；新转移即使没有扩大目标的数值输入，也需要发布并唤醒读者。贡献族撤回不等于删除已记录的历史控制流边。
 
-过程导航从真实调用来源开始：`Callees` 给出 `ProcedureId`，`ProcedureEntries` 给出入口 `Point` 和 frame 描述，再通过 `current_input` 读取当前 payload。Procedure 的保留入口与 Body 准入后的输入有各自前提；后者不能替代前者的完整入口覆盖。接线见[导航接口](../crates/evm-abstract/src/analysis/cooperation/navigation.rs)和[过程发布适配](../crates/evm-abstract/src/analysis/transfer/procedure/cooperation.rs)。
+过程导航从真实调用来源开始：`Callees` 给出 `ProcedureId`，`ProcedureEntries` 给出 `PointKind::ProcedureEntry` 和 frame 描述，再通过 `current_input` 读取实际保留的入口。这个输入跟踪 Procedure 自己的 `entry_source`、payload 和 revision；多个 caller 或多个 Body key 不会把首个 Body 变成入口。该点只读，不注册 `PerInput` 任务，不创建本地 `ExtraStores`，也不初始化可消费的 `Refinements`。入口可用只说明其保留状态有效，不证明整个过程已闭合。[导航接口](../crates/evm-abstract/src/analysis/cooperation/navigation.rs)和[多 caller 客户端](../crates/evm-abstract/tests/cooperation/global/entries.rs)展示这条读取链，后者还断言入口增长及同块的多个 Body key。
 
-[`Summaries<N>`](../crates/evm-abstract/src/analysis/cooperation/global.rs)提供真实返回数据、store、输出代际、观察 revision 与独立的 `closed` 标记；`Continuations<N>` 提供调用者、callee、模板 revision 及实际 stack/store。`Procedures` 和 `Subscriptions` 用于发现键，不需要猜测内部表索引。[过程观察客户端](../crates/evm-abstract/tests/cooperation/global/procedures.rs)展示完整的公开读取链。缺失的输出种类尚未被发现；开放目录或一次返回观察都不是完整性证明，必须区分 payload 增长与生产求解的完成状态。
+[`Summaries<N>`](../crates/evm-abstract/src/analysis/cooperation/global.rs)提供增量 MAY 快照：解释器当前已计算的抽象返回数据与 store 上界、native 输出 `generation` 和观察 `revision`。MAY 可以包含实际不会发生的行为，不是具体执行存在的见证。缺失的输出种类尚未被发现，不能据此排除执行。普通必需 `Read` 等待首个快照，后续增长唤醒读者，不接纳闭合证明的作用域。[过程观察客户端](../crates/evm-abstract/tests/cooperation/global/procedures.rs)分别以必需读取和可选发现观察 MAY，断言两种模式都能稳定。`Continuations<N>` 另提供调用者、callee、模板 revision 及实际 stack/store；`Procedures` 和 `Subscriptions` 用于发现键。
+
+完整性由独立的 `SummaryClosures` 提供：以 `ProcedureId` 为键，值 `SummaryClosure { generation }` 绑定该过程的 native 输出代际。发布依据是同一 Kernel 内一个选中的整张相对执行表闭合证明，接口不承诺每个 callee 独立提前闭合。证明跟踪实际 Body 与贡献输入、native entry/output 及其他输入源槽，也跟踪来源成员变化；只有真正闭合后才发布证书。来源前提失效时，证书立即不可用并使受跟踪读取回到 `Pending`；相同代际的证书可以续证，不制造数值增长；只保存代际数值不保留证书有效性。它与只读入口输入的作用域分离，某个入口有效并不证明整表已闭合。
+
+要据完整输出收缩，使用公开 [`closed_summary<N,Cx>`](../crates/evm-abstract/src/analysis/cooperation/query.rs)：它必需读取快照和证书，检查 native 代际一致，返回 `ClosedSummaryResult<N,E>` 中的 `Answer<Arc<Summary<N>>>`。就绪的完整空输出表示没有终态贡献，不自动证明入口不可达。底层查询失败保留为 `SummaryReadError::Capability`；两份已就绪值代际不同则返回 `GenerationMismatch`。`Pending` 保留给真正尚未解决的底层读取。[摘要有效期客户端](../crates/evm-abstract/tests/cooperation/global/summary_validity.rs)在 Body 重算前读取完整摘要，断言旧闭合证明不可继续使用，并设有未变提供者的对照。
+
+若完整摘要只用于可选精度，`discover_closed_summary` 先发现证书；可用后才升级为快照与证书的必需读取，返回值遵守同一完整性契约。`Pending` 时要有独立成立的保守事实；不能从缺失证书推导保证。[反馈客户端](../crates/evm-abstract/tests/cooperation/global/deferred.rs)展示这种升级和独立依据。没有独立依据的必需闭合证明依赖环可以保持 `Pending`；必需读取未解决时，不能把本地结束当成共同 `Closed`。
 
 ## 全局覆盖、局部收缩与前提失效
 
@@ -161,7 +177,7 @@ let policies = EnginePolicies::new(ContextInsensitive, MergeResumeStatus).with_s
 
 来源这次没有贡献，也需要证据。[`withdraw_generation`](../crates/analysis-kernel/src/kernel/generation.rs)只用于**完整来源求值**确认该贡献族当前没有贡献；部分执行、必需读取未解决、资源拒绝或取消都不能撤回。撤回一个贡献族不等于整个点不可达，也不能抹掉其他提供者的贡献。[EVM 生命周期适配](../crates/evm-abstract/src/analysis/engine/cooperation/lifecycle.rs)检查来源版本和本地闭包后才执行这项操作，保留选择器身份以便将来安全重新激活。
 
-退役后还要释放本地任务、输入快照和 channel 中属于旧 scope 的值。共享 channel 通过 [`ReclaimScope`](../crates/analysis-kernel/src/reclamation.rs)只回收该 scope；分析级聚合值继续保留。`ExtraStores::retirement_work` 与 `Capability::drop_work` 必须覆盖释放的实际工作，不能因为克隆 `Arc` 很便宜就假定最后一个 owner 的销毁也便宜。客户端自行缓存语义事实时，同样需要完整前提身份与失效规则，不能只按 PC 复用。
+退役后还要释放本地任务、输入快照和 channel 中属于旧 scope 的值。共享 channel 通过 [`ReclaimScope`](../crates/analysis-kernel/src/reclaim.rs)只回收该 scope；分析级聚合值继续保留。回收逐 channel 原子；静态组合的后续提供者拒绝时，先前的回收仍保留，可安全重试同一退役 scope。`ExtraStores::retirement_work` 与 `Capability::drop_work` 必须覆盖释放的实际工作，不能因为克隆 `Arc` 很便宜就假定最后一个 owner 的销毁也便宜。客户端自行缓存语义事实时，同样需要完整前提身份与失效规则，不能只按 PC 复用。
 
 ## 未知、Pending、缺席与不可达
 
@@ -188,9 +204,21 @@ let policies = EnginePolicies::new(ContextInsensitive, MergeResumeStatus).with_s
 
 观察导入与闭包是不同工作。策略若提供 `refinement_import_work`，先支付导入，再按实际导入结果支付后续规约；新增 `MemberOf` 的集合可能比原输入大，原来的 atom 数不足以推导其闭包成本。未提供导入专用报价时，保留完整 `refinement_work` 的付款契约。具体接口见 [`EvmNumericAlgebra`](../crates/evm-abstract/src/domain/algebra.rs)。
 
-数值优化同样需要明确语义证书。`uniform_word_bytes(word)` 声明在**这一策略**下，32 个合法 `BYTE` 索引的结果等价，包含隐藏载体约束；可见形状相同或 `byte_quotes_uniform()` 报价相同都不能替代它。自定义策略默认拒绝这项证书，`ProductAlgebra` 也不会因选用了默认载体而自动继承更强的写入捷径。`pack_word_numeric` 则须等价于该策略约定的逐字节拼接，保留必需的自定义规约，并按 `pack_word_work` 先付费。
+数值优化同样需要明确语义证书。`uniform_word_bytes(word)` 声明在**这一策略**下，32 个合法 `BYTE` 索引的结果等价，包含隐藏载体约束；可见形状相同或 `byte_quotes_uniform()` 报价相同都不能替代它。自定义策略默认拒绝这项证书，`ProductAlgebra` 也不会因选用了默认载体而自动继承更强的写入捷径。`pack_word_numeric` 则须等价于该策略约定的逐字节拼接，保留必需的自定义规约，受计费调用按 `pack_word_work` 先付费，缺少报价则走普通路径。
 
-完整运算报价包含运算内部的查询；调用者之后独立查询返回载体的 singleton，仍需按实际 `singleton_work` 付费。不能从内建载体查询便宜推断自定义载体也便宜，也不能重复收取完整报价已经覆盖的内部查询。缺失的报价不代表免费；例如 `literal_quote_work` 默认以 `usize::MAX` 在构造前拒绝。
+这些证书只声明数值语义。[`EvmValue`](../crates/evm-abstract/src/domain/value.rs) 将数值约束、provenance、身份和表达式分层保存：数值相同不能建立源身份，来源相同也不能建立值身份。内存字节的表达式与来源仍须按真实操作保留，不能用 uniform-byte 或拼接证书替代其来源证明。
+
+例如，`MLOAD` 已付费的内容证明给出零时，可以保留字面值 `0`，来源仍是 `Memory`。[外部来源与回滚见证](../crates/evm-abstract/tests/issue13_review.rs)将实际 `MLOAD` 数值检查到完成的 `SSTORE` 和后续存储读取。算术运算已获得的单值证明也只针对这次输入下的当前结果，不能按 opcode 跨输入复用。
+
+`WordElement` 的纯方法不自动计费。保留/遍历大小 `work_size` 与实际元素的复制报价 `clone_work` 是两个契约；自定义深复制可以更贵，不能普遍用保留大小代替它。未被完整运算报价覆盖的派生结果复制，须在构造后按实际结果自己的 `clone_work` 付款，或转移所有权避免复制。输入报价的倍数不能自动证明已覆盖新结果，标准观察也不是完整载体副本。
+
+[`SharedCheckpoint`](../crates/snapshot-state/src/shared_checkpoint.rs) 的句柄克隆只共享已保存版本；恢复为可写 Store 时，独占版本可以移动，共享版本则需要实际 Store 复制。句柄复制费用不能代替这次完整载荷复制的报价。
+
+完整运算报价包含运算内部的查询；前后独立查询 singleton，要先付实际 `singleton_work`，独立导出观察或做成员判断（`contains`）则要支付覆盖该查询的 `work_size`。复制和保留费用不预付之后的查询。
+
+同一不可变载体的已获答案可以复用，构造或运算协议也可以传递针对当前结果的证书。值改变后需要新结果自己的证明或一次已付款的查询。查询前后都要检查取消，不能发布取消后取得的证明。
+
+不能从内建载体查询便宜推断自定义载体也便宜，也不能重复收取完整报价已覆盖的内部查询。缺失的报价不代表免费；受计费路径中的 `literal_quote_work` 默认以 `usize::MAX` 在构造前拒绝。没有账本的纯库调用由调用者承担工作。
 
 局部结果必须连同结束原因读取：精度轮数/事实容量限制保留安全的已完成结果，`WorkLimit`、`Cancelled`、`KernelFailure` 分别记录工作中断、取消与协议失败，不能都解释为“规则已稳定”。原生报告 schema 为 [11](../crates/evm-abstract/src/analysis.rs)，wire schema 为 [16](../crates/evm-abstract-protocol/src/lib.rs)，`DomainSpec` 的成本版本为 [6](../crates/evm-abstract/src/domain/spec.rs)；报告格式与逻辑工作单位各自有版本。
 
