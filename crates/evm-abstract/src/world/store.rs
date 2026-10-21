@@ -760,12 +760,26 @@ impl<N: WordElement> EvmStore<N> {
     }
 
     /// Replace an account balance after a modeled transfer.
-    pub fn write_balance(&mut self, address: Address, mut value: EvmValue<N>) {
+    pub fn write_balance(&mut self, address: Address, value: EvmValue<N>) {
+        let nonzero = value.may_be_nonzero();
+        let zero = nonzero && value.may_be_zero();
+        self.write_balance_with_truth(address, value, zero, nonzero);
+    }
+
+    /// Install the same value whose zero/nonzero possibilities the executable
+    /// caller has already prepared. Metadata changes do not require discovery.
+    pub(crate) fn write_balance_with_truth(
+        &mut self,
+        address: Address,
+        mut value: EvmValue<N>,
+        zero: bool,
+        nonzero: bool,
+    ) {
         value.forget_identity();
         // A positive transfer establishes account presence. A joined balance
         // containing zero cannot discard the possibility of an absent account.
-        if value.may_be_nonzero() {
-            if !value.may_be_zero() {
+        if nonzero {
+            if !zero {
                 self.mark_present(address);
             } else if self.existence(address) == Existence::Absent {
                 self.existence.insert(address, Existence::Unknown);
@@ -966,35 +980,91 @@ impl<N: WordElement> EvmStore<N> {
         beneficiary: Address,
         domain: AlgebraRef<'_, D>,
     ) {
+        let result: Result<(), std::convert::Infallible> =
+            self.selfdestruct_classified_with(address, beneficiary, domain, None, |value, _| {
+                let nonzero = value.may_be_nonzero();
+                let zero = nonzero && value.may_be_zero();
+                Ok((value, zero, nonzero))
+            });
+        result.unwrap_or_else(|never| match never {});
+    }
+
+    /// Execute using paid classification of this store's unchanged owner
+    /// balance. The dispatcher retains both zero and nonzero possibilities;
+    /// these facts must be prepared before any transfer or lifecycle effect.
+    pub(crate) fn selfdestruct_with_balance_truth<D: EvmNumericAlgebra<Element = N>, E>(
+        &mut self,
+        address: Address,
+        beneficiary: Address,
+        domain: AlgebraRef<'_, D>,
+        zero: bool,
+        nonzero: bool,
+        prepare: impl FnMut(
+            EvmValue<N>,
+            crate::domain::SingletonProof,
+        ) -> Result<(EvmValue<N>, bool, bool), E>,
+    ) -> Result<(), E> {
+        self.selfdestruct_classified_with(
+            address,
+            beneficiary,
+            domain,
+            Some((zero, nonzero)),
+            prepare,
+        )
+    }
+
+    fn selfdestruct_classified_with<D: EvmNumericAlgebra<Element = N>, E>(
+        &mut self,
+        address: Address,
+        beneficiary: Address,
+        domain: AlgebraRef<'_, D>,
+        truth: Option<(bool, bool)>,
+        mut prepare: impl FnMut(
+            EvmValue<N>,
+            crate::domain::SingletonProof,
+        ) -> Result<(EvmValue<N>, bool, bool), E>,
+    ) -> Result<(), E> {
         let balance = self.read_balance(address);
         let created = self.created_in_transaction(address);
         if address != beneficiary {
-            self.touch_account(beneficiary);
             let recipient = self.read_balance(beneficiary);
-            self.write_balance(
-                beneficiary,
-                domain.apply(revm_bytecode::opcode::ADD, &[recipient, balance.clone()]),
+            let (reduced, proof) = domain.apply_detailed_with_singleton(
+                revm_bytecode::opcode::ADD,
+                &[recipient, balance.clone()],
             );
-            self.write_balance(address, EvmValue::<N>::constant(U256::ZERO));
-            if !balance.may_be_zero() {
+            let (recipient, zero, nonzero) = prepare(reduced.value, proof)?;
+            self.touch_account(beneficiary);
+            self.write_balance_with_truth(beneficiary, recipient, zero, nonzero);
+            self.write_balance_with_truth(
+                address,
+                EvmValue::<N>::constant(U256::ZERO),
+                true,
+                false,
+            );
+            let (zero, nonzero) = truth.unwrap_or_else(|| {
+                let zero = balance.may_be_zero();
+                (zero, zero && balance.may_be_nonzero())
+            });
+            if !zero {
                 self.mark_present(beneficiary);
-            } else if balance.may_be_nonzero() && self.existence(beneficiary) != Existence::Present
-            {
+            } else if nonzero && self.existence(beneficiary) != Existence::Present {
                 self.existence.insert(beneficiary, Existence::Unknown);
             }
         } else if created != Some(false) {
-            self.write_balance(
-                address,
-                if created == Some(true) {
-                    EvmValue::<N>::constant(U256::ZERO)
-                } else {
-                    domain.join(&balance, &EvmValue::<N>::constant(U256::ZERO))
-                },
-            );
+            let (value, zero, nonzero) = if created == Some(true) {
+                (EvmValue::<N>::constant(U256::ZERO), true, false)
+            } else {
+                prepare(
+                    domain.join(&balance, &EvmValue::<N>::constant(U256::ZERO)),
+                    crate::domain::SingletonProof::NotQueried,
+                )?
+            };
+            self.write_balance_with_truth(address, value, zero, nonzero);
         }
         if created != Some(false) {
             self.pending_destruction.insert(address, created);
         }
+        Ok(())
     }
 
     /// Commit deferred EIP-6780 deletion and EIP-161 touched-empty clearing.
