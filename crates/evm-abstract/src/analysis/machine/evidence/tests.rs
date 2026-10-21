@@ -269,14 +269,27 @@ fn result_observations_preserve_small_work_budget_receipts() {
     let push_setup_work = ValueAlgebra::new(domain)
         .literal_quote_work(pushed)
         .saturating_add(AbstractValue::constant(pushed).clone_work());
+    let mut stop_payload = initial.clone();
+    stop_payload
+        .active_mut()
+        .stack
+        .push(AbstractValue::constant(pushed));
+    // Price STOP's actual owned input independently of a successful transfer.
+    // Its clone payer includes census work that stays paid on later refusal.
+    let mut stop_copy_budget = WorkBudget::new(config.max_work);
+    stop_payload.pay_clone_with(&mut stop_copy_budget).unwrap();
+    let stop_copy_work = stop_copy_budget.used();
+    assert!(stop_copy_work > 0);
     // Keep the declared PUSH factory/receipt setup separate from entry
     // admission and semantic visits. STOP costs one visit plus its operation,
-    // then needs checked finalization before it can install an outcome.
-    for (semantic_work, expected_pcs, expected_progress) in [
-        (0, vec![], vec![]),
-        (1, vec![0], vec![InstructionProgress::Completed]),
+    // then pays the owned input copy before dispatch and checked finalization
+    // before installing an outcome. Neither copy refusal reaches Dispatched.
+    for (semantic_work, copy_allowance, expected_pcs, expected_progress) in [
+        (0, 0, vec![], vec![]),
+        (1, 0, vec![0], vec![InstructionProgress::Completed]),
         (
             2,
+            0,
             vec![0, 2],
             vec![
                 InstructionProgress::Completed,
@@ -285,6 +298,25 @@ fn result_observations_preserve_small_work_budget_receipts() {
         ),
         (
             3,
+            0,
+            vec![0, 2],
+            vec![
+                InstructionProgress::Completed,
+                InstructionProgress::OperandsConsumed,
+            ],
+        ),
+        (
+            3,
+            stop_copy_work - 1,
+            vec![0, 2],
+            vec![
+                InstructionProgress::Completed,
+                InstructionProgress::OperandsConsumed,
+            ],
+        ),
+        (
+            3,
+            stop_copy_work,
             vec![0, 2],
             vec![
                 InstructionProgress::Completed,
@@ -297,7 +329,14 @@ fn result_observations_preserve_small_work_budget_receipts() {
         } else {
             push_setup_work
         };
-        let maximum = admission + setup_work + semantic_work;
+        let mut copy_budget = WorkBudget::new(copy_allowance);
+        if semantic_work == 3 {
+            assert_eq!(
+                stop_payload.pay_clone_with(&mut copy_budget).is_ok(),
+                copy_allowance == stop_copy_work
+            );
+        }
+        let maximum = admission + setup_work + semantic_work + copy_allowance;
         let mut budget = WorkBudget::new(maximum);
         let execution = transfer::execute(
             &world,
@@ -310,8 +349,10 @@ fn result_observations_preserve_small_work_budget_receipts() {
             StorageReadPolicy::Abstract,
         );
         assert!(budget.exhausted());
-        assert_eq!(budget.used(), maximum);
-        assert_eq!(budget.used() - admission - setup_work, semantic_work);
+        assert_eq!(
+            budget.used(),
+            admission + setup_work + semantic_work + copy_budget.used()
+        );
         assert_eq!(execution.executed_pcs, expected_pcs);
         assert_eq!(execution.instruction_progress, expected_progress);
         assert!(execution.successors.is_empty());
@@ -355,6 +396,9 @@ fn result_observations_preserve_small_work_budget_receipts() {
             }
         );
         assert_eq!(execution.payload.store, initial.store);
+        if semantic_work > 0 {
+            assert_eq!(execution.payload, stop_payload);
+        }
     }
 
     // Derive the cleanup fee from the checked lifecycle path used by STOP,
@@ -375,7 +419,8 @@ fn result_observations_preserve_small_work_budget_receipts() {
             .finalize_transaction_checked(domain, None, &mut cleanup_budget)
             .is_ok();
         assert_eq!(completed, remaining == finalization_work);
-        let mut budget = WorkBudget::new(admission + push_setup_work + 3 + remaining);
+        let dispatched_work = admission + push_setup_work + 3 + stop_copy_work;
+        let mut budget = WorkBudget::new(dispatched_work + remaining);
         let execution = transfer::execute(
             &world,
             &entry,
@@ -386,10 +431,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
             &mut budget,
             StorageReadPolicy::Abstract,
         );
-        assert_eq!(
-            budget.used(),
-            admission + push_setup_work + 3 + cleanup_budget.used()
-        );
+        assert_eq!(budget.used(), dispatched_work + cleanup_budget.used());
         assert_eq!(budget.exhausted(), !completed);
         assert_eq!(execution.executed_pcs, vec![0, 2]);
         assert_eq!(

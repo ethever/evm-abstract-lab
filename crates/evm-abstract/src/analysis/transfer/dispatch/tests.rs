@@ -980,8 +980,29 @@ fn create_old_msize_discovery_is_paid_once_and_stops_before_metadata_installatio
     let fixture = fixture("f000", false);
     let offset = word(1).with_expression(ExprId::constant(U256::ONE));
     let size = word(1).with_expression(ExprId::constant(U256::ONE));
+    let certified = fixture.input.active().memory.clone();
+    let zero_proof = ExprId::constant(U256::ZERO);
+    assert_eq!(certified.len().expression(), Some(&zero_proof));
+    assert!(certified.default_byte().expression().is_none());
+    let mut uncertified = certified.clone();
+    let mut cleared = 0;
+    // Model the same opaque zero MSIZE without the constructor's optional
+    // certificate. Only forget that proof; keep N, source and byte state intact.
+    // Setup queries run outside the counter scopes used for paid discovery.
+    uncertified.update_values(&mut |value| {
+        if value.expression() == Some(&zero_proof) {
+            value.forget_expression();
+            cleared += 1;
+        }
+    });
+    assert_eq!(cleared, 1);
+    assert!(uncertified.len().expression().is_none());
+    let mut restored = uncertified.clone();
+    restored.retain_length_literal(zero_proof.clone());
+    assert_eq!(restored, certified);
     for stop in 0..5 {
         let mut result = empty_execution(fixture.input.clone());
+        result.payload.active_mut().memory = uncertified.clone();
         let before = result.payload.active().memory.clone();
         let _receipt = RECEIPT.scope();
         RECEIPT.update(|receipt| {
@@ -1004,6 +1025,8 @@ fn create_old_msize_discovery_is_paid_once_and_stops_before_metadata_installatio
         assert_eq!(RECEIPT.get().queries, usize::from(stop == 0 || stop == 4));
         if stop == 0 {
             assert_eq!(answer, Ok(()));
+            assert!(!budget.exhausted());
+            assert!(budget.used() > 1_000_000);
             assert_eq!(
                 result.payload.active().memory.len().numeric().exact(),
                 Some(U256::from(32))
@@ -1021,8 +1044,39 @@ fn create_old_msize_discovery_is_paid_once_and_stops_before_metadata_installatio
             assert_eq!(budget.used(), if stop == 4 { 1_000_000 } else { 0 });
         }
     }
+    // The unchanged constructor proof also covers nonempty allocation. Even
+    // a refusing/cancelling opaque query must be unnecessary on this path.
+    {
+        let mut result = empty_execution(fixture.input.clone());
+        let _receipt = RECEIPT.scope();
+        RECEIPT.update(|receipt| {
+            receipt.watch_word = Some(U256::ZERO);
+            receipt.fee = usize::MAX;
+            receipt.on_quote = true;
+            receipt.on_query = true;
+        });
+        let token = analysis_control::Cancellation::new();
+        let mut budget = WorkBudget::new(fixture.config.max_work);
+        analysis_control::with_cancellation(&token, || {
+            transfer::create::expand_prepared(
+                &mut result,
+                &offset,
+                &size,
+                &mut context(&fixture, &mut budget),
+            )
+        })
+        .unwrap();
+        assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
+        assert!(!token.is_cancelled());
+        assert!(!budget.exhausted());
+        assert_eq!(
+            result.payload.active().memory.len().numeric().exact(),
+            Some(U256::from(32))
+        );
+    }
     // Empty creation cannot change MSIZE, even when its discovery is refused.
     let mut result = empty_execution(fixture.input.clone());
+    result.payload.active_mut().memory = uncertified.clone();
     let _receipt = RECEIPT.scope();
     RECEIPT.update(|receipt| {
         receipt.watch_word = Some(U256::ZERO);
@@ -1037,10 +1091,7 @@ fn create_old_msize_discovery_is_paid_once_and_stops_before_metadata_installatio
     )
     .unwrap();
     assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
-    assert_eq!(
-        result.payload.active().memory,
-        fixture.input.active().memory
-    );
+    assert_eq!(result.payload.active().memory, uncertified);
 }
 
 #[test]
