@@ -17,17 +17,41 @@
 //! builtin routes. Each factory uses the same kernel/meter and creates fresh
 //! channels for that input universe. Client providers and consumers select their
 //! own static routes with the kernel's Cons/Here/There vocabulary; no capability
-//! type registry or alternate solver is involved.
+//! type registry or alternate solver is involved. [`SharedStores`] supplies a
+//! separate once-per-run client tail selected with [`SharedRoute`]; querying a
+//! foreign Scope never switches a generation-owned ExtraStores tail.
+//!
+//! [`current_input`] resolves a public point through [`Generations`] and the
+//! kernel's tracked current-generation selector, then reads the shared native
+//! Inputs channel. Retain the structural Point for later queries, rather than
+//! using an old Subject as a live selector. Native slot growth and adopted
+//! foreign assumption growth retire dependent local scopes before their old
+//! guarantees can be consumed again. Same-universe descending improvements and
+//! selector movement wake readers without inventing a larger universe.
+//!
+//! [`Points`], [`Topology`], [`Procedures`] and [`Subscriptions`] are open discovery
+//! observations. Value, ready-empty, Pending and explicit absence have distinct
+//! meanings; an unfinished discovery set is never a completeness certificate.
+//! Sound feedback either follows an independently valid invariant or covers all
+//! executions in its declared frozen contributor universe. In particular, a
+//! cyclic rule cannot use a missing predecessor/provider as a proof that an
+//! undiscovered feasible path is absent. Native summary bounds and continuation
+//! templates expose payloads and revisions separately from completion metadata.
 
 mod composition;
 mod entry;
 mod error;
 mod facts;
+mod global;
 mod input;
+mod navigation;
+mod ports;
+mod query;
 mod refinement;
 
 pub use composition::{
     Extension, ExtraStores, InputTasks, NoExtension, NoStores, NoTasks, PairedTasks, PerInput,
+    SharedStores,
 };
 pub use entry::{
     analyze_world_cooperating, analyze_world_cooperating_with_control,
@@ -35,12 +59,23 @@ pub use entry::{
 };
 pub use error::CooperationError;
 pub use facts::{Refinements, StackFacts, StackMeet};
+pub use global::Topology;
+pub use global::{
+    Continuation, ContinuationId, Continuations, Direction, Edge, Generations, Neighbors, Points,
+    ProcedureId, Procedures, Subscriptions, Summaries, Summary, SummaryOutput,
+};
 pub use input::{
     ImmutableInputPolicy, Input, InputAlreadyInitialized, Inputs, Point, PointKind, Subject,
 };
+pub use navigation::{Callees, ProcedureEntries, ProcedureInfo};
+pub use ports::{
+    CalleeRoute, ContinuationRoute, GenerationRoute, PointsRoute, Ports, ProcedureEntryRoute,
+    ProcedureRoute, SharedRoute, SubscriptionRoute, SummaryRoute, TopologyRoute,
+};
+pub use query::{current_input, discover_input};
 pub use refinement::{InitializationError, LocalInput, RefinementError};
 
-use analysis_kernel::{Channel, Cons, Context, Descending, Here, Nil, There};
+use analysis_kernel::{Context, Here, Nil, There};
 
 pub use super::worklist::{MachineMeter as EvmMeter, runtime::Task as EvmTask};
 
@@ -49,25 +84,19 @@ pub type InputRoute = Here;
 /// Explicit route of generation-local entailed stack guarantees.
 pub type RefinementRoute = There<Here>;
 
-/// Typed stores shared by interpreter consumers and independent components.
-/// Input cells are initialized before extension jobs can run. The second route
-/// requires explicit registered initialization and reduction authority.
-pub type Ports<N, Tail = Nil> = Cons<
-    Channel<Inputs<N>, ImmutableInputPolicy<N>>,
-    Cons<Channel<Refinements, Descending<StackMeet>>, Tail>,
->;
-
 /// The kernel's actual static capability context, parameterized over the host
 /// task and meter. `Registered` retains its original sealed authority protocol.
-pub type PortsContext<'r, 'k, J, M, N, Tail = Nil> = Context<'r, 'k, J, M, Ports<N, Tail>>;
+pub type PortsContext<'r, 'k, J, M, N, Tail = Nil, Global = Nil> =
+    Context<'r, 'k, J, M, Ports<'r, N, Tail, Global>>;
 
 /// Actual production capability context. It uses the engine's shared task sum
 /// and original root ledger; independently authored components can instead be
 /// generic over only their required Read/Accepts/Charges capabilities.
-pub type EvmContext<'r, 'k, 'm, N, T, Tail = Nil> =
-    PortsContext<'r, 'k, EvmTask<T>, EvmMeter<'m>, N, Tail>;
+pub type EvmContext<'r, 'k, 'm, N, T, Tail = Nil, Global = Nil> =
+    PortsContext<'r, 'k, EvmTask<T>, EvmMeter<'m>, N, Tail, Global>;
 
-pub(crate) use refinement::{apply_refinements, create_ports, initialize, read_refinements};
+pub(crate) use global::Shared;
+pub(crate) use refinement::{apply_refinements, initialize, read_refinements};
 
 #[cfg(test)]
 mod tests;

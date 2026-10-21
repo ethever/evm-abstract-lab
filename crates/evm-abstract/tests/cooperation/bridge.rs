@@ -2,9 +2,9 @@
 #[path = "bridge/extra.rs"]
 mod extra;
 #[path = "bridge/fixture.rs"]
-mod fixture;
+pub(super) mod fixture;
 #[path = "bridge/rule.rs"]
-mod rule;
+pub(super) mod rule;
 
 use super::{
     fixtures,

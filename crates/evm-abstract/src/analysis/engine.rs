@@ -200,13 +200,13 @@ pub(super) fn run_world_with<D: EvmNumericAlgebra, C: ContextPolicy, P: Partitio
 }
 
 /// Join the real interpreter with a caller-owned static analyzer assembly.
-pub(super) fn run_world_cooperating<D, C, P, A, S, F, E>(
+pub(super) fn run_world_cooperating<D, C, P, A, S, F, G, E>(
     world: EvmWorld<D::Element>,
     entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     domain: AlgebraRef<'_, D>,
     policies: &EnginePolicies<C, P>,
-    extension: &mut Extension<A, S, F>,
+    extension: &mut Extension<A, S, F, G>,
     observer: &super::progress::Observer,
 ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>>
 where
@@ -215,8 +215,13 @@ where
     P: PartitionPolicy,
     S: InputTasks,
     F: ExtraStores,
-    for<'r, 'k, 'm> A:
-        Analyzer<EvmContext<'r, 'k, 'm, D::Element, S::Task, F::Stores>, Task = S::Task, Error = E>,
+    G: ExtraStores,
+    G::Stores: analysis_kernel::ReclaimScope,
+    for<'r, 'k, 'm> A: Analyzer<
+            EvmContext<'r, 'k, 'm, D::Element, S::Task, F::Stores, G::Stores>,
+            Task = S::Task,
+            Error = E,
+        >,
 {
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::with_observer(observer);
@@ -667,6 +672,9 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
     fn stop_queued(&mut self, reason: FrontierReason) {
         self.observe_terminal_boundary(&reason);
         let pending: Vec<_> = self.runtime.pending_world().collect();
+        if pending.is_empty() && self.result.frontiers.is_empty() {
+            self.frontier(None, None, reason.clone());
+        }
         for id in pending {
             self.frontier(
                 None,
@@ -724,6 +732,54 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 }
                 continue;
             }
+            if matches!(
+                &task.0,
+                TaskKind::Body(_) | TaskKind::Resume(_) | TaskKind::SummaryObservation
+            ) {
+                let frontiers = self.procedures.resume_task(
+                    task,
+                    token,
+                    &self.result.world,
+                    &self.result.entry,
+                    &self.result.config,
+                    self.domain,
+                    self.policies,
+                    self.budget,
+                    self.counters,
+                    self.storage_reads,
+                    &mut self.runtime,
+                    self.cooperation.as_mut().ok_or(MachineError::Shape)?,
+                );
+                self.result.transfers = self.counters.transfers;
+                let global_stop = frontiers.iter().find_map(|frontier| {
+                    matches!(
+                        &frontier.reason,
+                        FrontierReason::Work
+                            | FrontierReason::SummaryWork
+                            | FrontierReason::Budget(_)
+                            | FrontierReason::Relations(
+                                crate::domain::relational::QueryReason::Cancelled
+                            )
+                    )
+                    .then(|| frontier.reason.clone())
+                });
+                for frontier in frontiers {
+                    self.observe_terminal_boundary(&frontier.reason);
+                    self.result.frontiers.push(EvmMachineFrontier {
+                        from: None,
+                        target: frontier.target,
+                        pc: Some(frontier.pc),
+                        reason: frontier.reason,
+                        range: frontier.range,
+                        payload: frontier.payload,
+                    });
+                }
+                if let Some(reason) = global_stop {
+                    self.stop_queued(reason);
+                    return Ok(None);
+                }
+                continue;
+            }
             let TaskKind::World { node: id, .. } = &task.0 else {
                 return Err(MachineError::Shape);
             };
@@ -762,14 +818,27 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     answer.version,
                     0,
                     None,
+                    None,
                     input,
                     self.domain,
                     &mut self.runtime,
                     self.active.as_mut().ok_or(MachineError::Shape)?,
                     self.budget,
+                    |run| {
+                        let observed = run.observe_slot(&self.inputs[id])?;
+                        if observed != answer.version {
+                            return Err(analysis_kernel::KernelError::InvalidHandle);
+                        }
+                        Ok(())
+                    },
                 )
                 .map_err(|error| cooperation.stop(error, self.budget))?;
             match view {
+                LocalInput::Deferred => {
+                    self.runtime
+                        .finish(self.active.take().ok_or(MachineError::Shape)?, self.budget)?;
+                    self.active_node = None;
+                }
                 LocalInput::Reachable { payload, limited } => {
                     let work = limited.len().saturating_mul(16);
                     if !self.budget.charge(work) {
@@ -797,6 +866,13 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     state.executed_pcs = Vec::new();
                     state.execution_evidence =
                         Some(EvmExecutionEvidence::new(Vec::new(), Vec::new()));
+                    cooperation
+                        .complete_native(
+                            &mut self.runtime,
+                            self.active.as_mut().ok_or(MachineError::Shape)?,
+                            self.budget,
+                        )
+                        .map_err(|error| cooperation.stop(error, self.budget))?;
                     self.runtime
                         .finish(self.active.take().ok_or(MachineError::Shape)?, self.budget)?;
                 }
@@ -828,6 +904,7 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                     break;
                 }
             };
+            let frontiers_before = self.result.frontiers.len();
             self.counters.report(self.budget.used());
             if let Some(reason) = transfer_stop(
                 self.result.transfers,
@@ -928,6 +1005,18 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
                 )
             });
             self.cache = cache;
+            if X::ENABLED && self.result.frontiers.len() == frontiers_before {
+                let cooperation = self.cooperation.as_mut().expect("composition owner");
+                if let Err(error) = cooperation.complete_native(
+                    &mut self.runtime,
+                    self.active.as_mut().expect("complete world evaluation"),
+                    self.budget,
+                ) {
+                    let error = cooperation.stop(error, self.budget);
+                    self.stop_pending(id, error.frontier_reason());
+                    break;
+                }
+            }
             if let Some(token) = self.active.take()
                 && let Err(error) = self.runtime.finish(token, self.budget)
             {
@@ -1267,6 +1356,32 @@ impl<D: EvmNumericAlgebra, C: ContextPolicy, P: PartitionPolicy, X: Composition<
             to,
             kind: successor.kind,
         });
+        if X::ENABLED {
+            let edge = super::cooperation::Edge {
+                from: super::cooperation::Point {
+                    namespace: 0,
+                    kind: super::cooperation::PointKind::World,
+                    index: from,
+                },
+                to: super::cooperation::Point {
+                    namespace: 0,
+                    kind: super::cooperation::PointKind::World,
+                    index: to,
+                },
+                kind: successor.kind,
+            };
+            let cooperation = self.cooperation.as_mut().expect("cooperation owner");
+            if let Err(error) = cooperation.edge(
+                edge,
+                &mut self.runtime,
+                self.active.as_mut().expect("active world publisher"),
+                self.budget,
+            ) {
+                let error = cooperation.stop(error, self.budget);
+                self.frontier(Some(from), None, error.frontier_reason());
+                return None;
+            }
+        }
         self.record_successor(from, to, successor.kind);
         Some(to)
     }

@@ -48,6 +48,9 @@ impl JoinPolicy for Fixed {
 struct Stores(Rc<Cell<usize>>);
 impl ExtraStores for Stores {
     type Stores = Cons<Channel<KnownStack, Ascending<Fixed>>, Nil>;
+    fn retirement_work(&self, stores: &Self::Stores) -> usize {
+        stores.head.len().saturating_mul(16).saturating_add(1)
+    }
     fn create<J, M: Meter>(
         &self,
         kernel: &mut Kernel<J>,
@@ -177,6 +180,7 @@ fn run(exhaust: bool) -> (crate::analysis::WorldAnalysis, usize, usize, usize) {
         ),
         tasks: PairedTasks::new(PerInput, PerInput),
         stores: Stores(Rc::clone(&factories)),
+        shared: crate::analysis::cooperation::NoStores,
     };
     let algebra = ValueAlgebra::new(Domain::default());
     let result = analyze_world_cooperating(
@@ -241,3 +245,9 @@ fn external_ledger_refusal_after_feedback_keeps_the_honest_partial_report() {
     );
     assert!(result.work() <= result.config().max_work);
 }
+
+#[path = "tests/lifetime.rs"]
+mod lifetime;
+
+#[path = "tests/shared.rs"]
+mod shared;

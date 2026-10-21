@@ -103,6 +103,7 @@ struct EvmNode<N: WordElement> {
 }
 
 struct EvmProcedure<N: WordElement, Tag: Clone + Ord> {
+    namespace: usize,
     frame: FrameKey,
     entry: usize,
     // A real CALL continuation keeps success/failure separate for one block.
@@ -146,6 +147,9 @@ pub(in crate::analysis) struct EvmTable<N: WordElement, Tag: Clone + Ord = Optio
     subscribers: Vec<EvmSubscriber<N>>,
     subscribers_by_key: BTreeMap<(usize, usize), usize>,
     frontiers: Vec<EvmExecutionFrontier<N>>,
+    // Moving deferred frontier payloads to the outer result does not erase the
+    // relation's incompleteness or make its native completion observation true.
+    incomplete: bool,
     /// Query precision losses in this relation, reported at the outer summary
     /// site instead of assigning callback PCs to an invented Unknown opcode.
     precision_losses: BTreeSet<DiagnosticKind>,
@@ -173,6 +177,7 @@ impl<N: WordElement, Tag: Clone + Ord> Default for EvmTable<N, Tag> {
             subscribers: Vec::new(),
             subscribers_by_key: BTreeMap::new(),
             frontiers: Vec::new(),
+            incomplete: false,
             precision_losses: BTreeSet::new(),
             propagations: 0,
             reused: 0,
@@ -201,9 +206,11 @@ struct EvmSolver<
     runtime: &'a mut Runtime<<X as InputTasks>::Task>,
     cooperation: &'a mut Cooperation<D::Element, X, E>,
     active: Option<RunningJob>,
-    caller: &'a mut RunningJob,
+    caller: Option<&'a mut RunningJob>,
     namespace: usize,
     producer: Option<Producer>,
+    deferred: bool,
+    consumed: Option<crate::analysis::cooperation::Subject>,
 }
 
 impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
@@ -265,9 +272,11 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
             runtime,
             cooperation,
             active: None,
-            caller,
+            caller: Some(caller),
             namespace,
             producer: None,
+            deferred: false,
+            consumed: None,
         };
         let detached = EvmMachinePayload {
             call_stack: EvmCallStack::new(EvmRootFrame {
@@ -283,13 +292,33 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
                 None
             }
         };
+        if let Some(root) = root
+            && let Err(error) = solver.observe_origin(
+                crate::analysis::cooperation::Point {
+                    namespace: 0,
+                    kind: crate::analysis::cooperation::PointKind::World,
+                    index: source_state,
+                },
+                root,
+            )
+        {
+            super::boundary(&mut result, 0, error.frontier_reason());
+        }
         solver.run();
+        let relative_closed = match solver.runtime.relative_closed(solver.budget) {
+            Ok(closed) => closed,
+            Err(error) => {
+                super::boundary(&mut result, 0, error.frontier_reason());
+                false
+            }
+        };
         if kind == ProcedureSummaryKind::KnownRecursion
             && let Some(root) = root
             && solver.table.procedures[root].outputs.is_empty()
             && !solver.table.nodes[solver.table.procedures[root].entry].excluded
-            && solver.runtime.relative_closed()
+            && relative_closed
             && solver.table.frontiers.is_empty()
+            && !solver.table.incomplete
         {
             // Folding physical depth cannot certify empty finite behavior.
             // CALL rejection normally supplies real continuation-derived exits;
@@ -305,12 +334,14 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
                 .fold(1usize, |work, output| work.saturating_add(output.work));
             // Reading even an empty output relation retains the outer consumer.
             // A later callee publication then wakes this exact World job.
-            let outputs = solver
-                .runtime
-                .with_run(solver.caller, solver.budget, |run| {
+            let outputs = solver.runtime.with_run(
+                solver.caller.as_deref_mut().expect("outer caller"),
+                solver.budget,
+                |run| {
                     run.read_slot(&procedure.output, &procedure.outputs, output_work)
                         .map_err(kernel_failure)
-                });
+                },
+            );
             let outputs = match outputs {
                 Ok(answer) => match answer.state {
                     Availability::Value(outputs) => outputs,
@@ -475,9 +506,7 @@ impl<N: WordElement, Tag: Clone + Ord> EvmTable<N, Tag> {
                 Vec::new()
             }
         };
-        let closed = solver.runtime.relative_closed()
-            && solver.cooperation.settled(solver.runtime)
-            && result.frontiers.is_empty();
+        let closed = relative_closed && result.frontiers.is_empty() && !solver.table.incomplete;
         let record = EvmProcedureSummaryRecord {
             source_state,
             kind,

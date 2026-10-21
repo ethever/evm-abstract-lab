@@ -105,7 +105,7 @@ fn caller_growth_redelivers_an_unchanged_callee_generation() {
             .any(|task| task == TaskKind::Resume(subscriber))
     );
     solver.run();
-    assert!(solver.runtime.relative_closed());
+    assert!(solver.runtime.relative_closed(solver.budget).unwrap());
     assert!(
         solver.table.frontiers.is_empty(),
         "{:?}",

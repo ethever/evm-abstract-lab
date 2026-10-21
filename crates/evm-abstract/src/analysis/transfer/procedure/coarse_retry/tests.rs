@@ -200,7 +200,7 @@ fn real_worklist_counts_both_attempts_and_only_actually_covered_blocks() {
             .outputs
             .contains_key(&OutcomeKind::Return)
     );
-    assert!(h.table.runtime.relative_closed());
+    assert!(h.table.runtime.relative_closed(&mut h.budget).unwrap());
     assert_eq!(
         h.table
             .nodes

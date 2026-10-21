@@ -66,6 +66,6 @@ fn interruption_retains_every_task_family_and_a_self_dirty_rerun() {
         };
         assert_eq!(open.pending, 4 + usize::from(dirty));
         assert_eq!(open.in_flight + open.interrupted, 1);
-        assert!(!runtime.relative_closed());
+        assert!(runtime.relative_closed(&mut budget).is_err());
     }
 }

@@ -48,6 +48,8 @@ pub struct Subject {
 pub struct Input<N: WordElement> {
     subject: Subject,
     payload: Arc<EvmMachinePayload<N>>,
+    universe: Scope,
+    retained_work: usize,
 }
 
 impl<N: WordElement> Clone for Input<N> {
@@ -55,6 +57,8 @@ impl<N: WordElement> Clone for Input<N> {
         Self {
             subject: self.subject,
             payload: Arc::clone(&self.payload),
+            universe: self.universe,
+            retained_work: self.retained_work,
         }
     }
 }
@@ -63,15 +67,34 @@ impl<N: WordElement> Input<N> {
     /// Retain an already paid native snapshot. The payload keeps its actual N,
     /// frame relations, transaction Store and per-caller rollback checkpoints.
     pub fn new(subject: Subject, payload: EvmMachinePayload<N>) -> Self {
+        let retained_work = payload.work_size().saturating_add(8);
         Self {
             subject,
+            retained_work,
             payload: Arc::new(payload),
+            universe: subject.scope,
         }
     }
 
     /// Exact assumptions under which this snapshot and any feedback are valid.
     pub fn subject(&self) -> Subject {
         self.subject
+    }
+
+    /// Stable run scope used for global directory, CFG and summary queries.
+    /// It outlives replaceable local assumptions and contains no local narrowing.
+    pub fn universe(&self) -> Scope {
+        self.universe
+    }
+
+    pub(crate) fn in_universe(mut self, universe: Scope) -> Self {
+        self.universe = universe;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn downgrade(&self) -> std::sync::Weak<EvmMachinePayload<N>> {
+        Arc::downgrade(&self.payload)
     }
 
     /// Borrow the immutable native state without a conversion to a fixed domain.
@@ -82,7 +105,7 @@ impl<N: WordElement> Input<N> {
     /// Conservative retained native-state traversal envelope. Fine-grained
     /// numerical operations can use the actual element's more precise quotes.
     pub fn work_size(&self) -> usize {
-        self.payload.work_size().saturating_add(8)
+        self.retained_work
     }
 }
 
@@ -99,8 +122,12 @@ impl<N: WordElement> Capability for Inputs<N> {
     }
 
     fn value_work(_: &Input<N>) -> usize {
-        // Query/retention only copies the paid immutable snapshot handle.
+        // Query clones only a handle; disposal can traverse the entire payload.
         8
+    }
+
+    fn drop_work(input: &Input<N>) -> usize {
+        input.retained_work
     }
 }
 
