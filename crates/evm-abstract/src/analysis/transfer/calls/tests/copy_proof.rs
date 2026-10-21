@@ -15,6 +15,7 @@ use std::fmt;
 static QUERIES: Counter<usize> = Counter::new(0);
 static QUERY_QUOTES: Counter<usize> = Counter::new(0);
 
+mod derived;
 mod nonzero;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -135,8 +136,24 @@ pub(super) fn finish_prices<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             &mut budget,
         )
         .unwrap();
-    let prefix = budget.used();
+    let mut prefix = budget.used();
     assert!(budget.charge(remaining));
+    let remaining = payload
+        .call_stack
+        .parent()
+        .unwrap()
+        .memory
+        .prepared_return_copy_stage_work_with(
+            source,
+            &child.continuation.output_offset,
+            &child.continuation.output_size,
+            domain,
+            &mut budget,
+        );
+    if remaining != 0 {
+        prefix = budget.used();
+        assert!(budget.charge(remaining));
+    }
     (budget.used(), prefix)
 }
 

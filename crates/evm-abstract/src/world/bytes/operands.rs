@@ -41,7 +41,7 @@ pub(in crate::world) fn remember<N: WordElement, D: EvmNumericAlgebra<Element = 
     let mut clean = value.clone();
     normalize(&expression, &mut clean, domain);
     if informative(&expression, &clean) || facts.contains_key(&expression) {
-        insert(facts, expression, &clean, domain);
+        insert(facts, expression, clean, domain);
     }
     check_count(facts.len(), limits)
 }
@@ -125,13 +125,17 @@ fn check_count(count: usize, limits: ExprLimits) -> Result<(), ExprError> {
 fn insert<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     facts: &mut BTreeMap<ExprId, EvmValue<N>>,
     expression: ExprId,
-    value: &EvmValue<N>,
+    value: EvmValue<N>,
     domain: AlgebraRef<'_, D>,
 ) {
-    facts
-        .entry(expression)
-        .and_modify(|old| *old = domain.join(old, value))
-        .or_insert_with(|| value.clone());
+    match facts.entry(expression) {
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            *entry.get_mut() = domain.join(entry.get(), &value);
+        }
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(value);
+        }
+    }
 }
 
 #[cfg(test)]

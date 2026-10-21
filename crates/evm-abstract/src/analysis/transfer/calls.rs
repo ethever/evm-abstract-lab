@@ -293,15 +293,24 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
     parent
         .stack
         .push(EvmValue::<D::Element>::constant(result_value));
-    if let Err(error) = parent.memory.copy_return_data_with(
+    let copied = parent.memory.copy_return_data_budgeted_with(
         &continuation.output_offset,
         &parent.returndata,
         &continuation.output_size,
         config.max_memory_bytes,
         domain,
-    ) {
-        boundary_on(result, pc, super::errors::bytes(error), payload.key());
-        return;
+        context.budget,
+    );
+    match copied {
+        Ok(true) => {}
+        Ok(false) => {
+            boundary_on(result, pc, FrontierReason::Work, payload.key());
+            return;
+        }
+        Err(error) => {
+            boundary_on(result, pc, super::errors::bytes(error), payload.key());
+            return;
+        }
     }
     if let Err(reason) = query::checkpoint(context.budget) {
         boundary_on(result, pc, reason, payload.key());

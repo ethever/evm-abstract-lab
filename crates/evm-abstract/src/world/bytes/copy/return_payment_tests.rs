@@ -179,6 +179,37 @@ impl EvmNumericAlgebra for Policy {
 type Bytes = EvmByteArray<Word>;
 type Value = EvmValue<Word>;
 
+impl<N: WordElement> EvmByteArray<N> {
+    /// Independent completion invoices construct only the first private range
+    /// stage, then quote its actual values. Fixtures using this helper must
+    /// have valid ranges and finite prices; no COPY or output is published.
+    pub(crate) fn prepared_return_copy_stage_work_with<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        source: &Self,
+        destination: &EvmValue<N>,
+        requested: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
+    ) -> usize {
+        if super::super::ranges::known_singleton(requested) == Some(U256::ZERO) {
+            return 0;
+        }
+        let mut stage = self.clone();
+        stage
+            .expand_independent_with(destination, requested, 0, domain)
+            .expect("valid invoice allocation");
+        let copied = super::super::ranges::minimum(requested, source.len(), domain)
+            .expect("valid invoice minimum");
+        stage
+            .return_copy_stage_preparation(
+                &copied,
+                &zero_with().with_expression(ExprId::constant(U256::ZERO)),
+                budget,
+            )
+            .expect("finite invoice copy prices")
+    }
+}
+
 fn literal(n: U256) -> Value {
     Value::constant(n).with_expression(ExprId::constant(n))
 }
@@ -327,9 +358,18 @@ fn prepared_copy_keeps_complete_arrays_and_errors_for_partial_zero_and_overflow_
                 .unwrap()
         );
         assert_eq!((RECEIPT.get().queries, RECEIPT.get().query_quotes), (0, 0));
-        actual
-            .copy_return_data_with(&at, &source, &size, 0, algebra.borrowed())
-            .unwrap();
+        assert!(
+            actual
+                .copy_return_data_budgeted_with(
+                    &at,
+                    &source,
+                    &size,
+                    0,
+                    algebra.borrowed(),
+                    &mut budget
+                )
+                .unwrap()
+        );
         assert_eq!(actual, expected);
         for (key, value) in &source.operands {
             if size.expression().and_then(ExprId::as_constant) != Some(U256::ZERO) {
@@ -355,7 +395,14 @@ fn prepared_copy_keeps_complete_arrays_and_errors_for_partial_zero_and_overflow_
             .unwrap()
     );
     assert_eq!(
-        actual.copy_return_data_with(&at, &source, &size, 0, algebra.borrowed()),
+        actual.copy_return_data_budgeted_with(
+            &at,
+            &source,
+            &size,
+            0,
+            algebra.borrowed(),
+            &mut budget
+        ),
         Err(error)
     );
     assert_eq!(actual, target);
@@ -396,7 +443,7 @@ fn census_covers_keys_outside_the_content_root_and_preserves_invalid_key_rejecti
     );
     assert!(
         target
-            .copy_return_data_with(&at, &source, &size, 0, algebra.borrowed())
+            .copy_return_data_budgeted_with(&at, &source, &size, 0, algebra.borrowed(), &mut budget)
             .is_err()
     );
     assert_eq!(target, frozen);
@@ -428,11 +475,22 @@ fn tiny_keys_with_deep_native_payloads_pay_copy_prices_before_the_same_complete_
             .pay_return_copy_with(&source, &at, &size, algebra.borrowed(), &mut pilot)
             .unwrap()
     );
-    let total = pilot.used();
+    let initial = pilot.used();
     let prepared = RECEIPT.get().prepared_paid;
-    assert!(total >= 4 * 128 * 1024);
+    assert!(initial >= 2 * 128 * 1024);
+    let remaining = target.prepared_return_copy_stage_work_with(
+        &source,
+        &at,
+        &size,
+        algebra.borrowed(),
+        &mut pilot,
+    );
+    let stage_prefix = pilot.used();
+    assert!(pilot.charge(remaining));
+    let total = pilot.used();
+    assert!(total >= 3 * 128 * 1024);
     RECEIPT.set(Receipt::default());
-    let mut short = WorkBudget::new(total - 1);
+    let mut short = WorkBudget::new(initial - 1);
     assert!(
         !actual
             .pay_return_copy_with(&source, &at, &size, algebra.borrowed(), &mut short)
@@ -441,6 +499,21 @@ fn tiny_keys_with_deep_native_payloads_pay_copy_prices_before_the_same_complete_
     assert_eq!(short.used(), prepared);
     assert_eq!(RECEIPT.get().copied_bytes, 0);
     RECEIPT.set(Receipt::default());
+    let mut short = WorkBudget::new(total - 1);
+    assert!(
+        actual
+            .pay_return_copy_with(&source, &at, &size, algebra.borrowed(), &mut short)
+            .unwrap()
+    );
+    assert!(
+        !actual
+            .copy_return_data_budgeted_with(&at, &source, &size, 0, algebra.borrowed(), &mut short)
+            .unwrap()
+    );
+    assert_eq!(short.used(), stage_prefix);
+    assert_eq!(actual, target);
+    assert_eq!(RECEIPT.get().copied_bytes, 128 * 1024);
+    RECEIPT.set(Receipt::default());
     let mut budget = WorkBudget::new(total);
     assert!(
         actual
@@ -448,12 +521,15 @@ fn tiny_keys_with_deep_native_payloads_pay_copy_prices_before_the_same_complete_
             .unwrap()
     );
     assert_eq!(RECEIPT.get().copied_bytes, 0);
-    actual
-        .copy_return_data_with(&at, &source, &size, 0, algebra.borrowed())
-        .unwrap();
+    assert!(
+        actual
+            .copy_return_data_budgeted_with(&at, &source, &size, 0, algebra.borrowed(), &mut budget)
+            .unwrap()
+    );
     assert_eq!(actual, expected);
     let receipt = RECEIPT.get();
-    assert!(receipt.copied_bytes > 0 && receipt.copied_bytes <= budget.used());
+    assert_eq!(receipt.copied_bytes, 3 * 128 * 1024);
+    assert!(receipt.copied_bytes <= budget.used());
     assert_eq!((receipt.queries, receipt.query_quotes), (0, 0));
 }
 

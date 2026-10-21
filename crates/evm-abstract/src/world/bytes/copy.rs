@@ -493,36 +493,35 @@ impl<N: WordElement> EvmByteArray<N> {
         pay(budget, items.saturating_add(1))?;
         let mut native = 0usize;
         if !zero_request {
-            // The ordinary body stages target twice; an empty source only
-            // expands one staged target. Expansion may clone MSIZE again.
-            let copies = if normal { 2 } else { 1 };
+            // Only the first stage still contains these original values. The
+            // second array and its possibly new MSIZE are priced after range
+            // construction, using those actual objects.
             for value in self
                 .bytes
                 .values()
                 .chain(self.operands.values())
                 .chain([&self.length, &self.default])
             {
-                native = native.saturating_add(value_work(value, budget)?.saturating_mul(copies));
+                native = native.saturating_add(value_work(value, budget)?);
             }
-            native =
-                native.saturating_add(value_work(&self.length, budget)?.saturating_mul(copies));
+            native = native.saturating_add(value_work(&self.length, budget)?);
         }
         if normal {
-            // import_empty clones a source value once. remember's owned clean
-            // value and insertion need at most two copies of each input fact.
+            // import_empty and remember each copy a source value once; the
+            // normalized clean value is moved into its first map entry.
             for value in source.operands.values() {
-                native = native.saturating_add(value_work(value, budget)?.saturating_mul(2));
+                native = native.saturating_add(value_work(value, budget)?);
             }
         }
         // Counts follow the existing nested normalizations: no-op request1/1,
-        // empty-source expansion2/2, full COPY6/2. New min/length values and
-        // numeric joins keep the original complete range/union envelope.
+        // empty-source expansion2/2, full COPY5/2. Copies of new min/length
+        // values have a separate post-construction owner below.
         let destination_copies = if zero_request {
             1
         } else if zero_source {
             2
         } else {
-            6
+            5
         };
         let requested_copies = if zero_request { 1 } else { 2 };
         native = native
@@ -537,6 +536,60 @@ impl<N: WordElement> EvmByteArray<N> {
             self.copy_return_data_work_with(source, destination, requested, domain)
         }
         .saturating_add(native);
+        checkpoint(budget)?;
+        Ok(work)
+    }
+
+    /// Price only the actual second-stage values. The original structural fee
+    /// already owns map/header/root work; its input retention bound cannot own
+    /// a clone of an opaque numeric value produced by expansion or minimum.
+    pub(super) fn pay_return_copy_stage_with(
+        &self,
+        copied: &EvmValue<N>,
+        source_offset: &EvmValue<N>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, RangeError> {
+        use crate::resource::{CloneError, clone_payment::pay};
+        let funded = self
+            .return_copy_stage_preparation(copied, source_offset, budget)
+            .and_then(|work| pay(budget, work));
+        match funded {
+            Ok(()) => Ok(true),
+            Err(CloneError::Work) => Ok(false),
+            Err(CloneError::Cancelled) => Err(ExprError::Cancelled.into()),
+        }
+    }
+
+    fn return_copy_stage_preparation(
+        &self,
+        copied: &EvmValue<N>,
+        source_offset: &EvmValue<N>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<usize, crate::resource::CloneError> {
+        use crate::resource::clone_payment::{checkpoint, pay, value_work};
+        checkpoint(budget)?;
+        if super::ranges::known_singleton(copied) == Some(U256::ZERO) {
+            return Ok(0);
+        }
+        // Cached counts precede the value scan and all declared-price
+        // callbacks. No expression/root traversal or numeric query bids.
+        pay(budget, self.cloned_value_count().saturating_add(4))?;
+        let mut work = 0usize;
+        for value in self
+            .bytes
+            .values()
+            .chain(self.operands.values())
+            .chain([&self.length, &self.default])
+        {
+            work = work.saturating_add(value_work(value, budget)?);
+        }
+        // The inner expansion can retain MSIZE once more. Its allocation
+        // arguments, then remember's clean value, copy the actual min3 and
+        // zero source-offset2 times. Insertion itself moves the clean N.
+        work = work
+            .saturating_add(value_work(&self.length, budget)?)
+            .saturating_add(value_work(copied, budget)?.saturating_mul(3))
+            .saturating_add(value_work(source_offset, budget)?.saturating_mul(2));
         checkpoint(budget)?;
         Ok(work)
     }
