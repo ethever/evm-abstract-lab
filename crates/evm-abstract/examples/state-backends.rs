@@ -20,7 +20,7 @@ const OBSERVATION_SCOPE: &str = "all-listed-slots-plus-unlisted-default-read";
 #[derive(Debug, Error)]
 enum ExampleError {
     #[error("{0}")]
-    Argument(#[from] ParseIntError),
+    Argument(ParseIntError),
     #[error("{name} must be between 1 and {maximum}")]
     ArgumentRange { name: String, maximum: usize },
     #[error("usage: state-backends [slots: 1..65536] [iterations: 1..10000]")]
@@ -40,11 +40,35 @@ enum ExampleError {
         admitted: bool,
     },
     #[error("{0}")]
-    Json(#[from] serde_json::Error),
+    Json(serde_json::Error),
     #[error("{0}")]
-    World(#[from] WorldError),
+    World(WorldError),
     #[error("transaction Store operation failed: {0}")]
-    Store(#[from] StoreError),
+    Store(StoreError),
+}
+
+impl From<ParseIntError> for ExampleError {
+    fn from(error: ParseIntError) -> Self {
+        Self::Argument(error)
+    }
+}
+
+impl From<serde_json::Error> for ExampleError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
+}
+
+impl From<WorldError> for ExampleError {
+    fn from(error: WorldError) -> Self {
+        Self::World(error)
+    }
+}
+
+impl From<StoreError> for ExampleError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
 }
 
 #[derive(Serialize)]
