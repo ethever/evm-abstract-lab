@@ -30,7 +30,7 @@ fn catalog(code: &str) -> (Arc<CodeCatalog>, CodeId) {
 use crate::analysis::{
     AnalysisEngine, AnalysisInput, EnginePolicies, control::Control, cooperation::NoExtension,
 };
-use std::{convert::Infallible, sync::LazyLock};
+use std::{convert::Infallible, sync::OnceLock};
 type Session = AnalysisSession<
     'static,
     ProductAlgebra,
@@ -39,9 +39,17 @@ type Session = AnalysisSession<
     crate::analysis::SemanticPolicies,
     NoExtension,
 >;
-static NUMERIC: LazyLock<crate::domain::ValueAlgebra<ProductAlgebra>> =
-    LazyLock::new(|| crate::domain::ValueAlgebra::new(ProductAlgebra::default()));
-static POLICIES: LazyLock<EnginePolicies> = LazyLock::new(EnginePolicies::default);
+static NUMERIC: OnceLock<crate::domain::ValueAlgebra<ProductAlgebra>> = OnceLock::new();
+static POLICIES: OnceLock<EnginePolicies> = OnceLock::new();
+
+fn numeric() -> &'static crate::domain::ValueAlgebra<ProductAlgebra> {
+    NUMERIC.get_or_init(|| crate::domain::ValueAlgebra::new(ProductAlgebra::default()))
+}
+
+fn policies() -> &'static EnginePolicies {
+    POLICIES.get_or_init(EnginePolicies::default)
+}
+
 fn engine() -> AnalysisEngine<
     'static,
     ProductAlgebra,
@@ -50,7 +58,7 @@ fn engine() -> AnalysisEngine<
     crate::analysis::SemanticPolicies,
     NoExtension,
 > {
-    AnalysisEngine::new(&NUMERIC, &POLICIES, Box::leak(Box::new(NoExtension)))
+    AnalysisEngine::new(numeric(), policies(), Box::leak(Box::new(NoExtension)))
 }
 fn from_world(
     world: World,
@@ -133,7 +141,7 @@ fn returns(report: &SessionAnalysis<crate::domain::NumericValue>) -> Vec<TestVal
         .outcomes()
         .iter()
         .filter(|outcome| outcome.kind == OutcomeKind::Return)
-        .map(|outcome| outcome.data.read_word(&word(0), NUMERIC.borrowed()))
+        .map(|outcome| outcome.data.read_word(&word(0), numeric().borrowed()))
         .collect();
     assert!(!values.is_empty(), "{:?}", report.analysis().frontiers());
     values
@@ -489,7 +497,7 @@ fn injection_after_runtime_write_and_revert_never_patches_runtime_or_saved_roots
                 .unwrap();
             assert_eq!(
                 exit.store
-                    .read(address(0x101), &word(0), NUMERIC.borrowed())
+                    .read(address(0x101), &word(0), numeric().borrowed())
                     .singleton(),
                 Some(U256::from(9))
             );
@@ -505,7 +513,7 @@ fn injection_after_runtime_write_and_revert_never_patches_runtime_or_saved_roots
                 .map(|outcome| {
                     outcome
                         .store
-                        .read(address(0x101), &word(0), NUMERIC.borrowed())
+                        .read(address(0x101), &word(0), numeric().borrowed())
                 })
                 .collect::<Vec<_>>()
         };
@@ -711,7 +719,7 @@ fn ordinary_routes_share_layered_execution_and_preserve_abstract_world_bounds() 
             .filter(|o| o.kind == OutcomeKind::Return)
             .all(|o| o
                 .data
-                .read_word(&word(0), NUMERIC.borrowed())
+                .read_word(&word(0), numeric().borrowed())
                 .singleton()
                 .is_none())
     );
@@ -1036,14 +1044,14 @@ fn offline_demands_inject_initial_values_after_runtime_write_and_preserve_rollba
         assert!(
             outcome
                 .store
-                .read(address(0x101), &word(0), NUMERIC.borrowed())
+                .read(address(0x101), &word(0), numeric().borrowed())
                 .singleton()
                 .is_none()
         );
         assert_eq!(
             outcome
                 .store
-                .read(address(0x101), &word(1), NUMERIC.borrowed())
+                .read(address(0x101), &word(1), numeric().borrowed())
                 .singleton(),
             Some(U256::from(3))
         );
@@ -1188,7 +1196,7 @@ fn exact_initial_fact_does_not_bypass_static_write_failure() {
         assert_eq!(
             outcome
                 .store
-                .read(address(0x101), &word(0), NUMERIC.borrowed())
+                .read(address(0x101), &word(0), numeric().borrowed())
                 .singleton(),
             Some(U256::from(3))
         );
