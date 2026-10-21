@@ -42,7 +42,7 @@ pub use identity::{InputIdentity, RuntimeIdentity, ValueIdentity};
 pub use numeric::NumericValue;
 pub use observation::WordObservation;
 pub use reduce::{EvmReduction, ReductionStatus};
-pub use spec::DomainSpec;
+pub use spec::{DomainSpec, DomainSpecError};
 pub use value::EvmValue;
 
 /// 根工作账本拒绝整项数值运算；不是 EVM gas 不足。
