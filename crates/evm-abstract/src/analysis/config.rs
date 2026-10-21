@@ -28,13 +28,25 @@ impl Default for Config {
 pub enum ConfigError {
     /// Invalid shared semantic bounds on the actual selected algebra.
     #[error("{0}")]
-    DomainSpec(#[from] crate::domain::DomainSpecError),
+    DomainSpec(crate::domain::DomainSpecError),
     /// Transaction or block observations contradict an input invariant.
     #[error("{0}")]
-    Environment(#[from] crate::world::environment::EnvironmentError),
+    Environment(crate::world::environment::EnvironmentError),
     /// A required execution budget is zero.
     #[error("state, transfer, work, call depth and materialization budgets must be positive")]
     Budget,
+}
+
+impl From<crate::domain::DomainSpecError> for ConfigError {
+    fn from(error: crate::domain::DomainSpecError) -> Self {
+        Self::DomainSpec(error)
+    }
+}
+
+impl From<crate::world::environment::EnvironmentError> for ConfigError {
+    fn from(error: crate::world::environment::EnvironmentError) -> Self {
+        Self::Environment(error)
+    }
 }
 
 /// Admitted execution limits. Numeric policies belong to ValueAlgebra::spec().
