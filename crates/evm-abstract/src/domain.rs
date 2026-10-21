@@ -8,7 +8,7 @@
 
 mod algebra;
 mod byte_projection;
-mod concrete;
+pub(crate) mod concrete;
 pub mod congruence;
 pub mod cooperation;
 mod element;
