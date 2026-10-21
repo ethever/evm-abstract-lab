@@ -276,6 +276,7 @@ fn full_source_fresh_rename_and_rollback_preserve_old_reads() {
     let mut store = Store::new(&world);
     store.havoc_account(address);
     let old = store.read(address, &v(0), domain);
+    store.write_nonce(address, old.clone());
     let snapshot = store.snapshot();
     let map = store
         .fresh_leaves()
@@ -283,9 +284,29 @@ fn full_source_fresh_rename_and_rollback_preserve_old_reads() {
         .map(|e| (e, ExprId::fresh().unwrap()))
         .collect::<BTreeMap<_, _>>();
     assert!(map.len() >= 2);
+    // Roots fit; the deeper slot read fails later in the nonce map.
+    let expression = old.expression().unwrap();
+    assert_eq!(
+        store.rename_fresh(
+            &map,
+            ExprLimits {
+                max_depth: expression.depth() - 1,
+                ..ExprLimits::default()
+            },
+        ),
+        Err(StoreError::Expression(ExprError::Limit {
+            nodes: expression.nodes(),
+            depth: expression.depth(),
+        }))
+    );
+    assert_eq!(&store, snapshot.state());
     store.rename_fresh(&map, ExprLimits::default()).unwrap();
     assert_ne!(
         store.read(address, &v(0), domain).expression(),
+        old.expression()
+    );
+    assert_eq!(
+        snapshot.state().nonce(address).expression(),
         old.expression()
     );
     store.restore(snapshot);
