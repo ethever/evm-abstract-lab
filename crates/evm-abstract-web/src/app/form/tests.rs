@@ -105,6 +105,62 @@ fn selected_fork_controls_the_submitted_execution_rules() {
     }
 }
 
+#[test]
+fn precision_selector_submits_each_supported_numeric_model() {
+    use evm_abstract_protocol::NumericModel;
+
+    let ctx = Context::default();
+    crate::notation::initialize_fonts(&ctx);
+    ctx.global_style_mut(|style| style.animation_time = 0.0);
+    let mut form = AnalysisForm {
+        open: true,
+        ..AnalysisForm::default()
+    };
+    let size = Vec2::new(1440.0, 1400.0);
+    let click = |form: &mut AnalysisForm, pos| {
+        for pressed in [true, false] {
+            paint_sized(
+                &ctx,
+                form,
+                vec![
+                    Event::PointerMoved(pos),
+                    Event::PointerButton {
+                        pos,
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                    },
+                ],
+                size,
+            );
+        }
+    };
+    for _ in 0..3 {
+        paint_sized(&ctx, &mut form, vec![], size);
+    }
+    let output = paint_sized(&ctx, &mut form, vec![], size).1;
+    click(&mut form, text_center(&output, "Precision"));
+    for (model, current, choice) in [
+        (NumericModel::FiniteSet, "Product", "Finite set"),
+        (NumericModel::Product, "Finite set", "Product"),
+    ] {
+        let output = paint_sized(&ctx, &mut form, vec![], size).1;
+        text_center(&output, "Numeric model");
+        click(&mut form, text_center(&output, current));
+        let output = paint_sized(&ctx, &mut form, vec![], size).1;
+        click(&mut form, text_center(&output, choice));
+        assert_eq!(
+            form.request().limits,
+            AnalysisLimits {
+                numeric_model: model,
+                ..AnalysisLimits::default()
+            }
+        );
+        let output = paint_sized(&ctx, &mut form, vec![], size).1;
+        text_center(&output, choice);
+    }
+}
+
 fn click(ctx: &Context, form: &mut AnalysisForm, pos: Pos2) -> Option<AnalyzeRequest> {
     let mut request = None;
     for pressed in [true, false] {

@@ -118,16 +118,6 @@ record! {
 record! {
     /// Complete actual execution policy, excluding RPC transport allowances.
     pub struct RootTerminalConfig {
-        /// Actual numeric profile.
-        pub domain_profile: crate::DomainProfile,
-        /// Actual reduction rounds.
-        pub reduction_rounds: u64,
-        /// Actual retained fact bound.
-        pub max_facts: u64,
-        /// Actual expression/relation policy.
-        pub relations: RootTerminalRelationLimits,
-        /// Actual constant capacity.
-        pub max_constants: u64,
         /// Actual jump history bound.
         pub context_depth: u64,
         /// Actual state bound.
@@ -153,8 +143,6 @@ record! {
         pub schema_version: u16,
         /// Actual word width.
         pub word_bits: u16,
-        /// Actual numeric profile.
-        pub profile: crate::DomainProfile,
         /// Actual constant capacity.
         pub capacity: u64,
         /// Actual reduction rounds.
@@ -233,6 +221,8 @@ record! {
         pub environment: crate::EnvironmentSnapshot,
         /// Complete actual native execution configuration.
         pub config: RootTerminalConfig,
+        /// Descriptive application selection, not a native policy certificate.
+        pub numeric_model: crate::NumericModel,
         /// Complete actual domain policy.
         pub domain_spec: RootTerminalDomainSpec,
         /// Captured original frame identity.
