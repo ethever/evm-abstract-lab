@@ -1,7 +1,7 @@
 //! Native bounded finite-set semantics over the actual finite carrier.
 //!
-//! Every retained set is a complete disjunction. Capacity overflow and refused
-//! enumeration lose precision to Top; they never keep a truncated sample. The
+//! Every retained set is a complete disjunction. Capacity overflow and unknown
+//! inputs lose precision to Top; they never keep a truncated sample. The
 //! finite lattice needs no component scheduler: its local reduction only applies
 //! the frozen capacity. Shared relation/fact limits still come from DomainSpec.
 
@@ -13,10 +13,6 @@ use super::{
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
-// A large complete input can produce very few distinct outputs. Bound raw
-// Cartesian visits before evaluation rather than relying on output overflow to
-// stop duplicate-heavy products. The same admission is used by the work quote.
-const MAX_CARTESIAN_VISITS: usize = 4096;
 const COPY_WORK: usize = 2;
 const LITERAL_WORK: usize = 128;
 const SINGLETON_WORK: usize = 16;
@@ -47,12 +43,8 @@ fn tree_entry_work(size: usize) -> usize {
     levels.saturating_add(1).saturating_mul(64)
 }
 
-fn cartesian_visits(args: &[&FiniteConstantSet]) -> Option<usize> {
-    args.iter().try_fold(1usize, |visits, value| {
-        visits
-            .checked_mul(value.cardinality()?)
-            .filter(|total| *total <= MAX_CARTESIAN_VISITS)
-    })
+fn cartesian_visits(mut cardinalities: impl Iterator<Item = Option<usize>>) -> Option<usize> {
+    cardinalities.try_fold(1usize, |visits, size| visits.checked_mul(size?))
 }
 
 fn result_range(op: u8) -> Option<u64> {
@@ -96,7 +88,7 @@ impl FiniteSetAlgebra {
     }
 
     fn transfer(&self, op: u8, args: &[&FiniteConstantSet]) -> FiniteConstantSet {
-        if cartesian_visits(args).is_none() {
+        if cartesian_visits(args.iter().map(|value| value.cardinality())).is_none() {
             return self.unconstrained_result(op);
         }
         let first = args[0]
@@ -104,6 +96,8 @@ impl FiniteSetAlgebra {
             .expect("admitted finite Cartesian operand");
         let mut result = std::collections::BTreeSet::new();
         let mut insert = |a, b, c| {
+            #[cfg(test)]
+            tests::NUMERIC_EXECUTIONS.update(|counts| counts.1 += 1);
             result.insert(concrete::evaluate(op, a, b, c));
             result.len() <= self.spec.capacity()
         };
@@ -212,6 +206,8 @@ impl EvmNumericAlgebra for FiniteSetAlgebra {
         op: u8,
         mut args: impl ExactSizeIterator<Item = &'a Self::Element>,
     ) -> NumericReduction<Self::Element> {
+        #[cfg(test)]
+        tests::NUMERIC_EXECUTIONS.update(|counts| counts.0 += 1);
         let Some(arity) = concrete::arity(op).filter(|arity| *arity == args.len()) else {
             return NumericReduction::stable(FiniteConstantSet::top());
         };
@@ -228,15 +224,16 @@ impl EvmNumericAlgebra for FiniteSetAlgebra {
 
     fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Self::Element>) -> usize {
         let mut count = 0usize;
-        let mut visits = Some(1usize);
+        let mut cardinalities = [Some(1); 3];
         let mut queries = 0usize;
+        let mut may_fold = false;
         for value in args {
+            let cardinality = value.cardinality();
+            if let Some(slot) = cardinalities.get_mut(count) {
+                *slot = cardinality;
+            }
             count = count.saturating_add(1);
-            visits = visits.and_then(|total| {
-                total
-                    .checked_mul(value.cardinality()?)
-                    .filter(|total| *total <= MAX_CARTESIAN_VISITS)
-            });
+            may_fold |= cardinality != Some(1);
             // One symbolic-expression query per operand; reserve a second for
             // metadata decisions without copying any numeric operand.
             queries = queries.saturating_add(value.singleton_work().saturating_mul(2));
@@ -249,11 +246,26 @@ impl EvmNumericAlgebra for FiniteSetAlgebra {
         if concrete::arity(op) != Some(count) {
             return fixed;
         }
-        let candidates = visits.unwrap_or_else(|| {
-            result_range(op)
+        // Numeric Top or a multivalue result can still carry exact retained
+        // expressions. The facade may evaluate them once after transfer, even
+        // when no Cartesian candidates were admitted. Cached cardinality is
+        // sufficient for this conservative reservation; no query or clone runs.
+        let fixed = if may_fold {
+            fixed.saturating_add(evaluation_work(op))
+        } else {
+            fixed
+        };
+        let cardinalities = &cardinalities[..count];
+        let candidates = match cartesian_visits(cardinalities.iter().copied()) {
+            Some(visits) => visits,
+            // A complete finite product that cannot be quoted must be refused
+            // by the root meter. Unknown inputs instead use the small complete
+            // output image (or Top), matching the pure transfer above.
+            None if cardinalities.iter().all(Option::is_some) => return usize::MAX,
+            None => result_range(op)
                 .filter(|last| (*last as usize) < self.spec.capacity())
-                .map_or(0, |last| last as usize + 1)
-        });
+                .map_or(0, |last| last as usize + 1),
+        };
         let output = candidates.min(self.spec.capacity().saturating_add(1));
         fixed.saturating_add(
             candidates.saturating_mul(evaluation_work(op).saturating_add(tree_entry_work(output))),
