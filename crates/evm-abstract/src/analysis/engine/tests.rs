@@ -297,34 +297,63 @@ fn actual_summary_registration_exhaustion_remains_summary_work() {
 
 #[test]
 fn initial_lift_distinguishes_cancellation_from_real_work_exhaustion() {
+    use crate::analysis::{
+        AnalysisEngine, AnalysisInput, EnginePolicies,
+        control::Control,
+        cooperation::{CooperationError, NoExtension},
+        progress::Observer,
+        transfer,
+    };
+
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
-    let token = analysis_control::Cancellation::new();
-    token.cancel();
-    let cancelled = analysis_control::with_cancellation(&token, || {
-        crate::analysis::testing::execute(
-            world.clone(),
-            entry.clone(),
-            fixtures::config(),
-            crate::analysis::testing::NumericLimits::machine().spec(),
-        )
-        .unwrap()
-    });
-    assert_eq!(cancelled.status(), Status::Incomplete);
-    assert_eq!(
-        cancelled.frontiers[0].reason,
-        FrontierReason::Relations(QueryReason::Cancelled)
+    let algebra = crate::analysis::testing::product(
+        crate::analysis::testing::NumericLimits::machine().spec(),
     );
-    let mut config = fixtures::config();
-    config.max_work = 1;
-    let exhausted = crate::analysis::testing::execute(
-        world,
-        entry,
-        config,
-        crate::domain::DomainSpec::default(),
-    )
-    .unwrap();
-    assert_eq!(exhausted.status(), Status::Incomplete);
-    assert_eq!(exhausted.frontiers[0].reason, FrontierReason::Work);
+    let control = Control::new(Observer::default());
+    control.cancellation().cancel();
+    // The lift retains its precise stop cause; the public entrypoint rejects
+    // a pre-cancelled request before it can publish any analysis result.
+    let cancelled =
+        control.scope(|| transfer::initial(&world, &entry, algebra.borrowed()).unwrap_err());
+    assert_eq!(cancelled, FrontierReason::Relations(QueryReason::Cancelled));
+    let validation_work = entry.environment.blob_hashes.length.singleton_work();
+    assert!(validation_work > 1);
+    let input = AnalysisInput::new(world, entry).unwrap();
+    let policies: EnginePolicies = Default::default();
+    let mut extension = NoExtension;
+    let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
+    assert!(matches!(
+        engine.run(input.clone(), fixtures::config(), &control),
+        Err(CooperationError::Cancelled)
+    ));
+
+    // Keep the original tiny limit and separately fund all validation. The
+    // latter refuses the positive initial-lift invoice, before state install.
+    for maximum in [1, validation_work] {
+        let mut config = fixtures::config();
+        config.max_work = maximum;
+        let exhausted = engine
+            .run(input.clone(), config, &Control::default())
+            .unwrap();
+        assert_eq!(exhausted.status(), Status::Incomplete);
+        assert!(exhausted.states().is_empty());
+        assert!(exhausted.outcomes().is_empty());
+        let [frontier] = exhausted.frontiers() else {
+            panic!("input admission must retain exactly one unpaid obligation");
+        };
+        assert_eq!(frontier.reason, FrontierReason::Work);
+        assert_eq!(frontier.from, None);
+        assert_eq!(frontier.target, None);
+        assert_eq!(frontier.pc, None);
+        assert_eq!(
+            exhausted.work(),
+            if maximum == validation_work {
+                validation_work
+            } else {
+                0
+            }
+        );
+    }
 }
 
 #[test]
