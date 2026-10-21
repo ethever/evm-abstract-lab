@@ -357,7 +357,7 @@ impl<J> Kernel<J> {
         }
         let head = self.scopes[scope.index].head;
         let work = self.retirement_work(scope, meter)?;
-        let changes = self.prepare_changes(&[head], &[head], meter, work)?;
+        let changes = self.prepare_changes(&[head], &[head], None, meter, work)?;
         self.install_retirement(scope);
         self.install_changes(changes);
         self.release_generation(scope);

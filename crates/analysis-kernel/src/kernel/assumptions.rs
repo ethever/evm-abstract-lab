@@ -18,7 +18,20 @@ impl<J> Kernel<J> {
         source: Scope,
         meter: &mut M,
     ) -> Result<(), KernelError<M::Stop>> {
-        self.adopt(job, fact, Some(source), meter)
+        self.adopt(job, fact, Some(source), false, meter)
+    }
+
+    /// Directory membership is a topology premise even in the reader's own
+    /// scope, including an empty directory before the first foreign publication.
+    /// Publication exempts genuine same-scope feedback from this premise only.
+    pub(super) fn assume_directory<M: Meter>(
+        &mut self,
+        job: JobId,
+        directory: FactId,
+        source: Scope,
+        meter: &mut M,
+    ) -> Result<(), KernelError<M::Stop>> {
+        self.adopt(job, directory, Some(source), true, meter)
     }
 
     pub(super) fn assume_producers<M: Meter>(
@@ -27,7 +40,7 @@ impl<J> Kernel<J> {
         fact: FactId,
         meter: &mut M,
     ) -> Result<(), KernelError<M::Stop>> {
-        self.adopt(job, fact, None, meter)
+        self.adopt(job, fact, None, false, meter)
     }
 
     fn adopt<M: Meter>(
@@ -35,6 +48,7 @@ impl<J> Kernel<J> {
         job: JobId,
         fact: FactId,
         source: Option<Scope>,
+        directory: bool,
         meter: &mut M,
     ) -> Result<(), KernelError<M::Stop>> {
         let target = self.jobs[job.index].scope;
@@ -43,7 +57,9 @@ impl<J> Kernel<J> {
         }
         self.check_usable_scope(target)?;
         self.check_fact(fact)?;
-        if self.facts[fact.index].coverage.is_empty() && source.is_none_or(|scope| scope == target)
+        if !directory
+            && self.facts[fact.index].coverage.is_empty()
+            && source.is_none_or(|scope| scope == target)
         {
             return Ok(());
         }
@@ -59,7 +75,7 @@ impl<J> Kernel<J> {
                 .coverage
                 .values()
                 .any(|producer| *producer != target);
-            if source != target || foreign {
+            if directory || source != target || foreign {
                 premises.insert(fact);
             }
             if source != target {
