@@ -28,7 +28,9 @@ fn abs(value: U256) -> U256 {
     }
 }
 
-pub(super) fn evaluate(op: u8, a: U256, b: U256, c: U256) -> U256 {
+/// Evaluate in EVM pop order after validating opcode and operand count with [`arity`].
+/// This evaluator assumes that validation; zero padding is only for unused operand slots.
+pub(crate) fn evaluate(op: u8, a: U256, b: U256, c: U256) -> U256 {
     let boolean = |v: bool| U256::from(u8::from(v));
     // 256 bit 大整数、模乘和快速幂由 alloy/ruint 提供；这里只表达 EVM 规则。
     match op {
