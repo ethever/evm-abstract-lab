@@ -1,7 +1,6 @@
 //! Fresh range results have copy prices independent of the original operands.
 
 use super::*;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ProductAlgebra;
 use std::{
     sync::Mutex,

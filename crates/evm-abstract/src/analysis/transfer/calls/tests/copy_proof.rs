@@ -1,7 +1,6 @@
 //! COPY's independent zero proofs must select the body bought by its quote.
 
 use super::*;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ProductAlgebra;
 use crate::{
     analysis::{EvmContinuation, EvmMachinePayload},

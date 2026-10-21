@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, Entry, World};
-use crate::domain::EvmNumericAlgebra as _;
 
 use crate::{
     analysis::{
@@ -79,7 +78,7 @@ fn direct_known_recursion_closes_with_default_depth_and_without_unknown_effects(
             use_summaries,
             ..ExecutionConfig::default()
         };
-        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let config_numeric = crate::analysis::testing::NumericLimits::default();
         let result =
             crate::analysis::testing::execute(world, entry, config, config_numeric.spec()).unwrap();
         let algebra = crate::analysis::testing::product(result.domain_spec());
@@ -284,7 +283,7 @@ fn procedure_table_without_any_terminal_retains_an_explicit_frontier() {
     // it deliberately does not claim admission by a repeated recursive CALL.
     let (world, entry) = fixture(&[(0x101, "5b5f56")]);
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let input =
@@ -403,14 +402,19 @@ fn recursive_procedure_keeps_private_return_pcs_finite_at_an_acyclic_helper() {
     let program = crate::bytecode::Program::from_hex_with_fork(&code, world.fork()).unwrap();
     let marker = program.jumpdest_blocks()[&336];
     for use_summaries in [true, false] {
-        let mut config = ExecutionConfig {
+        let config = ExecutionConfig {
             max_work: 1_000_000_000,
             use_summaries,
             ..ExecutionConfig::default()
         };
-        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
-        config_numeric.max_constants = 512;
-        config_numeric.relations.enabled = false;
+        let config_numeric = crate::analysis::testing::NumericLimits {
+            max_constants: 512,
+            relations: crate::domain::relational::RelationLimits {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let domain =
             crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
         let domain = domain.borrowed();

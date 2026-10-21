@@ -3,12 +3,12 @@ use super::{Context, Facts, Preparation, memo, preparation};
 use alloy_primitives::U256;
 use std::{rc::Rc, sync::Arc};
 use {
-    crate::domain::ValueAlgebra, crate::domain::identity::Symbol,
-    crate::domain::provenance::Origin, crate::domain::relational::RelationLimits,
-    crate::domain::symbolic::ExprError, crate::domain::symbolic::ExprId,
-    crate::resource::WorkBudget, crate::world::bytes::conditional::Branch,
-    crate::world::bytes::conditional::ConditionalFacts, crate::world::bytes::conditional::Scope,
-    crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue,
+    crate::domain::identity::Symbol, crate::domain::provenance::Origin,
+    crate::domain::relational::RelationLimits, crate::domain::symbolic::ExprError,
+    crate::domain::symbolic::ExprId, crate::resource::WorkBudget,
+    crate::world::bytes::conditional::Branch, crate::world::bytes::conditional::ConditionalFacts,
+    crate::world::bytes::conditional::Scope, crate::world::test_support::TestAlgebra,
+    crate::world::test_support::TestValue,
 };
 use {
     crate::world::bytes::test_support::assert_complete_value,

@@ -73,6 +73,8 @@ pub struct RpcAnalysis<N: crate::domain::WordElement> {
     failures: Vec<RpcError>,
 }
 
+type RpcAnalysisResult<N, E> = Result<RpcAnalysis<N>, RpcAnalysisError<E>>;
+
 impl<N: crate::domain::WordElement> RpcAnalysis<N> {
     /// Last graph, with typed incomplete frontiers for acquisition failures.
     pub fn analysis(&self) -> &EvmWorldAnalysis<N> {
@@ -148,7 +150,7 @@ pub fn analyze_rpc<'a, D, C, P, S, X>(
     entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     control: &Control,
-) -> Result<RpcAnalysis<D::Element>, RpcAnalysisError<<X as Composition<D::Element>>::Error>>
+) -> RpcAnalysisResult<D::Element, <X as Composition<D::Element>>::Error>
 where
     D: crate::domain::EvmNumericAlgebra,
     C: ContextPolicy,
@@ -165,7 +167,7 @@ fn analyze_controlled<'a, D, C, P, S, X>(
     entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     control: &Control,
-) -> Result<RpcAnalysis<D::Element>, RpcAnalysisError<<X as Composition<D::Element>>::Error>>
+) -> RpcAnalysisResult<D::Element, <X as Composition<D::Element>>::Error>
 where
     D: crate::domain::EvmNumericAlgebra,
     C: ContextPolicy,

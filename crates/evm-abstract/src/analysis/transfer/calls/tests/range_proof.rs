@@ -21,12 +21,10 @@ fn disabled_relations_keep_paid_call_output_and_empty_failure_proofs() {
 }
 
 fn paid_call_output_range(relations_enabled: bool) {
-    let mut config = ExecutionConfig {
+    let config = ExecutionConfig {
         max_work: 1_000_000_000,
         ..ExecutionConfig::default()
     };
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
-    config_numeric.relations.enabled = relations_enabled;
     let numeric = ValueAlgebra::new(Policy);
     let algebra = if relations_enabled {
         numeric.borrowed()

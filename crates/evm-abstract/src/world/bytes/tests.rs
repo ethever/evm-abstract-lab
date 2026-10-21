@@ -1,9 +1,9 @@
 //! Length and observed-cell numeric facts constrain the same immutable source.
 
 use crate::world::test_support::TestBytes;
+use crate::world::test_support::TestValue;
 use alloy_primitives::U256;
 use std::collections::{BTreeMap, BTreeSet};
-use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 fn byte_sequence(length: TestValue) -> TestBytes {
     let mut array = TestBytes::unknown();

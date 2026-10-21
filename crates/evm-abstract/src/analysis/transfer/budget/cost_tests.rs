@@ -1,7 +1,6 @@
 //! Real memory-quotation entry with an index-sensitive independent backend.
 
 use super::{byte_work, operation_work_budgeted, quotation_work};
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork,
     analysis::{ExecutionConfig, machine::fixtures::address, transfer},

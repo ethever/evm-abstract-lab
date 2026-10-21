@@ -469,7 +469,7 @@ mod top_word_byte_union {
     use super::super::{Context, scalar_in};
     use super::{
         Facts, Reader, WORD_BYTE_UNION_CALLS, WORD_CACHE_WORK, constant, expression, join,
-        numeric_domain, original_union, uncached,
+        original_union, uncached,
     };
     use alloy_primitives::U256;
     use revm_bytecode::opcode;

@@ -146,18 +146,18 @@ pub(in crate::analysis) fn prepare_with<D: EvmNumericAlgebra>(
 type RuntimeRetry = EvmRuntimeRetry<crate::domain::NumericValue>;
 
 #[cfg(test)]
+type ReifiedRetry<N> = (
+    Box<EvmBoundedState<N>>,
+    EvmPayloadSummary<N>,
+    crate::analysis::EvmMachinePayload<N>,
+);
+
+#[cfg(test)]
 pub(in crate::analysis) fn prepare<D: EvmNumericAlgebra>(
     original: &EvmPayloadSummary<D::Element>,
     domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
-) -> Result<
-    (
-        Box<crate::analysis::state::bounded::EvmBoundedState<D::Element>>,
-        EvmPayloadSummary<D::Element>,
-        crate::analysis::EvmMachinePayload<D::Element>,
-    ),
-    MachineError,
-> {
+) -> Result<ReifiedRetry<D::Element>, MachineError> {
     let prepared = prepare_with(original, domain, budget)?;
     reserve(budget, prepared.bound.work_size().saturating_mul(4))?;
     let payload = super::instantiate(&prepared.bound, domain)?;

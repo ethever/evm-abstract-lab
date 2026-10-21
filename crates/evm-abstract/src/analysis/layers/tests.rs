@@ -1,5 +1,3 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::*;
 #[cfg(test)]
 use crate::analysis::testing::{Account, Entry, TestValue, World};

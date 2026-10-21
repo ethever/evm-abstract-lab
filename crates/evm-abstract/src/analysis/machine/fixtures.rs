@@ -1,16 +1,12 @@
 //! Shared small machine fixtures for join and certificate regressions.
 
+use super::{ExecutionConfig, MachinePayload};
 #[cfg(test)]
 use crate::analysis::testing::{Account, ByteArray, Entry, EvmEnvironment, TestValue, World};
-use crate::domain::EvmNumericAlgebra as _;
-
-use crate::domain::ValueAlgebra;
-
-use super::{ExecutionConfig, MachinePayload};
 use crate::{
     Fork,
-    analysis::{self, Config, WorldAnalysis, transfer},
-    domain::{ProductAlgebra, relational::RelationLimits},
+    analysis::{Config, WorldAnalysis, transfer},
+    domain::ProductAlgebra,
 };
 use alloy_primitives::{Address, U256};
 
@@ -28,7 +24,6 @@ pub(in crate::analysis) fn config() -> ExecutionConfig {
             context_depth: 0,
             max_states: 256,
             max_transfers: 1024,
-            ..Config::default()
         },
         max_work: 100_000_000,
         max_memory_bytes: 4096,

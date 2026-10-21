@@ -143,8 +143,6 @@ pub(super) fn config() -> ExecutionConfig {
             context_depth: 0,
             max_states: 512,
             max_transfers: 4096,
-
-            ..Config::default()
         },
         max_memory_bytes: 4096,
         max_work: 100_000_000,

@@ -4,8 +4,8 @@ use crate::world::test_support::TestStore;
 use std::num::NonZeroUsize;
 use {
     crate::Address, crate::Fork, crate::U256, crate::domain::symbolic::ExprId,
-    crate::world::test_support::TestAccount, crate::world::test_support::TestAlgebra,
-    crate::world::test_support::TestValue, crate::world::test_support::TestWorld,
+    crate::world::test_support::TestAccount, crate::world::test_support::TestValue,
+    crate::world::test_support::TestWorld,
 };
 
 // Numeric, provenance and persistent identity assertions remain unchanged;

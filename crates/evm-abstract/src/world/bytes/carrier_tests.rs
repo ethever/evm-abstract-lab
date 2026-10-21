@@ -11,7 +11,7 @@ use {
     crate::domain::WordElement, crate::domain::WordObservation, crate::domain::facts::FactError,
     crate::domain::facts::Symbol, crate::domain::symbolic::ExprId, crate::resource::WorkBudget,
     crate::world::EvmAccount, crate::world::EvmLog, crate::world::EvmStore, crate::world::EvmWorld,
-    crate::world::LogKey, crate::world::LogSourceKind, crate::world::test_support::TestAlgebra,
+    crate::world::LogKey, crate::world::LogSourceKind,
 };
 
 static BINDING_IMPORTS: crate::test_instrumentation::Counter<usize> =

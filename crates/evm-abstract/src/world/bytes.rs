@@ -22,7 +22,7 @@ mod refresh;
 mod slice;
 pub(in crate::world) mod summary;
 #[cfg(test)]
-use crate::world::test_support::{TestBytes, TestBytesSummary};
+use crate::world::test_support::TestBytes;
 pub use summary::EvmByteArraySummary;
 #[cfg(test)]
 mod carrier_tests;

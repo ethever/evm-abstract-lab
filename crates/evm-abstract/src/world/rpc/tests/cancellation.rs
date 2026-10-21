@@ -92,7 +92,7 @@ fn cancelled_analysis_never_starts_rpc_or_returns_an_incomplete_success() {
                 crate::analysis::MergeResumeStatus,
             );
             let mut extension = crate::analysis::cooperation::NoExtension;
-            let control = (&control).clone();
+            let control = control.clone();
             let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
             crate::analysis::analyze_rpc(
                 engine,
@@ -149,7 +149,7 @@ fn cancellation_during_storage_discovery_returns_cancelled_instead_of_a_frontier
                 crate::analysis::MergeResumeStatus,
             );
             let mut extension = crate::analysis::cooperation::NoExtension;
-            let control = (&control).clone();
+            let control = control.clone();
             let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
             crate::analysis::analyze_rpc(
                 engine,

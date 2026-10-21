@@ -320,7 +320,8 @@ impl DomainSpec {
         let a = args.next();
         let b = args.next();
         let c = args.next();
-        let quote = self.numeric_transfer_work(a.into_iter().chain(b).chain(c).chain(args), None);
+        let quote =
+            self.numeric_transfer_work(op, a.into_iter().chain(b).chain(c).chain(args), None);
         if quote == usize::MAX {
             return quote;
         }
@@ -382,12 +383,13 @@ impl DomainSpec {
 
     pub(super) fn numeric_transfer_work<'a>(
         self,
+        op: u8,
         args: impl Iterator<Item = &'a NumericValue>,
         closure_work: Option<usize>,
     ) -> usize {
-        let (tuples, all_finite, size, len, shapes, dyadic) = args.fold(
-            (1usize, true, 0usize, 0usize, 0u8, true),
-            |(tuples, all, size, len, shapes, dyadic), v| {
+        let (tuples, all_finite, size, len, shapes, dyadic, exact_components) = args.fold(
+            (1usize, true, 0usize, 0usize, 0u8, true, 0b111u8),
+            |(tuples, all, size, len, shapes, dyadic, exact_components), v| {
                 let shape = if v.is_top() {
                     1
                 } else if canonical_literal(v) {
@@ -402,11 +404,35 @@ impl DomainSpec {
                     len.saturating_add(1),
                     shapes | shape,
                     dyadic && dyadic_congruence(v),
+                    exact_components
+                        & (u8::from(v.bits.singleton().is_some())
+                            | (u8::from(v.interval.singleton().is_some()) << 1)
+                            | (u8::from(v.congruence.singleton().is_some()) << 2)),
                 )
             },
         );
+        let supported = super::concrete::arity(op) == Some(len);
+        let evaluation = super::concrete::evaluation_work(op);
+        // Keep the existing 256-unit cheap tuple envelope, replacing its
+        // 64-unit concrete evaluation with the selected opcode's real bound.
+        let tuple_work = 256usize.saturating_add(if supported {
+            evaluation.saturating_sub(64)
+        } else {
+            0
+        });
         if len > 0 && all_finite && tuples <= self.capacity() {
-            return tuples.saturating_mul(256).saturating_add(size);
+            // A single tuple always produces a singleton, so the facade skips
+            // expression evaluation. A complete larger image may still fold
+            // one retained expression after all numeric evaluations finish.
+            let fold = if supported && tuples > 1 {
+                evaluation
+            } else {
+                0
+            };
+            return tuples
+                .saturating_mul(tuple_work)
+                .saturating_add(size)
+                .saturating_add(fold);
         }
         // For {canonical literal, Top}, binary transfer yields a range, mask
         // cube, boolean or exact word. Multiplication's congruence is a power
@@ -427,12 +453,30 @@ impl DomainSpec {
         } else {
             None
         };
-        tuples
+        // Output capacity limits distinct retained results, not tuple visits.
+        // Colliding images can require the entire Cartesian product even when
+        // tuples exceed capacity. Unknown operands admit no finite enumeration.
+        let visits = if supported && all_finite {
+            tuples.saturating_mul(tuple_work)
+        } else {
+            tuples
+        };
+        // Raw exact transfer returns before component transfer and facade fold.
+        // Otherwise each independently exact component can evaluate once, then
+        // a nonsingleton result may fold one expression. Cached component tags
+        // also cover inconsistent products without assuming they are reachable.
+        let concrete = if supported {
+            evaluation.saturating_mul(exact_components.count_ones() as usize + 1)
+        } else {
+            0
+        };
+        visits
             .saturating_add(4096)
             .saturating_add(
                 closure_work.unwrap_or_else(|| self.numeric_closure_work(self.capacity(), rounds)),
             )
             .saturating_add(size)
+            .saturating_add(concrete)
     }
 }
 

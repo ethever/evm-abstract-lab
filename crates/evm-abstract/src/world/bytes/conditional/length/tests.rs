@@ -7,8 +7,8 @@ use {
     crate::domain::relational::EvmValueQuery, crate::domain::relational::QueryReason,
     crate::domain::relational::RelationLimits, crate::domain::relational::RelationState,
     crate::domain::symbolic::ByteStateKind, crate::domain::symbolic::ExprId,
-    crate::resource::WorkBudget, crate::world::test_support::TestAlgebra,
-    crate::world::test_support::TestBytes, crate::world::test_support::TestValue,
+    crate::resource::WorkBudget, crate::world::test_support::TestBytes,
+    crate::world::test_support::TestValue,
 };
 
 fn v(n: usize) -> TestValue {

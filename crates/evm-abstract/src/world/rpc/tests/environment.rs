@@ -5,7 +5,7 @@ use alloy_primitives::B256;
 use serde_json::{Value as Json, json};
 use std::{sync::mpsc, thread};
 use {
-    crate::Address, crate::Fork, crate::U256, crate::analysis, crate::analysis::ExecutionConfig,
+    crate::Address, crate::Fork, crate::U256, crate::analysis::ExecutionConfig,
     crate::analysis::Status, crate::analysis::progress::Event, crate::analysis::progress::Observer,
     crate::analysis::progress::Phase, crate::world::rpc, crate::world::rpc::RpcError,
     crate::world::test_support::TestEntry, crate::world::test_support::TestEnvironment,
@@ -360,7 +360,7 @@ fn rpc_progress_records_pin_acquisition_and_execution_without_changing_results()
             );
             let mut extension = crate::analysis::cooperation::NoExtension;
             let control =
-                crate::analysis::control::Control::with_observer((&Observer::new(sender)).clone());
+                crate::analysis::control::Control::with_observer(Observer::new(sender).clone());
             let engine = crate::analysis::AnalysisEngine::new(&algebra, &policies, &mut extension);
             crate::analysis::analyze_rpc(
                 engine,

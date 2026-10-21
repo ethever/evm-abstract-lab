@@ -2,14 +2,11 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, TestValue};
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ProductAlgebra;
 
 use crate::analysis::testing::ByteArray;
 use crate::analysis::testing::Entry;
 use crate::analysis::testing::World;
-use crate::domain;
-use crate::domain::ValueAlgebra;
 
 use super::*;
 use crate::{
@@ -39,7 +36,7 @@ fn fixture(
         .unwrap();
     let mut entry = Entry::new(owner);
     entry.environment.calldata = ByteArray::empty();
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.max_nodes = max_nodes;
     config_numeric.relations.max_depth = max_depth;

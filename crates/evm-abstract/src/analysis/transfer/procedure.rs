@@ -594,10 +594,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
 #[cfg(test)]
 pub(in crate::analysis) mod testing;
 #[cfg(test)]
-use crate::{
-    analysis::{ChildFrame, Continuation, MachinePayload},
-    domain::ProductAlgebra,
-};
+use crate::analysis::{ChildFrame, Continuation, MachinePayload};
 #[cfg(test)]
 use testing::{Solver, Table, execute_inner, form};
 

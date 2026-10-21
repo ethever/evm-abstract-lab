@@ -139,7 +139,7 @@ fn real_native_frontier_and_streamed_account_evidence_retain_the_native_shape() 
     account.code = Code::Runtime(program);
     world.insert(address, account).unwrap();
     let calldata = TestBytes::unknown();
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     // Admit the complete input root (source token and length), while refusing
     // the larger compound logical-range guard before CALLDATACOPY's effect.
     let algebra = product_with_relations(crate::domain::relational::RelationLimits {
@@ -242,7 +242,7 @@ fn symbolic_balance_analysis(expression: ExprId) -> TestWorldAnalysis {
     let mut account = TestAccount::from_hex("00", Fork::Osaka).unwrap();
     account.balance = TestValue::top().with_expression(expression);
     world.insert(address, account).unwrap();
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let algebra = product_with_relations(crate::domain::relational::RelationLimits {
         max_depth: 512,
         ..Default::default()

@@ -5,7 +5,6 @@ use crate::domain::ProductAlgebra;
 use super::*;
 use crate::analysis::machine::fixtures::{address, fixture, word};
 use crate::analysis::testing::AbstractLog;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::world::LogKey;
 use alloy_primitives::U256;
 use std::collections::VecDeque;
@@ -35,7 +34,7 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
         max_work: 200_000_000,
         ..Default::default()
     };
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let mut budget = WorkBudget::new(config.max_work);
@@ -180,7 +179,6 @@ fn parked_joined_summary_contains_the_current_bound() {
     let joined = join(&original, &incoming, domain, false).unwrap();
     let mut table = Table::default();
     let config = crate::analysis::ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
     let mut solver = table.solver(
@@ -214,7 +212,6 @@ fn exhausted_ledger_does_not_replace_current_summary_with_an_old_input() {
     let summary = form(&input, &entry, domain).unwrap();
     let mut table = Table::default();
     let config = crate::analysis::ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let mut budget = WorkBudget::new(0);
     let mut counters = Counters::default();
     let mut solver = table.solver(
@@ -245,7 +242,6 @@ fn symbolic_owner_namespace_is_never_used_for_storage_discovery() {
     frame.key.address_value = AddressInput::Concrete(namespace);
     frame.address_operand = Some(TestValue::unknown_address());
     let config = crate::analysis::ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let mut budget = WorkBudget::new(config.max_work);
     let execution = execute_inner(
         &world,
@@ -272,7 +268,7 @@ fn symbolic_owner_namespace_is_never_used_for_storage_discovery() {
 fn equal_exit_buffers_share_one_invocation_source_but_later_calls_are_fresh() {
     let (world, entry) = fixture(&[]);
     let config = crate::analysis::ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let payload =
@@ -333,7 +329,7 @@ fn static_environment_closes_without_analyzing_or_reporting_known_callbacks() {
     let (world, mut entry) = fixture(&[(0x102, "5b5f56")]);
     entry.environment.is_static = true;
     let config = crate::analysis::ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let mut payload =
@@ -434,7 +430,7 @@ fn static_environment_keeps_a_typed_frontier_when_envelope_work_is_unavailable()
     let (world, mut entry) = fixture(&[(0x102, "00")]);
     entry.environment.is_static = true;
     let config = crate::analysis::ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let payload =

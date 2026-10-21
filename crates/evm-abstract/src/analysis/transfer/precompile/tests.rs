@@ -3,11 +3,9 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, Entry, TestValue, World};
-use crate::domain::EvmNumericAlgebra as _;
 
 use crate::analysis::testing::ByteArray;
 use crate::analysis::transfer::Execution;
-use crate::domain;
 use crate::domain::ProductAlgebra;
 use crate::domain::ValueAlgebra;
 
@@ -426,7 +424,7 @@ fn signature_success_buffers_cover_empty_and_word_and_report_typed_limits() {
             &[255; 32],
             crate::analysis::testing::product(config_numeric.spec()).borrowed(),
         );
-        let mut limited = config.clone();
+        let limited = config.clone();
         let mut limited_numeric = config_numeric.clone();
         limited_numeric.relations.max_nodes = 1;
         let (_, _, payload) = fixture(
@@ -1194,7 +1192,7 @@ fn summary_admission_and_input_retention_refusals_have_no_fake_terminals() {
     assert_eq!(result.payload, payload);
     assert!(!budget.exhausted());
     assert_eq!(budget.used(), price);
-    let mut limited = config.clone();
+    let limited = config.clone();
     let mut limited_numeric = config_numeric.clone();
     limited_numeric.relations.max_nodes = 1;
     let input_error = payload

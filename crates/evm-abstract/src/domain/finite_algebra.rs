@@ -13,6 +13,8 @@ use super::{
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
+use super::concrete::evaluation_work;
+
 const COPY_WORK: usize = 2;
 const LITERAL_WORK: usize = 128;
 const SINGLETON_WORK: usize = 16;
@@ -55,18 +57,6 @@ fn result_range(op: u8) -> Option<u64> {
         opcode::BYTE => Some(255),
         opcode::CLZ => Some(256),
         _ => None,
-    }
-}
-
-fn evaluation_work(op: u8) -> usize {
-    match op {
-        // Square-and-multiply uses at most 512 fixed-width multiplications;
-        // reserve their limb work and the exponent/loop bookkeeping.
-        opcode::EXP => 16384,
-        // Include signed normalization and widened modular intermediates.
-        opcode::ADDMOD | opcode::MULMOD => 4096,
-        opcode::DIV | opcode::SDIV | opcode::MOD | opcode::SMOD => 1024,
-        _ => 64,
     }
 }
 

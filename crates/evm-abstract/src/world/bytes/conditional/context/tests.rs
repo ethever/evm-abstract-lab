@@ -3,10 +3,9 @@ use crate::world::bytes::conditional::{Branch, ConditionalFacts, Scope};
 use alloy_primitives::U256;
 use std::{rc::Rc, sync::Arc};
 use {
-    crate::domain::ValueAlgebra, crate::domain::identity::Symbol,
-    crate::domain::provenance::Origin, crate::domain::relational::RelationLimits,
-    crate::domain::symbolic::ExprError, crate::domain::symbolic::ExprId,
-    crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue,
+    crate::domain::identity::Symbol, crate::domain::provenance::Origin,
+    crate::domain::relational::RelationLimits, crate::domain::symbolic::ExprError,
+    crate::domain::symbolic::ExprId, crate::world::test_support::TestValue,
 };
 
 pub(super) fn constant(value: usize) -> TestValue {

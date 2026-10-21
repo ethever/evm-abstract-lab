@@ -1,18 +1,17 @@
 //! Prepared Reader actions share the original demand budget.
 
-use super::{Context, Facts, Reader, constant, numeric_domain, packing, scalar_in, zero};
+use super::{Context, Facts, Reader, constant, packing, scalar_in, zero};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::{num::NonZeroUsize, sync::Arc};
 use {
-    crate::domain::EvmNumericAlgebra, crate::domain::ValueAlgebra, crate::domain::WordElement,
-    crate::domain::provenance::Origin, crate::domain::symbolic::ByteStateId,
-    crate::domain::symbolic::ByteStateKind, crate::domain::symbolic::ExprError,
-    crate::domain::symbolic::ExprId, crate::domain::symbolic::ExprLimits,
-    crate::domain::symbolic::SourceId, crate::domain::symbolic::StateLimits,
-    crate::resource::WorkBudget, crate::world::bytes::conditional,
-    crate::world::bytes::conditional::ConditionalFacts, crate::world::test_support::TestAlgebra,
-    crate::world::test_support::TestValue,
+    crate::domain::WordElement, crate::domain::provenance::Origin,
+    crate::domain::symbolic::ByteStateId, crate::domain::symbolic::ByteStateKind,
+    crate::domain::symbolic::ExprError, crate::domain::symbolic::ExprId,
+    crate::domain::symbolic::ExprLimits, crate::domain::symbolic::SourceId,
+    crate::domain::symbolic::StateLimits, crate::resource::WorkBudget,
+    crate::world::bytes::conditional, crate::world::bytes::conditional::ConditionalFacts,
+    crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue,
 };
 use {
     crate::world::bytes::test_support::assert_complete_value,

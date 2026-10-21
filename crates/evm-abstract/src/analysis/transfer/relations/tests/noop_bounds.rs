@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{TestValue, TestValueQuery};
-use crate::domain::EvmNumericAlgebra as _;
 
 use crate::domain::{EvmNumericAlgebra, ValueAlgebra, WordElement};
 

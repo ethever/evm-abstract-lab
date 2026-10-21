@@ -2,7 +2,6 @@ use super::super::{
     StorageReadPolicy, WorkBudget, execute, initial,
     query::tests::{Policy, RECEIPT, Word},
 };
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork, U256,
     analysis::{EnginePolicies, ExecutionConfig, FrontierReason, Status},

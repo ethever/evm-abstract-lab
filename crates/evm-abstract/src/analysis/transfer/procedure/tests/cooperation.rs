@@ -4,7 +4,6 @@ use crate::domain::ProductAlgebra;
 
 use super::*;
 use crate::analysis::worklist::runtime::TaskKind;
-use crate::domain::EvmNumericAlgebra as _;
 
 #[test]
 fn tracking_a_native_body_uses_no_carrier_copy_or_query_and_honors_cancellation() {
@@ -55,7 +54,7 @@ fn tracking_a_native_body_uses_no_carrier_copy_or_query_and_honors_cancellation(
 fn output_growth_wakes_the_retained_outer_world_consumer() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let mut config = crate::analysis::machine::fixtures::config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let config_numeric = crate::analysis::testing::NumericLimits::machine();
     config.use_summaries = true;
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
@@ -192,7 +191,7 @@ fn caller_growth_redelivers_an_unchanged_callee_generation() {
 fn late_feedback_redelivers_an_unchanged_template_and_callee_output() {
     let (world, entry) = fixture(&[(0x101, "005b00")]);
     let config = crate::analysis::machine::fixtures::config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let config_numeric = crate::analysis::testing::NumericLimits::machine();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let mut payload = super::super::testing::initial(&world, &entry, domain).unwrap();

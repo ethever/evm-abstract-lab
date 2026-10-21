@@ -1,5 +1,3 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::*;
 use crate::analysis::MachinePayload;
 use crate::analysis::testing::ByteArray;
@@ -52,7 +50,7 @@ fn fixture() -> (
         world.insert(address(target), Account::empty()).unwrap();
     }
     let entry = Entry::concrete(address(0x101), address(0x1000), word(0), ByteArray::empty());
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.enabled = false;
     let algebra =
@@ -266,8 +264,10 @@ fn reserved_work(payload: &MachinePayload, procedure: bool) -> usize {
 }
 
 fn finite_words(count: u64) -> TestValue {
-    let mut numeric = crate::analysis::testing::NumericLimits::default();
-    numeric.max_constants = 16;
+    let numeric = crate::analysis::testing::NumericLimits {
+        max_constants: 16,
+        ..Default::default()
+    };
     let algebra = crate::analysis::testing::product(numeric.spec());
     let domain = algebra.borrowed();
     (1..count).fold(word(0), |value, next| domain.join(&value, &word(next)))

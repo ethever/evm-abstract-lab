@@ -55,10 +55,8 @@ pub use machine::{
 };
 #[cfg(test)]
 use machine::{
-    CallStack, ChildFrame, Continuation, ExecutionEvidence, FrameState, InstructionValue,
-    MachineFrontier, MachineOutcome, MachinePayload, MachineState, ProcedureSummary,
-    ProcedureSummaryOutput, ProcedureSummaryRecord, RangeRequest, RangeWitness, RootFrame,
-    WorldAnalysis,
+    CallStack, ChildFrame, Continuation, MachineOutcome, MachinePayload, ProcedureSummaryRecord,
+    RootFrame, WorldAnalysis,
 };
 pub use machine::{
     EvmCallStack, EvmChildFrame, EvmContinuation, EvmExecutionEvidence, EvmFrame, EvmFrameState,
@@ -71,14 +69,10 @@ pub use rpc::{
 };
 pub use single::ProjectionError;
 pub use summary::{EvmSummaryInput, EvmSummaryOutput, EvmSummaryRecord, SummaryStats};
-#[cfg(test)]
-use summary::{SummaryInput, SummaryOutput, SummaryRecord};
 pub use terminal::{
     EvmRootTerminalCoverage, EvmRootTerminalInputBinding, EvmRootTerminalOutcome,
     RootTerminalRetention, RootTerminalScope, RootTerminalTrigger,
 };
-#[cfg(test)]
-use terminal::{RootTerminalCoverage, RootTerminalInputBinding, RootTerminalOutcome};
 pub use transfer::create::CreationBoundary;
 
 /// Serialized EVM analysis format. Version 11 distinguishes reduction work

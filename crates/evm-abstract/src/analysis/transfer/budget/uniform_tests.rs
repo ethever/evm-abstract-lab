@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::ByteArray;
-use crate::domain::EvmNumericAlgebra as _;
 
 use super::{OperationQuote, operation_work_budgeted, quotation_work};
 use crate::{

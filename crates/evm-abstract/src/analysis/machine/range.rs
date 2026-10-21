@@ -9,7 +9,7 @@ use serde::Serialize;
 use std::sync::Arc;
 
 /// A byte-array representation rejected a concrete or unbound range. Logical
-/// memory-policy partitions remain Memory with their guarded RangeWitness.
+/// memory-policy partitions remain Memory with their guarded EvmRangeWitness.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum ByteRangeBoundary {
     /// No finite size or trusted symbolic size term was supplied.
@@ -72,9 +72,3 @@ pub struct EvmRangeWitness<N: WordElement> {
     /// Immutable machine state, including the surviving branch assumptions.
     pub payload: Arc<EvmMachinePayload<N>>,
 }
-
-// Local regression fixtures use explicit built-in carriers.
-#[cfg(test)]
-pub(in crate::analysis) type RangeRequest = EvmRangeRequest<crate::domain::NumericValue>;
-#[cfg(test)]
-pub(in crate::analysis) type RangeWitness = EvmRangeWitness<crate::domain::NumericValue>;

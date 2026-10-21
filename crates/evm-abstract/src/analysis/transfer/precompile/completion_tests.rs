@@ -3,7 +3,6 @@
 use crate::domain::ProductAlgebra;
 
 use super::*;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{
         EvmMachinePayload, ExecutionConfig, FrameCode, MachineEdgeKind, RecentDistinctJumps,
@@ -60,7 +59,7 @@ fn child(
             Bytes::exact(&[0x2a])
         },
     );
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.enabled = false;
     let policy = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(config_numeric.spec())));
@@ -372,7 +371,7 @@ fn exact_native_relative_root_pays_only_an_actual_saved_store_rollback() {
             let entry =
                 EvmEntry::concrete(address(target), address(0x900), value(0), Bytes::empty());
             let config = ExecutionConfig::default();
-            let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+            let config_numeric = crate::analysis::testing::NumericLimits::default();
             let policy =
                 ValueAlgebra::new(Policy(ProductAlgebra::from_spec(config_numeric.spec())));
             let mut payload = initial(&world, &entry, policy.borrowed()).unwrap();
@@ -441,7 +440,7 @@ fn symbolic_native_relative_root_restores_are_paid_only_by_the_common_owner() {
         world.insert(address(0x303), EvmAccount::empty()).unwrap();
         let entry = EvmEntry::concrete(address(6), address(0x900), value(0), Bytes::unknown());
         let config = ExecutionConfig::default();
-        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let config_numeric = crate::analysis::testing::NumericLimits::default();
         let policy = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(config_numeric.spec())));
         let mut payload = initial(&world, &entry, policy.borrowed()).unwrap();
         let mut saved = payload.active().saved_store.state().clone();
