@@ -1,7 +1,10 @@
 //! Fresh range results have copy prices independent of the original operands.
 
 use super::*;
-use std::cell::RefCell;
+use std::{
+    sync::Mutex,
+    thread::{self, ThreadId},
+};
 
 #[derive(Clone, Copy, Default)]
 struct Receipt {
@@ -21,14 +24,35 @@ struct Factory {
     cancel: Option<analysis_control::Cancellation>,
 }
 
-thread_local! {
-    static FACTORY: RefCell<Factory> = RefCell::new(Factory::default());
+// Match the concrete per-thread registry used by analysis_control. Only
+// fixture configuration/handle lookup holds the lock, never analysis work.
+static FACTORY: Mutex<Vec<(ThreadId, Factory)>> = Mutex::new(Vec::new());
+
+fn with_factory(operation: impl FnOnce(&mut Factory)) {
+    let owner = thread::current().id();
+    let mut factories = FACTORY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let index = match factories.iter().position(|(thread, _)| *thread == owner) {
+        Some(index) => index,
+        None => {
+            factories.push((owner, Factory::default()));
+            factories.len() - 1
+        }
+    };
+    operation(&mut factories[index].1);
 }
 
 struct ResetFactory;
 impl Drop for ResetFactory {
     fn drop(&mut self) {
-        FACTORY.with(|factory| *factory.borrow_mut() = Factory::default());
+        let owner = thread::current().id();
+        let mut factories = FACTORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(index) = factories.iter().position(|(thread, _)| *thread == owner) {
+            factories.swap_remove(index);
+        }
     }
 }
 
@@ -82,8 +106,7 @@ impl WordElement for DerivedWord {
     }
     fn constant(value: U256) -> Self {
         let mut word = Self::cheap(NumericValue::constant(value));
-        FACTORY.with(|factory| {
-            let factory = factory.borrow();
+        with_factory(|factory| {
             if factory.watched == Some(value) {
                 word.price = factory.price;
                 word.cancel = factory.cancel.clone();
@@ -234,15 +257,15 @@ fn actual_finish_refuses_new_msize_and_minimum_max_prices_before_their_first_clo
     let _scope = COPIES.scope();
     let _reset = ResetFactory;
     for (watched, requested) in [(64, 1), (3, 3)] {
-        FACTORY.with(|factory| *factory.borrow_mut() = Factory::default());
+        with_factory(|factory| *factory = Factory::default());
         // Old values are cheap, including the original request/source length.
         let payload = fixture(requested);
         let source = DerivedBytes::exact(&vec![0x11; requested as usize]);
         let original = payload.clone();
         let mut result = crate::analysis::transfer::empty_execution(payload.clone());
-        FACTORY.with(|factory| {
-            factory.borrow_mut().watched = Some(U256::from(watched));
-            factory.borrow_mut().price = usize::MAX;
+        with_factory(|factory| {
+            factory.watched = Some(U256::from(watched));
+            factory.price = usize::MAX;
         });
         COPIES.set(Receipt::default());
         let mut budget = WorkBudget::new(usize::MAX);
@@ -262,12 +285,12 @@ fn fresh_result_full_fee_preserves_copy_and_raw_capture_but_fee_minus_one_publis
     let _reset = ResetFactory;
     let algebra = ValueAlgebra::new(DerivedPolicy);
     for (watched, requested, source_len, copies) in [(64, 8, 1, 2), (3, 3, 3, 3)] {
-        FACTORY.with(|factory| *factory.borrow_mut() = Factory::default());
+        with_factory(|factory| *factory = Factory::default());
         let payload = fixture(requested);
         let source = DerivedBytes::exact(&vec![0x11; source_len]);
-        FACTORY.with(|factory| {
-            factory.borrow_mut().watched = Some(U256::from(watched));
-            factory.borrow_mut().price = 1_000_003;
+        with_factory(|factory| {
+            factory.watched = Some(U256::from(watched));
+            factory.price = 1_000_003;
         });
         let mut expected = payload.call_stack.parent().unwrap().memory.clone();
         expected
@@ -332,7 +355,7 @@ fn fresh_result_price_hook_checks_current_and_captured_cancellation_before_copy(
     let _reset = ResetFactory;
     for watched in [64, 3] {
         for captured_cancel in [false, true] {
-            FACTORY.with(|factory| *factory.borrow_mut() = Factory::default());
+            with_factory(|factory| *factory = Factory::default());
             let payload = fixture(if watched == 64 { 1 } else { 3 });
             let source = DerivedBytes::exact(&[0x11; 3]);
             let mut result = crate::analysis::transfer::empty_execution(payload.clone());
@@ -341,8 +364,8 @@ fn fresh_result_price_hook_checks_current_and_captured_cancellation_before_copy(
             let current = analysis_control::Cancellation::new();
             let mut budget =
                 analysis_control::with_cancellation(&captured, || WorkBudget::new(usize::MAX));
-            FACTORY.with(|factory| {
-                *factory.borrow_mut() = Factory {
+            with_factory(|factory| {
+                *factory = Factory {
                     watched: Some(U256::from(watched)),
                     price: 1_000_003,
                     cancel: Some(if captured_cancel {
