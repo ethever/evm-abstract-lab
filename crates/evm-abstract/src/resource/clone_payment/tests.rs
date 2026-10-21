@@ -1,6 +1,5 @@
 //! Private predicates have independent retention and declared-copy envelopes.
 
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork, U256,
     analysis::ExecutionConfig,
@@ -11,8 +10,9 @@ use crate::{
     world::{EvmAccount, EvmEntry, EvmWorld},
 };
 use alloy_primitives::Address;
+use revm_bytecode::opcode;
 use serde::Serialize;
-use std::{collections::BTreeSet, fmt};
+use std::{collections::BTreeSet, fmt, num::NonZeroUsize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Receipt {
@@ -58,6 +58,8 @@ impl PartialEq for Word {
 impl Eq for Word {}
 
 impl Word {
+    const WRAPPER_WORK: usize = 16;
+
     pub(crate) fn expensive(work: usize) -> Self {
         Self {
             native: NumericValue::unsigned_range(U256::ZERO, U256::from(32)).unwrap(),
@@ -148,7 +150,7 @@ impl WordElement for Word {
         self.native
             .work_size()
             .saturating_add(self.private.len())
-            .saturating_add(16)
+            .saturating_add(Self::WRAPPER_WORK)
     }
     fn clone_work(&self) -> usize {
         let mut armed = false;
@@ -208,9 +210,28 @@ impl EvmNumericAlgebra for Policy {
         })
     }
     fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
-        args.fold(1024usize, |work, value| {
-            work.saturating_add(value.work_size().saturating_mul(8))
-        })
+        // Transfer and facade literals return an empty predicate. Price the
+        // wrapper fields separately from the actual selected native policy.
+        let mut wrapper_work = Word::WRAPPER_WORK;
+        let expressions = self.spec().relations().enabled;
+        let native_work = self.0.operation_work(
+            op,
+            args.map(|arg| {
+                // Two temporary vectors stage/release their slots. Native
+                // copies release shared handles while the original inputs
+                // remain alive, so use their cheap copy cost, not work_size.
+                wrapper_work = wrapper_work
+                    .saturating_add(arg.native.clone_work().saturating_mul(2))
+                    .saturating_add(4);
+                // Facade expression discovery may query each input once; the
+                // private exclusion scan is additional to the native query.
+                if expressions {
+                    wrapper_work = wrapper_work.saturating_add(arg.private.len());
+                }
+                &arg.native
+            }),
+        );
+        native_work.saturating_add(wrapper_work)
     }
     fn literal_quote_work(&self, _literal: U256) -> usize {
         128
@@ -267,4 +288,102 @@ pub(crate) fn private_value(work: usize) -> EvmValue<Word> {
         .with_numeric(Word::expensive(work))
         .with_origin(crate::domain::provenance::Origin::Environment)
         .with_identity(138, 7)
+}
+
+#[test]
+fn operation_quote_covers_the_configured_product_output() {
+    let _scope = RECEIPT.scope();
+    let capacity = 4096;
+    let policy = Policy(ProductAlgebra::from_spec(DomainSpec::new(
+        NonZeroUsize::new(capacity).unwrap(),
+        NonZeroUsize::new(4).unwrap(),
+        // The finite cover and its other semantic atoms must both fit.
+        NonZeroUsize::new(capacity * 2).unwrap(),
+    )));
+    let args = [Word::top(), Word::constant(U256::from(capacity - 1))];
+    reset();
+    let quote = policy.operation_work(opcode::AND, args.iter());
+    let result = policy.apply_numeric(opcode::AND, args.iter()).value;
+    assert_eq!(RECEIPT.get(), Receipt::default());
+    assert_eq!(result.native.constants().map(BTreeSet::len), Some(capacity));
+    assert!(result.private.is_empty());
+    assert_eq!(result.work_size(), capacity + 12 + Word::WRAPPER_WORK);
+    let old_quote = args.iter().fold(1024usize, |work, arg| {
+        work.saturating_add(arg.work_size().saturating_mul(8))
+    });
+    assert!(result.work_size() > old_quote);
+    assert!(quote >= result.work_size());
+}
+
+#[test]
+fn operation_quotes_follow_native_capacity_and_max_without_copy_or_query_hooks() {
+    let _scope = RECEIPT.scope();
+    let cancellation = analysis_control::Cancellation::new();
+    // The declared copy refusal is independent of this borrowed operation.
+    let mut word = Word::top().with_predicate(usize::MAX);
+    word.cancel_price = Some(cancellation.clone());
+    let args = [word, Word::constant(U256::from(131_071))];
+    let receipt = Receipt {
+        armed: true,
+        ..Receipt::default()
+    };
+    RECEIPT.set(receipt);
+    let quotes = [8, 131_072, usize::MAX].map(|capacity| {
+        let policy = Policy(ProductAlgebra::from_spec(DomainSpec::new(
+            NonZeroUsize::new(capacity).unwrap(),
+            NonZeroUsize::new(4).unwrap(),
+            NonZeroUsize::new(capacity.saturating_mul(2)).unwrap(),
+        )));
+        let native = policy
+            .0
+            .operation_work(opcode::AND, args.iter().map(|arg| &arg.native));
+        let quote = policy.operation_work(opcode::AND, args.iter());
+        assert!(
+            quote
+                >= native
+                    .saturating_add(Word::WRAPPER_WORK)
+                    .saturating_add(args[0].private.len())
+        );
+        if capacity == usize::MAX {
+            assert_eq!(native, usize::MAX);
+        } else {
+            assert_ne!(quote, usize::MAX);
+        }
+        assert_eq!(RECEIPT.get(), receipt);
+        assert!(!cancellation.is_cancelled());
+        quote
+    });
+    assert!(quotes[1] > quotes[0]);
+    // Native AND Top with 2^17-1 has 2^17 candidates. The configured capacity
+    // and fact limit admit that cover; NumericValue stores r+12 work, and this
+    // wrapper adds 16 with no output predicate. No large result is constructed.
+    assert!(quotes[1] >= 131_072 + 12 + Word::WRAPPER_WORK);
+    assert_eq!(quotes[2], usize::MAX);
+}
+
+#[test]
+fn operation_quote_covers_private_expression_queries_and_facade_literal() {
+    let _scope = RECEIPT.scope();
+    let policy = ValueAlgebra::new(Policy(ProductAlgebra::default()));
+    let args = [
+        EvmValue::from_numeric(Word::constant(U256::from(3)).with_predicate(usize::MAX)),
+        EvmValue::top().with_expression(crate::domain::symbolic::ExprId::constant(U256::from(3))),
+    ];
+    reset();
+    let numeric = policy.numeric_algebra();
+    let quote = numeric.operation_work(opcode::SUB, args.iter().map(EvmValue::numeric));
+    assert_eq!(RECEIPT.get(), Receipt::default());
+    assert!(
+        numeric
+            .apply_numeric(opcode::SUB, args.iter().map(EvmValue::numeric))
+            .value
+            .native
+            .is_top()
+    );
+    let result = policy.apply(opcode::SUB, &args);
+    assert_eq!(result.numeric().native.singleton(), Some(U256::ZERO));
+    assert!(result.numeric().private.is_empty());
+    assert!(quote >= result.numeric().work_size());
+    assert_eq!(RECEIPT.get().queries, 3);
+    assert_eq!((RECEIPT.get().clones, RECEIPT.get().quotes), (0, 0));
 }

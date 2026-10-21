@@ -23,8 +23,6 @@ mod range;
 mod stack;
 mod symbolic;
 
-#[cfg(test)]
-pub(in crate::analysis) use evidence::InstructionValue;
 pub use evidence::{EvmExecutionEvidence, EvmInstructionValue, InstructionProgress};
 #[cfg(test)]
 pub(in crate::analysis) use frame::{ChildFrame, RootFrame};
