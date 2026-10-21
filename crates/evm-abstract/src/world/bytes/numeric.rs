@@ -147,6 +147,88 @@ pub(in crate::world) fn attach<N: WordElement>(
 const WORD_CACHE_ENTRIES: usize = 32;
 const WORD_CACHE_WORK: usize = 8 * 1024;
 
+// Continuations borrow the admitted content graph. Values move between tasks;
+// no numeric carrier or branch cache is copied to retain a host stack frame.
+enum ReadTask<'s, N: WordElement> {
+    Byte(&'s ByteStateId, ExprId),
+    Word(&'s ByteStateId, ExprId),
+    View(&'s ByteView, ExprId),
+    WordByte(&'s ExprId, U256),
+    WordBytes(&'s ByteStateId, U256),
+    DiscardThen(&'s ByteStateId, ExprId),
+    Pad(Box<EvmValue<N>>, U256),
+    Value(Box<EvmValue<N>>),
+    Zero,
+    UnknownByte,
+    Choices(ReadChoices<'s>, bool),
+    Join,
+    First,
+    Pack,
+    Branch {
+        condition: &'s ExprId,
+        nonzero: bool,
+        state: &'s ByteStateId,
+        index: ExprId,
+        word: bool,
+    },
+    EndBranch,
+}
+
+enum ChoiceKind<'s> {
+    Word(&'s ByteStateId, &'s ExprId),
+    WholeWord(&'s ByteStateId),
+    Copy(&'s ByteStateId, &'s ByteView),
+    View(&'s ByteView),
+}
+
+// Keep only the three finite operands, never their Cartesian product. Each
+// next alternative is scheduled after the previous paid evaluation and join.
+struct ReadChoices<'s> {
+    kind: ChoiceKind<'s>,
+    operands: [Vec<U256>; 3],
+    position: [usize; 3],
+}
+
+impl<'s> ReadChoices<'s> {
+    fn next<N: WordElement>(&mut self) -> Option<ReadTask<'s, N>> {
+        let [a, b, c] = std::array::from_fn(|i| self.operands[i].get(self.position[i]).copied());
+        let (a, b, c) = (a?, b?, c?);
+        for i in (0..3).rev() {
+            self.position[i] += 1;
+            if self.position[i] < self.operands[i].len() || i == 0 {
+                break;
+            }
+            self.position[i] = 0;
+        }
+        Some(match self.kind {
+            ChoiceKind::Word(previous, value) => {
+                if a >= b && a - b < U256::from(32) {
+                    ReadTask::WordByte(value, a - b)
+                } else {
+                    ReadTask::Byte(previous, ExprId::constant(a))
+                }
+            }
+            ChoiceKind::WholeWord(state) => ReadTask::WordBytes(state, a),
+            ChoiceKind::Copy(previous, source) => {
+                if a >= b && a - b < c {
+                    ReadTask::View(source, ExprId::constant(a - b))
+                } else {
+                    ReadTask::Byte(previous, ExprId::constant(a))
+                }
+            }
+            ChoiceKind::View(view) => {
+                if a >= c {
+                    ReadTask::Zero
+                } else {
+                    b.checked_add(a).map_or(ReadTask::Zero, |index| {
+                        ReadTask::Byte(&view.state, ExprId::constant(index))
+                    })
+                }
+            }
+        })
+    }
+}
+
 /// A batch of reads using exactly the same immutable facts and numeric policy.
 /// Cached values keep all metadata and never escape this evaluator's lifetime.
 pub(super) struct Reader<
@@ -272,9 +354,135 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
     }
 
     pub(super) fn read(&mut self, state: &ByteStateId, index: &ExprId) -> EvmValue<N> {
-        if self.context.stopped() {
-            return EvmValue::<N>::top();
+        self.evaluate(ReadTask::Byte(state, index.clone()))
+    }
+
+    fn evaluate(&mut self, task: ReadTask<'_, N>) -> EvmValue<N> {
+        let mut tasks = vec![task];
+        let mut values = Vec::new();
+        let mut branches: Vec<Self> = Vec::new();
+        while let Some(task) = tasks.pop() {
+            let reader = branches.last_mut().unwrap_or(&mut *self);
+            if reader.context.stopped() {
+                return EvmValue::<N>::top();
+            }
+            let result = match task {
+                ReadTask::Byte(state, index) => reader.read_step(state, &index, &mut tasks),
+                ReadTask::Word(state, offset) => reader.word_step(state, &offset, &mut tasks),
+                ReadTask::View(view, relative) => reader.view_step(view, &relative, &mut tasks),
+                ReadTask::WordByte(value, index) => Some(reader.context.observe_byte(
+                    reader.domain,
+                    opcode::BYTE,
+                    &[
+                        EvmValue::<N>::constant(index),
+                        scalar_in(value, &reader.context, reader.domain),
+                    ],
+                )),
+                ReadTask::WordBytes(state, offset) => {
+                    tasks.push(ReadTask::Pack);
+                    for j in (0..32).rev() {
+                        tasks.push(offset.checked_add(U256::from(j)).map_or_else(
+                            || ReadTask::Zero,
+                            |i| ReadTask::Byte(state, ExprId::constant(i)),
+                        ));
+                    }
+                    None
+                }
+                ReadTask::DiscardThen(state, index) => {
+                    values.pop().expect("discarded copy candidate");
+                    tasks.push(ReadTask::Byte(state, index));
+                    None
+                }
+                ReadTask::Pad(length, relative) => {
+                    let value = values.pop().expect("view byte");
+                    Some(if relative < crate::world::unsigned_bounds(&length).0 {
+                        value
+                    } else {
+                        reader
+                            .context
+                            .join_with(reader.domain, &value, &zero_with())
+                    })
+                }
+                ReadTask::Value(value) => Some(*value),
+                ReadTask::Zero => Some(zero_with()),
+                ReadTask::UnknownByte => Some(EvmValue::<N>::unknown_byte()),
+                ReadTask::Choices(mut choices, seen) => {
+                    if let Some(next) = choices.next() {
+                        tasks.push(ReadTask::Choices(choices, true));
+                        tasks.push(if seen {
+                            ReadTask::Join
+                        } else {
+                            ReadTask::First
+                        });
+                        tasks.push(next);
+                        None
+                    } else {
+                        (!seen).then(|| {
+                            if matches!(choices.kind, ChoiceKind::WholeWord(_)) {
+                                EvmValue::<N>::top()
+                            } else {
+                                EvmValue::<N>::unknown_byte()
+                            }
+                        })
+                    }
+                }
+                ReadTask::First => {
+                    let value: EvmValue<N> = values.pop().expect("first alternative");
+                    Some(value.clone())
+                }
+                ReadTask::Join => {
+                    let right = values.pop().expect("right alternative");
+                    let left = values.pop().expect("left alternative");
+                    Some(reader.context.join_with(reader.domain, &left, &right))
+                }
+                ReadTask::Pack => {
+                    let bytes = values.split_off(values.len() - 32);
+                    Some(reader.pack_bytes(bytes))
+                }
+                ReadTask::Branch {
+                    condition,
+                    nonzero,
+                    state,
+                    index,
+                    word,
+                } => {
+                    // Each selected snapshot owns the same fresh word cache as
+                    // the recursive evaluator. Exit before the sibling starts.
+                    let branch = Self::with_context(
+                        reader.context.branch(condition, nonzero),
+                        reader.domain,
+                    );
+                    branches.push(branch);
+                    tasks.push(ReadTask::EndBranch);
+                    tasks.push(if word {
+                        ReadTask::Word(state, index)
+                    } else {
+                        ReadTask::Byte(state, index)
+                    });
+                    None
+                }
+                ReadTask::EndBranch => {
+                    branches.pop().expect("active branch");
+                    None
+                }
+            };
+            if let Some(value) = result {
+                values.push(value);
+            }
         }
+        if self.context.stopped() {
+            EvmValue::<N>::top()
+        } else {
+            values.pop().expect("completed read")
+        }
+    }
+
+    fn read_step<'s>(
+        &mut self,
+        state: &'s ByteStateId,
+        index: &ExprId,
+        tasks: &mut Vec<ReadTask<'s, N>>,
+    ) -> Option<EvmValue<N>> {
         let domain = self.domain;
         let context = self.context.clone();
         let state = demanded_state(state, index, 1, &context, domain);
@@ -316,11 +524,11 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 let i = scalar_in(index, &context, domain);
                 let len = scalar_in(length, &context, domain);
                 if context.stopped() {
-                    return EvmValue::<N>::top();
+                    return Some(EvmValue::<N>::top());
                 }
                 let (_, hi) = crate::world::unsigned_bounds(&len);
                 if crate::world::unsigned_bounds(&i).0 >= hi {
-                    return zero_with();
+                    return Some(zero_with());
                 }
                 let cell = if let Some(indices) = crate::world::candidates(&i) {
                     indices
@@ -363,22 +571,26 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                     &[scalar_in(value, &context, domain), constant_with(255)],
                 );
                 if index == offset {
-                    return val;
+                    return Some(val);
                 }
                 let i = scalar_in(index, &context, domain);
                 let at = scalar_in(offset, &context, domain);
                 if let (Some(i), Some(at)) = (i.singleton(), at.singleton()) {
                     return if i == at {
-                        val
+                        Some(val)
                     } else {
-                        self.read(previous, index)
+                        tasks.push(ReadTask::Byte(previous, index.clone()));
+                        None
                     };
                 }
                 if disjoint(&i, &at) {
-                    self.read(previous, index)
+                    tasks.push(ReadTask::Byte(previous, index.clone()));
                 } else {
-                    context.join_with(domain, &self.read(previous, index), &val)
+                    tasks.push(ReadTask::Join);
+                    tasks.push(ReadTask::Value(Box::new(val)));
+                    tasks.push(ReadTask::Byte(previous, index.clone()));
                 }
+                return None;
             }
             ByteStateKind::WriteWord {
                 previous,
@@ -390,25 +602,19 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 if let (Some(indices), Some(offsets)) =
                     (crate::world::candidates(&i), crate::world::candidates(&at))
                 {
-                    let mut out = None;
-                    for i in indices.iter() {
-                        for at in offsets.iter() {
-                            let val = if *i >= *at && *i - *at < U256::from(32) {
-                                context.observe_byte(
-                                    domain,
-                                    opcode::BYTE,
-                                    &[
-                                        EvmValue::<N>::constant(*i - *at),
-                                        scalar_in(value, &context, domain),
-                                    ],
-                                )
-                            } else {
-                                self.read(previous, &ExprId::constant(*i))
-                            };
-                            out = Some(join(out, val, domain, &context));
-                        }
-                    }
-                    return out.unwrap_or_else(EvmValue::<N>::unknown_byte);
+                    tasks.push(ReadTask::Choices(
+                        ReadChoices {
+                            kind: ChoiceKind::Word(previous, value),
+                            operands: [
+                                indices.iter().copied().collect(),
+                                offsets.iter().copied().collect(),
+                                vec![U256::ZERO],
+                            ],
+                            position: [0; 3],
+                        },
+                        false,
+                    ));
+                    return None;
                 }
                 let (ilo, ihi) = crate::world::unsigned_bounds(&i);
                 let (alo, ahi) = crate::world::unsigned_bounds(&at);
@@ -417,10 +623,14 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                         .checked_add(U256::from(32))
                         .is_some_and(|end| ilo >= end)
                 {
-                    return self.read(previous, index);
+                    tasks.push(ReadTask::Byte(previous, index.clone()));
+                    return None;
                 }
                 let val = self.word_byte_union(value);
-                context.join_with(domain, &self.read(previous, index), &val)
+                tasks.push(ReadTask::Join);
+                tasks.push(ReadTask::Value(Box::new(val)));
+                tasks.push(ReadTask::Byte(previous, index.clone()));
+                return None;
             }
             ByteStateKind::Copy {
                 previous,
@@ -436,126 +646,136 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                     crate::world::candidates(&dst),
                     crate::world::candidates(&len),
                 ) {
-                    let mut out = None;
-                    for i in indices.iter() {
-                        for dst in destinations.iter() {
-                            for len in lengths.iter() {
-                                let val = if *i >= *dst && *i - *dst < *len {
-                                    self.view_read(source, &ExprId::constant(*i - *dst))
-                                } else {
-                                    self.read(previous, &ExprId::constant(*i))
-                                };
-                                out = Some(join(out, val, domain, &context));
-                            }
-                        }
-                    }
-                    return out.unwrap_or_else(EvmValue::<N>::unknown_byte);
+                    tasks.push(ReadTask::Choices(
+                        ReadChoices {
+                            kind: ChoiceKind::Copy(previous, source),
+                            operands: [
+                                indices.iter().copied().collect(),
+                                destinations.iter().copied().collect(),
+                                lengths.iter().copied().collect(),
+                            ],
+                            position: [0; 3],
+                        },
+                        false,
+                    ));
+                    return None;
                 }
                 if index == destination && !len.may_be_zero() {
-                    return self.view_read(source, &ExprId::constant(U256::ZERO));
+                    tasks.push(ReadTask::View(source, ExprId::constant(U256::ZERO)));
+                    return None;
                 }
                 let (ilo, ihi) = crate::world::unsigned_bounds(&i);
                 let (dlo, dhi) = crate::world::unsigned_bounds(&dst);
                 let (llo, lhi) = crate::world::unsigned_bounds(&len);
                 if ihi < dlo || dhi.checked_add(lhi).is_some_and(|end| ilo >= end) {
-                    return self.read(previous, index);
+                    tasks.push(ReadTask::Byte(previous, index.clone()));
+                    return None;
                 }
                 if let (Some(i), Some(dst)) = (i.singleton(), dst.singleton())
                     && i >= dst
                 {
                     let delta = i - dst;
-                    let copied = self.view_read(source, &ExprId::constant(delta));
-                    return if delta < llo {
-                        copied
+                    if delta < llo {
+                        tasks.push(ReadTask::View(source, ExprId::constant(delta)));
                     } else if delta >= lhi {
-                        self.read(previous, index)
+                        // Keep the original source observation and its payment
+                        // before discarding an out-of-range copied candidate.
+                        tasks.push(ReadTask::DiscardThen(previous, index.clone()));
+                        tasks.push(ReadTask::View(source, ExprId::constant(delta)));
                     } else {
-                        context.join_with(domain, &copied, &self.read(previous, index))
-                    };
+                        tasks.push(ReadTask::Join);
+                        tasks.push(ReadTask::Byte(previous, index.clone()));
+                        tasks.push(ReadTask::View(source, ExprId::constant(delta)));
+                    }
+                    return None;
                 }
-                context.join_with(
-                    domain,
-                    &self.read(previous, index),
-                    &EvmValue::<N>::unknown_byte(),
-                )
+                tasks.push(ReadTask::Join);
+                tasks.push(ReadTask::UnknownByte);
+                tasks.push(ReadTask::Byte(previous, index.clone()));
+                return None;
             }
-            ByteStateKind::Slice { source } => self.view_read(source, index),
+            ByteStateKind::Slice { source } => {
+                tasks.push(ReadTask::View(source, index.clone()));
+                return None;
+            }
             ByteStateKind::Ite {
                 condition,
                 then_state,
                 else_state,
             } => {
                 let c = scalar_in(condition, &context, domain);
+                let branch = |nonzero, state| ReadTask::Branch {
+                    condition,
+                    nonzero,
+                    state,
+                    index: index.clone(),
+                    word: false,
+                };
                 if !c.may_be_zero() {
-                    Self::with_context(context.branch(condition, true), domain)
-                        .read(then_state, index)
+                    tasks.push(branch(true, then_state));
                 } else if !c.may_be_nonzero() {
-                    Self::with_context(context.branch(condition, false), domain)
-                        .read(else_state, index)
+                    tasks.push(branch(false, else_state));
                 } else {
-                    context.join_with(
-                        domain,
-                        &Self::with_context(context.branch(condition, true), domain)
-                            .read(then_state, index),
-                        &Self::with_context(context.branch(condition, false), domain)
-                            .read(else_state, index),
-                    )
+                    tasks.push(ReadTask::Join);
+                    tasks.push(branch(false, else_state));
+                    tasks.push(branch(true, then_state));
                 }
+                return None;
             }
         };
         if context.stopped() {
-            EvmValue::<N>::top()
+            Some(EvmValue::<N>::top())
         } else {
-            value
+            Some(value)
         }
     }
 
-    fn view_read(&mut self, view: &ByteView, relative: &ExprId) -> EvmValue<N> {
+    fn view_step<'s>(
+        &mut self,
+        view: &'s ByteView,
+        relative: &ExprId,
+        tasks: &mut Vec<ReadTask<'s, N>>,
+    ) -> Option<EvmValue<N>> {
         let context = self.context.clone();
         let domain = self.domain;
         let rel = scalar_in(relative, &context, domain);
         let off = scalar_in(&view.offset, &context, domain);
         let len = scalar_in(&view.length, &context, domain);
         if context.stopped() {
-            return EvmValue::<N>::top();
+            return Some(EvmValue::<N>::top());
         }
         if let (Some(relatives), Some(offsets), Some(lengths)) = (
             crate::world::candidates(&rel),
             crate::world::candidates(&off),
             crate::world::candidates(&len),
         ) {
-            let mut out = None;
-            for rel in relatives.iter() {
-                for off in offsets.iter() {
-                    for len in lengths.iter() {
-                        let v = if *rel >= *len {
-                            zero_with()
-                        } else {
-                            off.checked_add(*rel).map_or_else(zero_with, |i| {
-                                self.read(&view.state, &ExprId::constant(i))
-                            })
-                        };
-                        out = Some(join(out, v, domain, &context));
-                    }
-                }
-            }
-            return out.unwrap_or_else(EvmValue::<N>::unknown_byte);
+            tasks.push(ReadTask::Choices(
+                ReadChoices {
+                    kind: ChoiceKind::View(view),
+                    operands: [
+                        relatives.iter().copied().collect(),
+                        offsets.iter().copied().collect(),
+                        lengths.iter().copied().collect(),
+                    ],
+                    position: [0; 3],
+                },
+                false,
+            ));
+            return None;
         }
         if crate::world::unsigned_bounds(&rel).0 >= crate::world::unsigned_bounds(&len).1 {
-            return zero_with();
+            return Some(zero_with());
         }
         // Checked source addition: no BV256 wraparound can expose source byte zero.
         if let (Some(rel), Some(off)) = (rel.singleton(), off.singleton()) {
-            return off.checked_add(rel).map_or_else(zero_with, |i| {
-                let v = self.read(&view.state, &ExprId::constant(i));
-                if rel < crate::world::unsigned_bounds(&len).0 {
-                    v
-                } else {
-                    context.join_with(domain, &v, &zero_with())
-                }
-            });
+            let Some(i) = off.checked_add(rel) else {
+                return Some(zero_with());
+            };
+            tasks.push(ReadTask::Pad(Box::new(len), rel));
+            tasks.push(ReadTask::Byte(&view.state, ExprId::constant(i)));
+            return None;
         }
-        EvmValue::<N>::unknown_byte()
+        Some(EvmValue::<N>::unknown_byte())
     }
 }
 
@@ -570,9 +790,15 @@ pub(super) fn read<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 
 impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
     pub(super) fn word(&mut self, state: &ByteStateId, offset: &ExprId) -> EvmValue<N> {
-        if self.context.stopped() {
-            return EvmValue::<N>::top();
-        }
+        self.evaluate(ReadTask::Word(state, offset.clone()))
+    }
+
+    fn word_step<'s>(
+        &mut self,
+        state: &'s ByteStateId,
+        offset: &ExprId,
+        tasks: &mut Vec<ReadTask<'s, N>>,
+    ) -> Option<EvmValue<N>> {
         let domain = self.domain;
         let context = self.context.clone();
         let state = demanded_state(state, offset, 32, &context, domain);
@@ -585,21 +811,23 @@ impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
             // Joining bytes separately mixes alternatives from different snapshots.
             // The same selector chooses every byte of this word demand.
             let c = scalar_in(condition, &context, domain);
+            let branch = |nonzero, state| ReadTask::Branch {
+                condition,
+                nonzero,
+                state,
+                index: offset.clone(),
+                word: true,
+            };
             if !c.may_be_zero() {
-                return Self::with_context(context.branch(condition, true), domain)
-                    .word(then_state, offset);
+                tasks.push(branch(true, then_state));
+            } else if !c.may_be_nonzero() {
+                tasks.push(branch(false, else_state));
+            } else {
+                tasks.push(ReadTask::Join);
+                tasks.push(branch(false, else_state));
+                tasks.push(branch(true, then_state));
             }
-            if !c.may_be_nonzero() {
-                return Self::with_context(context.branch(condition, false), domain)
-                    .word(else_state, offset);
-            }
-            return context.join_with(
-                domain,
-                &Self::with_context(context.branch(condition, true), domain)
-                    .word(then_state, offset),
-                &Self::with_context(context.branch(condition, false), domain)
-                    .word(else_state, offset),
-            );
+            return None;
         }
         if let ByteStateKind::WriteWord {
             offset: written,
@@ -609,7 +837,7 @@ impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
             && super::reads::same_offset(written, offset, &context, domain)
             && super::reads::nonwrapping_word(offset, &context, domain)
         {
-            return scalar_in(value, &context, domain);
+            return Some(scalar_in(value, &context, domain));
         }
         // A view/copy forwards a value only when every demanded byte belongs
         // to the same nonwrapping source window. Partial windows keep the
@@ -636,58 +864,62 @@ impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
             _ => None,
         };
         if let Some((source, at)) = forwarded {
-            return self.word(source, &at);
+            tasks.push(ReadTask::Word(source, at));
+            return None;
         }
         let offsets = scalar_in(offset, &context, domain);
         let Some(offsets) = crate::world::candidates(&offsets) else {
-            return if matches!(state.kind(), ByteStateKind::Zero) {
+            return Some(if matches!(state.kind(), ByteStateKind::Zero) {
                 scalar_in(&ExprId::constant(U256::ZERO), &context, domain)
             } else {
                 EvmValue::<N>::top()
-            };
+            });
         };
-        let mut out = None;
-        for offset in offsets.iter() {
-            let bytes = (0..32)
-                .map(|j| {
-                    offset
-                        .checked_add(U256::from(j))
-                        .map_or_else(zero_with, |i| self.read(state, &ExprId::constant(i)))
-                })
-                .collect::<Vec<_>>();
-            if context.stopped() {
-                return EvmValue::<N>::top();
-            }
-            if let Some(value) = packing::pack(&bytes, domain, &context) {
-                out = Some(join(out, value, domain, &context));
-                continue;
-            }
-            if context.stopped() {
-                return EvmValue::<N>::top();
-            }
-            let mut parts = bytes
-                .into_iter()
-                .enumerate()
-                .map(|(j, b)| context.apply(domain, opcode::SHL, &[constant_with((31 - j) * 8), b]))
-                .collect::<Vec<_>>();
-            while parts.len() > 1 {
-                if context.stopped() {
-                    return EvmValue::<N>::top();
-                }
-                parts = parts
-                    .chunks(2)
-                    .map(|p| {
-                        if p.len() == 2 {
-                            context.apply(domain, opcode::OR, p)
-                        } else {
-                            p[0].clone()
-                        }
-                    })
-                    .collect();
-            }
-            out = Some(join(out, parts.pop().expect("word"), domain, &context));
+        tasks.push(ReadTask::Choices(
+            ReadChoices {
+                kind: ChoiceKind::WholeWord(state),
+                operands: [
+                    offsets.iter().copied().collect(),
+                    vec![U256::ZERO],
+                    vec![U256::ZERO],
+                ],
+                position: [0; 3],
+            },
+            false,
+        ));
+        None
+    }
+
+    fn pack_bytes(&self, bytes: Vec<EvmValue<N>>) -> EvmValue<N> {
+        let context = &self.context;
+        let domain = self.domain;
+        if let Some(value) = packing::pack(&bytes, domain, context) {
+            return value;
         }
-        out.unwrap_or_else(EvmValue::<N>::top)
+        if context.stopped() {
+            return EvmValue::<N>::top();
+        }
+        let mut parts = bytes
+            .into_iter()
+            .enumerate()
+            .map(|(j, b)| context.apply(domain, opcode::SHL, &[constant_with((31 - j) * 8), b]))
+            .collect::<Vec<_>>();
+        while parts.len() > 1 {
+            if context.stopped() {
+                return EvmValue::<N>::top();
+            }
+            parts = parts
+                .chunks(2)
+                .map(|p| {
+                    if p.len() == 2 {
+                        context.apply(domain, opcode::OR, p)
+                    } else {
+                        p[0].clone()
+                    }
+                })
+                .collect();
+        }
+        parts.pop().expect("word")
     }
 }
 
@@ -749,6 +981,8 @@ fn disjoint<N: WordElement>(a: &EvmValue<N>, b: &EvmValue<N>) -> bool {
 
 #[cfg(test)]
 mod payer_tests;
+#[cfg(test)]
+mod stack_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
