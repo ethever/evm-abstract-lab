@@ -156,17 +156,18 @@ impl Default for EnvironmentInput {
 }
 choice! {
     /// Numeric abstraction selected for this request.
-    pub enum DomainProfile {
+    pub enum NumericModel {
         /// Product of constants, bits, intervals and congruences.
         Product,
-        /// Finite constants baseline.
-        ConstantsOnly,
+        /// Bounded finite sets of constants, executed by the finite-set algebra.
+        FiniteSet,
     }
 }
 record! {
     /// Execution, precision and acquisition controls with platform-independent integers.
     /// Values have no application-defined maximum; the native host validates
     /// representability and semantic requirements before execution.
+    /// Numeric limits configure the selected algebra independently of execution budgets.
     pub struct AnalysisLimits {
         /// Maximum graph states.
         pub max_states: u64,
@@ -188,7 +189,7 @@ record! {
         /// True does not guarantee that a certificate can be attached.
         pub root_terminal_coverage: bool,
         /// Numeric abstraction.
-        pub domain_profile: DomainProfile,
+        pub numeric_model: NumericModel,
         /// Fact reduction rounds.
         pub reduction_rounds: u64,
         /// Maximum retained scalar facts.
@@ -223,7 +224,7 @@ impl Default for AnalysisLimits {
             max_memory_bytes: 64 * 1024 * 1024,
             use_summaries: true,
             root_terminal_coverage: true,
-            domain_profile: DomainProfile::Product,
+            numeric_model: NumericModel::Product,
             reduction_rounds: 16,
             max_facts: 4096,
             relations_enabled: true,

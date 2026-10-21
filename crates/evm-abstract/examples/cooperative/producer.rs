@@ -6,23 +6,25 @@ use evm_abstract::{
         InputRoute, Inputs, RefinementRoute, Refinements, StackFacts, Subject,
     },
     domain::{
-        NumericValue,
+        WordElement,
         symbolic::{ExprId, ExprKind},
     },
     kernel::{Accepts, Charges, LocalClosure, Read, Reduction, Scoped},
 };
 use revm_bytecode::opcode;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, marker::PhantomData};
 
-pub struct Producer {
+pub struct Producer<N: WordElement> {
     enabled: bool,
     pub feedback_observed: usize,
+    numeric: PhantomData<fn() -> N>,
 }
-impl Producer {
+impl<N: WordElement> Producer<N> {
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled,
             feedback_observed: 0,
+            numeric: PhantomData,
         }
     }
 }
@@ -54,28 +56,22 @@ fn always_false(expression: &ExprId) -> bool {
         })
 }
 
-impl<Cx> Reduction<Cx> for Producer
+impl<N: WordElement, Cx> Reduction<Cx> for Producer<N>
 where
-    Cx: Read<Inputs<NumericValue>, InputRoute>
-        + Read<
-            Refinements,
-            RefinementRoute,
-            Error = <Cx as Read<Inputs<NumericValue>, InputRoute>>::Error,
-        > + Accepts<ZeroGuards, ProofRoute>
-        + Charges<Error = <Cx as Read<Inputs<NumericValue>, InputRoute>>::Error>,
+    Cx: Read<Inputs<N>, InputRoute>
+        + Read<Refinements, RefinementRoute, Error = <Cx as Read<Inputs<N>, InputRoute>>::Error>
+        + Accepts<ZeroGuards, ProofRoute>
+        + Charges<Error = <Cx as Read<Inputs<N>, InputRoute>>::Error>,
 {
     type Task = Subject;
     type Error = Failure<
-        <Cx as Read<Inputs<NumericValue>, InputRoute>>::Error,
+        <Cx as Read<Inputs<N>, InputRoute>>::Error,
         <Cx as Accepts<ZeroGuards, ProofRoute>>::Error,
     >;
     fn reduce(&mut self, subject: &Subject, cx: &mut Cx) -> Result<LocalClosure, Self::Error> {
         cx.charge(64).map_err(Failure::Infrastructure)?;
-        let input = <Cx as Read<Inputs<NumericValue>, InputRoute>>::query(
-            cx,
-            Scoped::new(subject.scope, ()),
-        )
-        .map_err(Failure::Infrastructure)?;
+        let input = <Cx as Read<Inputs<N>, InputRoute>>::query(cx, Scoped::new(subject.scope, ()))
+            .map_err(Failure::Infrastructure)?;
         let Some(input) = input.value() else {
             return Ok(LocalClosure::Stable);
         };

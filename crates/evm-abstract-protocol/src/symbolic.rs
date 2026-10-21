@@ -435,11 +435,22 @@ record! {
         pub length: usize,
     }
 }
+record! {
+    /// Invalid reported postprocessing allowance or usage.
+    pub struct PostprocessingWorkFailure {
+        /// Reported application allowance, which must be positive.
+        pub max_work: u64,
+        /// Reported usage, which must not exceed the allowance.
+        pub work: u64,
+    }
+}
 variant! {
     /// Compatibility failure before consuming a report.
     pub enum ReportValidationFailure {
         /// Unsupported schema version.
         Schema(u16),
+        /// Incoherent application postprocessing allowance and usage.
+        Postprocessing(PostprocessingWorkFailure),
         /// Mixed graph sort or dependency-order mismatch.
         Symbolic(SymbolicReferenceFailure),
         /// Missing pool entry.
@@ -455,6 +466,11 @@ impl std::fmt::Display for ReportValidationFailure {
                 f,
                 "report schema {version} is unsupported; expected {}",
                 crate::SCHEMA_VERSION
+            ),
+            Self::Postprocessing(failure) => write!(
+                f,
+                "postprocessing work {} requires a positive allowance of at least that amount; reported {}",
+                failure.work, failure.max_work
             ),
             Self::Symbolic(failure) => write!(f, "{failure}"),
             Self::Pool(failure) => write!(

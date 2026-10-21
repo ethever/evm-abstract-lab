@@ -4,16 +4,10 @@ use super::{Pools, api, environment, value};
 use evm_abstract::{
     Fork,
     analysis::{self, FrameCode},
-    domain::{Profile, relational::RelationLimits},
+    domain::{WordElement, relational::RelationLimits},
     world::SnapshotIdentity,
 };
 
-fn profile(source: Profile) -> api::DomainProfile {
-    match source {
-        Profile::Product => api::DomainProfile::Product,
-        Profile::ConstantsOnly => api::DomainProfile::ConstantsOnly,
-    }
-}
 fn relations(source: RelationLimits) -> api::RootTerminalRelationLimits {
     api::RootTerminalRelationLimits {
         enabled: source.enabled,
@@ -22,9 +16,10 @@ fn relations(source: RelationLimits) -> api::RootTerminalRelationLimits {
         max_depth: source.max_depth as u64,
     }
 }
-pub(super) fn project(
-    source: &analysis::RootTerminalCoverage,
-    pools: &mut Pools<'_>,
+pub(super) fn project<N: WordElement>(
+    source: &analysis::EvmRootTerminalCoverage<N>,
+    numeric_model: api::NumericModel,
+    pools: &mut Pools<'_, N>,
 ) -> Result<api::RootTerminalCoverage, api::ApiError> {
     pools.symbolic.charge(1)?;
     let input = source.input();
@@ -78,11 +73,6 @@ pub(super) fn project(
         entry_address: input.entry().address.to_string(),
         environment: environment::project(&input.entry().environment, pools)?,
         config: api::RootTerminalConfig {
-            domain_profile: profile(config.analysis.domain_profile),
-            reduction_rounds: config.analysis.reduction_rounds as u64,
-            max_facts: config.analysis.max_facts as u64,
-            relations: relations(config.analysis.relations),
-            max_constants: config.analysis.max_constants as u64,
             context_depth: config.analysis.context_depth as u64,
             max_states: config.analysis.max_states as u64,
             max_transfers: config.analysis.max_transfers as u64,
@@ -92,10 +82,10 @@ pub(super) fn project(
             use_summaries: config.use_summaries,
             root_terminal_coverage: config.root_terminal_coverage,
         },
+        numeric_model,
         domain_spec: api::RootTerminalDomainSpec {
             schema_version: domain.schema_version(),
             word_bits: domain.word_bits(),
-            profile: profile(domain.profile()),
             capacity: domain.capacity() as u64,
             reduction_rounds: domain.reduction_rounds() as u64,
             fact_limit: domain.fact_limit() as u64,
@@ -131,7 +121,7 @@ pub(super) fn project(
         saved_store: pools.store(input.saved_store().state())?,
         initial_store: pools.store(input.initial_store())?,
     };
-    let outcome = |source: &analysis::RootTerminalOutcome, pools: &mut Pools<'_>| {
+    let outcome = |source: &analysis::EvmRootTerminalOutcome<N>, pools: &mut Pools<'_, N>| {
         Ok::<_, api::ApiError>(api::RootTerminalOutcome {
             kind: match source.kind() {
                 analysis::OutcomeKind::Return => api::OutcomeKind::Return,

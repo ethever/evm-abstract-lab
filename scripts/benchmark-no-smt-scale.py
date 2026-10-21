@@ -177,6 +177,14 @@ def load_commands(path, cases):
     if (not isinstance(profile["report_exit_codes"], list) or not profile["report_exit_codes"]
             or any(type(code) is not int or code < 0 for code in profile["report_exit_codes"])):
         raise ValueError("declare nonnegative final-report exit codes")
+    if profile["interface"].get("versions", {}).get("native") == 12:
+        if (profile.get("expected_native_numeric_model") not in ("product", "finite-set")
+                or not isinstance(profile.get("expected_native_domain_spec"), dict)
+                or not profile["expected_native_domain_spec"]):
+            raise ValueError("native 12 requires the selected model and complete algebra limits")
+        allowance = profile.get("expected_native_postprocessing_max_work")
+        if type(allowance) is not int or allowance <= 0:
+            raise ValueError("native 12 requires a positive application postprocessing allowance")
     for name, case in cases.items():
         entry = profile["cases"][name]
         if entry["input_identity_sha256"] != case["input_identity_sha256"]:
@@ -223,7 +231,13 @@ def native_final(report, process, accepted_exits):
         for frontier in report["frontiers"]))
     result["entry_sha256"] = digest(report["entry"])
     result["world_sha256"] = digest(report["world"])
-    result["effective_policy_sha256"] = digest(report["config"])
+    # A native budget-only config does not describe numeric precision. Retain
+    # the actual algebra limits and application label as independent evidence.
+    for field in ("domain_spec", "numeric_model", "postprocessing_max_work", "postprocessing_work"):
+        if field in report:
+            result[field] = report[field]
+    result["effective_policy_sha256"] = digest({key: report[key] for key in
+        ("config", "domain_spec", "numeric_model", "postprocessing_max_work") if key in report})
     result["semantic_acceptance"] = "pending joint output/effect inclusion review"
     return result
 
@@ -251,9 +265,23 @@ def collect_report(directory, process, commands, report_parse_limit_bytes):
         if (directory / "stdout.log").stat().st_size > report_parse_limit_bytes:
             record["phase"] = "output_unvalidated_parse_guard"
             raise ValueError("stdout exceeds harness parsing limit; retain raw output without inferring a Report")
-        final = native_final(read_json(directory / "stdout.log"), process, accepted_exits)
+        report = read_json(directory / "stdout.log")
+        native_version = commands.get("interface", {}).get("versions", {}).get("native")
+        if native_version == 12 and report.get("schema_version") != native_version:
+            raise ValueError("expected native report schema 12")
+        if native_version == 12:
+            allowance, used = report.get("postprocessing_max_work"), report.get("postprocessing_work")
+            if (type(allowance) is not int or allowance <= 0
+                    or type(used) is not int or not 0 <= used <= allowance):
+                raise ValueError("invalid native application postprocessing metadata")
+        final = native_final(report, process, accepted_exits)
         record.update(nativefinal=final, report_delivered=True, phase="native_final_received")
         record["policy_matches"] = final["config"] == commands["expected_native_config"]
+        if native_version == 12:
+            record["policy_matches"] = record["policy_matches"] and (
+                final.get("domain_spec") == commands["expected_native_domain_spec"]
+                and final.get("numeric_model") == commands["expected_native_numeric_model"]
+                and final["postprocessing_max_work"] == commands["expected_native_postprocessing_max_work"])
     except (ValueError, KeyError, TypeError, AttributeError, OSError, OverflowError, RecursionError) as error:
         record["report_error"] = {"type": type(error).__name__, "message": str(error)}
     return record

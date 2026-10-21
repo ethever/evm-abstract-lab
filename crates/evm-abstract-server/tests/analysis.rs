@@ -613,6 +613,13 @@ fn source_directory_remains_available_when_work_stops_before_root_state() {
     input.limits.max_work = 1;
     let report = analyze(input).unwrap();
     assert_eq!(report.status, AnalysisStatus::Incomplete);
+    assert_eq!(report.metadata.limits.max_work, 1);
+    assert_eq!(
+        report.metadata.postprocessing_max_work,
+        evm_abstract_server::analyze::DEFAULT_POSTPROCESS_WORK as u64
+    );
+    assert!(report.metadata.postprocessing_work <= report.metadata.postprocessing_max_work);
+    report.validate().unwrap();
     let source = &report.programs[report
         .metadata
         .root_program
@@ -1471,13 +1478,37 @@ fn nonpositive_execution_and_precision_budgets_still_fail_native_admission() {
             max_expression_depth: 0,
             ..AnalysisLimits::default()
         },
+        AnalysisLimits {
+            relations_enabled: false,
+            max_constraints: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            relations_enabled: false,
+            max_expression_nodes: 0,
+            ..AnalysisLimits::default()
+        },
+        AnalysisLimits {
+            relations_enabled: false,
+            max_expression_depth: 0,
+            ..AnalysisLimits::default()
+        },
     ] {
+        let invalid_relations = limits.max_constraints == 0
+            || limits.max_expression_nodes == 0
+            || limits.max_expression_depth == 0;
         let mut input = request("00");
         input.limits = limits;
-        assert_eq!(
-            analyze(input).unwrap_err().code,
-            ApiErrorCode::InvalidLimits
-        );
+        let error = analyze(input).unwrap_err();
+        assert_eq!(error.code, ApiErrorCode::InvalidLimits);
+        if invalid_relations {
+            assert_eq!(
+                error.details,
+                evm_abstract_protocol::ErrorDetails::Configuration(
+                    evm_abstract_protocol::ConfigurationFailure::Relations
+                )
+            );
+        }
     }
     // Context-insensitivity is a valid precision choice with a distinct zero meaning.
     assert!(analyze(request("00")).unwrap().ssa.complete);

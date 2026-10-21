@@ -28,7 +28,7 @@
 
 离线核对 [`rpc_discovery.rs`](../../crates/evm-abstract/tests/rpc_discovery.rs) 的 `discovery_replays_unknown_slot_alias_writes_before_delegatecall`：它自建 `127.0.0.1` HTTP 服务，对比按需发现、预先加载和关闭摘要的结果；重跑后 slot 候选仍覆盖 7 和 9。继续到 `compare` 的断言即可，不必一次阅读全部回归。
 
-实现只追踪 [`analyze_rpc`](../../crates/evm-abstract/src/analysis/rpc.rs) 的收集前沿、补入事实、重启轮次，以及 [`Store::missing_initial_slots`](../../crates/evm-abstract/src/world/store.rs) 的初始依赖判断。理论问题是如何保持同一次事务的先后关系；累计预算不能因为重跑而重新获得一份额度。
+实现只追踪 [`analyze_rpc`](../../crates/evm-abstract/src/analysis/rpc.rs) 的收集前沿、补入事实、重启轮次，以及 [`EvmStore::missing_initial_slots`](../../crates/evm-abstract/src/world/store.rs) 的初始依赖判断。理论问题是如何保持同一次事务的先后关系；累计预算不能因为重跑而重新获得一份额度。
 
 **停在这里的产物：**能指出最后一轮的图与跨轮累计计数分别在哪里，并解释为何 `MissingStorage` 可能在最终报告中消失。有真实 RPC 时，再选做[关闭发现的同 hash 对照](../10-snapshots-summaries-creation.md#rpc-without-discovery)；保持两次调用输入相同。
 
@@ -52,7 +52,7 @@
 | SELFDESTRUCT 延迟删除 | [中间标记与最终账户](../10-snapshots-summaries-creation.md#3-selfdestruct转账和删除发生在不同时间)，`created-selfdestruct.json` | 区分 pending_destruction、中途仍有代码和最终 outcome 的账户事实 |
 | 预编译原生执行 | [没有普通字节码的调用帧](../10-snapshots-summaries-creation.md#4-预编译没有普通字节码也有调用帧)，`identity-precompile.json` | 找到真实调用帧、返回字节和继续边，说明没有普通指令体仍有执行效果 |
 
-实现按所选题分别看 [`create.rs`](../../crates/evm-abstract/src/analysis/transfer/create.rs)、[`Store::selfdestruct` / `finalize_transaction`](../../crates/evm-abstract/src/world/store.rs)、[`precompile.rs`](../../crates/evm-abstract/src/analysis/transfer/precompile.rs)。理论上要检查代码身份、生命周期或执行模式有没有进入当前判断的前提，不能仅凭账户地址复用旧结论。
+实现按所选题分别看 [`create.rs`](../../crates/evm-abstract/src/analysis/transfer/create.rs)、[`EvmStore::selfdestruct` / `finalize_transaction`](../../crates/evm-abstract/src/world/store.rs)、[`precompile.rs`](../../crates/evm-abstract/src/analysis/transfer/precompile.rs)。理论上要检查代码身份、生命周期或执行模式有没有进入当前判断的前提，不能仅凭账户地址复用旧结论。
 
 ## 未知部分与已知代码共同迭代
 

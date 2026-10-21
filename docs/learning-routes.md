@@ -20,7 +20,7 @@
 | 专题模块 | 理论入口 | 实现入口 | 共用正文与实验 |
 | --- | --- | --- | --- |
 | [执行规则与输入范围](modules/execution.md) | [具体执行的对象](routes/theory.md#execution) | [CLI 到字节码、世界和入口](routes/implementation.md#execution) | [00 运行](00-start.md)、[01 解码](01-bytecode.md)、[08 fork](08-forks.md)、[13 环境](13-evm-environment.md) |
-| [数值摘要与组合域](modules/domains.md) | [集合、序与近似](routes/theory.md#domains) | [AbstractValue、NumericValue 与运算](routes/implementation.md#domains) | [02 抽象域](02-domain.md)、[12 事实交换](12-product-domains-facts.md) |
+| [数值摘要与组合域](modules/domains.md) | [集合、序与近似](routes/theory.md#domains) | [EvmValue<N>、NumericValue 与运算](routes/implementation.md#domains) | [02 抽象域](02-domain.md)、[12 事实交换](12-product-domains-facts.md) |
 | [控制流、固定点与敏感性](modules/control-flow.md) | [传播为什么需要重访](routes/theory.md#control-flow) | [状态键、工作队列与合并](routes/implementation.md#control-flow) | [03 CFG](03-cfg.md)、[05 敏感性](05-sensitivity.md) |
 | [值流、φ 与部分 SSA](modules/ssa.md) | [定义来源和覆盖范围](routes/theory.md#ssa) | [执行记录、SSA 构建与渲染](routes/implementation.md#ssa) | [04 SSA](04-ssa.md)，包括[未完成分析](04-ssa.md#7-未完成时按需查看部分-ssa) |
 | [内存与 storage](modules/memory-storage.md) | [字节、槽位及别名](routes/theory.md#memory-storage) | [ByteArray、Store 与读写](routes/implementation.md#memory-storage) | [14 memory](14-memory-model.md)、[16 storage](16-storage-model.md) |

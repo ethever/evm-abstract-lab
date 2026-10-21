@@ -19,7 +19,7 @@ fn rpc_analyze_and_explain_keep_local_relation_bounds() {
         ];
         let analysis = result(execute(&server, &policy), 0);
         assert_eq!(
-            analysis["config"]["analysis"]["relations"],
+            analysis["domain_spec"]["relations"],
             serde_json::json!({
                 "enabled": true, "max_nodes": 4096, "max_depth": 128, "max_constraints": 1024,
             })

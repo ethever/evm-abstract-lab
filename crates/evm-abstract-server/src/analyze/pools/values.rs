@@ -58,11 +58,13 @@ impl Dictionary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evm_abstract::domain::NumericValue;
     #[test]
     fn hash_collision_never_merges_distinct_scalar_facts() {
-        let concrete = crate::analyze::value::info(&evm_abstract::domain::AbstractValue::constant(
-            evm_abstract::U256::from(0xab),
-        ));
+        let concrete =
+            crate::analyze::value::info(&evm_abstract::domain::EvmValue::<NumericValue>::constant(
+                evm_abstract::U256::from(0xab),
+            ));
         let mut memory = concrete.clone();
         memory.origins = Some(vec![evm_abstract_protocol::ValueOrigin::Memory]);
         let mut dictionary = Dictionary::default();

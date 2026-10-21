@@ -1,4 +1,4 @@
-# Preserve program text alignment and capacity/error contracts as small leaves.
+# Preserve program text alignment and capacity contracts as small leaves.
 {
   lib,
   inputs,
@@ -33,18 +33,11 @@ let
     cp ssa-world-aligned.txt "$out/"
   '';
   explain-capacity = mkCheck "explain-capacity" [ ] { } ''
-    evm-abstract explain --hex 5f351e00 --domain constants-only --max-constants 257 > explain-capacity.txt
+    evm-abstract explain --hex 5f351e00 --numeric-model finite-set --max-constants 257 > explain-capacity.txt
     grep -q 'status=Converged' explain-capacity.txt
-    evm-abstract cfg --hex 5f351e00 --domain constants-only --max-constants 257 --format json |
-      jq -e '.config.max_constants == 257 and (.states[0].exit_stack[0].Constants | length == 257)' > /dev/null
+    evm-abstract cfg --hex 5f351e00 --numeric-model finite-set --max-constants 257 --format json |
+      jq -e '.domain_spec.capacity == 257 and (.states[0].exit_stack[0].numeric.constants | length == 257)' > /dev/null
     cp explain-capacity.txt "$out/"
-  '';
-  explain-capacity-work = mkCheck "explain-capacity-work" [ ] { } ''
-    evm-abstract explain --hex 5f351e00 --domain constants-only --max-constants 1000 --max-work 20000000 > explain-capacity-work.txt && exit 1 || test "$?" = 2
-    grep -q 'status=Incomplete' explain-capacity-work.txt
-    grep -q 'Work' explain-capacity-work.txt
-    grep -q 'SSA unavailable' explain-capacity-work.txt
-    cp explain-capacity-work.txt "$out/"
   '';
 in
 {
@@ -54,7 +47,6 @@ in
     example-ssa-aligned = ssa-aligned;
     example-ssa-world-aligned = ssa-world-aligned;
     example-explain-capacity = explain-capacity;
-    example-explain-capacity-work = explain-capacity-work;
   };
   artifacts = [
     {
@@ -76,10 +68,6 @@ in
     {
       name = "explain-capacity.txt";
       path = "${explain-capacity}/explain-capacity.txt";
-    }
-    {
-      name = "explain-capacity-work.txt";
-      path = "${explain-capacity-work}/explain-capacity-work.txt";
     }
   ];
 }

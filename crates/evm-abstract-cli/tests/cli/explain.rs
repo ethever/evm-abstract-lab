@@ -53,6 +53,8 @@ fn success(output: &Output) {
 
 fn assert_full_report(explanation: &str, report: &Output) {
     let report = text(report);
+    let (model, report) = report.split_once('\n').unwrap();
+    assert!(explanation.lines().any(|line| line == model));
     assert!(
         explanation.contains(report.trim_end()),
         "explain must preserve the complete analyze report"
@@ -190,7 +192,7 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
             let report = world_command("analyze", name, &query);
             assert_eq!(report.status.code(), Some(2));
             let report: Json = serde_json::from_slice(&report.stdout).unwrap();
-            assert_eq!(report["config"]["analysis"]["relations"]["max_nodes"], 2);
+            assert_eq!(report["domain_spec"]["relations"]["max_nodes"], 2);
             assert!(
                 report["frontiers"]
                     .as_array()
@@ -209,7 +211,7 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
 }
 
 #[test]
-fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
+fn hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
     let path = format!(
         "{}/../../examples/straight-line.hex",
         env!("CARGO_MANIFEST_DIR")
@@ -237,7 +239,13 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
     ]
     .map(|(flag, value)| (flag, value.to_string()));
     let mut args = vec![
-        "explain", "--hex", &code, "--fork", "osaka", "--domain", "product",
+        "explain",
+        "--hex",
+        &code,
+        "--fork",
+        "osaka",
+        "--numeric-model",
+        "product",
     ];
     for (flag, value) in &explicit_values {
         args.extend([*flag, value.as_str()]);
@@ -246,7 +254,9 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
     success(&explicit);
     assert_eq!(hex.stdout, explicit.stdout);
     let explanation = text(&hex);
-    assert!(explanation.contains("context_depth=128") && explanation.contains("domain=Product"));
+    assert!(
+        explanation.contains("context_depth=128") && explanation.contains("Numeric model: product")
+    );
     assert!(explanation.contains("stack SSA:") && !explanation.contains(VERIFIED));
     for depth in ["0", "1", "2", "8"] {
         let overridden = run_concrete(&["explain", "--hex", &code, "--context-depth", depth]);
@@ -266,7 +276,7 @@ fn legacy_hex_and_file_explain_keep_defaults_and_explicit_fork_behavior() {
 }
 
 #[test]
-fn legacy_explain_still_reports_resource_frontiers_without_ssa() {
+fn program_explain_reports_resource_frontiers_without_ssa() {
     let output = run_concrete(&["explain", "--hex", "600035565b00", "--max-transfers", "1"]);
     assert_eq!(output.status.code(), Some(2));
     let explanation = text(&output);
@@ -489,8 +499,8 @@ fn world_explain_uses_entry_environment_domain_and_every_execution_budget_flag()
         "65536",
         "--max-constants",
         "1",
-        "--domain",
-        "constants-only",
+        "--numeric-model",
+        "finite-set",
         "--reduction-rounds",
         "1",
         "--max-facts",
@@ -506,7 +516,7 @@ fn world_explain_uses_entry_environment_domain_and_every_execution_budget_flag()
     success(&output);
     let explanation = text(&output);
     assert_full_report(&explanation, &world.run_concrete("analyze", &extra));
-    assert!(explanation.contains("ConstantsOnly") && explanation.contains(CALLEE));
+    assert!(explanation.contains("Numeric model: finite-set") && explanation.contains(CALLEE));
     assert!(explanation.contains("CALLDATASIZE") && explanation.contains("CALLVALUE"));
     assert_human_ssa(&explanation);
     let mut json_extra = extra.to_vec();
@@ -520,18 +530,15 @@ fn world_explain_uses_entry_environment_domain_and_every_execution_budget_flag()
         CALLEE
     );
     assert_eq!(
-        analyzed["entry"]["environment"]["value"]["Constants"],
+        analyzed["entry"]["environment"]["value"]["numeric"]["constants"],
         json!(["0x7"])
     );
     assert_eq!(
-        analyzed["entry"]["environment"]["calldata"]["length"]["Constants"],
+        analyzed["entry"]["environment"]["calldata"]["length"]["numeric"]["constants"],
         json!(["0x1"])
     );
     assert_eq!(analyzed["config"]["use_summaries"], false);
-    assert_eq!(
-        analyzed["config"]["analysis"]["domain_profile"],
-        "constants-only"
-    );
+    assert_eq!(analyzed["numeric_model"], "finite-set");
     assert_eq!(analyzed["config"]["analysis"]["context_depth"], 0);
     assert_eq!(analyzed["config"]["max_call_depth"], 5);
 }

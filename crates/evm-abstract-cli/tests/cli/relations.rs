@@ -27,8 +27,8 @@ fn default_relation_policy_matches_web_for_program_and_world() {
         "max_constraints": defaults.max_constraints,
     });
     for policy in [
-        &raw["config"]["relations"],
-        &world["config"]["analysis"]["relations"],
+        &raw["domain_spec"]["relations"],
+        &world["domain_spec"]["relations"],
     ] {
         assert_eq!(policy, &expected);
     }
@@ -52,7 +52,7 @@ fn local_facts_preserve_feasible_paths_and_exclude_a_contradictory_branch() {
         .unwrap();
     let analysis = report(output);
     assert_eq!(analysis["status"], "Converged");
-    assert_eq!(analysis["config"]["relations"]["enabled"], true);
+    assert_eq!(analysis["domain_spec"]["relations"]["enabled"], true);
     assert!(analysis["frontiers"].as_array().unwrap().is_empty());
     let blocks = analysis["program"]["blocks"].as_array().unwrap();
     let reachable: Vec<_> = analysis["states"]
@@ -91,11 +91,11 @@ fn world_ssa_and_text_report_the_complete_retained_relation_policy() {
     let mut world_args = vec!["--format", "json"];
     world_args.extend_from_slice(&policy);
     let world = report(analyze("call-return-branch", &world_args));
-    assert_eq!(world["config"]["analysis"]["relations"], expected);
+    assert_eq!(world["domain_spec"]["relations"], expected);
     let mut ssa_args = vec!["ssa", "--hex", GUARDS, "--format", "json"];
     ssa_args.extend_from_slice(&policy);
     let ssa = report(run_concrete(&ssa_args));
-    assert_eq!(ssa["analysis"]["config"]["relations"], expected);
+    assert_eq!(ssa["analysis"]["domain_spec"]["relations"], expected);
     for mut args in [
         vec!["cfg", "--hex", "00"],
         vec!["explain", "--hex", "00"],

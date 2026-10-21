@@ -1,36 +1,53 @@
-//! World-to-report integration beyond the bytecode-only public request fixtures.
+//! EvmWorld-to-report integration beyond the bytecode-only public request fixtures.
 use super::*;
+use evm_abstract::domain::{NumericValue, ProductAlgebra, ValueAlgebra};
 use evm_abstract::{
     Fork,
-    domain::Profile,
-    world::{AddressInput, EvmEnvironment},
+    domain::{DomainSpec, EvmNumericAlgebra},
+    world::{AddressInput, EvmEnvironmentValues},
 };
 
-fn project_world(world: World, address: Address) -> api::AnalysisReport {
-    // Native world fixtures retain the complete library policy in execution and metadata.
+/// Fixture execution uses the same canonical borrowed engine as requests.
+pub(in crate::analyze) fn execute<D: EvmNumericAlgebra>(
+    world: EvmWorld<D::Element>,
+    entry: EvmEntry<D::Element>,
+    config: analysis::ExecutionConfig,
+    algebra: &ValueAlgebra<D>,
+) -> analysis::EvmWorldAnalysis<D::Element> {
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let mut engine = AnalysisEngine::new(algebra, &policies, &mut extension);
+    engine
+        .run(
+            AnalysisInput::new(world, entry).unwrap(),
+            config,
+            &Control::default(),
+        )
+        .unwrap()
+}
+
+fn project_world(world: EvmWorld<NumericValue>, address: Address) -> api::AnalysisReport {
     let config = analysis::ExecutionConfig::default();
+    let spec = DomainSpec::default();
+    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(spec));
     let request = api::AnalyzeRequest {
         limits: api::AnalysisLimits {
             max_states: config.analysis.max_states as u64,
             max_transfers: config.analysis.max_transfers as u64,
             context_depth: config.analysis.context_depth as u64,
-            max_constants: config.analysis.max_constants as u64,
+            max_constants: spec.capacity() as u64,
             max_work: config.max_work as u64,
             max_call_depth: config.max_call_depth as u64,
             max_memory_bytes: config.max_memory_bytes as u64,
             use_summaries: config.use_summaries,
             root_terminal_coverage: config.root_terminal_coverage,
-            domain_profile: match config.analysis.domain_profile {
-                Profile::Product => api::DomainProfile::Product,
-                Profile::ConstantsOnly => api::DomainProfile::ConstantsOnly,
-            },
-            reduction_rounds: config.analysis.reduction_rounds as u64,
-            max_facts: config.analysis.max_facts as u64,
-            relations_enabled: config.analysis.relations.enabled,
-            max_constraints: config.analysis.relations.max_constraints as u64,
-            max_expression_nodes: config.analysis.relations.max_nodes as u64,
-            max_expression_depth: config.analysis.relations.max_depth as u64,
-            // RPC acquisition limits have no native execution counterpart.
+            numeric_model: api::NumericModel::Product,
+            reduction_rounds: spec.reduction_rounds() as u64,
+            max_facts: spec.fact_limit() as u64,
+            relations_enabled: spec.relations().enabled,
+            max_constraints: spec.relations().max_constraints as u64,
+            max_expression_nodes: spec.relations().max_nodes as u64,
+            max_expression_depth: spec.relations().max_depth as u64,
             ..api::AnalysisLimits::default()
         },
         ..api::AnalyzeRequest::default()
@@ -38,25 +55,30 @@ fn project_world(world: World, address: Address) -> api::AnalysisReport {
     assert_eq!(
         serde_json::to_value(input::config(&request.limits).unwrap()).unwrap(),
         serde_json::to_value(&config).unwrap(),
-        "native world fixture limits must preserve the full library policy"
+        "native world fixture execution budgets must match metadata"
     );
-    let graph = analysis::analyze_world(
+    assert_eq!(input::spec(&request.limits).unwrap(), spec);
+    let graph = execute(
         world,
-        Entry {
+        EvmEntry {
             address,
-            environment: EvmEnvironment {
+            environment: EvmEnvironmentValues {
                 to: AddressInput::Concrete(address),
-                value: evm_abstract::domain::AbstractValue::constant(evm_abstract::U256::ZERO),
-                ..EvmEnvironment::default()
+                value: evm_abstract::domain::EvmValue::<NumericValue>::constant(
+                    evm_abstract::U256::ZERO,
+                ),
+                ..EvmEnvironmentValues::default()
             },
         },
         config,
-    )
-    .unwrap();
+        &algebra,
+    );
     report::report(
         &graph,
         &request,
         api::AnalysisScope::RpcWorld,
+        &algebra,
+        api::NumericModel::Product,
         &Control::default(),
     )
     .unwrap()
@@ -74,15 +96,25 @@ fn invalid_opcodes_at_the_same_pc_use_each_childs_captured_program() {
         )
     };
     let code = format!("{}{}00", call(first), call(second));
-    let mut world = World::new(Fork::Osaka, "invalid opcode child source fixture");
+    let mut world =
+        EvmWorld::<NumericValue>::new(Fork::Osaka, "invalid opcode child source fixture");
     world
-        .insert(root, Account::from_hex(&code, Fork::Osaka).unwrap())
+        .insert(
+            root,
+            EvmAccount::<NumericValue>::from_hex(&code, Fork::Osaka).unwrap(),
+        )
         .unwrap();
     world
-        .insert(first, Account::from_hex("fe", Fork::Osaka).unwrap())
+        .insert(
+            first,
+            EvmAccount::<NumericValue>::from_hex("fe", Fork::Osaka).unwrap(),
+        )
         .unwrap();
     world
-        .insert(second, Account::from_hex("ef", Fork::Osaka).unwrap())
+        .insert(
+            second,
+            EvmAccount::<NumericValue>::from_hex("ef", Fork::Osaka).unwrap(),
+        )
         .unwrap();
     let report = project_world(world, root);
     assert_eq!(report.status, api::AnalysisStatus::Converged);
@@ -113,15 +145,18 @@ fn invalid_opcodes_at_the_same_pc_use_each_childs_captured_program() {
 #[test]
 fn invalid_initcode_opcode_uses_creation_program_at_pc_zero() {
     let creator = Address::repeat_byte(0x11);
-    let mut world = World::new(Fork::Osaka, "invalid opcode initcode source fixture");
+    let mut world =
+        EvmWorld::<NumericValue>::new(Fork::Osaka, "invalid opcode initcode source fixture");
     // Write FE into memory, then execute that byte as a separate CREATE frame.
     world
         .insert(
             creator,
-            Account::from_hex("60fe5f5360015f5ff000", Fork::Osaka).unwrap(),
+            EvmAccount::<NumericValue>::from_hex("60fe5f5360015f5ff000", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    world.insert(creator.create(0), Account::absent()).unwrap();
+    world
+        .insert(creator.create(0), EvmAccount::<NumericValue>::absent())
+        .unwrap();
     let report = project_world(world, creator);
     assert_eq!(report.status, api::AnalysisStatus::Converged);
     assert!(report.frontiers.is_empty());
@@ -153,17 +188,17 @@ fn nested_delegation_has_captured_entry_byte_without_instruction_receipt() {
     let authority = Address::repeat_byte(0x11);
     let target = Address::repeat_byte(0x22);
     let implementation = Address::repeat_byte(0x33);
-    let mut world = World::new(Fork::Osaka, "invalid nested delegation fixture");
-    let mut account = Account::empty();
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "invalid nested delegation fixture");
+    let mut account = EvmAccount::<NumericValue>::empty();
     account.code = Code::Delegation(target);
     world.insert(authority, account).unwrap();
-    let mut account = Account::empty();
+    let mut account = EvmAccount::<NumericValue>::empty();
     account.code = Code::Delegation(implementation);
     world.insert(target, account).unwrap();
     world
         .insert(
             implementation,
-            Account::from_hex("fe", Fork::Osaka).unwrap(),
+            EvmAccount::<NumericValue>::from_hex("fe", Fork::Osaka).unwrap(),
         )
         .unwrap();
     let report = project_world(world, authority);
@@ -217,23 +252,28 @@ fn delegation_projection_retains_why_original_byte_is_unavailable() {
 fn delegated_root_source_uses_code_program_and_retains_authority_storage() {
     let authority = Address::repeat_byte(0x11);
     let target = Address::repeat_byte(0x22);
-    let mut world = World::new(Fork::Osaka, "typed delegation report fixture");
-    let mut root = Account::empty();
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "typed delegation report fixture");
+    let mut root = EvmAccount::<NumericValue>::empty();
     root.code = Code::Delegation(target);
     world.insert(authority, root).unwrap();
     world
-        .insert(target, Account::from_hex("602a00", Fork::Osaka).unwrap())
+        .insert(
+            target,
+            EvmAccount::<NumericValue>::from_hex("602a00", Fork::Osaka).unwrap(),
+        )
         .unwrap();
-    let graph = analysis::analyze_world(
+    let graph = execute(
         world,
-        Entry::new(authority),
+        EvmEntry::<NumericValue>::new(authority),
         analysis::ExecutionConfig::default(),
-    )
-    .unwrap();
+        &ValueAlgebra::new(ProductAlgebra::default()),
+    );
     let report = report::report(
         &graph,
         &api::AnalyzeRequest::default(),
         api::AnalysisScope::RpcWorld,
+        &ValueAlgebra::new(ProductAlgebra::from_spec(graph.domain_spec())),
+        api::NumericModel::Product,
         &Control::default(),
     )
     .unwrap();
@@ -260,34 +300,39 @@ fn child_frames_reference_complete_programs_private_memory_and_parent_continuati
     let root = Address::repeat_byte(0x11);
     let child = Address::repeat_byte(0x22);
     let code = format!("60205f5f5f73{}5af400", alloy_primitives::hex::encode(child));
-    let mut world = World::new(Fork::Osaka, "delegatecall fixture");
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "delegatecall fixture");
     world
-        .insert(root, Account::from_hex(&code, Fork::Osaka).unwrap())
+        .insert(
+            root,
+            EvmAccount::<NumericValue>::from_hex(&code, Fork::Osaka).unwrap(),
+        )
         .unwrap();
     world
         .insert(
             child,
-            Account::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap(),
+            EvmAccount::<NumericValue>::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap(),
         )
         .unwrap();
-    let environment = EvmEnvironment {
+    let environment = EvmEnvironmentValues {
         to: AddressInput::Concrete(root),
-        value: evm_abstract::domain::AbstractValue::constant(evm_abstract::U256::ZERO),
-        ..EvmEnvironment::default()
+        value: evm_abstract::domain::EvmValue::<NumericValue>::constant(evm_abstract::U256::ZERO),
+        ..EvmEnvironmentValues::<NumericValue>::default()
     };
-    let graph = analysis::analyze_world(
+    let graph = execute(
         world,
-        Entry {
+        EvmEntry {
             address: root,
             environment,
         },
         analysis::ExecutionConfig::default(),
-    )
-    .unwrap();
+        &ValueAlgebra::new(ProductAlgebra::default()),
+    );
     let report = report::report(
         &graph,
         &api::AnalyzeRequest::default(),
         api::AnalysisScope::RpcWorld,
+        &ValueAlgebra::new(ProductAlgebra::from_spec(graph.domain_spec())),
+        api::NumericModel::Product,
         &Control::default(),
     )
     .unwrap();
@@ -341,7 +386,7 @@ fn deepest_admitted_expression_has_a_flat_roundtrippable_typed_graph() {
     use evm_abstract::{
         U256,
         domain::{
-            AbstractValue,
+            EvmValue,
             identity::Symbol,
             symbolic::{ExprId, ExprLimits},
         },
@@ -359,7 +404,7 @@ fn deepest_admitted_expression_has_a_flat_roundtrippable_typed_graph() {
     let control = Control::default();
     let mut pool = super::symbolic::Pool::new(&control);
     let projected = pool
-        .value(&AbstractValue::top().with_expression(expression))
+        .value(&EvmValue::<NumericValue>::top().with_expression(expression))
         .unwrap();
     let encoded = serde_json::to_vec(&(&projected, &pool.graph)).unwrap();
     assert!(
@@ -478,5 +523,6 @@ fn relational_frontier_projection_preserves_all_local_causes() {
 }
 
 mod known_recursion;
+mod numeric;
 mod symbolic;
 mod unknown;

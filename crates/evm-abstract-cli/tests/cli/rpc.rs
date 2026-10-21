@@ -320,11 +320,13 @@ fn rpc_discovery_can_be_disabled_without_guessing_empty_code() {
 }
 
 fn contains(value: &Json, expected: U256) -> bool {
-    value["Constants"].as_array().is_some_and(|values| {
-        values.iter().any(|value| {
-            value.as_str().and_then(|value| value.parse::<U256>().ok()) == Some(expected)
+    value["numeric"]["constants"]
+        .as_array()
+        .is_some_and(|values| {
+            values.iter().any(|value| {
+                value.as_str().and_then(|value| value.parse::<U256>().ok()) == Some(expected)
+            })
         })
-    })
 }
 
 fn address_word(address: &str) -> U256 {
@@ -702,7 +704,31 @@ fn rpc_account_and_request_caps_stop_discovery_with_explicit_partial_results() {
 
 fn relations(analysis: &Json) -> BTreeSet<String> {
     // One bijection spans the entire relation, including cross-outcome aliases.
-    let outcomes = super::native::canonical(&analysis["outcomes"]);
+    let mut outcomes = super::native::canonical(&analysis["outcomes"]);
+    // Refining immutable account facts preserves the prior value's possible
+    // origins; preloading literal RPC values can retain Constant origins. This
+    // comparison covers EVM effects, numeric facts and joint source identities,
+    // rather than requiring equal descriptive origin precision for acquisition.
+    fn without_account_origins(value: &mut Json) {
+        if let Some(provenance) = value.as_object_mut().unwrap().remove("provenance")
+            && provenance["code_address_role"] == true
+        {
+            value["provenance"] = json!({"code_address_role":true});
+        }
+    }
+    for outcome in outcomes.as_array_mut().unwrap() {
+        let store = &mut outcome["store"];
+        for field in ["balances", "nonces"] {
+            for value in store[field].as_object_mut().unwrap().values_mut() {
+                without_account_origins(value);
+            }
+        }
+        for account in store["account_observations"].as_array_mut().unwrap() {
+            for field in ["balance", "nonce"] {
+                without_account_origins(&mut account[field]);
+            }
+        }
+    }
     outcomes
         .as_array()
         .unwrap()

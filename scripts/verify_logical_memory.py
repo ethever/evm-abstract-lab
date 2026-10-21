@@ -14,11 +14,13 @@ def only(items):
 def memory_word_seven(word):
     # The numeric abstraction can be coarse; the typed root proves this word.
     assert word["provenance"]["origins"] == {"Sources": ["Memory"]}
-    bounds = word["interval"]
+    numeric = word["numeric"]
+    bounds = numeric.get("interval", {"unsigned_lo": "0x0", "unsigned_hi": hex((1 << 256) - 1),
+                                      "signed_lo": "0x0", "signed_hi": hex((1 << 256) - 1)})
     assert int(bounds["unsigned_lo"], 16) <= 7 <= int(bounds["unsigned_hi"], 16)
     biased = 7 ^ (1 << 255)
     assert int(bounds["signed_lo"], 16) <= biased <= int(bounds["signed_hi"], 16)
-    congruence = word["congruence"]
+    congruence = numeric.get("congruence", "Top")
     if congruence != "Top":
         if set(congruence) == {"Exact"}:
             assert int(congruence["Exact"], 16) == 7
@@ -27,10 +29,11 @@ def memory_word_seven(word):
             modulo = congruence["Modulo"]
             modulus = int(modulo["modulus"], 16)
             assert modulus > 0 and 7 % modulus == int(modulo["residue"], 16)
-    assert int(word["known_bits"]["zero"], 16) & 7 == 0
-    assert int(word["known_bits"]["one"], 16) & 7 == int(word["known_bits"]["one"], 16)
-    if "Constants" in word:
-        assert "0x7" in word["Constants"]
+    bits = numeric.get("known_bits", {"zero": "0x0", "one": "0x0"})
+    assert int(bits["zero"], 16) & 7 == 0
+    assert int(bits["one"], 16) & 7 == int(bits["one"], 16)
+    if "constants" in numeric:
+        assert "0x7" in numeric["constants"]
     graph = word["expression"]
     assert graph["identity_scope"]
     nodes = graph["nodes"]
@@ -102,8 +105,7 @@ def assert_logical_memory(payload):
                  and item["scope"] == "Definition" and item["validity"] == "Current"
                  and item["source"] == "Instruction"])
     assert fact["provenance"] == word["provenance"]
-    assert fact["numeric"] == {key: value for key, value in word.items()
-                               if key not in ("provenance", "expression")}
+    assert fact["numeric"] == word["numeric"]
     assert fact["constant"] is None or fact["constant"] == "0x7"
     assert any(item["kind"] == "Failure" and item["state"] == state["id"] for item in machine["outcomes"])
     assert any(item["kind"] == "Return" and item["state"] == state["id"] for item in machine["outcomes"])
@@ -128,11 +130,11 @@ def assert_retained_partial(payload):
     before = state["entry"]["call_stack"]["root"]["state"]["memory"]
     frame = state["exit"]["call_stack"]["root"]["state"]
     after = frame["memory"]
-    assert frame["stack"] == [] and before["length"]["Constants"] == ["0x0"]
+    assert frame["stack"] == [] and before["length"]["numeric"]["constants"] == ["0x0"]
     # Expansion precedes refusal; the retained contents are still pristine.
-    assert after["length"]["Constants"] == ["0x20"] and before["root"] == after["root"]
+    assert after["length"]["numeric"]["constants"] == ["0x20"] and before["root"] == after["root"]
     for memory in (before, after):
-        assert memory["memory"] is True and memory["default"]["Constants"] == ["0x0"]
+        assert memory["memory"] is True and memory["default"]["numeric"]["constants"] == ["0x0"]
         assert memory["root"]["nodes"][memory["root"]["root"]] == "BytesZero"
         assert memory["bytes"] == {} and memory["operands"] == memory["conditional"] == []
         assert memory["failure"] is None
@@ -151,7 +153,7 @@ def assert_retained_partial(payload):
         fact = only([item for item in ir["facts"] if item["value"] == only(instruction["results"])
                      and item["scope"] == {"State": {"state": 0}} and item["validity"] == "Current"
                      and item["source"] == "Instruction"])
-        assert fact["constant"] == literal and fact["numeric"]["Constants"] == [literal]
+        assert fact["constant"] == literal and fact["numeric"]["constants"] == [literal]
         assert fact["provenance"]["origins"] == {"Sources": ["Constant"]}
     effect_chain(ir, block)
 

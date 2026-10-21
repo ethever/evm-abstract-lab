@@ -3,8 +3,8 @@
 use super::{InputError, parse};
 use alloy_primitives::{Address, U256};
 use evm_abstract::{
-    domain::{AbstractValue, Domain},
-    world::{Code, Existence, SnapshotIdentity, Store},
+    domain::{EvmValue, NumericValue, ProductAlgebra, ValueAlgebra},
+    world::{Code, EvmStore, Existence, SnapshotIdentity},
 };
 
 fn address(last: u64) -> Address {
@@ -13,7 +13,7 @@ fn address(last: u64) -> Address {
 
 #[test]
 fn omitted_facts_stay_unknown_and_explicit_empty_code_is_known() {
-    let world = parse(r#"{
+    let world = parse::<NumericValue>(r#"{
         "fork":"osaka", "provenance":"offline:partial", "accounts":[
           {"address":"0x0000000000000000000000000000000000000101","code":"0x","storage":{"0x0":"0x7"}},
           {"address":"0x0000000000000000000000000000000000000200"}
@@ -28,29 +28,36 @@ fn omitted_facts_stay_unknown_and_explicit_empty_code_is_known() {
         Code::Unknown
     ));
     assert!(world.account(address(0x300)).is_none());
-    let store = Store::new(&world);
-    let key = AbstractValue::constant(U256::ZERO);
-    let known = store.read(address(0x101), &key, Domain::default());
-    let expected = AbstractValue::constant(U256::from(7));
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let store = EvmStore::new_checked(&world, algebra.borrowed()).unwrap();
+    let key = EvmValue::<NumericValue>::constant(U256::ZERO);
+    let known = store.read(address(0x101), &key, algebra.borrowed());
+    let expected = EvmValue::<NumericValue>::constant(U256::from(7));
     assert_eq!(known.numeric(), expected.numeric());
     assert_eq!(known.provenance(), expected.provenance());
-    assert_eq!(store.read(address(0x101), &key, Domain::default()), known);
+    assert_eq!(store.read(address(0x101), &key, algebra.borrowed()), known);
     assert!(matches!(
         known.expression().map(|expr| expr.kind()),
         Some(evm_abstract::domain::symbolic::ExprKind::SlotRead { .. })
     ));
     let unknown = store.read(
         address(0x101),
-        &AbstractValue::constant(U256::ONE),
-        Domain::default(),
+        &EvmValue::<NumericValue>::constant(U256::ONE),
+        algebra.borrowed(),
     );
-    assert_eq!(unknown.numeric(), AbstractValue::top().numeric());
-    assert_eq!(unknown.provenance(), AbstractValue::top().provenance());
+    assert_eq!(unknown.numeric(), EvmValue::<NumericValue>::top().numeric());
+    assert_eq!(
+        unknown.provenance(),
+        EvmValue::<NumericValue>::top().provenance()
+    );
     assert!(unknown.expression().is_some());
-    assert_eq!(store.read_balance(address(0x101)), AbstractValue::top());
+    assert_eq!(
+        store.read_balance(address(0x101)),
+        EvmValue::<NumericValue>::top()
+    );
     assert_eq!(
         world.account(address(0x101)).unwrap().nonce,
-        AbstractValue::top()
+        EvmValue::<NumericValue>::top()
     );
     assert_eq!(
         world.account(address(0x101)).unwrap().existence,
@@ -61,23 +68,24 @@ fn omitted_facts_stay_unknown_and_explicit_empty_code_is_known() {
 
 #[test]
 fn declared_complete_storage_makes_unlisted_slots_zero() {
-    let world = parse(r#"{
+    let world = parse::<NumericValue>(r#"{
         "fork":"osaka", "provenance":"offline:complete", "accounts":[
           {"address":"0x0000000000000000000000000000000000000101","code":"0x","storage_unknown":false,"balance":"0x9"}
         ]
     }"#).unwrap();
-    let store = Store::new(&world);
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let store = EvmStore::new_checked(&world, algebra.borrowed()).unwrap();
     assert_eq!(
         store.read(
             address(0x101),
-            &AbstractValue::constant(U256::from(1)),
-            Domain::default()
+            &EvmValue::<NumericValue>::constant(U256::from(1)),
+            algebra.borrowed()
         ),
-        AbstractValue::constant(U256::ZERO)
+        EvmValue::<NumericValue>::constant(U256::ZERO)
     );
     assert_eq!(
         store.read_balance(address(0x101)),
-        AbstractValue::constant(U256::from(9))
+        EvmValue::<NumericValue>::constant(U256::from(9))
     );
 }
 
@@ -92,7 +100,7 @@ fn anchored_snapshot_validates_block_identity_code_hash_and_fingerprint() {
         "accounts":[{{"address":"0x0000000000000000000000000000000000000101", "code":"0x00", "code_hash":"{code_hash}", "nonce":"0x1", "existence":"present"}}]
     }}"#
     );
-    let world = parse(&input).unwrap();
+    let world = parse::<NumericValue>(&input).unwrap();
     assert_eq!(
         world.identity(),
         &SnapshotIdentity::Chain {
@@ -102,12 +110,15 @@ fn anchored_snapshot_validates_block_identity_code_hash_and_fingerprint() {
     );
     assert_eq!(
         world.account(address(0x101)).unwrap().nonce,
-        AbstractValue::constant(U256::from(1))
+        EvmValue::<NumericValue>::constant(U256::from(1))
     );
     let mut json: serde_json::Value = serde_json::from_str(&input).unwrap();
     json["fingerprint"] = serde_json::json!(world.fingerprint().unwrap());
     assert_eq!(
-        parse(&json.to_string()).unwrap().fingerprint().unwrap(),
+        parse::<NumericValue>(&json.to_string())
+            .unwrap()
+            .fingerprint()
+            .unwrap(),
         world.fingerprint().unwrap()
     );
     let verified = json.to_string();
@@ -115,19 +126,22 @@ fn anchored_snapshot_validates_block_identity_code_hash_and_fingerprint() {
     control.cancellation().cancel();
     control.scope(|| {
         assert!(matches!(
-            parse(&verified),
+            parse::<NumericValue>(&verified),
             Err(InputError::FingerprintCalculation(
                 evm_abstract::world::FingerprintError::Cancelled
             ))
         ));
     });
     assert_eq!(
-        parse(&verified).unwrap().fingerprint().unwrap(),
+        parse::<NumericValue>(&verified)
+            .unwrap()
+            .fingerprint()
+            .unwrap(),
         world.fingerprint().unwrap()
     );
     json["accounts"][0]["nonce"] = serde_json::json!("0x2");
     assert!(matches!(
-        parse(&json.to_string()),
+        parse::<NumericValue>(&json.to_string()),
         Err(InputError::Fingerprint { .. })
     ));
 }
@@ -140,20 +154,20 @@ fn anchored_missing_or_mismatched_code_hash_and_invalid_metadata_are_rejected() 
         "accounts":[{"address":"0x0000000000000000000000000000000000000101", "code":"0x00"}],
     });
     assert!(matches!(
-        parse(&base.to_string()),
+        parse::<NumericValue>(&base.to_string()),
         Err(InputError::MissingCodeHash(_))
     ));
     let mut json = base.clone();
     json["accounts"][0]["code_hash"] = serde_json::json!(alloy_primitives::keccak256([]));
     assert!(matches!(
-        parse(&json.to_string()),
+        parse::<NumericValue>(&json.to_string()),
         Err(InputError::World(
             evm_abstract::world::WorldError::CodeHash { .. }
         ))
     ));
     json["accounts"][0].as_object_mut().unwrap().remove("code");
     assert!(matches!(
-        parse(&json.to_string()),
+        parse::<NumericValue>(&json.to_string()),
         Err(InputError::World(
             evm_abstract::world::WorldError::UnknownCodeHash(_)
         ))
@@ -161,13 +175,13 @@ fn anchored_missing_or_mismatched_code_hash_and_invalid_metadata_are_rejected() 
     let mut json = base.clone();
     json["identity"]["block_hash"] = serde_json::json!("latest");
     assert!(matches!(
-        parse(&json.to_string()),
+        parse::<NumericValue>(&json.to_string()),
         Err(InputError::Hash { .. })
     ));
     let mut json = base;
     json["identity"]["chain_id"] = serde_json::json!("1");
     assert!(matches!(
-        parse(&json.to_string()),
+        parse::<NumericValue>(&json.to_string()),
         Err(InputError::WordSyntax { .. })
     ));
 }
@@ -180,7 +194,7 @@ fn offline_explicit_identity_and_duplicate_json_storage_keys_are_checked() {
         "accounts":[{"address":"0x0000000000000000000000000000000000000101", "code":"0x00"}]
     }"#;
     assert_eq!(
-        parse(input).unwrap().identity(),
+        parse::<NumericValue>(input).unwrap().identity(),
         &SnapshotIdentity::Offline {
             label: "synthetic-demo".to_owned()
         }
@@ -189,7 +203,10 @@ fn offline_explicit_identity_and_duplicate_json_storage_keys_are_checked() {
         "fork":"osaka", "provenance":"bad-input",
         "accounts":[{"address":"0x0000000000000000000000000000000000000101", "storage":{"0x1":"0x7","0x1":"0x8"}}]
     }"#;
-    assert!(matches!(parse(duplicated), Err(InputError::Json(_))));
+    assert!(matches!(
+        parse::<NumericValue>(duplicated),
+        Err(InputError::Json(_))
+    ));
 }
 
 #[test]
@@ -199,7 +216,7 @@ fn absent_account_requires_all_zero_observations() {
         "accounts":[{"address":"0x0000000000000000000000000000000000000101", "code":"0x", "existence":"absent", "balance":"0x0", "nonce":"0x0", "storage_unknown":false}],
     });
     assert_eq!(
-        parse(&input.to_string())
+        parse::<NumericValue>(&input.to_string())
             .unwrap()
             .account(address(0x101))
             .unwrap()
@@ -208,7 +225,7 @@ fn absent_account_requires_all_zero_observations() {
     );
     input["accounts"][0]["nonce"] = serde_json::json!("0x1");
     assert!(matches!(
-        parse(&input.to_string()),
+        parse::<NumericValue>(&input.to_string()),
         Err(InputError::World(
             evm_abstract::world::WorldError::InvalidAbsence(_)
         ))
@@ -224,7 +241,7 @@ fn conflicting_account_or_normalized_slot_facts_are_rejected() {
         ]
     }"#;
     assert!(matches!(
-        parse(duplicate_account),
+        parse::<NumericValue>(duplicate_account),
         Err(InputError::Duplicate(_))
     ));
     let duplicate_slot = r#"{
@@ -233,13 +250,13 @@ fn conflicting_account_or_normalized_slot_facts_are_rejected() {
         ]
     }"#;
     assert!(matches!(
-        parse(duplicate_slot),
+        parse::<NumericValue>(duplicate_slot),
         Err(InputError::DuplicateSlot { .. })
     ));
 }
 
 fn json_error(input: &str) -> String {
-    match parse(input) {
+    match parse::<NumericValue>(input) {
         Err(InputError::Json(error)) => error.to_string(),
         Err(error) => panic!("expected JSON error, observed {error:?}"),
         Ok(_) => panic!("invalid JSON input was accepted: {input}"),
@@ -297,14 +314,14 @@ fn required_snapshot_and_identity_fields_remain_required() {
 
 #[test]
 fn null_optional_fields_match_omitted_unknown_facts() {
-    let omitted = parse(
+    let omitted = parse::<NumericValue>(
         r#"{
         "fork":"osaka","provenance":"test",
         "accounts":[{"address":"0x0000000000000000000000000000000000000101"}]
     }"#,
     )
     .unwrap();
-    let explicit_null = parse(
+    let explicit_null = parse::<NumericValue>(
         r#"{
         "fork":"osaka","provenance":"test","identity":null,"fingerprint":null,
         "accounts":[{"address":"0x0000000000000000000000000000000000000101",
@@ -401,8 +418,8 @@ fn duplicate_fields_are_rejected_even_when_the_first_value_is_null() {
 
 #[test]
 fn identity_tag_can_follow_variant_fields_and_rejects_unknown_kinds() {
-    let before = parse(r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"offline","label":"example"}}"#).unwrap();
-    let after = parse(r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"label":"example","kind":"offline"}}"#).unwrap();
+    let before = parse::<NumericValue>(r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"kind":"offline","label":"example"}}"#).unwrap();
+    let after = parse::<NumericValue>(r#"{"fork":"osaka","provenance":"test","accounts":[],"identity":{"label":"example","kind":"offline"}}"#).unwrap();
     assert_eq!(before.fingerprint().unwrap(), after.fingerprint().unwrap());
 
     let block_hash = alloy_primitives::B256::repeat_byte(0x11);
@@ -410,7 +427,7 @@ fn identity_tag_can_follow_variant_fields_and_rejects_unknown_kinds() {
         r#"{{"fork":"osaka","provenance":"test","accounts":[],"identity":{{"block_hash":"{block_hash}","kind":"chain","chain_id":"0x1"}}}}"#
     );
     assert_eq!(
-        parse(&chain).unwrap().identity(),
+        parse::<NumericValue>(&chain).unwrap().identity(),
         &SnapshotIdentity::Chain {
             chain_id: U256::from(1),
             block_hash,
@@ -423,14 +440,14 @@ fn identity_tag_can_follow_variant_fields_and_rejects_unknown_kinds() {
 
 #[test]
 fn sequence_inputs_preserve_the_existing_snapshot_format() {
-    let map = parse(
+    let map = parse::<NumericValue>(
         r#"{
         "fork":"osaka","provenance":"test","identity":{"kind":"offline","label":"example"},
         "accounts":[{"address":"0x0000000000000000000000000000000000000101"}]
     }"#,
     )
     .unwrap();
-    let sequence = parse(
+    let sequence = parse::<NumericValue>(
         r#"[
         "osaka","test",["offline","example"],null,
         [["0x0000000000000000000000000000000000000101",null,{},true,null,null,null,null]]

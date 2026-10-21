@@ -175,8 +175,8 @@ fn numeric_top_stays_compact_in_all_human_views() {
         "explain",
         "--hex",
         "5f351e00",
-        "--domain",
-        "constants-only",
+        "--numeric-model",
+        "finite-set",
         "--max-constants",
         "8",
     ])));
@@ -191,8 +191,8 @@ fn numeric_top_stays_compact_in_all_human_views() {
             command,
             "--hex",
             "5f351e6006565b00",
-            "--domain",
-            "constants-only",
+            "--numeric-model",
+            "finite-set",
             "--max-constants",
             "8",
         ];
@@ -206,7 +206,7 @@ fn numeric_top_stays_compact_in_all_human_views() {
         ("explain", vec![]),
         ("explain", vec!["--verbose"]),
     ] {
-        let mut args = vec!["--domain", "constants-only", "--max-constants", "8"];
+        let mut args = vec!["--numeric-model", "finite-set", "--max-constants", "8"];
         args.extend_from_slice(&view);
         assert_numeric_top(&text(world.run_default(command, &args)));
     }
@@ -253,16 +253,19 @@ fn constrained_values_keep_all_unknown_bit_positions() {
 
 fn assert_clz_json(value: &Json) {
     assert_eq!(
-        value["known_bits"],
+        value["numeric"]["known_bits"],
         json!({ "zero": U256::MAX << 9_usize, "one": U256::ZERO })
     );
-    assert_eq!(value["known_bits"].as_object().unwrap().len(), 2);
-    assert_eq!(value["interval"]["unsigned_lo"], "0x0");
-    assert_eq!(value["interval"]["unsigned_hi"], "0x100");
-    assert!(value.get("Constants").is_none());
+    assert_eq!(value["numeric"]["known_bits"].as_object().unwrap().len(), 2);
+    assert_eq!(value["numeric"]["interval"]["unsigned_lo"], "0x0");
+    assert_eq!(value["numeric"]["interval"]["unsigned_hi"], "0x100");
+    assert!(crate::native::numeric(value).get("constants").is_none());
     // Numeric keys retain their meaning; the independent expression layer
     // records the CLZ relation instead of changing the numeric mask shape.
-    assert_eq!(value.as_object().unwrap().len(), 6);
+    assert_eq!(crate::native::numeric(value).as_object().unwrap().len(), 2);
+    if let Some(provenance) = value.get("provenance") {
+        assert!(provenance.is_object());
+    }
     assert_eq!(
         super::native::root(&value["expression"])["Operation"]["opcode"],
         0x1e
@@ -270,7 +273,7 @@ fn assert_clz_json(value: &Json) {
 }
 
 #[test]
-fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
+fn json_retains_product_components_and_finite_carriers_in_native_envelopes() {
     for command in ["cfg", "ssa"] {
         let rendered = text(run_concrete(&[
             command,
@@ -308,16 +311,14 @@ fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
         "cfg",
         "--hex",
         "5f3500",
-        "--domain",
-        "constants-only",
+        "--numeric-model",
+        "finite-set",
         "--format",
         "json",
     ]));
     let top: Json = serde_json::from_str(&top).unwrap();
     let value = &top["states"][0]["exit_stack"][0];
-    assert!(value["Constants"].is_null());
-    assert_eq!(value["known_bits"]["zero"], "0x0");
-    assert_eq!(value["known_bits"]["one"], "0x0");
+    assert_eq!(value["numeric"], json!({}));
     let graph = &value["expression"];
     let read = &super::native::root(graph)["WordRead"];
     let nodes = graph["nodes"].as_array().unwrap();
@@ -336,25 +337,16 @@ fn json_retains_masks_components_and_top_tags_in_cfg_ssa_and_world() {
         "cfg",
         "--hex",
         "5f5400",
-        "--domain",
-        "constants-only",
+        "--numeric-model",
+        "finite-set",
         "--format",
         "json",
     ]));
     let uncorrelated: Json = serde_json::from_str(&uncorrelated).unwrap();
     let value = &uncorrelated["states"][0]["exit_stack"][0];
-    assert!(value.get("Constants").is_none());
-    assert_eq!(value["known_bits"]["zero"], "0x0");
-    assert_eq!(value["known_bits"]["one"], "0x0");
-    assert_eq!(value["interval"]["unsigned_lo"], "0x0");
-    assert_eq!(
-        value["interval"]["unsigned_hi"],
-        format!("0x{}", "f".repeat(64))
-    );
-    assert_eq!(value["congruence"], "Top");
-    assert_eq!(value["nonzero"], false);
+    assert_eq!(value["numeric"], json!({}));
     assert!(
-        value.get("expression").is_some(),
+        value["expression"].is_object(),
         "an opaque runtime read has its own expression"
     );
 }

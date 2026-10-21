@@ -25,7 +25,7 @@ JUMPI(condition, 0x000c)
 
 最终候选只有 8 个，但中间步骤已有 16 个。这个对照显式使用 `--max-constants 8`：如果中途丢掉所有信息，就无法靠下一条 OR 重新知道最低位为一。KnownBits 组件逐位保存必须为零、必须为一或尚未确定的性质，避免这次信息丢失；内部与 JSON 用两个位掩码编码，文本直接显示[十六进制位模式](#怎样读十六进制位模式)。
 
-这次只比较数值组件，先用 `--no-relations` 关闭符号表达式传播和路径约束。`--domain` 选择数值表示，与关系开关是两项独立策略：
+这次只比较数值组件，先用 `--no-relations` 关闭符号表达式传播和路径约束。`--numeric-model` 选择数值表示，与关系开关是两项独立策略：
 
 ```bash
 nix run . -- cfg \
@@ -34,14 +34,14 @@ nix run . -- cfg \
 
 nix run . -- cfg \
   --file examples/known-bits-branch.hex \
-  --domain constants-only \
+  --numeric-model finite-set \
   --no-relations --context-depth 0 --max-constants 8 --format json > /tmp/facts-constants.json
 
 jq '.status, [.edges[] | .kind]' /tmp/facts-product.json
 jq '.status, [.edges[] | .kind]' /tmp/facts-constants.json
 ```
 
-两次分析都可完成。组合域只有 BranchTrue；constants-only 保留 BranchTrue 和 BranchFalse，因为未知 x 的 AND/OR 无法从有限集合获得上述位信息。`--context-depth 0` 让实验集中展示数值域的区别。
+两次分析都可完成。组合域只有 BranchTrue；finite-set 保留 BranchTrue 和 BranchFalse，因为未知 x 的 AND/OR 无法从有限集合获得上述位信息。`--context-depth 0` 让实验集中展示数值域的区别。
 
 这已经说明两件事：`Converged` 可以对应不同精度；提高常量容量也不等于增加未知输入的位语义。要排除假分支，需要某个组件证明条件非零。
 
@@ -67,37 +67,37 @@ nix run . -- cfg \
 
 第一段只有 BranchFalse，第二段保留两种分支。这些命令的 calldata 是 root frame 的未知输入；显式 `--evm.calldata HEX` 可提供具体数据。
 
-**来源相同**与**同一个值**是两项事实。不同偏移的读取都可以带 Calldata 来源，却没有相等保证。root calldata 是不可变输入，已确定偏移的 word 有稳定符号；DUP 保留这个值，SWAP 只改变位置。因此 [`copy-identity.hex`](../examples/copy-identity.hex) 在 product 和 constants-only 下都只有 BranchFalse：这里利用的是同一个输入，不能用它区分两种数值域。
+**来源相同**与**同一个值**是两项事实。不同偏移的读取都可以带 Calldata 来源，却没有相等保证。root calldata 是不可变输入，已确定偏移的 word 有稳定符号；DUP 保留这个值，SWAP 只改变位置。因此 [`copy-identity.hex`](../examples/copy-identity.hex) 在 product 和 finite-set 下都只有 BranchFalse：这里利用的是同一个输入，不能用它区分两种数值域。
 
 下面分别展示稳定输入身份与临时复制身份：
 
 ```bash
-# 两次读取同一个 root calldata word，再 XOR；两种 profile 都得到零。
+# 两次读取同一个 root calldata word，再 XOR；两种数值模型 都得到零。
 nix run . -- cfg --hex 5f355f351800 --format json > /tmp/input-identity.json
-jq '.states[0].exit_stack[0].Constants' /tmp/input-identity.json
+jq '.states[0].exit_stack[0].numeric.constants' /tmp/input-identity.json
 
-# 先做加法，再复制这个运算结果。复制身份属于共用AbstractValue，两profile均生效。
+# 先做加法，再复制这个运算结果。复制身份属于共用的 `EvmValue<N>`，两种数值模型均生效。
 nix run . -- cfg --hex 5f35600101801800 --no-relations --format json > /tmp/copy-product.json
-nix run . -- cfg --hex 5f35600101801800 --domain constants-only --no-relations \
+nix run . -- cfg --hex 5f35600101801800 --numeric-model finite-set --no-relations \
   --format json > /tmp/copy-constants.json
 jq '.states[0].exit_stack[0]' /tmp/copy-product.json
 jq '.states[0].exit_stack[0]' /tmp/copy-constants.json
 ```
 
-第一条查询输出 `["0x0"]`。关闭关系传播后的最后两条也都显示单点零：加法产生的新值没有继承原 calldata word 的稳定输入身份，但DUP 复制同一个当前定义。临时复制身份属于共用的 AbstractValue，不由数值 profile或关系开关决定。因此复制身份本身不能作为 product 与 constants-only的数值精度对照；[第 1 节](#1-先手算这个条件可能为零吗)使用 KnownBits性质作对照。
+第一条查询输出 `["0x0"]`。关闭关系传播后的最后两条也都显示单点零：加法产生的新值没有继承原 calldata word 的稳定输入身份，但 DUP 复制同一个当前定义。临时复制身份属于共用的 EvmValue<N>，不由数值模型或关系开关决定。因此复制身份本身不能作为 product 与 finite-set 的数值精度对照；[第 1 节](#1-先手算这个条件可能为零吗)使用 KnownBits 性质作对照。
 
 临时复制身份在进入下一块、汇合、调用或摘要边界失效。稳定的不可变输入符号则可跨块保留，默认 caller/origin、重复 CALLVALUE、相同偏移的 root calldata word 都属于这一类；摘要还必须匹配完整环境。不同环境里的同名符号不证明相等，子帧 memory 派生的 calldata 也不会冒充 root 输入。两种身份都不意味着“任意两次读取同一 storage slot 都相等”；读取之间的写入会改变状态。SSA 编号也不会反馈成执行器的关系证明。独立符号表达式可以表示派生值并跨块保留；每个机器状态的关系环境另外保存路径约束。
 
 ### 默认关系模式怎样补上派生值
 
-在相同 constants-only 数值 profile 下，把关系模式留在默认开启状态：
+在相同 finite-set 数值模型 下，把关系模式留在默认开启状态：
 
 ```bash
-nix run . -- cfg --hex 5f356001016008565b5f356001011800 --domain constants-only --format json > /tmp/copy-relational.json
-jq '.states[-1].exit_stack[0].Constants, .config.relations' /tmp/copy-relational.json
+nix run . -- cfg --hex 5f356001016008565b5f356001011800 --numeric-model finite-set --format json > /tmp/copy-relational.json
+jq '.states[-1].exit_stack[0].numeric.constants, .domain_spec.relations' /tmp/copy-relational.json
 ```
 
-这里再次得到单点零。加法结果不必继承 calldata 的输入身份：两次计算的表达式都是 `CALLDATALOAD(0)+1`，中间的 JUMP 已使临时复制身份失效；持久表达式仍相同，XOR 规范化为零，并把这个常量反馈给数值层。这是符号表达式提供的新证据，与块内复制身份及来源标签各自独立。这个实验没有依赖 DUP，也没有把 profile 当作元数据开关。
+这里再次得到单点零。加法结果不必继承 calldata 的输入身份：两次计算的表达式都是 `CALLDATALOAD(0)+1`，中间的 JUMP 已使临时复制身份失效；持久表达式仍相同，XOR 规范化为零，并把这个常量反馈给数值层。这是符号表达式提供的新证据，与块内复制身份及来源标签各自独立。这个实验没有依赖 DUP，也没有把数值模型当作元数据开关。
 
 关系模式还能保留 JUMPI 的已选分支假设。例如同一个 CALLVALUE 先被约束为 1，之后再测试是否为 2，后一个 true 分支不可行。具体命令和求解边界见[第 15 课](15-symbolic-relations.md)。
 
@@ -113,23 +113,31 @@ EVM 的一个 word 是 256 位，取值空间为 `0 .. 2^256-1`。组合域中�
 | Congruence | 同余，即除以某个正整数后的固定余数 | x 是否为 8 的倍数？ |
 | Nonzero 保证 | 已证明不是零 | 条件是否必须非零？ |
 
-这些是 `NumericValue` 的真实字段，数值查询、候选枚举和格式化只读取这一层。机器中的 `AbstractValue` 则组合独立的数据：
+这些是 `NumericValue` 的真实字段，数值查询、候选枚举和格式化只读取这一层。机器中的 `EvmValue<N>` 则组合独立的数据：
 
 | 层次 | 负责什么 | 不应混入什么 |
 | --- | --- | --- |
-| `numeric`：`NumericValue` | 有限集合、位、范围、同余、非零保证 | 来源、变量身份、表达式和路径约束 |
+| `numeric`：`N`；product 时为 `NumericValue` | 所选数值代数的实际载体；product 保存有限集合、位、范围、同余、非零保证 | 来源、变量身份、表达式和路径约束 |
 | `provenance`：`Provenance` | 可能来源与代码地址使用角色 | 输入身份或任意数值相等证明 |
 | `identity`：`ValueIdentity` | 同作用域输入与块内临时定义的可信身份 | 根据相同来源或相同数值摘要猜测身份 |
 | `expression`：`ExprId` | 不可变输入、运行时新值及其 EVM 纯运算表达式 | 把每次经过同一个 pc 的新值当成同一个变量 |
 | 机器状态的 `relations` | 当前路径保留的跨值假设及数值保证 | 全局共享不同路径的假设 |
 
-`AbstractValue` 通过显式字段组合这些信息，没有通过 Deref 隐藏这几层。更改来源标签不改写身份，局部事实证明后的数值收窄也保留原变量与表达式。
+`EvmValue<N>` 通过显式字段组合这些信息，没有通过 Deref 隐藏这几层。更改来源标签不改写身份，局部事实证明后的数值收窄也保留原变量与表达式。
 
 来源记录的是当前观察和纯运算输入的类别摘要。MLOAD、SLOAD 等读取会重新标记为 Memory、Storage；纯算术合并输入类别并加入 Arithmetic。它不保存完整读取位置、祖先链或污点历史。
 
-[`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)只管理常量组件：Top 不限制候选，非空集合限制候选必须属于其中，空交返回错误。这个组件单独格式化时，Top 显示为 `⊤`。`AbstractValue::finite_constants()` 查看这个组件；`AbstractValue::contains()` 则检查它与位、区间、同余和非零保证的交集。常量组件为 Top 不等于整个值没有数值限制。
+[`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)表示 Top 或非空有限集合，空交返回错误。它既是 product 的常量组件，也是 `FiniteSetAlgebra::Element` 的独立载体。`EvmValue<N>::finite_constants()` 读取所选载体导出的有限保证；product 的 `contains()` 同时检查常量、位、区间、同余与非零约束。常量组件为 Top 不等于 product 的整个数值没有限制。
 
-有限集合无法枚举时，其他组件仍可以排除候选。JSON 没有 `Constants` 键，只说明这个组件不能给出完整列表。只有数值约束、来源、使用角色、固定身份和表达式都未知，且没有符号预算缺口时，整个值才序列化为 `"Top"`。数值上为 Top 的输入仍可带 `identity.input.name` 和 `expression`；`provenance` 只记录来源与角色；因此不能仅根据 JSON 是字符串还是对象判断数值精度。反过来，一个候选没有被约束排除，也不代表存在某条执行能取到它。
+原生 JSON 中，每个 `EvmValue<N>` 都是对象：必填的 `.numeric` 保存实际 `N`，非默认的 `.provenance`、`.identity`、`.expression` 和 `.symbolic_limit` 保存不同种类的元数据。未知来源、空身份、无表达式和 false 标志均可省略，只有外层 `.numeric` 必填。product 的 `.numeric` 按组件省略默认值：
+
+| 省略的组件 | 表示的默认约束 |
+| --- | --- |
+| `constants` | 没有有限集合约束 |
+| `known_bits`、`interval`、`congruence` | 相应组件为 Top |
+| `nonzero` | false，没有排除零 |
+
+每个非默认组件都完整输出，即使其他组件已经表达相同保证，也不因此删除。product 的数值 Top 是 `{}`；finite-set 的数值 Top 同样是 `{}`，有限值则是 `{"constants":[...]}`。外层 `.numeric` 始终存在；自定义载体保留自己的原生序列化。读取 `.numeric.constants` 的 jq 查询在键缺失时返回 `null`，这与把整个值编码成字符串 Top 是不同的格式。候选没有被约束排除，并不证明存在具体执行能取到它。
 
 ### 怎样读十六进制位模式
 
@@ -210,7 +218,7 @@ KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部�
 
 来源、地址范围和代码用途也必须区分。`IsAddress` 保证高 96 位为零；`IsCodeAddress` 只记录作为代码地址使用的角色。它们都不能证明该账户存在，更不能提供未知账户的代码。
 
-若想继续看库接口，可从 [`Domain::from_facts`](../crates/evm-abstract/src/domain.rs) 和 [`facts.rs`](../crates/evm-abstract/src/domain/facts.rs)进入。上述范围加 8 的倍数就是该接口可以建立的初始前提。`MemberOf` 的 `FiniteSet` 与常量组件共用非空集合表示，但声明成员关系必须给出具体集合，不能使用 Top。事实表按候选元素计入事实容量；导入组合值后，常量容量决定能否继续保留这份完整列表。这是两项独立的限制。非法范围、空候选或零模数会被拒绝；矛盾不能改写成成功的 Top。
+若想继续看库接口，可从 [`ValueAlgebra::from_facts`](../crates/evm-abstract/src/domain/algebra.rs) 和 [`facts.rs`](../crates/evm-abstract/src/domain/facts.rs)进入。上述范围加 8 的倍数就是该接口可以建立的初始前提。`MemberOf` 的 `FiniteSet` 与常量组件共用非空集合表示，但声明成员关系必须给出具体集合，不能使用 Top。事实表按候选元素计入事实容量；导入组合值后，常量容量决定能否继续保留这份完整列表。这是两项独立的限制。非法范围、空候选或零模数会被拒绝；矛盾不能改写成成功的 Top。
 
 ## 5. 同一值的约束取交，不同路径的可能取并
 
@@ -268,17 +276,19 @@ CLI/Web 默认数值策略为 product，常量容量 512、交换轮数 16、事
 nix run . -- analyze \
   --world examples/worlds/returndata-copy.json \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
-  --domain product --max-constants 512 --reduction-rounds 16 --max-facts 4096 \
+  --numeric-model product --max-constants 512 --reduction-rounds 16 --max-facts 4096 \
   --max-work 1000000000000 --format json > /tmp/facts-world.json
 
 jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
-结果的 `schema_version` 为 11；其中 `domain_spec.schema_version` 仍为 2，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `cost_version` 为 6，`provenance_policy` 是 `scoped-expressions-and-value-identities-v3`。费用版本 5 曾标记类型化依赖传播及其共享工作计费规则；版本 6 更新共享 kernel 的逻辑工作模型，显式计入自定义规则与独立数值查询的费用。不同费用版本的原始 work 数字不是同一计量单位，不能直接相除解释为提速，也不能把费用版本读成报告或域策略 schema。`domain_spec.relations` 冻结关系开关、表达式/约束预算，同样参与摘要资格。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求完整策略相等。
+原生报告的 `schema_version` 为 12，独立的 Web 协议为 17；`domain_spec.schema_version` 为 3。CLI 用 `numeric_model: "product"` / `"finite-set"` 记录所选模型，wire 17 对应为 `"Product"` / `"FiniteSet"`，`domain_spec` 则保存实际代数的 word 宽度、常量容量、交换上限、widening、费用版本、来源策略和关系限制，不包含模型选择器。原生 `Config` 只保存上下文、状态和 transfer 限制，`ExecutionConfig` 再保存工作、调用深度、具体物化等执行预算；数值与关系限制只由 `algebra.spec()` 提供。`DomainSpec::validate()` 返回类型化 `DomainSpecError`；表达式与关系上限为零时，即使关闭关系推理也会拒绝。
 
-`--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 constants-only 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；CLI 默认容量 512 可以容纳全部候选；显式降至 8 时则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
+当前 `cost_version` 为 7，表示借用式数值操作与显式 opcode 工作报价。版本 6 的共享 kernel、规则和独立查询计费是此前的口径；跨费用版本的原始 work 不是同一单位，不能直接相除解释为提速。`domain_spec.relations` 冻结关系开关与表达式/约束预算。子调用使用同一代数和策略，[调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)还要检查实际输入、来源和策略资格；模型标签不能代替这些检查。
 
-`cfg` 和 `ssa` 同样接受 `--domain`、`--reduction-rounds` 与 `--max-facts`。把 product 换成 constants-only 只改变数值组件；用 `--no-relations` 可另外关闭表达式传播和路径约束，保留输入身份。隔离有限集合精度时应同时关闭关系模式；两项交换上限必须为正。提高上限可能增加精度与工作量，不能自动消除模型前沿。不同策略的 work 数字应结合费用策略解读。
+`--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 finite-set 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；CLI 默认容量 512 可以容纳全部候选；显式降至 8 时则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
+
+`cfg` 和 `ssa` 同样接受 `--numeric-model`、`--reduction-rounds` 与 `--max-facts`。把 product 换成 finite-set 只改变数值组件；用 `--no-relations` 可另外关闭表达式传播和路径约束，保留输入身份。隔离有限集合精度时应同时关闭关系模式；两项交换上限必须为正。提高上限可能增加精度与工作量，不能自动消除模型前沿。不同策略的 work 数字应结合费用策略解读。
 
 最后检查 JSON 的一个实际值。JUMPI 会弹出条件，分支入口不再保留它；下面只运行[第 1 节](#1-先手算这个条件可能为零吗)的算术部分，在 STOP 前留下结果：
 
@@ -290,7 +300,7 @@ nix run . -- cfg \
 jq '.states[0].exit_stack[0]' /tmp/facts-value.json
 ```
 
-有限值保留 `Constants` 键；数值 JSON 仍平铺 `known_bits`、`interval`、`congruence` 与 `nonzero`，不是新增一层 `numeric` 包装。`provenance` 只存来源与角色；固定身份另在 `identity.input.name`，保留的表达式在 `expression`。这里的候选是 1、3……15。文本与 DOT 只展示数值概要；需要确认某项保证时读完整 JSON，避免把没有常量列表的组合值误读成完全未知。
+本例使用 product，完整候选 1、3……15 位于 `.numeric.constants`，位掩码位于 `.numeric.known_bits`，区间、同余和非零保证也在 `.numeric` 中。来源在 `.provenance`，固定身份在 `.identity.input.name`，表达式在 `.expression`。文本与 DOT 展示数值概要；原生 JSON 保存真实载体。Web 的 `ValueInfo` 和来源图的 `WordObservation` 是各自独立的观察格式，读取它们时不要再套一层机器值的 `.numeric`。
 
 输入 JSON 与 RPC 初始账户的读取发生在执行账本建立之前。RPC 的后续账户与有限槽采集发生在分析轮次之间，账户数和 HTTP 请求数另有累计上限；成功后扩充初始事实，从入口重建分析，沿用根执行账本。JSON 的 `rpc_acquisition.states_created` 记录全部轮次的状态分配数，因此可能大于最终 `states` 长度。`fetched_storage` 与 `failed_storage` 记录动态槽采集的地址和槽键，显式 `--slot` 的初始采集不计入前者。数值域的 `--max-facts` 只限制局部事实交换，不限制这些 RPC 观察；读[第 10 课](10-snapshots-summaries-creation.md#可选实验从固定区块采集)可对照两组额度。
 

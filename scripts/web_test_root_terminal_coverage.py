@@ -149,7 +149,7 @@ def _binding(report, request, *, is_static):
     binding = coverage["input"]
     assert set(binding) == {
         "snapshot", "revision", "storage_source", "input_scope", "fork", "entry_address",
-        "environment", "config", "domain_spec", "frame", "program", "calldata",
+        "environment", "config", "domain_spec", "numeric_model", "frame", "program", "calldata",
         "call_value", "saved_store", "initial_store"}, set(binding)
     assert set(binding["snapshot"]) == {"Offline"} and report["metadata"]["snapshot"] is None
     snapshot = binding["snapshot"]["Offline"]
@@ -162,18 +162,20 @@ def _binding(report, request, *, is_static):
     assert binding["environment"] == report["metadata"]["environment"]
     config = binding["config"]
     limits = request["limits"]
+    assert report["metadata"]["postprocessing_max_work"] == 2_000_000_000
+    assert 0 <= report["metadata"]["postprocessing_work"] <= 2_000_000_000
     relation_fields = {"enabled": "relations_enabled", "max_constraints": "max_constraints",
                        "max_nodes": "max_expression_nodes", "max_depth": "max_expression_depth"}
-    assert config["relations"] == {key: limits[source] for key, source in relation_fields.items()}
-    assert {key: value for key, value in config.items() if key != "relations"} == {
-        key: value for key, value in limits.items()
-        if not key.startswith("rpc_") and key not in relation_fields.values()}
+    assert binding["numeric_model"] == limits["numeric_model"] == "Product"
+    execution_fields = {"context_depth", "max_states", "max_transfers", "max_work",
+                        "max_call_depth", "max_memory_bytes", "use_summaries", "root_terminal_coverage"}
+    assert config == {key: limits[key] for key in execution_fields}
     assert config["root_terminal_coverage"] is True
     assert binding["domain_spec"] == {
-        "schema_version": 2, "word_bits": 256, "profile": "Product", "capacity": 512,
-        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 6,
+        "schema_version": 3, "word_bits": 256, "capacity": 512,
+        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 7,
         "widening_after_updates": 2, "provenance_policy": "scoped-expressions-and-value-identities-v3",
-        "relations": config["relations"]}
+        "relations": {key: limits[source] for key, source in relation_fields.items()}}
     original = next(state for state in report["states"] if state["state"] == 0)["entry"]
     root, = original["frames"]
     program, = [item for item in report["programs"] if item["id"] == binding["program"]]
@@ -504,11 +506,17 @@ def _invalid_requests(page, url, request, output):
         ("boolean-string", "root_terminal_coverage", "true"),
         ("boolean-number", "root_terminal_coverage", 1),
         ("unknown-limit", "root_terminal_coverag", True),
+        ("obsolete-selector", "domain_profile", "Product"),
+        ("obsolete-model", "numeric_model", "ConstantsOnly"),
+        ("missing-model", "numeric_model", None),
     ]
     results = {}
     for name, field, value in controls:
         invalid = deepcopy(request)
-        invalid["limits"][field] = value
+        if name == "missing-model":
+            del invalid["limits"][field]
+        else:
+            invalid["limits"][field] = value
         response = page.request.post(url + "/api/tasks", data=json.dumps(invalid),
                                      headers={"Content-Type": "application/json"})
         assert response.status == 400, (name, response.text())
@@ -572,14 +580,14 @@ def _schema_control(page, canvas, output, expected_request):
         response = route.fetch()
         native_text = response.text()
         envelope = json.loads(native_text)
-        assert envelope["result"]["Ok"]["schema_version"] == 16
-        envelope["result"]["Ok"]["schema_version"] = 15
+        assert envelope["result"]["Ok"]["schema_version"] == 17
+        envelope["result"]["Ok"]["schema_version"] = 16
         replacement = json.dumps(envelope)
         headers = dict(response.headers)
         headers.pop("content-encoding", None)
         headers.pop("content-length", None)
         # This body is a deliberately invalid client control, never evidence
-        # of a live native schema-15 report or of an attached certificate.
+        # of a live wire schema-16 report or of an attached certificate.
         (output / "coverage-schema-control-native.json").write_text(native_text + "\n")
         (output / "coverage-schema-control-mutated.json").write_text(replacement + "\n")
         route.fulfill(status=response.status, headers=headers, body=replacement)
@@ -596,7 +604,7 @@ def _schema_control(page, canvas, output, expected_request):
         assert json.loads(submitted.value.request.post_data) == expected_request
         current_id = _decimal_identity(str(submitted.value.json()["result"]["Ok"]["id"]))
         try:
-            expect(status).to_contain_text("Unsupported response schema 15; expected 16", timeout=60000)
+            expect(status).to_contain_text("Unsupported response schema 16; expected 17", timeout=60000)
         finally:
             canvas.screenshot(path=str(output / "coverage-schema-rejected.png"))
         after_status = status.text_content()
@@ -608,7 +616,7 @@ def _schema_control(page, canvas, output, expected_request):
         evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
         assert intercepted == [True], intercepted
         assert len(posts) == 1 and json.loads(posts[0]) == expected_request, posts
-        assert after_status.startswith("Error: Unsupported response schema 15; expected 16; "), after_status
+        assert after_status.startswith("Error: Unsupported response schema 16; expected 17; "), after_status
         current_ids = re.findall(r"(?:^|; )Current Job ID: ([^;]+)(?=;|$)", after_status)
         retained_ids = re.findall(r"(?:^|; )Result Job ID: ([^;]+)(?=;|$)", after_status)
         assert len(current_ids) == len(retained_ids) == 1, after_status
@@ -619,7 +627,7 @@ def _schema_control(page, canvas, output, expected_request):
         assert_translation(before_card, after_card, 0, 0, tolerance=1.0)
         assert after_card["selected_kind"] == before_card["selected_kind"]
         assert after_ink == before_ink, (before_ink, after_ink)
-        return {"received": 14, "expected": 15, "retained_selection": selected,
+        return {"received": 16, "expected": 17, "retained_selection": selected,
                 "retained_result_job_id": result_id, "current_job_id": current_id,
                 "evidence": evidence, "status": after_status, "control_only": True}
     finally:
@@ -644,7 +652,7 @@ def root_terminal_coverage_interactions(context):
     assert defaults["limits"] == LAYOUT_DEFAULT_LIMITS
     assert defaults["limits"]["root_terminal_coverage"] is True
     ordinary = first.json()["result"]["Ok"]
-    assert ordinary["schema_version"] == 16 and ordinary["root_terminal_coverage"] is None
+    assert ordinary["schema_version"] == 17 and ordinary["root_terminal_coverage"] is None
     assert ordinary["status"] == "Converged" and ordinary["ssa"]["complete"] is True
     assert ordinary["frontiers"] == []
     _stores(ordinary)
@@ -769,7 +777,7 @@ def root_terminal_coverage_interactions(context):
                                "root_terminal_coverage": enabled}}
         assert request == expected, (name, request, expected)
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 16 and report["metadata"]["limits"] == expected["limits"]
+        assert report["schema_version"] == 17 and report["metadata"]["limits"] == expected["limits"]
         assert report["fork"] == request["fork"] == "Osaka"
         (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report, request

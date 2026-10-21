@@ -2,11 +2,11 @@
 use alloy_primitives::{Address, B256, U256, hex};
 use evm_abstract::{
     analysis,
-    domain::{AbstractValue, Profile, relational::RelationLimits},
-    world::{AddressInput, BlobHashes, ByteArray, EvmEnvironment, GasInput, rpc},
+    domain::{DomainSpec, EvmValue, WordElement, relational::RelationLimits},
+    world::{AddressInput, EvmBlobHashes, EvmByteArray, EvmEnvironmentValues, GasInput, rpc},
 };
 use evm_abstract_protocol as api;
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroUsize, time::Duration};
 
 pub(super) fn invalid(
     kind: api::ValidationErrorKind,
@@ -56,17 +56,23 @@ fn hash(value: &str, field: &str) -> Result<B256, api::ApiError> {
         )
     })
 }
-fn value(input: &api::WordInput, field: &str) -> Result<AbstractValue, api::ApiError> {
+fn value<N: WordElement>(
+    input: &api::WordInput,
+    field: &str,
+) -> Result<EvmValue<N>, api::ApiError> {
     match input {
-        api::WordInput::Unknown => Ok(AbstractValue::top()),
-        api::WordInput::Concrete(text) => word(text, field).map(AbstractValue::constant),
+        api::WordInput::Unknown => Ok(EvmValue::top()),
+        api::WordInput::Concrete(text) => word(text, field).map(EvmValue::constant),
     }
 }
-fn optional(input: &Option<String>, field: &str) -> Result<AbstractValue, api::ApiError> {
+fn optional<N: WordElement>(
+    input: &Option<String>,
+    field: &str,
+) -> Result<EvmValue<N>, api::ApiError> {
     input
         .as_ref()
-        .map(|text| word(text, field).map(AbstractValue::constant))
-        .unwrap_or_else(|| Ok(AbstractValue::top()))
+        .map(|text| word(text, field).map(EvmValue::constant))
+        .unwrap_or_else(|| Ok(EvmValue::top()))
 }
 fn hashes(input: &[api::IndexedHash], field: &str) -> Result<BTreeMap<U256, B256>, api::ApiError> {
     let mut result = BTreeMap::new();
@@ -84,7 +90,9 @@ fn hashes(input: &[api::IndexedHash], field: &str) -> Result<BTreeMap<U256, B256
     }
     Ok(result)
 }
-pub(super) fn environment(input: &api::EnvironmentInput) -> Result<EvmEnvironment, api::ApiError> {
+pub(super) fn environment<N: WordElement>(
+    input: &api::EnvironmentInput,
+) -> Result<EvmEnvironmentValues<N>, api::ApiError> {
     let caller = match &input.caller {
         api::AddressSetting::Unknown => AddressInput::unknown_caller(),
         api::AddressSetting::Concrete(text) => address(text, "caller")?.into(),
@@ -98,16 +106,18 @@ pub(super) fn environment(input: &api::EnvironmentInput) -> Result<EvmEnvironmen
         })
         .transpose()?;
     let calldata = match &input.calldata {
-        api::CalldataInput::Unknown => ByteArray::unknown(),
-        api::CalldataInput::Exact(text) => ByteArray::exact(&hex::decode(text).map_err(|_| {
-            invalid(
-                api::ValidationErrorKind::Environment,
-                "calldata",
-                "expected hexadecimal calldata bytes",
-            )
-        })?),
+        api::CalldataInput::Unknown => EvmByteArray::unknown(),
+        api::CalldataInput::Exact(text) => {
+            EvmByteArray::exact(&hex::decode(text).map_err(|_| {
+                invalid(
+                    api::ValidationErrorKind::Environment,
+                    "calldata",
+                    "expected hexadecimal calldata bytes",
+                )
+            })?)
+        }
     };
-    let environment = EvmEnvironment {
+    let environment = EvmEnvironmentValues {
         caller,
         origin,
         calldata,
@@ -133,18 +143,17 @@ pub(super) fn environment(input: &api::EnvironmentInput) -> Result<EvmEnvironmen
         chain_id: input
             .chain_id
             .as_ref()
-            .map(|text| word(text, "chain_id").map(AbstractValue::constant))
+            .map(|text| word(text, "chain_id").map(EvmValue::constant))
             .transpose()?,
         base_fee: optional(&input.base_fee, "base_fee")?,
         blob_base_fee: optional(&input.blob_base_fee, "blob_base_fee")?,
         block_hashes: hashes(&input.block_hashes, "block_hashes")?,
-        blob_hashes: BlobHashes {
+        blob_hashes: EvmBlobHashes {
             length: value(&input.blob_count, "blob_count")?,
             hashes: hashes(&input.blob_hashes, "blob_hashes")?,
         },
-        ..EvmEnvironment::default()
+        ..EvmEnvironmentValues::default()
     };
-    environment.validate().map_err(super::errors::environment)?;
     Ok(environment)
 }
 pub(super) fn fork(input: api::Fork) -> evm_abstract::Fork {
@@ -185,22 +194,9 @@ pub(super) fn config(
     }
     Ok(analysis::ExecutionConfig {
         analysis: analysis::Config {
-            domain_profile: match input.domain_profile {
-                api::DomainProfile::Product => Profile::Product,
-                api::DomainProfile::ConstantsOnly => Profile::ConstantsOnly,
-            },
-            reduction_rounds: host_size(input.reduction_rounds, "reduction_rounds")?,
-            max_facts: host_size(input.max_facts, "max_facts")?,
             max_states: host_size(input.max_states, "max_states")?,
             max_transfers: host_size(input.max_transfers, "max_transfers")?,
-            max_constants: host_size(input.max_constants, "max_constants")?,
             context_depth: host_size(input.context_depth, "context_depth")?,
-            relations: RelationLimits {
-                enabled: input.relations_enabled,
-                max_constraints: host_size(input.max_constraints, "max_constraints")?,
-                max_nodes: host_size(input.max_expression_nodes, "max_expression_nodes")?,
-                max_depth: host_size(input.max_expression_depth, "max_expression_depth")?,
-            },
         },
         max_work: host_size(input.max_work, "max_work")?,
         max_call_depth: host_size(input.max_call_depth, "max_call_depth")?,
@@ -209,6 +205,46 @@ pub(super) fn config(
         root_terminal_coverage: input.root_terminal_coverage,
     })
 }
+/// Numeric/shared limits are owned by the selected algebra, independently of
+/// execution budgets. Nonzero admission happens before constructing that policy.
+pub(super) fn spec(input: &api::AnalysisLimits) -> Result<DomainSpec, api::ApiError> {
+    let positive = |value: u64, field: &str, failure, message: &str| {
+        NonZeroUsize::new(host_size(value, field)?).ok_or_else(|| api::ApiError {
+            code: api::ApiErrorCode::InvalidLimits,
+            message: message.into(),
+            details: api::ErrorDetails::Configuration(failure),
+        })
+    };
+    let capacity = positive(
+        input.max_constants,
+        "max_constants",
+        api::ConfigurationFailure::Constants,
+        "max_constants must be positive",
+    )?;
+    let rounds = positive(
+        input.reduction_rounds,
+        "reduction_rounds",
+        api::ConfigurationFailure::Facts,
+        "reduction_rounds must be positive",
+    )?;
+    let facts = positive(
+        input.max_facts,
+        "max_facts",
+        api::ConfigurationFailure::Facts,
+        "max_facts must be positive",
+    )?;
+    let relations = RelationLimits {
+        enabled: input.relations_enabled,
+        max_constraints: host_size(input.max_constraints, "max_constraints")?,
+        max_nodes: host_size(input.max_expression_nodes, "max_expression_nodes")?,
+        max_depth: host_size(input.max_expression_depth, "max_expression_depth")?,
+    };
+    let spec = DomainSpec::new(capacity, rounds, facts).with_relations(relations);
+    spec.validate()
+        .map_err(|error| super::errors::configuration(analysis::ConfigError::from(error)))?;
+    Ok(spec)
+}
+
 pub(super) fn rpc(
     input: &api::RpcInput,
     endpoint: &str,
@@ -300,15 +336,16 @@ mod tests {
         assert_eq!(native.analysis.max_states, 4_097);
         assert_eq!(native.analysis.max_transfers, 100_001);
         assert_eq!(native.analysis.context_depth, 17);
-        assert_eq!(native.analysis.max_constants, 33);
+        let spec = spec(&limits).unwrap();
+        assert_eq!(spec.capacity(), 33);
         assert_eq!(native.max_work, 100_000_001);
         assert_eq!(native.max_call_depth, 129);
         assert_eq!(native.max_memory_bytes, 1_048_577);
-        assert_eq!(native.analysis.reduction_rounds, 33);
-        assert_eq!(native.analysis.max_facts, 16_385);
-        assert_eq!(native.analysis.relations.max_constraints, 4_097);
-        assert_eq!(native.analysis.relations.max_nodes, 16_385);
-        assert_eq!(native.analysis.relations.max_depth, 129);
+        assert_eq!(spec.reduction_rounds(), 33);
+        assert_eq!(spec.fact_limit(), 16_385);
+        assert_eq!(spec.relations().max_constraints, 4_097);
+        assert_eq!(spec.relations().max_nodes, 16_385);
+        assert_eq!(spec.relations().max_depth, 129);
         assert!(native.analysis.validate().is_ok());
         let rpc = rpc(
             &source(),
@@ -364,15 +401,16 @@ mod tests {
             assert_eq!(native.analysis.max_states as u64, count);
             assert_eq!(native.analysis.max_transfers as u64, count);
             assert_eq!(native.analysis.context_depth as u64, count);
-            assert_eq!(native.analysis.max_constants as u64, count);
+            let spec = spec(&limits).unwrap();
+            assert_eq!(spec.capacity() as u64, count);
             assert_eq!(native.max_work as u64, count);
             assert_eq!(native.max_call_depth as u64, count);
             assert_eq!(native.max_memory_bytes as u64, count);
-            assert_eq!(native.analysis.reduction_rounds as u64, count);
-            assert_eq!(native.analysis.max_facts as u64, count);
-            assert_eq!(native.analysis.relations.max_constraints as u64, count);
-            assert_eq!(native.analysis.relations.max_nodes as u64, count);
-            assert_eq!(native.analysis.relations.max_depth as u64, count);
+            assert_eq!(spec.reduction_rounds() as u64, count);
+            assert_eq!(spec.fact_limit() as u64, count);
+            assert_eq!(spec.relations().max_constraints as u64, count);
+            assert_eq!(spec.relations().max_nodes as u64, count);
+            assert_eq!(spec.relations().max_depth as u64, count);
             assert!(native.analysis.validate().is_ok());
             let rpc = rpc(
                 &source(),
@@ -416,7 +454,7 @@ mod tests {
             )
             .unwrap();
             assert!(matches!(
-                evm_abstract::world::rpc::load(&rpc),
+                evm_abstract::world::rpc::load::<evm_abstract::domain::NumericValue>(&rpc),
                 Err(evm_abstract::world::rpc::RpcError::Configuration {
                     reason: evm_abstract::world::rpc::ConfigurationReason::Limits,
                     ..

@@ -113,11 +113,11 @@ B₃ @ 0x000e:
 集合组件的 **join（合并）** 把两条路径上的 `{1}` 和 `{2}` 合成 `{1,2}`。φ 则保留前驱与定义之间的对应关系。用这个例子比较：
 
 ```bash
-nix run . -- ssa --file examples/diamond.hex --context-depth 0 --max-constants 1 --domain constants-only
+nix run . -- ssa --file examples/diamond.hex --context-depth 0 --max-constants 1 --numeric-model finite-set
 nix run . -- ssa --file examples/diamond.hex --context-depth 0 --max-constants 1
 ```
 
-constants-only 的入口数值变成 Top；默认 product 只是不能完整列出候选，仍保留范围等性质。本例的两条 CFG 分支都保留，所以两种输出的 φ 都有 σᵖ₁ 与 σᵖ₂ 两条来源。一般情况下，数值精度能排除某些分支，CFG 和后续 SSA 结构也会随之改变，不能假定改变域只会改变 `abstract` 注释。
+finite-set 的入口数值变成 Top；默认 product 只是不能完整列出候选，仍保留范围等性质。本例的两条 CFG 分支都保留，所以两种输出的 φ 都有 σᵖ₁ 与 σᵖ₂ 两条来源。一般情况下，数值精度能排除某些分支，CFG 和后续 SSA 结构也会随之改变，不能假定改变域只会改变 `abstract` 注释。
 
 SSA 名字本身也不是路径约束。看到 `%0` 被比较为 5，并不意味着当前分析已经在某条边上证明 `%0=5`；这取决于分析是否保存了比较与原值之间的关系。
 
@@ -127,7 +127,7 @@ SSA 名字本身也不是路径约束。看到 `%0` 被比较为 5，并不意�
 nix run . -- ssa --file examples/copy-identity.hex --context-depth 0
 ```
 
-原 XOR 的两个操作数引用同一个名字，因为 DUP 复制引用。该例的根 calldata 读取保留固定输入符号，product 和 constants-only 在构建 CFG 时都能证明 `x XOR x = 0`，因此只保留 false 分支；默认规范化 SSA 还会把该结果显示为 `CONST 0x0 ; origin=XOR`，并保留原 XOR 的 PC、操作数和执行效果。
+原 XOR 的两个操作数引用同一个名字，因为 DUP 复制引用。该例的根 calldata 读取保留固定输入符号，product 和 finite-set 在构建 CFG 时都能证明 `x XOR x = 0`，因此只保留 false 分支；默认规范化 SSA 还会把该结果显示为 `CONST 0x0 ; origin=XOR`，并保留原 XOR 的 PC、操作数和执行效果。
 
 这些信息的边界是：
 
@@ -138,7 +138,7 @@ nix run . -- ssa --file examples/copy-identity.hex --context-depth 0
 | 固定输入符号 | 同一环境为根帧 calldata、caller/origin 等固定输入保留身份 | 身份一致时可跨块保留；不同环境、不同偏移或不相关子帧输入不能混同 |
 | Provenance 来源标签 | 读取建立观察位置的类别，纯运算合并输入来源 | 描述可能来源；两个值同属 Calldata 或 Storage 不证明相等 |
 
-临时复制身份不等于 `%n`，不会序列化进 JSON；传统 `ValueIdentity` 的固定输入名称展示省略环境 scope。Native schema 11 的符号图另行保留 `Input.scope` 与 producer `identity_scope`：同一报告内用它们和输入名称一起辨认固定输入，不能据此推断不同报告中的输入相等，见[符号状态导出](17-symbolic-state.md)。临时身份也不使两个相同抽象摘要自动成为同一个运行时值。当前完整 SSA 在 CFG 完成后生成，不能再将 φ 的来源关系反馈给前面的工作表，替它恢复任意槽位配对、分支约束或内存别名。组件交换的完整边界见[第 12 课](12-product-domains-facts.md)。
+临时复制身份不等于 `%n`，不会序列化进 JSON；传统 `ValueIdentity` 的固定输入名称展示省略环境 scope。Native schema 12 的符号图另行保留 `Input.scope` 与 producer `identity_scope`：同一报告内用它们和输入名称一起辨认固定输入，不能据此推断不同报告中的输入相等，见[符号状态导出](17-symbolic-state.md)。临时身份也不使两个相同抽象摘要自动成为同一个运行时值。当前完整 SSA 在 CFG 完成后生成，不能再将 φ 的来源关系反馈给前面的工作表，替它恢复任意槽位配对、分支约束或内存别名。组件交换的完整边界见[第 12 课](12-product-domains-facts.md)。
 
 ## 4. 循环为什么不需要无限多个名字
 

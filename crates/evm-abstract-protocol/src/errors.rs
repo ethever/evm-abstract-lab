@@ -85,6 +85,19 @@ record! {
     }
 }
 choice! {
+    /// Native engine failure; contextual diagnostics remain in ApiError.message.
+    pub enum ExecutionFailureKind {
+        /// Shared analyzer scope, dependency, identity or resource protocol failed.
+        Protocol,
+        /// Required immutable input initialization failed.
+        Initialization,
+        /// Local facts were invalid or required refinement work was refused.
+        Refinement,
+        /// Required analyzer work or feedback obligations remain unsettled.
+        Unfinished,
+    }
+}
+choice! {
     /// HTTP and browser transport failures.
     pub enum TransportErrorKind {
         /// Invalid HTTP framing.
@@ -127,7 +140,9 @@ variant! {
         Environment(crate::EnvironmentFailure),
         /// Exact native configuration invariant.
         Configuration(crate::ConfigurationFailure),
-        /// Typed immutable initial-input session failure.
+        /// Typed engine failure, separate from task and worker transport.
+        Execution(ExecutionFailureKind),
+        /// Typed immutable initial-input session or preparation failure.
         Session(Box<crate::SessionFailure>),
         /// Rejected server resource range.
         Limit(crate::LimitFailure),
@@ -137,7 +152,7 @@ variant! {
         Transport(TransportFailure),
         /// Task admission or cancellation failure.
         Task(TaskFailure),
-        /// Native worker execution failure.
+        /// Worker process/thread or result-channel failure.
         Worker(WorkerFailure),
         /// RPC request or snapshot failure.
         Rpc(Box<crate::RpcFailure>),

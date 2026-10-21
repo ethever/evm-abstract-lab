@@ -13,11 +13,19 @@ pub(crate) mod timing;
 mod value;
 use evm_abstract::{
     Address,
-    analysis::{self, control::Control, progress::Phase},
+    analysis::{
+        self, AnalysisEngine, AnalysisInput, EnginePolicies, control::Control,
+        cooperation::NoExtension, progress::Phase,
+    },
     bytecode::Program,
-    world::{Account, Code, Entry, World},
+    domain::{EvmNumericAlgebra, FiniteSetAlgebra, ProductAlgebra, ValueAlgebra},
+    world::{Code, EvmAccount, EvmEntry, EvmWorld},
 };
 use evm_abstract_protocol as api;
+
+/// Independent application allowance shared by requested native postprocessing.
+/// It matches the CLI policy and remains available after execution stops.
+pub const DEFAULT_POSTPROCESS_WORK: usize = 2_000_000_000;
 
 /// Analyze bytecode without an RPC registry; RPC inputs require `analyze_with_providers`.
 pub fn analyze(request: api::AnalyzeRequest) -> Result<api::AnalysisReport, api::ApiError> {
@@ -70,7 +78,7 @@ fn checkpoint(control: &Control) -> Result<(), api::ApiError> {
 fn config_error(error: analysis::ConfigError) -> api::ApiError {
     errors::configuration(error)
 }
-fn rpc_error(error: analysis::RpcAnalysisError) -> api::ApiError {
+fn rpc_error(error: analysis::RpcAnalysisError<std::convert::Infallible>) -> api::ApiError {
     match error {
         analysis::RpcAnalysisError::Session(error) => errors::session_error(error),
         analysis::RpcAnalysisError::Cancelled(_) => cancelled(),
@@ -86,7 +94,41 @@ fn run(
     checkpoint(control)?;
     control.observer().phase(Phase::Validating);
     let config = input::config(&request.limits)?;
-    let mut environment = input::environment(&request.environment)?;
+    let spec = input::spec(&request.limits)?;
+    // This is the sole numeric-model dispatch. Every downstream input, engine,
+    // RPC snapshot and projection retains the selected algebra's real carrier.
+    match request.limits.numeric_model {
+        api::NumericModel::Product => run_typed(
+            request,
+            config,
+            ValueAlgebra::new(ProductAlgebra::from_spec(spec)),
+            api::NumericModel::Product,
+            control,
+            providers,
+        ),
+        api::NumericModel::FiniteSet => run_typed(
+            request,
+            config,
+            ValueAlgebra::new(FiniteSetAlgebra::from_spec(spec)),
+            api::NumericModel::FiniteSet,
+            control,
+            providers,
+        ),
+    }
+}
+
+fn run_typed<D: EvmNumericAlgebra>(
+    request: api::AnalyzeRequest,
+    config: analysis::ExecutionConfig,
+    algebra: ValueAlgebra<D>,
+    numeric_model: api::NumericModel,
+    control: &Control,
+    providers: &crate::rpc_providers::Registry,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
+    let mut environment = input::environment::<D::Element>(&request.environment)?;
     let fork = input::fork(request.fork);
     let (native, scope) = match &request.input {
         api::AnalysisInput::Bytecode(source) => {
@@ -116,25 +158,24 @@ fn run(
                 environment.to = address.into();
             }
             let address = address.unwrap_or_else(|| Address::repeat_byte(0x11));
-            let mut world = World::offline(fork, "web-bytecode", "explicit browser bytecode");
-            let mut account = Account::unknown();
+            let mut world =
+                EvmWorld::<D::Element>::offline(fork, "web-bytecode", "explicit browser bytecode");
+            let mut account = EvmAccount::unknown();
             account.code = Code::Runtime(program);
             world.insert(address, account).map_err(errors::world)?;
             checkpoint(control)?;
             control.observer().phase(Phase::Analyzing);
-            let native = analysis::analyze_world_with_control(
+            let input = AnalysisInput::new(
                 world,
-                Entry {
+                EvmEntry {
                     address,
                     environment,
                 },
-                config,
-                control,
             )
-            .map_err(|error| match error {
-                analysis::ControlledAnalysisError::Config(error) => config_error(error),
-                analysis::ControlledAnalysisError::Cancelled => cancelled(),
-            })?;
+            .map_err(config_error)?;
+            let native = engine
+                .run(input, config, control)
+                .map_err(errors::execution)?;
             (native, api::AnalysisScope::SingleProgram)
         }
         api::AnalysisInput::Rpc(source) => {
@@ -143,9 +184,10 @@ fn run(
             let endpoint = providers.endpoint(&source.provider_id)?;
             let input = input::rpc(source, endpoint, fork, &request.limits)?;
             checkpoint(control)?;
-            let native = analysis::analyze_rpc_with_control(
+            let native = analysis::analyze_rpc(
+                engine,
                 &input,
-                Entry {
+                EvmEntry {
                     address,
                     environment,
                 },
@@ -157,7 +199,7 @@ fn run(
             (native, api::AnalysisScope::RpcWorld)
         }
     };
-    report::report(&native, &request, scope, control)
+    report::report(&native, &request, scope, &algebra, numeric_model, control)
 }
 
 #[cfg(test)]

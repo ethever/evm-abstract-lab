@@ -7,9 +7,9 @@ use crate::{number, world};
 use alloy_primitives::{Address, B256, U256};
 use clap::Args;
 use evm_abstract::{
-    domain::AbstractValue,
+    domain::{EvmValue, WordElement},
     world::{
-        AddressInput, BlobHashes, ByteArray, EvmEnvironment, GasInput,
+        AddressInput, EvmBlobHashes, EvmByteArray, EvmEnvironmentValues, GasInput,
         environment::EnvironmentError,
     },
 };
@@ -33,7 +33,7 @@ pub(crate) struct EvmArgs {
     pub value: Option<U256>,
     /// Observed calldata bytes; omit for symbolic bytes and length, use 0x for empty.
     #[arg(id = "evm.calldata", long = "evm.calldata", value_parser = calldata)]
-    pub calldata: Option<ByteArray>,
+    pub calldata: Option<CalldataInput>,
     /// Apply STATICCALL write restrictions to the entry and descendants.
     #[arg(id = "evm.static", long = "evm.static")]
     pub is_static: bool,
@@ -78,6 +78,12 @@ pub(crate) struct EvmArgs {
     pub blob_count: Option<U256>,
 }
 
+/// Concrete bytes at Clap's boundary; one flag supplies one complete sequence.
+#[derive(Clone)]
+pub(crate) struct CalldataInput {
+    bytes: Vec<u8>,
+}
+
 #[derive(Clone)]
 pub(crate) struct IndexedHash {
     index: U256,
@@ -104,9 +110,9 @@ fn address(input: &str) -> Result<Address, String> {
     world::address(input, "EVM environment").map_err(|error| error.to_string())
 }
 
-fn calldata(input: &str) -> Result<ByteArray, String> {
+fn calldata(input: &str) -> Result<CalldataInput, String> {
     world::calldata(input)
-        .map(|bytes| ByteArray::exact(&bytes))
+        .map(|bytes| CalldataInput { bytes })
         .map_err(|error| error.to_string())
 }
 
@@ -140,7 +146,9 @@ fn indexed(
 }
 
 impl EvmArgs {
-    pub(crate) fn environment(self) -> Result<EvmEnvironment, EnvironmentInputError> {
+    pub(crate) fn environment<N: WordElement>(
+        self,
+    ) -> Result<EvmEnvironmentValues<N>, EnvironmentInputError> {
         if let Some(count) = self.blob_count
             && let Some(entry) = self.blob_hash.iter().find(|entry| entry.index >= count)
         {
@@ -149,7 +157,7 @@ impl EvmArgs {
                 count,
             });
         }
-        let environment = EvmEnvironment {
+        let environment = EvmEnvironmentValues {
             input_scope: Default::default(),
             to: self.to.map_or_else(AddressInput::unknown_to, Into::into),
             caller: self
@@ -157,7 +165,9 @@ impl EvmArgs {
                 .map_or_else(AddressInput::unknown_caller, Into::into),
             origin: self.origin.map(Into::into),
             value: quantity(self.value),
-            calldata: self.calldata.unwrap_or_else(ByteArray::unknown),
+            calldata: self.calldata.map_or_else(EvmByteArray::unknown, |input| {
+                EvmByteArray::exact(&input.bytes)
+            }),
             is_static: self.is_static,
             gas_price: quantity(self.gas_price),
             coinbase: self
@@ -167,12 +177,12 @@ impl EvmArgs {
             number: quantity(self.number),
             prevrandao: quantity(self.prevrandao),
             gas_limit: quantity(self.gas_limit),
-            chain_id: self.chain_id.map(AbstractValue::constant),
+            chain_id: self.chain_id.map(EvmValue::constant),
             base_fee: quantity(self.basefee),
             blob_base_fee: quantity(self.blob_basefee),
             gas: self.gas.map_or(GasInput::Unknown, GasInput::UpperBound),
             block_hashes: indexed(&self.block_hash, "evm.block-hash")?,
-            blob_hashes: BlobHashes {
+            blob_hashes: EvmBlobHashes {
                 length: quantity(self.blob_count),
                 hashes: indexed(&self.blob_hash, "evm.blob-hash")?,
             },
@@ -182,6 +192,6 @@ impl EvmArgs {
     }
 }
 
-fn quantity(input: Option<U256>) -> AbstractValue {
-    input.map_or_else(AbstractValue::top, AbstractValue::constant)
+fn quantity<N: WordElement>(input: Option<U256>) -> EvmValue<N> {
+    input.map_or_else(EvmValue::top, EvmValue::constant)
 }

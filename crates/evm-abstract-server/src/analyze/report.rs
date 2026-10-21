@@ -1,22 +1,31 @@
 //! Project the complete world machine while preserving native graph namespaces.
+//! The caller retains the actual execution algebra; the model label comes from
+//! application dispatch, while captured numeric limits come from native results.
 mod environment;
 mod summaries;
 mod terminal;
 use super::{checkpoint, mapping, pools::Pools, rpc, ssa, value};
 use evm_abstract::{
     analysis::{self, control::Control, progress::Phase},
-    world::{SnapshotIdentity, Store},
+    domain::{EvmNumericAlgebra, ValueAlgebra, WordElement},
+    resource::WorkBudget,
+    world::{EvmStore, SnapshotIdentity},
 };
 use evm_abstract_protocol as api;
 
-pub(super) fn report(
-    native: &analysis::WorldAnalysis,
+pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    native: &analysis::EvmWorldAnalysis<N>,
     request: &api::AnalyzeRequest,
     scope: api::AnalysisScope,
+    algebra: &ValueAlgebra<D>,
+    numeric_model: api::NumericModel,
     control: &Control,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     checkpoint(control)?;
-    let mut pools = Pools::new(control);
+    // The request's Control.scope covers this ledger and every native output
+    // computation. There is no local execution projection on the server path.
+    let mut postprocessing = WorkBudget::new(super::DEFAULT_POSTPROCESS_WORK);
+    let mut pools = Pools::<N>::new(control);
     pools.symbolic.charge(
         native
             .states()
@@ -28,10 +37,18 @@ pub(super) fn report(
             .saturating_add(native.world().accounts().len()),
     )?;
     control.observer().phase(Phase::BuildingSsa);
-    let ssa = ssa::report(native, control, &mut pools.symbolic)?;
+    let ssa = ssa::report(native, control, &mut postprocessing, &mut pools.symbolic)?;
     checkpoint(control)?;
     control.observer().phase(Phase::Projecting);
-    let initial = Store::new(native.world());
+    let initial =
+        EvmStore::<N>::new_checked(native.world(), algebra.borrowed()).map_err(|error| {
+            if control.cancellation().is_cancelled() {
+                return pools.symbolic.failure(api::ExportFailureKind::Cancelled, 0);
+            }
+            let mut failure = pools.symbolic.failure(api::ExportFailureKind::StateRoot, 0);
+            failure.message = format!("initial store export failed: {error}");
+            failure
+        })?;
     let accounts: Vec<api::AccountState> = native
         .world()
         .accounts()
@@ -174,7 +191,7 @@ pub(super) fn report(
     let abstract_summaries = summaries::project(native, control, &mut pools.symbolic)?;
     let root_terminal_coverage = native
         .root_terminal_coverage()
-        .map(|source| terminal::project(source, &mut pools))
+        .map(|source| terminal::project(source, numeric_model, &mut pools))
         .transpose()?;
     checkpoint(control)?;
     let report = api::AnalysisReport {
@@ -251,6 +268,8 @@ pub(super) fn report(
             environment,
             limits: request.limits.clone(),
             work: native.work() as u64,
+            postprocessing_max_work: super::DEFAULT_POSTPROCESS_WORK as u64,
+            postprocessing_work: postprocessing.used() as u64,
             timings: api::AnalysisTimings::default(),
             export_limits: pools.symbolic.limits,
             export_usage: pools.symbolic.usage,

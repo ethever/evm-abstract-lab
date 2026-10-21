@@ -172,11 +172,11 @@ CALL 返回后的第一个基本块按成功位 0 / 1 分开传播，随后恢�
 | 摘要内部实际执行的已知块 | procedure `covered_blocks`、代码身份 | 过程级覆盖来源，不冒充主图展开轨迹 |
 | 尚未完成 | `frontiers` 与 `closed: false` | 真实预算／状态／效果缺口 |
 
-协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、块覆盖和迭代计数。Web 可在对应节点的 inspector 中查看。native JSON 则保留过程输入和结果 Store；当前两种报告的 schema 版本分别为 native 11、Web protocol 16。
+协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、块覆盖和迭代计数。Web 可在对应节点的 inspector 中查看。native JSON 则保留过程输入和结果 Store；当前两种报告的 schema 版本分别为 native 12、Web protocol 17。
 
 历史上，native 8 将旧 `unknown_summaries` 统一为 `procedure_summaries`，Web protocol 13 新增摘要的 `kind` 和 `root_procedure`；native 9／Web protocol 14 随后移除了原生 SMT 策略与结果字段。消费者应按版本同步迁移。Web 的已知递归节点显示 Recursive bytecode summary，Frame inspector 显示 Recursive bytecode；未知过程继续显示 Abstract environment／Abstract interactions。
 
-当前原生 schema 11 的账户代码采用 `{"Runtime":{"fork":"osaka","byte_len":1,"bytecode":"0x00"}}` 这样的格式；`Runtime` 内仅含 `fork`、`byte_len` 和 `bytecode`。小写、带 `0x` 前缀的 `bytecode` 保留该观测捕获的全部原始字节，包括无效指令、截断 PUSH 数据和不可达尾部；`byte_len` 是原始字节数。消费者使用导出的 fork 调用 `Program::from_hex_with_fork(bytecode, fork)` 重建程序。World、当前 Store、saved_store 与 outcome Store 分别输出各自持有的代码版本，不向当前 World 重新查询历史代码。此前读取账户 `Runtime.blocks` 的消费者须迁移；独立 Program、`FrameState.program` 和单程序 `analysis.program` 仍提供 decoded `blocks`，wire schema 16 的 `programs[].blocks` 也保持原格式。
+当前原生 schema 12 的账户代码采用 `{"Runtime":{"fork":"osaka","byte_len":1,"bytecode":"0x00"}}` 这样的格式；`Runtime` 内仅含 `fork`、`byte_len` 和 `bytecode`。小写、带 `0x` 前缀的 `bytecode` 保留该观测捕获的全部原始字节，包括无效指令、截断 PUSH 数据和不可达尾部；`byte_len` 是原始字节数。消费者使用导出的 fork 调用 `Program::from_hex_with_fork(bytecode, fork)` 重建程序。World、当前 Store、saved_store 与 outcome Store 分别输出各自持有的代码版本，不向当前 World 重新查询历史代码。此前读取账户 `Runtime.blocks` 的消费者须迁移；独立 Program、`EvmFrameState<N>.program` 和单程序 `analysis.program` 仍提供 decoded `blocks`，wire schema 17 的 `programs[].blocks` 也保持原格式。
 
 下面是引入已知递归时留存的 `self-return-42.json` 历史 Chromium 截图，字段与界面按当时版本解读。选中的是有代码哈希、storage owner 和 caller continuation 的 Runtime frame；下方记录当时的闭合过程摘要。这份历史证据不代表当前版本的浏览器验收或 USDC 性能结果。
 

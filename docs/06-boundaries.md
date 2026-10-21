@@ -16,12 +16,12 @@
 
 完成状态还限定于本次输入：省略调用环境参数时，入口 caller、value、calldata 的长度与内容为符号输入；显式提供 `--evm.value 0` 或 `--evm.calldata 0x` 则分别限定为零金额和空输入。后一份结果即使 `Converged`，也不因此覆盖其他 value 或 calldata。离线输入、关闭 RPC 发现或无法完整枚举槽键时，未观察的 storage 可以继续用未知值表示，未知值本身不必产生前沿；默认 RPC 发现则补查 SLOAD 需要的有限槽。
 
-这三个信号不互相替代。默认 `product` 还需区分**常量集合组件为 Top**与**整个数值为 Top**：候选太多不能列完时，位、范围或同余组件可能仍有约束。下面先用 `constants-only` 重现有限集合实验，再观察组合域的局部精度上限。
+这三个信号不互相替代。默认 `product` 还需区分**常量集合组件为 Top**与**整个数值为 Top**：候选太多不能列完时，位、范围或同余组件可能仍有约束。下面先用 `finite-set` 重现有限集合实验，再观察组合域的局部精度上限。
 
 ### 实验 A：精度下降，但分析完成
 
 ```bash
-nix run . -- cfg --file examples/diamond.hex --domain constants-only --context-depth 0 --max-constants 1
+nix run . -- cfg --file examples/diamond.hex --numeric-model finite-set --context-depth 0 --max-constants 1
 ```
 
 输出是 `status=Converged`。汇合点 `pc=0x0e` 的栈为：
@@ -86,7 +86,7 @@ jq '{status, schema_version, calldata: .environment.calldata.length,
 
 两次都退出 0、得到 `Converged`。符号长度保留 `BranchTrue` 和 `BranchFalse`；明确空 calldata 只保留 `BranchTrue`。提高 `--context-depth` 或 `--max-facts` 不会撤销用户给出的空输入约束，也不会自动把一次具体调用扩大成任意调用。
 
-JSON 的分析 `schema_version` 为 11；文本里的 `domain ... domain schema=2` 对应域策略 `domain_spec.schema_version`，两者不是同一个版本字段。单程序 `cfg --format json` 在 `.environment` 记录输入，`ssa --format json` 在 `.analysis.environment` 记录输入。world/RPC 的 `analyze --format json` 在 `.entry.environment` 记录输入，追加 `--ssa` 后则在 `.analysis.entry.environment`。读取环境和帧的具体路径见[第 10 课](10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
+JSON 的分析 `schema_version` 为 12；文本里的 `domain schema=3` 对应域策略 `domain_spec.schema_version`，两者不是同一个版本字段。单程序 `cfg --format json` 在 `.environment` 记录输入，`ssa --format json` 在 `.analysis.environment` 记录输入。world/RPC 的 `analyze --format json` 在 `.entry.environment` 记录输入，追加 `--ssa` 后则在 `.analysis.entry.environment`。读取环境和帧的具体路径见[第 10 课](10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
 
 ## 2. 诊断、程序失败和分析前沿分别看
 
@@ -179,7 +179,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | 部分 | 已建模的内容 | 阅读结果时保留的限制 |
 | --- | --- | --- |
 | 输入事实 | 多账户 JSON，或自动读取 chain ID 并固定区块 hash 的 RPC 采集；默认按需增加具体 callee 和 SLOAD 有限槽事实并从入口重跑，保存身份、来源与指纹 | 离线输入不联网；未知目标、关闭发现后未观察的初始槽和未判定的账户存在性保持未知；非有限槽键保留符号关系，不能自动 RPC 补查；完全信任 RPC 提供者，不请求证明；固定后不回退到移动标签；不支持 EOF 代码格式 |
-| 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；NumericValue 组合有限常量、KnownBits、Interval、Congruence 和非零保证；AbstractValue 独立保存来源、身份和表达式；按 fork 启用 CLZ | 常量集合及事实交换有局部上限；状态级关系受表达式、约束数量与共享工作量限制 |
+| 栈和纯运算 | 栈高上限 1024，U256 算术、补码、布尔与位运算；NumericValue 组合有限常量、KnownBits、Interval、Congruence 和非零保证；EvmValue<N> 独立保存来源、身份和表达式；按 fork 启用 CLZ | 常量集合及事实交换有局部上限；状态级关系受表达式、约束数量与共享工作量限制 |
 | 复制与输入身份 | 基本块内的复制身份支持 `x XOR x=0` 等规则；固定输入符号在同一环境内可跨块保持相等，默认 caller/origin 是同一变量 | 临时复制身份在控制流、调用和摘要边界失效；独立环境的同名符号不能据此认作相等；来源标签或数值摘要相同也不证明相等；有界表达式、历史读取和路径假设可跨块保留，整机 join 使用共享 selector；widening 可放弃保证，同一位置在不同历史根上的读取也不能直接认作相同 |
 | 内存与数据 | 每帧独立 ByteStateId，符号地址和有序写入、captured-source Copy、有限 view、长度与零补 | 数值投影或查询仍可较宽；超 logical footprint 策略保留 MemoryPolicy，构造/具体化失败各有 typed 前沿 |
 | JUMP/JUMPI | 有限目标逐个验证；Top 覆盖真实 JUMPDEST；依据数值条件和关系域的分支可行性查询保留边 | 可能有伪边；有界跳转历史不等于内部函数恢复 |
@@ -207,7 +207,7 @@ SSTORE 0, 7       → 当前 Store 的 slot 0 = 7
 | CREATE/CREATE2 | 有限 nonce、endowment、salt，可表示 initcode 与明确碰撞事实；执行 initcode 后验证、安装 runtime | 不知道创建者逻辑地址、nonce、碰撞状态、代码或 salt 时保留有类型的 `Creation` 前沿；失败及祖先 REVERT 恢复检查点 |
 | SELFDESTRUCT | 支持的 fork 均使用 [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780)：转移余额，同事务创建账户在最外层成功完成时删除 | 事务执行期间代码仍可读/调用；原有账户保留代码/storage；未知受益人或无法判断逻辑地址别名时保留边界 |
 | 预编译 | 按 fork 选择固定的 `revm-precompile` 原生实现；传播有限具体输入的返回/失败；预留工作量 | 输入或长度不能表示时为 `PrecompileInput`，资源不足为 `Work`；不声称精确 gas |
-| 完整调用摘要 | 只复用前置条件完全匹配、已完成的 callee 图与全部输出关系 | 固定世界、代码 hash、完整帧/Store、完整不可变 EVM 环境（含 origin 与符号作用域）、输入关系约束、完整域策略（DomainSpec）和深度策略等都需一致；状态、代码、生命周期或 profile、交换上限变化都会影响匹配；复用时重命名 callee 内部新符号，保留输入绑定；未完成关系不发布 |
+| 完整调用摘要 | 只复用前置条件完全匹配、已完成的 callee 图与全部输出关系 | 固定世界、代码 hash、完整帧/Store、完整不可变 EVM 环境（含 origin 与符号作用域）、输入关系约束、完整域策略（DomainSpec）和深度策略等都需一致；状态、代码、生命周期、数值代数或交换上限变化都会影响匹配；复用时重命名 callee 内部新符号，保留输入绑定；未完成关系不发布 |
 | 工作与资源预算 | 所有账户及 RPC 重跑轮次共用状态分配数、transfer 次数与累计工作量；另有限采集账户/请求数、帧深度和内存预算 | 重跑保留已耗费用，最终图状态数可小于累计分配数；超限留下有类型前沿，`Incomplete`、退出 2；完整跨合约 SSA 拒绝未完成图，部分 SSA 另标覆盖缺口；与局部交换精度上限分别判断 |
 
 组合数值域描述各个值的可能性；别名还需符号地址、状态根、写序和路径关系。“两个值来源于 Storage”不能证明读写同一 slot，逐 byte/slot 候选也不能证明交叉组合可行。当前 roots 已保存同址与条件更新关系，查询仍可能受支持和额度限制，见[第 14 课](14-memory-model.md)。循环 widening 明确放弃部分数值或路径保证，无法覆盖的增长保留 frontier；固定点完成不等于最精确结果。

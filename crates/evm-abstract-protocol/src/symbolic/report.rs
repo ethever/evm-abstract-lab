@@ -250,10 +250,17 @@ impl Validation<'_> {
     }
 }
 impl AnalysisReport {
-    /// Validate the version and every symbolic, program, buffer/store/pending reference.
+    /// Validate the version, postprocessing budget and every symbolic/program/pool reference.
     pub fn validate(&self) -> Result<(), ReportValidationFailure> {
         if self.schema_version != crate::SCHEMA_VERSION {
             return Err(ReportValidationFailure::Schema(self.schema_version));
+        }
+        let max_work = self.metadata.postprocessing_max_work;
+        let work = self.metadata.postprocessing_work;
+        if max_work == 0 || work > max_work {
+            return Err(ReportValidationFailure::Postprocessing(
+                crate::PostprocessingWorkFailure { max_work, work },
+            ));
         }
         Validation {
             report: self,

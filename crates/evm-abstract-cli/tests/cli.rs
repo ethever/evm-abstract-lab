@@ -254,7 +254,7 @@ fn cfg_file_preserves_default_128_and_explicit_context_depths() {
         assert_eq!(helpers.len(), if depth == 0 { 1 } else { 2 });
         for helper in helpers {
             assert_eq!(
-                helper["entry_stack"][0]["Constants"]
+                helper["entry_stack"][0]["numeric"]["constants"]
                     .as_array()
                     .unwrap()
                     .len(),
@@ -400,7 +400,7 @@ fn cfg_file_preserves_default_128_and_explicit_context_depths() {
                     assert!(cfg["edges"].as_array().unwrap().iter().any(|edge| {
                         edge["from"] == previous
                             && edge["to"] == state["id"]
-                            && edge["kind"] == "Jump"
+                            && edge["kind"]["Intraprocedural"] == "Jump"
                     }));
                 }
                 previous = state["id"].as_u64();
@@ -742,7 +742,7 @@ fn shared_budgets_keep_typed_frontiers_and_exit_two() {
                 .any(|frontier| frontier["reason"] == reason)
         );
         if args.contains(&"--max-symbolic-nodes") {
-            assert_eq!(json["config"]["analysis"]["relations"]["max_nodes"], 2);
+            assert_eq!(json["domain_spec"]["relations"]["max_nodes"], 2);
             assert!(
                 json["frontiers"]
                     .as_array()

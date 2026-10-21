@@ -57,7 +57,7 @@ nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 
 ## 数值精度：集合以外还能知道什么
 
-完成[第 02 课](../docs/02-domain.md)的集合手算后，用 `--no-relations` 隔离数值层，再比较 product 与 `--domain constants-only`。这三份输入都从未知 calldata 开始；第一份显式使用 `--max-constants 8` 保留小容量对照：
+完成[第 02 课](../docs/02-domain.md)的集合手算后，用 `--no-relations` 隔离数值层，再比较 product 与 `--numeric-model finite-set`。这三份输入都从未知 calldata 开始；第一份显式使用 `--max-constants 8` 保留小容量对照：
 
 | 文件 | 手算条件 | 默认组合域的分支 | 仅有限集合的分支 |
 | --- | --- | --- | --- |
@@ -67,22 +67,21 @@ nix run . -- explain --file examples/internal-calls.hex --context-depth 1
 
 ```bash
 nix run . -- cfg --file examples/known-bits-branch.hex --no-relations --context-depth 0 --max-constants 8
-nix run . -- cfg --file examples/known-bits-branch.hex --no-relations --context-depth 0 --max-constants 8 --domain constants-only
+nix run . -- cfg --file examples/known-bits-branch.hex --no-relations --context-depth 0 --max-constants 8 --numeric-model finite-set
 nix run . -- explain --file examples/copy-identity.hex --context-depth 0
-nix run . -- cfg --file examples/copy-identity.hex --context-depth 0 --domain constants-only
+nix run . -- cfg --file examples/copy-identity.hex --context-depth 0 --numeric-model finite-set
 nix run . -- cfg --file examples/independent-inputs.hex --context-depth 0
 ```
 
-三份输入都应 `Converged`。原始 calldata 的固定偏移读取具有稳定输入身份，因此第二份在两个 profile 中都能确认 XOR 的两个操作数相同；偏移 0、32 的符号不同，所以第三份仍保留两条分支。固定输入身份与本次基本块内的临时复制身份是两种机制，前者可跨控制流保留，并在 constants-only 中继续使用。这些符号名字只在同一组输入中表示关联，跨报告的同名符号不证明相等。完整实验与事实交换过程见[第 12 课](../docs/12-product-domains-facts.md)，默认输入和独立命名空间见[第 13 课](../docs/13-evm-environment.md)。
+三份输入都应 `Converged`。原始 calldata 的固定偏移读取具有稳定输入身份，因此第二份在两种数值模型中都能确认 XOR 的两个操作数相同；偏移 0、32 的符号不同，所以第三份仍保留两条分支。固定输入身份与本次基本块内的临时复制身份是两种机制，前者可跨控制流保留，并在 finite-set 中继续使用。这些符号名字只在同一组输入中表示关联，跨报告的同名符号不证明相等。完整实验与事实交换过程见[第 12 课](../docs/12-product-domains-facts.md)，默认输入和独立命名空间见[第 13 课](../docs/13-evm-environment.md)。
 
 有限结果的完整枚举可以单独调整容量。下面读取未知 calldata word，再计算 Osaka 的 CLZ：
 
 ```bash
-nix run . -- explain --hex 5f351e00 --no-relations --domain constants-only --max-constants 257
-nix run . -- explain --hex 5f351e00 --no-relations --domain constants-only --max-constants 1000 --max-work 20000000
+nix run . -- explain --hex 5f351e00 --no-relations --numeric-model finite-set --max-constants 257
 ```
 
-CLZ 的完整结果为 `0..=256`，共 257 个候选。第一条命令为 `Converged`，完整保留它们；CLI 默认容量 512 同样能容纳全部候选；显式降至 8 时返回 Top，默认 product 仍可用其他组件保留范围和固定位约束。第二条的容量 1000 不再因配置上限被拒绝，但会在 CLZ 前耗尽本例显式指定的 2000 万共享工作预算：输出 `status=Incomplete` 与 `Work` 前沿，显示 `SSA unavailable`，退出码为 2。`--max-constants` 接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；参数不直接预分配容量，容量足够还须检查执行是否完成。
+CLZ 的完整结果为 `0..=256`，共 257 个候选。这条命令为 `Converged`，完整保留它们；CLI 默认容量 512 同样能容纳全部候选；显式降至 8 时返回 Top，默认 product 仍可用其他组件保留范围和固定位约束。`--max-constants` 接受运行平台能表示的任意正 `usize`，没有额外的 64 上限；参数不直接预分配容量，容量足够还须检查执行是否完成。
 
 ## Storage：先读懂一个账户的单元，再增加调用层级
 
@@ -131,7 +130,7 @@ nix run . -- explain \
   --evm.value 0 --evm.calldata 0x
 ```
 
-A 调用 B，B 的返回数据让 A 选择分支。`explain` 默认显示捕获代码的反汇编、简明 CFG 与栈、每个 `Oᵢ` 的结果概要，最后显示 `Verified cross-contract SSA:`。先在 `Transitions` 中找到 `Call` / `Return`，再看 `Outcomes` 中分别保留的结果；具体地址短引用的完整值在 `Addresses` 中，未知地址直接使用符号名字。SSA 用 `%结果 = 指令 %操作数` 展示值流，`Tᵢ` 标识转移。需要完整环境字段、捕获帧与效果链时加 `--verbose`；需要查询 JSON 字段时改用 `analyze --format json`，再加 `--ssa` 可导出完成图的 SSA。JSON 为 `schema_version=11`，caller 和逻辑 `address_value` 的有类型格式见[第 09 课的代理实验](../docs/09-cross-contract.md#4-代理实验读谁的代码写谁的-storage)。
+A 调用 B，B 的返回数据让 A 选择分支。`explain` 默认显示捕获代码的反汇编、简明 CFG 与栈、每个 `Oᵢ` 的结果概要，最后显示 `Verified cross-contract SSA:`。先在 `Transitions` 中找到 `Call` / `Return`，再看 `Outcomes` 中分别保留的结果；具体地址短引用的完整值在 `Addresses` 中，未知地址直接使用符号名字。SSA 用 `%结果 = 指令 %操作数` 展示值流，`Tᵢ` 标识转移。需要完整环境字段、捕获帧与效果链时加 `--verbose`；需要查询 JSON 字段时改用 `analyze --format json`，再加 `--ssa` 可导出完成图的 SSA。JSON 为 `schema_version=12`，caller 和逻辑 `address_value` 的有类型格式见[第 09 课的代理实验](../docs/09-cross-contract.md#4-代理实验读谁的代码写谁的-storage)。
 
 反汇编中的代码身份由代码地址、hash 和模式区分；状态账户另行保留。代理可以共享实现代码，创建例子可以在同一地址执行 InitCode 与新安装的 Runtime。指令列表与状态入口、出口栈共同描述抽象分析，不能当作逐指令具体步骤记录。表中写的是**具体成功轨迹**；抽象模型还保留 gas 等失败可能，因此实际输出可能包含更大的值集合或其他 outcome。`Incomplete` 时 `explain` 保留反汇编、部分图、每个已知结果及全部诊断与前沿，显示 `SSA unavailable` 并退出 `2`；`--verbose` 保留完整报告分区。
 

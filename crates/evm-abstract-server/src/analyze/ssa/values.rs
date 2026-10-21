@@ -2,8 +2,8 @@
 //! facts. Original evidence, equality and computation dependencies stay distinct.
 
 use evm_abstract::{
-    analysis::{WorldAnalysis, control::Control},
-    domain::AbstractValue,
+    analysis::{EvmWorldAnalysis, control::Control},
+    domain::WordElement,
     ssa,
 };
 use evm_abstract_protocol as api;
@@ -33,9 +33,9 @@ pub(super) fn operation(source: &ssa::NormalizedOperation, name: &str) -> api::S
     }
 }
 
-pub(super) fn report(
-    graph: &WorldAnalysis,
-    ir: &ssa::NormalizedSsa,
+pub(super) fn report<N: WordElement>(
+    graph: &EvmWorldAnalysis<N>,
+    ir: &ssa::NormalizedSsa<N>,
     control: &Control,
     pool: &mut Pool<'_>,
 ) -> Result<Vec<api::SsaValue>, api::ApiError> {
@@ -107,12 +107,17 @@ pub(super) fn report(
         .collect()
 }
 
-fn fact(source: &ssa::ValueFact, pool: &mut Pool<'_>) -> Result<api::SsaValueFacts, api::ApiError> {
+fn fact<N: WordElement>(
+    source: &ssa::ValueFact<N>,
+    pool: &mut Pool<'_>,
+) -> Result<api::SsaValueFacts, api::ApiError> {
     let value = source
         .numeric
         .as_ref()
         .map(|numeric| {
-            let mut info = pool.value(&AbstractValue::from_numeric(numeric.clone()))?;
+            pool.charge(numeric.work_size())?;
+            let mut info = value::observation(&numeric.observation());
+            info.summary = numeric.to_string();
             if let Some(provenance) = &source.provenance {
                 info.origins = provenance
                     .origins()

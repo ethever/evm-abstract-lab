@@ -25,7 +25,7 @@
 
 **理论角度：**word 的数值和它占用的字节位置是两项信息。偏移 1 表示向后移动一个字节，不能把它当成下一个独立 word。新帧的 memory 读零，写入和访问范围又会改变后续观察。
 
-**实现角度：**打开 [`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs)，只追 `memory`、`write_word`、`read_word`、`expand`；先看新 memory 的 Zero 内容根，再看 default 数值事实；两者解释初始读零，lazy Copy 后则不能只靠 default 判断内容。然后用[覆盖一个字节的实验](../14-memory-model.md#在一个已写入的-word-中覆盖一个字节)理解 `write_byte`。
+**实现角度：**打开 [`EvmByteArray<N>`](../../crates/evm-abstract/src/world/bytes.rs)，只追 `memory`、`write_word`、`read_word`、`expand`；先看新 memory 的 Zero 内容根，再看 default 数值事实；两者解释初始读零，lazy Copy 后则不能只靠 default 判断内容。然后用[覆盖一个字节的实验](../14-memory-model.md#在一个已写入的-word-中覆盖一个字节)理解 `write_byte`。
 
 **观察与停点：**第一个实验的 `stack out` 为 `[{0x2a}, {0x20}]`，分别是读取结果与 MSIZE。能解释“值是 42，内存规模是 32 字节”，即可进入 storage；COPY、未知长度和跨帧复制可留到需要时。
 
@@ -39,7 +39,7 @@
 
 **理论角度：**指令按执行顺序改变当前状态。已知唯一 slot 的写入替换旧值，称为强更新；读取 slot 1 不受这次写 slot 0 影响。初始 world 是输入事实，当前 Store 是执行到此处的状态。
 
-**实现角度：**沿 [`Store::new` → `write` → `read`](../../crates/evm-abstract/src/world/store.rs)，找到 `Plane` 的账户根与显式项、账户默认值、全局默认值；结合[三层查找](../16-storage-model.md#当前-store-的三层查找)阅读。再做[未列出 slot 的对照](../16-storage-model.md#没列出的-slot-是零还是未知)：`storage_unknown:false` 是输入的完整性声明。
+**实现角度：**沿 [`EvmStore::new` → `write` → `read`](../../crates/evm-abstract/src/world/store.rs)，找到 `Plane` 的账户根与显式项、账户默认值、全局默认值；结合[三层查找](../16-storage-model.md#当前-store-的三层查找)阅读。再做[未列出 slot 的对照](../16-storage-model.md#没列出的-slot-是零还是未知)：`storage_unknown:false` 是输入的完整性声明。
 
 **观察与停点：**基础实验的栈是 `[42,7]`；完整零默认与未知默认的对照分别是 `[5,0,0]` 和 `[5,⊤,⊤]`。这些离线实验都可以 `Converged`，未知值本身不表示分析未完成。到这里已完成本模块的基础目标。
 
@@ -71,7 +71,7 @@
 
 **理论角度：**地址归属和状态版本要分别确定。DELEGATECALL 可以执行实现账户的代码、写代理账户的 slot；REVERT 恢复调用入口检查点，包含更深调用造成的效果。
 
-**实现角度：**对照 [`FrameState::memory` / `saved_store`](../../crates/evm-abstract/src/analysis/machine/frame.rs) 和 [`calls::finish`](../../crates/evm-abstract/src/analysis/transfer/calls.rs)。用[嵌套回滚实验](../16-storage-model.md#9-revert-恢复的是调用入口检查点不是固定初始快照)的 [`storage-callback-revert.json`](../../examples/storage-callback-revert.json)追踪 `(A[0],B[0])` 从 `(1,4)` 到 `(9,7)` 再回到 `(1,4)` 的成功进入子调用路径。
+**实现角度：**对照 [`EvmFrameState::memory` / `saved_store`](../../crates/evm-abstract/src/analysis/machine/frame.rs) 和 [`calls::finish`](../../crates/evm-abstract/src/analysis/transfer/calls.rs)。用[嵌套回滚实验](../16-storage-model.md#9-revert-恢复的是调用入口检查点不是固定初始快照)的 [`storage-callback-revert.json`](../../examples/storage-callback-revert.json)追踪 `(A[0],B[0])` 从 `(1,4)` 到 `(9,7)` 再回到 `(1,4)` 的成功进入子调用路径。
 
 **观察与停点：**能解释恢复后 A[0] 是 1，而不是初始 5 或回调写入的 9。更完整的调用、返回字节和后端比较交给[调用与状态模块](calls-state.md)；它们不影响前两个基础单元的完成。
 
