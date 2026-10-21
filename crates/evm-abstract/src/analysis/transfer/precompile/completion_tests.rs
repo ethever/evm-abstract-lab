@@ -427,3 +427,71 @@ fn exact_native_relative_root_pays_only_an_actual_saved_store_rollback() {
         }
     }
 }
+
+#[test]
+fn symbolic_native_relative_root_restores_are_paid_only_by_the_common_owner() {
+    let _scope = RECEIPT.scope();
+    let mut invoices = Vec::new();
+    for price in [H, H + 7001, usize::MAX] {
+        let mut world = EvmWorld::new(Fork::Osaka, "symbolic native common restore");
+        world.insert(address(0x303), EvmAccount::empty()).unwrap();
+        let entry = EvmEntry::concrete(address(6), address(0x900), value(0), Bytes::unknown());
+        let config = ExecutionConfig::default();
+        let policy = ValueAlgebra::new(Policy(config.domain().unwrap()));
+        let mut payload = initial(&world, &entry, policy.borrowed()).unwrap();
+        let mut saved = payload.active().saved_store.state().clone();
+        saved.write_balance(
+            address(0x303),
+            EvmValue::from_numeric(Word::expensive(price)),
+        );
+        payload.active_mut().saved_store = crate::world::EvmSnapshot::from_state(saved);
+        let expected = payload.clone();
+        let mut budget = WorkBudget::new(usize::MAX);
+        reset();
+        let execution = super::super::execute_inner(
+            &world,
+            &entry,
+            payload,
+            &config,
+            policy.borrowed(),
+            &RecentDistinctJumps,
+            &mut budget,
+            StorageReadPolicy::Abstract,
+            true,
+        );
+        let receipt = RECEIPT.get();
+        assert_eq!(execution.payload, expected);
+        assert!(execution.successors.is_empty() && execution.completed_calls.is_empty());
+        assert_eq!(execution.outcomes[0].kind, OutcomeKind::Return);
+        assert_eq!(execution.outcomes[0].store, expected.store);
+        if price == usize::MAX {
+            assert_eq!((receipt.bytes, receipt.private_quotes), (0, 1));
+            assert_eq!(execution.outcomes.len(), 1);
+            assert_eq!(execution.frontiers[0].reason, FrontierReason::Work);
+        } else {
+            assert_eq!(receipt.private_quotes, 2);
+            assert_eq!(
+                receipt.bytes,
+                if cfg!(feature = "imbl") { 0 } else { 2 * 4096 }
+            );
+            assert!(execution.frontiers.is_empty());
+            assert_eq!(
+                execution
+                    .outcomes
+                    .iter()
+                    .map(|outcome| outcome.kind)
+                    .collect::<Vec<_>>(),
+                [
+                    OutcomeKind::Return,
+                    OutcomeKind::Revert,
+                    OutcomeKind::Failure
+                ]
+            );
+            for outcome in &execution.outcomes[1..] {
+                assert_eq!(&outcome.store, expected.active().saved_store.state());
+            }
+            invoices.push(budget.used());
+        }
+    }
+    assert_eq!(invoices[1] - invoices[0], 2 * 7001);
+}

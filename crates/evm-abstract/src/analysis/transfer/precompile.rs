@@ -412,21 +412,6 @@ fn finish_native<D: EvmNumericAlgebra>(
         boundary(result, 0, error.into());
         return;
     }
-    // A relative root restores directly in finish_root_store; only child
-    // rollback has a saved-store payer in finish. Checkpoint clones are handles.
-    if context.procedure
-        && result.payload.call_stack.active_child().is_none()
-        && kind != OutcomeKind::Return
-        && let Err(error) = result
-            .payload
-            .active()
-            .saved_store
-            .state()
-            .pay_clone_with(context.budget)
-    {
-        boundary(result, 0, error.into());
-        return;
-    }
     let payload = result.payload.clone();
     finish(result, payload, kind, data, context, 0);
 }

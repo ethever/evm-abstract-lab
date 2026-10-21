@@ -82,15 +82,6 @@ fn reserve_failure<N: WordElement>(
             payload.active().saved_store.state(),
             budget,
         )?);
-    } else if procedure {
-        // Relative root completion restores directly in finish_root_store;
-        // child restore/output copies have their own payers inside finish.
-        payload
-            .active()
-            .saved_store
-            .state()
-            .pay_clone_with(budget)
-            .ok()?;
     }
     let depth = payload.call_stack.depth();
     reserve(budget, depth.saturating_mul(4))?;

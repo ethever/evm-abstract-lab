@@ -21,6 +21,7 @@ use crate::{
 use std::num::NonZeroUsize;
 
 mod clone_invoice;
+mod root_restore;
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
@@ -235,6 +236,15 @@ fn reserved_work(payload: &MachinePayload, procedure: bool) -> usize {
     reserve_failure(payload, procedure, &mut budget).unwrap();
     // The common failure boundary now owns this one input snapshot.
     payload.pay_clone_with(&mut budget).unwrap();
+    if procedure && payload.call_stack.active_child().is_none() {
+        // finish_root_store owns the relative root's actual restoration.
+        payload
+            .active()
+            .saved_store
+            .state()
+            .pay_clone_with(&mut budget)
+            .unwrap();
+    }
     budget.used()
 }
 
