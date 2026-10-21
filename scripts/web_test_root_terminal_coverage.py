@@ -70,6 +70,61 @@ def _zero(value):
     assert int(value["unsigned"]["lower"], 16) == int(value["unsigned"]["upper"], 16) == 0
 
 
+def _empty_data(report, data, expected):
+    # Empty constructors can retain an extra length certificate. Admit only a
+    # typed zero proof; every other scalar, source and byte-array field stays exact.
+    for value in [data["length"], expected["length"], data["default"], expected["default"]]:
+        _zero(value)
+        if value["expression"] is not None:
+            assert _node(report, value["expression"], "Constant") == "0x0", value
+    assert data == {**expected, "length": {**expected["length"],
+                                          "expression": data["length"]["expression"]}}, (data, expected)
+
+
+def _empty_data_controls(report, data, expected):
+    """Exercise proof-layout equivalence and semantic refusals on real tuples."""
+    zero = _node(report, data["symbolic"], "View")["length"]
+    for actual_proof in [None, zero]:
+        for expected_proof in [None, zero]:
+            actual, template = deepcopy(data), deepcopy(expected)
+            actual["length"] = {**actual["length"], "expression": actual_proof}
+            template["length"] = {**template["length"], "expression": expected_proof}
+            _empty_data(report, actual, template)
+    nodes = report["symbolic"]["nodes"]
+    fresh = next({"node": index} for index, node in enumerate(nodes)
+                 if type(node) is dict and set(node) == {"Fresh"})
+    one = {"node": len(nodes)}
+    control = {**report, "symbolic": {**report["symbolic"], "nodes": [*nodes, {"Constant": "0x1"}]}}
+    invalid_fields = [
+        ("length", "constants", ["0x1"]), ("length", "known_one", "0x1"),
+        ("length", "origins", ["Memory"]), ("length", "identity", {"scope": "0"}),
+        ("length", "expression", one), ("length", "expression", fresh),
+        ("length", "expression", {"node": True}),
+        ("default", "constants", ["0x1"]), ("default", "origins", ["Memory"]),
+        ("default", "expression", one), (None, "symbolic", fresh),
+        (None, "cells", [{"offset": "0x0"}]), (None, "memory", True),
+        (None, "unexpected", True),
+    ]
+    for container, field, value in invalid_fields:
+        invalid = deepcopy(data)
+        if container is None:
+            invalid[field] = value
+        else:
+            invalid[container] = {**invalid[container], field: value}
+        try:
+            _empty_data(control, invalid, expected)
+        except AssertionError:
+            continue
+        raise AssertionError(("accepted invalid empty data", container, field, value))
+    invalid_expected = deepcopy(expected)
+    invalid_expected["length"] = {**invalid_expected["length"], "expression": one}
+    try:
+        _empty_data(control, data, invalid_expected)
+    except AssertionError:
+        return {"positive": 4, "negative": len(invalid_fields) + 1}
+    raise AssertionError("accepted a contradictory expected length proof")
+
+
 def _stores(report):
     # These are required on ordinary reports too. Equal base refs remain
     # owner-scoped templates; this check never equates two account values.
@@ -251,6 +306,7 @@ def _tuples(report, binding):
             assert _node(report, view["state"], "BytesExact") == "0x"
             expected = {**calldata, "length": saved["transient_default"],
                         "default": saved["transient_default"], "symbolic": data["symbolic"]}
+            _empty_data(report, data, expected)
         else:
             _top(data["length"])
             assert data["cells"] == []
@@ -262,7 +318,7 @@ def _tuples(report, binding):
                                [view["length"], source["source"]["token"]])
             expected = {**calldata, "length": {**calldata["length"], "expression": view["length"]},
                         "symbolic": data["symbolic"]}
-        assert data == expected, (outcome["kind"], data, expected)
+            assert data == expected, (outcome["kind"], data, expected)
     returned, reverted, failed = [_pool(report, "stores", item["store"]) for item in outcomes]
     # Static uses the same deliberately coarse Return upper bound. Its actual
     # input.static remains true; no identity/feasibility claim is made here.
@@ -324,7 +380,7 @@ def _observed_failures(report, independent=()):
         assert _node(report, view["state"], "BytesExact") == "0x"
         expected = {**calldata, "length": saved["transient_default"],
                     "default": saved["transient_default"], "symbolic": data["symbolic"]}
-        assert data == expected, (data, expected)
+        _empty_data(report, data, expected)
         store = _pool(report, "stores", outcome["store"])
         # Engine's pre-entry Failure clones the whole saved Store. Every other
         # observed Failure must match the complete independently finalized root.
@@ -334,6 +390,7 @@ def _observed_failures(report, independent=()):
             assert _rollback_store(report, binding, store) not in independent
             finalized += 1
     assert pre_entry > 0 and finalized > 0, (pre_entry, finalized)
+    _empty_data_controls(report, data, expected)
 
 
 def _detail(report):
