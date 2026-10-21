@@ -1,8 +1,8 @@
-use crate::domain::ProductAlgebra;
 //! COPY's independent zero proofs must select the body bought by its quote.
 
 use super::*;
 use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::{
     analysis::{EvmContinuation, EvmMachinePayload},
     domain::{
@@ -90,11 +90,9 @@ impl EvmNumericAlgebra for Policy {
         op: u8,
         args: impl ExactSizeIterator<Item = &'a Word>,
     ) -> NumericReduction<Word> {
-        let args: Vec<&Word> = args.collect();
-        let args: Vec<_> = args.iter().map(|arg| arg.0.clone()).collect();
         NumericReduction::stable(Word(
             ProductAlgebra::default()
-                .apply_numeric(op, args.iter())
+                .apply_numeric(op, args.map(|arg| &arg.0))
                 .value,
         ))
     }

@@ -24,7 +24,6 @@ use analysis_kernel::{
 };
 use std::{cell::Cell, convert::Infallible, rc::Rc};
 
-use crate::domain::EvmNumericAlgebra as _;
 struct NoClient;
 impl<Cx> Analyzer<Cx> for NoClient {
     type Task = Subject;
@@ -192,7 +191,8 @@ impl Harness {
         let extension = Extension::with_tasks(NoClient, Tasks(Rc::clone(&tasks)))
             .with_stores(Local(Rc::clone(&locals)))
             .with_shared_stores(Global(Rc::clone(&refuse)));
-        let mut payload = fixtures::payload(ProductAlgebra::default());
+        let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+        let mut payload = fixtures::payload(algebra.borrowed());
         payload.active_mut().stack.push(fixtures::word(1));
         Self {
             cooperation: Cooperation::new(extension),

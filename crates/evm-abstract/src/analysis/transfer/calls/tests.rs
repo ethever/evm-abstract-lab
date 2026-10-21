@@ -216,15 +216,21 @@ fn target_remainder_retains_the_exact_guard_without_a_native_feasibility_query()
     assert_eq!(remainder.call_stack, payload.call_stack);
     assert_eq!(remainder.store, payload.store);
     assert_eq!(
-        remainder
-            .relations
-            .can_equal(&expression, U256::from(0x301), &config_numeric.relations),
+        remainder.relations.can_equal(
+            &expression,
+            U256::from(0x301),
+            &config_numeric.relations,
+            domain
+        ),
         crate::domain::relational::CheckResult::ProvenImpossible
     );
     assert_eq!(
-        remainder
-            .relations
-            .can_equal(&expression, U256::from(0x302), &config_numeric.relations),
+        remainder.relations.can_equal(
+            &expression,
+            U256::from(0x302),
+            &config_numeric.relations,
+            domain
+        ),
         crate::domain::relational::CheckResult::MayBeFeasible
     );
 }

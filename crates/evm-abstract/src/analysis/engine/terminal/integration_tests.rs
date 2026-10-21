@@ -1,29 +1,38 @@
-use crate::domain::ProductAlgebra;
 //! Real engine boundaries keep detailed evidence separate from root coverage.
+use crate::domain::ProductAlgebra;
 
 #[cfg(test)]
 use crate::analysis::testing::{Entry, World};
-use crate::domain::EvmNumericAlgebra as _;
 
 use crate::{
     U256,
     analysis::{
         ExecutionConfig, FrontierReason, InstructionProgress, Limit, OutcomeKind,
-        RootTerminalScope, RootTerminalTrigger, Status, WorldAnalysis, machine::fixtures,
+        RootTerminalScope, RootTerminalTrigger, Status, WorldAnalysis, control::Control,
+        machine::fixtures,
     },
+    resource::WorkBudget,
     ssa,
 };
 
 const TWO_BLOCK_RETURN: &str = "6003565b602a5f5260205ff3";
 
-fn run(world: &World, entry: &Entry, config: ExecutionConfig) -> WorldAnalysis {
-    crate::analysis::testing::execute(
-        world.clone(),
-        entry.clone(),
-        config,
-        crate::domain::DomainSpec::default(),
-    )
-    .unwrap()
+fn run(
+    world: &World,
+    entry: &Entry,
+    config: ExecutionConfig,
+    spec: crate::domain::DomainSpec,
+) -> WorldAnalysis {
+    crate::analysis::testing::execute(world.clone(), entry.clone(), config, spec).unwrap()
+}
+
+fn partial_ssa(analysis: &WorldAnalysis) -> ssa::PartialWorldSsa<crate::domain::NumericValue> {
+    Control::default().scope(|| {
+        let mut postprocessing = WorkBudget::new(2_000_000_000);
+        let partial = ssa::build_partial_world(analysis, &mut postprocessing).unwrap();
+        partial.verify(analysis, &mut postprocessing).unwrap();
+        partial
+    })
 }
 
 fn assert_same_detail(expected: &WorldAnalysis, actual: &WorldAnalysis) {
@@ -65,12 +74,12 @@ fn assert_same_detail(expected: &WorldAnalysis, actual: &WorldAnalysis) {
 fn explicitly_disabled_keeps_existing_detail_and_native_omission() {
     let (world, entry) = fixtures::fixture(&[(0x101, TWO_BLOCK_RETURN)]);
     let mut config = fixtures::config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let config_numeric = crate::analysis::testing::NumericLimits::machine();
     config.analysis.max_transfers = 1;
     config.root_terminal_coverage = false;
-    let ordinary = run(&world, &entry, config.clone());
+    let ordinary = run(&world, &entry, config.clone(), config_numeric.spec());
     config.root_terminal_coverage = false;
-    let explicitly_disabled = run(&world, &entry, config);
+    let explicitly_disabled = run(&world, &entry, config, config_numeric.spec());
     assert_same_detail(&ordinary, &explicitly_disabled);
     assert_eq!(ordinary.work(), explicitly_disabled.work());
     assert_eq!(ordinary.status(), Status::Incomplete);
@@ -91,15 +100,15 @@ fn default_on_keeps_state_and_transfer_caps_separate_from_terminal_coverage() {
         (256, 1, Limit::Transfers, RootTerminalTrigger::Transfers),
     ] {
         let mut config = ExecutionConfig::default();
-        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let config_numeric = crate::analysis::testing::NumericLimits::default();
         assert!(config.root_terminal_coverage);
         assert_eq!(config.max_work, 20_000_000);
         config.analysis.max_states = max_states;
         config.analysis.max_transfers = max_transfers;
         let mut disabled = config.clone();
         disabled.root_terminal_coverage = false;
-        let ordinary = run(&world, &entry, disabled);
-        let covered = run(&world, &entry, config.clone());
+        let ordinary = run(&world, &entry, disabled, config_numeric.spec());
+        let covered = run(&world, &entry, config.clone(), config_numeric.spec());
         assert_same_detail(&ordinary, &covered);
         assert_eq!(covered.status(), Status::Incomplete);
         assert_eq!(covered.transfers(), 1);
@@ -127,8 +136,7 @@ fn default_on_keeps_state_and_transfer_caps_separate_from_terminal_coverage() {
             serde_json::to_value(coverage.input().config()).unwrap(),
             serde_json::to_value(&config).unwrap()
         );
-        let partial = ssa::build_partial_world(&covered).unwrap();
-        partial.verify(&covered).unwrap();
+        let partial = partial_ssa(&covered);
         assert_eq!(partial.status(), Status::Incomplete);
         assert_eq!(partial.frontiers().len(), covered.frontiers().len());
         assert_eq!(partial.blocks().len(), covered.states().len());
@@ -145,14 +153,14 @@ fn actual_state_and_transfer_caps_attach_only_separate_terminal_coverage() {
         (256, 1, Limit::Transfers, RootTerminalTrigger::Transfers),
     ] {
         let mut config = fixtures::config();
-        let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+        let config_numeric = crate::analysis::testing::NumericLimits::machine();
         config.max_work = usize::MAX;
         config.analysis.max_states = max_states;
         config.analysis.max_transfers = max_transfers;
         config.root_terminal_coverage = false;
-        let ordinary = run(&world, &entry, config.clone());
+        let ordinary = run(&world, &entry, config.clone(), config_numeric.spec());
         config.root_terminal_coverage = true;
-        let covered = run(&world, &entry, config);
+        let covered = run(&world, &entry, config, config_numeric.spec());
         assert_same_detail(&ordinary, &covered);
         assert_eq!(covered.status(), Status::Incomplete);
         assert_eq!(covered.transfers(), 1);
@@ -178,8 +186,7 @@ fn actual_state_and_transfer_caps_attach_only_separate_terminal_coverage() {
                 OutcomeKind::Failure
             ]
         );
-        let partial = ssa::build_partial_world(&covered).unwrap();
-        partial.verify(&covered).unwrap();
+        let partial = partial_ssa(&covered);
         assert_eq!(partial.status(), Status::Incomplete);
         assert_eq!(partial.frontiers().len(), covered.frontiers().len());
         assert_eq!(partial.blocks().len(), covered.states().len());
@@ -215,13 +222,13 @@ fn actual_work_refusal_keeps_the_original_pending_mload_and_partial_ssa() {
     // This is the existing partial-SSA prefix, with all cutoffs measured here.
     let (world, entry) = fixtures::fixture(&[(0x101, "602a60405100")]);
     let mut config = fixtures::config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let config_numeric = crate::analysis::testing::NumericLimits::machine();
     config.max_work = usize::MAX;
     config.root_terminal_coverage = false;
-    let complete = run(&world, &entry, config.clone());
+    let complete = run(&world, &entry, config.clone(), config_numeric.spec());
     assert_eq!(complete.status(), Status::Converged);
     config.root_terminal_coverage = true;
-    let prepared_complete = run(&world, &entry, config.clone());
+    let prepared_complete = run(&world, &entry, config.clone(), config_numeric.spec());
     assert_same_detail(&complete, &prepared_complete);
     assert!(prepared_complete.root_terminal_coverage().is_none());
     let preparation = prepared_complete
@@ -235,7 +242,7 @@ fn actual_work_refusal_keeps_the_original_pending_mload_and_partial_ssa() {
     while minimum < maximum {
         let midpoint = minimum + (maximum - minimum) / 2;
         config.max_work = midpoint;
-        let candidate = run(&world, &entry, config.clone());
+        let candidate = run(&world, &entry, config.clone(), config_numeric.spec());
         if candidate
             .states()
             .iter()
@@ -247,10 +254,10 @@ fn actual_work_refusal_keeps_the_original_pending_mload_and_partial_ssa() {
         }
     }
     config.max_work = minimum;
-    let ordinary = run(&world, &entry, config.clone());
+    let ordinary = run(&world, &entry, config.clone(), config_numeric.spec());
     config.root_terminal_coverage = true;
     config.max_work = minimum.checked_add(preparation).unwrap();
-    let covered = run(&world, &entry, config);
+    let covered = run(&world, &entry, config, config_numeric.spec());
     assert_same_detail(&ordinary, &covered);
     assert_eq!(covered.status(), Status::Incomplete);
     assert_eq!(covered.states()[0].executed_pcs, [0, 2, 4]);
@@ -269,8 +276,7 @@ fn actual_work_refusal_keeps_the_original_pending_mload_and_partial_ssa() {
         covered.root_terminal_coverage().unwrap().trigger(),
         &RootTerminalTrigger::Work
     );
-    let partial = ssa::build_partial_world(&covered).unwrap();
-    partial.verify(&covered).unwrap();
+    let partial = partial_ssa(&covered);
     assert_eq!(partial.status(), Status::Incomplete);
     assert_eq!(partial.blocks()[0].instructions.len(), 3);
     assert_eq!(
@@ -285,14 +291,14 @@ fn actual_work_refusal_keeps_the_original_pending_mload_and_partial_ssa() {
 fn exact_return_42_retains_its_strict_detailed_outcomes_without_coverage() {
     let (world, entry) = fixtures::fixture(&[(0x101, "602a5f5260205ff3")]);
     let mut config = fixtures::config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let config_numeric = crate::analysis::testing::NumericLimits::machine();
     config.max_work = usize::MAX;
     config.root_terminal_coverage = false;
-    let ordinary = run(&world, &entry, config.clone());
+    let ordinary = run(&world, &entry, config.clone(), config_numeric.spec());
     config.root_terminal_coverage = true;
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
-    let covered = run(&world, &entry, config);
+    let covered = run(&world, &entry, config, config_numeric.spec());
     assert_same_detail(&ordinary, &covered);
     assert_eq!(covered.status(), Status::Converged);
     assert!(covered.frontiers().is_empty());

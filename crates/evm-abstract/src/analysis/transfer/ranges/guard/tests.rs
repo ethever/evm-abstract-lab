@@ -5,7 +5,7 @@ use super::{
     output_release_work, release_work, value_copy_work,
 };
 #[cfg(test)]
-use crate::analysis::testing::{TestValue, Reduction};
+use crate::analysis::testing::{Reduction, TestValue};
 use crate::domain::ValueAlgebra;
 use crate::{
     U256,
@@ -15,7 +15,8 @@ use crate::{
         transfer::{RetentionCause, boundary, empty_execution, initial},
     },
     domain::{
-        ProductAlgebra, EvmValue, EvmNumericAlgebra, WordElement, FiniteConstantSet, FiniteSetAlgebra, EvmReduction,
+        EvmNumericAlgebra, EvmReduction, EvmValue, FiniteConstantSet, FiniteSetAlgebra,
+        ProductAlgebra, WordElement,
         identity::Symbol,
         provenance::Origin,
         relational::QueryReason,
@@ -42,7 +43,9 @@ fn inputs() -> (TestValue, TestValue) {
 // Independent expansion of the original unbudgeted helper. Keep the complete
 // reductions so a dropped expression cannot hide a numeric/metadata difference.
 fn reference<D: EvmNumericAlgebra>(
-    offset: &EvmValue<D::Element>, size: &EvmValue<D::Element>, domain: crate::domain::AlgebraRef<'_, D>,
+    offset: &EvmValue<D::Element>,
+    size: &EvmValue<D::Element>,
+    domain: crate::domain::AlgebraRef<'_, D>,
 ) -> Vec<(u8, Vec<EvmValue<D::Element>>, EvmReduction<D::Element>)> {
     let mut steps = Vec::new();
     let mut apply = |op, args: &[EvmValue<D::Element>]| {
@@ -80,20 +83,53 @@ fn verify_paid_operations<D: EvmNumericAlgebra>(numeric: D) {
     let algebra = ValueAlgebra::new(numeric);
     let domain = algebra.borrowed();
     let config = ExecutionConfig::default();
-    let offset = EvmValue::<D::Element>::top().with_symbol(Symbol::CallValue, Some(71)).with_identity(81, 1);
-    let size = EvmValue::<D::Element>::top().with_symbol(Symbol::CalldataLength, Some(71)).with_identity(81, 2);
-    let finite = domain.join(&EvmValue::constant(U256::ZERO), &EvmValue::constant(U256::MAX))
+    let offset = EvmValue::<D::Element>::top()
+        .with_symbol(Symbol::CallValue, Some(71))
+        .with_identity(81, 1);
+    let size = EvmValue::<D::Element>::top()
+        .with_symbol(Symbol::CalldataLength, Some(71))
+        .with_identity(81, 2);
+    let finite = domain
+        .join(
+            &EvmValue::constant(U256::ZERO),
+            &EvmValue::constant(U256::MAX),
+        )
         .with_expression(ExprId::input(71, Symbol::Timestamp));
-    for (offset, size) in [(offset, size), (finite.clone(), finite),
-        (EvmValue::constant(U256::ZERO), EvmValue::constant(logical::MAX_END))] {
+    for (offset, size) in [
+        (offset, size),
+        (finite.clone(), finite),
+        (
+            EvmValue::constant(U256::ZERO),
+            EvmValue::constant(logical::MAX_END),
+        ),
+    ] {
         let steps = reference(&offset, &size, domain);
-        assert_eq!(steps.iter().map(|step| step.0).collect::<Vec<_>>(),
-            [opcode::ISZERO, opcode::GT, opcode::ISZERO, opcode::SUB, opcode::GT, opcode::ISZERO, opcode::AND, opcode::OR]);
+        assert_eq!(
+            steps.iter().map(|step| step.0).collect::<Vec<_>>(),
+            [
+                opcode::ISZERO,
+                opcode::GT,
+                opcode::ISZERO,
+                opcode::SUB,
+                opcode::GT,
+                opcode::ISZERO,
+                opcode::AND,
+                opcode::OR
+            ]
+        );
         let mut budget = WorkBudget::new(usize::MAX);
-        let mut builder = Builder { domain, budget: &mut budget, retention: GuardRetention::new(&offset, &size) };
+        let mut builder = Builder {
+            domain,
+            budget: &mut budget,
+            retention: GuardRetention::new(&offset, &size),
+        };
         for (step, (op, args, expected)) in steps.iter().enumerate() {
-            let actual = if matches!(step, 1 | 3 | 4) { builder.copied(*op, [&args[0], &args[1]]) }
-                else { builder.apply(*op, args) }.unwrap();
+            let actual = if matches!(step, 1 | 3 | 4) {
+                builder.copied(*op, [&args[0], &args[1]])
+            } else {
+                builder.apply(*op, args)
+            }
+            .unwrap();
             assert_same_value(&actual, &expected.value);
             assert!(release_work(actual.work_size()) <= output_release_work(domain, *op, args));
         }
@@ -103,16 +139,22 @@ fn verify_paid_operations<D: EvmNumericAlgebra>(numeric: D) {
         assert_same_value(&built.request.size, &size);
         assert_eq!(built.request.limit, EvmValue::constant(logical::MAX_END));
         assert_same_value(&built.condition, &steps[7].2.value);
-        assert_same_value(&built.condition, &super::super::memory_condition(&offset, &size, domain));
+        assert_same_value(
+            &built.condition,
+            &super::super::memory_condition(&offset, &size, domain),
+        );
         assert!(!budget.exhausted());
     }
 }
 #[test]
 fn paid_guard_operations_keep_semantics_for_product_and_finite_carriers() {
     for enabled in [false, true] {
-        let spec = crate::domain::DomainSpec::default().with_relations(crate::domain::relational::RelationLimits {
-            enabled, ..Default::default()
-        });
+        let spec = crate::domain::DomainSpec::default().with_relations(
+            crate::domain::relational::RelationLimits {
+                enabled,
+                ..Default::default()
+            },
+        );
         verify_paid_operations(ProductAlgebra::from_spec(spec));
         verify_paid_operations(FiniteSetAlgebra::from_spec(spec));
     }
@@ -154,9 +196,13 @@ fn caller_copy_fees_cover_native_finite_carrier_and_saturate_before_actions() {
     let mut config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.enabled = false;
-    let domain = crate::domain::ValueAlgebra::new(FiniteSetAlgebra::from_spec(config_numeric.spec()));
+    let domain =
+        crate::domain::ValueAlgebra::new(FiniteSetAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
-    let (left, right) = (EvmValue::<FiniteConstantSet>::constant(U256::ONE), EvmValue::constant(U256::from(2)));
+    let (left, right) = (
+        EvmValue::<FiniteConstantSet>::constant(U256::ONE),
+        EvmValue::constant(U256::from(2)),
+    );
     let mut budget =
         WorkBudget::new(QUOTE_WORK + value_copy_work(&left) + value_copy_work(&right) - 1);
     assert!(domain.operation_work(opcode::GT, &[left.clone(), right.clone()]) > 0);

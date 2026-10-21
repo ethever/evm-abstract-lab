@@ -1,9 +1,9 @@
-use crate::domain::ProductAlgebra;
 //! Optional scalar terms may be forgotten only after their numeric transfer.
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, TestValue};
 use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 
 use crate::analysis::testing::ByteArray;
 use crate::analysis::testing::Entry;
@@ -22,7 +22,16 @@ use crate::{
     },
 };
 
-fn fixture(code: &str, max_nodes: usize, max_depth: usize) -> (World, Entry, ExecutionConfig) {
+fn fixture(
+    code: &str,
+    max_nodes: usize,
+    max_depth: usize,
+) -> (
+    World,
+    Entry,
+    ExecutionConfig,
+    crate::domain::ValueAlgebra<ProductAlgebra>,
+) {
     let owner = Address::repeat_byte(0x11);
     let mut world = World::new(Fork::Osaka, "scalar retention");
     world
@@ -34,15 +43,19 @@ fn fixture(code: &str, max_nodes: usize, max_depth: usize) -> (World, Entry, Exe
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.max_nodes = max_nodes;
     config_numeric.relations.max_depth = max_depth;
-    (world, entry, config)
+    (
+        world,
+        entry,
+        config,
+        crate::analysis::testing::product(config_numeric.spec()),
+    )
 }
 
 #[test]
 fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
     // A following block lets us inspect the result before transaction finalization.
-    let (world, entry, config) = fixture("015b00", 2, 64);
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
-    let domain = domain.borrowed();
+    let (world, entry, config, algebra) = fixture("015b00", 2, 64);
+    let domain = algebra.borrowed();
     let mut input = TestValue::unsigned_range(U256::from(2), U256::from(3))
         .unwrap()
         .with_symbol(Symbol::CallValue, Some(7));
@@ -95,7 +108,7 @@ fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
             .diagnostics
             .contains(&(0, DiagnosticKind::FactExchangeLimited(reduction.status)))
     );
-    assert!(budget.used() >= domain.operation_work(&args));
+    assert!(budget.used() >= domain.operation_work(opcode::ADD, &args));
     assert!(!budget.exhausted());
 
     for concrete in [2, 3] {
@@ -124,9 +137,9 @@ fn scalar_retention_limit_keeps_numeric_facts_and_completes_the_instruction() {
 fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_survive() {
     // First block: a+1, DUP. Second: (a+1)+1, b+1, compare the saved a+1
     // with a copy of b+1, then branch. Only the two deep-input ADDs exceed depth 2.
-    let (world, entry, config) = fixture("600101805b60010191600101808214601357005b00", 1024, 2);
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
-    let domain = domain.borrowed();
+    let (world, entry, config, algebra) =
+        fixture("600101805b60010191600101808214601357005b00", 1024, 2);
+    let domain = algebra.borrowed();
     let deep = || {
         TestValue::top().with_expression(
             ExprId::operation(opcode::NOT, &[ExprId::fresh().unwrap()], Default::default())
@@ -240,9 +253,8 @@ fn forgotten_results_have_independent_leaves_while_copies_and_both_branches_surv
 
 #[test]
 fn inherited_scalar_limit_still_records_a_frontier_and_keeps_its_marker() {
-    let (world, entry, config) = fixture("015b00", 2, 64);
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
-    let domain = domain.borrowed();
+    let (world, entry, config, algebra) = fixture("015b00", 2, 64);
+    let domain = algebra.borrowed();
     let input = TestValue::unsigned_range(U256::from(2), U256::from(3))
         .unwrap()
         .with_symbol(Symbol::CallValue, Some(7))

@@ -1,6 +1,6 @@
-use crate::domain::ProductAlgebra;
 use super::*;
 use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::domain::symbolic::ExprId;
 use revm_bytecode::opcode;
 
@@ -198,7 +198,7 @@ fn relation_boundary_probe_same_numeric_different_alias_inputs() {
         let mut payload = input.clone();
         payload
             .relations
-            .assume_checked(&equality, alias, &config_numeric.relations)
+            .assume_checked(&equality, alias, &config_numeric.relations, domain)
             .unwrap();
         assert!(!payload.relations.is_bottom());
         inputs.push((case, expected, payload));

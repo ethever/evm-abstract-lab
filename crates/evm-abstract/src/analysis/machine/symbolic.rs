@@ -1,8 +1,6 @@
 //! Capture-avoiding traversal includes immutable byte/slot roots and source
 //! tokens. Numeric visit_values is intentionally insufficient for this job.
 
-#[cfg(test)]
-use crate::domain::ValueAlgebra;
 use crate::domain::{AlgebraRef, EvmNumericAlgebra, WordElement};
 
 use super::{EvmFrameState, EvmMachinePayload, MachineError, join::checkpoint};
@@ -75,19 +73,5 @@ impl<N: WordElement> EvmMachinePayload<N> {
         checkpoint()?;
         *self = renamed;
         Ok(())
-    }
-}
-
-// Default regression fixtures retain their scalar-free call syntax.
-// Executable paths carry their run's algebra into `_with`.
-#[cfg(test)]
-impl super::MachinePayload {
-    pub(crate) fn rename_fresh(
-        &mut self,
-        map: &BTreeMap<ExprId, ExprId>,
-        limits: ExprLimits,
-    ) -> Result<(), MachineError> {
-        let numeric = crate::domain::ProductAlgebra::default();
-        self.rename_fresh(map, limits, ValueAlgebra::new(numeric).borrowed())
     }
 }

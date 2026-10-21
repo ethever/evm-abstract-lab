@@ -1,5 +1,6 @@
-use crate::domain::ProductAlgebra;
 //! Common concrete assignments, rather than independent marginal membership.
+
+use crate::domain::ProductAlgebra;
 
 #[cfg(test)]
 use crate::analysis::testing::TestValue;

@@ -1,6 +1,5 @@
 //! Default identity routing moves complete inputs; refusals retain them.
 
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{
         engine::policy::{MachinePartition, PolicyContext, PolicySite, StructuralPartition},

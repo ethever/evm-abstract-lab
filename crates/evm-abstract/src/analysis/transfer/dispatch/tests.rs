@@ -1,8 +1,8 @@
-use crate::domain::ProductAlgebra;
 //! Dispatch witnesses use an independent interval carrier with private facts.
 
 use super::*;
 use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
     analysis::{
@@ -242,7 +242,11 @@ impl EvmNumericAlgebra for Policy {
     ) -> NumericReduction<Opaque> {
         let args: Vec<&Opaque> = args.collect();
         // No calls to the instrumented singleton interface inside this algebra.
-        let words = args.iter().map(Opaque::exact).collect::<Option<Vec<_>>>();
+        let words = args
+            .iter()
+            .copied()
+            .map(Opaque::exact)
+            .collect::<Option<Vec<_>>>();
         let exact = words
             .as_ref()
             .and_then(|words| match (op, words.as_slice()) {

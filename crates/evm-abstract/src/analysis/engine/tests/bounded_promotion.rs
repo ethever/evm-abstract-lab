@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::ByteArray;
-use crate::domain::EvmNumericAlgebra as _;
 
 use super::*;
 use crate::{
@@ -37,7 +36,7 @@ fn with_word(
 }
 
 fn fixture() -> (WorldAnalysis, usize, [MachinePayload; 3]) {
-    let mut config = fixtures::config();
+    let config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.enabled = false;
     config_numeric.relations.max_constraints = 2;
@@ -230,7 +229,7 @@ fn replay_keeps_same_key_resume_partitions_and_reexecutes_incompatible_certifica
     );
     engine.reuse = Some(&mut reuse);
     engine.reset_pending(&[]);
-    let failed = with_word(&first, 9, **engine.domain.numeric_algebra());
+    let failed = with_word(&first, 9, engine.domain);
     let certificate = certificate(vec![
         node(first.clone(), Some(true), 71),
         node(failed.clone(), Some(false), 72),
@@ -353,8 +352,14 @@ fn successor_work_refusal_keeps_old_entry_proof_and_full_incoming_frontier() {
 fn actual_staged_replay_publishes_promotion_and_dependencies_only_after_success() {
     for reject_after_promotion in [false, true] {
         let (mut result, child) = interrupted_fixture();
-        result.config_numeric.relations.enabled = false;
-        result.config_numeric.relations.max_constraints = 2;
+        result.domain_spec =
+            result
+                .domain_spec()
+                .with_relations(crate::domain::relational::RelationLimits {
+                    enabled: false,
+                    max_constraints: 2,
+                    ..result.domain_spec().relations()
+                });
         let domain =
             crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
         let domain = domain.borrowed();
@@ -506,10 +511,9 @@ fn replay_satisfaction_then_growth_retains_live_work_cost_and_stop_coverage() {
     let mut probe = engine.runtime.fork(&mut setup).unwrap();
     let mut quote = WorkBudget::new(usize::MAX);
     let (task, token) = probe.next(false, &mut quote).unwrap().unwrap();
-    let crate::analysis::worklist::runtime::TaskKind::World { node: quoted, .. } = &task.0 else {
+    let crate::analysis::worklist::runtime::TaskKind::World { node: quoted, .. } = task.0 else {
         panic!("world work")
     };
-    let quoted = *quoted;
     probe.finish(token, &mut quote).unwrap();
     let used = engine.budget.used();
     let popped = engine.next_pending().unwrap().unwrap();

@@ -152,23 +152,25 @@ fn native_word(value: &serde_json::Value) -> U256 {
 }
 
 fn assert_native_contains(byte: &serde_json::Value, concrete: U256) {
-    if let Some(constants) = byte["Constants"].as_array() {
+    let numeric = byte.get("numeric").expect("native value requires numeric");
+    assert!(numeric.is_object());
+    if let Some(constants) = numeric.get("constants") {
+        let constants = constants.as_array().unwrap();
         assert!(constants.iter().any(|value| native_word(value) == concrete));
     }
-    assert_eq!(
-        concrete & native_word(&byte["known_bits"]["zero"]),
-        U256::ZERO
-    );
-    let one = native_word(&byte["known_bits"]["one"]);
-    assert_eq!(concrete & one, one);
-    let interval = &byte["interval"];
-    assert!(native_word(&interval["unsigned_lo"]) <= concrete);
-    assert!(concrete <= native_word(&interval["unsigned_hi"]));
-    let biased = concrete ^ (U256::ONE << 255);
-    assert!(native_word(&interval["signed_lo"]) <= biased);
-    assert!(biased <= native_word(&interval["signed_hi"]));
-    let congruence = &byte["congruence"];
-    if congruence != "Top" {
+    if let Some(bits) = numeric.get("known_bits") {
+        assert_eq!(concrete & native_word(&bits["zero"]), U256::ZERO);
+        let one = native_word(&bits["one"]);
+        assert_eq!(concrete & one, one);
+    }
+    if let Some(interval) = numeric.get("interval") {
+        assert!(native_word(&interval["unsigned_lo"]) <= concrete);
+        assert!(concrete <= native_word(&interval["unsigned_hi"]));
+        let biased = concrete ^ (U256::ONE << 255);
+        assert!(native_word(&interval["signed_lo"]) <= biased);
+        assert!(biased <= native_word(&interval["signed_hi"]));
+    }
+    if let Some(congruence) = numeric.get("congruence") {
         if let Some(exact) = congruence.get("Exact") {
             assert_eq!(native_word(exact), concrete);
         } else {
@@ -179,7 +181,12 @@ fn assert_native_contains(byte: &serde_json::Value, concrete: U256) {
             );
         }
     }
-    assert!(!byte["nonzero"].as_bool().unwrap() || concrete != U256::ZERO);
+    assert!(
+        !numeric
+            .get("nonzero")
+            .is_some_and(|nonzero| nonzero.as_bool().unwrap())
+            || concrete != U256::ZERO
+    );
 }
 
 fn assert_witnesses(memory: &ByteArray) {
@@ -213,8 +220,11 @@ fn precise_byte_write_preserves_concrete_witnesses_and_native_serialized_facts()
     memory.write_word(&offset, &value, domain).unwrap();
     let json = serde_json::to_value(&memory).unwrap();
     assert_witnesses(&memory);
-    assert_eq!(json["bytes"]["30"]["Constants"], serde_json::json!(["0x1"]));
-    assert_eq!(json["bytes"]["30"]["congruence"]["Exact"], "0x1");
+    assert_eq!(
+        json["bytes"]["30"]["numeric"]["constants"],
+        serde_json::json!(["0x1"])
+    );
+    assert_eq!(json["bytes"]["30"]["numeric"]["congruence"]["Exact"], "0x1");
     assert_eq!(algebra.numeric_algebra().applies.get(), 32);
     let stored = memory
         .stored_bytes()
@@ -364,8 +374,9 @@ fn uniform_certificate_uses_the_injected_full_fee_or_honestly_refuses() {
     let args = [EvmValue::constant(U256::ZERO), value];
     let config = ExecutionConfig::default();
     let program = Program::from_hex_with_fork("525b00", Fork::Osaka).unwrap();
+    let default = ValueAlgebra::new(ProductAlgebra::default());
     let default_fee = ByteArray::memory()
-        .uniform_word_write_work(&args[0], &args[1], ProductAlgebra::default())
+        .uniform_word_write_work(&args[0], &args[1], default.borrowed())
         .unwrap();
     for surcharge in [None, Some(usize::MAX), Some(100_000)] {
         let policy = BytePolicy::<false> {

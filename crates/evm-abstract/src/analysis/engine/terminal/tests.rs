@@ -1,9 +1,8 @@
-use crate::domain::ProductAlgebra;
 //! Private authority/admission probes; no fallback machine state is fabricated.
+use crate::domain::{DomainSpec, ProductAlgebra};
 
 #[cfg(test)]
-use crate::analysis::testing::{Account, TestValue};
-use crate::domain::EvmNumericAlgebra as _;
+use crate::analysis::testing::{Account, TestValue, product};
 
 use super::*;
 use crate::{
@@ -63,13 +62,14 @@ fn ready(
     config: &ExecutionConfig,
     facts: &layers::StateFacts,
     budget: &mut WorkBudget,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
 ) -> Result<ReadyRoot, PrepareError> {
     prepare(
         original,
         world,
         entry,
         config,
-        ProductAlgebra::from_spec(config_numeric.spec()),
+        domain,
         Some((facts.snapshot(), facts.revision())),
         budget,
     )
@@ -121,9 +121,9 @@ impl JointInput {
 
 #[test]
 fn capture_owns_the_actual_lifted_root_and_joint_return_effects() {
+    let algebra = product(DomainSpec::default());
+    let domain = algebra.borrowed();
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
-    let domain = domain.borrowed();
     let original =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let unchanged = original.clone();
@@ -135,7 +135,16 @@ fn capture_owns_the_actual_lifted_root_and_joint_return_effects() {
     assert!(exact.expression().is_none());
     assert!(!JointInput::default().storage(&original.store, address(3), 0, domain));
     let mut budget = WorkBudget::new(usize::MAX);
-    let prepared = ready(&original, &world, &entry, &config, &facts, &mut budget).unwrap();
+    let prepared = ready(
+        &original,
+        &world,
+        &entry,
+        &config,
+        &facts,
+        &mut budget,
+        domain,
+    )
+    .unwrap();
     let used = budget.used();
     let coverage = prepared.publish(RootTerminalTrigger::States).unwrap();
     assert_eq!(budget.used(), used);
@@ -189,12 +198,11 @@ fn capture_owns_the_actual_lifted_root_and_joint_return_effects() {
 
 #[test]
 fn original_rollback_future_three_touch_and_static_data_share_one_input() {
+    let algebra = product(DomainSpec::default());
+    let domain = algebra.borrowed();
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         for is_static in [false, true] {
             let (world, entry, config, facts) = fixture(fork, is_static);
-            let domain =
-                crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
-            let domain = domain.borrowed();
             let original =
                 crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain)
                     .unwrap();
@@ -205,6 +213,7 @@ fn original_rollback_future_three_touch_and_static_data_share_one_input() {
                 &config,
                 &facts,
                 &mut WorkBudget::new(usize::MAX),
+                domain,
             )
             .unwrap()
             .publish(RootTerminalTrigger::Transfers)
@@ -269,11 +278,10 @@ fn original_rollback_future_three_touch_and_static_data_share_one_input() {
 
 #[test]
 fn static_return_covers_unlisted_owner_cleanup_under_one_input_valuation() {
+    let algebra = product(DomainSpec::default());
+    let domain = algebra.borrowed();
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         let (world, entry, config, facts) = fixture(fork, true);
-        let domain =
-            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
-        let domain = domain.borrowed();
         let c = address(0x999);
         let d = address(0x998);
         assert!(!world.accounts().contains_key(&c));
@@ -288,6 +296,7 @@ fn static_return_covers_unlisted_owner_cleanup_under_one_input_valuation() {
             &config,
             &facts,
             &mut WorkBudget::new(usize::MAX),
+            domain,
         )
         .unwrap()
         .publish(RootTerminalTrigger::States)
@@ -364,9 +373,9 @@ fn static_return_covers_unlisted_owner_cleanup_under_one_input_valuation() {
 
 #[test]
 fn only_genuine_entry_shapes_and_real_identity_can_be_captured() {
+    let algebra = product(DomainSpec::default());
+    let domain = algebra.borrowed();
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
-    let domain = domain.borrowed();
     let original =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut budget = WorkBudget::new(usize::MAX);
@@ -386,7 +395,15 @@ fn only_genuine_entry_shapes_and_real_identity_can_be_captured() {
     let mut stacked = original.clone();
     stacked.active_mut().stack.push(word(1));
     assert!(matches!(
-        ready(&stacked, &world, &entry, &config, &facts, &mut budget),
+        ready(
+            &stacked,
+            &world,
+            &entry,
+            &config,
+            &facts,
+            &mut budget,
+            domain
+        ),
         Err(PrepareError::Unsupported(UnsupportedRoot::NotEntry))
     ));
     let mut child = original.clone();
@@ -400,21 +417,29 @@ fn only_genuine_entry_shapes_and_real_identity_can_be_captured() {
         },
     });
     assert!(matches!(
-        ready(&child, &world, &entry, &config, &facts, &mut budget),
+        ready(&child, &world, &entry, &config, &facts, &mut budget, domain),
         Err(PrepareError::Unsupported(UnsupportedRoot::ActiveChild))
     ));
     for mode in [FrameCode::InitCode, FrameCode::Unknown] {
         let mut unsupported = original.clone();
         unsupported.active_mut().code = mode;
         assert!(matches!(
-            ready(&unsupported, &world, &entry, &config, &facts, &mut budget),
+            ready(
+                &unsupported,
+                &world,
+                &entry,
+                &config,
+                &facts,
+                &mut budget,
+                domain
+            ),
             Err(PrepareError::Unsupported(UnsupportedRoot::NotRuntime))
         ));
     }
     let mut view = original.clone();
     view.active_mut().calldata = ByteArray::memory();
     assert!(matches!(
-        ready(&view, &world, &entry, &config, &facts, &mut budget),
+        ready(&view, &world, &entry, &config, &facts, &mut budget, domain),
         Err(PrepareError::Unsupported(UnsupportedRoot::InputByteView))
     ));
     assert!(!budget.exhausted());
@@ -422,27 +447,33 @@ fn only_genuine_entry_shapes_and_real_identity_can_be_captured() {
 
 #[test]
 fn exact_total_fee_admits_and_fee_minus_one_declines_without_sticky_work() {
+    let algebra = product(DomainSpec::default());
+    let domain = algebra.borrowed();
     for is_static in [false, true] {
         let (world, entry, config, facts) = fixture(Fork::Osaka, is_static);
-        let original = crate::analysis::transfer::procedure::testing::initial(
-            &world,
-            &entry,
-            ProductAlgebra::from_spec(config_numeric.spec()),
+        let original =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
+        let mut full = WorkBudget::new(usize::MAX);
+        let prepared = ready(
+            &original, &world, &entry, &config, &facts, &mut full, domain,
         )
         .unwrap();
-        let mut full = WorkBudget::new(usize::MAX);
-        let prepared = ready(&original, &world, &entry, &config, &facts, &mut full).unwrap();
         let fee = full.used();
         drop(prepared);
         assert_eq!(full.used(), fee);
         let mut exact = WorkBudget::new(fee + 17);
         assert!(exact.charge(17));
-        ready(&original, &world, &entry, &config, &facts, &mut exact).unwrap();
+        ready(
+            &original, &world, &entry, &config, &facts, &mut exact, domain,
+        )
+        .unwrap();
         assert_eq!(exact.used(), fee + 17);
         for maximum in [0, 1, fee / 2, fee - 1] {
             let mut short = WorkBudget::new(maximum);
             assert!(matches!(
-                ready(&original, &world, &entry, &config, &facts, &mut short),
+                ready(
+                    &original, &world, &entry, &config, &facts, &mut short, domain
+                ),
                 Err(PrepareError::Admission(AdmissionStop::Insufficient))
             ));
             assert!(
@@ -461,7 +492,15 @@ fn exact_total_fee_admits_and_fee_minus_one_declines_without_sticky_work() {
         assert!(sticky.charge(0));
         let used = sticky.used();
         assert!(matches!(
-            ready(&original, &world, &entry, &config, &facts, &mut sticky),
+            ready(
+                &original,
+                &world,
+                &entry,
+                &config,
+                &facts,
+                &mut sticky,
+                domain
+            ),
             Err(PrepareError::Admission(AdmissionStop::AlreadyExhausted))
         ));
         assert_eq!(sticky.used(), used);
@@ -478,19 +517,25 @@ fn exact_total_fee_admits_and_fee_minus_one_declines_without_sticky_work() {
 
 #[test]
 fn prepaid_publish_survives_real_work_exhaustion_but_checks_payer_cancellation() {
+    let algebra = product(DomainSpec::default());
+    let domain = algebra.borrowed();
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
-    let original = crate::analysis::transfer::procedure::testing::initial(
-        &world,
-        &entry,
-        ProductAlgebra::from_spec(config_numeric.spec()),
-    )
-    .unwrap();
+    let original =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let payer = Cancellation::new();
     let unrelated = Cancellation::new();
     unrelated.cancel();
     let mut budget = analysis_control::with_cancellation(&payer, || WorkBudget::new(usize::MAX));
     let prepared = analysis_control::with_cancellation(&unrelated, || {
-        ready(&original, &world, &entry, &config, &facts, &mut budget)
+        ready(
+            &original,
+            &world,
+            &entry,
+            &config,
+            &facts,
+            &mut budget,
+            domain,
+        )
     })
     .unwrap();
     let input = std::ptr::from_ref(prepared.anchor.input.as_ref());
@@ -508,22 +553,39 @@ fn prepaid_publish_survives_real_work_exhaustion_but_checks_payer_cancellation()
     assert!(budget.exhausted());
 
     let mut budget = analysis_control::with_cancellation(&payer, || WorkBudget::new(usize::MAX));
-    let prepared = ready(&original, &world, &entry, &config, &facts, &mut budget).unwrap();
+    let prepared = ready(
+        &original,
+        &world,
+        &entry,
+        &config,
+        &facts,
+        &mut budget,
+        domain,
+    )
+    .unwrap();
     let used = budget.used();
     payer.cancel();
     assert!(prepared.publish(RootTerminalTrigger::Work).is_none());
     assert_eq!(budget.used(), used);
     assert!(matches!(
-        ready(&original, &world, &entry, &config, &facts, &mut budget),
+        ready(
+            &original,
+            &world,
+            &entry,
+            &config,
+            &facts,
+            &mut budget,
+            domain
+        ),
         Err(PrepareError::Admission(AdmissionStop::Cancelled))
     ));
 }
 
 #[test]
 fn checked_bytes_can_decline_after_paid_construction_without_mutating_input() {
+    let algebra = product(DomainSpec::default());
+    let domain = algebra.borrowed();
     let (world, entry, config, facts) = fixture(Fork::Osaka, false);
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
-    let domain = domain.borrowed();
     let original =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let unchanged = original.clone();
@@ -562,21 +624,28 @@ fn checked_bytes_can_decline_after_paid_construction_without_mutating_input() {
 
 #[test]
 fn raw_code_and_offline_label_growth_are_linear_fee_terms() {
+    let algebra = product(DomainSpec::default());
+    let domain = algebra.borrowed();
     let mut fees = Vec::new();
     for bytes in [1usize, 1025] {
         // World observations are immutable. Construct the intended code once
         // while retaining exactly the same balance, nonce and storage facts.
         let (world, entry, config, _) = fixture_with_code(Fork::Osaka, false, &"00".repeat(bytes));
-        let original = crate::analysis::transfer::procedure::testing::initial(
-            &world,
-            &entry,
-            ProductAlgebra::from_spec(config_numeric.spec()),
-        )
-        .unwrap();
+        let original =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         for label_len in [8usize, 8192] {
             let facts = layers::StateFacts::new(layers::SnapshotId::offline("x".repeat(label_len)));
             let mut budget = WorkBudget::new(usize::MAX);
-            ready(&original, &world, &entry, &config, &facts, &mut budget).unwrap();
+            ready(
+                &original,
+                &world,
+                &entry,
+                &config,
+                &facts,
+                &mut budget,
+                domain,
+            )
+            .unwrap();
             fees.push(budget.used());
         }
     }
@@ -591,11 +660,10 @@ fn raw_code_and_offline_label_growth_are_linear_fee_terms() {
 
 #[test]
 fn no_delete_finalizer_guard_funds_actual_owner_local_receipts() {
+    let algebra = product(DomainSpec::default());
+    let domain = algebra.borrowed();
     for count in [1u64, 8] {
-        let (mut world, entry, config, _) = fixture(Fork::Osaka, true);
-        let domain =
-            crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
-        let domain = domain.borrowed();
+        let (mut world, entry, _, _) = fixture(Fork::Osaka, true);
         for number in 0..count {
             let mut account = Account::unknown();
             account.balance = domain.join(&word(0), &word(7));
@@ -649,16 +717,25 @@ fn no_delete_finalizer_guard_funds_actual_owner_local_receipts() {
 
 #[test]
 fn ordinary_small_root_preparation_fits_the_default_work_budget() {
+    let algebra = product(DomainSpec::default());
+    let domain = algebra.borrowed();
     for is_static in [false, true] {
         let (world, entry, config, facts) = fixture(Fork::Osaka, is_static);
-        let original = crate::analysis::transfer::procedure::testing::initial(
-            &world,
-            &entry,
-            ProductAlgebra::from_spec(config_numeric.spec()),
-        )
-        .unwrap();
+        let original =
+            crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
         let mut budget = WorkBudget::new(config.max_work);
-        assert!(ready(&original, &world, &entry, &config, &facts, &mut budget).is_ok());
+        assert!(
+            ready(
+                &original,
+                &world,
+                &entry,
+                &config,
+                &facts,
+                &mut budget,
+                domain
+            )
+            .is_ok()
+        );
         assert!(!budget.exhausted());
         assert!(budget.used() < config.max_work);
     }

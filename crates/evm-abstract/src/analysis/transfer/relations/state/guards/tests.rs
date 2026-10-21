@@ -7,6 +7,7 @@ use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ValueAlgebra;
 use crate::{
     Fork,
+    analysis::testing::AbstractLog,
     analysis::{
         ExecutionConfig, FrontierReason, MachinePayload,
         machine::{ChildFrame, Continuation},
@@ -14,8 +15,7 @@ use crate::{
     },
     domain::{ProductAlgebra, relational::CheckResult, symbolic::ExprId},
     resource::WorkBudget,
-    analysis::testing::AbstractLog,
-world::{ LogKey, LogSourceKind},
+    world::{LogKey, LogSourceKind},
 };
 use alloy_primitives::{Address, B256, U256};
 
@@ -62,7 +62,7 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
     payload.active_mut().saved_store = Snapshot::from_state(guarded);
     payload
         .relations
-        .assume(&guard, true, &config_numeric.relations);
+        .assume(&guard, true, &config_numeric.relations, domain);
     let relations = payload.relations.clone();
     let mut budget = WorkBudget::new(10_000_000);
     let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
@@ -170,13 +170,13 @@ fn guard_config() -> ExecutionConfig {
 fn v(value: u64) -> TestValue {
     TestValue::constant(U256::from(value))
 }
-fn bytes(condition: &ExprId) -> ByteArray {
+fn bytes(condition: &ExprId, domain: crate::domain::AlgebraRef<'_, ProductAlgebra>) -> ByteArray {
     ByteArray::exact(&[1])
         .join_guarded(
             &ByteArray::exact(&[3]),
-            ProductAlgebra::default(),
+            domain,
             condition.clone(),
-            guard_config().analysis.relations.expressions(),
+            domain.spec().relations().expressions(),
         )
         .unwrap()
 }
@@ -193,7 +193,7 @@ impl Fixture {
     fn new(case: DirectCase) -> Self {
         let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
         let domain = domain.borrowed();
-        let limits = guard_config().analysis.relations.expressions();
+        let limits = domain.spec().relations().expressions();
         let owners = [Address::repeat_byte(0x11), Address::repeat_byte(0x22)];
         let mut world = World::offline(Fork::Osaka, "joint guards", "frozen initial cells");
         world.insert(owners[0], Account::empty()).unwrap();
@@ -237,7 +237,7 @@ impl Fixture {
                         v(1).join_guarded(&v(3), domain, guards[4].clone(), limits)
                             .unwrap(),
                     ],
-                    data: bytes(&guards[2]),
+                    data: bytes(&guards[2], domain),
                 },
                 domain,
             )
@@ -250,14 +250,14 @@ impl Fixture {
             .join_guarded(&initial, domain, guards[3].clone(), limits)
             .unwrap();
         let frame = before.active_mut();
-        frame.memory = bytes(&guards[4]);
-        frame.calldata = bytes(&guards[0]);
-        frame.returndata = bytes(&guards[2]);
+        frame.memory = bytes(&guards[4], domain);
+        frame.calldata = bytes(&guards[0], domain);
+        frame.returndata = bytes(&guards[2], domain);
         frame.saved_store = Snapshot::from_state(saved);
         let mut child = frame.clone();
         child.key.address = owners[1];
-        child.memory = bytes(&guards[5]);
-        child.calldata = bytes(&guards[1]);
+        child.memory = bytes(&guards[5], domain);
+        child.calldata = bytes(&guards[1], domain);
         before.call_stack.push_child(ChildFrame {
             state: child,
             continuation: Continuation {
@@ -277,7 +277,7 @@ impl Fixture {
                 assert_eq!(
                     before
                         .relations
-                        .assume(guard, truth, &guard_config().analysis.relations),
+                        .assume(guard, truth, &domain.spec().relations(), domain),
                     CheckResult::MayBeFeasible
                 );
             }

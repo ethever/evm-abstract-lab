@@ -1,5 +1,3 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::*;
 #[cfg(test)]
 use crate::analysis::testing::{Account, ByteArray, Entry, World};
@@ -319,14 +317,12 @@ fn touched_ripemd_inputs_fall_back_to_fresh_failure_and_normal_execution() {
 
 #[test]
 fn budget_and_current_cancellation_refuse_reuse_without_partial_effects() {
+    let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = algebra.borrowed();
     let (world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
-    let input = crate::analysis::transfer::procedure::testing::initial(
-        &world,
-        &entry,
-        ProductAlgebra::default(),
-    )
-    .unwrap();
+    let input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let before = input.clone();
     let mut reuse = ExecutionReuse::new(catalog, 4, config.max_work, config.max_memory_bytes);
     let mut preparation = WorkBudget::new(config.max_work);
@@ -335,7 +331,7 @@ fn budget_and_current_cancellation_refuse_reuse_without_partial_effects() {
         &entry,
         input.clone(),
         &config,
-        ProductAlgebra::default(),
+        domain,
         &mut preparation,
         transfer::StorageReadPolicy::Abstract,
     );
@@ -432,9 +428,12 @@ fn ineligible_inputs_pay_only_metadata_before_lookup_or_remember() {
             initcode.active_mut().key.mode = FrameCode::InitCode;
             candidates.push(initcode);
             let mut related = input.clone();
-            related
-                .relations
-                .assume(&ExprId::fresh().unwrap(), true, &domain.spec().relations());
+            related.relations.assume(
+                &ExprId::fresh().unwrap(),
+                true,
+                &domain.spec().relations(),
+                domain,
+            );
             assert!(!related.relations.is_empty());
             candidates.push(related);
             let mut absent = input.clone();
@@ -642,21 +641,19 @@ fn eligible_paths_keep_full_signature_program_stack_and_policy_guards() {
 
 #[test]
 fn optional_retention_cap_refuses_entry_without_changing_execution() {
+    let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
+    let domain = algebra.borrowed();
     let (world, entry, catalog) = fixture(None);
     let config = ExecutionConfig::default();
-    let input = crate::analysis::transfer::procedure::testing::initial(
-        &world,
-        &entry,
-        ProductAlgebra::default(),
-    )
-    .unwrap();
+    let input =
+        crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let mut ledger = WorkBudget::new(config.max_work);
     let execution = crate::analysis::transfer::procedure::testing::execute(
         &world,
         &entry,
         input.clone(),
         &config,
-        ProductAlgebra::default(),
+        domain,
         &mut ledger,
         transfer::StorageReadPolicy::Abstract,
     );

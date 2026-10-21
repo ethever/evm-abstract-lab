@@ -1,8 +1,7 @@
-use crate::domain::ProductAlgebra;
 //! A covered arrival may still establish a new acceleration obligation.
+use crate::domain::ProductAlgebra;
 
 use super::{Counters, engine, fixtures};
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{FrontierReason, MachineEdgeKind, engine::Successor, worklist::kernel_failure},
     domain::ValueAlgebra,

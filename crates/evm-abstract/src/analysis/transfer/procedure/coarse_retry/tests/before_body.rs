@@ -1,5 +1,6 @@
-use crate::domain::ProductAlgebra;
 //! Real summary Input binding failures, before any instruction can execute.
+
+use crate::domain::ProductAlgebra;
 
 #[cfg(test)]
 use crate::analysis::testing::{ByteArray, ByteArraySummary};
@@ -52,6 +53,7 @@ fn harness(code: &str, cap: usize, coordinates: usize, values: &[u8]) -> Harness
         entry,
         budget: WorkBudget::new(config.max_work),
         config,
+        config_numeric,
         table: Table::default(),
         counters: Counters::default(),
     };
@@ -62,7 +64,11 @@ fn harness(code: &str, cap: usize, coordinates: usize, values: &[u8]) -> Harness
 }
 
 fn raw_failure(h: &Harness) -> MachineError {
-    let error = instantiate(&h.table.nodes[0].payload, crate::analysis::testing::product(h.config_numeric.spec()).borrowed()).unwrap_err();
+    let error = instantiate(
+        &h.table.nodes[0].payload,
+        crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+    )
+    .unwrap_err();
     let MachineError::Bytes(RangeError::State(StateError::Limit { nodes, depth })) = &error else {
         panic!("must fail at the raw Input binding constructor: {error:?}")
     };
@@ -96,7 +102,7 @@ fn real_input_binding_limits_promote_before_body_at_small_library_and_screen13_c
         let error = raw_failure(&h);
         assert!(retention_refusal(&error));
         let domain = crate::analysis::testing::product(h.config_numeric.spec());
-let domain = domain.borrowed();
+        let domain = domain.borrowed();
         // Every individual coordinate fits the same cap. Only their complete
         // Input carrier refuses; the selected policy itself remains unchanged.
         input_summary(domain, 1, &values)
@@ -149,7 +155,7 @@ let domain = domain.borrowed();
 fn prebody_promotion_keeps_the_whole_original_gamma_and_captured_context() {
     let mut h = harness("525b00", 256, 32, &[0, 1, 3]);
     let domain = crate::analysis::testing::product(h.config_numeric.spec());
-let domain = domain.borrowed();
+    let domain = domain.borrowed();
     let owner = address(0x101);
     let mut store =
         crate::analysis::transfer::procedure::testing::initial(&h.world, &h.entry, domain)
@@ -308,7 +314,7 @@ fn before_body_failed_preparation_or_transfer_keeps_first_frontier_and_metadata(
         h.config_numeric.relations.max_nodes = cap;
         let original = h.table.nodes[0].payload.clone();
         let domain = crate::analysis::testing::product(h.config_numeric.spec());
-let domain = domain.borrowed();
+        let domain = domain.borrowed();
         let error = instantiate(&original, domain).unwrap_err();
         let reason = error.clone().frontier_reason();
         let spent = h.budget.used();
@@ -566,7 +572,7 @@ fn prebody_coarse_mode_and_frozen_layout_survive_fresh_incoming_ids() {
         _ => panic!("must have promoted before the body"),
     };
     let domain = crate::analysis::testing::product(h.config_numeric.spec());
-let domain = domain.borrowed();
+    let domain = domain.borrowed();
     let mut grown = None;
     for _ in 0..3 {
         let mut incoming = original.clone();

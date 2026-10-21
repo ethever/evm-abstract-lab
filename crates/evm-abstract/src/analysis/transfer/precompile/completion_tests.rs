@@ -1,5 +1,6 @@
-use crate::domain::ProductAlgebra;
 //! Native CALL completion pays for each owned input, independently of retention.
+
+use crate::domain::ProductAlgebra;
 
 use super::*;
 use crate::domain::EvmNumericAlgebra as _;

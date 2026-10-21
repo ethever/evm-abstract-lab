@@ -1,5 +1,6 @@
-use crate::domain::ProductAlgebra;
 //! Real admission and interruption preserve FIFO, status partitions and bounds.
+
+use crate::domain::ProductAlgebra;
 
 use super::*;
 use crate::domain::EvmNumericAlgebra as _;
@@ -17,7 +18,7 @@ fn duplicate_and_growing_inputs_park_each_resume_partition_with_its_current_boun
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     payload.active_mut().stack = vec![word(7), word(1)];
     payload.normalize();
-    let mut table = Table::default();
+    let mut table = Table::with_algebra(crate::analysis::testing::product(config_numeric.spec()));
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
     let (root, success, failure);

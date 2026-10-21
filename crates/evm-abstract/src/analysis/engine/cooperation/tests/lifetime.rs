@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, ByteArray, Entry, TestValue, World};
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork,
     analysis::{
@@ -206,9 +205,8 @@ impl Inventory {
                 runtime::{Runtime, TaskKind},
             },
         };
-        let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
-        let domain = domain.borrowed();
-        let mut payload = fixtures::payload(domain);
+        let algebra = ValueAlgebra::new(ProductAlgebra::default());
+        let mut payload = fixtures::payload(algebra.borrowed());
         payload.active_mut().stack.push(fixtures::word(0));
         payload.normalize();
         let mut budget = crate::resource::WorkBudget::new(1_000_000_000);
@@ -244,7 +242,7 @@ impl Inventory {
             assumption,
             owner,
             payload,
-            algebra: ValueAlgebra::new(domain),
+            algebra,
             budget,
             counts,
         }
@@ -398,8 +396,7 @@ fn self_loop_native_growth_during_evaluation_cannot_withdraw_old_contributions()
     let work = h.payload.work_size().saturating_mul(8);
     MachineMeter(&mut h.budget).reserve(work).unwrap();
     let mut grown = h.payload.clone();
-    grown.active_mut().stack[0] =
-        ProductAlgebra::default().join(&fixtures::word(0), &fixtures::word(1));
+    grown.active_mut().stack[0] = h.algebra.join(&fixtures::word(0), &fixtures::word(1));
     let payload = &mut h.payload;
     h.runtime
         .with_run(&mut current, &mut h.budget, |run| {

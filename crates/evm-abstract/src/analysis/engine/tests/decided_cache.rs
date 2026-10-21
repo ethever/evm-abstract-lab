@@ -1,10 +1,12 @@
-use super::super::{Counters, run_metered};
+use super::super::Counters;
 #[cfg(test)]
 use crate::analysis::testing::ByteArray;
 use crate::{
     analysis::{
-        ExecutionConfig, OutcomeKind, Status, machine::fixtures, transfer::StorageReadPolicy,
+        AnalysisEngine, AnalysisInput, EnginePolicies, ExecutionConfig, OutcomeKind, Status,
+        cooperation::NoExtension, machine::fixtures, transfer::StorageReadPolicy,
     },
+    domain::{DomainSpec, ProductAlgebra, ValueAlgebra},
     resource::WorkBudget,
 };
 
@@ -16,15 +18,19 @@ fn recursive_counter_retains_default_closure_under_local_reasoning() {
     let config = ExecutionConfig::default();
     let mut ledger = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
-    let result = run_metered(
-        world,
-        entry,
-        config,
-        &mut ledger,
-        &mut counters,
-        StorageReadPolicy::Abstract,
-    )
-    .unwrap();
+    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::default()));
+    let policies: EnginePolicies = Default::default();
+    let mut extension = NoExtension;
+    let result = AnalysisEngine::new(&algebra, &policies, &mut extension)
+        .run_metered(
+            AnalysisInput::new(world, entry).unwrap(),
+            config,
+            &mut ledger,
+            &mut counters,
+            StorageReadPolicy::Abstract,
+            None,
+        )
+        .unwrap();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -47,7 +53,7 @@ fn recursive_counter_retains_default_closure_under_local_reasoning() {
         assert_eq!(
             output
                 .data
-                .read_word(&fixtures::word(0), Default::default())
+                .read_word(&fixtures::word(0), algebra.borrowed())
                 .singleton(),
             Some(alloy_primitives::U256::from(42))
         );

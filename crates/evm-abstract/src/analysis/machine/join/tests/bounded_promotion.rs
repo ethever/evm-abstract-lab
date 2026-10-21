@@ -2,8 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::Store;
-use crate::domain::EvmNumericAlgebra as _;
-
 use crate::domain::ValueAlgebra;
 
 use super::*;
@@ -11,7 +9,7 @@ use crate::{
     analysis::{FrameCode, MachinePayload},
     domain::{
         facts::FactError,
-        relational::{Constraint, QueryReason, RelationLimits, RelationPathKind, RelationState},
+        relational::{Constraint, QueryReason, RelationPathKind, RelationState},
         symbolic::{ExprError, StateError},
     },
     world::{RangeError, StoreError},
@@ -169,7 +167,7 @@ fn select_canonical_arm(
         selectors.insert(condition.clone(), ExprId::constant(U256::ZERO));
         let assignment = BTreeMap::from([(condition.clone(), ExprId::constant(U256::ZERO))]);
         assigned
-            .rename_fresh(&assignment, domain.spec().relations().expressions())
+            .rename_fresh(&assignment, domain.spec().relations().expressions(), domain)
             .unwrap();
     }
     (assigned, selectors)
@@ -265,8 +263,11 @@ fn canonical_word_assignment(
     assignment
 }
 
-fn exact_local_value(expression: &ExprId, limits: &RelationLimits) -> U256 {
-    match RelationState::default().local_value(expression, limits) {
+fn exact_local_value(
+    expression: &ExprId,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+) -> U256 {
+    match RelationState::default().local_value(expression, &domain.spec().relations(), domain) {
         TestValueQuery::Exact(value) => value,
         result => panic!(
             "grounded local query must be exact: {result:?}; expression={}",
@@ -279,8 +280,9 @@ fn assert_assigned_cache(
     value: &TestValue,
     expected: U256,
     assignment: &BTreeMap<ExprId, ExprId>,
-    limits: &RelationLimits,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
 ) {
+    let limits = domain.spec().relations();
     assert!(value.contains(expected));
     if let Some(expression) = value.expression() {
         assert_eq!(
@@ -288,7 +290,7 @@ fn assert_assigned_cache(
                 &expression
                     .rename_fresh(assignment, limits.expressions())
                     .unwrap(),
-                limits,
+                domain,
             ),
             expected
         );
@@ -308,7 +310,11 @@ pub(super) fn assert_poststep_word_witness(
 ) {
     // Only the read-only proof uses enabled local queries. The execution's
     // disabled relations, two-alternative policy and all budgets stay frozen.
-    let limits = fixtures::config().analysis.relations;
+    let proof_algebra = crate::analysis::testing::product(
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    );
+    let proof = proof_algebra.borrowed();
+    let limits = proof.spec().relations();
     let memory = &payload.active().memory;
     let original_relations = memory.symbolic_relations(&limits).unwrap();
     let original_guards = memory.guard_conditions(limits.expressions()).unwrap();
@@ -350,7 +356,7 @@ pub(super) fn assert_poststep_word_witness(
                 &guard
                     .rename_fresh(&assignment, limits.expressions())
                     .unwrap(),
-                &limits
+                proof,
             ),
             expected
         );
@@ -358,19 +364,19 @@ pub(super) fn assert_poststep_word_witness(
 
     let word_value = U256::from(word);
     let bytes = word_value.to_be_bytes::<32>();
-    assert_assigned_cache(memory.len(), U256::from(32), &assignment, &limits);
-    assert_assigned_cache(memory.default_byte(), U256::ZERO, &assignment, &limits);
+    assert_assigned_cache(memory.len(), U256::from(32), &assignment, proof);
+    assert_assigned_cache(memory.default_byte(), U256::ZERO, &assignment, proof);
     for (index, value) in memory.stored_bytes() {
-        assert_assigned_cache(value, U256::from(bytes[index]), &assignment, &limits);
+        assert_assigned_cache(value, U256::from(bytes[index]), &assignment, proof);
     }
     for (expression, value) in memory.symbolic_facts() {
         let constant = exact_local_value(
             &expression
                 .rename_fresh(&assignment, limits.expressions())
                 .unwrap(),
-            &limits,
+            proof,
         );
-        assert_assigned_cache(value, constant, &assignment, &limits);
+        assert_assigned_cache(value, constant, &assignment, proof);
     }
     // These are exact reads from the original root under the SAME cell/selector
     // assignment, including every byte absent from the presentation cache.
@@ -383,7 +389,7 @@ pub(super) fn assert_poststep_word_witness(
         .unwrap()
         .rename_fresh(&assignment, limits.expressions())
         .unwrap();
-        assert_eq!(exact_local_value(&read, &limits), U256::from(byte));
+        assert_eq!(exact_local_value(&read, proof), U256::from(byte));
     }
 
     let retained = original_relations
@@ -406,7 +412,7 @@ pub(super) fn assert_poststep_word_witness(
                 then_path,
                 else_path,
             } => {
-                pending.push(if exact_local_value(selector, &limits) == U256::ZERO {
+                pending.push(if exact_local_value(selector, proof) == U256::ZERO {
                     else_path
                 } else {
                     then_path
@@ -417,21 +423,21 @@ pub(super) fn assert_poststep_word_witness(
     // Feasibility alone supplies no witness. Every active original atom and
     // selector must first have a determined, assumption-free local value.
     for expression in expressions {
-        let _ = exact_local_value(expression, &limits);
+        let _ = exact_local_value(expression, proof);
     }
-    assert_eq!(retained.check(&limits), CheckResult::MayBeFeasible);
+    assert_eq!(retained.check(&limits, proof), CheckResult::MayBeFeasible);
 
     for (value, expected) in [
         (&payload.active().stack[0], word_value),
         (&payload.active().call_value, U256::from(call_value)),
     ] {
-        assert_assigned_cache(value, expected, &assignment, &limits);
+        assert_assigned_cache(value, expected, &assignment, proof);
     }
     let value = &assigned.active().call_value;
     assert_eq!(value, &TestValue::from_numeric(value.numeric().clone()));
     assert!(value.contains(U256::from(call_value)));
     assigned
-        .rename_fresh(&assignment, limits.expressions())
+        .rename_fresh(&assignment, limits.expressions(), domain)
         .unwrap();
     // Numeric-only scalar cells have no aliases to the independent byte source.
     assigned.active_mut().stack[0] = TestValue::constant(word_value);
@@ -458,7 +464,7 @@ fn joint_selector_witness_rejects_a_tuple_with_only_valid_marginals() {
         crate::analysis::testing::NumericLimits::machine().spec(),
     ));
     let domain = domain.borrowed();
-    let limits = fixtures::config().analysis.relations;
+    let limits = domain.spec().relations();
     let base = fixtures::payload(domain);
     let owner = fixtures::address(0x101);
     let [mut first, mut second] = [1, 2].map(|word| word_payload(&base, word, domain));
@@ -509,7 +515,7 @@ fn joint_selector_witness_rejects_a_tuple_with_only_valid_marginals() {
                 .rename_fresh(&assignment, limits.expressions())
                 .unwrap();
             assert_eq!(
-                exact_local_value(&joint, &limits),
+                exact_local_value(&joint, domain),
                 U256::from(u8::from(tuple == selected))
             );
         }
@@ -530,7 +536,6 @@ fn exact_retention_precedes_alternatives_promotion_of_both_complete_operands() {
     let originals = [first.clone(), second.clone(), third.clone()];
     let mut alternatives = EntryAlternatives::new(&first);
     let mut budget = WorkBudget::new(100_000_000);
-    let selectors = BTreeSet::new();
     let exact = alternatives
         .join_entry(&first, &second, &environment, domain, &mut budget, false)
         .unwrap()
@@ -594,7 +599,6 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
     let incoming = word_payload(&base, 2, domain);
     let inputs = (old.clone(), incoming.clone());
     let alternatives = EntryAlternatives::new(&old);
-    let selectors = BTreeSet::new();
     let mut exact_work = WorkBudget::new(100_000_000);
     assert_eq!(
         alternatives
@@ -860,6 +864,7 @@ fn complete_path_constraint_refusal_can_forget_the_whole_path() {
                     &ExprId::fresh().unwrap(),
                     true,
                     &construction.spec().relations(),
+                    construction,
                 ),
                 CheckResult::MayBeFeasible
             );

@@ -1,16 +1,16 @@
+//! Production relative slots use injected state, keys and refusal semantics.
 
 #[cfg(test)]
 use crate::domain::NumericValue;
 use crate::domain::ProductAlgebra;
-//! Production relative slots use injected state, keys and refusal semantics.
 
 use super::*;
+use crate::analysis::cooperation::NoExtension;
 use crate::analysis::engine::{
     Acceleration, CorrelatedJoin, EnginePolicies, FeedbackAcceleration, FirstResumeStatus,
     MachinePartition, Partitioned, PartitionedRelative, PolicyContext, PolicySite, ProcedureOutput,
     ProcedureSummaryPolicy, ProjectedSummaries, RecentDistinctJumps, RelativeState,
-    SemanticPolicies, StatePolicy, StructuralPartition,
-    cooperation::{Cooperation, Empty},
+    SemanticPolicies, StatePolicy, StructuralPartition, cooperation::Cooperation,
 };
 use crate::analysis::testing::Entry;
 use crate::analysis::worklist::runtime::Runtime;
@@ -27,7 +27,7 @@ struct Harness<S: StatePolicy<ProductAlgebra, Option<bool>>> {
     caller: analysis_kernel::RunningJob,
     domain: ValueAlgebra<ProductAlgebra>,
     policies: EnginePolicies<RecentDistinctJumps, FirstResumeStatus, S>,
-    cooperation: Cooperation<NumericValue, Empty, Infallible>,
+    cooperation: Cooperation<NumericValue, NoExtension, Infallible>,
     budget: WorkBudget,
     counters: Counters,
 }
@@ -65,10 +65,22 @@ impl<S: StatePolicy<ProductAlgebra, Option<bool>>> Harness<S> {
         input
     }
 
+    fn set_relations(&mut self, relations: crate::domain::relational::RelationLimits) {
+        self.domain =
+            crate::analysis::testing::product(self.domain.spec().with_relations(relations));
+    }
+
     fn solver(
         &mut self,
-    ) -> EvmSolver<'_, ProductAlgebra, RecentDistinctJumps, FirstResumeStatus, S, Empty, Infallible>
-    {
+    ) -> EvmSolver<
+        '_,
+        ProductAlgebra,
+        RecentDistinctJumps,
+        FirstResumeStatus,
+        S,
+        NoExtension,
+        Infallible,
+    > {
         EvmSolver {
             table: &mut self.table,
             world: &self.world,
@@ -144,7 +156,10 @@ fn procedure_entry_retains_growth_when_body_preparation_selects_another_key() {
         ProjectedSummaries,
     );
     let mut h = Harness::new("00", state);
-    h.config_numeric.relations.enabled = false;
+    h.set_relations(crate::domain::relational::RelationLimits {
+        enabled: false,
+        ..h.domain.spec().relations()
+    });
     let [first, second, third] = [7, 9, 11].map(|value| h.input(value));
     let mut solver = h.solver();
     let procedure = solver.procedure(first).unwrap();
@@ -177,7 +192,10 @@ fn procedure_entry_anchor_wakes_its_reader_when_the_body_key_changes() {
         ProjectedSummaries,
     );
     let mut h = Harness::new("00", state);
-    h.config_numeric.relations.enabled = false;
+    h.set_relations(crate::domain::relational::RelationLimits {
+        enabled: false,
+        ..h.domain.spec().relations()
+    });
     let first = h.input(7);
     let next = h.input(9);
     {
@@ -402,7 +420,10 @@ fn runtime_retry_refuses_injected_policy_instead_of_executing_legacy_bound() {
     input.normalize();
     let summary = super::super::testing::form(&input, &h.entry, domain).unwrap();
     let live = super::super::testing::instantiate(&summary, domain).unwrap();
-    h.config_numeric.relations.max_nodes = live.active().memory.state_root().nodes() + 2;
+    h.set_relations(crate::domain::relational::RelationLimits {
+        max_nodes: live.active().memory.state_root().nodes() + 2,
+        ..h.domain.spec().relations()
+    });
     let mut solver = h.solver();
     solver.procedure(input).unwrap();
     let original = solver.table.nodes[0].payload.clone();

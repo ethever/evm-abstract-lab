@@ -64,7 +64,7 @@ fn rejected_guard_keeps_the_original_coverage_frontier() {
         .unwrap()
         .with_expression(expression);
     let mut budget = WorkBudget::new(10_000_000);
-    let transfer_numeric = ProductAlgebra::default();
+    let transfer_numeric = ProductAlgebra::from_spec(config_numeric.spec());
     let mut context = crate::analysis::transfer::testing::context(
         &config,
         &mut budget,
@@ -162,14 +162,15 @@ fn branch_keeps_expressions_until_instruction_consumption() {
 fn cached_local_bounds_cannot_override_narrower_callers_or_cancellation() {
     let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let transfer_algebra = crate::analysis::testing::product(config_numeric.spec());
+    let domain = transfer_algebra.borrowed();
     let expression = ExprId::fresh().unwrap();
     let other = ExprId::fresh().unwrap();
     let mut relations = RelationState::default();
-    relations.add_equal(&expression, &other, &config_numeric.relations);
+    relations.add_equal(&expression, &other, &config_numeric.relations, domain);
     let mut value = TestValue::top().with_expression(expression.clone());
     let mut budget = WorkBudget::new(20_000_000);
-    let transfer_algebra = ValueAlgebra::new(ProductAlgebra::default());
-    let mut context = context(&config, &mut budget, transfer_algebra.borrowed());
+    let mut context = context(&config, &mut budget, domain);
     assert_eq!(
         super::refine(&mut value, &relations, &mut context),
         Ok(true)
@@ -201,6 +202,8 @@ fn retained_guarded_facts_never_prune_an_admitted_numeric_candidate() {
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let expression = ExprId::fresh().unwrap();
     let limits = config_numeric.relations;
+    let algebra = crate::analysis::testing::product(config_numeric.spec());
+    let domain = algebra.borrowed();
     let branch = |constant| {
         let mut state = RelationState::default();
         let eq = ExprId::operation(
@@ -209,14 +212,12 @@ fn retained_guarded_facts_never_prune_an_admitted_numeric_candidate() {
             Default::default(),
         )
         .unwrap();
-        state.assume(&eq, true, &limits);
+        state.assume(&eq, true, &limits, domain);
         state
     };
     let relations = branch(2u64)
         .join_guarded(&branch(3), ExprId::fresh().unwrap(), &limits)
         .unwrap();
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
-    let domain = domain.borrowed();
     let mut value = domain
         .join(
             &TestValue::constant(U256::ZERO),
@@ -241,9 +242,11 @@ fn unused_local_capacity_does_not_become_an_automatic_work_fee() {
         let mut config = ExecutionConfig::default();
         let mut config_numeric = crate::analysis::testing::NumericLimits::default();
         config_numeric.relations.max_nodes = nodes;
+        let algebra = crate::analysis::testing::product(config_numeric.spec());
+        let domain = algebra.borrowed();
         let mut relations = RelationState::default();
-        relations.add_equal(&expression, &other, &config_numeric.relations);
-        let mut value = ProductAlgebra::default()
+        relations.add_equal(&expression, &other, &config_numeric.relations, domain);
+        let mut value = domain
             .join(
                 &TestValue::constant(U256::ONE),
                 &TestValue::constant(U256::from(2)),
@@ -254,11 +257,7 @@ fn unused_local_capacity_does_not_become_an_automatic_work_fee() {
             super::refine(
                 &mut value,
                 &relations,
-                &mut context(
-                    &config,
-                    &mut budget,
-                    ValueAlgebra::new(&ProductAlgebra::default())
-                )
+                &mut context(&config, &mut budget, domain)
             ),
             Ok(true)
         );
@@ -277,11 +276,13 @@ fn unused_local_capacity_does_not_become_an_automatic_work_fee() {
 fn a_work_stop_mid_projection_keeps_every_original_finite_candidate() {
     let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let algebra = crate::analysis::testing::product(config_numeric.spec());
+    let domain = algebra.borrowed();
     let expression = ExprId::fresh().unwrap();
     let other = ExprId::fresh().unwrap();
     let mut relations = RelationState::default();
-    relations.add_equal(&expression, &other, &config_numeric.relations);
-    let before = ProductAlgebra::default()
+    relations.add_equal(&expression, &other, &config_numeric.relations, domain);
+    let before = domain
         .join(
             &TestValue::constant(U256::ONE),
             &TestValue::constant(U256::from(2)),
@@ -293,11 +294,7 @@ fn a_work_stop_mid_projection_keeps_every_original_finite_candidate() {
         super::refine(
             &mut full,
             &relations,
-            &mut context(
-                &config,
-                &mut budget,
-                ValueAlgebra::new(&ProductAlgebra::default())
-            )
+            &mut context(&config, &mut budget, domain)
         ),
         Ok(true)
     );
@@ -307,11 +304,7 @@ fn a_work_stop_mid_projection_keeps_every_original_finite_candidate() {
         super::refine(
             &mut value,
             &relations,
-            &mut context(
-                &config,
-                &mut limited,
-                ValueAlgebra::new(&ProductAlgebra::default())
-            )
+            &mut context(&config, &mut limited, domain)
         ),
         Err(FrontierReason::Work)
     );
