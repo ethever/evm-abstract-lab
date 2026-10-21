@@ -6,7 +6,9 @@
 
 ## 先运行一个例子
 
-需要安装 Nix 并启用 `nix-command` 和 `flakes`。以下命令在仓库根目录执行；首次构建可能下载依赖，例子本身不需要 RPC、钱包或资金。
+本地或 Remote SSH 环境需要安装 Nix 并启用 `nix-command` 和 `flakes`。GitHub Codespaces 按[声明式容器配置](.devcontainer/devcontainer.json)自动安装并初始化 Nix；首次创建与已有环境的重建步骤见[开发环境说明](docs/development.md#github-codespaces)。
+
+以下命令在仓库根目录执行；首次构建可能下载依赖，例子本身不需要 RPC、钱包或资金。
 
 ```bash
 nix run . -- explain --file examples/straight-line.hex
