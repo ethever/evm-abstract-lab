@@ -142,6 +142,62 @@ fn rejected_initial_storage_fact_retains_exact_owner_and_full_slot_key() {
 }
 
 #[test]
+fn native_refinement_refusals_keep_numeric_reason_and_location_through_wire() {
+    use evm_abstract::{
+        analysis::{
+            RpcAnalysisError,
+            layers::{FactKey, SessionError},
+        },
+        domain::facts::FactError as NumericFactError,
+    };
+    let owner = Address::repeat_byte(0x11);
+    let slot = U256::MAX;
+    for (source, expected, code) in [
+        (
+            NumericFactError::Capacity {
+                max_atoms: 4,
+                required: 7,
+            },
+            api::FactFailure::Capacity(api::FactCapacityFailure {
+                max_atoms: 4,
+                required: 7,
+            }),
+            api::ApiErrorCode::InvalidLimits,
+        ),
+        (
+            NumericFactError::UnsupportedOperation(0xf1),
+            api::FactFailure::UnsupportedOperation(0xf1),
+            api::ApiErrorCode::Internal,
+        ),
+    ] {
+        let source = SessionError::Refinement {
+            key: FactKey::Storage {
+                address: owner,
+                slot,
+            },
+            source,
+        };
+        let message = source.to_string();
+        let projected = super::super::rpc_error(RpcAnalysisError::Session(source));
+        assert_eq!(projected.code, code);
+        assert_eq!(projected.message, message);
+        assert_eq!(
+            projected.details,
+            api::ErrorDetails::Session(Box::new(api::SessionFailure::Refinement(
+                api::SessionRefinementFailure {
+                    location: api::InitialFactLocation::Storage(api::StorageLocation {
+                        address: owner.to_string(),
+                        slot: format!("0x{slot:x}"),
+                    }),
+                    source: expected,
+                }
+            )))
+        );
+        roundtrip(&projected);
+    }
+}
+
+#[test]
 fn independent_offline_snapshots_with_equal_labels_still_report_snapshot_mismatch() {
     use evm_abstract::analysis::{
         RpcAnalysisError,
