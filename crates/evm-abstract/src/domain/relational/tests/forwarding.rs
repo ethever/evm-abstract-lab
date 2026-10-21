@@ -1,9 +1,7 @@
 //! Default-budget proofs and independent boundary checks for demanded reads.
 
-fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
-    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-}
 use super::super::{CheckResult, EvmValueQuery, RelationLimits, RelationState};
+use super::product_algebra;
 use crate::domain::{identity::Symbol, numeric::NumericValue, symbolic::*};
 use alloy_primitives::{U256, keccak256};
 use revm_bytecode::opcode;

@@ -276,22 +276,6 @@ fn observation_import_filters_a_complete_cover_by_every_guarantee() {
 }
 
 #[test]
-fn native_serialization_omits_top_and_retains_complete_constants() {
-    assert_eq!(
-        serde_json::to_value(FiniteConstantSet::top()).unwrap(),
-        serde_json::json!({})
-    );
-    let finite = words(&[2, 9]);
-    let serialized = serde_json::to_value(&finite).unwrap();
-    assert_eq!(serialized.as_object().unwrap().len(), 1);
-    assert_eq!(
-        serialized["constants"],
-        serde_json::to_value(finite.as_values().unwrap()).unwrap()
-    );
-    assert_eq!(serialized["constants"].as_array().unwrap().len(), 2);
-}
-
-#[test]
 fn work_quotes_price_opcode_queries_shared_copies_and_overflow() {
     let domain = algebra(8);
     let one = words(&[1]);

@@ -1,13 +1,10 @@
 //! Common conjunctions stay unconditional; every residual uses the machine guard.
 
-fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
-    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-}
 use super::super::{
     CheckResult, Constraint, EvmValueQuery, QueryReason, RelationLimits, RelationPath,
     RelationPathKind, RelationState,
 };
-use super::{c, limits, op};
+use super::{c, limits, op, product_algebra};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
