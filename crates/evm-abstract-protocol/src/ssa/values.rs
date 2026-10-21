@@ -122,8 +122,9 @@ choice! {
     }
 }
 record! {
-    /// Numeric properties attached to a definition. None means missing facts;
-    /// a present top ValueInfo means facts were collected but are imprecise.
+    /// Scoped word guarantees with independent exact proofs and observations.
+    /// A proved constant does not require a retained ValueInfo; availability
+    /// is determined by status rather than the presence of either payload.
     pub struct SsaValueFacts {
         /// Whether this fact is available and current.
         pub status: SsaFactStatus,
@@ -131,9 +132,9 @@ record! {
         pub scope: SsaFactScope,
         /// Derivation category.
         pub source: SsaFactSource,
-        /// Exact singleton from all numeric components, when proved.
+        /// Exact word proved by a native observation or independent derivation.
         pub constant: Option<String>,
-        /// Numeric properties and retained source categories.
+        /// Retained numeric properties and source categories, independently optional.
         pub value: Option<crate::ValueInfo>,
     }
 }

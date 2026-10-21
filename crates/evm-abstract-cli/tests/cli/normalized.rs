@@ -38,9 +38,27 @@ fn default_single_ssa_folds_and_copies_without_losing_bytecode_identity() {
         json!([{"local_state":0,"machine_state":0}])
     );
     assert!(folded["machine_analysis"].is_object());
-    assert!(ir["facts"].as_array().unwrap().iter().any(|fact| {
-        fact["value"] == 2 && fact["scope"] == "Definition" && fact["constant"] == "0x3"
-    }));
+    let facts = ir["facts"].as_array().unwrap();
+    for (value, source, constant) in [
+        (0, "Literal", "0x1"),
+        (1, "Literal", "0x2"),
+        (2, "ConstantFold", "0x3"),
+    ] {
+        let proof = facts
+            .iter()
+            .find(|fact| {
+                fact["value"] == value && fact["source"] == source && fact["scope"] == "Definition"
+            })
+            .expect("derived word proof remains available without a numeric carrier");
+        assert_eq!(proof["constant"], constant);
+        assert!(proof["numeric"].is_null());
+    }
+    let observed = facts
+        .iter()
+        .find(|fact| fact["value"] == 2 && fact["source"] == "Instruction")
+        .expect("the actual instruction observation is retained separately");
+    assert!(observed["numeric"].is_object());
+    assert_eq!(observed["constant"], "0x3");
 
     let copied = report(&["ssa", "--hex", "345f015000", "--format", "json"], 0);
     let row = &copied["ssa"]["blocks"][0]["instructions"][2];
