@@ -12,11 +12,26 @@ use crate::{
 
 #[test]
 fn paid_call_output_range_survives_continuation_and_completion_without_rediscovery() {
-    let config = ExecutionConfig {
+    paid_call_output_range(true);
+}
+
+#[test]
+fn disabled_relations_keep_paid_call_output_and_empty_failure_proofs() {
+    paid_call_output_range(false);
+}
+
+fn paid_call_output_range(relations_enabled: bool) {
+    let mut config = ExecutionConfig {
         max_work: 1_000_000_000,
         ..ExecutionConfig::default()
     };
-    let algebra = ValueAlgebra::new(Policy);
+    config.analysis.relations.enabled = relations_enabled;
+    let numeric = ValueAlgebra::new(Policy);
+    let algebra = if relations_enabled {
+        numeric.borrowed()
+    } else {
+        numeric.borrowed().without_relations()
+    };
     let value = |n: u64| EvmValue::<Word>::constant(U256::from(n));
     let mut world = EvmWorld::new(Fork::Osaka, "paid CALL output proof");
     world
@@ -37,7 +52,7 @@ fn paid_call_output_range_survives_continuation_and_completion_without_rediscove
         value(0),
         EvmByteArray::empty(),
     );
-    let input = initial(&world, &entry, algebra.borrowed()).unwrap();
+    let input = initial(&world, &entry, algebra).unwrap();
     let program = input.active().program.clone().unwrap();
     let offset = value(0).with_origin(Origin::Memory).with_identity(91, 1);
     let size = EvmValue::from_numeric(Word {
@@ -72,7 +87,7 @@ fn paid_call_output_range_survives_continuation_and_completion_without_rediscove
         opcode::CALL,
         &args,
         &program,
-        &mut context(&config, &mut budget, algebra.borrowed()),
+        &mut context(&config, &mut budget, algebra),
         0,
     );
     let child = result
@@ -115,7 +130,7 @@ fn paid_call_output_range_survives_continuation_and_completion_without_rediscove
             &data,
             &continuation.output_offset,
             &continuation.output_size,
-            algebra.borrowed(),
+            algebra,
         );
     assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (1, 1));
     for maximum in [fee - 1, fee] {
@@ -131,7 +146,7 @@ fn paid_call_output_range_survives_continuation_and_completion_without_rediscove
             child.clone(),
             OutcomeKind::Return,
             data.clone(),
-            &mut context(&config, &mut budget, algebra.borrowed()),
+            &mut context(&config, &mut budget, algebra),
             0,
         );
         assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
@@ -155,13 +170,67 @@ fn paid_call_output_range_survives_continuation_and_completion_without_rediscove
                     .payload
                     .active()
                     .memory
-                    .read_word_with(&value(0), algebra.borrowed())
+                    .read_word_with(&value(0), algebra)
                     .singleton(),
                 Some(U256::from(42))
             );
         } else {
             assert!(result.completed_calls.is_empty() && result.successors.is_empty());
             assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+        }
+    }
+
+    // An exceptional child returns no bytes. Preserve the caller's content root
+    // while still allocating the requested output range and paying its real fee.
+    for watched in [None, Some(U256::ZERO), Some(U256::from(32))] {
+        RECEIPT.update(|r| {
+            r.watched = watched;
+            r.query_tag = None;
+            r.quotes = 0;
+            r.queries = 0;
+            r.fee = usize::MAX;
+        });
+        let data = EvmByteArray::empty();
+        let parent = child.call_stack.parent().unwrap();
+        let root = parent.memory.state_root().clone();
+        let fee = parent.memory.copy_return_data_work_with(
+            &data,
+            &continuation.output_offset,
+            &continuation.output_size,
+            algebra,
+        );
+        assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
+        for maximum in [fee - 1, fee] {
+            let mut result = empty_execution(child.clone());
+            let mut budget = WorkBudget::new(maximum);
+            finish(
+                &mut result,
+                child.clone(),
+                OutcomeKind::Failure,
+                data.clone(),
+                &mut context(&config, &mut budget, algebra),
+                0,
+            );
+            assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
+            assert_eq!(budget.used(), if maximum == fee { fee } else { 0 });
+            if maximum == fee {
+                assert!(result.frontiers.is_empty());
+                assert_eq!(result.completed_calls.len(), 1);
+                let resumed = result
+                    .successors
+                    .iter()
+                    .find(|s| s.kind == MachineEdgeKind::Failure)
+                    .unwrap();
+                assert_eq!(resumed.payload.active().returndata, data);
+                assert_eq!(resumed.payload.active().memory.state_root(), &root);
+                assert_eq!(
+                    resumed.payload.active().memory.len().numeric(),
+                    &Word::constant(U256::from(32))
+                );
+            } else {
+                assert!(result.completed_calls.is_empty() && result.successors.is_empty());
+                assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+            }
         }
     }
 }

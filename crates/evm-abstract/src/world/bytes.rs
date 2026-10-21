@@ -195,7 +195,11 @@ pub(in crate::world) fn check_value<N: WordElement>(
 impl<N: WordElement> EvmByteArray<N> {
     /// Empty finite input.
     pub fn empty() -> Self {
-        Self::exact(&[])
+        let mut empty = Self::exact(&[]);
+        // COPY consumes independent length proofs. A custom N may expose no
+        // cached scalar views, so retain this constructor's zero without a query.
+        empty.retain_length_literal(ExprId::constant(U256::ZERO));
+        empty
     }
     /// Observed finite input, zero-padded beyond its length.
     pub fn exact(input: &[u8]) -> Self {
