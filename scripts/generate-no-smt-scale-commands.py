@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Bind the frozen offline corpus to an explicitly selected no-SMT CLI source.
 
-Only writes a command profile and optional wire 16 requests; never builds or
+Only writes a command profile and optional wire 17 requests; never builds or
 runs analysis. Keep outputs separate from frozen baselines. Regenerate the
 profile for the final build's exact source commit.
 
-The current interface requires native 11 / wire 16 / cost 6. Historical cost 4/5
+The current interface requires native 12 / wire 17 / domain 3 / cost 7. Historical
 profiles stay bound to their frozen source and generator; they are not upgraded.
 """
 
@@ -24,17 +24,20 @@ def generate(repository, source):
     witnesses = {
         "cli": "crates/evm-abstract-cli/src/main.rs",
         "relations": "crates/evm-abstract-cli/src/symbolic.rs",
+        "numeric": "crates/evm-abstract-cli/src/numeric.rs",
         "native": "crates/evm-abstract/src/analysis.rs",
         "wire": "crates/evm-abstract-protocol/src/lib.rs",
         "cost": "crates/evm-abstract/src/domain/spec.rs",
     }
     texts = {key: (source / path).read_text() for key, path in witnesses.items()}
-    for key, expected in [("native", 11), ("wire", 16)]:
+    for key, expected in [("native", 12), ("wire", 17)]:
         match = re.search(r"pub const SCHEMA_VERSION: u16 = (\d+);", texts[key])
         if match is None or int(match[1]) != expected:
             raise ValueError(f"expected {key} schema {expected}")
-    if not re.search(r"cost_version:\s*6\s*,", texts["cost"]):
-        raise ValueError("expected logical cost version 6")
+    if not re.search(r"schema_version:\s*3\s*,", texts["cost"]):
+        raise ValueError("expected numeric policy schema 3")
+    if not re.search(r"cost_version:\s*7\s*,", texts["cost"]):
+        raise ValueError("expected logical cost version 7")
     if re.search(r"smt_provider|smt_rlimit|embedded_smt", texts["relations"]):
         raise ValueError("selected CLI still exposes native solver policy")
     commit = subprocess.check_output(
@@ -42,7 +45,7 @@ def generate(repository, source):
     profile["interface"] = {
         "name": "no-smt-cli-world",
         "source_commit": commit,
-        "versions": {"native": 11, "wire": 16, "cost": 6},
+        "versions": {"native": 12, "wire": 17, "domain": 3, "cost": 7},
         "source_witnesses": {
             path: hashlib.sha256((source / path).read_bytes()).hexdigest()
             for path in witnesses.values()
@@ -60,6 +63,30 @@ def generate(repository, source):
         del profile["policy_mapping"][key]
     for key in ("provider", "rlimit"):
         del profile["expected_native_config"]["analysis"]["relations"][key]
+    # Numeric policy is owned by the selected algebra, not ExecutionConfig.
+    # Verify it independently so a budget-only config cannot hide weaker limits.
+    policy = profile["policy"]
+    assert policy.pop("domain_profile") == "Product"
+    policy["numeric_model"] = "Product"
+    policy["postprocessing_max_work"] = 2_000_000_000
+    del profile["policy_mapping"]["domain_profile"]
+    profile["policy_mapping"]["numeric_model"] = (
+        "--numeric-model product; native numeric_model=product; wire numeric_model=Product")
+    profile["policy_mapping"]["postprocessing_max_work"] = (
+        "application DEFAULT_POSTPROCESS_WORK=2000000000; independent from --max-work")
+    analysis = profile["expected_native_config"]["analysis"]
+    profile["expected_native_numeric_model"] = "product"
+    profile["expected_native_postprocessing_max_work"] = 2_000_000_000
+    profile["expected_native_domain_spec"] = {
+        "schema_version": 3, "word_bits": 256,
+        "capacity": analysis.pop("max_constants"),
+        "reduction_rounds": analysis.pop("reduction_rounds"),
+        "fact_limit": analysis.pop("max_facts"),
+        "cost_version": 7, "widening_after_updates": 2,
+        "provenance_policy": "scoped-expressions-and-value-identities-v3",
+        "relations": analysis.pop("relations"),
+    }
+    assert analysis.pop("domain_profile") == "product"
     profile["policy_mapping"]["relations_enabled"] = (
         "true: omit --no-relations; bounded local consequence propagation only")
     for case in profile["cases"].values():
@@ -67,13 +94,17 @@ def generate(repository, source):
         for flag in ("--smt.provider", "--smt.rlimit"):
             position = command.index(flag)
             del command[position:position + 2]
+        command[command.index("--domain")] = "--numeric-model"
         command.append("--no-root-terminal-coverage")
     return profile
 
 
-def derive_wire16_request(original):
-    """Keep every frozen wire 14 input and limit, explicitly disabling coverage."""
+def derive_wire17_request(original):
+    """Migrate one frozen wire 14 request, retaining its exact input and limits."""
     request = deepcopy(original)
+    # This is an explicit historical-input derivation, never a live decoder.
+    assert request["limits"].pop("domain_profile") == "Product"
+    request["limits"]["numeric_model"] = "Product"
     request["limits"]["root_terminal_coverage"] = False
     return request
 
@@ -83,7 +114,7 @@ def main():
     parser.add_argument("--interface-source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--request-output-dir", type=Path,
-                        help="write separate wire 16 WETH/USDC requests with the frozen 1T/off policy")
+                        help="write separate wire 17 WETH/USDC requests with the frozen 1T/off policy")
     arguments = parser.parse_args()
     repository = Path(__file__).resolve().parents[1]
     profile = generate(repository, arguments.interface_source.resolve(strict=True))
@@ -92,8 +123,8 @@ def main():
         arguments.request_output_dir.mkdir(parents=True, exist_ok=True)
         for name in ("weth", "usdc"):
             original = repository / f"examples/no-smt-scale/wire14/{name}-original-request.json"
-            request = derive_wire16_request(json.loads(original.read_bytes()))
-            output = arguments.request_output_dir / f"{name}-wire16-request.json"
+            request = derive_wire17_request(json.loads(original.read_bytes()))
+            output = arguments.request_output_dir / f"{name}-wire17-request.json"
             output.write_text(json.dumps(request, indent=2) + "\n")
 
 

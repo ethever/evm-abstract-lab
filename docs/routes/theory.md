@@ -24,7 +24,7 @@
 2. 做[第 01 课的 `60 5b 00` 实验](../01-bytecode.md#1-先手算三字节程序)。在每个字节下面写“操作码”或“立即数”，解释为什么中间的 `5b` 不能作为跳转目标。接着读[截断 PUSH](../01-bytecode.md#2-push-的立即数缺一半时怎么办)和[切块规则](../01-bytecode.md#3-把指令切成基本块)，把“字节位置”和“可执行位置”分开。
 3. 用[第 08 课的 CLZ 对照](../08-forks.md#2-手算-clz-怎样算出跳转地址)观察同一字节在不同 fork 下的结果，再做[第 13 课的离线默认输入实验](../13-evm-environment.md#先用离线命令检查默认关联)。分别记录协议规则与环境假设：默认 caller 和 origin 是同一输入，省略 calldata 则保持未知，不能当作空字节。读到[委托代码](../08-forks.md#4-eip-7702账户的-code-可能是委托标记)时，先记下“代码来源账户可能不同于状态账户”，第七步再展开。
 
-源码从 [`bytecode.rs`](../../crates/evm-abstract/src/bytecode.rs)、[`fork.rs`](../../crates/evm-abstract/src/fork.rs) 和 [`world/environment.rs`](../../crates/evm-abstract/src/world/environment.rs) 进入，分别寻找指令边界、协议选择与 `AddressInput` / `EvmEnvironment`。环境有符号身份，不等于它已经有具体数值；fork 默认值也不证明它适用于任意链上区块。
+源码从 [`bytecode.rs`](../../crates/evm-abstract/src/bytecode.rs)、[`fork.rs`](../../crates/evm-abstract/src/fork.rs) 和 [`world/environment.rs`](../../crates/evm-abstract/src/world/environment.rs) 进入，分别寻找指令边界、协议选择与 `AddressInput` / `EvmEnvironmentValues<N>`。环境有符号身份，不等于它已经有具体数值；fork 默认值也不证明它适用于任意链上区块。
 
 **完成问题：** 两次分析用相同字节码，一次省略 calldata，一次明确传入空 calldata，它们在分析同一组调用吗？如果 CLZ 在某个 fork 下异常终止，而分析报告 `Converged`，为什么这两件事可以同时成立？
 
@@ -40,11 +40,11 @@
 
 先只理解两个操作：`join` 合并不同路径的可能性，`transfer` 计算执行指令后的摘要。例如 `{1} join {2} = {1,2}`，再加 `{10}` 得 `{11,12}`。表示能力有上限时，需要扩大摘要：常量集合装不下所有候选便变成 Top，表示任意 word，不能任意删几个候选。
 
-1. 按[第 02 课的有限集合实验](../02-domain.md#1-从可能是-1也可能是-2开始)，用 [`diamond.hex`](../../examples/diamond.hex) 手填汇合入口与 ADD 出口。沿用正文关闭关系层、使用 constants-only 的参数，随后按 [join 容量实验](../02-domain.md#3-join把两条路径的信息合在一起)把容量改为 1，解释为什么数值变粗而执行仍可继续。
+1. 按[第 02 课的有限集合实验](../02-domain.md#1-从可能是-1也可能是-2开始)，用 [`diamond.hex`](../../examples/diamond.hex) 手填汇合入口与 ADD 出口。沿用正文关闭关系层、使用 finite-set 的参数，随后按 [join 容量实验](../02-domain.md#3-join把两条路径的信息合在一起)把容量改为 1，解释为什么数值变粗而执行仍可继续。
 2. 读[逐槽合并丢失配对关系](../02-domain.md#5-为什么摘要会包含实际不会出现的组合)：`[1,10]` 和 `[2,20]` 合为 `[{1,2},{10,20}]` 后，写出多出的组合。带着这个问题读[第 12 课的组件表](../12-product-domains-facts.md#3-几个组件约束同一个-word)：位、区间和同余共同约束一个 word，却不会自动记住两个槽位来自同一条路径。
 3. 手算[范围与同余交换](../12-product-domains-facts.md#4-信息交换从范围和整除性找回候选)：`1≤x≤20` 且 x 是 8 的倍数，候选为 `{8,16}`。这叫规约：把已有约束相互传递。再读[约束取交与路径取并](../12-product-domains-facts.md#5-同一值的约束取交不同路径的可能取并)，用一句话解释为什么这两处不能都使用“交集”。
 
-源码依次看 [`FiniteConstantSet::join`](../../crates/evm-abstract/src/domain/finite_constant_set.rs)、[`NumericValue`](../../crates/evm-abstract/src/domain/numeric.rs)、[`AbstractValue`](../../crates/evm-abstract/src/domain/value.rs)，再看 [`Domain`](../../crates/evm-abstract/src/domain.rs) 与 [`reduce.rs`](../../crates/evm-abstract/src/domain/reduce.rs)。区分常量组件为 Top 和整个数值没有约束；工作表 join 与有轮数限制的 facts 交换也是不同操作。当前实现没有声称每次都求得理论上最精确的组合域结果。
+源码依次看 [`FiniteConstantSet::join`](../../crates/evm-abstract/src/domain/finite_constant_set.rs)、[`NumericValue`](../../crates/evm-abstract/src/domain/numeric.rs)、[`EvmValue<N>`](../../crates/evm-abstract/src/domain/value.rs)，再看 [`ValueAlgebra<D>`](../../crates/evm-abstract/src/domain/algebra.rs) 以及 `ProductAlgebra` / `FiniteSetAlgebra` 与 [`reduce.rs`](../../crates/evm-abstract/src/domain/reduce.rs)。区分常量组件为 Top 和整个数值没有约束；工作表 join 与有轮数限制的 facts 交换也是不同操作。当前实现没有声称每次都求得理论上最精确的组合域结果。
 
 **完成问题：** 常量组件无法枚举，却知道一个值最低位为 1，能否判断它非零？把容量从 1 提高到 8，为什么仍不能自动恢复 `[1,10]` 与 `[2,20]` 的配对关系？
 
@@ -112,7 +112,7 @@ SSA 在静态表示中给每个值定义分配一个唯一名字，让使用者�
 2. 按[第 16 课的 slot 实验](../16-storage-model.md#2-第一个实验替换-slot-0读取-slot-0-和-slot-1)区分初始 world 与当前 Store，手算[两候选 slot 的更新](../16-storage-model.md#5-有两个可能的-slot为什么要保留旧值)。同时检查[未列出的 slot](../16-storage-model.md#没列出的-slot-是零还是未知)：是否为零取决于初始完整性声明，不取决于表项数量。
 3. 比较[同一符号 memory 偏移](../14-memory-model.md#同一个未知偏移写后再读也未必恢复原值)与[同一未知 storage 键](../16-storage-model.md#6-无法列出-slot-候选刚写入再读为什么是-07)。正常同址写后读得到 7；无约束 memory 地址还包含超策略输入，原始 [`memory-symbolic-offset.hex`](../../examples/memory-symbolic-offset.hex) 因而保留 frontier。不要用具体 calldata 替代未知输入来掩盖覆盖边界。
 
-源码看 [`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs) 的根、view 与读写，以及 [`Store` 的 slot 转换](../../crates/evm-abstract/src/world/store/slots.rs)。`select(store(S,k,7),k)=7` 表达当前有序状态模型利用的同址规则；它无需先求出 k 的数值。EVM 的账户归属、写序、byte 长度、零补和范围仍由分析器定义，局部数值推理不能替代这些语义。
+源码看 [`EvmByteArray<N>`](../../crates/evm-abstract/src/world/bytes.rs) 的根、view 与读写，以及 [`EvmStore<N>` 的 slot 转换](../../crates/evm-abstract/src/world/store/slots.rs)。`select(store(S,k,7),k)=7` 表达当前有序状态模型利用的同址规则；它无需先求出 k 的数值。EVM 的账户归属、写序、byte 长度、零补和范围仍由分析器定义，局部数值推理不能替代这些语义。
 
 **完成问题：**同一个 k 的写后读为何是 7，改读固定 slot 0 又为何需要别名条件？只看两个 slot 的独立候选与看完整根，分别能证明到哪一步？增大常量容量是否会自动补上未完成的局部查询？
 

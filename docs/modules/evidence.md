@@ -14,7 +14,7 @@
 
 两份结果都可收敛，但未知长度保留真假分支，空输入只保留 true 分支。先在报告里找到实际环境字段，再写结论：“在这组输入约束、fork 和分析策略下……”；不要把一次空输入分析扩写成任意调用。
 
-理论上，结论的量化范围由输入决定；把范围缩小后得到的结论不能自动扩大。实现上，沿 [`EvmArgs::environment`](../../crates/evm-abstract-cli/src/evm.rs) 到 [`EvmEnvironment`](../../crates/evm-abstract/src/world/environment.rs)，检查省略参数与传入零/空如何形成不同输入。
+理论上，结论的量化范围由输入决定；把范围缩小后得到的结论不能自动扩大。实现上，沿 [`EvmArgs::environment`](../../crates/evm-abstract-cli/src/evm.rs) 到 [`EvmEnvironmentValues<N>`](../../crates/evm-abstract/src/world/environment.rs)，检查省略参数与传入零/空如何形成不同输入。
 
 **停在这里的产物：**一张“两组输入 → 两组分支”的对照表，并能在 JSON 中定位环境。需要解释其他字段时，定点补读[执行与输入模块](execution.md)，无需在本单元枚举全部 CLI 参数。
 

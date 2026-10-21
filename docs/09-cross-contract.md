@@ -142,7 +142,7 @@ nix run . -- explain \
   --verbose
 ```
 
-完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=11`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=12`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 完整 SSA 继续逐帧列出 active/suspended、代码地址、storage owner、代码 hash、mode、caller、static、跳转历史和栈高，不会因为活动帧采用共用指令布局而省略暂停帧。`bytecode instructions` 与 `instruction effects` 共享当前 Bᵢ 标题和不带 `0x` 的 pc 列，效果行不重复打印 Bᵢ 标题；指令正文显示归一化计算，并保留逐指令效果编号与故障注释。JSON 的 `opcode`、`immediate`、`operands`、`results`、`fault` 继续记录原始指令证据，`operation` 记录最终计算，`facts` 与 `mappings` 分别记录事实和来源、等价、依赖。教学视图与完整视图使用同一份归一化 SSA，完整视图展开帧和效果链。
 
@@ -160,7 +160,7 @@ nix run . -- explain \
 
 完整报告中的返回字节使用稀疏表示：`length` 给出可能长度，`default` 给出未单独列出位置的抽象字节，偏移行列出显式字节事实。例如 `length={0x20} (32 bytes)` 表示长度确定为 32；`0x001f` 是第 31 字节的偏移，和长度不是同一个字段。连续且精确的字节可以写成 hex；仍有多种可能的字节保留值集合或位、范围等约束。`kind` 区分普通字节序列与按 32 字节扩展的 memory。没有偏移行不表示空数组：还要看长度和默认字节；未知也不能读成零。[第 14 课](14-memory-model.md)将这些输出对应到 ByteArray 的表示与读取规则。
 
-数值默认用[第 12 课的组合域](12-product-domains-facts.md)表示。文本里的 `{0x1}` 是候选集合的简写；无法列出完整候选但仍有数值约束时，`bits=` 后用 64 个十六进制位置展示固定位：数字表示该位置全部已知，`*` 表示四位全未知，`[01**]` 这样的四位二进制模式表示部分已知。模式按高位到低位排列，不省略任何 `*`。整个数值没有约束时显示 `⊤`；仅位组件没有约束时，`bits=` 后仍显示完整的 64 个 `*`，其他组件可能仍有约束。完整报告的表格保留全部字符；普通长字段会换行，每个完整 256 位模式及其紧邻的 `bits=` 标签保持在同一行。JSON 还携带位、区间、同余和来源；`known_bits.zero` 与 `known_bits.one` 仍是原来的两个掩码，文本格式变化不改变这些字段。查询确定候选时可取 `.Constants`，但没有这个键不等于数值完全未知。文本保留数值概要，JSON 用于检查各组件。固定输入身份在值的 `.identity.input.name`，不是来源字段；纯运算的持久表达式另在 `.expression`。世界状态入口/出口的关系分别在 `.states[].entry.relations` 和 `.states[].exit.relations`，详见[第 15 课](15-symbolic-relations.md)。
+数值默认用[第 12 课的组合域](12-product-domains-facts.md)表示。文本里的 `{0x1}` 是候选集合的简写；无法列出完整候选但仍有数值约束时，`bits=` 后用 64 个十六进制位置展示固定位：数字表示该位置全部已知，`*` 表示四位全未知，`[01**]` 这样的四位二进制模式表示部分已知。模式按高位到低位排列，不省略任何 `*`。整个数值没有约束时显示 `⊤`；仅位组件没有约束时，`bits=` 后仍显示完整的 64 个 `*`，其他组件可能仍有约束。完整报告的表格保留全部字符；普通长字段会换行，每个完整 256 位模式及其紧邻的 `bits=` 标签保持在同一行。JSON 还携带位、区间、同余和来源；`known_bits.zero` 与 `known_bits.one` 仍是原来的两个掩码，文本格式变化不改变这些字段。查询 product 的完整候选时可取 `.numeric.constants`；值为 `null` 只说明常量组件没有完整列表。文本保留数值概要，JSON 用于检查各组件。固定输入身份在值的 `.identity.input.name`，不是来源字段；纯运算的持久表达式另在 `.expression`。世界状态入口/出口的关系分别在 `.states[].entry.relations` 和 `.states[].exit.relations`，详见[第 15 课](15-symbolic-relations.md)。
 
 完整报告的摘要统计中 `published=1`、`hits=0` 可以同时成立：分析器保存了一份完整子调用结果，但没有后来的相同调用可复用。在下面的 [`returndata-copy.json`](../examples/worlds/returndata-copy.json) 中，A 只 CALL B 一次，因此没有第二次命中的机会。摘要记录中的 `source` 指向首次分析的状态，`reused_at` 指向后来的复用位置；这些都是分析图编号，不是账户或链上交易编号。
 
@@ -192,7 +192,7 @@ CALL 失败而 A 能继续时，成功位为 0，没有返回字节写入输出�
 
 调用栈总有一个入口帧，以及零个或多个子帧。没有子帧时入口活动；有子帧时最后一个子帧活动，其余暂停。完整报告的 `Depth` 是帧数量；入口为 1。每个帧里的 `stack in` / `stack out` 是 EVM 操作数栈，按栈底 → 栈顶显示；它与这组执行帧组成的调用栈不同。
 
-所有帧都保存回滚点，入口自身失败时也需要它。子帧还必须保存怎样返回父帧：继续位置和输出复制区。源码用 `RootFrame` / `ChildFrame` 区分这两种角色，调用栈只能移除子帧，始终保留入口。角色和活动状态是两项事实：入口帧也能暂停等待 B。
+所有帧都保存回滚点，入口自身失败时也需要它。子帧还必须保存怎样返回父帧：继续位置和输出复制区。源码用 `EvmRootFrame<N>` / `EvmChildFrame<N>` 区分这两种角色，调用栈只能移除子帧，始终保留入口。角色和活动状态是两项事实：入口帧也能暂停等待 B。
 
 | 帧里的内容 | 为什么要保存 |
 | --- | --- |
@@ -293,7 +293,7 @@ jq '[.outcomes[] | select(.kind == "Return")
      | .store.persistent.slots] | unique' /tmp/rollback.json
 ```
 
-你会看到 B slot 0 保留 `0x4`，A slot 0 为 `0x3`。A slot 1 的某个抽象值中，`Constants` 为 `["0x0","0x2a"]`，还带有其他数值组件与来源；其中 `0x2a` 是 42，零来自没有得到 REVERT 数据的失败可能。这个结果保留了 REVERT 数据，同时撤销了 B 的写入。它描述该样例的抽象可能性，不是任意调用都正确回滚的证明。
+你会看到 B slot 0 保留 `0x4`，A slot 0 为 `0x3`。A slot 1 的某个抽象值中，`.numeric.constants` 为 `["0x0","0x2a"]`，还带有其他数值组件与来源；其中 `0x2a` 是 42，零来自没有得到 REVERT 数据的失败可能。这个结果保留了 REVERT 数据，同时撤销了 B 的写入。它描述该样例的抽象可能性，不是任意调用都正确回滚的证明。
 
 两个相关实验：
 

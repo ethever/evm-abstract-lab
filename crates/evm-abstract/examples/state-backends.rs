@@ -3,8 +3,8 @@
 use alloy_primitives::{Address, U256, keccak256};
 use evm_abstract::{
     Fork,
-    domain::{AbstractValue, Domain},
-    world::{Account, Store, World, WorldError},
+    domain::{EvmNumericAlgebra, EvmValue, ProductAlgebra, ValueAlgebra, WordElement},
+    world::{EvmAccount, EvmStore, EvmWorld, WorldError},
 };
 use serde::Serialize;
 use std::{hint::black_box, num::ParseIntError, time::Instant};
@@ -75,7 +75,7 @@ fn bounded_argument(
     Ok(value)
 }
 
-fn observation(value: AbstractValue) -> u64 {
+fn observation<N: WordElement>(value: EvmValue<N>) -> u64 {
     match value.constants() {
         Some(values) => values.iter().fold(values.len() as u64, |checksum, value| {
             checksum.wrapping_add(value.to::<u64>())
@@ -84,18 +84,18 @@ fn observation(value: AbstractValue) -> u64 {
     }
 }
 
-fn store_checksum(store: &Store) -> Result<String, ExampleError> {
+fn store_checksum<N: WordElement + Serialize>(store: &EvmStore<N>) -> Result<String, ExampleError> {
     Ok(format!("{:#x}", keccak256(serde_json::to_vec(store)?)))
 }
 
-fn sample(
+fn sample<N: WordElement + Serialize>(
     workload: &'static str,
-    baseline: &Store,
+    baseline: &EvmStore<N>,
     slots: usize,
     iterations: usize,
     writes_per_iteration: usize,
     effect_store_checksum: &str,
-    mut operation: impl FnMut(&mut Store) -> u64,
+    mut operation: impl FnMut(&mut EvmStore<N>) -> u64,
 ) -> Result<Sample, ExampleError> {
     // Initial construction and this per-workload clone are outside the timer.
     let mut store = baseline.clone();
@@ -132,26 +132,38 @@ fn run() -> Result<(), ExampleError> {
         return Err(ExampleError::Usage);
     }
 
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    measure(slots, iterations, &algebra)
+}
+
+fn measure<D: EvmNumericAlgebra>(
+    slots: usize,
+    iterations: usize,
+    algebra: &ValueAlgebra<D>,
+) -> Result<(), ExampleError>
+where
+    D::Element: Serialize,
+{
     let address = Address::from([1_u8; 20]);
-    let domain = Domain::default();
-    let mut account = Account::empty();
+    let domain = algebra.borrowed();
+    let mut account = EvmAccount::<D::Element>::empty();
     account.storage = (0..slots)
         .map(|slot| {
             (
                 U256::from(slot),
-                AbstractValue::constant(U256::from(slot.saturating_add(1))),
+                EvmValue::constant(U256::from(slot.saturating_add(1))),
             )
         })
         .collect();
-    let mut world = World::new(Fork::Osaka, "state-backend-comparison");
+    let mut world = EvmWorld::new(Fork::Osaka, "state-backend-comparison");
     world.insert(address, account)?;
-    let baseline = Store::new(&world);
+    let baseline = EvmStore::new(&world, domain);
     let sparse_slots: Vec<_> = (0..slots.min(8))
-        .map(|slot| AbstractValue::constant(U256::from(slot)))
+        .map(|slot| EvmValue::constant(U256::from(slot)))
         .collect();
-    let first_slot = AbstractValue::constant(U256::ZERO);
-    let unknown_slot = AbstractValue::top();
-    let replacement = AbstractValue::constant(U256::from(1_000_000));
+    let first_slot = EvmValue::constant(U256::ZERO);
+    let unknown_slot = EvmValue::top();
+    let replacement = EvmValue::constant(U256::from(1_000_000));
     let mut alternate = baseline.clone();
     for slot in &sparse_slots {
         alternate.write(address, slot, &replacement, domain);

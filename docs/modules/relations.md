@@ -20,7 +20,7 @@
 
 **理论角度：**数值摘要相同只说明允许的取值集合相同；Calldata 来源相同只说明来源类别。身份说明是否复用了同一个值，表达式还记录它如何由操作数计算出来。
 
-**实现角度：**在 [`AbstractValue`](../../crates/evm-abstract/src/domain/value.rs) 中区分 numeric、provenance、identity、expression；再到 [`ExprId`](../../crates/evm-abstract/src/domain/symbolic.rs) 找输入叶与 operation。完整路径条件另在 `RelationState`，不属于某个单值。
+**实现角度：**在 [`EvmValue<N>`](../../crates/evm-abstract/src/domain/value.rs) 中区分 numeric、provenance、identity、expression；再到 [`ExprId`](../../crates/evm-abstract/src/domain/symbolic.rs) 找输入叶与 operation。完整路径条件另在 `RelationState`，不属于某个单值。
 
 **观察与停点：**正文默认关系模式下 EQ 得 `{1}`，关闭关系后得 `{0,1}`。能说明差别来自保留派生表达式，即可继续；固定输入身份和 DUP 复制规则在关闭关系后仍可存在。
 
@@ -62,7 +62,7 @@
 
 **理论角度：**身份回答“地址是否还是 k”，有序根回答“读的是写入之前还是之后”。两项合起来才可用 `select(store(S,k,7),k)=7`。若随后向 q 写入，还需区分 q=k 与 q≠k；不同来源或不同 hash 输入不能直接证明不等。没有局部证明也不等于条件不成立。
 
-**实现角度：**[`ByteArray`](../../crates/evm-abstract/src/world/bytes.rs) 与 [`Store`](../../crates/evm-abstract/src/world/store/slots.rs) 建立 EVM 状态根；[`RelationState`](../../crates/evm-abstract/src/domain/relational.rs) 保留局部事实和路径条件；[`relations::refine`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 再将已证明的上界反馈到数值投影。长度、范围、账户和回滚规则仍由状态实现负责。
+**实现角度：**[`EvmByteArray<N>`](../../crates/evm-abstract/src/world/bytes.rs) 与 [`EvmStore<N>`](../../crates/evm-abstract/src/world/store/slots.rs) 建立 EVM 状态根；[`RelationState`](../../crates/evm-abstract/src/domain/relational.rs) 保留局部事实和路径条件；[`relations::refine`](../../crates/evm-abstract/src/analysis/transfer/relations.rs) 再将已证明的上界反馈到数值投影。长度、范围、账户和回滚规则仍由状态实现负责。
 
 再读[局部推理与工作预算](../15-symbolic-relations.md#7-局部推理与工作预算)，找到当前报告的表达式/约束上限、status 和 frontiers。`max_work` 是抽象工作量，不是秒数或 EVM gas。
 

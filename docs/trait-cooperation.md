@@ -35,15 +35,15 @@ without consumer: Converged, impossible branch reached = true
 let mut extension = Extension::with_tasks(
     Pair::new(
         Registered::new(consumer::Consumer::new(true)),
-        Registered::new(producer::Producer::new(true)),
+        Registered::new(producer::Producer::<FiniteConstantSet>::new(true)),
     ),
     PairedTasks::new(PerInput, PerInput),
 )
 .with_stores(contracts::Stores);
 
-let analysis = analyze_world_cooperating(
-    world, entry, config, &algebra, &policies, &mut extension,
-)?;
+let input = AnalysisInput::new(world, entry)?;
+let analysis = AnalysisEngine::new(&algebra, &policies, &mut extension)
+    .run(input, config, &Control::default())?;
 ```
 
 imports、错误类型和三个对照的完整代码在示例中。[contracts.rs](../crates/evm-abstract/examples/cooperative/contracts.rs)定义 `ZeroGuards::Value = BTreeSet<usize>`：每个元素是从活动栈底计数、已证明恒为零的槽。合取用集合并集，因为证明的槽越多，保证越强；空集是一个已就绪、没有额外保证的答案。本地工厂返回 `Cons<Channel<ZeroGuards, Descending<Conjoin>>, Nil>`，为该词汇选择明确的存储和合取策略。
@@ -56,9 +56,11 @@ imports、错误类型和三个对照的完整代码在示例中。[contracts.rs
 | 整个执行状态怎样分组、覆盖和加速 | [`EnginePolicies<C,P,S>`](../crates/evm-abstract/src/analysis/engine/policy.rs)、[`StatePolicy`](../crates/evm-abstract/src/analysis/engine/policy/semantic.rs) | 实际状态键、完整输入准入、相对输入及过程输出摘要 |
 | 独立任务怎样交换事实 | [`Extension<A,P,F,G>`](../crates/evm-abstract/src/analysis/cooperation/composition.rs)、[`analysis-kernel`](../crates/analysis-kernel/src/lib.rs) | 任务计划、类型化 channel、跨程序点依赖与共同闭包 |
 
-`ValueAlgebra<D>` 在数值策略外处理值身份、来源和表达式；`EvmValue<N>`、`EvmByteArray<N>`、`EvmStore<N>`、`EvmWorld<N>`、`EvmEntry<N>` 及 `EvmWorldAnalysis<N>` 保留实际载体。`AbstractValue`、`World` 等名字是默认 `NumericValue` 的具体别名。泛型原生报告入口见 [`render::world`](../crates/evm-abstract/src/render/world.rs)；跨表示边界时仍需检查具体事实是否被保留。
+`ValueAlgebra<D>` 在数值策略外处理值身份、来源和表达式；`EvmValue<N>`、`EvmByteArray<N>`、`EvmStore<N>`、`EvmWorld<N>`、`EvmEntry<N>` 及 `EvmWorldAnalysis<N>` 保留实际载体。`ProductAlgebra` 使用 `NumericValue`，`FiniteSetAlgebra` 使用 `FiniteConstantSet`；泛型 helper 通过 `D::Element` 传递两者。原生 JSON 的 `.numeric` 保留实际载体，来源图的 `WordObservation` 和协议 `ValueInfo` 则是各自显式的观察边界。
 
-[`analyze_world_with`](../crates/evm-abstract/src/analysis.rs) 接收数值和状态策略；接入独立组件使用 [`analyze_world_cooperating`](../crates/evm-abstract/src/analysis/cooperation/entry.rs)。后者将状态策略与组件任务计划作为独立泛型参数传递。冻结策略按引用传入，一般入口不要求策略实现 `Clone` 或 `Copy`。配置中的 `DomainSpec` 必须与传入数值策略一致；默认入口使用同一生产内核的空扩展。
+[`AnalysisEngine`](../crates/evm-abstract/src/analysis.rs) 只有一个公开执行入口。先用 `AnalysisInput::new(world, entry)` 建立经过校验、带有真实 snapshot/revision 的不可变输入，再调用借用式引擎的 `run(input, config, &control)`。状态策略与组件任务计划是独立泛型参数；冻结策略按引用传入，无须 `Clone` 或 `Copy`。`NoExtension` 直接实现空组合，走同一引擎。数值与关系限制只来自 `algebra.spec()`，执行配置只保存执行预算。所有载体与组件都遵守相同的输入来源、取消和终止覆盖绑定协议。
+
+需要单程序教学 CFG 时，显式调用 `EvmAnalysis::from_execution(native, &mut postprocess)`。投影持有完整原生执行，并用 `execution_state_id` 把局部状态映射回底层图；投影先按实际载体复制和结构工作预付费，不再次执行程序。应用将同一有限后处理账本传给后续 SSA 构建与验证，用 `MachineEdgeKind` 保留所有两端均被选中的原生边，以及 frontier 和指令进度；输出阶段的 Work/Cancelled 不会生成伪造的完整 SSA。
 
 ## 状态策略决定可执行的完整表示
 
@@ -196,11 +198,13 @@ channel 通常用 [`Ascending<JoinPolicy>` 或 `Descending<RefinePolicy>`](../cr
 
 ## 数值局部协作与工作报价
 
-[`ProductAlgebra<M,R,W=ComposedWork>`](../crates/evm-abstract/src/domain/cooperation/policy.rs)在一次固定数值输入内组合位、区间与标量规约；它与程序层的 `Extension` 可以分别选择。替换规则必须保持这次输入的共同具体含义，不能沿用另一组规则的收敛或成本证明。
+[`ProductAlgebra<M,R,W>`](../crates/evm-abstract/src/domain/cooperation/policy.rs)在一次固定数值输入内组合位、区间与标量规约；它与程序层的 `Extension` 可以分别选择。`ProductAlgebra::from_spec(spec)` 装配内置规则和 `BuiltinWork`；`ProductAlgebra::new(spec, masks, bounds)` 选择替换规则并使用 `ComposedWork`。只有确切的内置组合可以使用经过核对的收敛、拼接和均匀字节定律。替换规则必须保持这次输入的共同具体含义，不能沿用另一组规则的收敛或成本证明。
 
 例如 `x∈[7,14]` 时，`ADD 1; AND 8` 恒得 `8`：区间先得到 `[8,15]`，再将恒定的位传给按位域，供下一条 `AND` 使用。[数值组合客户端](../crates/evm-abstract/tests/cooperation/product.rs)用实际返回值检查这条信息传递，并关闭该规约方向检查精度贡献。
 
-默认 `ComposedWork` 要求所选规则实现 [`RuleWork`](../crates/evm-abstract/src/domain/cooperation/cost.rs)，覆盖一次执行的能力调用、发布策略及计算，再按允许的整个调度组合报价。`with_work` 可注入针对这对规则的 `ProductWork`，包括显式的 `BoundedWork`；有限工作额度并不承诺局部闭包，也不改变事实容量和允许的规则步数。
+`ComposedWork` 要求所选规则实现 [`RuleWork`](../crates/evm-abstract/src/domain/cooperation/cost.rs)，覆盖一次执行的能力调用、发布策略及计算，再按允许的整个调度组合报价。`with_work` 可注入针对这对规则的 `ProductWork`，包括显式的 `BoundedWork`；有限工作额度并不承诺局部闭包，也不改变事实容量和允许的规则步数。
+
+`EvmNumericAlgebra::apply_numeric(op, args)` 接收 `ExactSizeIterator<Item = &Element>`，`observe_byte_numeric` 使用同一借用协议。`operation_work(op, args)` 必须按实际 opcode 报价，覆盖该实现内部的复制和查询；共用的 `ValueAlgebra` 不强制复制数值操作数。缺少可选能力时可以保守返回 Top 或拒绝未知工作，不能把缺少报价读成免费执行。
 
 观察导入与闭包是不同工作。策略若提供 `refinement_import_work`，先支付导入，再按实际导入结果支付后续规约；新增 `MemberOf` 的集合可能比原输入大，原来的 atom 数不足以推导其闭包成本。未提供导入专用报价时，保留完整 `refinement_work` 的付款契约。具体接口见 [`EvmNumericAlgebra`](../crates/evm-abstract/src/domain/algebra.rs)。
 
@@ -220,7 +224,7 @@ channel 通常用 [`Ascending<JoinPolicy>` 或 `Descending<RefinePolicy>`](../cr
 
 不能从内建载体查询便宜推断自定义载体也便宜，也不能重复收取完整报价已覆盖的内部查询。缺失的报价不代表免费；受计费路径中的 `literal_quote_work` 默认以 `usize::MAX` 在构造前拒绝。没有账本的纯库调用由调用者承担工作。
 
-局部结果必须连同结束原因读取：精度轮数/事实容量限制保留安全的已完成结果，`WorkLimit`、`Cancelled`、`KernelFailure` 分别记录工作中断、取消与协议失败，不能都解释为“规则已稳定”。原生报告 schema 为 [11](../crates/evm-abstract/src/analysis.rs)，wire schema 为 [16](../crates/evm-abstract-protocol/src/lib.rs)，`DomainSpec` 的成本版本为 [6](../crates/evm-abstract/src/domain/spec.rs)；报告格式与逻辑工作单位各自有版本。
+局部结果必须连同结束原因读取：精度轮数/事实容量限制保留安全的已完成结果，`WorkLimit`、`Cancelled`、`KernelFailure` 分别记录工作中断、取消与协议失败，不能都解释为“规则已稳定”。原生报告 schema 为 [12](../crates/evm-abstract/src/analysis.rs)，wire schema 为 [17](../crates/evm-abstract-protocol/src/lib.rs)，`DomainSpec` 的成本版本为 [7](../crates/evm-abstract/src/domain/spec.rs)；报告格式与逻辑工作单位各自有版本。
 
 ## 共同闭包与客户端责任
 

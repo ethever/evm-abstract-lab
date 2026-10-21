@@ -115,10 +115,10 @@ nix run . -- analyze --world examples/storage-basic.json \
   --evm.caller 0x0000000000000000000000000000000000001000 \
   --evm.value 0 --evm.calldata 0x --format json > /tmp/storage-basic.json
 
-jq '{initial: .world.accounts["0x0000000000000000000000000000000000000101"].storage["0x0"].Constants,
+jq '{initial: .world.accounts["0x0000000000000000000000000000000000000101"].storage["0x0"].numeric.constants,
      successful: [.outcomes[] | select(.kind == "Return")
                   | .store.persistent.slots[]
-                  | {address, slot, constants: .value.Constants}]}' \
+                  | {address, slot, constants: .value.numeric.constants}]}' \
   /tmp/storage-basic.json
 ```
 
@@ -451,7 +451,7 @@ nix run . -- analyze --world examples/storage-callback-revert.json \
 jq '[.states[]
      | select((.key.frames | length) == 3)
      | .exit.store.persistent.slots
-     | map({address, slot, constants: .value.Constants})] | unique' \
+     | map({address, slot, constants: .value.numeric.constants})] | unique' \
   /tmp/storage-callback.json
 ```
 
@@ -462,7 +462,7 @@ jq '[.states[]
 ```bash
 jq '[.outcomes[] | select(.kind == "Return")
      | .store.persistent.slots
-     | map({address, slot, constants: .value.Constants})] | unique' \
+     | map({address, slot, constants: .value.numeric.constants})] | unique' \
   /tmp/storage-callback.json
 ```
 
@@ -493,7 +493,7 @@ nix run . -- explain --world examples/storage-transient.json \
 
 出口为 `[{0x5}, {0x0}, {0x7}]`。两种 storage 的 slot 编号虽然都是 0，却属于不同 plane（存储平面），TSTORE 没有覆盖 persistent 的 5。
 
-当前 `Store::new` 为新交易创建全零 transient 根；子调用与重入按相同账户共享当前 plane，参与检查点与回滚。交易终结清理 transient，不能把上一笔交易的根带进下一笔。
+当前 `EvmStore::new` 为新交易创建全零 transient 根；子调用与重入按相同账户共享当前 plane，参与检查点与回滚。交易终结清理 transient，不能把上一笔交易的根带进下一笔。
 
 ## 11. RPC 补查的是初始事实，不是当前交易值
 
@@ -518,7 +518,7 @@ SLOAD(0)
 
 ### 值未知，与依赖初始值，是两项事实
 
-Store 另存一份 `InitialIndependence`，记录某个单元在**每条表示的路径上是否都已替换旧值，不再需要该 slot 的初始值作为未写中的兜底候选**。它不是“当前值是否确定”的标志，也不是 JSON 中 AbstractValue 的一个数值组件。
+Store 另存一份 `InitialIndependence`，记录某个单元在**每条表示的路径上是否都已替换旧值，不再需要该 slot 的初始值作为未写中的兜底候选**。它不是“当前值是否确定”的标志，也不是 JSON 中 EvmValue<N> 的一个数值组件。
 
 这里的“初始依赖”有特定含义：它描述当前单元的旧值兜底，不追踪写入值 y 自身的数据来源。例如 `y=SLOAD(0)+1; SSTORE(0,y)`，y 的数值仍依赖先前读取的初始 slot 0；但强写之后，后续 SLOAD(0) 直接读取已保存的 y，不再额外加入“可能没写中而保留的旧值”。RPC 模式会在前一个 SLOAD 需要初始事实时先补查，再重跑计算 y。不能把这个标志理解成强写消除了所有数据依赖。
 

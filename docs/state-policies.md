@@ -1,6 +1,6 @@
 # 选择整机状态策略
 
-`analyze_world_with` 同时接收数值代数和 `EnginePolicies`。其中
+`AnalysisEngine::new(&algebra, &policies, &mut extension)` 借用数值代数、`EnginePolicies` 和组件。其中
 `SemanticPolicies` 分别决定状态的实际分组、完整输入的合并、何时加速，以及过程输入和输出的摘要表示。
 这些策略在一次分析中保持固定，可以借用调用方的数据，无须实现 `Clone` 或 `Copy`。
 
@@ -8,32 +8,34 @@
 use evm_abstract::{
     Address, Fork,
     analysis::{
-        analyze_world_with, BoundedJoin, CoarseSummaries, EagerAcceleration,
+        AnalysisEngine, AnalysisInput, BoundedJoin, CoarseSummaries, EagerAcceleration,
         EnginePolicies, ExecutionConfig, FirstResumeStatus, ForgetJumpHistory,
         OutcomeKind, RecentDistinctJumps, SemanticPolicies, Status,
+        control::Control, cooperation::NoExtension,
     },
-    domain::{AbstractValue, Domain, ValueAlgebra},
-    world::{Account, Entry, World},
+    domain::{EvmValue, NumericValue, ProductAlgebra, ValueAlgebra},
+    world::{EvmAccount, EvmEntry, EvmWorld},
 };
 
 let address = Address::repeat_byte(0x11);
-let mut world = World::new(Fork::Osaka, "state policy example");
-world.insert(address, Account::from_hex(
+let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "state policy example");
+world.insert(address, EvmAccount::from_hex(
     "602a5f5260205ff3", Fork::Osaka,
 ).unwrap()).unwrap();
-let algebra = ValueAlgebra::new(Domain::default());
+let algebra = ValueAlgebra::new(ProductAlgebra::default());
 let policies = EnginePolicies::new(RecentDistinctJumps, FirstResumeStatus)
     .with_state(SemanticPolicies::new(
         ForgetJumpHistory, BoundedJoin, EagerAcceleration, CoarseSummaries,
     ));
-let result = analyze_world_with(
-    world, Entry::new(address), ExecutionConfig::default(), &algebra, &policies,
-).unwrap();
+let input = AnalysisInput::new(world, EvmEntry::new(address)).unwrap();
+let mut extension = NoExtension;
+let result = AnalysisEngine::new(&algebra, &policies, &mut extension)
+    .run(input, ExecutionConfig::default(), &Control::default()).unwrap();
 assert_eq!(result.status(), Status::Converged);
 assert!(result.outcomes().iter().any(|outcome| {
     outcome.kind == OutcomeKind::Return
         && outcome.data.read_word(
-            &AbstractValue::constant(0u64.into()), Domain::default(),
+            &EvmValue::constant(0u64.into()), algebra.borrowed(),
         ).contains(42u64.into())
 }));
 ```

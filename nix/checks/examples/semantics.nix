@@ -44,7 +44,7 @@ let
                   node($write.WriteWord.offset) == {"Constant": "0x0"} and
                   node($write.WriteWord.value) == {"Constant": "0x2a"}
                 ) catch false;
-              .analysis.schema_version == 11 and .analysis.status == "Converged" and
+              .analysis.schema_version == 12 and .analysis.status == "Converged" and
               .analysis.frontiers == [] and .ssa.complete and
               (.analysis.procedure_summaries | length) > 0 and
               all(.analysis.procedure_summaries[];
@@ -57,7 +57,7 @@ let
               all(.analysis.outcomes[] | select(.kind == "Return");
                 .data as $data | ($data | has("failure")) and
                 $data.failure == null and $data.memory == false and
-                $data.length.Constants == ["0x20"] and ($data.root | word42))
+                $data.length.numeric.constants == ["0x20"] and ($data.root | word42))
             ' ${report}/report.json > /dev/null
             ln -s ${report}/report.json "$out/report.json"
           ''
@@ -100,14 +100,14 @@ let
     ln -s ${
       fixtures.worldReport { world = "examples/worlds/create-runtime.json"; }
     }/analysis.json creation.json
-    jq -e 'any(.states[]; .key.frames[-1].mode == "InitCode") and any(.states[]; .key.frames[-1].mode == "Runtime" and .key.frames[-1].code_hash == "0x30962a84ef989ca0f724a5b2ec94f9cbf6a731752ce2c0be5333bf96e460c9fd") and any(.outcomes[]; .store.nonces["0x0000000000000000000000000000000000000101"].Constants == ["0x1"] and any(.store.account_observations[]; .address == "0xea53a153a9a04fd632b2486d84732feb3b71afb7" and .existence == "present" and .code_size == 8 and .nonce.Constants == ["0x1"]))' creation.json > /dev/null
+    jq -e 'any(.states[]; .key.frames[-1].mode == "InitCode") and any(.states[]; .key.frames[-1].mode == "Runtime" and .key.frames[-1].code_hash == "0x30962a84ef989ca0f724a5b2ec94f9cbf6a731752ce2c0be5333bf96e460c9fd") and any(.outcomes[]; .store.nonces["0x0000000000000000000000000000000000000101"].numeric.constants == ["0x1"] and any(.store.account_observations[]; .address == "0xea53a153a9a04fd632b2486d84732feb3b71afb7" and .existence == "present" and .code_size == 8 and .nonce.numeric.constants == ["0x1"]))' creation.json > /dev/null
     cp -a creation.json "$out/"
   '';
   destruction = mkCheck "destruction" [ ] { } ''
     ln -s ${
       fixtures.worldReport { world = "examples/worlds/created-selfdestruct.json"; }
     }/analysis.json destruction.json
-    jq -e 'any(.states[]; .entry.store.pending_destruction["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"] == true and .entry.store.codes["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"].Runtime.byte_len == 8) and any(.outcomes[]; .kind == "Return" and .store.balances["0x0000000000000000000000000000000000000200"].Constants == ["0x7"] and any(.store.account_observations[]; .address == "0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb" and .existence == "absent" and .code_size == 0 and .nonce.Constants == ["0x0"]))' destruction.json > /dev/null
+    jq -e 'any(.states[]; .entry.store.pending_destruction["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"] == true and .entry.store.codes["0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb"].Runtime.byte_len == 8) and any(.outcomes[]; .kind == "Return" and .store.balances["0x0000000000000000000000000000000000000200"].numeric.constants == ["0x7"] and any(.store.account_observations[]; .address == "0x2fd1832070091785c7e2aa8b7d3464a3e23a4eeb" and .existence == "absent" and .code_size == 0 and .nonce.numeric.constants == ["0x0"]))' destruction.json > /dev/null
     cp -a destruction.json "$out/"
   '';
   precompile = mkCheck "precompile" [ ] { } ''
@@ -130,14 +130,14 @@ let
         ) catch false;
       . as $report |
       {"Precompile": "0x0000000000000000000000000000000000000004"} as $native |
-      .schema_version == 11 and .status == "Converged" and .frontiers == [] and
+      .schema_version == 12 and .status == "Converged" and .frontiers == [] and
       any(.states[]; .key.frames[-1].mode == $native) and
       any(.outcomes[];
         . as $outcome |
         .kind == "Return" and (.data | has("failure")) and
         .data.failure == null and .data.memory == false and
         (.data.length | type) == "object" and
-        .data.length.Constants == ["0x20"] and (.data.root | word42) and
+        .data.length.numeric.constants == ["0x20"] and (.data.root | word42) and
         # Bind this output to the caller buffer supplied by the native Return.
         any($report.states[];
           .id == $outcome.state and .key.frames[-1].mode == "Runtime" and
