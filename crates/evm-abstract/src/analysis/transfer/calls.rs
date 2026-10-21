@@ -38,28 +38,39 @@ pub(super) fn resolve<N: WordElement>(
     store: &EvmStore<N>,
     target: Address,
 ) -> Result<(Address, FrameCode, Option<Program>), FrontierReason> {
-    if precompile(world, target) {
-        return Ok((target, FrameCode::Precompile(target), None));
+    let (address, mode, program) =
+        resolve_code(world.fork(), target, |address| store.code(address));
+    Ok((address, mode, program.cloned()))
+}
+
+/// Shared source resolution for execution and a declared, unexpanded root view.
+/// Lookup borrows only code; projecting an incomplete input never builds a Store
+/// or invents an entered frame just to discover which program is declared.
+pub(in crate::analysis) fn resolve_code<'a>(
+    fork: crate::Fork,
+    target: Address,
+    code: impl Fn(Address) -> Option<&'a Code>,
+) -> (Address, FrameCode, Option<&'a Program>) {
+    if super::precompile::contains(fork, target) {
+        return (target, FrameCode::Precompile(target), None);
     }
-    match store.code(target) {
-        Some(Code::Runtime(program)) => Ok((target, FrameCode::Runtime, Some(program.clone()))),
-        Some(Code::Empty) => Ok((target, FrameCode::Empty, None)),
+    match code(target) {
+        Some(Code::Runtime(program)) => (target, FrameCode::Runtime, Some(program)),
+        Some(Code::Empty) => (target, FrameCode::Empty, None),
         Some(Code::Delegation(implementation)) => {
-            if precompile(world, *implementation) {
-                return Ok((*implementation, FrameCode::Empty, None));
+            if super::precompile::contains(fork, *implementation) {
+                return (*implementation, FrameCode::Empty, None);
             }
-            match store.code(*implementation) {
+            match code(*implementation) {
                 Some(Code::Runtime(program)) => {
-                    Ok((*implementation, FrameCode::Runtime, Some(program.clone())))
+                    (*implementation, FrameCode::Runtime, Some(program))
                 }
-                Some(Code::Empty) => Ok((*implementation, FrameCode::Empty, None)),
-                Some(Code::Delegation(_)) => {
-                    Ok((*implementation, FrameCode::InvalidDelegation, None))
-                }
-                _ => Ok((*implementation, FrameCode::Unknown, None)),
+                Some(Code::Empty) => (*implementation, FrameCode::Empty, None),
+                Some(Code::Delegation(_)) => (*implementation, FrameCode::InvalidDelegation, None),
+                _ => (*implementation, FrameCode::Unknown, None),
             }
         }
-        _ => Ok((target, FrameCode::Unknown, None)),
+        _ => (target, FrameCode::Unknown, None),
     }
 }
 

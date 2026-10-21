@@ -225,13 +225,12 @@ fn equal_domain_specs_do_not_share_results_between_numeric_instances() {
     // Disable expression constant recovery so the deliberately coarser ADD
     // implementation remains observable at this numeric injection boundary.
     let config = ExecutionConfig::default();
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(
-        DomainSpec::default().with_relations(crate::domain::relational::RelationLimits {
+    let domain = ProductAlgebra::from_spec(DomainSpec::default().with_relations(
+        crate::domain::relational::RelationLimits {
             enabled: false,
             ..Default::default()
-        }),
+        },
     ));
-    let domain = domain.borrowed();
     let policies: EnginePolicies = EnginePolicies::default();
     let (world, entry) = fixture();
     let mut observations = Vec::new();

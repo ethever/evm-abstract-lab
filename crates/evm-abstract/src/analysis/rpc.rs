@@ -263,13 +263,12 @@ where
             }
         }
         for (address, slots) in storage {
-            // 覆盖 key 扫描、快照初始账户复制与 slot 观测安装的工作。
-            let slot_work = crate::domain::EvmValue::<D::Element>::constant(U256::ZERO)
-                .work_size()
-                .saturating_add(4);
+            // Acquisition retains raw U256 observations. Fund their fixed-width
+            // bookkeeping here; the session quotes its actual N literal factory
+            // at the later paid lift, without manufacturing a value to price it.
             let work = slots
                 .len()
-                .saturating_mul(slot_work.saturating_mul(4))
+                .saturating_mul(128)
                 .saturating_add(session.world().work_size());
             if let Some(reason) = layered.reserve_acquisition(work) {
                 resource_frontier(&mut analysis, reason);

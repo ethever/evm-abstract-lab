@@ -51,6 +51,8 @@ pub(in crate::analysis) mod cooperation;
 pub(in crate::analysis) mod policy;
 use super::cooperation::{Composition, CooperationError, InputTasks, LocalInput, Point, PointKind};
 use cooperation::Cooperation;
+#[cfg(test)]
+use cooperation::Empty;
 mod input;
 mod installation;
 mod reuse;

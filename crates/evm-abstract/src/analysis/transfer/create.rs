@@ -694,7 +694,7 @@ pub(super) fn finish_creation<D: EvmNumericAlgebra>(
 mod tests {
 
     use super::reserved;
-    use crate::{Fork, world::World};
+    use crate::{Fork, analysis::testing::World};
     use alloy_primitives::{Address, U256};
 
     #[test]

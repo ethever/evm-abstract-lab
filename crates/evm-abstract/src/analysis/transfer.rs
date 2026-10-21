@@ -39,6 +39,7 @@ fn identity_scope() -> Option<u64> {
 mod arithmetic_proof_tests;
 mod budget;
 mod calls;
+pub(super) use calls::resolve_code;
 mod candidates;
 #[cfg(test)]
 mod clone_payment_tests;
@@ -1686,13 +1687,13 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
 
 #[cfg(test)]
 mod tests {
+    use crate::analysis::testing::Entry;
+    use crate::analysis::testing::World;
     use crate::analysis::transfer::ExecutionFrontier;
     use crate::domain::ValueAlgebra;
-    use crate::world::Entry;
-    use crate::world::World;
 
     use super::*;
-    use crate::{Fork, world::Account};
+    use crate::{Fork, analysis::testing::Account};
 
     #[test]
     fn cancelled_transfer_preserves_input_and_differs_from_exhausted_work() {
@@ -1703,8 +1704,9 @@ mod tests {
             .unwrap();
         let entry = Entry::new(owner);
         let config = ExecutionConfig::default();
-        let domain = config.domain().unwrap();
-        let input = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+        let domain = crate::analysis::testing::product(crate::domain::DomainSpec::default());
+        let domain = domain.borrowed();
+        let input = initial(&world, &entry, domain).unwrap();
         for cancelled in [false, true] {
             let control = crate::analysis::control::Control::new(Default::default());
             let (result, budget) = control.scope(|| {
@@ -1717,7 +1719,7 @@ mod tests {
                     &entry,
                     input.clone(),
                     &config,
-                    ValueAlgebra::new(&domain),
+                    domain,
                     &crate::analysis::RecentDistinctJumps,
                     &mut budget,
                     StorageReadPolicy::Abstract,
@@ -1759,8 +1761,9 @@ mod tests {
         world.insert(owner, Account::empty()).unwrap();
         let entry = Entry::new(owner);
         let config = ExecutionConfig::default();
-        let domain = config.domain().unwrap();
-        let mut payload = initial(&world, &entry, ValueAlgebra::new(&domain)).unwrap();
+        let domain = crate::analysis::testing::product(crate::domain::DomainSpec::default());
+        let domain = domain.borrowed();
+        let mut payload = initial(&world, &entry, domain).unwrap();
         // Exercise the defensive evidence boundary directly: ordinary validated
         // delegation facts normally provide the marker bytes at resolution.
         let frame = payload.active_mut();
@@ -1772,7 +1775,7 @@ mod tests {
             &entry,
             payload,
             &config,
-            ValueAlgebra::new(&domain),
+            domain,
             &crate::analysis::RecentDistinctJumps,
             &mut WorkBudget::new(config.max_work),
             StorageReadPolicy::Abstract,
