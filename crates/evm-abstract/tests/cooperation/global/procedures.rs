@@ -95,18 +95,20 @@ where
                 };
                 if let Some(summary) = summary.value() {
                     cx.charge(summary.work_size())?;
-                    self.revisions
-                        .entry(*id)
-                        .or_default()
-                        .insert(summary.revision);
+                    let revisions = self.revisions.entry(*id).or_default();
+                    assert!(
+                        revisions
+                            .last()
+                            .is_none_or(|previous| *previous <= summary.revision),
+                        "native snapshot revisions must not move backwards"
+                    );
+                    revisions.insert(summary.revision);
                     let proof = <Cx as Discover<SummaryClosures, SummaryClosureRoute>>::discover(
                         cx,
                         Scoped::new(input.universe(), *id),
                     )?;
-                    if proof
-                        .value()
-                        .is_some_and(|proof| proof.generation == summary.generation)
-                    {
+                    if let Some(proof) = proof.value() {
+                        assert_eq!(proof.generation, summary.generation);
                         self.closed.insert(*id);
                     }
                     for output in summary.outputs.values() {
@@ -194,16 +196,24 @@ fn check_procedure_reader<const REQUIRED: bool>(use_summaries: bool) {
     assert!(!reader.continuations.is_empty());
     assert!(reader.payloads > 0);
     assert!(!reader.closed.is_empty());
-    assert!(
-        reader.revisions.values().any(|versions| versions.len() > 1),
-        "output and completion growth must wake real clients"
-    );
-    assert!(
-        reader
-            .body_generations
-            .values()
-            .any(|generations| generations.len() > 1)
-    );
+    assert!(!reader.body_generations.is_empty());
+    if REQUIRED {
+        // Required first-value reads defer this fixture's native bodies until
+        // an initial MAY snapshot arrives. Later native output growth wakes them.
+        assert!(
+            reader.revisions.values().any(|versions| versions.len() > 1),
+            "native output growth must wake the required snapshot readers"
+        );
+        assert!(
+            reader
+                .body_generations
+                .values()
+                .any(|generations| generations.len() > 1)
+        );
+    }
+    // An optional observer can first run after native work settles and coalesce
+    // intermediate snapshots. Controlled Read/Discover wakeups and same-value
+    // completion are checked by the native_may_growth private regressions.
     assert!(
         reader
             .body_generations

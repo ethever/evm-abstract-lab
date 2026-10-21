@@ -344,6 +344,15 @@ fn mismatched_live_certificate_cannot_certify_a_new_snapshot() {
 
 #[test]
 fn native_may_growth_wakes_required_snapshot_reader_without_staling_its_scope() {
+    check_native_may_growth::<true>();
+}
+
+#[test]
+fn native_may_growth_wakes_discovery_snapshot_reader_without_staling_its_scope() {
+    check_native_may_growth::<false>();
+}
+
+fn check_native_may_growth<const REQUIRED: bool>() {
     let mut h = Harness::new();
     h.publish().unwrap();
     h.certificate(true);
@@ -381,12 +390,18 @@ fn native_may_growth_wakes_required_snapshot_reader_without_staling_its_scope() 
         .generation_entry(world, scope, &mut meter)
         .unwrap();
     let mut run = h.runtime.kernel().begin(reader, &mut meter).unwrap();
-    let value = run
-        .query(
+    let value = if REQUIRED {
+        run.query(
             &mut h.cooperation.shared.as_mut().unwrap().summaries,
             Scoped::new(world, Harness::ID),
         )
-        .unwrap();
+    } else {
+        run.query_discovery(
+            &mut h.cooperation.shared.as_mut().unwrap().summaries,
+            Scoped::new(world, Harness::ID),
+        )
+    }
+    .unwrap();
     assert!(
         matches!(value.state, analysis_kernel::Availability::Value(summary) if summary.generation == 7)
     );
@@ -424,14 +439,54 @@ fn native_may_growth_wakes_required_snapshot_reader_without_staling_its_scope() 
     );
     let mut meter = MachineMeter(&mut h.budget);
     let mut run = h.runtime.kernel().begin(reader, &mut meter).unwrap();
-    let value = run
-        .query(
+    let value = if REQUIRED {
+        run.query(
             &mut h.cooperation.shared.as_mut().unwrap().summaries,
             Scoped::new(world, Harness::ID),
         )
-        .unwrap();
+    } else {
+        run.query_discovery(
+            &mut h.cooperation.shared.as_mut().unwrap().summaries,
+            Scoped::new(world, Harness::ID),
+        )
+    }
+    .unwrap();
     assert!(
         matches!(value.state, analysis_kernel::Availability::Value(summary) if summary.generation == 8)
     );
     run.finish(LocalClosure::Stable).unwrap();
+
+    // Completion renews the separate proof; an unchanged MAY generation does
+    // not manufacture another raw-snapshot notification or retire its reader.
+    let mut producer = h.producer();
+    h.cooperation
+        .publish_summaries(
+            vec![(
+                Harness::ID,
+                crate::analysis::cooperation::Summary::new(8, std::collections::BTreeMap::new(), 8),
+            )],
+            true,
+            &mut h.runtime,
+            &mut producer,
+            &mut h.budget,
+            |run| {
+                run.observe_slot(&h.source)?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    h.runtime.finish(producer, &mut h.budget).unwrap();
+    assert!(
+        !h.runtime
+            .view()
+            .worklist()
+            .pending()
+            .any(|job| job == reader)
+    );
+    assert!(
+        !h.runtime
+            .view()
+            .scope_stale(scope, &mut MachineMeter(&mut h.budget))
+            .unwrap()
+    );
 }
