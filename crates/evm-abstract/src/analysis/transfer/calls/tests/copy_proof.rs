@@ -15,6 +15,8 @@ use std::fmt;
 static QUERIES: Counter<usize> = Counter::new(0);
 static QUERY_QUOTES: Counter<usize> = Counter::new(0);
 
+mod nonzero;
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 struct Word(NumericValue);
 
