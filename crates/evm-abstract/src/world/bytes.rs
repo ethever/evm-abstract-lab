@@ -843,18 +843,65 @@ impl<N: WordElement> EvmByteArray<N> {
         max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
+        self.copy_return_data_prepared(
+            target_offset,
+            returndata,
+            requested,
+            max_bytes,
+            domain,
+            None,
+        )
+        .map(|_| ())
+    }
+
+    /// The caller funds original inputs and structural COPY work first. Newly
+    /// produced range values get their own copy owner before the nested stage;
+    /// a refused payment never publishes the private target.
+    pub(crate) fn copy_return_data_budgeted_with<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        target_offset: &EvmValue<N>,
+        returndata: &Self,
+        requested: &EvmValue<N>,
+        max_bytes: usize,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, RangeError> {
+        self.copy_return_data_prepared(
+            target_offset,
+            returndata,
+            requested,
+            max_bytes,
+            domain,
+            Some(budget),
+        )
+    }
+
+    fn copy_return_data_prepared<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        target_offset: &EvmValue<N>,
+        returndata: &Self,
+        requested: &EvmValue<N>,
+        max_bytes: usize,
+        domain: AlgebraRef<'_, D>,
+        budget: Option<&mut crate::resource::WorkBudget>,
+    ) -> Result<bool, RangeError> {
         let target_offset = &ranges::normalized_without_query(target_offset)?;
         let requested = &ranges::normalized_without_query(requested)?;
         // Keep both fallible normalizations before skipping the staged clone.
         // Use the same independent proof as quotation, even if N declines its
         // optional numeric query. Empty sources still pass through expansion.
         if ranges::known_singleton(requested) == Some(U256::ZERO) {
-            return Ok(());
+            return Ok(true);
         }
         let mut out = self.clone();
         out.expand_independent_with(target_offset, requested, max_bytes, domain)?;
         let copied = ranges::minimum(requested, returndata.len(), domain)?;
         let source_offset = zero_with().with_expression(ExprId::constant(U256::ZERO));
+        if let Some(budget) = budget
+            && !out.pay_return_copy_stage_with(&copied, &source_offset, budget)?
+        {
+            return Ok(false);
+        }
         out.copy_from_with_queries(
             target_offset,
             (returndata, &source_offset),
@@ -864,7 +911,7 @@ impl<N: WordElement> EvmByteArray<N> {
             ranges::Queries::Independent,
         )?;
         *self = out;
-        Ok(())
+        Ok(true)
     }
     pub(crate) fn check_existing(&self, limits: ExprLimits) -> Result<(), RangeError> {
         if let Some(error) = &self.failure {

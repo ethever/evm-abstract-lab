@@ -121,17 +121,8 @@ fn paid_call_output_range(relations_enabled: bool) {
     bytes[31] = 42;
     let mut data = EvmByteArray::exact(&bytes);
     data.retain_length_literal(ExprId::constant(U256::from(bytes.len())));
-    let fee = child
-        .call_stack
-        .parent()
-        .unwrap()
-        .memory
-        .copy_return_data_work_with(
-            &data,
-            &continuation.output_offset,
-            &continuation.output_size,
-            algebra,
-        );
+    let (fee, prepared) =
+        super::copy_proof::finish_prices(&child, &data, OutcomeKind::Return, algebra);
     assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (1, 1));
     for maximum in [fee - 1, fee] {
         RECEIPT.update(|r| {
@@ -150,7 +141,7 @@ fn paid_call_output_range(relations_enabled: bool) {
             0,
         );
         assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
-        assert_eq!(budget.used(), if maximum == fee { fee } else { 0 });
+        assert_eq!(budget.used(), if maximum == fee { fee } else { prepared });
         eprintln!(
             "CALL_RESUME fee={fee} used={} queries=0 quotes=0 completed={}",
             budget.used(),
@@ -193,12 +184,8 @@ fn paid_call_output_range(relations_enabled: bool) {
         let data = EvmByteArray::empty();
         let parent = child.call_stack.parent().unwrap();
         let root = parent.memory.state_root().clone();
-        let fee = parent.memory.copy_return_data_work_with(
-            &data,
-            &continuation.output_offset,
-            &continuation.output_size,
-            algebra,
-        );
+        let (fee, prepared) =
+            super::copy_proof::finish_prices(&child, &data, OutcomeKind::Failure, algebra);
         assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
         for maximum in [fee - 1, fee] {
             let mut result = empty_execution(child.clone());
@@ -212,7 +199,7 @@ fn paid_call_output_range(relations_enabled: bool) {
                 0,
             );
             assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
-            assert_eq!(budget.used(), if maximum == fee { fee } else { 0 });
+            assert_eq!(budget.used(), if maximum == fee { fee } else { prepared });
             if maximum == fee {
                 assert!(result.frontiers.is_empty());
                 assert_eq!(result.completed_calls.len(), 1);
