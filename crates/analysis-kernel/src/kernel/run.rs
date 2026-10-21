@@ -309,9 +309,10 @@ impl<J, M: Meter> Run<'_, J, M> {
         let work = value_work
             .saturating_add(coverage.as_ref().map_or(0, |update| update.work))
             .saturating_add(1);
-        let changes = self
-            .kernel
-            .prepare_changes(changes, semantic, self.meter, work)?;
+        let local_topology = (self.scope() == key.scope).then_some((directory, key.scope));
+        let changes =
+            self.kernel
+                .prepare_changes(changes, semantic, local_topology, self.meter, work)?;
         if numerical {
             channel
                 .scopes
@@ -362,9 +363,10 @@ impl<J, M: Meter> Run<'_, J, M> {
         let work = coverage
             .as_ref()
             .map_or(1, |update| update.work.saturating_add(1));
-        let changes = self
-            .kernel
-            .prepare_changes(changes, semantic, self.meter, work)?;
+        let local_topology = (self.scope() == key.scope).then_some((table.directory, key.scope));
+        let changes =
+            self.kernel
+                .prepare_changes(changes, semantic, local_topology, self.meter, work)?;
         // Covering absence from a new source generation may renew its declared
         // family without erasing an aggregate value retained from other inputs.
         if first {
@@ -386,6 +388,10 @@ impl<J, M: Meter> Run<'_, J, M> {
     /// A stale source returns recoverable `StaleGeneration`: this Vec API cannot
     /// represent Pending membership. Uncovered declared producers similarly
     /// return `PendingCoverage` until their current selections republish.
+    /// Membership (even empty) is adopted against foreign publications in this
+    /// scope; genuine same-scope feedback only wakes this generation. The caller
+    /// must establish the declared producer/key universe's completeness: this is
+    /// an enumeration of resolved keys, not proof about undeclared producers.
     pub fn keys<Q: Capability, P: PublicationPolicy<Value = Q::Value>>(
         &mut self,
         channel: &mut Channel<Q, P>,
@@ -426,7 +432,8 @@ impl<J, M: Meter> Run<'_, J, M> {
             }
         }
         reserve(self.meter, cost)?;
-        self.kernel.assume(self.job, directory, scope, self.meter)?;
+        self.kernel
+            .assume_directory(self.job, directory, scope, self.meter)?;
         for cell in table
             .cells
             .values()
@@ -558,6 +565,7 @@ impl<J, M: Meter> Run<'_, J, M> {
             Some(self.kernel.prepare_changes(
                 &ids,
                 if semantic { &ids } else { &[] },
+                None,
                 self.meter,
                 install_work,
             )?)
