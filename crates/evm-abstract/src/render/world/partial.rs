@@ -4,33 +4,44 @@
 //! Pending instructions retain their recorded phase without manufacturing a
 //! normal result or an unobserved effect; unexecuted nodes contain no TAC.
 
+use crate::domain::WordElement;
 use evm_abstract_notation::Symbol;
 
 use crate::{
-    analysis::{InstructionProgress, WorldAnalysis},
+    analysis::{EvmWorldAnalysis, InstructionProgress},
     render::{instruction::InstructionLayout, normalized::Artifact},
     ssa::{NormalizedSsa, PartialBlockCoverage, PartialWorldSsa},
 };
 use revm_bytecode::opcode;
 use std::fmt::Write;
 
-pub(super) fn render(analysis: &WorldAnalysis, ir: &PartialWorldSsa) -> String {
+pub(super) fn render<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ir: &PartialWorldSsa<N>,
+) -> String {
     render_with_mode(analysis, Artifact::Partial(ir), false)
 }
 
-pub(super) fn render_verbose(analysis: &WorldAnalysis, ir: &PartialWorldSsa) -> String {
+pub(super) fn render_verbose<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ir: &PartialWorldSsa<N>,
+) -> String {
     render_with_mode(analysis, Artifact::Partial(ir), true)
 }
 
-pub(super) fn render_normalized(
-    analysis: &WorldAnalysis,
-    ir: &NormalizedSsa,
+pub(super) fn render_normalized<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ir: &NormalizedSsa<N>,
     verbose: bool,
 ) -> String {
     render_with_mode(analysis, Artifact::Normalized(ir), verbose)
 }
 
-fn render_with_mode(analysis: &WorldAnalysis, ir: Artifact<'_>, verbose: bool) -> String {
+fn render_with_mode<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ir: Artifact<'_, N>,
+    verbose: bool,
+) -> String {
     let mut output = String::from("Partial SSA (machine state IDs):\n");
     write!(
         output,

@@ -12,7 +12,7 @@ pub(super) fn evaluate<D: EvmNumericAlgebra>(
     context: &TransferContext<'_, D>,
     pc: usize,
 ) -> Option<EvmValue<D::Element>> {
-    let value = match bytes.keccak_with(context.domain, context.config.max_memory_bytes) {
+    let value = match bytes.keccak(context.domain, context.config.max_memory_bytes) {
         Ok(value) => value,
         Err(error) => {
             boundary(result, pc, errors::bytes(error));

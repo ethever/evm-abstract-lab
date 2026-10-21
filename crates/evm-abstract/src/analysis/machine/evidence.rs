@@ -111,8 +111,8 @@ impl<N: WordElement> EvmExecutionEvidence<N> {
 #[cfg(test)]
 mod tests;
 
-/// Default numeric assembly for [`EvmInstructionValue`].
-pub type InstructionValue = EvmInstructionValue<crate::domain::NumericValue>;
-
-/// Default numeric assembly for [`EvmExecutionEvidence`].
-pub type ExecutionEvidence = EvmExecutionEvidence<crate::domain::NumericValue>;
+// Local regression fixtures use explicit built-in carriers.
+#[cfg(test)]
+pub(in crate::analysis) type InstructionValue = EvmInstructionValue<crate::domain::NumericValue>;
+#[cfg(test)]
+pub(in crate::analysis) type ExecutionEvidence = EvmExecutionEvidence<crate::domain::NumericValue>;

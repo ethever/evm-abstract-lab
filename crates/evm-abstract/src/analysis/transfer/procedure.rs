@@ -11,6 +11,9 @@
 //! not constrain those identities. Retained feedback metadata publishes through
 //! the same native slots as payload growth, including after a consumer settles.
 
+#[cfg(test)]
+use crate::analysis::testing::{ByteArray, TestValue, World};
+
 use crate::analysis::engine::policy::{KeyIndex, PolicyKey};
 use crate::analysis::engine::{
     ContextPolicy, EnginePolicies, PartitionPolicy, ProcedureOutput, StatePolicy,
@@ -59,7 +62,7 @@ mod tests;
 
 use crate::analysis::state::{
     EvmPayloadSummary,
-    payload::{self, instantiate as instantiate_with, semantic_eq},
+    payload::{self, instantiate, semantic_eq},
     projection, storage_observations,
 };
 #[cfg(test)]
@@ -67,7 +70,7 @@ use crate::analysis::state::{context, stack_alias};
 #[cfg(test)]
 pub(in crate::analysis) use coarse_retry::prepare as prepare_runtime_retry;
 #[cfg(test)]
-use payload::join as join_with;
+use payload::join;
 pub(in crate::analysis) use recursion::is_recursive_entry;
 
 /// This is an internal owner namespace, never an observed account address.
@@ -231,7 +234,7 @@ struct EvmSolver<
     C: ContextPolicy,
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
-    X: Composition<D::Element, E>,
+    X: Composition<D::Element, Error = E>,
     E,
 > {
     table: &'a mut EvmTable<D::Element, S::Key>,
@@ -278,7 +281,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         C: ContextPolicy,
         P: PartitionPolicy,
         S: StatePolicy<D, P::Class, Key = Key>,
-        X: Composition<N, E>,
+        X: Composition<N, Error = E>,
         E,
     >(
         &mut self,
@@ -440,7 +443,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 let output_store = if payload.active().key.is_static {
                     Ok(output.summary.store.apply_static_touches(&payload.store))
                 } else {
-                    output.summary.store.instantiate_with(domain)
+                    output.summary.store.instantiate(domain)
                 };
                 // Equal numerical byte bounds on mutually exclusive exits of
                 // this invocation describe the same unconstrained observable
@@ -453,13 +456,9 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 {
                     Ok(data.clone())
                 } else {
-                    output
-                        .summary
-                        .data
-                        .instantiate_with(domain)
-                        .inspect(|data| {
-                            data_sources.push((output.summary.data.clone(), data.clone()));
-                        })
+                    output.summary.data.instantiate(domain).inspect(|data| {
+                        data_sources.push((output.summary.data.clone(), data.clone()));
+                    })
                 };
                 let (store, data) = match (output_store, output_data) {
                     (Ok(store), Ok(data)) => (store, data),
@@ -549,15 +548,15 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                         let input = solver.table.entry_source(id).expect("retained procedure");
                         Ok(EvmProcedureSummary {
                             frame: procedure.frame.clone(),
-                            input: input.payload.store.instantiate_with(domain)?,
+                            input: input.payload.store.instantiate(domain)?,
                             outputs: procedure
                                 .outputs
                                 .iter()
                                 .map(|(kind, output)| {
                                     Ok(EvmProcedureSummaryOutput {
                                         kind: *kind,
-                                        data: output.summary.data.instantiate_with(domain)?,
-                                        store: output.summary.store.instantiate_with(domain)?,
+                                        data: output.summary.data.instantiate(domain)?,
+                                        store: output.summary.store.instantiate(domain)?,
                                     })
                                 })
                                 .collect::<Result<Vec<_>, MachineError>>()?,
@@ -597,11 +596,10 @@ pub(in crate::analysis) mod testing;
 #[cfg(test)]
 use crate::{
     analysis::{ChildFrame, Continuation, MachinePayload},
-    domain::{AbstractValue, Domain, NumericValue},
-    world::{ByteArray, World},
+    domain::ProductAlgebra,
 };
 #[cfg(test)]
-use testing::{Solver, Table, execute_inner, form, instantiate, join};
+use testing::{Solver, Table, execute_inner, form};
 
 #[cfg(test)]
 use super::{Execution, ExecutionFrontier};

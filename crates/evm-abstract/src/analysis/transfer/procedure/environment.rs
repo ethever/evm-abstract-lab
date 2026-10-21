@@ -16,7 +16,7 @@ impl<
     C: ContextPolicy,
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
-    X: Composition<D::Element, E>,
+    X: Composition<D::Element, Error = E>,
     E,
 > EvmSolver<'_, D, C, P, S, X, E>
 {
@@ -47,7 +47,7 @@ impl<
         if let Err(error) =
             payload
                 .store
-                .unknown_effects_with(&protected, Some(owner), is_static, self.domain)
+                .unknown_effects(&protected, Some(owner), is_static, self.domain)
         {
             boundary_on(
                 &mut result,

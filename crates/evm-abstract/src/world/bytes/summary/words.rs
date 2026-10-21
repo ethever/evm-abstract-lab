@@ -171,7 +171,7 @@ pub(super) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         if analysis_control::current_cancellation().is_cancelled() {
             return Err(ExprError::Cancelled.into());
         }
-        let value = array.read_word_checked_with(&EvmValue::constant(U256::from(index)), domain)?;
+        let value = array.read_word_checked(&EvmValue::constant(U256::from(index)), domain)?;
         if value.numeric().requires_retained_binding()
             && !value.numeric().is_top()
             && value.singleton().is_none()

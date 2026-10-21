@@ -106,7 +106,7 @@ impl<N: WordElement> Plane<N> {
 impl<N: WordElement> EvmStore<N> {
     /// Unknown-world effects under the selected transaction lifecycle rules.
     /// Every supported fork keeps SELFDESTRUCT code visible until finalization.
-    pub fn apply_unknown_effects_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn apply_unknown_effects<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         protected: &BTreeSet<Address>,
         delegated_owner: Option<Address>,
@@ -116,7 +116,7 @@ impl<N: WordElement> EvmStore<N> {
     ) -> Result<(), StoreError> {
         match fork {
             crate::Fork::Cancun | crate::Fork::Prague | crate::Fork::Osaka => {
-                self.unknown_effects_with(protected, delegated_owner, is_static, domain)
+                self.unknown_effects(protected, delegated_owner, is_static, domain)
             }
         }
     }
@@ -133,7 +133,7 @@ impl<N: WordElement> EvmStore<N> {
     /// delegated unknown execution additionally writes its current owner.
     /// Static execution preserves values but can touch zero-value recipients.
     /// Errors leave the store unchanged.
-    pub(crate) fn unknown_effects_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn unknown_effects<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         protected: &BTreeSet<Address>,
         writable_owner: Option<Address>,
@@ -203,40 +203,5 @@ impl<N: WordElement> EvmStore<N> {
         out.check_existing(limits)?;
         *self = out;
         Ok(())
-    }
-}
-
-impl EvmStore<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn apply_unknown_effects(
-        &mut self,
-        protected: &BTreeSet<Address>,
-        delegated_owner: Option<Address>,
-        is_static: bool,
-        fork: crate::Fork,
-    ) -> Result<(), StoreError> {
-        self.apply_unknown_effects_with(
-            protected,
-            delegated_owner,
-            is_static,
-            fork,
-            crate::domain::ValueAlgebra::new(crate::domain::Domain::default()).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    #[cfg(test)]
-    pub(crate) fn unknown_effects(
-        &mut self,
-        protected: &BTreeSet<Address>,
-        writable_owner: Option<Address>,
-        is_static: bool,
-        domain: crate::domain::Domain,
-    ) -> Result<(), StoreError> {
-        self.unknown_effects_with(
-            protected,
-            writable_owner,
-            is_static,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
     }
 }

@@ -3,15 +3,13 @@
 //! This is an upper-bound evaluator, not a second content DAG or alias solver.
 //! Unknown aliasing joins both alternatives; reads retain their original terms.
 
-use super::{conditional::Context, constant_with, zero_with};
+use super::{conditional::Context, constant, zero};
 use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    EvmValue, Profile,
+    EvmValue,
     symbolic::{ByteStateId, ByteStateKind, ByteView, ExprId, ExprKind},
 };
-#[cfg(test)]
-use crate::world::bytes::{constant, zero};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::collections::BTreeMap;
@@ -47,14 +45,14 @@ pub(in crate::world) fn scalar_in<N: WordElement, D: EvmNumericAlgebra<Element =
         if context.stopped() {
             return EvmValue::<N>::top();
         }
-        if let Some(constant_with) = expression.as_constant() {
+        if let Some(constant) = expression.as_constant() {
             // A constant-key source union is not a unique input occurrence.
             // Drop its must-alias identity while retaining every possible source.
-            let joined = context.join_with(domain, &v, &EvmValue::<N>::constant(constant_with));
+            let joined = context.join(domain, &v, &EvmValue::<N>::constant(constant));
             return if context.stopped() {
                 EvmValue::<N>::top()
             } else {
-                joined.with_numeric(N::constant(constant_with))
+                joined.with_numeric(N::constant(constant))
             };
         }
         if let ExprKind::Ite {
@@ -113,7 +111,7 @@ pub(in crate::world) fn scalar_in<N: WordElement, D: EvmNumericAlgebra<Element =
             } else if !c.may_be_zero() {
                 scalar_in(then_value, &context.branch(condition, true), domain)
             } else {
-                context.join_with(
+                context.join(
                     domain,
                     &scalar_in(then_value, &context.branch(condition, true), domain),
                     &scalar_in(else_value, &context.branch(condition, false), domain),
@@ -124,7 +122,7 @@ pub(in crate::world) fn scalar_in<N: WordElement, D: EvmNumericAlgebra<Element =
     }
 }
 
-pub(in crate::world) fn numeric_domain_with<'a, D: EvmNumericAlgebra>(
+pub(in crate::world) fn numeric_domain<'a, D: EvmNumericAlgebra>(
     domain: AlgebraRef<'a, D>,
 ) -> AlgebraRef<'a, D> {
     domain.without_relations()
@@ -255,7 +253,7 @@ impl<'s> ReadChoices<'s> {
 pub(super) struct Reader<
     'a,
     N: WordElement = crate::domain::NumericValue,
-    D: EvmNumericAlgebra<Element = N> = crate::domain::Domain,
+    D: EvmNumericAlgebra<Element = N> = crate::domain::ProductAlgebra,
 > {
     context: Context<'a, N, D>,
     domain: AlgebraRef<'a, D>,
@@ -271,7 +269,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
     pub(super) fn with_context(context: Context<'a, N, D>, domain: AlgebraRef<'a, D>) -> Self {
         Self {
             context,
-            domain: numeric_domain_with(domain),
+            domain: numeric_domain(domain),
             word_bytes: BTreeMap::new(),
             retained_work: 0,
         }
@@ -298,11 +296,10 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
         }
         let top_image = self.domain.byte_image_candidate(scalar.numeric())
             && scalar.numeric().is_top()
-            && self.domain.spec().profile() == Profile::Product
             && !self.domain.spec().relations().enabled;
         let complete = if top_image {
             true
-        } else if full_image::candidate_with(scalar.numeric(), self.domain) {
+        } else if full_image::candidate(scalar.numeric(), self.domain) {
             // Enum/policy checks leave finite and congruence-constrained words
             // on their original path. Fund the fixed mask proof before running
             // it; a refused mandatory payment must not enter the old loop.
@@ -323,7 +320,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
             };
             let value = self
                 .context
-                .apply(self.domain, opcode::BYTE, &[constant_with(0), scalar]);
+                .apply(self.domain, opcode::BYTE, &[constant(0), scalar]);
             #[cfg(test)]
             if !self.context.stopped() {
                 tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.0 += 1);
@@ -335,7 +332,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                     let byte = self.context.apply(
                         self.domain,
                         opcode::BYTE,
-                        &[constant_with(j), scalar.clone()],
+                        &[constant(j), scalar.clone()],
                     );
                     #[cfg(test)]
                     if !self.context.stopped() {
@@ -410,13 +407,11 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                     Some(if relative < crate::world::unsigned_bounds(&length).0 {
                         value
                     } else {
-                        reader
-                            .context
-                            .join_with(reader.domain, &value, &zero_with())
+                        reader.context.join(reader.domain, &value, &zero())
                     })
                 }
                 ReadTask::Value(value) => Some(*value),
-                ReadTask::Zero => Some(zero_with()),
+                ReadTask::Zero => Some(zero()),
                 ReadTask::UnknownByte => Some(EvmValue::<N>::unknown_byte()),
                 ReadTask::Choices(mut choices, seen) => {
                     if let Some(next) = choices.next() {
@@ -445,7 +440,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 ReadTask::Join => {
                     let right = values.pop().expect("right alternative");
                     let left = values.pop().expect("left alternative");
-                    Some(reader.context.join_with(reader.domain, &left, &right))
+                    Some(reader.context.join(reader.domain, &left, &right))
                 }
                 ReadTask::Pack => {
                     let bytes = values.split_off(values.len() - 32);
@@ -551,9 +546,9 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                                 &context,
                             ))
                         })
-                        .unwrap_or_else(zero_with)
+                        .unwrap_or_else(zero)
                 } else if crate::world::unsigned_bounds(&index).0 >= U256::from(bytes.len()) {
-                    zero_with()
+                    zero()
                 } else {
                     EvmValue::<N>::unknown_byte()
                 }
@@ -568,7 +563,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 }
                 let (_, hi) = crate::world::unsigned_bounds(&len);
                 if crate::world::unsigned_bounds(&i).0 >= hi {
-                    return Some(zero_with());
+                    return Some(zero());
                 }
                 let cell = if let Some(indices) = crate::world::candidates(&i) {
                     indices
@@ -597,7 +592,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 if crate::world::unsigned_bounds(&i).1 < crate::world::unsigned_bounds(&len).0 {
                     cell
                 } else {
-                    context.join_with(domain, &cell, &zero_with())
+                    context.join(domain, &cell, &zero())
                 }
             }
             ByteStateKind::WriteByte {
@@ -608,7 +603,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 let val = context.observe_byte(
                     domain,
                     opcode::AND,
-                    &[scalar_in(value, &context, domain), constant_with(255)],
+                    &[scalar_in(value, &context, domain), constant(255)],
                 );
                 if index == offset {
                     return Some(val);
@@ -756,12 +751,12 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
             return None;
         }
         if crate::world::unsigned_bounds(&rel).0 >= crate::world::unsigned_bounds(&len).1 {
-            return Some(zero_with());
+            return Some(zero());
         }
         // Checked source addition: no BV256 wraparound can expose source byte zero.
         if let (Some(rel), Some(off)) = (rel.singleton(), off.singleton()) {
             let Some(i) = off.checked_add(rel) else {
-                return Some(zero_with());
+                return Some(zero());
             };
             tasks.push(ReadTask::Pad(Box::new(len), rel));
             tasks.push(ReadTask::Byte(&view.state, ExprId::constant(i)));
@@ -850,7 +845,7 @@ impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
         let mut parts = bytes
             .into_iter()
             .enumerate()
-            .map(|(j, b)| context.apply(domain, opcode::SHL, &[constant_with((31 - j) * 8), b]))
+            .map(|(j, b)| context.apply(domain, opcode::SHL, &[constant((31 - j) * 8), b]))
             .collect::<Vec<_>>();
         while parts.len() > 1 {
             if context.stopped() {
@@ -911,10 +906,7 @@ fn join<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     if context.stopped() {
         return EvmValue::<N>::top();
     }
-    out.map_or_else(
-        || value.clone(),
-        |old| context.join_with(domain, &old, &value),
-    )
+    out.map_or_else(|| value.clone(), |old| context.join(domain, &old, &value))
 }
 fn disjoint<N: WordElement>(a: &EvmValue<N>, b: &EvmValue<N>) -> bool {
     let (alo, ahi) = crate::world::unsigned_bounds(a);
@@ -949,14 +941,4 @@ pub(in crate::world) fn bound<N: WordElement>(
     } else {
         value.with_numeric(N::from_observation(observation))
     }
-}
-
-#[cfg(test)]
-pub(in crate::world) fn numeric_domain(domain: crate::domain::Domain) -> crate::domain::Domain {
-    crate::domain::Domain::from_spec(domain.spec().with_relations(
-        crate::domain::relational::RelationLimits {
-            enabled: false,
-            ..domain.spec().relations()
-        },
-    ))
 }

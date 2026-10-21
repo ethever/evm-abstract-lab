@@ -266,7 +266,7 @@ pub(in crate::world) fn retain_truth<E, N: WordElement, D: EvmNumericAlgebra<Ele
     guarantee
         .observe(condition, bound.numeric(), &policy)
         .map_err(GuardRefinementError::Facts)?;
-    match guarantee.refine_numeric_with(condition, old.numeric(), domain, &policy) {
+    match guarantee.refine_numeric(condition, old.numeric(), domain, &policy) {
         crate::domain::relational::EvmScalarQuery::Refined { numeric, .. } => {
             facts.insert(
                 condition.clone(),
@@ -292,7 +292,7 @@ pub(in crate::world) fn refresh_scalar<N: WordElement, D: EvmNumericAlgebra<Elem
 ) {
     if let Some(expression) = value.expression()
         && let Some(exact) =
-            numeric::scalar(expression, facts, numeric::numeric_domain_with(domain)).singleton()
+            numeric::scalar(expression, facts, numeric::numeric_domain(domain)).singleton()
         && value.contains(exact)
     {
         *value = value.clone().with_numeric(N::constant(exact));
@@ -332,7 +332,7 @@ impl<N: WordElement> EvmByteArray<N> {
     /// Apply only caller-proved guard truth. None retains both alternatives;
     /// false means the imported facts prove the whole state infeasible. Errors
     /// leave this wrapper unchanged. The callback owns query/budget diagnostics.
-    pub fn refine_guards_with<E, D: EvmNumericAlgebra<Element = N>>(
+    pub fn refine_guards<E, D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         domain: AlgebraRef<'_, D>,
         limits: ExprLimits,
@@ -352,21 +352,5 @@ impl<N: WordElement> EvmByteArray<N> {
         out.check_existing(limits)?;
         *self = out;
         Ok(true)
-    }
-}
-
-impl EvmByteArray<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn refine_guards<E>(
-        &mut self,
-        domain: crate::domain::Domain,
-        limits: ExprLimits,
-        proof: &mut impl FnMut(&ExprId) -> Result<Option<bool>, E>,
-    ) -> Result<bool, GuardRefinementError<E>> {
-        self.refine_guards_with(
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-            limits,
-            proof,
-        )
     }
 }

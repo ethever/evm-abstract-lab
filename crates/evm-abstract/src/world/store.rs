@@ -3,19 +3,19 @@
 use super::{Code, EvmByteArray, EvmWorld, Existence};
 use crate::bytecode::Program;
 use crate::domain::AlgebraRef;
-#[cfg(test)]
-use crate::domain::{AbstractValue, Domain};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
-    EvmValue, ValueAlgebra,
+    EvmValue,
     symbolic::{ExprError, ExprId, SlotStateId, SourceId, StateError},
 };
-#[cfg(test)]
-use crate::world::{ByteArray, World};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use snapshot_state::SharedCheckpoint;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
+#[cfg(test)]
+use {crate::world::test_support::TestBytes, crate::world::test_support::TestWorld};
 
 mod clone_payment;
 mod effects;
@@ -33,7 +33,9 @@ mod traversal;
 mod widening;
 use thiserror::Error;
 
-pub use summary::{EvmStoreSummary, StoreSummary};
+#[cfg(test)]
+use crate::world::test_support::{TestLog, TestStore, TestStoreSummary};
+pub use summary::EvmStoreSummary;
 
 /// Ordered state observations with the selected snapshot storage backend.
 pub use snapshot_state::OrderedMap;
@@ -95,7 +97,7 @@ pub enum LogError {
 }
 
 impl<N: WordElement> EvmLog<N> {
-    fn join_with<D: EvmNumericAlgebra<Element = N>>(
+    fn join<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,
         domain: AlgebraRef<'_, D>,
@@ -107,7 +109,7 @@ impl<N: WordElement> EvmLog<N> {
                 .zip(&other.topics)
                 .map(|(left, right)| domain.join(left, right))
                 .collect(),
-            data: self.data.join_with(&other.data, domain),
+            data: self.data.join(&other.data, domain),
         }
     }
 
@@ -577,10 +579,7 @@ impl<N: WordElement> EvmStore<N> {
             log.data.update_values(update);
         });
     }
-    pub(crate) fn project_with<D: EvmNumericAlgebra<Element = N>>(
-        &mut self,
-        domain: AlgebraRef<'_, D>,
-    ) {
+    pub(crate) fn project<D: EvmNumericAlgebra<Element = N>>(&mut self, domain: AlgebraRef<'_, D>) {
         let project = |value: &mut EvmValue<N>| {
             *value = domain.project(value);
         };
@@ -603,19 +602,15 @@ impl<N: WordElement> EvmStore<N> {
         project(&mut self.balance_default);
     }
     /// Build transaction state without modifying the fixed input snapshot.
-    pub fn new_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn new<D: EvmNumericAlgebra<Element = N>>(
         world: &EvmWorld<N>,
         domain: AlgebraRef<'_, D>,
     ) -> Self {
-        Self::new_with_limits(
-            world,
-            crate::domain::symbolic::ExprLimits::default(),
-            domain,
-        )
+        Self::new_with_limits(world, domain.spec().relations().expressions(), domain)
     }
 
     /// Initialize every account root under the actual execution domain policy.
-    pub fn new_checked_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn new_checked<D: EvmNumericAlgebra<Element = N>>(
         world: &EvmWorld<N>,
         domain: AlgebraRef<'_, D>,
     ) -> Result<Self, StoreError> {
@@ -678,13 +673,13 @@ impl<N: WordElement> EvmStore<N> {
     }
 
     /// Read persistent storage, joining finite possible slot aliases.
-    pub fn read_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn read<D: EvmNumericAlgebra<Element = N>>(
         &self,
         address: Address,
         slot: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) -> EvmValue<N> {
-        self.persistent.read_with(address, slot, domain)
+        self.persistent.read(address, slot, domain)
     }
 
     /// Missing finite initial keys still needed by the current storage value.
@@ -717,37 +712,37 @@ impl<N: WordElement> EvmStore<N> {
 
     /// Append an ordered slot write; numeric aliases remain conservative.
     /// Checked callers use write_checked to receive a typed retention failure.
-    pub fn write_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn write<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         address: Address,
         slot: &EvmValue<N>,
         value: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) {
-        if let Err(error) = self.write_checked_with(address, slot, value, domain) {
+        if let Err(error) = self.write_checked(address, slot, value, domain) {
             self.persistent.failure = Some(error);
         }
     }
 
     /// Read transaction-scoped transient storage.
-    pub fn read_transient_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn read_transient<D: EvmNumericAlgebra<Element = N>>(
         &self,
         address: Address,
         slot: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) -> EvmValue<N> {
-        self.transient.read_with(address, slot, domain)
+        self.transient.read(address, slot, domain)
     }
 
     /// Update transient storage with the same alias semantics as SSTORE.
-    pub fn write_transient_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn write_transient<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         address: Address,
         slot: &EvmValue<N>,
         value: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) {
-        if let Err(error) = self.write_transient_checked_with(address, slot, value, domain) {
+        if let Err(error) = self.write_transient_checked(address, slot, value, domain) {
             self.transient.failure = Some(error);
         }
     }
@@ -975,7 +970,7 @@ impl<N: WordElement> EvmStore<N> {
 
     /// [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) balance movement and deferred deletion for all supported forks.
     /// The caller enumerates finite beneficiaries before invoking this operation.
-    pub fn selfdestruct_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn selfdestruct<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         address: Address,
         beneficiary: Address,
@@ -1072,14 +1067,14 @@ impl<N: WordElement> EvmStore<N> {
     /// Uncertain deletion joins retained/deleted states; untouched empty accounts
     /// and accounts proven nonempty remain intact. Retention or cancellation
     /// errors leave the complete Store unchanged.
-    pub fn finalize_transaction_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn finalize_transaction<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), StoreError> {
         let limits = domain.spec().relations().expressions();
         self.check_existing(limits)?;
         let mut staged = self.clone();
-        staged.prepare_unlisted_finalization_with(domain)?;
+        staged.prepare_unlisted_finalization(domain)?;
         finalization::Plan::new(&staged).apply(&mut staged, domain, &mut || {
             if analysis_control::current_cancellation().is_cancelled() {
                 Err(StoreError::State(StateError::Cancelled))
@@ -1177,7 +1172,7 @@ impl<N: WordElement> EvmStore<N> {
                 continue;
             }
             if let Some(existing) = possible_logs.get_mut(key) {
-                *existing = existing.join_with(log, domain);
+                *existing = existing.join(log, domain);
             } else {
                 possible_logs.insert(key.clone(), log.clone());
             }
@@ -1263,7 +1258,7 @@ impl<N: WordElement> EvmStore<N> {
 
     /// Add a possible event, joining repeated visits to its fixed source site.
     /// No order or multiplicity is implied by this idempotent event summary.
-    pub fn emit_log_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn emit_log<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         key: LogKey,
         mut log: EvmLog<N>,
@@ -1284,7 +1279,7 @@ impl<N: WordElement> EvmStore<N> {
             });
         }
         if let Some(existing) = self.possible_logs.get_mut(&key) {
-            *existing = existing.join_with(&log, domain);
+            *existing = existing.join(&log, domain);
         } else {
             self.possible_logs.insert(key, log);
         }
@@ -1471,123 +1466,3 @@ impl<N: WordElement> EvmStore<N> {
 
 #[cfg(test)]
 mod storage_dependencies;
-
-/// Default numeric-carrier compatibility alias.
-pub type Store = EvmStore<crate::domain::NumericValue>;
-/// Default numeric-carrier compatibility alias.
-pub type Snapshot = EvmSnapshot<crate::domain::NumericValue>;
-/// Default numeric-carrier compatibility alias.
-pub type AbstractLog = EvmLog<crate::domain::NumericValue>;
-
-impl EvmStore<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn project(&mut self, domain: crate::domain::Domain) {
-        self.project_with(crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn new_checked(
-        world: &EvmWorld<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> Result<Self, StoreError> {
-        Self::new_checked_with(world, crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn read(
-        &self,
-        address: Address,
-        slot: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> EvmValue<crate::domain::NumericValue> {
-        self.read_with(
-            address,
-            slot,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn write(
-        &mut self,
-        address: Address,
-        slot: &EvmValue<crate::domain::NumericValue>,
-        value: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) {
-        self.write_with(
-            address,
-            slot,
-            value,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn read_transient(
-        &self,
-        address: Address,
-        slot: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> EvmValue<crate::domain::NumericValue> {
-        self.read_transient_with(
-            address,
-            slot,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn write_transient(
-        &mut self,
-        address: Address,
-        slot: &EvmValue<crate::domain::NumericValue>,
-        value: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) {
-        self.write_transient_with(
-            address,
-            slot,
-            value,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn selfdestruct(
-        &mut self,
-        address: Address,
-        beneficiary: Address,
-        domain: crate::domain::Domain,
-    ) {
-        self.selfdestruct_with(
-            address,
-            beneficiary,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn finalize_transaction(
-        &mut self,
-        domain: crate::domain::Domain,
-    ) -> Result<(), StoreError> {
-        self.finalize_transaction_with(crate::domain::ValueAlgebra::new(domain).borrowed())
-    }
-    /// Default numeric-policy compatibility wrapper.
-    pub fn emit_log(
-        &mut self,
-        key: LogKey,
-        log: EvmLog<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> Result<(), LogError> {
-        self.emit_log_with(
-            key,
-            log,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
-    }
-}
-
-impl EvmStore<crate::domain::NumericValue> {
-    /// Initialize transaction state using the default numeric policy.
-    pub fn new(world: &super::World) -> Self {
-        Self::new_with(
-            world,
-            ValueAlgebra::new(crate::domain::Domain::default()).borrowed(),
-        )
-    }
-}

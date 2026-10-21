@@ -27,11 +27,12 @@ pub(super) fn refine<D: EvmNumericAlgebra>(
         return Err(FrontierReason::Work);
     }
     let domain = context.domain;
-    let limits = context.config.analysis.relations.expressions();
+    let limits = context.domain.spec().relations().expressions();
+    let relation_policy = domain.spec().relations();
     let mut projection = Projection::new(
         relations,
         domain,
-        &context.config.analysis.relations,
+        &relation_policy,
         context.budget,
         Policy::Branch { diagnostics, pc },
     );

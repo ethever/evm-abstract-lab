@@ -148,7 +148,7 @@ type RuntimeRetry = EvmRuntimeRetry<crate::domain::NumericValue>;
 #[cfg(test)]
 pub(in crate::analysis) fn prepare(
     original: &crate::analysis::state::PayloadSummary,
-    domain: crate::domain::Domain,
+    domain: crate::domain::ProductAlgebra,
     budget: &mut WorkBudget,
 ) -> Result<
     (
@@ -161,10 +161,10 @@ pub(in crate::analysis) fn prepare(
     let algebra = crate::domain::ValueAlgebra::new(domain);
     let prepared = prepare_with(original, algebra.borrowed(), budget)?;
     reserve(budget, prepared.bound.work_size().saturating_mul(4))?;
-    let payload = super::instantiate_with(&prepared.bound, algebra.borrowed())?;
+    let payload = super::instantiate(&prepared.bound, algebra.borrowed())?;
     MachineError::check_cancelled()?;
     Ok((prepared.representation, prepared.bound, payload))
 }
 
 #[cfg(test)]
-use super::{Domain, Execution};
+use super::{Execution, ProductAlgebra};

@@ -1,6 +1,6 @@
 //! Share a fresh word's byte projection only with its algebra's certificate.
 
-use super::{EvmByteArray, constant_with};
+use super::{EvmByteArray, constant};
 use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
@@ -73,7 +73,7 @@ pub(super) fn refresh<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         // Context, authoritative expression, checks and failure marker. Only
         // the first Reader executes BYTE; its complete AV is cloned 32 times.
         let byte = array
-            .read_byte_with_numeric(&constant_with(index), domain, Some(&mut numeric))
+            .read_byte_with_numeric(&constant(index), domain, Some(&mut numeric))
             .unwrap_or_else(|_| EvmValue::<N>::unknown_byte().with_symbolic_limit());
         array.bytes.insert(index, byte);
     }
@@ -81,7 +81,7 @@ pub(super) fn refresh<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 
 impl<N: WordElement> EvmByteArray<N> {
     /// Cached-only admission and complete quotation before effects or literals.
-    pub(crate) fn uniform_word_write_work_with<D: EvmNumericAlgebra<Element = N>>(
+    pub(crate) fn uniform_word_write_work<D: EvmNumericAlgebra<Element = N>>(
         &self,
         offset: &EvmValue<N>,
         value: &EvmValue<N>,
@@ -96,22 +96,5 @@ impl<N: WordElement> EvmByteArray<N> {
             &self.default,
             self.allocations.len(),
         ))
-    }
-}
-
-#[cfg(test)]
-impl EvmByteArray<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub(crate) fn uniform_word_write_work(
-        &self,
-        offset: &EvmValue<crate::domain::NumericValue>,
-        value: &EvmValue<crate::domain::NumericValue>,
-        domain: crate::domain::Domain,
-    ) -> Option<usize> {
-        self.uniform_word_write_work_with(
-            offset,
-            value,
-            crate::domain::ValueAlgebra::new(domain).borrowed(),
-        )
     }
 }

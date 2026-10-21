@@ -4,15 +4,19 @@ use super::{
     DeferredSsaEdge, PartialBlockCoverage, PartialInstruction, PartialWorldBlock, PartialWorldSsa,
     coverage, deferred_reason, is_call,
 };
+use crate::domain::WordElement;
 use crate::ssa::{SsaInvariantKind as Kind, error::invariant};
 use crate::{
-    analysis::{InstructionProgress, MachineEdgeKind, Status, WorldAnalysis},
+    analysis::{EvmWorldAnalysis, InstructionProgress, MachineEdgeKind, Status},
     ssa::{EffectInput, EffectPhi, FramePhi, Instruction, SsaError, Transition},
 };
 use revm_bytecode::opcode;
 use std::collections::BTreeMap;
 
-pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaError> {
+pub(super) fn build<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<PartialWorldSsa<N>, SsaError> {
     crate::ssa::checkpoint()?;
     let mut next = 0;
     let mut effect_next = 0;
@@ -259,7 +263,7 @@ pub(super) fn build(analysis: &WorldAnalysis) -> Result<PartialWorldSsa, SsaErro
         blocks,
         transitions,
         deferred_edges,
-        frontiers: analysis.frontiers().to_vec(),
+        frontiers: super::clone_frontiers(analysis.frontiers(), budget)?,
         value_count: next,
         effect_count: effect_next,
     })

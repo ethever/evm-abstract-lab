@@ -16,7 +16,7 @@ use super::{
     Arc, BTreeMap, BTreeSet, DiagnosticKind, EvmByteArray, EvmCallStack, EvmExecution,
     EvmExecutionFrontier, EvmMachinePayload, EvmNode, EvmOutput, EvmPayloadSummary, EvmProcedure,
     EvmRootFrame, EvmSolver, EvmStore, EvmSubscriber, FrameCode, FrontierReason, Limit,
-    MachineEdgeKind, MachineError, OutcomeKind, execute_inner_with, instantiate_with,
+    MachineEdgeKind, MachineError, OutcomeKind, execute_inner_with, instantiate,
     resume_summary_inner, transfer_stop,
 };
 
@@ -25,7 +25,7 @@ impl<
     C: ContextPolicy,
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
-    X: Composition<D::Element, E>,
+    X: Composition<D::Element, Error = E>,
     E,
 > EvmSolver<'_, D, C, P, S, X, E>
 {
@@ -34,10 +34,11 @@ impl<
         payload: &EvmMachinePayload<D::Element>,
     ) -> Result<EvmPayloadSummary<D::Element>, MachineError> {
         let mut refined = payload.clone();
+        let relation_policy = self.domain.spec().relations();
         let mut projection = super::projection::Projection::new(
             &payload.relations,
             self.domain,
-            &self.config.analysis.relations,
+            &relation_policy,
             self.budget,
             super::projection::Policy::Summary,
         );
@@ -717,7 +718,7 @@ impl<
             return false;
         }
         let input = self.table.nodes[id].payload.clone();
-        let execution = match instantiate_with(&input, self.domain) {
+        let execution = match instantiate(&input, self.domain) {
             Ok(payload) => {
                 let payload = match self.cooperative_input(id, payload, 0) {
                     Ok(Some(payload)) => payload,
@@ -917,8 +918,8 @@ impl<
             .map_err(MachineError::frontier_reason)?;
         self.reserve(prepared.value.work_size().saturating_mul(4))
             .map_err(MachineError::frontier_reason)?;
-        let payload = instantiate_with(&prepared.value, self.domain)
-            .map_err(MachineError::frontier_reason)?;
+        let payload =
+            instantiate(&prepared.value, self.domain).map_err(MachineError::frontier_reason)?;
         self.retry_admission()?;
         Ok(coarse_retry::Admitted {
             representation: coarse,
@@ -956,7 +957,7 @@ impl<
                 self.reserve(bound.work_size().saturating_mul(4))
                     .map_err(MachineError::frontier_reason)?;
                 return Ok(super::super::empty_execution(
-                    instantiate_with(&bound, self.domain).map_err(MachineError::frontier_reason)?,
+                    instantiate(&bound, self.domain).map_err(MachineError::frontier_reason)?,
                 ));
             }
         };
@@ -1426,11 +1427,11 @@ impl<
                 .saturating_add(output.work)
                 .saturating_mul(4),
         )?;
-        let mut payload = instantiate_with(template, self.domain)?;
+        let mut payload = instantiate(template, self.domain)?;
         // Installed constraints still refer only to the old immutable snapshot.
         // Never reinstall those read bounds after replacing the EvmStore<D::Element>.
-        payload.store = output.summary.store.instantiate_with(self.domain)?;
-        let data = output.summary.data.instantiate_with(self.domain)?;
+        payload.store = output.summary.store.instantiate(self.domain)?;
+        let data = output.summary.data.instantiate(self.domain)?;
         let execution = resume_summary_inner(
             payload,
             kind,
@@ -1513,7 +1514,7 @@ fn parked_bound<D: EvmNumericAlgebra>(
 ) -> EvmExecutionFrontier<D::Element> {
     let current =
         crate::analysis::state::bounded::reserve(budget, summary.work_size().saturating_mul(4))
-            .and_then(|()| instantiate_with(summary, domain))
+            .and_then(|()| instantiate(summary, domain))
             .ok();
     let target = current
         .as_ref()

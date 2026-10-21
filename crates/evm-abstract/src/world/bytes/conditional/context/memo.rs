@@ -4,7 +4,7 @@
 use super::Context;
 use crate::domain::AlgebraRef;
 use crate::domain::{
-    DomainSpec, EvmValue, Profile,
+    DomainSpec, EvmValue,
     symbolic::{ExprError, ExprId, ExprLimits},
 };
 use crate::domain::{EvmNumericAlgebra, WordElement};
@@ -56,7 +56,7 @@ pub(super) struct Demand<'a, D: EvmNumericAlgebra> {
     // Accepted action receipts only: true denotes a numeric primitive.
     #[cfg(test)]
     payments: RefCell<Vec<(bool, usize)>>,
-    // Completed payment checkpoints followed by actual Reader Domain calls.
+    // Completed payment checkpoints followed by actual Reader algebra calls.
     #[cfg(test)]
     reader_calls: Cell<(usize, usize)>,
 }
@@ -362,7 +362,7 @@ pub(super) struct Memo<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> {
 }
 
 impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Memo<'_, N, D> {
-    pub(super) fn get_with(
+    pub(super) fn get(
         &self,
         expression: &ExprId,
         domain: AlgebraRef<'_, D>,
@@ -494,8 +494,8 @@ pub(in crate::world::bytes) struct Preparation {
 /// A real join still runs after the equal/Top meet shortcuts. Use the same
 /// fixed-width gcd and B-tree insertion tariff as the byte writer, plus
 /// expression comparisons and materialization of joined components. The caller
-/// and memo's own AV snapshots remain arena work. Constants-only joins rebuild
-/// numeric summaries, including one congruence fold per retained candidate.
+/// and memo's own AV snapshots remain arena work. Policies without the product shortcut certificate receive the conservative
+/// candidate-rebuilding envelope, including one congruence fold per candidate.
 pub(super) fn join_work<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     domain: AlgebraRef<'_, D>,
     left: &EvmValue<N>,
@@ -516,14 +516,15 @@ pub(super) fn join_work<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     };
     let origin_height = (usize::BITS - origins.leading_zeros()) as usize + 1;
     let retained = candidates.min(domain.capacity());
-    let (congruence_joins, summaries) = if domain.spec().profile() == Profile::ConstantsOnly {
-        (
-            retained.saturating_sub(1).max(1),
-            retained.saturating_mul(256),
-        )
-    } else {
-        (1, 0)
-    };
+    let (congruence_joins, summaries) =
+        if !domain.numeric_algebra().supports_product_scalar_shortcuts() {
+            (
+                retained.saturating_sub(1).max(1),
+                retained.saturating_mul(256),
+            )
+        } else {
+            (1, 0)
+        };
     4096usize
         .saturating_mul(congruence_joins)
         .saturating_add(candidates.saturating_mul(height).saturating_mul(256))

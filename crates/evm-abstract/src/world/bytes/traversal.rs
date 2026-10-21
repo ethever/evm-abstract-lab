@@ -83,7 +83,7 @@ impl<N: WordElement> EvmByteArray<N> {
         out
     }
     /// One capture-avoiding map must be shared by the entire machine payload.
-    pub fn rename_fresh_with<D: EvmNumericAlgebra<Element = N>>(
+    pub fn rename_fresh<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         map: &BTreeMap<ExprId, ExprId>,
         limits: ExprLimits,
@@ -207,19 +207,4 @@ pub(super) fn exact_work(root: &ByteStateId) -> usize {
         }
     }
     work
-}
-
-impl EvmByteArray<crate::domain::NumericValue> {
-    /// Default numeric-policy compatibility wrapper.
-    pub fn rename_fresh(
-        &mut self,
-        map: &BTreeMap<ExprId, ExprId>,
-        limits: ExprLimits,
-    ) -> Result<(), RangeError> {
-        self.rename_fresh_with(
-            map,
-            limits,
-            crate::domain::ValueAlgebra::new(crate::domain::Domain::default()).borrowed(),
-        )
-    }
 }

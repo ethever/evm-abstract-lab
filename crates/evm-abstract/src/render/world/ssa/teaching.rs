@@ -3,6 +3,7 @@
 //! DUP/SWAP 只调整已有名称；调用结果在恢复调用者的转换处定义。
 //! 检查点和粗粒度效果只在跨帧转换处展示，完整证据由详细视图提供。
 
+use crate::domain::WordElement;
 use evm_abstract_notation::Symbol;
 
 use crate::render::{
@@ -13,7 +14,7 @@ use crate::render::{
 #[cfg(test)]
 use crate::ssa::WorldSsa;
 use crate::{
-    analysis::{MachineEdgeKind, MachineState, WorldAnalysis},
+    analysis::{EvmMachineState, EvmWorldAnalysis, MachineEdgeKind},
     ssa::{NormalizedSsa, Transition, ValueId},
 };
 use revm_bytecode::opcode;
@@ -24,18 +25,21 @@ mod tests;
 
 /// 简洁视图保留原图的状态、转换编号和操作数弹出顺序。
 #[cfg(test)]
-pub(in crate::render::world) fn render(analysis: &WorldAnalysis, ir: &WorldSsa) -> String {
+pub(in crate::render::world) fn render<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ir: &WorldSsa,
+) -> String {
     render_artifact(analysis, Artifact::World(ir))
 }
 
-pub(in crate::render::world) fn render_normalized(
-    analysis: &WorldAnalysis,
-    ir: &NormalizedSsa,
+pub(in crate::render::world) fn render_normalized<N: WordElement>(
+    analysis: &EvmWorldAnalysis<N>,
+    ir: &NormalizedSsa<N>,
 ) -> String {
     render_artifact(analysis, Artifact::Normalized(ir))
 }
 
-fn render_artifact(analysis: &WorldAnalysis, ir: Artifact<'_>) -> String {
+fn render_artifact<N: WordElement>(analysis: &EvmWorldAnalysis<N>, ir: Artifact<'_, N>) -> String {
     let references = References::new(analysis);
     let mut output = String::from("Verified cross-contract SSA:\n");
     writeln!(
@@ -68,9 +72,9 @@ fn render_artifact(analysis: &WorldAnalysis, ir: Artifact<'_>) -> String {
     output
 }
 
-fn write_block(
+fn write_block<N: WordElement>(
     output: &mut String,
-    state: &MachineState,
+    state: &EvmMachineState<N>,
     block: Block<'_>,
     references: &References,
 ) {
@@ -157,9 +161,9 @@ fn write_stacks(output: &mut String, stacks: &[Vec<ValueId>]) {
     }
 }
 
-fn write_transition(
+fn write_transition<N: WordElement>(
     output: &mut String,
-    analysis: &WorldAnalysis,
+    analysis: &EvmWorldAnalysis<N>,
     index: usize,
     transition: &Transition,
 ) {

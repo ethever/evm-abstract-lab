@@ -13,7 +13,7 @@ use crate::{
 };
 use analysis_kernel::{Availability, JobId, KernelError, LocalClosure, Meter, RunningJob, Scoped};
 
-impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
+impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
     pub(super) fn evaluate_seed(
         &mut self,
         runtime: &mut Runtime<<X as InputTasks>::Task>,
