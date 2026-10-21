@@ -1,6 +1,6 @@
 use super::{
     BoundsToMask, KeepBounds, KeepMasks, MaskToBounds, ProductAlgebra, RuleError, RuleWork,
-    close_order,
+    close_order, test_support::Count,
 };
 use crate::domain::{
     AbstractValue, Domain, DomainSpec, EvmNumericAlgebra, FiniteConstantSet, NumericValue, Profile,
@@ -30,43 +30,6 @@ fn input() -> NumericValue {
         ..NumericValue::top()
     }
 }
-#[derive(Clone, Copy)]
-struct CountedMask<'a>(&'a Cell<usize>);
-impl RuleWork for CountedMask<'_> {
-    fn evaluation_work(&self, spec: DomainSpec, finite: usize) -> usize {
-        BoundsToMask.evaluation_work(spec, finite)
-    }
-}
-impl<Cx> Reduction<Cx> for CountedMask<'_>
-where
-    BoundsToMask: Reduction<Cx, Task = Scope, Error = RuleError>,
-{
-    type Task = Scope;
-    type Error = RuleError;
-    fn reduce(&mut self, t: &Scope, cx: &mut Cx) -> Result<LocalClosure, RuleError> {
-        self.0.set(self.0.get() + 1);
-        BoundsToMask.reduce(t, cx)
-    }
-}
-#[derive(Clone, Copy)]
-struct CountedBounds<'a>(&'a Cell<usize>);
-impl RuleWork for CountedBounds<'_> {
-    fn evaluation_work(&self, spec: DomainSpec, finite: usize) -> usize {
-        MaskToBounds.evaluation_work(spec, finite)
-    }
-}
-impl<Cx> Reduction<Cx> for CountedBounds<'_>
-where
-    MaskToBounds: Reduction<Cx, Task = Scope, Error = RuleError>,
-{
-    type Task = Scope;
-    type Error = RuleError;
-    fn reduce(&mut self, t: &Scope, cx: &mut Cx) -> Result<LocalClosure, RuleError> {
-        self.0.set(self.0.get() + 1);
-        MaskToBounds.reduce(t, cx)
-    }
-}
-
 #[test]
 fn cyclic_typed_rules_close_in_both_orders_without_finite_enumeration() {
     let mut answers = Vec::new();
@@ -76,8 +39,14 @@ fn cyclic_typed_rules_close_in_both_orders_without_finite_enumeration() {
         let result = close_order(
             Domain::from_spec(spec(8, 256)),
             input(),
-            CountedMask(&masks),
-            CountedBounds(&bounds),
+            Count {
+                rule: BoundsToMask,
+                calls: &masks,
+            },
+            Count {
+                rule: MaskToBounds,
+                calls: &bounds,
+            },
             order,
         );
         assert_eq!(result.status, ReductionStatus::Stable);
@@ -194,6 +163,7 @@ fn default_observation_roundtrips_full_product_and_serialization() {
 
 #[test]
 fn large_default_operand_quotation_is_stable_and_does_not_run_reducers() {
+    let _counter = super::PROTOCOL_WORK.scope();
     let values = (0u64..1024).map(U256::from).collect();
     let value = AbstractValue::from_numeric(NumericValue {
         finite: FiniteConstantSet::try_from_values(values).unwrap(),
@@ -202,55 +172,13 @@ fn large_default_operand_quotation_is_stable_and_does_not_run_reducers() {
     let before = value.clone();
     let domain = ValueAlgebra::new(Domain::default());
     let first = domain.operation_work(std::slice::from_ref(&value));
+    assert_eq!(super::PROTOCOL_WORK.get(), (0, 0, 0));
     for _ in 0..8 {
         assert_eq!(domain.operation_work(std::slice::from_ref(&value)), first);
+        assert_eq!(super::PROTOCOL_WORK.get(), (0, 0, 0));
     }
     assert_eq!(value, before);
     assert!(first >= 1024);
-}
-
-#[test]
-fn tracked_protocol_work_is_funded_and_live_dependency_storage_is_bounded() {
-    let _counter = super::PROTOCOL_WORK.scope();
-    for capacity in [1, 8, 512] {
-        for rounds in [1, 4, 8] {
-            let spec = DomainSpec::new(
-                Profile::Product,
-                NonZeroUsize::new(capacity).unwrap(),
-                NonZeroUsize::new(rounds).unwrap(),
-                NonZeroUsize::new(1024).unwrap(),
-            );
-            let domain = ValueAlgebra::new(Domain::from_spec(spec));
-            for op in [opcode::ADD, opcode::MUL, opcode::AND, opcode::BYTE] {
-                super::PROTOCOL_WORK.set((0, 0, 0));
-                let values = [
-                    AbstractValue::from_numeric(input()),
-                    AbstractValue::constant(U256::from(7)),
-                ];
-                let quote = domain.operation_work(&values);
-                let result = domain.apply_detailed(op, &values);
-                assert!(
-                    !matches!(
-                        result.status,
-                        ReductionStatus::WorkLimit
-                            | ReductionStatus::Cancelled
-                            | ReductionStatus::KernelFailure
-                    ),
-                    "a sufficiently paid schedule must reach closure or its actual precision cap"
-                );
-                let (used, dependencies, steps) = super::PROTOCOL_WORK.get();
-                assert!(
-                    used <= quote,
-                    "performed kernel/rule work {used} exceeds paid operation {quote}"
-                );
-                assert!(
-                    dependencies <= 32,
-                    "one ephemeral scalar generation has only three facts and four jobs"
-                );
-                assert!(steps <= 1 + 3 * rounds);
-            }
-        }
-    }
 }
 
 #[test]

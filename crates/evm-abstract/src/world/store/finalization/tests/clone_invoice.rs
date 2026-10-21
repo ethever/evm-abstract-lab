@@ -42,11 +42,11 @@ fn fixture(
     (policy, current, EvmSnapshot::from_state(saved))
 }
 
-fn assert_invoice(saved_only: bool) {
+fn assert_invoice(saved_only: bool, delta: usize) {
     let _scope = RECEIPT.scope();
     let mut invoices = Vec::new();
     let mut quotes = Vec::new();
-    for price in [H, H + 7001] {
+    for price in [H, H + delta] {
         let (policy, input, saved) = fixture(saved_only, Word::expensive(price));
         let mut current = input.clone();
         let mut budget = WorkBudget::new(usize::MAX);
@@ -60,12 +60,6 @@ fn assert_invoice(saved_only: bool) {
             )
             .unwrap();
         let receipt = RECEIPT.get();
-        eprintln!(
-            "ordinary saved_only={saved_only} price={price} private_bytes={} private_quotes={} fee={}",
-            receipt.bytes,
-            receipt.private_quotes,
-            budget.used()
-        );
         assert_eq!(receipt.bytes, if cfg!(feature = "imbl") { 0 } else { 4096 });
         let expected = if saved_only { saved.state() } else { &input };
         assert_eq!(
@@ -78,17 +72,17 @@ fn assert_invoice(saved_only: bool) {
     }
     // Same retained representation and cleanup route, one changed declared
     // price and one physical std copy: retention cannot be a second owner.
-    assert_eq!(invoices[1] - invoices[0], 7001);
+    assert_eq!(invoices[1] - invoices[0], delta);
     assert_eq!(quotes, [1, 1]);
 }
 
-#[test]
-fn ordinary_staging_copy_has_one_declared_price_owner() {
-    assert_invoice(false);
-}
-#[test]
-fn ordinary_saved_restore_copy_has_one_declared_price_owner() {
-    assert_invoice(true);
+proptest::proptest! {
+    #[test]
+    fn ordinary_staging_and_restore_charge_each_declared_copy_price_once(delta in 1..=u16::MAX) {
+        for saved_only in [false, true] {
+            assert_invoice(saved_only, usize::from(delta));
+        }
+    }
 }
 
 fn retained_prefix(current: &EvmStore<Word>, rollback: Option<&EvmSnapshot<Word>>) -> usize {
@@ -113,39 +107,26 @@ fn retained_prefix(current: &EvmStore<Word>, rollback: Option<&EvmSnapshot<Word>
     budget.used()
 }
 
-fn assert_unfunded_copy(saved_only: bool) {
+#[test]
+fn ordinary_staging_and_restore_refuse_unfunded_copies_after_paid_retention() {
     let _scope = RECEIPT.scope();
-    let (policy, input, saved) = fixture(saved_only, Word::expensive(H));
-    let rollback = saved_only.then_some(&saved);
-    let prefix = retained_prefix(&input, rollback);
-    let mut current = input.clone();
-    let mut budget = WorkBudget::new(prefix + H - 1);
-    assert!(budget.charge(37));
-    reset();
-    let result =
-        current.finalize_transaction_checked_with(policy.borrowed(), rollback, &mut budget);
-    let receipt = RECEIPT.get();
-    eprintln!(
-        "ordinary finite deficit saved_only={saved_only} prefix={prefix} remaining_before_copy={} actual_private_bytes={} private_quotes={} used={} result={result:?}",
-        H - 1,
-        receipt.bytes,
-        receipt.private_quotes,
-        budget.used()
-    );
-    assert_eq!(receipt.bytes, 0);
-    assert_eq!(receipt.private_quotes, 1);
-    assert_eq!(result, Err(FinalizationError::Work));
-    assert_eq!(current, input);
-    assert!(budget.used() > prefix && budget.used() < prefix + H - 1);
-}
-
-#[test]
-fn ordinary_staging_refuses_finite_copy_after_retention_is_paid() {
-    assert_unfunded_copy(false);
-}
-#[test]
-fn ordinary_saved_restore_refuses_finite_copy_after_retention_is_paid() {
-    assert_unfunded_copy(true);
+    for saved_only in [false, true] {
+        let (policy, input, saved) = fixture(saved_only, Word::expensive(H));
+        let rollback = saved_only.then_some(&saved);
+        let prefix = retained_prefix(&input, rollback);
+        let mut current = input.clone();
+        let mut budget = WorkBudget::new(prefix + H - 1);
+        assert!(budget.charge(37));
+        reset();
+        let result =
+            current.finalize_transaction_checked_with(policy.borrowed(), rollback, &mut budget);
+        let receipt = RECEIPT.get();
+        assert_eq!(receipt.bytes, 0);
+        assert_eq!(receipt.private_quotes, 1);
+        assert_eq!(result, Err(FinalizationError::Work));
+        assert_eq!(current, input);
+        assert!(budget.used() > prefix && budget.used() < prefix + H - 1);
+    }
 }
 
 #[test]

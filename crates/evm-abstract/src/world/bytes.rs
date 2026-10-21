@@ -25,6 +25,8 @@ pub use summary::{ByteArraySummary, EvmByteArraySummary};
 #[cfg(test)]
 mod carrier_tests;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
 mod traversal;
 pub(super) mod widening;

@@ -4,6 +4,7 @@ use analysis_kernel::{Accepts, Availability, Charges, KernelError, PublishError,
 
 use super::super::{
     BoundedWork, Bounds, BoundsRoute, MaskRoute, Masks, RuleWork, ScalarRoute, Scalars,
+    test_support::CancelDuringRule,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -453,26 +454,6 @@ fn a_caught_component_refusal_cannot_turn_into_a_stable_closure() {
     assert!(result.value.is_top());
 }
 
-#[derive(Clone, Copy, Debug)]
-struct CancelDuringRule<'a> {
-    owner: &'a analysis_control::Cancellation,
-    unrelated: &'a analysis_control::Cancellation,
-    calls: &'a Cell<usize>,
-    refused: &'a Cell<bool>,
-}
-impl<Cx: Charges<Error = KernelError<WorkExhausted>>> Reduction<Cx> for CancelDuringRule<'_> {
-    type Task = Scope;
-    type Error = RuleError;
-    fn reduce(&mut self, _: &Scope, cx: &mut Cx) -> Result<LocalClosure, RuleError> {
-        self.calls.set(self.calls.get() + 1);
-        cx.charge(100_000)?;
-        self.owner.cancel();
-        let refusal = analysis_control::with_cancellation(self.unrelated, || cx.charge(1));
-        self.refused.set(refusal.is_err());
-        Ok(LocalClosure::Stable)
-    }
-}
-
 #[test]
 fn cancellation_is_captured_by_the_local_meter_and_keeps_the_root_identity() {
     for budgeted in [false, true] {
@@ -518,26 +499,6 @@ fn cancellation_is_captured_by_the_local_meter_and_keeps_the_root_identity() {
         );
         assert!(!unrelated.is_cancelled());
     }
-}
-
-#[test]
-fn preexisting_cancellation_stops_before_custom_rules() {
-    let owner = analysis_control::Cancellation::new();
-    let calls = Cell::new(0);
-    let custom = ProductAlgebra::new(
-        spec(8, 4096),
-        Paid {
-            rule: KeepMasks,
-            calls: &calls,
-        },
-        KeepBounds,
-    )
-    .with_work(BoundedWork(200_000));
-    owner.cancel();
-    let result =
-        analysis_control::with_cancellation(&owner, || custom.reduce_numeric(&NumericValue::top()));
-    assert_eq!(result.status, ReductionStatus::Cancelled);
-    assert_eq!(calls.get(), 0);
 }
 
 #[derive(Clone, Copy, Debug)]

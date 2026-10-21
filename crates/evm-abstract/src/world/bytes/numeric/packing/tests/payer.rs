@@ -265,10 +265,12 @@ fn no_quote_declines_and_paid_failed_predicate_keeps_its_fee_before_balanced_fal
 }
 
 #[test]
-fn max_and_overflow_quotes_refuse_without_hooks_fallback_or_publication() {
+fn max_and_aggregate_overflow_quotes_refuse_without_hooks_fallback_or_publication() {
     let state = ByteStateId::exact(Arc::from([7u8; 32]));
     for path in PATHS {
-        for fee in [usize::MAX, (usize::MAX / 2 + 1).saturating_mul(2)] {
+        // The second quote is finite, but exceeds even the prepaid ledger's
+        // remainder after PRIOR by one. A saturating quote would duplicate MAX.
+        for fee in [usize::MAX, usize::MAX - PRIOR + 1] {
             let policy = Paid::new(default_domain(), Some(fee), Hook::Delegate);
             let (_, used, exhausted) = context(path, usize::MAX, &policy, |context| {
                 let domain = context.algebra();
