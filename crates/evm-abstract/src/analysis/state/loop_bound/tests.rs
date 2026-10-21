@@ -1,13 +1,9 @@
 //! Production projection/replay, independent snapshots and non-layout effects.
 
-#[cfg(test)]
-use crate::analysis::testing::{ByteArray, TestValue};
-use crate::domain::EvmNumericAlgebra as _;
-
-use crate::domain::ValueAlgebra;
-
 use super::super::{form, instantiate};
 use super::*;
+#[cfg(test)]
+use crate::analysis::testing::{ByteArray, TestValue};
 use crate::{
     analysis::{machine::fixtures, transfer},
     domain::{ProductAlgebra, symbolic::ExprId},
@@ -283,7 +279,7 @@ fn unknown_alias_writes_weaken_retained_cells_as_well_as_the_default() {
 #[test]
 fn out_of_layout_touches_and_log_sources_enter_complete_envelopes() {
     use crate::analysis::testing::AbstractLog;
-use crate::world::{ LogKey, LogSourceKind};
+    use crate::world::{LogKey, LogSourceKind};
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let domain = domain.borrowed();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);

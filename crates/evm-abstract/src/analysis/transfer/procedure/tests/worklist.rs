@@ -3,7 +3,6 @@
 use crate::domain::ProductAlgebra;
 
 use super::*;
-use crate::domain::EvmNumericAlgebra as _;
 
 #[test]
 fn duplicate_and_growing_inputs_park_each_resume_partition_with_its_current_bound() {

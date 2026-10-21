@@ -1,6 +1,6 @@
 //! Legal content depth must not become native call-stack depth.
 
-use super::{Facts, Reader, numeric_domain};
+use super::{Facts, Reader};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use {
@@ -11,7 +11,7 @@ use {
 };
 
 use crate::{
-    domain::{ValueAlgebra, symbolic::ExprError},
+    domain::symbolic::ExprError,
     resource::WorkBudget,
     world::bytes::conditional::{self, ConditionalFacts, Context},
 };

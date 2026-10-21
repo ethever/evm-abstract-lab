@@ -1,6 +1,5 @@
 //! Recent sources preserve private callers while repeated loop keys stabilize.
 
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ValueAlgebra;
 
 use super::{canonical, work_size};

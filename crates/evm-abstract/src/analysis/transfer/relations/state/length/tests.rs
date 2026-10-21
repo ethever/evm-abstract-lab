@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, ByteArray, Entry, TestScalarQuery, TestValue, World};
-use crate::domain::EvmNumericAlgebra as _;
 
 use crate::domain::ValueAlgebra;
 
@@ -44,7 +43,7 @@ fn composite_proof_narrows_both_unknown_arms_without_changing_guard_or_frozen_re
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let domain = domain.borrowed();
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let limits = config_numeric.relations;
     let selector = ExprId::fresh().unwrap();
     let returned = ByteArray::unknown();
@@ -133,7 +132,7 @@ fn cancellation_and_optional_query_planning_budget_or_metadata_refusal_are_atomi
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let domain = domain.borrowed();
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let address = Address::repeat_byte(0x72);
     let mut world = World::offline(Fork::Osaka, "length admission", "optional precision");
     world.insert(address, Account::empty()).unwrap();

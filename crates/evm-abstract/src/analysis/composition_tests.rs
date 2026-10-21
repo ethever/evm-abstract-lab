@@ -237,7 +237,7 @@ fn equal_domain_specs_do_not_share_results_between_numeric_instances() {
     for coarse_add in [false, true, false] {
         let operations = Cell::new(0);
         let algebra = ValueAlgebra::new(NumericProbe {
-            domain: domain.clone(),
+            domain,
             operations: &operations,
             coarse_add,
             empty_reduce: false,

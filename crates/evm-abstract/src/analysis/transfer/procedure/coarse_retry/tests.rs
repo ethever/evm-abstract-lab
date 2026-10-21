@@ -4,7 +4,6 @@ use crate::domain::ProductAlgebra;
 
 #[cfg(test)]
 use crate::analysis::testing::{Entry, World};
-use crate::domain::EvmNumericAlgebra as _;
 
 use super::super::{Solver, Table, execute_inner, form, instantiate, semantic_eq};
 
@@ -35,7 +34,7 @@ struct Harness {
 impl Harness {
     fn new(code: &str) -> Self {
         let (world, entry) = fixtures::fixture(&[(0x101, code)]);
-        let mut config = fixtures::config();
+        let config = fixtures::config();
         let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
         let domain =
             crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));

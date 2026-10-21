@@ -544,6 +544,3 @@ mod tests;
 
 #[cfg(test)]
 pub(in crate::analysis) type ExecutionReuse = EvmExecutionReuse<crate::domain::NumericValue>;
-
-#[cfg(test)]
-use crate::domain;

@@ -6,8 +6,7 @@ use std::thread;
 use {
     crate::Address, crate::U256, crate::analysis::ExecutionConfig, crate::analysis::OutcomeKind,
     crate::analysis::RpcStorageSlot, crate::analysis::Status,
-    crate::world::test_support::TestAlgebra, crate::world::test_support::TestEntry,
-    crate::world::test_support::TestValue,
+    crate::world::test_support::TestEntry, crate::world::test_support::TestValue,
 };
 
 #[test]

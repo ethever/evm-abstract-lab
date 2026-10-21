@@ -524,7 +524,6 @@ fn joint_selector_witness_rejects_a_tuple_with_only_valid_marginals() {
 
 #[test]
 fn exact_retention_precedes_alternatives_promotion_of_both_complete_operands() {
-    let mut config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.enabled = false;
     config_numeric.relations.max_constraints = 2;
@@ -588,7 +587,6 @@ fn assert_unpublished(alternatives: &EntryAlternatives, before: &EntryAlternativ
 
 #[test]
 fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
-    let mut config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.max_constraints = 1;
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
@@ -668,7 +666,6 @@ fn rejected_projection_or_materialization_is_atomic_and_keeps_paid_work() {
 
 #[test]
 fn incompatible_and_unknown_frames_cannot_publish_a_bound() {
-    let mut config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.max_constraints = 1;
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
@@ -703,7 +700,6 @@ fn incompatible_and_unknown_frames_cannot_publish_a_bound() {
 
 #[test]
 fn an_existing_promoted_entry_keeps_its_old_proof_when_an_update_is_interrupted() {
-    let mut config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.enabled = false;
     config_numeric.relations.max_constraints = 1;
@@ -784,7 +780,6 @@ fn expression_and_byte_state_retention_refusals_promote_at_the_actual_join() {
             }
         }
         let inputs = (old.clone(), incoming.clone());
-        let mut config = fixtures::config();
         let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
         config_numeric.relations.max_depth = old.active().memory.state_root().depth();
         let domain =
@@ -870,7 +865,6 @@ fn complete_path_constraint_refusal_can_forget_the_whole_path() {
             );
         }
     }
-    let mut config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.max_constraints = 2;
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
@@ -913,7 +907,6 @@ fn complete_path_constraint_refusal_can_forget_the_whole_path() {
 
 #[test]
 fn same_byte_roots_still_require_the_complete_old_metadata_proof() {
-    let mut config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.max_constraints = 1;
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
@@ -962,7 +955,6 @@ fn same_byte_roots_still_require_the_complete_old_metadata_proof() {
 
 #[test]
 fn promotion_keeps_current_every_saved_frame_and_continuation_independent() {
-    let mut config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.max_constraints = 1;
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));

@@ -19,6 +19,11 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+pub(super) type AcquisitionSessionResult<'a, D, C, P, S, X> = Result<
+    AnalysisSession<'a, D, C, P, S, X>,
+    SessionError<<X as Composition<<D as EvmNumericAlgebra>::Element>>::Error>,
+>;
+
 pub(super) fn start<'a, D, C, P, S, X>(
     world: EvmWorld<D::Element>,
     observations: &BTreeMap<Address, AccountObservation>,
@@ -26,7 +31,7 @@ pub(super) fn start<'a, D, C, P, S, X>(
     entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     control: &Control,
-) -> Result<AnalysisSession<'a, D, C, P, S, X>, SessionError<<X as Composition<D::Element>>::Error>>
+) -> AcquisitionSessionResult<'a, D, C, P, S, X>
 where
     D: EvmNumericAlgebra,
     C: ContextPolicy,

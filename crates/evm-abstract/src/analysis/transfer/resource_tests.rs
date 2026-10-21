@@ -1,9 +1,8 @@
-use crate::domain::ProductAlgebra;
 use super::*;
-use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
-    analysis::{self, EnginePolicies, Status, engine::policy::RecentDistinctJumps},
+    analysis::{EnginePolicies, Status, engine::policy::RecentDistinctJumps},
     domain::{NumericValue, ValueAlgebra},
     world::EvmAccount,
 };
@@ -36,7 +35,7 @@ fn fixture(
         )),
         EvmByteArray::empty(),
     );
-    let mut config = ExecutionConfig {
+    let config = ExecutionConfig {
         max_work: 10_000_000,
         root_terminal_coverage: false,
         use_summaries: false,

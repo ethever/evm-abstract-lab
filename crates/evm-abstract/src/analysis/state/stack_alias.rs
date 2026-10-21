@@ -10,9 +10,6 @@ use super::{BTreeMap, EvmValue, MachineError, identify};
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-use crate::domain;
-
 /// Each class is labelled by its first position; singleton positions label themselves.
 /// Mixed numeric bounds on one node deliberately lose their alias guarantee.
 #[derive(Clone, Debug, PartialEq, Eq)]

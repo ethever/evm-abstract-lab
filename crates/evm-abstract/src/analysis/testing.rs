@@ -12,7 +12,6 @@ pub(in crate::analysis) type Entry = crate::world::EvmEntry<NumericValue>;
 pub(in crate::analysis) type ByteArray = crate::world::EvmByteArray<NumericValue>;
 pub(in crate::analysis) type ByteArraySummary = crate::world::EvmByteArraySummary<NumericValue>;
 pub(in crate::analysis) type Store = crate::world::EvmStore<NumericValue>;
-pub(in crate::analysis) type StoreSummary = crate::world::EvmStoreSummary<NumericValue>;
 pub(in crate::analysis) type Snapshot = crate::world::EvmSnapshot<NumericValue>;
 pub(in crate::analysis) type EvmEnvironment = crate::world::EvmEnvironmentValues<NumericValue>;
 pub(in crate::analysis) type TestValueQuery =
@@ -88,4 +87,3 @@ pub(in crate::analysis) fn execute(
 }
 
 pub(in crate::analysis) type AbstractLog = crate::world::EvmLog<NumericValue>;
-pub(in crate::analysis) type Reduction = crate::domain::EvmReduction<NumericValue>;

@@ -1,9 +1,6 @@
 //! CREATE/CREATE2 lifecycle. Initcode is a fresh frame of the shared machine;
 //! the destination's code remains empty until a successful RETURN installs it.
 
-#[cfg(test)]
-use crate::analysis::testing::World;
-
 use crate::domain::{EvmNumericAlgebra, SingletonProof, WordElement};
 
 use super::budget::{byte_work, maximum};

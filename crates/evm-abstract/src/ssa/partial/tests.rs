@@ -6,8 +6,8 @@ use crate::ssa::test_support::{
 use crate::{
     Address, Fork, U256,
     analysis::{
-        DiagnosticKind, ExecutionConfig, FrameCode, FrontierReason, InstructionProgress,
-        MachineEdgeKind, OutcomeKind, Status,
+        CreationBoundary, DiagnosticKind, ExecutionConfig, FrameCode, FrontierReason,
+        InstructionProgress, MachineEdgeKind, OutcomeKind, Status,
     },
     domain::relational::QueryReason,
     ssa::{self, SsaError, SsaInvariantKind as Kind},
@@ -108,8 +108,8 @@ fn unknown_call() -> TestWorldAnalysis {
         .unwrap();
     world.insert(address(0x200), TestAccount::empty()).unwrap();
     world.insert(address(4), TestAccount::empty()).unwrap();
-    // Keep a genuine uncovered effect: this target can attempt creation with
-    // unresolved destination facts. Unknown targets themselves are summarized.
+    // Retain this known candidate even when recursive unknown dispatch exhausts
+    // the work budget before its first instruction can execute.
     world
         .insert(
             address(0x300),
@@ -143,11 +143,30 @@ fn unknown_call_keeps_frontiers_known_candidates_and_deferred_results() {
         analysis
             .frontiers()
             .iter()
-            .any(|f| matches!(f.reason, FrontierReason::Creation(_)))
+            .any(|f| f.reason == FrontierReason::Work)
     );
+    let creator = analysis
+        .states()
+        .iter()
+        .find(|state| state.active().code_address == address(0x300))
+        .expect("unknown dispatch must retain the known creator candidate");
+    assert!(creator.executed_pcs.is_empty());
     let ir = build_partial_world(&analysis, &mut postprocessing()).unwrap();
     assert_eq!(ir.status(), Status::Incomplete);
     assert_eq!(ir.frontiers().len(), analysis.frontiers().len());
+    for (retained, native) in ir.frontiers().iter().zip(analysis.frontiers()) {
+        assert_eq!(
+            (retained.from, retained.pc, &retained.reason),
+            (native.from, native.pc, &native.reason)
+        );
+    }
+    let creator_block = &ir.blocks()[creator.id];
+    assert_eq!(creator_block.coverage, PartialBlockCoverage::Unexecuted);
+    assert!(creator_block.instructions.is_empty());
+    assert!(ir.transitions().iter().any(|transition| {
+        analysis.edges()[transition.edge].to == creator.id
+            && transition.kind == MachineEdgeKind::Call
+    }));
     assert!(
         ir.transitions()
             .iter()
@@ -183,6 +202,65 @@ fn unknown_call_keeps_frontiers_known_candidates_and_deferred_results() {
             .all(|t| t.result.is_none())
     );
     assert!(ir.blocks().iter().all(|b| !b.incoming_complete));
+    assert!(matches!(
+        ssa::build_world(&analysis),
+        Err(SsaError::IncompleteAnalysis)
+    ));
+}
+
+#[test]
+fn unknown_nonempty_initcode_keeps_creation_frontier_and_deferred_result() {
+    // Store an unknown word, then CREATE its nonempty 32-byte memory region.
+    // The sole known creator has the concrete zero nonce supplied by from_hex.
+    let analysis = run_with_value("345f5260205f5ff000", config(), TestValue::top());
+    assert_eq!(analysis.status(), Status::Incomplete);
+    let [frontier] = analysis.frontiers() else {
+        panic!("expected the actual unknown initcode boundary")
+    };
+    assert_eq!((frontier.from, frontier.pc), (Some(0), Some(7)));
+    assert_eq!(
+        frontier.reason,
+        FrontierReason::Creation(CreationBoundary::UnknownInitCode)
+    );
+    let creator = &analysis.states()[0];
+    assert_eq!(creator.active().code_address, address(0x101));
+    assert!(creator.executed_pcs.contains(&7));
+    let exit = creator.exit.as_ref().unwrap();
+    assert_eq!(
+        exit.store.nonce(address(0x101)).singleton(),
+        Some(U256::ZERO)
+    );
+    let memory = &exit.active().memory;
+    assert_eq!(memory.len().singleton(), Some(U256::from(32)));
+    assert!(
+        memory
+            .read_byte_checked(
+                &TestValue::constant(U256::ZERO),
+                product_without_relations().borrowed()
+            )
+            .unwrap()
+            .singleton()
+            .is_none()
+    );
+    let mut budget = postprocessing();
+    let ir = build_partial_world(&analysis, &mut budget).unwrap();
+    assert_eq!(ir.status(), Status::Incomplete);
+    let [retained] = ir.frontiers() else {
+        panic!("partial SSA must preserve the creation frontier")
+    };
+    assert_eq!(
+        (retained.from, retained.pc, &retained.reason),
+        (frontier.from, frontier.pc, &frontier.reason)
+    );
+    let create = ir.blocks()[0].instructions.last().unwrap();
+    assert_eq!(create.instruction.pc, 7);
+    assert_eq!(create.instruction.opcode, opcode::CREATE);
+    assert_eq!(create.progress, InstructionProgress::Dispatched);
+    assert_eq!(create.instruction.operands.len(), 3);
+    assert!(create.instruction.results.is_empty());
+    assert!(ir.transitions().is_empty());
+    assert!(!ir.blocks()[0].incoming_complete);
+    ir.verify(&analysis, &mut budget).unwrap();
     assert!(matches!(
         ssa::build_world(&analysis),
         Err(SsaError::IncompleteAnalysis)

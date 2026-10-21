@@ -22,8 +22,8 @@ use std::{
 };
 use {
     crate::Address, crate::Fork, crate::U256, crate::world::Existence,
-    crate::world::SnapshotIdentity, crate::world::test_support::TestAlgebra,
-    crate::world::test_support::TestStore, crate::world::test_support::TestValue,
+    crate::world::SnapshotIdentity, crate::world::test_support::TestStore,
+    crate::world::test_support::TestValue,
 };
 
 enum Reply {

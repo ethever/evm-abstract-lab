@@ -320,7 +320,6 @@ fn large_requested_depth_obeys_state_and_transfer_limits() {
                     context_depth: usize::MAX,
                     max_states,
                     max_transfers,
-                    ..Config::default()
                 },
                 ..ExecutionConfig::default()
             },
@@ -415,7 +414,6 @@ fn large_requested_depth_also_obeys_the_shared_work_limit() {
             context_depth: usize::MAX,
             max_states: 1_000,
             max_transfers: 1_000,
-            ..Config::default()
         },
         max_work: 5_000,
         use_summaries: false,

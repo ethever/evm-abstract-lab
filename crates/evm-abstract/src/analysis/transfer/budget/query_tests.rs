@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::TestValue;
-use crate::domain::EvmNumericAlgebra as _;
 
 use super::{arithmetic_work, byte_work, external_code_fee, operation_work_budgeted};
 use crate::{

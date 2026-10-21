@@ -98,6 +98,3 @@ pub(super) fn identify<N: WordElement>(value: EvmValue<N>, enabled: bool) -> Evm
     }
     value
 }
-
-#[cfg(test)]
-pub(in crate::analysis) type PayloadSummary = EvmPayloadSummary<crate::domain::NumericValue>;

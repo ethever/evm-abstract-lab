@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, Entry, TestValue, World};
-use crate::domain::EvmNumericAlgebra as _;
 
 use crate::domain::ValueAlgebra;
 
@@ -50,7 +49,7 @@ fn execution() -> Execution {
 fn rejected_guard_keeps_the_original_coverage_frontier() {
     let mut result = execution();
     let before = result.payload.relations.clone();
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.max_nodes = 64;
     let mut input = ExprId::fresh().unwrap();
@@ -85,7 +84,6 @@ fn shared_work_exhaustion_stops_before_guard_retention() {
     let mut result = execution();
     let before = result.payload.clone();
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let condition = TestValue::top().with_expression(ExprId::fresh().unwrap());
     let mut budget = WorkBudget::new(0);
     let transfer_numeric = ProductAlgebra::default();
@@ -103,7 +101,6 @@ fn shared_work_exhaustion_stops_before_guard_retention() {
 #[test]
 fn unknown_boolean_state_reads_keep_both_values_without_precision_diagnostics() {
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let state =
         SlotStateId::observed(SourceId::fresh().unwrap(), Vec::new(), Default::default()).unwrap();
     let read = ExprId::slot_read(state, ExprId::constant(U256::ZERO), Default::default()).unwrap();
@@ -130,7 +127,6 @@ use crate::analysis::transfer::testing::context;
 #[test]
 fn branch_keeps_expressions_until_instruction_consumption() {
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let expression = ExprId::fresh().unwrap();
     let condition = TestValue::top().with_expression(expression.clone());
     let mut result = execution();
@@ -161,7 +157,7 @@ fn branch_keeps_expressions_until_instruction_consumption() {
 #[test]
 fn cached_local_bounds_cannot_override_narrower_callers_or_cancellation() {
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let transfer_algebra = crate::analysis::testing::product(config_numeric.spec());
     let domain = transfer_algebra.borrowed();
     let expression = ExprId::fresh().unwrap();
@@ -199,7 +195,7 @@ fn cached_local_bounds_cannot_override_narrower_callers_or_cancellation() {
 #[test]
 fn retained_guarded_facts_never_prune_an_admitted_numeric_candidate() {
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let expression = ExprId::fresh().unwrap();
     let limits = config_numeric.relations;
     let algebra = crate::analysis::testing::product(config_numeric.spec());
@@ -239,7 +235,7 @@ fn unused_local_capacity_does_not_become_an_automatic_work_fee() {
     let other = ExprId::fresh().unwrap();
     let mut work = Vec::new();
     for nodes in [1024, 4096] {
-        let mut config = ExecutionConfig::default();
+        let config = ExecutionConfig::default();
         let mut config_numeric = crate::analysis::testing::NumericLimits::default();
         config_numeric.relations.max_nodes = nodes;
         let algebra = crate::analysis::testing::product(config_numeric.spec());
@@ -275,7 +271,7 @@ fn unused_local_capacity_does_not_become_an_automatic_work_fee() {
 #[test]
 fn a_work_stop_mid_projection_keeps_every_original_finite_candidate() {
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let algebra = crate::analysis::testing::product(config_numeric.spec());
     let domain = algebra.borrowed();
     let expression = ExprId::fresh().unwrap();

@@ -1,17 +1,16 @@
 //! Focused witnesses for the checked all-account pre-finalization adapter.
 
 use alloy_primitives::{Address, B256, U256};
+use std::collections::BTreeMap;
 use {super::super::StoreError, crate::world::test_support::TestStore};
 use {
     crate::Fork, crate::bytecode::Program, crate::domain::relational::RelationLimits,
     crate::domain::symbolic::SlotStateKind, crate::domain::symbolic::SourceId,
     crate::domain::symbolic::StateError, crate::world::Existence, crate::world::LogKey,
     crate::world::LogSourceKind, crate::world::test_support::TestAccount,
-    crate::world::test_support::TestAlgebra, crate::world::test_support::TestBytes,
-    crate::world::test_support::TestLog, crate::world::test_support::TestValue,
-    crate::world::test_support::TestWorld,
+    crate::world::test_support::TestBytes, crate::world::test_support::TestLog,
+    crate::world::test_support::TestValue, crate::world::test_support::TestWorld,
 };
-use {crate::world::test_support::TestEntry, std::collections::BTreeMap};
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())

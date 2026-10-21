@@ -1,12 +1,9 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::super::{form, instantiate, join, semantic_eq};
 use super::*;
 use crate::analysis::MachinePayload;
 use crate::analysis::machine::fixtures::{fixture, word};
 #[cfg(test)]
 use crate::analysis::testing::TestValue;
-use crate::domain::ValueAlgebra;
 use crate::domain::{NumericValue, ProductAlgebra, symbolic::ExprId};
 use alloy_primitives::U256;
 
@@ -65,7 +62,7 @@ fn written_input() -> (
 #[test]
 fn missing_observation_drops_on_join_and_changes_semantics() {
     let (_, entry, input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let left = form(&input, &entry, domain).unwrap();
     assert_eq!(left.storage_observations.0.len(), 1);
     assert_eq!(
@@ -93,7 +90,7 @@ let domain = algebra.borrowed();
 #[test]
 fn joined_finite_read_is_recovered_from_the_exact_instantiated_root() {
     let (_, entry, input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let left = form(&input, &entry, domain).unwrap();
     let mut next = input.clone();
     let key = next.active().stack[0].clone();
@@ -114,7 +111,7 @@ let domain = algebra.borrowed();
 #[test]
 fn equal_alias_observations_install_once_but_keep_every_position_and_numeric_fee() {
     let (_, entry, mut input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let key = input.active().stack[0].clone();
     input.active_mut().stack = vec![key; MAX_POSITIONS];
     let summary = form(&input, &entry, domain).unwrap();
@@ -151,7 +148,7 @@ let domain = algebra.borrowed();
 #[test]
 fn same_alias_with_different_compatible_read_bounds_installs_both() {
     let (_, entry, mut input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let key = input.active().stack[0].clone();
     input.active_mut().stack.push(key);
     let mut summary = form(&input, &entry, domain).unwrap();
@@ -188,7 +185,7 @@ let domain = algebra.borrowed();
 #[test]
 fn joined_alias_split_and_new_leader_use_the_current_partition() {
     let (_, entry, mut input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let key = input.active().stack[0].clone();
     input.active_mut().stack = vec![key.clone(); 4];
     let left = form(&input, &entry, domain).unwrap();
@@ -230,7 +227,7 @@ let domain = algebra.borrowed();
 #[test]
 fn independent_equal_numeric_keys_and_mixed_bound_alias_splits_install_separately() {
     let (_, entry, mut input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let key = input.active().stack[0].clone();
     input.active_mut().stack.push(key.clone());
     let aliased = form(&input, &entry, domain).unwrap();
@@ -257,7 +254,7 @@ let domain = algebra.borrowed();
 #[test]
 fn observation_cost_ignores_code_and_caps_optional_root_work() {
     let (_, _, mut input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let fee = form_work(&input, domain);
     let store_work = input.store.work_size();
     input.store.deploy_code(
@@ -300,7 +297,7 @@ let domain = algebra.borrowed();
 #[test]
 fn symbolic_logical_owner_is_outside_current_scope() {
     let (_, _, mut input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     input.active_mut().key.address_value = crate::world::AddressInput::unknown_to();
     assert_eq!(form_work(&input, domain), 0);
     assert!(
@@ -314,7 +311,7 @@ let domain = algebra.borrowed();
 #[test]
 fn repeated_projection_preserves_only_current_snapshot_guarantees() {
     let (_, entry, input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let summary = form(&input, &entry, domain).unwrap();
     let mut restored = instantiate(&summary, domain).unwrap();
     let owner = restored.active().key.address;
@@ -359,7 +356,7 @@ let domain = algebra.borrowed();
 #[test]
 fn independent_key_and_later_maybe_aliasing_write_do_not_reuse_the_old_read() {
     let (_, _, mut input, algebra) = written_input();
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let original = input.active().stack[0].clone();
     let other = TestValue::top().with_expression(ExprId::fresh().unwrap());
     input.active_mut().stack[0] = other.clone();

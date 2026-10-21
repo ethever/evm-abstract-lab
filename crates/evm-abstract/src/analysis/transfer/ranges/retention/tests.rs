@@ -1,12 +1,11 @@
 use crate::domain::ProductAlgebra;
-use crate::domain::EvmNumericAlgebra as _;
 
 use super::{Failure, GuardRetention, RetentionCause};
 #[cfg(test)]
 use crate::analysis::testing::TestValue;
 use crate::{
     U256,
-    analysis::{ExecutionConfig, FrontierReason},
+    analysis::FrontierReason,
     domain::{
         relational::QueryReason,
         symbolic::{ExprError, ExprId, ExprLimits, StateError},
@@ -25,7 +24,6 @@ fn guard_trace(
     size: &TestValue,
     max_nodes: usize,
 ) -> (TestValue, GuardRetention, Vec<Option<ExprError>>) {
-    let mut config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.max_nodes = max_nodes;
     config_numeric.relations.max_depth = 256;

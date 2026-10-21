@@ -4,7 +4,6 @@ use crate::domain::ProductAlgebra;
 
 #[cfg(test)]
 use crate::analysis::testing::{ByteArray, ByteArraySummary};
-use crate::domain::EvmNumericAlgebra as _;
 
 use super::*;
 use crate::{
@@ -37,7 +36,7 @@ fn input_summary(
 
 fn harness(code: &str, cap: usize, coordinates: usize, values: &[u8]) -> Harness {
     let (world, entry) = fixtures::fixture(&[(0x101, code)]);
-    let mut config = fixtures::config();
+    let config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     config_numeric.relations.max_nodes = cap;
     config_numeric.max_constants = 128;

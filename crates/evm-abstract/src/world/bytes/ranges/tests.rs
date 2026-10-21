@@ -4,8 +4,7 @@ use revm_bytecode::opcode;
 use {
     crate::domain::NumericValue, crate::domain::relational::EvmValueQuery,
     crate::domain::relational::RelationLimits, crate::domain::relational::RelationState,
-    crate::domain::symbolic::ExprId, crate::world::test_support::TestAlgebra,
-    crate::world::test_support::TestValue,
+    crate::domain::symbolic::ExprId, crate::world::test_support::TestValue,
 };
 
 fn word(value: u64) -> TestValue {

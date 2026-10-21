@@ -89,10 +89,20 @@ impl EvmNumericAlgebra for RefusingAlgebra {
     ) -> NumericReduction<RefusingWord> {
         NumericReduction::stable(RefusingWord::top())
     }
-    fn operation_work<'a>(&self, _: u8, args: impl Iterator<Item = &'a RefusingWord>) -> usize {
-        args.fold(64usize, |work, value| {
-            work.saturating_add(value.work_size())
-        })
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a RefusingWord>) -> usize {
+        let (work, count) = args.fold((64usize, 0usize), |(work, count), value| {
+            (
+                work.saturating_add(value.work_size()),
+                count.saturating_add(1),
+            )
+        });
+        // Native Top is cheap, but the facade can evaluate a retained constant
+        // expression once even when this independent numeric policy declines.
+        if crate::domain::concrete::arity(op) == Some(count) {
+            work.saturating_add(crate::domain::concrete::evaluation_work(op))
+        } else {
+            work
+        }
     }
     fn projection_work(&self, value: &RefusingWord) -> usize {
         value.clone_work()
@@ -100,6 +110,38 @@ impl EvmNumericAlgebra for RefusingAlgebra {
     fn refinement_work(&self, value: &RefusingWord, _: usize) -> usize {
         value.clone_work().saturating_add(64)
     }
+}
+
+#[test]
+fn refusing_carrier_quote_prepays_retained_max_exp_before_facade_folding() {
+    use crate::domain::{
+        concrete::{EVALUATIONS, evaluation_work},
+        symbolic::ExprId,
+    };
+    use crate::resource::WorkBudget;
+    use revm_bytecode::opcode;
+
+    let _evaluations = EVALUATIONS.scope();
+    let algebra = ValueAlgebra::new(RefusingAlgebra);
+    let args = [U256::from(3), U256::MAX]
+        .map(|word| EvmValue::<RefusingWord>::top().with_expression(ExprId::constant(word)));
+    let quote = algebra.operation_work(opcode::EXP, &args);
+    assert!(quote >= evaluation_work(opcode::EXP));
+    assert_eq!(EVALUATIONS.get(), (0, 0));
+    let mut denied = WorkBudget::new(evaluation_work(opcode::EXP) - 1);
+    assert!(
+        algebra
+            .apply_budgeted(opcode::EXP, &args, &mut denied)
+            .is_err()
+    );
+    assert_eq!(denied.used(), 0);
+    assert_eq!(EVALUATIONS.get(), (0, 0));
+    let result = algebra
+        .apply_budgeted(opcode::EXP, &args, &mut WorkBudget::new(quote))
+        .unwrap();
+    let inverse = (U256::MAX / U256::from(3)) * U256::from(2) + U256::ONE;
+    assert_eq!(result.value.singleton(), Some(inverse));
+    assert_eq!(EVALUATIONS.get(), (1, evaluation_work(opcode::EXP)));
 }
 
 #[test]

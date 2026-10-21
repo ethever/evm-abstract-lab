@@ -14,7 +14,6 @@ use crate::analysis::engine::{
 };
 use crate::analysis::testing::Entry;
 use crate::analysis::worklist::runtime::Runtime;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ValueAlgebra;
 use std::convert::Infallible;
 
@@ -36,7 +35,7 @@ impl<S: StatePolicy<ProductAlgebra, Option<bool>>> Harness<S> {
     fn new(code: &str, state: S) -> Self {
         let (world, entry) = fixture(&[(0x101, code)]);
         let config = crate::analysis::machine::fixtures::config();
-        let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+        let config_numeric = crate::analysis::testing::NumericLimits::machine();
         let mut budget = WorkBudget::new(config.max_work);
         let mut runtime = Runtime::new(&mut budget).unwrap();
         runtime.register_world(0, 1, &mut budget).unwrap();

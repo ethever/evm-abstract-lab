@@ -1,7 +1,6 @@
 //! Each exceptional completion has one owner for every actual native copy.
 
 use super::super::*;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
@@ -35,7 +34,7 @@ fn child(word: Word) -> (ExecutionConfig, ValueAlgebra<Policy>, Payload) {
             .unwrap();
     }
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let policy = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(config_numeric.spec())));
     let mut payload = initial(
         &world,

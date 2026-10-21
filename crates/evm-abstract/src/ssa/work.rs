@@ -400,16 +400,7 @@ pub(super) fn normalized_verify<N: WordElement>(
 
 /// Concrete folding has fixed word width, independent of any opaque carrier.
 pub(super) fn evaluate(op: u8, budget: &mut WorkBudget) -> Result<(), SsaError> {
-    use revm_bytecode::opcode;
-    let work = match op {
-        // At most 256 squares plus 256 products of four-limb words, with
-        // exponent/loop work: the same concrete bound used by finite transfer.
-        opcode::EXP => 16_384,
-        opcode::ADDMOD | opcode::MULMOD => 4096,
-        opcode::DIV | opcode::SDIV | opcode::MOD | opcode::SMOD => 1024,
-        _ => 64,
-    };
-    super::pay(budget, work)
+    super::pay(budget, crate::domain::concrete::evaluation_work(op))
 }
 
 /// Admit report reference/catalog construction before formatting allocates.

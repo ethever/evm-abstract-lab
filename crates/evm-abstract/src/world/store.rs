@@ -33,7 +33,7 @@ mod traversal;
 use thiserror::Error;
 
 #[cfg(test)]
-use crate::world::test_support::{TestLog, TestStore, TestStoreSummary};
+use crate::world::test_support::{TestLog, TestStore};
 pub use summary::EvmStoreSummary;
 
 /// Ordered state observations with the selected snapshot storage backend.

@@ -4,7 +4,6 @@ use crate::domain::ProductAlgebra;
 
 #[cfg(test)]
 use crate::analysis::testing::TestValue;
-use crate::domain::EvmNumericAlgebra as _;
 
 use super::*;
 use crate::domain::symbolic::{ByteStateKind, ExprId, ExprKind, SlotStateKind, SourceId};
@@ -65,7 +64,7 @@ impl Witness {
 #[test]
 fn coarse_entry_has_common_witnesses_for_all_original_joint_tuples_and_rolls_back_versions() {
     let config = fixtures::config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let config_numeric = crate::analysis::testing::NumericLimits::machine();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);

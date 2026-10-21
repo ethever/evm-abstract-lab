@@ -1,11 +1,9 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::{
     Builder, GuardRetention, QUOTE_WORK, RangeKind, build, literal_memory_singleton_work, logical,
     output_release_work, release_work, value_copy_work,
 };
 #[cfg(test)]
-use crate::analysis::testing::{Reduction, TestValue};
+use crate::analysis::testing::TestValue;
 use crate::domain::ValueAlgebra;
 use crate::{
     U256,
@@ -42,11 +40,13 @@ fn inputs() -> (TestValue, TestValue) {
 
 // Independent expansion of the original unbudgeted helper. Keep the complete
 // reductions so a dropped expression cannot hide a numeric/metadata difference.
+type GuardStep<N> = (u8, Vec<EvmValue<N>>, EvmReduction<N>);
+
 fn reference<D: EvmNumericAlgebra>(
     offset: &EvmValue<D::Element>,
     size: &EvmValue<D::Element>,
     domain: crate::domain::AlgebraRef<'_, D>,
-) -> Vec<(u8, Vec<EvmValue<D::Element>>, EvmReduction<D::Element>)> {
+) -> Vec<GuardStep<D::Element>> {
     let mut steps = Vec::new();
     let mut apply = |op, args: &[EvmValue<D::Element>]| {
         let reduced = domain.apply_detailed(op, args);
@@ -124,6 +124,9 @@ fn verify_paid_operations<D: EvmNumericAlgebra>(numeric: D) {
             retention: GuardRetention::new(&offset, &size),
         };
         for (step, (op, args, expected)) in steps.iter().enumerate() {
+            let numeric_work = domain
+                .numeric_algebra()
+                .operation_work(*op, args.iter().map(EvmValue::numeric));
             let actual = if matches!(step, 1 | 3 | 4) {
                 builder.copied(*op, [&args[0], &args[1]])
             } else {
@@ -131,7 +134,13 @@ fn verify_paid_operations<D: EvmNumericAlgebra>(numeric: D) {
             }
             .unwrap();
             assert_same_value(&actual, &expected.value);
-            assert!(release_work(actual.work_size()) <= output_release_work(domain, *op, args));
+            assert!(actual.numeric().work_size() <= numeric_work);
+            assert!(
+                release_work(actual.work_size()) <= output_release_work(domain, numeric_work, args),
+                "opcode {op:#x}: output size {}, release quote {}",
+                actual.work_size(),
+                output_release_work(domain, numeric_work, args),
+            );
         }
         let mut budget = WorkBudget::new(usize::MAX);
         let built = build(&offset, &size, &mut context(&config, &mut budget, domain)).unwrap();
@@ -160,6 +169,53 @@ fn paid_guard_operations_keep_semantics_for_product_and_finite_carriers() {
     }
 }
 
+#[test]
+fn paid_guard_operations_keep_semantics_for_opaque_carrier() {
+    use crate::analysis::transfer::query::tests::{Policy, RECEIPT};
+
+    let _receipt = RECEIPT.scope();
+    // This carrier has no finite candidate view, and its structural bound is
+    // independent of Product's inline fields and native finite cardinality.
+    verify_paid_operations(Policy);
+}
+
+#[test]
+fn opaque_output_release_and_execution_are_prepaid_before_the_operation() {
+    use crate::analysis::transfer::query::tests::{Policy, RECEIPT, Word};
+
+    let _receipt = RECEIPT.scope();
+    RECEIPT.update(|receipt| receipt.cancel_on_apply = true);
+    let algebra = ValueAlgebra::new(Policy);
+    let domain = algebra.borrowed();
+    let args = [EvmValue::<Word>::top(), EvmValue::top()];
+    let numeric_work = domain
+        .numeric_algebra()
+        .operation_work(opcode::SUB, args.iter().map(EvmValue::numeric));
+    let release = output_release_work(domain, numeric_work, &args);
+    let execution = domain.operation_work(opcode::SUB, &args);
+    for (remaining, paid) in [(release - 1, 0), (release + execution - 1, release)] {
+        let cancellation = analysis_control::Cancellation::new();
+        analysis_control::with_cancellation(&cancellation, || {
+            let mut budget = WorkBudget::new(17 + QUOTE_WORK + remaining);
+            assert!(budget.charge(17));
+            let mut builder = Builder {
+                domain,
+                budget: &mut budget,
+                retention: GuardRetention::new(&args[0], &args[1]),
+            };
+            assert!(matches!(
+                builder.apply(opcode::SUB, &args),
+                Err(FrontierReason::Work)
+            ));
+            assert_eq!(budget.used(), 17 + QUOTE_WORK + paid);
+            assert!(budget.exhausted());
+            // The opaque hook cancels on entry. A refused output reservation
+            // or execution fee must leave that hook entirely unexecuted.
+            assert!(!cancellation.is_cancelled());
+        });
+    }
+}
+
 // Quote only cached metadata of the already computed reference steps. Each
 // pair is the paid prefix and the next actual ProductAlgebra operation's exact price.
 fn operation_refusals(
@@ -182,7 +238,10 @@ fn operation_refusals(
             if matches!(step, 1 | 3 | 4) {
                 prefix += QUOTE_WORK + args.iter().map(value_copy_work).sum::<usize>();
             }
-            prefix += QUOTE_WORK + output_release_work(domain, *op, args);
+            let numeric_work = domain
+                .numeric_algebra()
+                .operation_work(*op, args.iter().map(EvmValue::numeric));
+            prefix += QUOTE_WORK + output_release_work(domain, numeric_work, args);
             let cost = domain.operation_work(*op, args);
             let refusal = (prefix, cost);
             prefix += cost;
@@ -193,7 +252,6 @@ fn operation_refusals(
 
 #[test]
 fn caller_copy_fees_cover_native_finite_carrier_and_saturate_before_actions() {
-    let mut config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.enabled = false;
     let domain =
@@ -207,7 +265,7 @@ fn caller_copy_fees_cover_native_finite_carrier_and_saturate_before_actions() {
         WorkBudget::new(QUOTE_WORK + value_copy_work(&left) + value_copy_work(&right) - 1);
     assert!(domain.operation_work(opcode::GT, &[left.clone(), right.clone()]) > 0);
     let mut builder = Builder {
-        domain: domain,
+        domain,
         budget: &mut budget,
         retention: GuardRetention::new(&left, &right),
     };
@@ -231,7 +289,7 @@ fn caller_copy_fees_cover_native_finite_carrier_and_saturate_before_actions() {
     let offset = TestValue::top().with_expression(expression);
     let mut budget = WorkBudget::new(1_000_000);
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     assert!(
         build(
             &offset,
@@ -251,7 +309,7 @@ fn caller_copy_fees_cover_native_finite_carrier_and_saturate_before_actions() {
 #[test]
 fn each_of_eight_operation_refusals_keeps_paid_prefix_payload_and_prior_failure() {
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     // Step 7 loses its expression; refusing step 8 must still report plain Work.
     config_numeric.relations.max_nodes = 10;
@@ -320,7 +378,7 @@ fn each_of_eight_operation_refusals_keeps_paid_prefix_payload_and_prior_failure(
 #[test]
 fn finite_raw_guard_error_attaches_only_to_the_actual_missing_expression_frontier() {
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.max_nodes = 10;
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
@@ -375,7 +433,7 @@ fn finite_raw_guard_error_attaches_only_to_the_actual_missing_expression_frontie
 #[test]
 fn raw_finite_error_does_not_turn_a_proven_constant_guard_into_a_failure() {
     let (world, entry) = fixture(&[(0x101, "00")]);
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.max_nodes = 1;
     let leaf = ExprId::input(71, Symbol::CallValue);
@@ -425,7 +483,7 @@ fn raw_finite_error_does_not_turn_a_proven_constant_guard_into_a_failure() {
 fn literal_and_cancelled_paths_keep_their_original_boundaries_without_guard_fallback() {
     let (world, entry) = fixture(&[(0x101, "00")]);
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let payload = initial(
         &world,
         &entry,
@@ -556,7 +614,7 @@ fn identification_short_circuits_without_calling_the_allocator() {
         let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
         let domain = domain.borrowed();
         let mut builder = Builder {
-            domain: domain,
+            domain,
             budget: &mut budget,
             retention: GuardRetention::new(&original, &original),
         };
@@ -573,7 +631,7 @@ fn identification_short_circuits_without_calling_the_allocator() {
 #[test]
 fn either_unmarked_operand_identity_failure_vetoes_finite_guard_evidence() {
     for missing in [0, 1] {
-        let mut config = ExecutionConfig::default();
+        let config = ExecutionConfig::default();
         let mut config_numeric = crate::analysis::testing::NumericLimits::default();
         config_numeric.relations.max_nodes = 1;
         let domain =

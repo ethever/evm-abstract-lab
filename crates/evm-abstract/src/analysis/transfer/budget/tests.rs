@@ -1,5 +1,3 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::{byte_work, operation_work};
 #[cfg(test)]
 use crate::analysis::testing::{Account, ByteArray, Entry, TestValue, World};
@@ -45,7 +43,7 @@ fn fixture() -> (
         constant(0),
         ByteArray::empty(),
     );
-    let mut config = ExecutionConfig::default();
+    let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.enabled = false;
     let algebra =

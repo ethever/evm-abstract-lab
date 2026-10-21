@@ -10,10 +10,10 @@ use crate::domain::{
 };
 #[cfg(test)]
 use crate::world::test_support::TestBytes;
+#[cfg(test)]
+use crate::world::test_support::TestValue;
 use alloy_primitives::U256;
 use std::collections::BTreeMap;
-#[cfg(test)]
-use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 type Facts<N = crate::domain::NumericValue> = BTreeMap<ExprId, EvmValue<N>>;
 

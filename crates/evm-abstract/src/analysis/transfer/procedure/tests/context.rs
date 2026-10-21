@@ -1,6 +1,5 @@
-use crate::domain::ProductAlgebra;
 use crate::analysis::machine::fixtures::fixture;
-use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 
 #[test]
 fn context_depth_zero_stays_empty_during_actual_loop_execution_and_replay() {

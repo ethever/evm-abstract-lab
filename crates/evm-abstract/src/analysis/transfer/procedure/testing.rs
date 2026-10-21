@@ -144,7 +144,7 @@ impl Table {
 }
 
 pub(in crate::analysis) use super::super::initial;
-pub(super) use payload::{form, instantiate, join};
+pub(super) use payload::{form, instantiate};
 
 #[expect(
     clippy::too_many_arguments,

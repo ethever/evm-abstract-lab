@@ -3,8 +3,8 @@ use super::Replay;
 use crate::analysis::testing::{ByteArray, TestValue};
 use crate::{
     analysis::{
-        self, Continuation, FrontierReason, InstructionProgress, MachineError, OutcomeKind,
-        RootFrame, Status,
+        Continuation, FrontierReason, InstructionProgress, MachineError, OutcomeKind, RootFrame,
+        Status,
         machine::fixtures,
         summary::{Certificate, Node, SummaryOutput, Terminal},
         transfer::CompletedCall,

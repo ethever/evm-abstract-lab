@@ -1,7 +1,6 @@
 //! Dispatch witnesses use an independent interval carrier with private facts.
 
 use super::*;
-use crate::domain::EvmNumericAlgebra as _;
 use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
@@ -272,7 +271,8 @@ impl EvmNumericAlgebra for Policy {
         }
         NumericReduction::stable(out)
     }
-    fn operation_work<'a>(&self, op: u8, _args: impl Iterator<Item = &'a Opaque>) -> usize {
+    // Every supported scalar opcode uses the same fixed-size carrier envelope.
+    fn operation_work<'a>(&self, _op: u8, _args: impl Iterator<Item = &'a Opaque>) -> usize {
         4096
     }
     fn literal_quote_work(&self, literal: U256) -> usize {
@@ -318,7 +318,7 @@ struct Fixture {
 }
 
 fn fixture(code: &str, relations: bool) -> Fixture {
-    let mut config = ExecutionConfig {
+    let config = ExecutionConfig {
         max_work: 1_000_000_000,
         ..ExecutionConfig::default()
     };

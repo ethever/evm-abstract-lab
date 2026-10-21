@@ -1,6 +1,5 @@
 //! A small carrier whose independent proof tariff exceeds its retained size.
 
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     U256,
     domain::{
@@ -181,9 +180,9 @@ impl EvmNumericAlgebra for Algebra {
         let _args: Vec<&Word> = _args.collect();
         NumericReduction::stable(Word::top())
     }
-    fn operation_work<'a>(&self, op: u8, _args: impl Iterator<Item = &'a Word>) -> usize {
-        // No test below requests a numeric operation; refuse rather than claim
-        // that a small retained-size quote funds this opaque carrier's queries.
+    fn operation_work<'a>(&self, _op: u8, _args: impl Iterator<Item = &'a Word>) -> usize {
+        // Every opcode is deliberately refused: these scalar-query fixtures
+        // never request numeric operations, whose opaque work is not quoted.
         usize::MAX
     }
     fn literal_quote_work(&self, _literal: U256) -> usize {

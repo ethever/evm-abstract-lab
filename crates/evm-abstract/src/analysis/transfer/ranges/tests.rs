@@ -1,5 +1,3 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::{memory_condition, sequence_condition};
 #[cfg(test)]
 use crate::analysis::testing::{Account, Entry, TestValue, World};
@@ -98,7 +96,7 @@ fn symbolic_logical_partition_retains_success_and_pre_effect_failure() {
         max_memory_bytes: 64,
         ..ExecutionConfig::default()
     };
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let config_numeric = crate::analysis::testing::NumericLimits::default();
     let mut budget = super::super::WorkBudget::new(10_000_000);
     let transfer_numeric = ProductAlgebra::from_spec(config_numeric.spec());
     let mut context = crate::analysis::transfer::testing::context(
@@ -156,7 +154,7 @@ fn assumption_capacity_failure_preserves_the_whole_unmodified_input() {
         domain::{relational::CheckResult, symbolic::ExprId},
     };
     let mut result = execution();
-    let mut config = ExecutionConfig {
+    let config = ExecutionConfig {
         max_memory_bytes: 64,
         ..ExecutionConfig::default()
     };
@@ -216,7 +214,7 @@ fn encoder_limit_keeps_success_guard_and_gas_failure_coverage() {
     };
     let mut result = execution();
     let before = result.payload.active().memory.clone();
-    let mut config = ExecutionConfig {
+    let config = ExecutionConfig {
         max_memory_bytes: 64,
         ..ExecutionConfig::default()
     };
@@ -326,10 +324,15 @@ mod literal_memory {
         let bound = logical::MAX_END;
         for enabled in [false, true] {
             for capacity in [8, 512] {
-                let mut config = ExecutionConfig::default();
-                let mut config_numeric = crate::analysis::testing::NumericLimits::default();
-                config_numeric.max_constants = capacity;
-                config_numeric.relations.enabled = enabled;
+                let config = ExecutionConfig::default();
+                let config_numeric = crate::analysis::testing::NumericLimits {
+                    max_constants: capacity,
+                    relations: crate::domain::relational::RelationLimits {
+                        enabled,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
                 assert_eq!(config.max_work, 20_000_000);
                 for (offset, size, allowed) in [
                     (U256::ZERO, U256::ONE, true),
@@ -375,7 +378,7 @@ mod literal_memory {
     #[test]
     fn numeric_zero_size_admits_unknown_symbolic_multivalue_and_max_offsets() {
         let config = ExecutionConfig::default();
-        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let config_numeric = crate::analysis::testing::NumericLimits::default();
         let domain =
             crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
         let domain = domain.borrowed();
@@ -475,9 +478,11 @@ mod literal_memory {
 
     #[test]
     fn finite_cardinality_prices_first_and_candidate_lookup_without_capacity_amplification() {
-        let mut config = ExecutionConfig::default();
-        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
-        config_numeric.max_constants = 512;
+        let config = ExecutionConfig::default();
+        let config_numeric = crate::analysis::testing::NumericLimits {
+            max_constants: 512,
+            ..Default::default()
+        };
         let domain =
             crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
         let domain = domain.borrowed();
@@ -543,7 +548,7 @@ mod literal_memory {
         assert_eq!(size.singleton(), Some(U256::ONE));
         assert_eq!(literal_memory_singleton_work(&size), 608);
         let config = ExecutionConfig::default();
-        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let config_numeric = crate::analysis::testing::NumericLimits::default();
         let mut budget = WorkBudget::new(1_600);
         let mut result = execution();
         let before = result.payload.clone();
@@ -567,7 +572,7 @@ mod literal_memory {
     #[test]
     fn literal_preflight_refuses_work_cancellation_and_inherited_exhaustion_atomically() {
         let config = ExecutionConfig::default();
-        let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+        let config_numeric = crate::analysis::testing::NumericLimits::default();
         let prior = 7;
         for mode in 0..3 {
             let cancellation = analysis_control::Cancellation::new();
@@ -662,12 +667,14 @@ mod literal_memory {
         for capacity in [8, 512] {
             // Keep the private helpers' original 1B allowance; exercise the
             // default enabled relation policy without changing those fixtures.
-            let mut config = ExecutionConfig {
+            let config = ExecutionConfig {
                 max_work: 1_000_000_000,
                 ..ExecutionConfig::default()
             };
-            let mut config_numeric = crate::analysis::testing::NumericLimits::default();
-            config_numeric.max_constants = capacity;
+            let config_numeric = crate::analysis::testing::NumericLimits {
+                max_constants: capacity,
+                ..Default::default()
+            };
             assert!(config_numeric.relations.enabled);
             let domain =
                 crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
@@ -751,26 +758,17 @@ mod literal_memory {
                         );
                     }
                     receipts.push(quote);
-                    // Product output release: bounded candidates, inline fields,
-                    // provenance and the expanded expression nodes, plus 32.
-                    let candidates = if op == opcode::SUB {
-                        args.iter()
-                            .try_fold(1usize, |tuples, arg| {
-                                arg.finite_constants()
-                                    .cardinality()
-                                    .map(|len| tuples.saturating_mul(len))
-                            })
-                            .unwrap_or(capacity)
-                            .min(capacity)
-                    } else {
-                        2
-                    };
+                    // The selected numeric operation quote bounds the actual
+                    // output structure; its release is an independent owner.
+                    use crate::domain::EvmNumericAlgebra as _;
+                    let numeric = domain
+                        .numeric_algebra()
+                        .operation_work(op, args.iter().map(TestValue::numeric));
                     let nodes = args.iter().fold(1usize, |nodes, arg| {
                         nodes.saturating_add(arg.expression().map_or(1, |expr| expr.nodes()))
                     });
                     receipts.push(
-                        candidates
-                            .saturating_add(12)
+                        numeric
                             .saturating_add(crate::domain::provenance::MAX_ORIGINS)
                             .saturating_add(nodes)
                             .saturating_add(32),
@@ -885,7 +883,7 @@ mod literal_memory {
 
     #[test]
     fn inherited_symbolic_limits_and_invalid_operand_roots_do_not_take_the_fastpath() {
-        let mut config = ExecutionConfig::default();
+        let config = ExecutionConfig::default();
         let mut config_numeric = crate::analysis::testing::NumericLimits::default();
         config_numeric.relations.max_nodes = 2;
         let source = ExprId::fresh().unwrap();

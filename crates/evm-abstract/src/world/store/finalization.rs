@@ -11,8 +11,6 @@ use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::resource::{CloneError, WorkBudget};
 #[cfg(test)]
-use crate::world::test_support::TestAlgebra;
-#[cfg(test)]
 use crate::world::test_support::TestStore;
 use alloy_primitives::Address;
 
