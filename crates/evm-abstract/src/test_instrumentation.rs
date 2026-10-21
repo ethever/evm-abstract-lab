@@ -5,6 +5,9 @@ use std::{
     thread::{self, ThreadId},
 };
 
+#[path = "../tests/support/work_boundary.rs"]
+pub(crate) mod work_boundary;
+
 pub(crate) struct Counter<T: Copy> {
     initial: T,
     entries: Mutex<Vec<(ThreadId, T)>>,
