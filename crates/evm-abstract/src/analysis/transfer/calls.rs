@@ -171,6 +171,10 @@ pub(super) fn finish_root_store<D: EvmNumericAlgebra>(
                 }
             })?;
     } else if kind != OutcomeKind::Return {
+        saved_store
+            .state()
+            .pay_clone_with(context.budget)
+            .map_err(FrontierReason::from)?;
         store.restore(saved_store.clone());
     }
     Ok(())
