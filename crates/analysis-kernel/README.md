@@ -6,7 +6,7 @@ stores with `SlotMeta<V>` sidecars. There is no language IR, erased value regist
 or dynamic analyzer dispatch.
 
 `Analyzer<Cx>` implementations state the `Read<Q,Route>`, `Accepts<Q,Route>` and
-`Charges` and `ReadGeneration` capabilities they need. `Cons`/`Here`/`There` route providers explicitly;
+`Charges`, `Discover` and `ReadGeneration` capabilities they need. `Cons`/`Here`/`There` route providers explicitly;
 `Pair` composes task and error types. `solve` runs those independent components on
 the same dependency graph. Missing, absent and directory reads all participate.
 The external Bounds/Masks fixture demonstrates mutual refinement in every initial
@@ -77,6 +77,24 @@ evaluation order; another fixture aggregates two independent provider routes.
   work can still discover and register successors/providers. Truly future external
   work must retain an explicit obligation before sealing.
 
+## Required reads and optional discovery
+
+`Read::query` adopts available semantic premises and requires an answer.
+`Discover::discover` / `Run::query_discovery` share the same identity, scope,
+producer-guard, clone-charge and cancellation checks. Discovery retains ordinary
+wake subscriptions but neither adopts a must premise nor requires its unanswered
+fact for closure. Use it for navigation and finding work. A partial observed set
+or unknown point does not prove complete membership, infeasibility or absence of
+unobserved behavior.
+
+Requirements are monotone per job/fact: Read upgrades an earlier Discover, and
+later discovery cannot downgrade it. Validity/producer subscriptions inherit the
+read mode. `ReadGeneration::current_generation` is always a mandatory routing
+demand, while scope numbers themselves remain nonsemantic. A stale selection
+keeps that reader's relative closure open despite an initialized selector fact.
+Effective readiness checks scope validity, selector validity and every declared
+producer, rather than only whether a numerical value was once published.
+
 ## Declared producer coverage
 
 A selected generation publishing outside its own scope declares its stable entry
@@ -111,6 +129,29 @@ and the returned Availability must precede use or cache reuse.
 `resolve_absent` can explicitly renew a replaced producer's covering absence while
 retaining an aggregate may value; it cannot retract that value. An ordinary
 absence read is still a wake dependency, rather than a permanent negative proof.
+
+## Confirmed family withdrawal
+
+`Run::withdraw_generation` asserts that a **complete** source evaluation proved
+no current contribution for this stable entry/family. Do not call it for partial,
+stopped or cancelled work. It retires the selected scope and leaves a resolved
+Absent route with the same selector and checked context/policy lineage. It says
+nothing about other producers or whole-point reachability. Repeated confirmed
+withdrawal is Unchanged, and `generation_stale` is false for resolved absence.
+`replace_generation` reactivates it only with a fresh compatible sealed input.
+A Run withdrawing its own selected scope completes that Run; subsequent
+publication from its retired job is rejected.
+
+A withdrawn producer contributes a valid empty input. An existing aggregate may
+remain as a conservative upper bound, preserving other producers' values. A
+consumer obtaining that value automatically adopts the stable entry's empty
+premise. Absent -> Active adds possible contribution and invalidates those
+adopters before old guarantees can be reused. The old source coverage becomes
+Pending until the new scope republishes a covering answer/absence. Ordinary
+Active -> Active route refresh stays separate from this semantic addition.
+Retirement, selection, invalidation and notifications are prepaid atomically;
+refusal/cancellation leaves the entire prior state intact. Directory handles are
+retained throughout this lifecycle.
 
 ## Installation and interruption
 
@@ -168,6 +209,8 @@ External slot operations explicitly quote application data costs. Kernel allocat
 scans, metadata snapshots, retirement and notification fanout are also charged.
 Costs that saturate are rejected, not silently accepted as bounded work.
 
+Wake edges and their mandatory-demand subsets are conservative within a live
+generation, and their observation, copying, destruction and retirement are paid.
 Read edges are conservative within a live generation. Retirement wakes consumers
 before releasing edges belonging to or targeting that generation, including
 cross-scope readers. Retired task identities remain checked tombstones, while
@@ -181,6 +224,12 @@ scope identity, rejects active scopes, and reserves traversal, key drops and
 or cancellation leaves all cells unchanged. Other scopes and their dependencies
 remain intact; repeated reclamation returns zero. Scope/fact tombstones reject
 retired or aborted handles rather than aliasing a later generation.
+`ReclaimScope` composes this ownership operation statically for Channel, Nil and
+nested Cons stores, including custom adapter routes. Atomicity is per channel:
+if a later child refuses, earlier successful removals remain, the typed error
+propagates, and retrying the same scope safely skips already reclaimed cells.
+Removed counts use checked addition; world-scoped aggregates are retained when
+reclaiming local-generation cells.
 
 Scope-owned fact indexes and job-owned provider indexes target retirement at its
 own graph and adjacent edges. Invalidation follows reverse semantic edges once
@@ -212,8 +261,9 @@ history.
 
 `LocalClosure::Limited` means an optional precision loss with sound coverage.
 `Closure::Closed` additionally requires no queued, admitted, in-flight,
-interrupted, missing-read, unsealed-scope, stale-generation or explicit semantic
-obligations.
+interrupted, mandatory missing-read/route, unsealed-scope, stale-generation or
+explicit semantic obligations. Unanswered optional discovery may remain; closure
+is not a proof that unknown future discovery targets are impossible.
 Bounded `solve` never fabricates global closure from queue emptiness or a local
 precision limit.
 
@@ -222,3 +272,12 @@ counting nested readers, then reserves the checked full traversal cost before
 inspecting closure and local limits. Empty queues and zero-step calls still
 check the same root meter for refusal/cancellation. The read-only `closure`,
 `closure_in`, `local_limits` and `statistics` APIs remain caller-accounted.
+
+`closure_in_metered(scope, meter)` computes the same local mandatory closure from
+that live scope's owned jobs, deduplicated required facts and producer guards,
+and its unresolved-obligation index. It prepays traversal and scratch storage,
+checks cancellation and leaves graph state intact on refusal. Unrelated retired
+facts/jobs/obligations add no local scan or linear charge. Unresolved obligations
+are indexed on creation, removed on resolution/retirement, and included in paid
+snapshot/drop accounting. Global and caller-funded introspection still use their
+explicit reporting contract; this paid local API does not cache another truth.

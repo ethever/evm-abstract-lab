@@ -175,8 +175,8 @@ fn replacement_releases_task_payloads_and_targeted_cleanup_ignores_unrelated_fac
         meter.used - start
     }
     assert!(
-        retirement_cost(10_000) < retirement_cost(0) + 128,
-        "only adjacent edge lookups may grow logarithmically; history is not traversed"
+        retirement_cost(10_000) < retirement_cost(0) + 1_024,
+        "wake and mandatory-demand index lookups grow logarithmically, far below the 10000-record history"
     );
 
     let drops = Arc::new(AtomicUsize::new(0));

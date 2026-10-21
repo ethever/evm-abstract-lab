@@ -15,11 +15,15 @@ use std::{
 mod assumptions;
 mod changes;
 mod coverage;
+mod dependencies;
+mod generation;
+mod readiness;
 mod reclaim;
 mod report;
 mod run;
 mod snapshot;
-pub use run::{GenerationEntry, Run, RunningJob, SlotMeta};
+pub use generation::GenerationEntry;
+pub use run::{Run, RunningJob, SlotMeta};
 pub use snapshot::KernelFork;
 
 /// A cumulative root ledger; refusing work never grants a fresh budget.
@@ -53,6 +57,27 @@ pub(crate) struct FactId {
     index: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadMode {
+    Required,
+    Discovery,
+}
+
+/// The stable selector is the sole selection/absence authority. The retired
+/// last scope preserves checked context/policy lineage through an empty interval.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Selection {
+    Active(Scope),
+    Absent { last: Scope },
+}
+impl Selection {
+    fn last(self) -> Scope {
+        match self {
+            Self::Active(scope) | Self::Absent { last: scope } => scope,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Fact {
     id: FactId,
@@ -60,6 +85,8 @@ struct Fact {
     version: Version,
     ready: bool,
     readers: BTreeSet<JobId>,
+    // Required subset of the wake readers; discoveries alone never block closure.
+    demands: BTreeSet<JobId>,
     providers: BTreeSet<JobId>,
     // Reverse semantic assumptions, separate from ordinary wake dependencies.
     assumptions: BTreeSet<Scope>,
@@ -67,7 +94,7 @@ struct Fact {
     coverage: BTreeMap<FactId, Scope>,
     // A selector's current scope is lifecycle metadata shared by every handle.
     // Keeping it here also gives a fork its own authoritative staged selection.
-    selected: Option<Scope>,
+    selected: Option<Selection>,
 }
 impl Fact {
     fn new(id: FactId, scope: Option<Scope>, ready: bool) -> Self {
@@ -77,6 +104,7 @@ impl Fact {
             version: Version::default(),
             ready,
             readers: BTreeSet::new(),
+            demands: BTreeSet::new(),
             providers: BTreeSet::new(),
             assumptions: BTreeSet::new(),
             coverage: BTreeMap::new(),
@@ -99,6 +127,7 @@ struct Job<J> {
     // Retired identities remain checked tombstones without owning task data.
     task: Option<Arc<J>>,
     reads: BTreeMap<FactId, Version>,
+    required: BTreeSet<FactId>,
     provides: BTreeSet<FactId>,
     state: JobState,
     evaluation: Version,
@@ -114,6 +143,7 @@ struct Generation {
     jobs: BTreeSet<JobId>,
     facts: BTreeSet<FactId>,
     assumptions: BTreeSet<FactId>,
+    open_obligations: BTreeSet<ObligationId>,
     entry: Option<FactId>,
     entry_owner: bool,
     // Only selected generations acquire this automatic invalidation contract.
@@ -285,10 +315,12 @@ impl<J> Kernel<J> {
             jobs: BTreeSet::new(),
             facts: [head].into_iter().collect(),
             assumptions: BTreeSet::new(),
+            open_obligations: BTreeSet::new(),
             entry: None,
             entry_owner: false,
             stale: false,
         });
+        self.facts[head.index].scope = Some(scope);
         self.scope_ids.insert(key, scope);
         Ok(scope)
     }
@@ -376,6 +408,7 @@ impl<J> Kernel<J> {
             scope,
             task: Some(Arc::new(task)),
             reads: BTreeMap::new(),
+            required: BTreeSet::new(),
             provides: BTreeSet::new(),
             state: JobState::Idle,
             evaluation: Version::default(),
@@ -633,41 +666,6 @@ impl<J> Kernel<J> {
         self.touch();
         Ok(())
     }
-    fn observe<M: Meter>(
-        &mut self,
-        job: JobId,
-        id: FactId,
-        meter: &mut M,
-    ) -> Result<(), KernelError<M::Stop>> {
-        self.check_job(job)?;
-        self.check_fact(id)?;
-        // Reserve lookup + both possible insertions before looking up the edge.
-        let cost = tree_work(self.jobs[job.index].reads.len())
-            .saturating_mul(2)
-            .saturating_add(tree_work(self.facts[id.index].readers.len()))
-            .saturating_add(2);
-        reserve(meter, cost)?;
-        let new = !self.jobs[job.index].reads.contains_key(&id);
-        self.jobs[job.index]
-            .reads
-            .insert(id, self.facts[id.index].version);
-        if new {
-            self.facts[id.index].readers.insert(job);
-        }
-        self.touch();
-        Ok(())
-    }
-    fn observe_scoped<M: Meter>(
-        &mut self,
-        job: JobId,
-        id: FactId,
-        scope: Scope,
-        meter: &mut M,
-    ) -> Result<(), KernelError<M::Stop>> {
-        self.check_scope(scope)?;
-        self.observe(job, self.scopes[scope.index].head, meter)?;
-        self.observe(job, id, meter)
-    }
     /// Open an adapter-owned semantic frontier independently of queue contents.
     pub fn obligation<M: Meter>(
         &mut self,
@@ -675,7 +673,10 @@ impl<J> Kernel<J> {
         meter: &mut M,
     ) -> Result<ObligationId, KernelError<M::Stop>> {
         self.check_usable_scope(scope)?;
-        reserve(meter, 2)?;
+        reserve(
+            meter,
+            3usize.saturating_add(tree_work(self.scopes[scope.index].open_obligations.len())),
+        )?;
         let id = ObligationId {
             epoch: self.epoch,
             birth: self.allocation,
@@ -686,6 +687,7 @@ impl<J> Kernel<J> {
             scope,
             resolved: false,
         });
+        self.scopes[scope.index].open_obligations.insert(id);
         self.touch();
         Ok(id)
     }
@@ -705,9 +707,14 @@ impl<J> Kernel<J> {
         if obligation.id != id {
             return Err(KernelError::InvalidHandle);
         }
-        self.check_scope(obligation.scope)?;
-        reserve(meter, 1)?;
+        let scope = obligation.scope;
+        self.check_scope(scope)?;
+        reserve(
+            meter,
+            tree_work(self.scopes[scope.index].open_obligations.len()).saturating_add(1),
+        )?;
         self.obligations[id.index].resolved = true;
+        self.scopes[scope.index].open_obligations.remove(&id);
         self.touch();
         Ok(())
     }
@@ -749,11 +756,11 @@ impl<J> Kernel<J> {
             .facts
             .iter()
             .filter(|fact| {
-                (!fact.ready || !self.coverage_ready(fact))
+                !self.fact_ready(fact)
                     && fact
                         .scope
                         .is_none_or(|scope| self.scopes[scope.index].active)
-                    && fact.readers.iter().any(|id| {
+                    && fact.demands.iter().any(|id| {
                         self.jobs[id.index].state != JobState::Retired
                             && self.scopes[self.jobs[id.index].scope.index].active
                             && !self.scopes[self.jobs[id.index].scope.index].stale

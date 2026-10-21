@@ -4,6 +4,7 @@ mod atomicity;
 mod feedback;
 mod protocol;
 mod sidecars;
+mod withdrawal;
 
 use super::*;
 use crate::{Answer, Availability, Change, Closure, KernelError, Nil, SlotMeta, solve};

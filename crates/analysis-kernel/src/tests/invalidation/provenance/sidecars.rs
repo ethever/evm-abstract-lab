@@ -235,3 +235,34 @@ fn unchanged_raw_publication_counter_cannot_certify_invalidated_producer_coverag
     assert_eq!(run.observe_slot(&x.slot), Err(KernelError::PendingCoverage));
     run.finish(LocalClosure::Stable).unwrap();
 }
+
+#[test]
+fn sidecar_empty_producer_premise_is_invalidated_before_equivalent_reactivation_coverage() {
+    let mut x = Sidecar::new();
+    x.s.grow();
+    let mut run = x.s.f.kernel.begin(x.s.f.owner, &mut x.s.f.meter).unwrap();
+    run.withdraw_generation(&mut x.s.f.entry).unwrap();
+    run.finish(LocalClosure::Stable).unwrap();
+    x.s.replace(false);
+    x.s.drain_owners();
+    assert!(x.read().value().is_some());
+    assert_eq!(x.s.f.kernel.closure(), Closure::Closed);
+    x.s.replace(true);
+    assert!(x.s.f.stale(1));
+    x.s.replace(false);
+    x.s.drain_owners();
+    assert_eq!(x.read().state, Availability::Pending);
+    let f = &mut x.s.f;
+    let mut run = f.kernel.begin(f.reader, &mut f.meter).unwrap();
+    run.observe_slot(&x.s.anchor).unwrap();
+    let incoming = x.bound.clone();
+    assert_eq!(
+        run.publish_prepared(&x.slot, &mut x.bound, incoming, Change::Unchanged, 1)
+            .unwrap(),
+        Change::Changed
+    );
+    run.finish(LocalClosure::Stable).unwrap();
+    assert!(x.read().value().is_some());
+    assert!(!x.s.f.stale(0) && !x.s.f.stale(1));
+    assert_eq!(x.s.f.kernel.closure(), Closure::Closed);
+}

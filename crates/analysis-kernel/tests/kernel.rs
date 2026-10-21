@@ -6,6 +6,8 @@ mod cooperation;
 mod publication_drop;
 #[path = "kernel/reclaim.rs"]
 mod reclaim;
+#[path = "kernel/reclaim_composition.rs"]
+mod reclaim_composition;
 #[path = "kernel/retirement.rs"]
 mod retirement;
 #[path = "kernel/support.rs"]

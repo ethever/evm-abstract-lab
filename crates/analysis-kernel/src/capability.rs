@@ -110,6 +110,18 @@ pub trait Read<Q: Capability, Route = crate::Here> {
     /// Record the dependency, including missing/negative reads.
     fn query(&mut self, key: Scoped<Q::Key>) -> Result<Answer<Q::Value>, Self::Error>;
 }
+/// Non-mandatory navigation/work discovery at a static provider route.
+///
+/// Retains wake subscriptions and validates all availability/producer guards, but
+/// does not adopt a fixed-generation premise. Unknown is neither infeasible nor
+/// a proof of complete membership; do not derive must guarantees from this view.
+/// A required Read on the same job/fact upgrades its retained dependency.
+pub trait Discover<Q: Capability, Route = crate::Here> {
+    /// Typed scope/meter failure of the client context.
+    type Error;
+    /// Discover currently available work; unanswered discovery alone allows closure.
+    fn discover(&mut self, key: Scoped<Q::Key>) -> Result<Answer<Q::Value>, Self::Error>;
+}
 /// Declared typed publication capability at an explicit static provider route.
 pub trait Accepts<Q: Capability, Route = crate::Here> {
     /// Typed policy or infrastructure failure.

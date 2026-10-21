@@ -2,7 +2,8 @@
 //!
 //! [`Kernel`] tracks obligations and typed publications; semantic values stay in
 //! [`Channel`]s. A query records its dependency even before any provider publishes
-//! an answer. Registered descending [`Reduction`]s are scoped to one immutable
+//! an answer. [`Discover`] retains optional wake observations without adopting
+//! semantic premises or requiring an answer for closure. Registered descending [`Reduction`]s are scoped to one immutable
 //! input generation, separately from ascending flow/summary publications.
 //!
 //! Publication is atomic, not a whole job: reserve policy work, prepare a value,
@@ -17,6 +18,7 @@ pub mod capability;
 pub mod cooperation;
 pub mod error;
 pub mod kernel;
+pub mod reclamation;
 pub mod scope;
 pub mod status;
 pub mod worklist;
@@ -24,7 +26,8 @@ pub mod worklist;
 pub use admission::{AdmissionPolicy, Prepared};
 pub use algebra::{Ascending, Descending, JoinPolicy, Lift, Product, Reachable, RefinePolicy};
 pub use capability::{
-    Accepts, Answer, Availability, Capability, Change, Channel, Charges, Read, ReadGeneration,
+    Accepts, Answer, Availability, Capability, Change, Channel, Charges, Discover, Read,
+    ReadGeneration,
 };
 pub use cooperation::{
     Analyzer, Cons, Context, Either, Here, Nil, Pair, Reduction, Registered, Select, There, solve,
@@ -34,6 +37,7 @@ pub use kernel::{
     GenerationEntry, JobId, Kernel, KernelFork, Meter, ObligationId, Run, RunningJob, SlotMeta,
     Statistics,
 };
+pub use reclamation::ReclaimScope;
 pub use scope::{Epoch, Scope, ScopeKey, Scoped, Version};
 pub use status::{Closure, LocalClosure, Open, SolveReport};
 pub use worklist::Worklist;
