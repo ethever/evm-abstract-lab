@@ -1,11 +1,13 @@
 //! Source regressions for real native attachment and the full wire boundary.
 use super::*;
-use crate::analyze::{input, report};
+use crate::analyze::{input, report, tests::execute};
 use alloy_primitives::{Address, B256, U256};
+use evm_abstract::domain::NumericValue;
+use evm_abstract::domain::{ProductAlgebra, ValueAlgebra};
 use evm_abstract::{
-    analysis::{WorldAnalysis, control::Control},
-    domain::{AbstractValue, Domain},
-    world::{Account, Entry, Store, World},
+    analysis::{EvmWorldAnalysis, control::Control},
+    domain::EvmValue,
+    world::{EvmAccount, EvmEntry, EvmStore, EvmWorld},
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -14,7 +16,11 @@ use std::collections::BTreeMap;
 // transfer cap interrupts actual detail; no certificate is minted by the test.
 const TWO_BLOCK_RETURN: &str = "6003565b602a5f5260205ff3";
 
-fn fixture(enabled: bool, is_static: bool, chain: bool) -> (WorldAnalysis, api::AnalyzeRequest) {
+fn fixture(
+    enabled: bool,
+    is_static: bool,
+    chain: bool,
+) -> (EvmWorldAnalysis<NumericValue>, api::AnalyzeRequest) {
     let owner = Address::repeat_byte(0x11);
     let other = Address::repeat_byte(0x22);
     let mut request = api::AnalyzeRequest {
@@ -28,49 +34,59 @@ fn fixture(enabled: bool, is_static: bool, chain: bool) -> (WorldAnalysis, api::
     request.limits.root_terminal_coverage = enabled;
     request.environment.is_static = is_static;
     let mut world = if chain {
-        World::anchored(
+        EvmWorld::<NumericValue>::anchored(
             Fork::Osaka,
             U256::MAX,
             B256::repeat_byte(0x45),
             "typed wire binding",
         )
     } else {
-        World::offline(Fork::Osaka, "same offline label", "typed wire binding")
+        EvmWorld::<NumericValue>::offline(Fork::Osaka, "same offline label", "typed wire binding")
     };
     for (address, code, stored) in [(owner, TWO_BLOCK_RETURN, 7_u64), (other, "00", 9)] {
-        let mut account = Account::from_hex(code, Fork::Osaka).unwrap();
-        account
-            .storage
-            .insert(U256::ZERO, AbstractValue::constant(U256::from(stored)));
-        account.balance = AbstractValue::constant(U256::from(10));
-        account.nonce = AbstractValue::constant(U256::ONE);
+        let mut account = EvmAccount::<NumericValue>::from_hex(code, Fork::Osaka).unwrap();
+        account.storage.insert(
+            U256::ZERO,
+            EvmValue::<NumericValue>::constant(U256::from(stored)),
+        );
+        account.balance = EvmValue::<NumericValue>::constant(U256::from(10));
+        account.nonce = EvmValue::<NumericValue>::constant(U256::ONE);
         world.insert(address, account).unwrap();
     }
     // Storage does not decide EIP-161 emptiness. This MAY-empty owner makes
     // future sticky address-3 cleanup retain an observable delete/keep root.
-    let mut ripemd = Account::unknown();
-    ripemd
-        .storage
-        .insert(U256::from(7), AbstractValue::constant(U256::from(7)));
+    let mut ripemd = EvmAccount::<NumericValue>::unknown();
+    ripemd.storage.insert(
+        U256::from(7),
+        EvmValue::<NumericValue>::constant(U256::from(7)),
+    );
     world
         .insert(Address::from_word(U256::from(3).into()), ripemd)
         .unwrap();
-    let native = analysis::analyze_world(
+    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(
+        input::spec(&request.limits).unwrap(),
+    ));
+    let native = execute(
         world,
-        Entry {
+        EvmEntry {
             address: owner,
             environment: input::environment(&request.environment).unwrap(),
         },
         input::config(&request.limits).unwrap(),
-    )
-    .unwrap();
+        &algebra,
+    );
     (native, request)
 }
-fn project(native: &WorldAnalysis, request: &api::AnalyzeRequest) -> api::AnalysisReport {
+fn project(
+    native: &EvmWorldAnalysis<NumericValue>,
+    request: &api::AnalyzeRequest,
+) -> api::AnalysisReport {
     let projected = report::report(
         native,
         request,
         api::AnalysisScope::SingleProgram,
+        &ValueAlgebra::new(ProductAlgebra::from_spec(native.domain_spec())),
+        api::NumericModel::Product,
         &Control::default(),
     )
     .unwrap();
@@ -81,7 +97,7 @@ fn project(native: &WorldAnalysis, request: &api::AnalyzeRequest) -> api::Analys
     decoded.validate().unwrap();
     decoded
 }
-fn scalar(projected: &api::ValueInfo, native: &AbstractValue) {
+fn scalar(projected: &api::ValueInfo, native: &EvmValue<NumericValue>) {
     let mut numerical = projected.clone();
     numerical.expression = None;
     assert_eq!(numerical, value::info(native));
@@ -180,7 +196,10 @@ fn report_joint(report: &api::AnalysisReport) -> Value {
     ])
 }
 
-fn native_joint(source: &analysis::RootTerminalCoverage, pools: &mut Pools<'_>) -> Value {
+fn native_joint<N: evm_abstract::domain::WordElement>(
+    source: &analysis::EvmRootTerminalCoverage<N>,
+    pools: &mut Pools<'_, N>,
+) -> Value {
     // Deliberately use a different directory order from report/project. This
     // oracle selects each actual native leaf, without reusing terminal::project.
     let mut outcomes: Vec<_> = source
@@ -321,10 +340,10 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     );
     let domain = source.input().domain_spec();
     assert_eq!(binding.domain_spec.schema_version, domain.schema_version());
-    assert_eq!(binding.domain_spec.schema_version, 2);
+    assert_eq!(binding.domain_spec.schema_version, 3);
     assert_eq!(binding.domain_spec.word_bits, domain.word_bits());
     assert_eq!(binding.domain_spec.cost_version, domain.cost_version());
-    assert_eq!(binding.domain_spec.cost_version, 6);
+    assert_eq!(binding.domain_spec.cost_version, 7);
     assert_eq!(
         binding.domain_spec.provenance_policy,
         domain.provenance_policy()
@@ -360,9 +379,9 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
         report.stores[binding.initial_store].storage_root
     );
     // Rollback alternatives finalize independently: equal sets need not share
-    // cleanup selectors. Match each full Store+data to its own native outcome.
+    // cleanup selectors. Match each full EvmStore+data to its own native outcome.
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let expected = native_joint(source, &mut pools);
     let actual = canonical_joint(report_joint(&report), &report.symbolic);
     assert_eq!(
@@ -407,7 +426,7 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
                     .iter_mut()
                     .find(|entry| entry.slot == "0x7")
                     .unwrap()
-                    .value = value::info(&AbstractValue::constant(U256::from(8)));
+                    .value = value::info(&EvmValue::<NumericValue>::constant(U256::from(8)));
             }
             2 => {
                 let api::Expression::SlotsIte(root) =
@@ -443,9 +462,9 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     changed_native_input
         .write_checked(
             Address::from_word(U256::from(3).into()),
-            &AbstractValue::constant(U256::from(7)),
-            &AbstractValue::constant(U256::from(8)),
-            Domain::from_spec(source.input().domain_spec()),
+            &EvmValue::<NumericValue>::constant(U256::from(7)),
+            &EvmValue::<NumericValue>::constant(U256::from(8)),
+            ValueAlgebra::new(ProductAlgebra::from_spec(source.input().domain_spec())).borrowed(),
         )
         .unwrap();
     let changed = pools.store(&changed_native_input).unwrap();
@@ -620,9 +639,13 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
     }
     bytecode.push_str("00");
     let owner = Address::repeat_byte(0x11);
-    let mut world = World::offline(Fork::Osaka, "raw retention site", "wire fixture");
+    let mut world =
+        EvmWorld::<NumericValue>::offline(Fork::Osaka, "raw retention site", "wire fixture");
     world
-        .insert(owner, Account::from_hex(&bytecode, Fork::Osaka).unwrap())
+        .insert(
+            owner,
+            EvmAccount::<NumericValue>::from_hex(&bytecode, Fork::Osaka).unwrap(),
+        )
         .unwrap();
     let mut request = api::AnalyzeRequest {
         input: api::AnalysisInput::Bytecode(api::BytecodeInput {
@@ -633,12 +656,12 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
     };
     request.limits.root_terminal_coverage = true;
     request.limits.max_expression_nodes = 64;
-    let entry = Entry {
+    let entry = EvmEntry {
         address: owner,
         environment: input::environment(&request.environment).unwrap(),
     };
     let config = input::config(&request.limits).unwrap();
-    let diagnostic = |native: &WorldAnalysis| {
+    let diagnostic = |native: &EvmWorldAnalysis<NumericValue>| {
         format!(
             "status={:?}, frontiers={:?}, work={}, states={}, executed_pcs={:?}",
             native.status(),
@@ -660,7 +683,14 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
     // write body runs; None alone cannot tell us whether preparation succeeded.
     let mut admission_config = config.clone();
     admission_config.analysis.max_transfers = 1;
-    let admitted = analysis::analyze_world(world.clone(), entry.clone(), admission_config).unwrap();
+    let admitted = execute(
+        world.clone(),
+        entry.clone(),
+        admission_config,
+        &ValueAlgebra::new(ProductAlgebra::from_spec(
+            input::spec(&request.limits).unwrap(),
+        )),
+    );
     assert_eq!(
         admitted
             .root_terminal_coverage()
@@ -669,7 +699,14 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
         "root preparation control: {}",
         diagnostic(&admitted)
     );
-    let native = analysis::analyze_world(world, entry, config).unwrap();
+    let native = execute(
+        world,
+        entry,
+        config,
+        &ValueAlgebra::new(ProductAlgebra::from_spec(
+            input::spec(&request.limits).unwrap(),
+        )),
+    );
     // Obtain the cause only from the immutable native attachment, never from
     // a flattened frontier category or a manually constructed certificate.
     let source = native
@@ -771,7 +808,7 @@ fn chain_identity_and_static_nonselected_account_state_survive_projection() {
     assert!(coverage.input.environment.is_static);
     assert!(report.metadata.environment.is_static);
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let expected = native_joint(source, &mut pools);
     assert_eq!(
         canonical_joint(report_joint(&report), &report.symbolic),
@@ -824,12 +861,21 @@ fn chain_identity_and_static_nonselected_account_state_survive_projection() {
     assert!(returned.accounts.is_empty());
     assert!(returned.code_default.is_none());
     assert_eq!(returned.existence_default, api::AccountExistence::Unknown);
-    assert_eq!(returned.balance_default, value::info(&AbstractValue::top()));
-    assert_eq!(returned.nonce_default, value::info(&AbstractValue::top()));
-    assert_eq!(returned.storage_default, value::info(&AbstractValue::top()));
+    assert_eq!(
+        returned.balance_default,
+        value::info(&EvmValue::<NumericValue>::top())
+    );
+    assert_eq!(
+        returned.nonce_default,
+        value::info(&EvmValue::<NumericValue>::top())
+    );
+    assert_eq!(
+        returned.storage_default,
+        value::info(&EvmValue::<NumericValue>::top())
+    );
     assert_eq!(
         returned.transient_default,
-        value::info(&AbstractValue::constant(U256::ZERO))
+        value::info(&EvmValue::<NumericValue>::constant(U256::ZERO))
     );
     assert_eq!(returned.created_default, Some(false));
     assert_eq!(returned.pending_destruction_default, Some(false));
@@ -870,12 +916,20 @@ fn ordinary_stores_export_unlisted_defaults_and_actual_unscoped_templates() {
     let owner = Address::repeat_byte(0x11);
     let other = Address::repeat_byte(0x22);
     let unlisted = Address::repeat_byte(0x33);
-    let mut world = World::offline(Fork::Osaka, "ordinary roots", "wire fixture");
-    world.insert(owner, Account::unknown()).unwrap();
-    world.insert(other, Account::unknown()).unwrap();
-    let store = Store::new(&world);
+    let mut world =
+        EvmWorld::<NumericValue>::offline(Fork::Osaka, "ordinary roots", "wire fixture");
+    world
+        .insert(owner, EvmAccount::<NumericValue>::unknown())
+        .unwrap();
+    world
+        .insert(other, EvmAccount::<NumericValue>::unknown())
+        .unwrap();
+    let store = EvmStore::<NumericValue>::new(
+        &world,
+        ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
+    );
     let control = Control::default();
-    let mut pools = Pools::new(&control);
+    let mut pools = Pools::<NumericValue>::new(&control);
     let id = pools.store(&store).unwrap();
     let snapshot = pools.stores[id].clone();
     assert!(
@@ -1053,14 +1107,14 @@ fn projection_errors_and_cancellation_return_no_partial_report_or_certificate() 
         api::ExportFailureKind::ExactBytes,
     ] {
         let control = Control::default();
-        let mut pools = Pools::new(&control);
+        let mut pools = Pools::<NumericValue>::new(&control);
         match kind {
             api::ExportFailureKind::Nodes => pools.symbolic.limits.max_nodes = 0,
             api::ExportFailureKind::Depth => pools.symbolic.limits.max_depth = 0,
             api::ExportFailureKind::ExactBytes => pools.symbolic.limits.max_exact_bytes = 0,
             _ => unreachable!(),
         }
-        let error = super::project(source, &mut pools).unwrap_err();
+        let error = super::project(source, api::NumericModel::Product, &mut pools).unwrap_err();
         assert!(matches!(error.details, api::ErrorDetails::Export(detail) if detail.kind == kind));
     }
     let control = Control::new(Default::default());
@@ -1069,12 +1123,14 @@ fn projection_errors_and_cancellation_return_no_partial_report_or_certificate() 
         &native,
         &request,
         api::AnalysisScope::SingleProgram,
+        &ValueAlgebra::new(ProductAlgebra::from_spec(native.domain_spec())),
+        api::NumericModel::Product,
         &control,
     )
     .unwrap_err();
     assert_eq!(error.code, api::ApiErrorCode::Cancelled);
-    let mut pools = Pools::new(&control);
-    assert!(super::project(source, &mut pools).is_err());
+    let mut pools = Pools::<NumericValue>::new(&control);
+    assert!(super::project(source, api::NumericModel::Product, &mut pools).is_err());
     assert!(pools.symbolic.graph.nodes.is_empty());
     assert!(pools.stores.is_empty());
     // The same immutable native record remains projectable after a failed export.

@@ -1,18 +1,19 @@
 use super::*;
+use evm_abstract::domain::NumericValue;
 use evm_abstract::{
     Address, Fork, U256,
     analysis::control::Control,
     domain::{
-        AbstractValue,
+        EvmValue,
         symbolic::{ExprId, ExprLimits},
     },
-    world::{Account, World},
+    world::{EvmAccount, EvmWorld},
 };
 
-fn world(expression: ExprId) -> World {
-    let mut world = World::new(Fork::Osaka, "typed fingerprint failure");
-    let mut account = Account::empty();
-    account.balance = AbstractValue::top().with_expression(expression);
+fn world(expression: ExprId) -> EvmWorld<NumericValue> {
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "typed fingerprint failure");
+    let mut account = EvmAccount::<NumericValue>::empty();
+    account.balance = EvmValue::<NumericValue>::top().with_expression(expression);
     world.insert(Address::repeat_byte(0x11), account).unwrap();
     world
 }

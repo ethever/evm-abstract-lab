@@ -57,11 +57,13 @@ fn fact(source: FactKey) -> api::InitialFactLocation {
         }
     }
 }
-pub(in crate::analyze) fn error(source: SessionError) -> api::ApiError {
+pub(in crate::analyze) fn error(source: SessionError<std::convert::Infallible>) -> api::ApiError {
     let message = source.to_string();
     let detail = match source {
         SessionError::Cancelled(_) => return super::super::cancelled(),
+        SessionError::Cooperation(error) => return super::execution(error),
         SessionError::Config(error) => return super::configuration(error),
+        SessionError::Work => api::SessionFailure::Work,
         SessionError::World(error) => return super::world(error),
         SessionError::Catalog(CatalogError::MixedFork { catalog, program }) => {
             api::SessionFailure::CatalogFork(api::CatalogForkMismatch {
@@ -87,7 +89,11 @@ pub(in crate::analyze) fn error(source: SessionError) -> api::ApiError {
         SessionError::Seed => api::SessionFailure::Seed,
     };
     api::ApiError {
-        code: api::ApiErrorCode::InvalidRequest,
+        code: if matches!(detail, api::SessionFailure::Work) {
+            api::ApiErrorCode::Internal
+        } else {
+            api::ApiErrorCode::InvalidRequest
+        },
         message,
         details: api::ErrorDetails::Session(Box::new(detail)),
     }

@@ -1,28 +1,32 @@
 pub(super) mod errors;
 mod values;
-use super::{checkpoint, symbolic::Pool};
-use evm_abstract::{analysis, ssa};
+use super::{POSTPROCESSING_MAX_WORK, checkpoint, symbolic::Pool};
+use evm_abstract::{analysis, domain::WordElement, resource::WorkBudget, ssa};
 use evm_abstract_protocol::ApiError;
 use evm_abstract_protocol::{
     BlockCoverage, DeferredEdge, DeferredReason, EffectInput, InstructionProgress, Phi, PhiInput,
     SsaBlock, SsaInstruction, SsaReport, SsaTransition,
 };
 
-pub(super) fn report(
-    graph: &analysis::WorldAnalysis,
+pub(super) fn report<N: WordElement>(
+    graph: &analysis::EvmWorldAnalysis<N>,
     control: &analysis::control::Control,
     pool: &mut Pool<'_>,
-) -> Result<SsaReport, ApiError> {
+) -> Result<(SsaReport, u64), ApiError> {
     // The builder validates original receipts first, then independently checks
     // value rewrites. Only the final normalized SSA is exported.
-    let ir = ssa::build_normalized_partial_world(graph).map_err(errors::convert)?;
+    // Projection owns a separate ledger; completing export never resets or
+    // spends the native execution's already-finished work allowance.
+    let mut budget = WorkBudget::new(POSTPROCESSING_MAX_WORK);
+    let ir = ssa::build_normalized_partial_world(graph, &mut budget).map_err(errors::convert)?;
+    pool.charge(budget.used())?;
     pool.charge(
         ir.blocks()
             .len()
             .saturating_add(ir.transitions().len())
             .saturating_add(ir.deferred_edges().len()),
     )?;
-    Ok(SsaReport {
+    let report = SsaReport {
         complete: ir.complete(),
         value_count: ir.value_count(),
         effect_count: ir.effect_count(),
@@ -167,5 +171,6 @@ pub(super) fn report(
                 },
             })
             .collect(),
-    })
+    };
+    Ok((report, budget.used() as u64))
 }

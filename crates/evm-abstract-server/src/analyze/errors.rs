@@ -4,7 +4,9 @@ pub(super) use session::error as session_error;
 
 use super::value;
 use evm_abstract::{
-    analysis::ConfigError, bytecode::DecodeError, world::environment::EnvironmentError,
+    analysis::{ConfigError, cooperation::CooperationError},
+    bytecode::DecodeError,
+    world::environment::EnvironmentError,
 };
 use evm_abstract_protocol as api;
 fn environment_details(source: EnvironmentError) -> api::EnvironmentFailure {
@@ -34,13 +36,8 @@ pub(super) fn environment(source: EnvironmentError) -> api::ApiError {
 pub(super) fn configuration(source: ConfigError) -> api::ApiError {
     let message = source.to_string();
     let detail = match source {
-        ConfigError::Environment(error) => {
-            api::ConfigurationFailure::Environment(environment_details(error))
-        }
-        ConfigError::Constants => api::ConfigurationFailure::Constants,
+        ConfigError::Environment(error) => return environment(error),
         ConfigError::Budget => api::ConfigurationFailure::Budget,
-        ConfigError::Facts => api::ConfigurationFailure::Facts,
-        ConfigError::Relations => api::ConfigurationFailure::Relations,
     };
     api::ApiError {
         code: api::ApiErrorCode::InvalidLimits,
@@ -48,6 +45,26 @@ pub(super) fn configuration(source: ConfigError) -> api::ApiError {
         details: api::ErrorDetails::Configuration(detail),
     }
 }
+/// The server installs NoExtension, so external component errors are impossible.
+/// Infrastructure categories remain typed instead of becoming transport failures.
+pub(super) fn execution(source: CooperationError<std::convert::Infallible>) -> api::ApiError {
+    let message = source.to_string();
+    let kind = match source {
+        CooperationError::Config(error) => return configuration(error),
+        CooperationError::Cancelled => return super::cancelled(),
+        CooperationError::Extension(error) => match error {},
+        CooperationError::Protocol(_) => api::ExecutionFailureKind::Protocol,
+        CooperationError::Initialization(_) => api::ExecutionFailureKind::Initialization,
+        CooperationError::Refinement(_) => api::ExecutionFailureKind::Refinement,
+        CooperationError::Unfinished(_) => api::ExecutionFailureKind::Unfinished,
+    };
+    api::ApiError {
+        code: api::ApiErrorCode::Internal,
+        message,
+        details: api::ErrorDetails::Execution(kind),
+    }
+}
+
 pub(super) fn bytecode(source: DecodeError) -> api::ApiError {
     api::ApiError {
         code: api::ApiErrorCode::InvalidBytecode,

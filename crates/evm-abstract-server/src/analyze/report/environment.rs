@@ -1,13 +1,13 @@
 //! Project actual effective environments through the same bounded pools.
 use super::{Pools, api, value};
 use evm_abstract::{
-    domain::AbstractValue,
-    world::{EvmEnvironment, GasInput},
+    domain::{EvmValue, WordElement},
+    world::{EvmEnvironmentValues, GasInput},
 };
 
-pub(super) fn project(
-    environment: &EvmEnvironment,
-    pools: &mut Pools<'_>,
+pub(super) fn project<N: WordElement>(
+    environment: &EvmEnvironmentValues<N>,
+    pools: &mut Pools<'_, N>,
 ) -> Result<api::EnvironmentSnapshot, api::ApiError> {
     pools.symbolic.charge(
         environment
@@ -15,7 +15,7 @@ pub(super) fn project(
             .len()
             .saturating_add(environment.blob_hashes.hashes.len()),
     )?;
-    let unknown = AbstractValue::top();
+    let unknown = EvmValue::<N>::top();
     let hashes =
         |table: &std::collections::BTreeMap<evm_abstract::U256, alloy_primitives::B256>| {
             table
