@@ -1,5 +1,6 @@
 //! Reservation for one fresh bounded lattice and one scalar import, without
-//! reduction rounds. Unsupported shapes retain the general refinement quote.
+//! reduction rounds. Exact built-in proofs take priority; other bounded scalar
+//! facts use the selected native import hook, with a whole-quote fallback.
 //! The caller supplies `EvmValue::from_numeric(known)`; `known` and `learn`
 //! keep their independent charges. These are logical source actions, not time.
 
@@ -89,6 +90,30 @@ const BINARY_VALIDATIONS: usize = 2 * (VALIDATE + 4 + 9 + 16);
 // then coordinate/predicate2. Lattice congruence is absent for Eq/Ne0.
 const BINARY_TRUTH: usize = 4 * (4 + 1 + 9 + 9 + 16 + 2);
 
+const COMMON: usize = ADMISSION
+    + FRESH_LATTICE
+    + APPLY_UNARY
+    + VALIDATE
+    + CLEANUP
+    + MAP_STORAGE
+    + FINISH_INSERT
+    + VALUE_WRAPPERS
+    + IMPORT_DISPATCH
+    + IMPORT_BITS
+    + IMPORT_INTERVAL;
+const SINGLETON_EXTRA: usize = SINGLETON_FINITE + SINGLETON_PREDICATES + SINGLETON_SUMMARIES;
+const BINARY_EXTRA: usize = CONSTRAIN_BINARY
+    + BINARY_STORAGE
+    + BINARY_SYMBOLS
+    + BINARY_REBUILD
+    + BINARY_SCALARS
+    + BINARY_VALIDATIONS
+    + BINARY_TRUTH;
+
+// Ordered binary bounds additionally inspect orientation/strictness, bias one
+// word, test an extremum, adjust one strict endpoint and write the two bounds.
+const ORDERED_BOUND: usize = 2 + 3 * 4 + 2;
+
 struct Shape {
     singleton: bool,
     binary: bool,
@@ -100,34 +125,96 @@ pub(super) fn reservation<D: EvmNumericAlgebra>(
     fact: &Fact,
 ) -> usize {
     if !domain.numeric_algebra().supports_product_scalar_shortcuts() {
-        return domain.refinement_work(input, 1);
+        return staged_reservation(domain, input, fact);
     }
     let Some(shape) = eligible(input, fact) else {
-        return domain.refinement_work(input, 1);
+        return staged_reservation(domain, input, fact);
     };
-    const COMMON: usize = ADMISSION
-        + FRESH_LATTICE
-        + APPLY_UNARY
-        + VALIDATE
-        + CLEANUP
-        + MAP_STORAGE
-        + FINISH_INSERT
-        + VALUE_WRAPPERS
-        + IMPORT_DISPATCH
-        + IMPORT_BITS
-        + IMPORT_INTERVAL;
-    const SINGLETON_EXTRA: usize = SINGLETON_FINITE + SINGLETON_PREDICATES + SINGLETON_SUMMARIES;
-    const BINARY_EXTRA: usize = CONSTRAIN_BINARY
-        + BINARY_STORAGE
-        + BINARY_SYMBOLS
-        + BINARY_REBUILD
-        + BINARY_SCALARS
-        + BINARY_VALIDATIONS
-        + BINARY_TRUTH;
     let fixed = COMMON
         + if shape.singleton { SINGLETON_EXTRA } else { 0 }
         + if shape.binary { BINARY_EXTRA } else { 0 };
     fixed.saturating_add(input.work_size())
+}
+
+// The selected policy owns native input copying/constraints, including hidden
+// carrier state. Only cached finite cardinality and borrowed fact tags/sizes are
+// inspected here. Engine::atom/known already pay expression walks and input
+// acquisition; learn/meet still pay their independent work after this import.
+fn staged_reservation<D: EvmNumericAlgebra>(
+    domain: AlgebraRef<'_, D>,
+    input: &EvmValue<D::Element>,
+    fact: &Fact,
+) -> usize {
+    let Some((members, structural)) = import_shape(fact) else {
+        return domain.refinement_work(input, 1);
+    };
+    let numeric = input.numeric();
+    let finite = numeric
+        .finite_constants()
+        .cardinality()
+        .unwrap_or(0)
+        .saturating_add(members);
+    domain
+        .numeric_algebra()
+        .refinement_import_work(numeric, 1, finite, structural)
+        .map_or_else(
+            || domain.refinement_work(input, 1),
+            |work| work.saturating_add(input.work_size().saturating_sub(numeric.work_size())),
+        )
+}
+
+// One fresh scalar slot and, for symbol/literal binaries, one fixed-size edge.
+// A MemberOf bound is its actual cached cardinality, never the configured fact
+// capacity. Scalar bounds/masks/congruences may synthesize at most one literal;
+// no singleton query, fact evaluation, candidate visit or allocation is needed
+// to reserve that possible word. Structural fees cover fact-table actions, not
+// another expression traversal or numeric closure.
+fn import_shape(fact: &Fact) -> Option<(usize, usize)> {
+    match fact {
+        Fact::Unary(fact) => {
+            let members = match &fact.predicate {
+                UnaryPredicate::MemberOf(set) => set.values().len(),
+                UnaryPredicate::Exact(_)
+                | UnaryPredicate::IsZero
+                | UnaryPredicate::KnownBits(_)
+                | UnaryPredicate::UnsignedBounds(_)
+                | UnaryPredicate::SignedBounds(_)
+                | UnaryPredicate::Congruent(_) => 1,
+                UnaryPredicate::BitSet(_)
+                | UnaryPredicate::BitClear(_)
+                | UnaryPredicate::NonZero
+                | UnaryPredicate::IsAddress
+                | UnaryPredicate::IsCodeAddress => 0,
+                // Origin-set metadata needs its own payload/copy proof; it is
+                // not a numeric finite set. Keep the existing complete quote.
+                UnaryPredicate::PossibleOrigins(_) => return None,
+            };
+            Some((members, COMMON))
+        }
+        Fact::Binary(fact) => {
+            if !matches!(
+                (fact.left, fact.right),
+                (Term::Symbol(_), Term::Constant(_)) | (Term::Constant(_), Term::Symbol(_))
+            ) {
+                // Multiple symbols or two constants use general normalization;
+                // the one-scalar structural proof below does not cover them.
+                return None;
+            }
+            let (members, bounds) = match fact.predicate {
+                BinaryPredicate::Eq => (1, 0),
+                BinaryPredicate::Ne => (0, 0),
+                BinaryPredicate::Ult
+                | BinaryPredicate::Ule
+                | BinaryPredicate::Slt
+                | BinaryPredicate::Sle => (1, ORDERED_BOUND),
+            };
+            Some((members, COMMON + BINARY_EXTRA + bounds))
+        }
+        // Operation relations have a separate normalization/operand payload;
+        // they are not produced by local scalar translation. Do not pretend
+        // their complete import work is covered by a one-scalar quote.
+        Fact::Relation(_) => None,
+    }
 }
 
 // Only tags and fixed-size fields: never enumerate candidates to obtain a fee.
