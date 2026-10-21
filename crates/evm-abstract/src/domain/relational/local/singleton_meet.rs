@@ -1,14 +1,13 @@
-//! Direct intersection with an already canonical word, after the old shortcuts.
+//! Direct intersection with an already canonical word under an explicit proof.
 //!
 //! A semantic singleton alone is insufficient: bounded generic reduction may
 //! retain noncanonical components. With a canonical operand, each successful
 //! component meet is already exact; reduction cannot strengthen its numeric
-//! result. Both frozen profiles preserve this one-element value at every valid
+//! result. The certified product preserves this one-element value at every valid
 //! capacity, round/fact limit and relation policy. Unsupported shapes decline
 //! before the caller reserves and executes the original generic intersection.
 
 use super::{LocalResult, Stop, Work};
-use crate::domain::Profile;
 use crate::domain::{AlgebraRef, EvmNumericAlgebra, WordElement};
 use alloy_primitives::U256;
 
@@ -20,7 +19,7 @@ const ADMISSION_WORK: usize = 4 * WORD_LIMBS;
 const MEMBERSHIP_WORK: usize = 24 * WORD_LIMBS;
 const CLONE_WORK: usize = 8 * WORD_LIMBS;
 
-pub(super) fn meet_with<D: EvmNumericAlgebra>(
+pub(super) fn meet<D: EvmNumericAlgebra>(
     left: &D::Element,
     right: &D::Element,
     domain: AlgebraRef<'_, D>,
@@ -50,12 +49,10 @@ pub(super) fn meet_with<D: EvmNumericAlgebra>(
         if !other.contains(value) {
             return Err(Stop::Bottom);
         }
-        // No reduction, candidate rebuilding or profile enumeration occurs here.
+        // No reduction or candidate rebuilding occurs here.
         // The clone shares the canonical singleton's immutable finite storage.
         work.prepay(CLONE_WORK)?;
-        return Ok(Some(match domain.spec().profile() {
-            Profile::Product | Profile::ConstantsOnly => canonical.clone(),
-        }));
+        return Ok(Some(canonical.clone()));
     }
     Ok(None)
 }

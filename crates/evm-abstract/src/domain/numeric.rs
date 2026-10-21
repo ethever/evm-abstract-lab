@@ -7,6 +7,8 @@ use std::{collections::BTreeSet, fmt};
 
 /// Intersection of finite candidates, masks, intervals and congruences.
 /// Component Top never means that all other numeric constraints are absent.
+/// Native JSON omits exactly each component's Top and the false nonzero flag;
+/// every retained non-default component is serialized without approximation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NumericValue {
     pub(super) finite: FiniteConstantSet,
@@ -164,17 +166,22 @@ impl NumericValue {
 }
 impl Serialize for NumericValue {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.is_top() {
-            return serializer.serialize_str("Top");
-        }
         let mut map = serializer.serialize_map(None)?;
-        if let Some(constants) = self.finite.as_values() {
-            map.serialize_entry("Constants", constants)?;
+        if let Some(constants) = self.constants() {
+            map.serialize_entry("constants", constants)?;
         }
-        map.serialize_entry("known_bits", &self.bits)?;
-        map.serialize_entry("interval", &self.interval)?;
-        map.serialize_entry("congruence", &self.congruence)?;
-        map.serialize_entry("nonzero", &self.nonzero)?;
+        if self.bits != KnownBits::top() {
+            map.serialize_entry("known_bits", &self.bits)?;
+        }
+        if !self.interval.is_top() {
+            map.serialize_entry("interval", &self.interval)?;
+        }
+        if !self.congruence.is_top() {
+            map.serialize_entry("congruence", &self.congruence)?;
+        }
+        if self.nonzero {
+            map.serialize_entry("nonzero", &self.nonzero)?;
+        }
         map.end()
     }
 }

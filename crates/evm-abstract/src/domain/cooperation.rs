@@ -5,7 +5,7 @@
 //! rules depend only on their public query capabilities; the scalar rule keeps
 //! the remaining finite/congruence/nonzero reductions and their fact limits.
 
-use super::{Domain, DomainSpec, NumericReduction, NumericValue, ReductionStatus, WorkExhausted};
+use super::{DomainSpec, NumericReduction, NumericValue, ReductionStatus, WorkExhausted};
 use super::{
     FiniteConstantSet, congruence::Congruence, facts::FactError, interval::Interval,
     known_bits::KnownBits,
@@ -28,7 +28,7 @@ mod tests;
 mod work;
 pub use bits::{BoundsToMask, KeepMasks};
 pub use bounds::{KeepBounds, MaskToBounds};
-pub use cost::{BoundedWork, ComposedWork, ProductWork, RuleWork};
+pub use cost::{BoundedWork, BuiltinWork, ComposedWork, ProductWork, RuleWork};
 pub use policy::ProductAlgebra;
 pub use work::Precharged;
 
@@ -249,7 +249,7 @@ where
     }
 }
 
-pub(super) fn close(domain: Domain, value: NumericValue) -> NumericReduction<NumericValue> {
+pub(super) fn close(domain: DomainSpec, value: NumericValue) -> NumericReduction<NumericValue> {
     // This convergence proof belongs only to this exact built-in assembly.
     let work = domain.numeric_refinement_work(&value, 0);
     close_with_work(domain, value, BoundsToMask, MaskToBounds, work)
@@ -257,7 +257,7 @@ pub(super) fn close(domain: Domain, value: NumericValue) -> NumericReduction<Num
 
 #[cfg(test)]
 fn close_order<M, R>(
-    domain: Domain,
+    domain: DomainSpec,
     value: NumericValue,
     masks: M,
     bounds: R,
@@ -270,7 +270,7 @@ where
     for<'r, 'k> R: Reduction<ProductContext<'r, 'k>, Task = Scope, Error = RuleError>,
 {
     let work = ComposedWork.closure_work(
-        domain.spec(),
+        domain,
         &masks,
         &bounds,
         domain.capacity().max(value.finite.work_size()),
@@ -279,7 +279,7 @@ where
 }
 
 pub(super) fn close_with_work<M, R>(
-    domain: Domain,
+    domain: DomainSpec,
     value: NumericValue,
     masks: M,
     bounds: R,
@@ -295,7 +295,7 @@ where
 }
 
 fn close_order_with_work<M, R>(
-    domain: Domain,
+    domain: DomainSpec,
     value: NumericValue,
     masks: M,
     bounds: R,
@@ -312,7 +312,6 @@ where
         return limited(value, ReductionStatus::Cancelled);
     }
     let Some(cap) = domain
-        .spec()
         .reduction_rounds()
         .checked_mul(3)
         .and_then(|steps| steps.checked_add(1))

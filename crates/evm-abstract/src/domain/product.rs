@@ -1,8 +1,7 @@
 //! Private default numeric primitives. These never call the metadata facade.
 
 use super::{
-    Domain, EvmValue, FiniteConstantSet, NumericReduction, NumericValue, Profile,
-    known_bits::KnownBits, query,
+    DomainSpec, EvmValue, FiniteConstantSet, NumericReduction, NumericValue, known_bits::KnownBits,
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -21,7 +20,7 @@ pub(super) fn finite(finite: FiniteConstantSet) -> NumericValue {
     }
 }
 
-impl Domain {
+impl DomainSpec {
     pub(super) fn numeric_memory_write_passes(
         self,
         offset: &EvmValue<NumericValue>,
@@ -58,25 +57,13 @@ impl Domain {
         source_pass + usize::from(!cached)
     }
     pub(super) fn numeric_project(self, value: &NumericValue) -> NumericValue {
-        if self.spec().profile() == Profile::Product {
-            let mut out = value.clone();
-            out.finite = out.finite.into_limited(self.spec().constant_capacity());
-            return out;
-        }
-        query::candidates(value, self.capacity())
-            .filter(|values| !values.is_empty() && values.len() <= self.capacity())
-            .map_or_else(NumericValue::top, |values| {
-                finite(FiniteConstantSet::try_from_values(values).expect("nonempty candidates"))
-            })
+        let mut out = value.clone();
+        out.finite = out.finite.into_limited(self.constant_capacity());
+        out
     }
 
     pub(super) fn numeric_join(self, left: &NumericValue, right: &NumericValue) -> NumericValue {
-        let candidates = left
-            .finite
-            .join(&right.finite, self.spec().constant_capacity());
-        if self.spec().profile() == Profile::ConstantsOnly {
-            return finite(candidates);
-        }
+        let candidates = left.finite.join(&right.finite, self.constant_capacity());
         NumericValue {
             finite: candidates,
             bits: left.bits.join(&right.bits),
@@ -88,9 +75,7 @@ impl Domain {
 
     pub(super) fn numeric_widen(self, old: &NumericValue, next: &NumericValue) -> NumericValue {
         let mut out = next.clone();
-        if self.spec().profile() == Profile::Product {
-            out.interval = old.interval.widen(&next.interval);
-        }
+        out.interval = old.interval.widen(&next.interval);
         out
     }
 
@@ -101,13 +86,10 @@ impl Domain {
     ) -> NumericValue {
         if old == next
             || next.constants().is_some_and(|values| {
-                values.len() <= self.spec().widening_after_updates().saturating_add(1)
+                values.len() <= self.widening_after_updates().saturating_add(1)
             })
         {
             return next.clone();
-        }
-        if self.spec().profile() == Profile::ConstantsOnly {
-            return NumericValue::top();
         }
         let previous = old.interval.unsigned_bounds();
         let joined = next.interval.unsigned_bounds();
@@ -130,7 +112,7 @@ impl Domain {
     pub(super) fn numeric_finite_apply(self, op: u8, args: &[&NumericValue]) -> NumericValue {
         let collect = |values| {
             finite(
-                FiniteConstantSet::collect_bounded(values, self.spec().constant_capacity())
+                FiniteConstantSet::collect_bounded(values, self.constant_capacity())
                     .expect("reachable finite values are nonempty"),
             )
         };
@@ -144,7 +126,7 @@ impl Domain {
                 finite(
                     FiniteConstantSet::collect_bounded(
                         (0u64..=256).map(U256::from),
-                        self.spec().constant_capacity(),
+                        self.constant_capacity(),
                     )
                     .unwrap(),
                 )
@@ -152,7 +134,7 @@ impl Domain {
                 finite(
                     FiniteConstantSet::collect_bounded(
                         [U256::ZERO, U256::ONE],
-                        self.spec().constant_capacity(),
+                        self.constant_capacity(),
                     )
                     .unwrap(),
                 )
@@ -179,8 +161,8 @@ impl Domain {
         let Some(expected) = super::concrete::arity(op).filter(|count| *count == args.len()) else {
             return NumericReduction::stable(NumericValue::top());
         };
-        // EVM pure operations have at most three read-only operands. Both
-        // owned and borrowed entrypoints retain the original numeric values.
+        // EVM pure operations have at most three borrowed operands; the fixed
+        // reference array retains the original numeric values without cloning.
         let first = args.next().expect("validated nonempty scalar operands");
         let operands = [
             first,
@@ -188,9 +170,6 @@ impl Domain {
             args.next().unwrap_or(first),
         ];
         let operands = &operands[..expected];
-        if self.spec().profile() == Profile::ConstantsOnly {
-            return NumericReduction::stable(self.numeric_finite_apply(op, operands));
-        }
         super::transfer::apply(self, op, operands, reduce)
     }
 
@@ -204,17 +183,10 @@ impl Domain {
             return self.numeric_apply_with(op, args, reduce).value;
         }
         let operands = [args.next().unwrap(), args.next().unwrap()];
-        super::byte_projection::observe_with(self, op, &operands, || {
+        super::byte_projection::observe_with(op, &operands, || {
             self.numeric_apply_with(op, operands.into_iter(), reduce)
                 .value
         })
-    }
-
-    pub(super) fn numeric_projection_work(self, value: &NumericValue) -> usize {
-        if self.spec().profile() == Profile::Product {
-            return 0;
-        }
-        query::candidate_visits(value, self.capacity()).saturating_mul(256)
     }
 
     pub(super) fn numeric_refinement_work(self, value: &NumericValue, facts: usize) -> usize {
@@ -260,7 +232,7 @@ impl Domain {
         let closure = closure_work.unwrap_or_else(|| self.numeric_closure_work(finite, rounds));
         let facts = facts
             .saturating_add(1)
-            .min(self.spec().fact_limit().saturating_add(1));
+            .min(self.fact_limit().saturating_add(1));
         4096usize
             .saturating_add(closure)
             .saturating_add(
@@ -278,7 +250,7 @@ impl Domain {
         finite_values: usize,
         expression_work: usize,
     ) -> usize {
-        // Keep the old fixed-word import and quadratic fact-normalization
+        // Fixed-word import retains the quadratic fact-normalization
         // envelope. Payload visits are the actual borrowed input/member count,
         // rather than the unrelated future scalar capacity/round multiplier.
         if self.numeric_closure_work(self.capacity(), Some(1)) == usize::MAX {
@@ -296,11 +268,10 @@ impl Domain {
             .saturating_add(value.work_size())
     }
 
-    fn numeric_closure_work(self, finite: usize, rounds: Option<usize>) -> usize {
+    pub(super) fn numeric_closure_work(self, finite: usize, rounds: Option<usize>) -> usize {
         use super::cooperation::{BoundsToMask, MaskToBounds, RuleWork, cost};
 
         if self
-            .spec()
             .reduction_rounds()
             .checked_mul(3)
             .and_then(|steps| steps.checked_add(1))
@@ -312,18 +283,18 @@ impl Domain {
         // Only the scheduling proof differs: these exact built-in rules permit
         // the input-sensitive cycle bounds and weighted schedule below.
         let mask = BoundsToMask
-            .evaluation_work(self.spec(), finite)
+            .evaluation_work(self, finite)
             .saturating_add(cost::STEP_WORK);
         let bounds = MaskToBounds
-            .evaluation_work(self.spec(), finite)
+            .evaluation_work(self, finite)
             .saturating_add(cost::STEP_WORK);
-        let scalar = cost::scalar_work(self.spec(), finite).saturating_add(cost::STEP_WORK);
+        let scalar = cost::scalar_work(self, finite).saturating_add(cost::STEP_WORK);
         let fixed = cost::fixed_work(finite);
         if let Some(rounds) = rounds {
             return fixed.saturating_add(
                 mask.saturating_add(bounds)
                     .saturating_add(scalar)
-                    .saturating_mul(rounds.min(self.spec().reduction_rounds())),
+                    .saturating_mul(rounds.min(self.reduction_rounds())),
             );
         }
         // solve permits 1 + 3*rounds evaluations. The seed runs once. Every
@@ -331,7 +302,7 @@ impl Domain {
         // also bounds reads, and a shared wake queues bounds before scalar.
         // Scalar is the most expensive job, bounds next, mask cheapest. Reserve
         // the maximum weighted schedule, retaining the initial mask evaluation.
-        let steps = self.spec().reduction_rounds().saturating_mul(3);
+        let steps = self.reduction_rounds().saturating_mul(3);
         let scalars = steps.saturating_sub(1) / 2;
         let bounds_runs = steps.saturating_sub(1).saturating_sub(scalars);
         fixed
@@ -340,7 +311,7 @@ impl Domain {
             .saturating_add(bounds.saturating_mul(bounds_runs))
     }
 
-    pub(super) fn numeric_operation_work_for<'a>(
+    pub(super) fn numeric_operation_work<'a>(
         self,
         op: u8,
         args: impl Iterator<Item = &'a NumericValue>,
@@ -349,8 +320,8 @@ impl Domain {
         let a = args.next();
         let b = args.next();
         let c = args.next();
-        let quote = self.numeric_operation_work(a.into_iter().chain(b).chain(c).chain(args));
-        if self.spec().profile() != Profile::Product || quote == usize::MAX {
+        let quote = self.numeric_transfer_work(a.into_iter().chain(b).chain(c).chain(args), None);
+        if quote == usize::MAX {
             return quote;
         }
         let closed = match (a, b, c) {
@@ -409,14 +380,7 @@ impl Domain {
         }
     }
 
-    pub(super) fn numeric_operation_work<'a>(
-        self,
-        args: impl Iterator<Item = &'a NumericValue>,
-    ) -> usize {
-        self.numeric_operation_work_with(args, None)
-    }
-
-    pub(super) fn numeric_operation_work_with<'a>(
+    pub(super) fn numeric_transfer_work<'a>(
         self,
         args: impl Iterator<Item = &'a NumericValue>,
         closure_work: Option<usize>,
@@ -441,9 +405,6 @@ impl Domain {
                 )
             },
         );
-        if self.spec().profile() == Profile::ConstantsOnly {
-            return tuples;
-        }
         if len > 0 && all_finite && tuples <= self.capacity() {
             return tuples.saturating_mul(256).saturating_add(size);
         }
@@ -500,7 +461,7 @@ fn address_literal_eq(cube: &NumericValue, literal: &NumericValue) -> bool {
         && literal.finite.singleton().is_some_and(|word| word <= max)
 }
 
-fn stable_scalar(domain: Domain, value: &NumericValue) -> bool {
+fn stable_scalar(domain: DomainSpec, value: &NumericValue) -> bool {
     if !value.finite.is_top() || !value.congruence.is_top() {
         return false;
     }
@@ -515,7 +476,7 @@ fn stable_scalar(domain: Domain, value: &NumericValue) -> bool {
         && !(value.bits.zero() | value.bits.one()).bit(0)
         && value.nonzero == (value.bits.one() != U256::ZERO)
         && (unknown >= usize::BITS as usize
-            || (1usize << unknown) > domain.capacity().min(domain.spec().fact_limit()))
+            || (1usize << unknown) > domain.capacity().min(domain.fact_limit()))
 }
 
 fn dyadic_congruence(value: &NumericValue) -> bool {

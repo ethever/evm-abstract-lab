@@ -25,11 +25,6 @@ static CONGRUENCE_TOP: OnceLock<Congruence> = OnceLock::new();
 /// query/copy quote or uses a complete enclosing operation quote that explicitly
 /// owns that work. Retaining or copying a value never prepays later queries.
 pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
-    /// Include this element's actual `Serialize` payload under `numeric` in
-    /// native value reports, even for Top. Custom carriers default to retaining
-    /// it; opting out promises the standard views satisfy the native contract.
-    /// Immutable source observations deliberately remain a separate boundary.
-    const SERIALIZE_NATIVE_PAYLOAD: bool = true;
     /// No constraint on the represented word.
     fn top() -> Self;
     /// Exactly this literal, independently of policy/capacity.
@@ -184,7 +179,6 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
 
 impl WordElement for NumericValue {
     // Preserve the exact legacy default value JSON, including the Top string.
-    const SERIALIZE_NATIVE_PAYLOAD: bool = false;
     fn top() -> Self {
         Self::top()
     }
