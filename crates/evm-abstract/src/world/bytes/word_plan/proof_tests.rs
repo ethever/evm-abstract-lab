@@ -73,7 +73,10 @@ fn literal_loads_survive_runtime_identification_and_storage_joins() {
                         .borrowed(),
                 )
                 .unwrap();
-            assert_eq!(value.numeric(), zero().numeric());
+            assert_eq!(
+                value.numeric(),
+                zero::<crate::domain::NumericValue>().numeric()
+            );
             assert!(
                 value
                     .provenance()
@@ -124,7 +127,10 @@ fn prepared_and_complete_reads_keep_the_computed_literal_certificate() {
             plan.preparation = None;
         }
         let value = plan.read_word_budgeted(&mut budget).unwrap().unwrap();
-        assert_eq!(value.numeric(), zero().numeric());
+        assert_eq!(
+            value.numeric(),
+            zero::<crate::domain::NumericValue>().numeric()
+        );
         assert_eq!(
             value.expression().and_then(ExprId::as_constant),
             Some(U256::ZERO)

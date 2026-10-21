@@ -560,7 +560,7 @@ mod tests {
             evaluate(
                 &plan.root,
                 None,
-                &expr(&zero()).unwrap(),
+                &expr(&zero::<crate::domain::NumericValue>()).unwrap(),
                 &context,
                 domain.borrowed()
             )
@@ -665,7 +665,7 @@ mod tests {
             evaluate(
                 &plan.root,
                 None,
-                &expr(&zero()).unwrap(),
+                &expr(&zero::<crate::domain::NumericValue>()).unwrap(),
                 &context,
                 domain.borrowed()
             )
@@ -708,7 +708,7 @@ mod tests {
     #[test]
     fn a_small_guarded_word_admits_the_plan_and_scratch_refusal_pays_a_complete_retry() {
         let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
-        let value = constant(7);
+        let value: TestValue = constant(7);
         let source = SlotStateId::observed(
             SourceId::fresh().unwrap(),
             (0usize..2)

@@ -203,12 +203,7 @@ fn scoped_reads_keep_original_sources_old_terms_and_renamed_facts() {
     )
     .unwrap();
     assert!(matches!(old.kind(), ExprKind::WordRead { view, .. } if view.state == original.root));
-    for current in [
-        memory.clone(),
-        memory
-            .widening_form(domain.borrowed(), limits.expressions())
-            .unwrap(),
-    ] {
+    for current in [memory.clone(), memory.project(domain.borrowed())] {
         let read_a = current
             .read_word_checked(&constant(64), domain.borrowed())
             .unwrap();

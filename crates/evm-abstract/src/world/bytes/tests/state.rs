@@ -2,6 +2,7 @@
 
 use super::super::*;
 use crate::domain::{
+    ProductAlgebra,
     relational::{CheckResult, EvmValueQuery, RelationLimits, RelationState},
     symbolic::{ExprKind, StateLimits},
 };
@@ -26,14 +27,14 @@ fn prove(relations: &RelationState, value: &TestValue, expected: U256) {
                 max_depth: 256,
                 ..RelationLimits::default()
             },
-            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
+            TestAlgebra::new(ProductAlgebra::default()).borrowed()
         ),
         EvmValueQuery::Exact(expected)
     );
 }
 #[test]
 fn unenumerated_copy_retains_input_length_and_complete_copy_hash() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let mut input = TestBytes::unknown();
     input.bind_input(410).unwrap();
     let size = input.len().clone();
@@ -57,7 +58,7 @@ fn unenumerated_copy_retains_input_length_and_complete_copy_hash() {
 }
 #[test]
 fn concrete_byte_order_partial_unaligned_and_history() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let mut memory = TestBytes::memory();
     let value = TestValue::constant(U256::from_be_bytes([0x12; 32]));
     memory.write_word(&v(3), &value, domain.borrowed()).unwrap();
@@ -81,7 +82,7 @@ fn concrete_byte_order_partial_unaligned_and_history() {
 }
 #[test]
 fn mcopy_reads_old_source_snapshot() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let mut memory = TestBytes::memory();
     memory
         .copy_from(
@@ -100,26 +101,18 @@ fn mcopy_reads_old_source_snapshot() {
         memory
             .slice(&v(0), &v(4), domain.borrowed())
             .unwrap()
-            .exact_bytes(
-                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-                    .borrowed()
-            ),
+            .exact_bytes(domain.borrowed()),
         Some(vec![1, 1, 2, 3])
     );
 }
 #[test]
 fn source_overflow_pads_without_wrapping_or_target_cap() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let input = TestBytes::exact(&[0xaa, 0xbb]);
     let sliced = input
         .slice(&TestValue::constant(U256::MAX), &v(2), domain.borrowed())
         .unwrap();
-    assert_eq!(
-        sliced.exact_bytes(
-            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
-        ),
-        Some(vec![0, 0])
-    );
+    assert_eq!(sliced.exact_bytes(domain.borrowed()), Some(vec![0, 0]));
     let mut memory = TestBytes::memory();
     memory
         .copy_from(
@@ -137,7 +130,7 @@ fn source_overflow_pads_without_wrapping_or_target_cap() {
 }
 #[test]
 fn symbolic_msize_and_zero_length_huge_offset() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let mut memory = TestBytes::memory();
     let original = memory.clone();
     memory
@@ -171,7 +164,7 @@ fn symbolic_msize_and_zero_length_huge_offset() {
 }
 #[test]
 fn return_copy_preserves_suffix_and_symbolic_minimum() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let mut memory = TestBytes::memory();
     memory
         .copy_from(
@@ -189,10 +182,7 @@ fn return_copy_preserves_suffix_and_symbolic_minimum() {
         memory
             .slice(&v(0), &v(4), domain.borrowed())
             .unwrap()
-            .exact_bytes(
-                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-                    .borrowed()
-            ),
+            .exact_bytes(domain.borrowed()),
         Some(vec![1, 9, 3, 4])
     );
     let ret = TestBytes::unknown()
@@ -208,7 +198,7 @@ fn return_copy_preserves_suffix_and_symbolic_minimum() {
 }
 #[test]
 fn public_default_covers_symbolic_copy_and_slice() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let source = TestBytes::exact(&[0xaa]);
     let offset = symbolic(0, 31);
     let mut memory = TestBytes::memory();
@@ -228,7 +218,7 @@ fn public_default_covers_symbolic_copy_and_slice() {
 }
 #[test]
 fn join_same_root_different_operand_bounds_covers_both() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let token = ExprId::fresh().unwrap();
     let a = symbolic(7, 8).with_expression(token.clone());
     let b = symbolic(9, 10).with_expression(token);
@@ -248,7 +238,7 @@ fn join_same_root_different_operand_bounds_covers_both() {
 }
 #[test]
 fn guarded_join_keeps_pointer_state_pairing() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let selector = ExprId::fresh().unwrap();
     let mut left = TestBytes::memory();
     let mut right = TestBytes::memory();
@@ -299,7 +289,7 @@ fn guarded_join_keeps_pointer_state_pairing() {
 }
 #[test]
 fn fresh_rename_includes_sources_and_preserves_history() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let source = TestBytes::unknown();
     let old = source.read_word(&v(0), domain.borrowed());
     let mut copied = source
@@ -326,7 +316,7 @@ fn fresh_rename_includes_sources_and_preserves_history() {
 }
 #[test]
 fn repeated_overwrite_and_zero_copy_are_idempotent() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let mut memory = TestBytes::memory();
     memory.write_word(&v(0), &v(7), domain.borrowed()).unwrap();
     let old = memory.clone();
@@ -348,7 +338,7 @@ fn repeated_overwrite_and_zero_copy_are_idempotent() {
 }
 #[test]
 fn materialization_policy_is_separate_from_logical_copy_size() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let mut memory = TestBytes::memory();
     memory
         .copy_from(
@@ -362,11 +352,7 @@ fn materialization_policy_is_separate_from_logical_copy_size() {
     assert!(memory.work_size() < 50_000);
     assert!(
         memory
-            .exact_bytes_bounded(
-                32,
-                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-                    .borrowed()
-            )
+            .exact_bytes_bounded(32, TestAlgebra::new(ProductAlgebra::default()).borrowed())
             .is_none()
     );
     assert_eq!(
@@ -379,7 +365,7 @@ fn materialization_policy_is_separate_from_logical_copy_size() {
 #[test]
 fn project_guarded_join_keep_length_source_view_and_hash() {
     let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
-        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+        TestAlgebra::new(ProductAlgebra::default())
             .spec()
             .with_relations(RelationLimits {
                 enabled: false,
@@ -391,7 +377,7 @@ fn project_guarded_join_keep_length_source_view_and_hash() {
         .slice(
             &v(0),
             &symbolic(1, 33),
-            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+            TestAlgebra::new(ProductAlgebra::default()).borrowed(),
         )
         .unwrap();
     let joined = old
@@ -414,7 +400,7 @@ fn project_guarded_join_keep_length_source_view_and_hash() {
 }
 #[test]
 fn checked_budget_failure_is_atomic_and_visible() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let left = TestBytes::exact(&[1]);
     let right = TestBytes::exact(&[2]);
     assert!(matches!(
@@ -430,12 +416,7 @@ fn checked_budget_failure_is_atomic_and_visible() {
         Err(RangeError::State(StateError::Limit { .. }))
             | Err(RangeError::Expression(ExprError::Limit { .. }))
     ));
-    assert_eq!(
-        left.exact_bytes(
-            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed()
-        ),
-        Some(vec![1])
-    );
+    assert_eq!(left.exact_bytes(domain.borrowed()), Some(vec![1]));
     assert_eq!(
         StateLimits::default().max_nodes,
         ExprLimits::default().max_nodes
@@ -443,7 +424,7 @@ fn checked_budget_failure_is_atomic_and_visible() {
 }
 #[test]
 fn unbounded_symbolic_word_numeric_respects_nonwrapping_reads() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let mut memory = TestBytes::memory();
     let offset = TestValue::top().with_expression(ExprId::fresh().unwrap());
     memory
@@ -469,7 +450,7 @@ fn existing_composed_or_scoped_input_binding_keeps_source_identity() {
         .slice(
             &v(1),
             &v(32),
-            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+            TestAlgebra::new(ProductAlgebra::default()).borrowed(),
         )
         .unwrap();
     let root = view.root.clone();
@@ -486,18 +467,14 @@ fn copy_large_exact_source_does_not_duplicate_all_sparse_facts() {
             &source,
             &v(0),
             &v(4096),
-            crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+            TestAlgebra::new(ProductAlgebra::default()).borrowed(),
         )
         .unwrap();
     assert!(memory.stored_bytes().count() <= COPY_FACT_LIMIT);
     assert!(memory.default_byte().contains(U256::from(0xaa)));
     assert_eq!(
         memory
-            .byte_at(
-                4095,
-                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-                    .borrowed()
-            )
+            .byte_at(4095, TestAlgebra::new(ProductAlgebra::default()).borrowed())
             .singleton(),
         Some(U256::from(0xaa))
     );
@@ -511,8 +488,7 @@ fn checked_self_join_respects_budget_and_cancellation() {
         array
             .join_guarded(
                 &array,
-                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-                    .borrowed(),
+                TestAlgebra::new(ProductAlgebra::default()).borrowed(),
                 guard.clone(),
                 ExprLimits {
                     max_nodes: 0,
@@ -527,8 +503,7 @@ fn checked_self_join_respects_budget_and_cancellation() {
         assert!(matches!(
             array.join_guarded(
                 &array,
-                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-                    .borrowed(),
+                TestAlgebra::new(ProductAlgebra::default()).borrowed(),
                 guard,
                 ExprLimits::default()
             ),
@@ -539,7 +514,7 @@ fn checked_self_join_respects_budget_and_cancellation() {
 
 #[test]
 fn ordinary_union_does_not_absorb_branch_under_an_incompatible_old_guard() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let guard = ExprId::fresh().unwrap();
     let mut left = TestBytes::memory();
     let mut right = TestBytes::memory();
@@ -588,7 +563,7 @@ fn ordinary_union_does_not_absorb_branch_under_an_incompatible_old_guard() {
 
 #[test]
 fn repeated_symbolic_range_writes_and_copy_keep_msize_stable() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let offset = symbolic(0, 64);
     let mut memory = TestBytes::memory();
     memory
@@ -617,7 +592,7 @@ fn repeated_symbolic_range_writes_and_copy_keep_msize_stable() {
 }
 #[test]
 fn allocation_witnesses_are_must_facts_across_join_and_rename() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let range = symbolic(0, 32);
     let mut a = TestBytes::memory();
     a.expand(&v(0), &range, domain.borrowed()).unwrap();
@@ -643,7 +618,7 @@ fn allocation_witnesses_are_must_facts_across_join_and_rename() {
 
 #[test]
 fn numeric_only_write_offsets_constrain_the_state_read_expression() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let offset = domain.join(&v(0), &v(1));
     let mut memory = TestBytes::memory();
     memory
@@ -689,7 +664,7 @@ fn copies_at_distinct_addresses_hash_to_the_same_storage_key_under_range_guard()
         crate::world::test_support::TestAccount, crate::world::test_support::TestStore,
         crate::world::test_support::TestWorld,
     };
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let mut input = TestBytes::unknown();
     input.bind_input(810).unwrap();
     let size = input.len().clone().with_numeric(
@@ -716,7 +691,7 @@ fn copies_at_distinct_addresses_hash_to_the_same_storage_key_under_range_guard()
     world.insert(address, TestAccount::empty()).unwrap();
     let mut store = TestStore::new(
         &world,
-        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
+        TestAlgebra::new(ProductAlgebra::default()).borrowed(),
     );
     store
         .write_checked(address, &ka, &v(7), domain.borrowed())
@@ -766,7 +741,7 @@ fn copies_at_distinct_addresses_hash_to_the_same_storage_key_under_range_guard()
 #[test]
 fn failed_state_is_not_healed_by_nonempty_slice_copy_or_hash() {
     let low = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::from_spec(
-        crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+        TestAlgebra::new(ProductAlgebra::default())
             .spec()
             .with_relations(RelationLimits {
                 max_depth: 1,
@@ -775,7 +750,7 @@ fn failed_state_is_not_healed_by_nonempty_slice_copy_or_hash() {
     ));
     let failed = TestBytes::exact(&[1]).join(&TestBytes::exact(&[2]), low.borrowed());
     let error = failed.failure.clone().expect("tiny depth rejects join");
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     assert_eq!(
         failed.slice(&v(0), &v(1), domain.borrowed()),
         Err(error.clone())
@@ -798,7 +773,7 @@ fn failed_state_is_not_healed_by_nonempty_slice_copy_or_hash() {
 
 #[test]
 fn finite_host_boundary_offsets_keep_uncached_byte_upper_bounds() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let domain = TestAlgebra::new(ProductAlgebra::default());
     let offset = domain
         .join(
             &domain.join(&v(0), &v(usize::MAX)),
@@ -847,4 +822,32 @@ fn finite_host_boundary_offsets_keep_uncached_byte_upper_bounds() {
         EvmValueQuery::Exact(value.singleton().unwrap()),
     );
     assert!(memory.work_size() < 2000);
+}
+
+#[test]
+fn numeric_projection_preserves_observed_input_and_large_copy_without_expansion() {
+    let domain = TestAlgebra::new(crate::domain::ProductAlgebra::default());
+    let source = super::byte_sequence(constant(1024 * 1024));
+    let mut memory = TestBytes::memory();
+    memory
+        .copy_from(
+            &constant(0),
+            &source,
+            &constant(0),
+            source.len(),
+            domain.borrowed(),
+        )
+        .unwrap();
+    let original = memory.clone();
+    let projected = memory.project(domain.borrowed());
+    assert_eq!(projected.state_root(), memory.state_root());
+    assert_eq!(projected.len(), memory.len());
+    assert_eq!(projected.stored_bytes().len(), memory.stored_bytes().len());
+    assert!(projected.work_size() < 1000);
+    assert_eq!(
+        projected.byte_at(7, domain.borrowed()).singleton(),
+        Some(U256::from(0xaa))
+    );
+    assert_eq!(projected.fresh_leaves(), memory.state_root().fresh_leaves());
+    assert_eq!(memory, original);
 }

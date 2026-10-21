@@ -446,12 +446,7 @@ fn disjoint_copy_reads_preserve_sources_facts_snapshots_and_hashes() {
     assert!(
         matches!(root.kind(), ByteStateKind::Copy { source, length: retained, .. } if source.state == *snapshot.state_root() && retained == &length)
     );
-    for current in [
-        &memory,
-        &memory
-            .widening_form(domain.borrowed(), limits.expressions())
-            .unwrap(),
-    ] {
+    for current in [&memory, &memory.project(domain.borrowed())] {
         let mut relations = RelationState::default();
         for (expression, value) in current.symbolic_facts() {
             relations
@@ -539,7 +534,7 @@ fn overlapping_and_symbolic_copy_ranges_keep_local_alternatives() {
         relations
             .observe(
                 target.expression().unwrap(),
-                constant(at).numeric(),
+                constant::<crate::domain::NumericValue>(at).numeric(),
                 &limits,
             )
             .unwrap();

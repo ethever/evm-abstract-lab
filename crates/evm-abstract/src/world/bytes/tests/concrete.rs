@@ -114,9 +114,7 @@ fn disjoint_reads_keep_original_singleton_sources_and_local_facts() {
         .write_word(&constant(160), &constant(99), domain.borrowed())
         .unwrap();
     let saved = memory.clone();
-    let form = memory
-        .widening_form(domain.borrowed(), limits.expressions())
-        .unwrap();
+    let form = memory.project(domain.borrowed());
     for current in [&memory, &form] {
         let mut relations = RelationState::default();
         for (expression, value) in current.symbolic_facts() {
@@ -199,14 +197,14 @@ fn symbolic_effects_and_unconstrained_guards_keep_both_values() {
         relations
             .observe(
                 offset.expression().unwrap(),
-                constant(at).numeric(),
+                constant::<crate::domain::NumericValue>(at).numeric(),
                 &limits,
             )
             .unwrap();
         relations
             .observe(
                 value.expression().unwrap(),
-                constant(written).numeric(),
+                constant::<crate::domain::NumericValue>(written).numeric(),
                 &limits,
             )
             .unwrap();

@@ -110,7 +110,7 @@ fn constant_offset_collision_copy_and_slice_keep_both_sources() {
 }
 
 #[test]
-fn normalized_zero_and_exact_writes_keep_singleton_sources_through_widening() {
+fn normalized_zero_and_exact_writes_keep_singleton_sources_through_numeric_projection() {
     let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let mut zero = TestBytes::memory();
     zero.write_byte(
@@ -146,20 +146,14 @@ fn normalized_zero_and_exact_writes_keep_singleton_sources_through_widening() {
             expected,
             &[Origin::Calldata],
         );
-        let form = value
-            .widening_form(domain.borrowed(), limits(domain.borrowed()))
-            .unwrap();
+        let form = value.project(domain.borrowed());
         assert_sources(
             &form.byte_at(0, domain.borrowed()),
             expected,
             &[Origin::Calldata],
         );
         assert_eq!(form.state_root(), value.state_root());
-        assert_eq!(
-            form,
-            form.widening_form(domain.borrowed(), limits(domain.borrowed()))
-                .unwrap()
-        );
+        assert_eq!(form, form.project(domain.borrowed()));
     }
 }
 
@@ -190,12 +184,7 @@ fn singleton_inputs_never_gain_a_shared_identity_and_keep_source_records() {
             .read_word(&constant(0), domain.borrowed())
             .same_identity(&memory.read_word(&constant(32), domain.borrowed()))
     );
-    for value in [
-        &memory,
-        &memory
-            .widening_form(domain.borrowed(), limits(domain.borrowed()))
-            .unwrap(),
-    ] {
+    for value in [&memory, &memory.project(domain.borrowed())] {
         for original in [&a, &b] {
             assert_eq!(
                 value.operands.get(original.expression().unwrap()),
@@ -214,7 +203,7 @@ fn singleton_inputs_never_gain_a_shared_identity_and_keep_source_records() {
 }
 
 #[test]
-fn singleton_fresh_history_survives_collision_widening_and_rename() {
+fn singleton_fresh_history_survives_collision_projection_and_rename() {
     let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let a = ExprId::fresh().unwrap();
     let b = ExprId::fresh().unwrap();
@@ -236,9 +225,7 @@ fn singleton_fresh_history_survives_collision_widening_and_rename() {
         )
         .unwrap();
     let snapshot = memory.clone();
-    let mut form = memory
-        .widening_form(domain.borrowed(), limits(domain.borrowed()))
-        .unwrap();
+    let mut form = memory.project(domain.borrowed());
     assert!(
         form.fresh_leaves()
             .is_superset(&BTreeSet::from([a.clone(), b.clone()]))
@@ -306,12 +293,7 @@ fn rename_collision_unions_origins_and_refreshes_all_constant_components() {
             domain.borrowed(),
         )
         .unwrap();
-    for current in [
-        &memory,
-        &memory
-            .widening_form(domain.borrowed(), limits(domain.borrowed()))
-            .unwrap(),
-    ] {
+    for current in [&memory, &memory.project(domain.borrowed())] {
         let fact = current
             .operands
             .get(&ExprId::constant(U256::from(7)))
@@ -334,49 +316,4 @@ fn rename_collision_unions_origins_and_refreshes_all_constant_components() {
             .numeric(),
         second.numeric()
     );
-}
-
-#[test]
-fn repeated_singleton_source_overwrite_drops_obsolete_fresh_records_in_widening() {
-    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
-    let mut memory = TestBytes::memory();
-    let mut previous = None;
-    for _ in 0..24 {
-        let source = ExprId::fresh().unwrap();
-        memory
-            .write_word(
-                &constant(0),
-                &calldata_seven().with_expression(source.clone()),
-                domain.borrowed(),
-            )
-            .unwrap();
-        memory = memory
-            .widening_form(domain.borrowed(), limits(domain.borrowed()))
-            .unwrap();
-        assert_eq!(memory.fresh_leaves(), BTreeSet::from([source.clone()]));
-        assert!(memory.work_size() < 500);
-        assert_sources(
-            &memory.read_word(&constant(0), domain.borrowed()),
-            U256::from(7),
-            &[Origin::Calldata],
-        );
-        if let Some(previous) = previous {
-            assert!(!memory.operands.contains_key(&previous));
-        }
-        let saved = memory.clone();
-        memory
-            .write_word(
-                &constant(0),
-                &calldata_seven().with_expression(source.clone()),
-                domain.borrowed(),
-            )
-            .unwrap();
-        assert_eq!(
-            memory
-                .widening_form(domain.borrowed(), limits(domain.borrowed()))
-                .unwrap(),
-            saved
-        );
-        previous = Some(source);
-    }
 }

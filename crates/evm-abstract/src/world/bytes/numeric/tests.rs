@@ -88,7 +88,10 @@ fn open_word_suffixes_remain_exact_through_reader_byte_observations() {
     let mut reader = Reader::new(&facts, domain.borrowed());
     for (state, index, expected) in [(&word, 38, 0x11), (&word, 39, 0x22), (&byte, 8, 0x22)] {
         let actual = reader.read(state, &ExprId::constant(U256::from(index)));
-        assert_eq!(actual.numeric(), constant(expected).numeric());
+        assert_eq!(
+            actual.numeric(),
+            constant::<crate::domain::NumericValue>(expected).numeric()
+        );
         assert!(!actual.symbolic_limit_reached());
         let sources = actual.provenance().origins().sources().unwrap();
         assert!(sources.contains(&Origin::Storage));

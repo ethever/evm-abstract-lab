@@ -31,7 +31,6 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 mod traversal;
-pub(super) mod widening;
 mod word_plan;
 mod write;
 
