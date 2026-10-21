@@ -555,7 +555,7 @@ fn actual_metadata_finishes_when_the_unused_n_maximum_cannot_be_prepaid() {
     let plan = prepare(&memory, &domain, &mut probe);
     let prepared = probe.used();
     let n = plan.preparation.as_ref().unwrap().nodes;
-    let offset_work = zero().work_size();
+    let offset_work = zero::<crate::domain::NumericValue>().work_size();
     let facts = fact_work(&memory.operands);
     let quantum = (4 * (memory.root.work_size() + offset_work) + memory.operands.len() + 8)
         .min(PLANNING_QUANTUM);

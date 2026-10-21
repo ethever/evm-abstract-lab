@@ -363,7 +363,7 @@ fn captured_source_history_and_observed_provenance_survive_later_writes() {
     let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let mut value = TestValue::top().with_symbol(Symbol::CalldataWord(U256::ZERO), Some(1701));
     value.set_origin(Origin::Calldata);
-    value = value.with_numeric(constant(7).numeric().clone());
+    value = value.with_numeric(constant::<crate::domain::NumericValue>(7).numeric().clone());
     let mut source = TestBytes::memory();
     source
         .write_word(&zero(), &value, domain.borrowed())

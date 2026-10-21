@@ -176,12 +176,7 @@ fn guarded_equal_numbers_keep_independent_sources_and_identity_meet() {
                 .contains(&origin)
         );
     }
-    for current in [
-        &memory,
-        &memory
-            .widening_form(domain.borrowed(), limits.expressions())
-            .unwrap(),
-    ] {
+    for current in [&memory, &memory.project(domain.borrowed())] {
         let mut relations = current.symbolic_relations(&limits).unwrap();
         for (nonzero, original) in [(true, &a), (false, &b)] {
             // The complete source record survives below its guard, never as a

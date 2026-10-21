@@ -209,7 +209,7 @@ fn baseline_identity_survives_new_rpc_observations() {
         panic!("unknown persistent base")
     };
     world
-        .install_storage(address, BTreeMap::from([(U256::from(2), v(11))]))
+        .install_storage(address, &BTreeMap::from([(U256::from(2), U256::from(11))]))
         .unwrap();
     let after = TestStore::new(
         &world,

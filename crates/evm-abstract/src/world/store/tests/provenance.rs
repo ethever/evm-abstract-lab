@@ -214,7 +214,7 @@ fn equal_numeric_writes_keep_origins_without_overwriting_constant_key_facts() {
 }
 
 #[test]
-fn colliding_initial_singletons_and_normalized_zero_keep_sources_in_widening() {
+fn colliding_initial_singletons_and_normalized_zero_keep_sources_under_numeric_projection() {
     let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     for complete in [true, false] {
         let (mut world, address) = world(complete);
@@ -234,9 +234,11 @@ fn colliding_initial_singletons_and_normalized_zero_keep_sources_in_widening() {
             &world,
             crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default()).borrowed(),
         );
-        let form = store
-            .widening_form(domain.borrowed(), ExprLimits::default())
-            .unwrap();
+        let form = {
+            let mut projected = store.clone();
+            projected.project(domain.borrowed());
+            projected
+        };
         for current in [&store, &form] {
             for key in [7, 8] {
                 assert_sources(
@@ -255,11 +257,11 @@ fn colliding_initial_singletons_and_normalized_zero_keep_sources_in_widening() {
             form.slot_root(address, false).unwrap(),
             store.slot_root(address, false).unwrap()
         );
-        assert_eq!(
-            form,
-            form.widening_form(domain.borrowed(), ExprLimits::default())
-                .unwrap()
-        );
+        assert_eq!(form, {
+            let mut projected = form.clone();
+            projected.project(domain.borrowed());
+            projected
+        });
     }
 }
 
@@ -287,9 +289,11 @@ fn independent_singleton_inputs_remain_separate_in_source_metadata() {
             }
         }
     }
-    let form = store
-        .widening_form(domain.borrowed(), ExprLimits::default())
-        .unwrap();
+    let form = {
+        let mut projected = store.clone();
+        projected.project(domain.borrowed());
+        projected
+    };
     for current in [&store, &form] {
         for transient in [false, true] {
             let facts = current
@@ -355,9 +359,11 @@ fn guard_projection_keeps_input_identity_when_the_slot_cache_has_joined_it_away(
                 domain.borrowed(),
             )
             .unwrap();
-        let form = projected
-            .widening_form(domain.borrowed(), ExprLimits::default())
-            .unwrap();
+        let form = {
+            let mut projected = projected.clone();
+            projected.project(domain.borrowed());
+            projected
+        };
         for transient in [false, true] {
             for current in [&projected, &form] {
                 let read = if transient {
@@ -419,9 +425,11 @@ fn singleton_guard_projection_retains_whole_case_numbers_sources_and_roots() {
                 domain.borrowed(),
             )
             .unwrap();
-        let form = projected
-            .widening_form(domain.borrowed(), ExprLimits::default())
-            .unwrap();
+        let form = {
+            let mut projected = projected.clone();
+            projected.project(domain.borrowed());
+            projected
+        };
         for transient in [false, true] {
             assert_eq!(
                 form.slot_root(address, transient).unwrap(),
@@ -506,9 +514,11 @@ fn renamed_slot_fact_collisions_keep_both_origins_without_input_aliases() {
             domain.borrowed(),
         )
         .unwrap();
-    let form = store
-        .widening_form(domain.borrowed(), ExprLimits::default())
-        .unwrap();
+    let form = {
+        let mut projected = store.clone();
+        projected.project(domain.borrowed());
+        projected
+    };
     for current in [&store, &form] {
         for transient in [false, true] {
             let facts = current
