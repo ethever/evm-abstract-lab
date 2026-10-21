@@ -450,16 +450,7 @@ fn declined_failure_reservation_never_clones_an_owned_numeric_payload() {
     let mut budget = WorkBudget::new(config.max_work);
     NUMERIC_CLONES.set(0);
     let accepted = {
-        let mut context = TransferContext {
-            config: &config,
-            domain: algebra.borrowed(),
-            budget: &mut budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: false,
-            discover_code: false,
-        };
+        let mut context = super::testing::context(&config, &mut budget, algebra.borrowed());
         late_failure::at_block_entry(&mut control, &mut context)
     };
     assert!(accepted);
@@ -481,16 +472,7 @@ fn declined_failure_reservation_never_clones_an_owned_numeric_payload() {
     let mut budget = WorkBudget::new(allowance);
     NUMERIC_CLONES.set(0);
     let accepted = {
-        let mut context = TransferContext {
-            config: &config,
-            domain: algebra.borrowed(),
-            budget: &mut budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: false,
-            discover_code: false,
-        };
+        let mut context = super::testing::context(&config, &mut budget, algebra.borrowed());
         late_failure::at_block_entry(&mut refused, &mut context)
     };
     assert!(!accepted);

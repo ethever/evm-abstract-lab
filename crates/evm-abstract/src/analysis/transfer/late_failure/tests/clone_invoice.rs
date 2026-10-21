@@ -83,16 +83,8 @@ fn run(
     budget: &mut WorkBudget,
 ) -> (bool, EvmExecution<Word>) {
     let mut result = empty_execution(payload);
-    let mut context = TransferContext {
-        config,
-        domain: policy.borrowed(),
-        budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context =
+        crate::analysis::transfer::testing::context(config, budget, policy.borrowed());
     let accepted = if let Some(candidate) = candidate {
         after_selfdestruct(&mut result, candidate, &mut context, 7)
     } else {
@@ -322,16 +314,11 @@ fn relative_root_retains_the_saved_store_copy_owner_missing_from_child_finish() 
         reset();
         let accepted = at_block_entry(
             &mut result,
-            &mut TransferContext {
-                config: &config,
-                domain: policy.borrowed(),
-                budget: &mut budget,
-                root_address: None,
-                input_scope: None,
-                query_cache: Default::default(),
-                procedure: true,
-                discover_code: false,
-            },
+            &mut crate::analysis::transfer::testing::procedure_context(
+                &config,
+                &mut budget,
+                policy.borrowed(),
+            ),
         );
         let receipt = RECEIPT.get();
         assert_eq!(receipt.private_quotes, 1);

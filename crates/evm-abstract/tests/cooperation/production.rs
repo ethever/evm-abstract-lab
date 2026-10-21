@@ -15,11 +15,7 @@ use evm_abstract::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn config() -> ExecutionConfig {
-    ExecutionConfig {
-        max_work: 1_000_000_000,
-        root_terminal_coverage: false,
-        ..ExecutionConfig::default()
-    }
+    super::fixtures::config(1_000_000_000)
 }
 fn policies() -> EnginePolicies {
     EnginePolicies::default()
@@ -293,6 +289,12 @@ fn alternate_context_partition_and_borrowed_noncopy_policy_reach_the_same_engine
     );
     assert!(context_calls.load(Ordering::Relaxed) > 0);
     assert!(partition_calls.load(Ordering::Relaxed) > 0);
+    assert!(
+        result
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == OutcomeKind::Return)
+    );
     assert!(
         result
             .outcomes()

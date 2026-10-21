@@ -285,9 +285,7 @@ fn independent_global_components_read_foreign_inputs_and_change_the_real_cfg_in_
         for enabled in [false, true] {
             let (code, impossible) = fixture();
             let calls = Calls::default();
-            let mut policy = Policy::new(&calls);
-            policy.exclusion_queries = false;
-            let algebra = evm_abstract::domain::ValueAlgebra::new(policy);
+            let algebra = fixtures::feedback_algebra(&calls);
             let factories = Rc::new(Cell::new(0));
             let mut extension = Extension::with_tasks(
                 Pair::new(
@@ -304,22 +302,13 @@ fn independent_global_components_read_foreign_inputs_and_change_the_real_cfg_in_
             let result = analyze_world_cooperating(
                 fixtures::world(&code),
                 fixtures::entry(),
-                ExecutionConfig {
-                    max_work: 5_000_000_000,
-                    root_terminal_coverage: false,
-                    ..ExecutionConfig::default()
-                },
+                fixtures::config(5_000_000_000),
                 &algebra,
                 &EnginePolicies::default(),
                 &mut extension,
             )
             .unwrap();
-            assert_eq!(
-                result.status(),
-                Status::Converged,
-                "{:?}",
-                result.frontiers()
-            );
+            fixtures::complete(&result);
             assert_eq!(factories.get(), 1, "custom global channel is created once");
             assert_eq!(
                 result

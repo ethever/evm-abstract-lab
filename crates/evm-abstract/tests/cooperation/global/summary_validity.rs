@@ -401,9 +401,7 @@ fn run(use_summaries: bool, invalidate: bool) {
     ]);
     let trace = Trace::default();
     let calls = Calls::default();
-    let mut policy = Policy::new(&calls);
-    policy.exclusion_queries = false;
-    let algebra = evm_abstract::domain::ValueAlgebra::new(policy);
+    let algebra = fixtures::feedback_algebra(&calls);
     let mut extension = Extension::with_tasks(
         Pair::new(
             Pair::new(
@@ -433,10 +431,8 @@ fn run(use_summaries: bool, invalidate: bool) {
         fixtures::world(&code),
         fixtures::entry(),
         ExecutionConfig {
-            max_work: 5_000_000_000,
-            root_terminal_coverage: false,
             use_summaries,
-            ..Default::default()
+            ..fixtures::config(5_000_000_000)
         },
         &algebra,
         &EnginePolicies::default(),
@@ -452,23 +448,33 @@ fn run(use_summaries: bool, invalidate: bool) {
         result.as_ref().map(|r| r.status())
     );
     let result = result.expect("Summary-only reader must reject an invalid closed guarantee");
-    assert_eq!(
-        result.status(),
-        Status::Converged,
-        "{:?}",
-        result.frontiers()
-    );
+    fixtures::complete(&result);
 }
 #[test]
-fn summary_only_reader_rejects_stale_closed_without_summary_cache() {
-    run(false, true);
-}
-#[test]
-fn summary_only_reader_rejects_stale_closed_with_summary_cache() {
-    run(true, true);
-}
-
-#[test]
-fn unchanged_provider_preserves_a_valid_closed_summary() {
-    run(true, false);
+fn summary_only_reader_tracks_provider_validity_in_each_cache_mode() {
+    for (case, use_summaries, invalidate) in [
+        (
+            "summary_only_reader_rejects_stale_closed_without_summary_cache",
+            false,
+            true,
+        ),
+        (
+            "summary_only_reader_rejects_stale_closed_with_summary_cache",
+            true,
+            true,
+        ),
+        (
+            "unchanged_provider_preserves_a_valid_closed_summary",
+            true,
+            false,
+        ),
+        (
+            "unchanged_provider_preserves_a_valid_closed_summary_without_cache",
+            false,
+            false,
+        ),
+    ] {
+        eprintln!("case={case}");
+        run(use_summaries, invalidate);
+    }
 }

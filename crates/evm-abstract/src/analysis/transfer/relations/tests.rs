@@ -8,7 +8,7 @@ use crate::{
     Fork,
     analysis::{
         ExecutionConfig, FrontierReason,
-        transfer::{Execution, TransferContext, WorkBudget, initial},
+        transfer::{Execution, WorkBudget, initial},
     },
     domain::{
         AbstractValue, Domain,
@@ -61,16 +61,11 @@ fn rejected_guard_keeps_the_original_coverage_frontier() {
         .with_expression(expression);
     let mut budget = WorkBudget::new(10_000_000);
     let transfer_numeric = Domain::default();
-    let mut context = TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&transfer_numeric),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&transfer_numeric),
+    );
     let successor = super::branch(&mut result, &condition, true, &mut context, 7).unwrap();
     assert_eq!(successor.relations, before);
     assert_eq!(result.frontiers.len(), 1);
@@ -89,16 +84,11 @@ fn shared_work_exhaustion_stops_before_guard_retention() {
     let condition = AbstractValue::top().with_expression(ExprId::fresh().unwrap());
     let mut budget = WorkBudget::new(0);
     let transfer_numeric = Domain::default();
-    let mut context = TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&transfer_numeric),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&transfer_numeric),
+    );
     assert!(super::branch(&mut result, &condition, true, &mut context, 7).is_none());
     assert_eq!(result.payload, before);
     assert_eq!(result.frontiers.len(), 1);
@@ -129,22 +119,7 @@ fn unknown_boolean_state_reads_keep_both_values_without_precision_diagnostics() 
     assert!(budget.used() > 0);
 }
 
-fn context<'a>(
-    config: &'a ExecutionConfig,
-    budget: &'a mut WorkBudget,
-    algebra: crate::domain::AlgebraRef<'a, Domain>,
-) -> TransferContext<'a, Domain> {
-    TransferContext {
-        config,
-        domain: algebra,
-        budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    }
-}
+use crate::analysis::transfer::testing::context;
 
 #[test]
 fn branch_keeps_expressions_until_instruction_consumption() {
@@ -239,16 +214,11 @@ fn retained_guarded_facts_never_prune_an_admitted_numeric_candidate() {
         )
         .with_expression(expression);
     let mut budget = WorkBudget::new(10_000_000);
-    let mut context = TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&domain),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&domain),
+    );
     assert_eq!(
         super::refine(&mut value, &relations, &mut context),
         Ok(true)

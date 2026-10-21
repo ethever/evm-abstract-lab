@@ -151,13 +151,17 @@ fn native_summary_and_continuation_keys_are_discovered_tracked_and_repeated_comp
 }
 
 #[test]
-fn required_open_summary_reader_settles_without_summaries() {
-    check_procedure_reader::<true>(false);
-}
-
-#[test]
-fn required_open_summary_reader_settles_with_summaries() {
-    check_procedure_reader::<true>(true);
+fn required_open_summary_reader_settles_in_each_cache_mode() {
+    for (case, use_summaries) in [
+        (
+            "required_open_summary_reader_settles_without_summaries",
+            false,
+        ),
+        ("required_open_summary_reader_settles_with_summaries", true),
+    ] {
+        eprintln!("case={case}");
+        check_procedure_reader::<true>(use_summaries);
+    }
 }
 
 fn check_procedure_reader<const REQUIRED: bool>(use_summaries: bool) {
@@ -169,10 +173,8 @@ fn check_procedure_reader<const REQUIRED: bool>(use_summaries: bool) {
         fixtures::world(&fixture.code),
         fixtures::entry(),
         ExecutionConfig {
-            max_work: 5_000_000_000,
-            root_terminal_coverage: false,
             use_summaries,
-            ..ExecutionConfig::default()
+            ..fixtures::config(5_000_000_000)
         },
         &algebra,
         &EnginePolicies::default(),

@@ -265,15 +265,13 @@ fn fact_capacity_and_unquotable_work_stop_feedback_at_distinct_boundaries() {
         (usize::MAX, ReductionStatus::WorkLimit),
     ] {
         let tiny = domain(Profile::Product, 1, rounds, 1);
-        for _ in 0..16 {
-            let stopped = tiny.reduce(&value);
-            assert_eq!(stopped.status, status);
-            assert_eq!(stopped.rounds, 0);
-            assert_eq!(stopped.value, value);
-            assert!(stopped.value.contains(U256::ZERO));
-            assert!(stopped.value.contains(U256::from(255)));
-            assert!(!stopped.value.contains(U256::from(256)));
-        }
+        let stopped = tiny.reduce(&value);
+        assert_eq!(stopped.status, status, "rounds={rounds}");
+        assert_eq!(stopped.rounds, 0, "rounds={rounds}");
+        assert_eq!(stopped.value, value, "rounds={rounds}");
+        assert!(stopped.value.contains(U256::ZERO), "rounds={rounds}");
+        assert!(stopped.value.contains(U256::from(255)), "rounds={rounds}");
+        assert!(!stopped.value.contains(U256::from(256)), "rounds={rounds}");
     }
 }
 

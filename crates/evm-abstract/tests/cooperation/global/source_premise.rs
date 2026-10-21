@@ -4,7 +4,7 @@ use super::{
     deferred::{Factory, GuardBound, Source},
     *,
 };
-use evm_abstract::analysis::{OutcomeKind, cooperation::Input};
+use evm_abstract::analysis::OutcomeKind;
 
 struct Parent {
     pc: usize,
@@ -15,17 +15,7 @@ struct Parent {
     )>,
     children: Vec<(Subject, ExcludingWord)>,
 }
-fn pc(input: &Input<ExcludingWord>) -> Option<usize> {
-    let frame = input.payload().active();
-    Some(
-        frame
-            .program
-            .as_ref()?
-            .blocks()
-            .get(frame.key.basic_block_index)?
-            .start_pc,
-    )
-}
+
 impl<Cx> Reduction<Cx> for Parent
 where
     Cx: Read<Inputs<ExcludingWord>, InputRoute, Error = Infrastructure>
@@ -44,13 +34,13 @@ where
             return Ok(LocalClosure::Stable);
         };
         cx.charge(input.work_size().saturating_mul(4))?;
-        if subject.point.namespace == 2 && pc(input) == Some(self.pc + 5) {
+        if subject.point.namespace == 2 && fixtures::input_pc(input) == Some(self.pc + 5) {
             self.children.push((
                 *subject,
                 input.payload().active().stack[0].numeric().clone(),
             ));
         }
-        if subject.point.namespace != 1 || pc(input) != Some(self.pc) {
+        if subject.point.namespace != 1 || fixtures::input_pc(input) != Some(self.pc) {
             return Ok(LocalClosure::Stable);
         }
         self.snapshots.push((*subject, input.payload().clone()));
@@ -142,10 +132,8 @@ fn parent_only_assumption_expands_the_same_child_snapshot_and_actual_return() {
             )
             .with_shared_stores(Factory);
             let mut config = ExecutionConfig {
-                max_work: 5_000_000_000,
-                root_terminal_coverage: false,
                 use_summaries,
-                ..ExecutionConfig::default()
+                ..fixtures::config(5_000_000_000)
             };
             config.analysis.relations.enabled = false;
             let result = analyze_world_cooperating(
@@ -157,12 +145,7 @@ fn parent_only_assumption_expands_the_same_child_snapshot_and_actual_return() {
                 &mut extension,
             )
             .unwrap();
-            assert_eq!(
-                result.status(),
-                Status::Converged,
-                "{:?}",
-                result.frontiers()
-            );
+            fixtures::complete(&result);
             assert!(extension.analyzer.left.grown > 0);
             let parent = extension.analyzer.right.rule();
             assert!(

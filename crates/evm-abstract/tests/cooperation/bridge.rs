@@ -6,41 +6,29 @@ pub(super) mod fixture;
 #[path = "bridge/rule.rs"]
 pub(super) mod rule;
 
-use super::{
-    fixtures,
-    policy::{Calls, Policy},
-};
+use super::{fixtures, policy::Calls};
 use alloy_primitives::U256;
 use analysis_kernel::{Change, Registered};
-use evm_abstract::{
-    analysis::{
-        EnginePolicies, ExecutionConfig, FrontierReason, OutcomeKind, Status,
-        control::Control,
-        cooperation::{
-            CooperationError, Extension, Point, PointKind, analyze_world_cooperating,
-            analyze_world_cooperating_with_control,
-        },
-        progress::Observer,
+use evm_abstract::analysis::{
+    EnginePolicies, ExecutionConfig, FrontierReason, OutcomeKind, Status,
+    control::Control,
+    cooperation::{
+        CooperationError, Extension, Point, PointKind, analyze_world_cooperating,
+        analyze_world_cooperating_with_control,
     },
-    domain::ValueAlgebra,
+    progress::Observer,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 fn config() -> ExecutionConfig {
-    ExecutionConfig {
-        max_work: 5_000_000_000,
-        root_terminal_coverage: false,
-        ..ExecutionConfig::default()
-    }
+    fixtures::config(5_000_000_000)
 }
 
 #[test]
 fn an_external_registered_rule_changes_real_cfg_and_receives_later_evm_inputs() {
     let fixture = fixture::guarded(false);
     let calls = Calls::default();
-    let mut policy = Policy::new(&calls);
-    policy.exclusion_queries = false; // Require program-level external reasoning.
-    let algebra = ValueAlgebra::new(policy);
+    let algebra = fixtures::feedback_algebra(&calls);
     let mut external = Extension::new(Registered::new(rule::Rule {
         enabled: true,
         ..rule::Rule::default()
@@ -54,12 +42,7 @@ fn an_external_registered_rule_changes_real_cfg_and_receives_later_evm_inputs() 
         &mut external,
     )
     .unwrap();
-    assert_eq!(
-        result.status(),
-        Status::Converged,
-        "{:?}",
-        result.frontiers()
-    );
+    fixtures::complete(&result);
     assert!(
         !result
             .states()
@@ -105,12 +88,7 @@ fn an_external_registered_rule_changes_real_cfg_and_receives_later_evm_inputs() 
         &mut removed,
     )
     .unwrap();
-    assert_eq!(
-        control.status(),
-        Status::Converged,
-        "{:?}",
-        control.frontiers()
-    );
+    fixtures::complete(&control);
     assert!(
         control
             .states()
@@ -124,9 +102,7 @@ fn an_external_registered_rule_changes_real_cfg_and_receives_later_evm_inputs() 
 fn recursive_summary_growth_reseeds_external_subjects_and_preserves_the_joint_fixed_point() {
     let fixture = fixture::guarded(true);
     let calls = Calls::default();
-    let mut policy = Policy::new(&calls);
-    policy.exclusion_queries = false;
-    let algebra = ValueAlgebra::new(policy);
+    let algebra = fixtures::feedback_algebra(&calls);
     let mut external = Extension::new(Registered::new(rule::Rule {
         enabled: true,
         ..rule::Rule::default()
@@ -140,12 +116,7 @@ fn recursive_summary_growth_reseeds_external_subjects_and_preserves_the_joint_fi
         &mut external,
     )
     .unwrap();
-    assert_eq!(
-        result.status(),
-        Status::Converged,
-        "{:?}",
-        result.frontiers()
-    );
+    fixtures::complete(&result);
     assert!(!result.procedure_summaries().is_empty());
     assert!(
         result
@@ -196,9 +167,7 @@ fn recursive_summary_growth_reseeds_external_subjects_and_preserves_the_joint_fi
 fn external_work_refusal_retains_incomplete_pending_effects_and_differs_from_cancellation() {
     let fixture = fixture::guarded(false);
     let calls = Calls::default();
-    let mut policy = Policy::new(&calls);
-    policy.exclusion_queries = false;
-    let algebra = ValueAlgebra::new(policy);
+    let algebra = fixtures::feedback_algebra(&calls);
     let mut external = Extension::new(Registered::new(rule::Rule {
         enabled: true,
         exhaust_after_feedback: true,

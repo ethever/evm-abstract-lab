@@ -10,7 +10,10 @@ use crate::{
     },
     world::{Account, Code, Existence},
 };
-use std::collections::BTreeMap;
+
+#[path = "../../../../tests/support/joint_witness.rs"]
+mod joint_witness;
+use joint_witness::JointWitness as JointInput;
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
@@ -72,61 +75,8 @@ fn ready(
 
 /// One narrow tuple witness assigns a shared source once. Unsupported graph
 /// forms decline the witness; numerical marginals cannot establish correlation.
-#[derive(Default)]
-struct JointInput {
-    words: BTreeMap<ExprId, U256>,
-    cells: BTreeMap<(SourceId, U256), U256>,
-}
-
 impl JointInput {
-    fn assign<K: Ord>(map: &mut BTreeMap<K, U256>, key: K, value: U256) -> bool {
-        match map.get(&key) {
-            Some(previous) => *previous == value,
-            None => {
-                map.insert(key, value);
-                true
-            }
-        }
-    }
-
-    fn expression(&mut self, expression: &ExprId, expected: U256) -> bool {
-        match expression.kind() {
-            ExprKind::Constant(value) => *value == expected,
-            ExprKind::Input(_) | ExprKind::Fresh(_) => {
-                Self::assign(&mut self.words, expression.clone(), expected)
-            }
-            ExprKind::SlotRead { state, key } => key
-                .as_constant()
-                .is_some_and(|key| self.slot(state, key, expected)),
-            _ => false,
-        }
-    }
-
-    fn slot(&mut self, state: &SlotStateId, key: U256, expected: U256) -> bool {
-        match state.kind() {
-            SlotStateKind::Zero => expected == U256::ZERO,
-            SlotStateKind::Input { source, bindings } => {
-                if let Some(binding) = bindings.iter().find(|binding| binding.index == key)
-                    && (!binding.numeric.contains(expected)
-                        || !self.expression(&binding.value, expected))
-                {
-                    return false;
-                }
-                Self::assign(&mut self.cells, (source.clone(), key), expected)
-            }
-            SlotStateKind::Store {
-                previous,
-                key: written,
-                value,
-            } => match written.as_constant() {
-                Some(written) if written == key => self.expression(value, expected),
-                Some(_) => self.slot(previous, key, expected),
-                None => false,
-            },
-            SlotStateKind::Ite { .. } => false,
-        }
-    }
-
+    // Private preparation probes require expression evidence even for singletons.
     fn storage(&mut self, store: &Store, owner: Address, expected: u64, domain: Domain) -> bool {
         let value = store.read_checked(owner, &word(8), domain).unwrap();
         let expected = U256::from(expected);
@@ -168,6 +118,13 @@ fn capture_owns_the_actual_lifted_root_and_joint_return_effects() {
     let original =
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let unchanged = original.clone();
+    let exact = original
+        .store
+        .read_checked(address(3), &word(8), domain)
+        .unwrap();
+    assert_eq!(exact.singleton(), Some(U256::ZERO));
+    assert!(exact.expression().is_none());
+    assert!(!JointInput::default().storage(&original.store, address(3), 0, domain));
     let mut budget = WorkBudget::new(usize::MAX);
     let prepared = ready(&original, &world, &entry, &config, &facts, &mut budget).unwrap();
     let used = budget.used();

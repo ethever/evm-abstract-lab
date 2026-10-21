@@ -6,7 +6,7 @@ use crate::{
     analysis::{
         ExecutionConfig, FrontierReason, MachinePayload,
         machine::{ChildFrame, Continuation},
-        transfer::{TransferContext, initial},
+        transfer::initial,
     },
     domain::{AbstractValue, Domain, relational::CheckResult, symbolic::ExprId},
     resource::WorkBudget,
@@ -58,16 +58,11 @@ fn direct_guards_refine_live_bytes_and_saved_storage_together() {
         .assume(&guard, true, &config.analysis.relations);
     let relations = payload.relations.clone();
     let mut budget = WorkBudget::new(10_000_000);
-    let mut context = TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&domain),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&domain),
+    );
     let mut diagnostics = Vec::new();
     assert_eq!(
         super::refine(
@@ -131,16 +126,11 @@ fn absent_guard_proof_retains_wrapper_and_work_refusal_stops_before_rewrite() {
     let relations = payload.relations.clone();
     let mut diagnostics = Vec::new();
     let mut budget = WorkBudget::new(10_000_000);
-    let mut context = TransferContext {
-        config: &config,
-        domain: ValueAlgebra::new(&domain),
-        budget: &mut budget,
-        root_address: None,
-        input_scope: None,
-        query_cache: Default::default(),
-        procedure: false,
-        discover_code: false,
-    };
+    let mut context = crate::analysis::transfer::testing::context(
+        &config,
+        &mut budget,
+        ValueAlgebra::new(&domain),
+    );
     assert_eq!(
         super::refine(
             &mut payload,
@@ -406,16 +396,11 @@ fn direct_guard_refinement_covers_fourteen_live_and_rollback_observations() {
         let relations = payload.relations.clone();
         let mut budget = WorkBudget::new(config.max_work);
         let mut diagnostics = Vec::new();
-        let mut context = TransferContext {
-            config: &config,
-            domain: ValueAlgebra::new(&domain),
-            budget: &mut budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: false,
-            discover_code: false,
-        };
+        let mut context = crate::analysis::transfer::testing::context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&domain),
+        );
         assert_eq!(
             super::refine(
                 &mut payload,

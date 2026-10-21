@@ -8,6 +8,9 @@ use evm_abstract::{
     world::{Account, ByteArray, Entry, Store, World},
 };
 use revm_bytecode::opcode;
+
+#[path = "../support/terminal_coverage.rs"]
+pub(super) mod terminal_coverage;
 use std::{collections::BTreeMap, time::Instant};
 
 pub(super) const A: u64 = 0x101;
@@ -179,7 +182,6 @@ pub(super) fn callback_closure_config() -> ExecutionConfig {
 /// Check the original root relation on the real default ledger, independently
 /// of funding a functional closure. A cheaper complete execution is also valid.
 pub(super) fn default_callback_coverage(world: World, entry: Entry) {
-    use evm_abstract::analysis::{FrontierReason, RootTerminalScope, RootTerminalTrigger};
     let config = ExecutionConfig::default();
     assert_eq!(config.max_work, 20_000_000);
     assert!(config.root_terminal_coverage);
@@ -190,48 +192,7 @@ pub(super) fn default_callback_coverage(world: World, entry: Entry) {
         complete_unknown(&analysis);
         return;
     }
-    assert_eq!(analysis.status(), Status::Incomplete);
-    let coverage = analysis
-        .root_terminal_coverage()
-        .expect("default work refusal retains its prepaid root relation");
-    let reason = match coverage.trigger() {
-        RootTerminalTrigger::Work => FrontierReason::Work,
-        RootTerminalTrigger::SummaryWork => FrontierReason::SummaryWork,
-        other => panic!("expected an actual shared-ledger work stop: {other:?}"),
-    };
-    assert!(
-        analysis
-            .frontiers()
-            .iter()
-            .any(|frontier| frontier.reason == reason)
-    );
-    assert_eq!(coverage.scope(), RootTerminalScope::AllInputStates);
-    assert_eq!(
-        coverage.outcomes().each_ref().map(|outcome| outcome.kind()),
-        [
-            OutcomeKind::Return,
-            OutcomeKind::Revert,
-            OutcomeKind::Failure,
-        ]
-    );
-    let input = coverage.input();
-    let original = &analysis.states()[0].entry;
-    assert_eq!(input.entry(), analysis.entry());
-    assert_eq!(input.frame(), &original.active().key);
-    assert_eq!(input.program(), original.active().program.as_ref().unwrap());
-    assert_eq!(input.calldata(), &original.active().calldata);
-    assert_eq!(input.call_value(), &original.active().call_value);
-    assert_eq!(input.saved_store(), &original.active().saved_store);
-    assert_eq!(input.initial_store(), &original.store);
-    assert_eq!(input.domain_spec(), analysis.domain_spec());
-    assert_eq!(
-        serde_json::to_value(input.config()).unwrap(),
-        serde_json::to_value(&config).unwrap()
-    );
-    assert_eq!(
-        coverage.outcomes()[2].data().len().singleton(),
-        Some(U256::ZERO)
-    );
+    terminal_coverage::assert_original_work_coverage(&analysis, &config);
 }
 
 pub(super) fn run(world: World, entry: Entry) -> WorldAnalysis {

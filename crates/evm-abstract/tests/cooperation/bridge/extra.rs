@@ -7,17 +7,11 @@ mod contracts;
 mod provider;
 
 use super::{config, fixture};
-use crate::{
-    fixtures, oracle,
-    policy::{Calls, Policy},
-};
+use crate::{fixtures, oracle, policy::Calls};
 use analysis_kernel::{Change, Pair, Registered};
-use evm_abstract::{
-    analysis::{
-        EnginePolicies, OutcomeKind, Status,
-        cooperation::{Extension, PairedTasks, PerInput, PointKind, analyze_world_cooperating},
-    },
-    domain::ValueAlgebra,
+use evm_abstract::analysis::{
+    EnginePolicies, OutcomeKind,
+    cooperation::{Extension, PairedTasks, PerInput, PointKind, analyze_world_cooperating},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,9 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 fn client_owned_capability_connects_independent_rules_to_real_evm_feedback() {
     let fixture = fixture::guarded(false);
     let calls = Calls::default();
-    let mut policy = Policy::new(&calls);
-    policy.exclusion_queries = false;
-    let algebra = ValueAlgebra::new(policy);
+    let algebra = fixtures::feedback_algebra(&calls);
     for removed in [None, Some("provider"), Some("consumer")] {
         // Consumer starts before the provider: only its automatic Pending-read
         // dependency can bring it back after the client-owned answer arrives.
@@ -48,12 +40,7 @@ fn client_owned_capability_connects_independent_rules_to_real_evm_feedback() {
             &mut extension,
         )
         .unwrap();
-        assert_eq!(
-            result.status(),
-            Status::Converged,
-            "{:?}",
-            result.frontiers()
-        );
+        fixtures::complete(&result);
         let impossible = result
             .states()
             .iter()
@@ -126,9 +113,7 @@ fn client_owned_capability_connects_independent_rules_to_real_evm_feedback() {
 fn client_owned_channels_are_recreated_when_recursive_summary_inputs_grow() {
     let fixture = fixture::guarded(true);
     let calls = Calls::default();
-    let mut policy = Policy::new(&calls);
-    policy.exclusion_queries = false;
-    let algebra = ValueAlgebra::new(policy);
+    let algebra = fixtures::feedback_algebra(&calls);
     let mut extension = Extension::with_tasks(
         Pair::new(
             Registered::new(consumer::Consumer::new(true)),
@@ -146,12 +131,7 @@ fn client_owned_channels_are_recreated_when_recursive_summary_inputs_grow() {
         &mut extension,
     )
     .unwrap();
-    assert_eq!(
-        result.status(),
-        Status::Converged,
-        "{:?}",
-        result.frontiers()
-    );
+    fixtures::complete(&result);
     assert!(!result.procedure_summaries().is_empty());
     assert!(result.procedure_summaries().iter().all(|s| s.closed));
     assert!(

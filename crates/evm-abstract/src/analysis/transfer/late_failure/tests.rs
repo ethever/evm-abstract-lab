@@ -530,16 +530,11 @@ fn exact_reservation_admits_failure_and_one_short_keeps_input_and_prior_debits()
         let mut budget = WorkBudget::new(maximum);
         assert!(budget.charge(prior));
         let mut result = super::super::empty_execution(input.clone());
-        let mut context = TransferContext {
-            config: &config,
-            domain: ValueAlgebra::new(&domain),
-            budget: &mut budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: true,
-            discover_code: false,
-        };
+        let mut context = crate::analysis::transfer::testing::procedure_context(
+            &config,
+            &mut budget,
+            ValueAlgebra::new(&domain),
+        );
         assert_eq!(at_block_entry(&mut result, &mut context), accepted);
         assert_eq!(
             result.payload, input,

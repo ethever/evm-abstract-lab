@@ -2,7 +2,7 @@ use super::{
     oracle,
     support::{
         Assembly, BALANCE, Fixture, ROOT, UNKNOWN, address, alternate_run, callback_implementation,
-        callback_parent, complete, config, default_run, entry, input, insert, recursive_counter,
+        callback_parent, complete, config, default_run, entry, insert, recursive_counter,
         recursive_returning, recursive_rollback, run, word, world,
     },
 };
@@ -33,6 +33,26 @@ fn both_complete_strategies_cover_recursive_body_output_and_feedback_growth() {
     let fixture = recursive_counter(true);
     let world = world(&fixture);
     let entry = entry(ByteArray::unknown());
+    let witnesses = oracle::witnesses(&world, &[0, 1, 2, 6, 17], |n, witness| {
+        assert_eq!(witness.kind, OutcomeKind::Return);
+        assert_eq!(witness.output_word(0), U256::from(n));
+        assert_eq!(witness.output_word(32), U256::from(n));
+        assert_eq!(witness.output_word(64), U256::from(77));
+        assert_eq!(witness.storage[&(address(ROOT), U256::ZERO)], U256::from(n));
+        if n >= 6 {
+            assert!(
+                witness
+                    .steps
+                    .iter()
+                    .filter(|(code, pc)| {
+                        *code == address(ROOT) && *pc == fixture.labels["recursive_call"]
+                    })
+                    .count()
+                    >= 6,
+                "the witness must exceed the unfolding bound"
+            );
+        }
+    });
     for use_summaries in [false, true] {
         let config = ExecutionConfig {
             use_summaries,
@@ -77,26 +97,7 @@ fn both_complete_strategies_cover_recursive_body_output_and_feedback_growth() {
                 }),
                 "output growth must reach retained recursive callers"
             );
-            for n in [0, 1, 2, 6, 17] {
-                let witness = oracle::execute(&world, &super::support::entry(input(n)));
-                assert_eq!(witness.kind, OutcomeKind::Return);
-                assert_eq!(witness.output_word(0), U256::from(n));
-                assert_eq!(witness.output_word(32), U256::from(n));
-                assert_eq!(witness.output_word(64), U256::from(77));
-                assert_eq!(witness.storage[&(address(ROOT), U256::ZERO)], U256::from(n));
-                if n >= 6 {
-                    assert!(
-                        witness
-                            .steps
-                            .iter()
-                            .filter(|(code, pc)| {
-                                *code == address(ROOT) && *pc == fixture.labels["recursive_call"]
-                            })
-                            .count()
-                            >= 6,
-                        "the witness must exceed the unfolding bound"
-                    );
-                }
+            for witness in &witnesses {
                 witness.covers(graph);
             }
         }
@@ -118,6 +119,13 @@ fn recursive_revert_restores_parent_persistent_and_transient_memory_witnesses() 
         default_run(&world, &entry, config.clone()),
         alternate_run(&world, &entry, config),
     ];
+
+    let witnesses = oracle::witnesses(&world, &[0, 1, 4, 6], |_, witness| {
+        assert_eq!(witness.kind, OutcomeKind::Return);
+        assert_eq!(witness.output_word(0), U256::from(5));
+        assert_eq!(witness.output_word(32), U256::from(7));
+        assert_eq!(witness.storage[&(address(ROOT), U256::ZERO)], U256::from(5));
+    });
     for graph in &graphs {
         complete(graph);
         assert!(
@@ -126,12 +134,7 @@ fn recursive_revert_restores_parent_persistent_and_transient_memory_witnesses() 
                 .iter()
                 .any(|r| r.kind == ProcedureSummaryKind::KnownRecursion)
         );
-        for n in [0, 1, 4, 6] {
-            let witness = oracle::execute(&world, &super::support::entry(input(n)));
-            assert_eq!(witness.kind, OutcomeKind::Return);
-            assert_eq!(witness.output_word(0), U256::from(5));
-            assert_eq!(witness.output_word(32), U256::from(7));
-            assert_eq!(witness.storage[&(address(ROOT), U256::ZERO)], U256::from(5));
+        for witness in &witnesses {
             witness.covers(graph);
         }
     }
@@ -190,22 +193,14 @@ fn both_strategies_cover_unknown_callbacks_and_each_rollback_scope() {
             default_run(&world, &entry, recursive_config()),
             alternate_run(&world, &entry, recursive_config()),
         ];
-        for graph in &graphs {
-            complete(graph);
-            assert!(
-                graph.procedure_summaries().iter().any(|record| {
-                    record.kind == ProcedureSummaryKind::UnknownEnvironment
-                        && record.procedures.iter().any(|p| {
-                            p.frame.code_address == address(ROOT) && !p.covered_blocks.is_empty()
-                        })
-                }),
-                "unknown execution must analyze the actual known callback bytecode"
-            );
-            for (selector, unknown_reverts, expected_status, expected_slot, expected_transient) in [
-                (0, false, 1, 77, 0),  // callback reverts; U handles its failure
-                (1, false, 1, 11, 11), // callback and U commit
-                (1, true, 0, 77, 0),   // U rolls back its successful callback
-            ] {
+        let witnesses: Vec<_> = [
+            (0, false, 1, 77, 0),  // callback reverts; U handles its failure
+            (1, false, 1, 11, 11), // callback and U commit
+            (1, true, 0, 77, 0),   // U rolls back its successful callback
+        ]
+        .into_iter()
+        .map(
+            |(selector, unknown_reverts, expected_status, expected_slot, expected_transient)| {
                 let concrete =
                     concrete_unknown(&world, &callback_implementation(selector, unknown_reverts));
                 let witness = oracle::execute(&concrete, &entry);
@@ -235,6 +230,22 @@ fn both_strategies_cover_unknown_callbacks_and_each_rollback_scope() {
                     witness.storage[&(address(ROOT), U256::ONE)],
                     U256::from(if outer_revert { 77 } else { expected_slot })
                 );
+                witness
+            },
+        )
+        .collect();
+        for graph in &graphs {
+            complete(graph);
+            assert!(
+                graph.procedure_summaries().iter().any(|record| {
+                    record.kind == ProcedureSummaryKind::UnknownEnvironment
+                        && record.procedures.iter().any(|p| {
+                            p.frame.code_address == address(ROOT) && !p.covered_blocks.is_empty()
+                        })
+                }),
+                "unknown execution must analyze the actual known callback bytecode"
+            );
+            for witness in &witnesses {
                 witness.covers(graph);
             }
         }
@@ -291,12 +302,13 @@ fn borrowed_summary_policy_changes_published_return_bytes_and_still_covers_revm(
         ),
     );
     let changed = run(&world, &entry, recursive_config(), &policies);
+    let witnesses = oracle::witnesses(&world, &[0, 1, 4, 9], |_, witness| {
+        assert_eq!(witness.output_word(0), U256::from(42));
+    });
     for graph in [&precise, &changed] {
         complete(graph);
         assert!(!graph.procedure_summaries().is_empty());
-        for n in [0, 1, 4, 9] {
-            let witness = oracle::execute(&world, &super::support::entry(input(n)));
-            assert_eq!(witness.output_word(0), U256::from(42));
+        for witness in &witnesses {
             witness.covers(graph);
         }
     }

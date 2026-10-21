@@ -232,9 +232,7 @@ fn later_world_fact_reenters_body_changes_native_output_and_preserves_failure_ca
         ] {
             let (code, _) = code();
             let calls = Calls::default();
-            let mut policy = Policy::new(&calls);
-            policy.exclusion_queries = false;
-            let algebra = evm_abstract::domain::ValueAlgebra::new(policy);
+            let algebra = fixtures::feedback_algebra(&calls);
             let control = Control::new(Observer::default());
             let mut extension = Extension::with_tasks(
                 Pair::new(
@@ -261,10 +259,8 @@ fn later_world_fact_reenters_body_changes_native_output_and_preserves_failure_ca
                 fixtures::world(&code),
                 fixtures::entry(),
                 ExecutionConfig {
-                    max_work: 5_000_000_000,
-                    root_terminal_coverage: false,
                     use_summaries,
-                    ..ExecutionConfig::default()
+                    ..fixtures::config(5_000_000_000)
                 },
                 &algebra,
                 &EnginePolicies::default(),
@@ -309,12 +305,7 @@ fn later_world_fact_reenters_body_changes_native_output_and_preserves_failure_ca
                     != FrontierReason::StateJoin(evm_abstract::analysis::JoinBoundary::Shape)));
                 continue;
             }
-            assert_eq!(
-                result.status(),
-                Status::Converged,
-                "{:?}",
-                result.frontiers()
-            );
+            fixtures::complete(&result);
             let callee_can_return_42 = result
                 .procedure_summaries()
                 .iter()

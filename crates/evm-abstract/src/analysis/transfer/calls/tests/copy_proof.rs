@@ -420,16 +420,11 @@ fn production_finish_pays_the_full_quote_and_refuses_a_smaller_budget_atomically
                 payload.clone(),
                 OutcomeKind::Return,
                 source.clone(),
-                &mut TransferContext {
-                    config: &config,
-                    domain: algebra.borrowed(),
-                    budget: &mut budget,
-                    root_address: None,
-                    input_scope: None,
-                    query_cache: Default::default(),
-                    procedure: false,
-                    discover_code: false,
-                },
+                &mut crate::analysis::transfer::testing::context(
+                    &config,
+                    &mut budget,
+                    algebra.borrowed(),
+                ),
                 7,
             );
             assert_eq!(budget.used(), 17 + if funded { fee } else { prepared });
@@ -471,16 +466,7 @@ fn cancelled_production_finish_keeps_the_unresumed_parent() {
         payload.clone(),
         OutcomeKind::Return,
         source,
-        &mut TransferContext {
-            config: &config,
-            domain: algebra.borrowed(),
-            budget: &mut budget,
-            root_address: None,
-            input_scope: None,
-            query_cache: Default::default(),
-            procedure: false,
-            discover_code: false,
-        },
+        &mut crate::analysis::transfer::testing::context(&config, &mut budget, algebra.borrowed()),
         7,
     );
     assert_eq!(budget.used(), 17);

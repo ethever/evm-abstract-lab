@@ -1,19 +1,7 @@
 //! Two independent proof components exchange inequalities through a real cycle.
 use super::*;
-use evm_abstract::analysis::cooperation::Input;
 use std::collections::BTreeMap;
 
-fn pc(input: &Input<ExcludingWord>) -> Option<usize> {
-    let frame = input.payload().active();
-    Some(
-        frame
-            .program
-            .as_ref()?
-            .blocks()
-            .get(frame.key.basic_block_index)?
-            .start_pc,
-    )
-}
 struct Inequality {
     upper: bool,
     enabled: bool,
@@ -46,7 +34,7 @@ where
             return Ok(LocalClosure::Stable);
         };
         let own_pc = if self.upper { self.a } else { self.b };
-        let own = pc(input);
+        let own = fixtures::input_pc(input);
         if own != Some(own_pc) && (self.upper || own != Some(self.c)) {
             return Ok(LocalClosure::Stable);
         }
@@ -73,7 +61,7 @@ where
                     let Some(source) = source.value() else {
                         continue;
                     };
-                    if pc(source) != Some(self.b) {
+                    if fixtures::input_pc(source) != Some(self.b) {
                         continue;
                     }
                     let facts = <Cx as Read<Refinements, RefinementRoute>>::query(
@@ -128,7 +116,7 @@ where
                 let Some(peer) = peer.value() else {
                     continue;
                 };
-                if pc(peer) != Some(if self.upper { self.b } else { self.a }) {
+                if fixtures::input_pc(peer) != Some(if self.upper { self.b } else { self.a }) {
                     continue;
                 }
                 let answer = <Cx as Read<Refinements, RefinementRoute>>::query(
@@ -219,9 +207,7 @@ fn peer_feedback_strengthens_source_then_returns_a_new_branch_consequence_withou
         for (forward, backward) in [(true, true), (false, true), (true, false)] {
             let (code, a, b, c, impossible) = fixture();
             let calls = Calls::default();
-            let mut policy = Policy::new(&calls);
-            policy.exclusion_queries = false;
-            let algebra = evm_abstract::domain::ValueAlgebra::new(policy);
+            let algebra = fixtures::feedback_algebra(&calls);
             let rule = |upper, enabled| Inequality {
                 upper,
                 enabled,
@@ -239,11 +225,7 @@ fn peer_feedback_strengthens_source_then_returns_a_new_branch_consequence_withou
                 ),
                 Order(upper_first),
             );
-            let mut config = ExecutionConfig {
-                max_work: 5_000_000_000,
-                root_terminal_coverage: false,
-                ..ExecutionConfig::default()
-            };
+            let mut config = fixtures::config(5_000_000_000);
             // Preserve the coarse native EQ carrier; neither ordinary relation
             // inference nor one local inequality supplies the peer's guarantee.
             config.analysis.relations.enabled = false;
@@ -256,12 +238,7 @@ fn peer_feedback_strengthens_source_then_returns_a_new_branch_consequence_withou
                 &mut extension,
             )
             .unwrap();
-            assert_eq!(
-                result.status(),
-                Status::Converged,
-                "{:?}",
-                result.frontiers()
-            );
+            fixtures::complete(&result);
             let complete = forward && backward;
             assert_eq!(
                 !extension.analyzer.left.rule().exact.is_empty(),
