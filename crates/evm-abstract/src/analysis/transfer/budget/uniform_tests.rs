@@ -526,3 +526,27 @@ fn transfer_keeps_custom_admission_and_payment_stable_across_memory_touch() {
     assert_transfer_write::<true>();
     assert_transfer_write::<false>();
 }
+
+#[test]
+fn runtime_identification_preserves_the_literal_offset_write_certificate() {
+    let policy = BytePolicy::<false> {
+        word_surcharge: Some(100_000),
+        ..Default::default()
+    };
+    let algebra = ValueAlgebra::new(&policy);
+    let domain = algebra.borrowed();
+    let memory = ByteArray::memory();
+    let offset = EvmValue::constant(U256::ZERO);
+    let word = input();
+    let before = memory.uniform_word_write_work_with(&offset, &word, domain);
+    assert!(before.is_some(), "the untouched literal qualifies");
+    let identified = crate::analysis::state::identify(offset.clone(), true);
+    assert_eq!(
+        memory.uniform_word_write_work_with(&identified, &word, domain),
+        before,
+        "identification changed the literal proof to {:?}",
+        identified.expression()
+    );
+    assert_eq!(identified, offset);
+    assert_eq!(policy.applies.get(), 0);
+}

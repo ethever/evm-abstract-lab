@@ -1,6 +1,6 @@
 # Nix 开发环境与 VS Code
 
-VS Code 和插件由用户自行安装。仓库在 `.vscode` 中提供插件推荐、工作区设置和任务；Nix 提供项目的构建工具、原生库、语言服务器和检查工具。第一次使用需要主机安装 Nix，并启用 `nix-command`、`flakes`。Nix 根据锁定的源码和校验和下载或构建项目依赖。
+本地或 Remote SSH 的 VS Code 和插件由用户自行安装。仓库在 `.vscode` 中提供插件推荐、工作区设置和任务；Nix 提供项目的构建工具、原生库、语言服务器和检查工具。本地或 Remote SSH 环境第一次使用需要在相应主机安装 Nix，并启用 `nix-command`、`flakes`。Nix 根据锁定的源码和校验和下载或构建项目依赖。
 
 从仓库根目录进入环境：
 
@@ -12,6 +12,21 @@ cargo check --workspace --all-targets --locked
 开发环境显式提供 Rust、Cargo、Clippy、rustfmt、rust-analyzer、Wasm target、wasm-bindgen、C/C++ 编译与构建工具、libclang、pkg-config、OpenSSL、Graphviz、字体、jq、Taplo、nixfmt、lychee、cargo-nextest 和 Dylint。Python 用于真实的语言服务器协议回归和可选的性能采样报告，浏览器检查另使用 Nix 提供的 Playwright 和 Chromium。
 
 依赖清单见 [`nix/dependencies.nix`](../nix/dependencies.nix)：构建工具包括 CMake、pkg-config 和 bindgen hook，OpenSSL 用于 Dylint UI 检查的 git2 依赖；原生 SMT 库已移除。Rust 语言服务器与命令行构建使用同一个开发环境；不要把某次构建产生的 `/nix/store/...` 路径手工写入工作区设置。
+
+## GitHub Codespaces
+
+Codespaces 按[声明式容器配置](../.devcontainer/devcontainer.json)使用官方 Ubuntu 基础镜像，以非 root 用户开发，并通过官方 `ghcr.io/devcontainers/features/nix` Feature 安装多用户 Nix。配置启用 `nix-command`、`flakes`，并将 Nix 加入非交互进程及编辑器扩展宿主的 `PATH`。
+
+首次创建时，生命周期命令自动执行 `./scripts/rust-analyzer-nix.sh --version`，下载或构建锁定的项目 devShell；`waitFor` 让编辑器等待初始化完成后再连接。首次依赖下载可能需要一些时间。容器配置同时声明 rust-analyzer 和 Even Better TOML 插件，项目依赖继续由 Nix 提供。
+
+已有 Codespace 需先更新到包含此配置的提交，再从命令面板执行 `Codespaces: Rebuild Container`。创建或重建完成后，在仓库根目录验证：
+
+```bash
+nix --version
+./scripts/rust-analyzer-nix.sh --version
+```
+
+前者确认 Nix 可用，后者确认项目 devShell 能启动 rust-analyzer。仅在终端执行 `nix develop` 或 `source` Nix 初始化脚本，不能改变已运行的编辑器扩展宿主环境；需要让容器配置在扩展宿主启动前生效。
 
 ## 接入现有 VS Code，包括 Remote SSH
 
