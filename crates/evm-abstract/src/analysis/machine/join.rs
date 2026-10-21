@@ -226,8 +226,8 @@ pub(super) fn join_value<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 }
 
 impl<N: WordElement> EvmMachinePayload<N> {
-    /// Conservative whole-machine traversal and retained-copy quote for public
-    /// semantic policies. Logical memory length is not an allocation charge.
+    /// Conservative whole-machine retention/traversal quote for semantic
+    /// policies. Owned copying requires its separate declared clone payment.
     pub fn policy_work_size(&self) -> usize {
         self.work_size()
     }
@@ -238,6 +238,7 @@ impl<N: WordElement> EvmMachinePayload<N> {
         cx: &mut crate::analysis::engine::policy::PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
         cx.reserve(self.policy_work_size().saturating_mul(2))?;
+        self.pay_clone_with(cx.budget)?;
         let copied = self.clone();
         cx.reserve(0)?;
         Ok(copied)

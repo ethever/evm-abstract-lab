@@ -42,6 +42,12 @@ pub(super) fn failure<D: EvmNumericAlgebra>(
         super::super::boundary(result, pc, crate::analysis::FrontierReason::Work);
         return false;
     }
+    // Every memory opcode reaches this same pre-effect snapshot. Retention
+    // passes do not price a carrier's independently declared owned Clone.
+    if let Err(error) = payload.pay_clone_with(context.budget) {
+        super::super::boundary(result, pc, error.into());
+        return false;
+    }
     let before = result.frontiers.len();
     super::finish(
         result,

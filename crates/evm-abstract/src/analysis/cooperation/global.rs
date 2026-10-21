@@ -153,17 +153,15 @@ pub struct SummaryOutput<N: WordElement> {
     pub generation: usize,
 }
 
-/// Current published procedure outputs. Missing outcome kinds have not been
-/// discovered; they are not proved impossible. `closed` is an explicit solver
-/// completion observation, not a promise that an open discovered set is complete.
+/// Incremental native MAY snapshot. Missing outcome kinds are undiscovered,
+/// never proved impossible. Adopt [`SummaryClosures`] through `closed_summary`
+/// before using this snapshot as a complete bound for refinement.
 #[derive(Clone, Debug)]
 pub struct Summary<N: WordElement> {
-    /// Monotone observation revision (including completion changes).
+    /// Monotone native snapshot observation revision.
     pub revision: usize,
     /// Native output-bound revision; completion alone does not change this.
     pub generation: usize,
-    /// True only after the producing relative solve has closed.
-    pub closed: bool,
     /// Native outcomes published so far.
     pub outputs: BTreeMap<OutcomeKind, SummaryOutput<N>>,
     retained_work: usize,
@@ -171,14 +169,12 @@ pub struct Summary<N: WordElement> {
 impl<N: WordElement> Summary<N> {
     pub(crate) fn new(
         revision: usize,
-        closed: bool,
         outputs: BTreeMap<OutcomeKind, SummaryOutput<N>>,
         retained_work: usize,
     ) -> Self {
         Self {
             revision,
             generation: revision,
-            closed,
             outputs,
             retained_work,
         }
@@ -202,6 +198,30 @@ impl<N: WordElement> Capability for Summaries<N> {
     }
     fn drop_work(value: &Self::Value) -> usize {
         value.work_size()
+    }
+}
+
+/// Certificate that the matching native output generation is a complete bound.
+/// The kernel also requires the selected table proof's current source validity;
+/// retaining this marker alone never retains that validity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SummaryClosure {
+    /// Native output generation certified by the producing table proof.
+    pub generation: usize,
+}
+
+/// Completion certificates, separate from incremental [`Summaries`]. Pending
+/// means that a complete bound is not currently established. Only a required
+/// read of this route adopts its source premises; discovery is observational.
+pub struct SummaryClosures;
+impl Capability for SummaryClosures {
+    type Key = ProcedureId;
+    type Value = SummaryClosure;
+    fn key_work(_: &ProcedureId) -> usize {
+        2
+    }
+    fn value_work(_: &SummaryClosure) -> usize {
+        1
     }
 }
 
@@ -333,6 +353,14 @@ impl<N: WordElement> Observation for Arc<Continuation<N>> {
         self.work_size()
     }
 }
+impl Observation for SummaryClosure {
+    fn revision(&self) -> usize {
+        self.generation
+    }
+    fn retained_work(&self) -> usize {
+        1
+    }
+}
 
 /// Retain only the latest already-joined native observation. The interpreter
 /// establishes coverage before publication; no historical snapshots are stored.
@@ -362,7 +390,39 @@ impl<T: Observation> JoinPolicy for ObservationPolicy<T> {
     }
 }
 
-type SummaryChannel<N> = Channel<Summaries<N>, Ascending<ObservationPolicy<Arc<Summary<N>>>>>;
+/// Retain observations of the currently computed MAY bounds and wake readers on
+/// growth. A snapshot proves neither completeness nor concrete witness existence;
+/// a complete bound requires the separately guarded completion certificate.
+pub struct SummaryPolicy<N: WordElement>(PhantomData<N>);
+impl<N: WordElement> Default for SummaryPolicy<N> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+impl<N: WordElement> PublicationPolicy for SummaryPolicy<N> {
+    type Value = Arc<Summary<N>>;
+    type Error = Infallible;
+    const DESCENDING: bool = false;
+
+    fn work(&self, old: &Self::Value, incoming: &Self::Value) -> usize {
+        ObservationPolicy::default().work(old, incoming)
+    }
+    fn combine(
+        &self,
+        old: &Self::Value,
+        incoming: &Self::Value,
+    ) -> Result<Self::Value, Infallible> {
+        ObservationPolicy::default().join(old, incoming)
+    }
+    fn equivalent(&self, old: &Self::Value, next: &Self::Value) -> bool {
+        old.revision == next.revision
+    }
+    fn preserves_guarantees(&self, _: &Self::Value, _: &Self::Value) -> bool {
+        true
+    }
+}
+
+type SummaryChannel<N> = Channel<Summaries<N>, SummaryPolicy<N>>;
 type ContinuationChannel<N> =
     Channel<Continuations<N>, Ascending<ObservationPolicy<Arc<Continuation<N>>>>>;
 
@@ -377,6 +437,7 @@ pub(crate) struct Shared<N: WordElement> {
     pub subscriptions: Channel<Subscriptions, Ascending<SetUnion<ContinuationId>>>,
     pub topology: Channel<Topology, Ascending<SetUnion<Edge>>>,
     pub summaries: SummaryChannel<N>,
+    pub closures: Channel<SummaryClosures, Ascending<ObservationPolicy<SummaryClosure>>>,
     pub continuations: ContinuationChannel<N>,
 }
 impl<N: WordElement> Shared<N> {
@@ -394,7 +455,8 @@ impl<N: WordElement> Shared<N> {
             procedures: kernel.channel(Ascending(SetUnion::default()), meter)?,
             subscriptions: kernel.channel(Ascending(SetUnion::default()), meter)?,
             topology: kernel.channel(Ascending(SetUnion::default()), meter)?,
-            summaries: kernel.channel(Ascending(ObservationPolicy::default()), meter)?,
+            summaries: kernel.channel(SummaryPolicy::default(), meter)?,
+            closures: kernel.channel(Ascending(ObservationPolicy::default()), meter)?,
             continuations: kernel.channel(Ascending(ObservationPolicy::default()), meter)?,
         })
     }

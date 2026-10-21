@@ -393,7 +393,6 @@ impl<
     fn summary_snapshot(
         &mut self,
         id: usize,
-        closed: bool,
     ) -> Result<crate::analysis::cooperation::Summary<D::Element>, MachineError> {
         let procedure = &self.table.procedures[id];
         let work = procedure.outputs.values().fold(8usize, |work, output| {
@@ -415,43 +414,15 @@ impl<
                 )
             })
             .collect();
-        let summary = crate::analysis::cooperation::Summary::new(
-            procedure.output_updates,
-            closed,
-            outputs,
-            work,
-        );
+        let summary =
+            crate::analysis::cooperation::Summary::new(procedure.output_updates, outputs, work);
         Ok(summary)
     }
 
-    pub(super) fn observe_summary(&mut self, id: usize, closed: bool) -> Result<(), MachineError> {
-        self.publish_summary_observation(id, closed)?;
+    pub(super) fn observe_summary(&mut self, _id: usize, closed: bool) -> Result<(), MachineError> {
         if X::ENABLED && !closed {
             self.runtime.schedule_observation(self.budget)?;
         }
-        Ok(())
-    }
-
-    fn publish_summary_observation(&mut self, id: usize, closed: bool) -> Result<(), MachineError> {
-        if !X::ENABLED {
-            return Ok(());
-        }
-        let summary = self.summary_snapshot(id, closed)?;
-        self.cooperation
-            .summary(
-                crate::analysis::cooperation::ProcedureId {
-                    namespace: 1,
-                    index: id,
-                },
-                summary,
-                self.runtime,
-                self.active
-                    .as_mut()
-                    .or(self.caller.as_deref_mut())
-                    .ok_or(MachineError::Shape)?,
-                self.budget,
-            )
-            .map_err(|error| self.cooperation.stop(error, self.budget))?;
         Ok(())
     }
 
@@ -497,8 +468,8 @@ impl<
 
     /// This persistent producer runs after Body/Resume work. Its world-owned
     /// token is a real semantic job, independent of any suspended World caller.
-    /// Native growth publishes an open bound synchronously; equivalent closure
-    /// metadata cannot manufacture another input/output growth event.
+    /// The persistent native owner publishes incremental MAY snapshots before
+    /// evaluating the separately guarded whole-table completion proof.
     pub(super) fn complete_observations(&mut self) -> Result<(), MachineError> {
         if !X::ENABLED {
             return Ok(());
@@ -547,13 +518,14 @@ impl<
                     namespace: 1,
                     index: id,
                 },
-                self.summary_snapshot(id, closed)?,
+                self.summary_snapshot(id)?,
             ));
         }
         let table = &self.table;
         self.cooperation
             .publish_summaries(
                 summaries,
+                closed,
                 self.runtime,
                 self.active.as_mut().ok_or(MachineError::Shape)?,
                 self.budget,

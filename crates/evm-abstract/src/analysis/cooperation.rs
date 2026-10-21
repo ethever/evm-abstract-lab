@@ -38,6 +38,14 @@
 //! undiscovered feasible path is absent. Native summary bounds and continuation
 //! templates expose payloads and revisions separately from completion metadata.
 
+//!
+//! [`Summaries`] exposes incremental MAY observations. Required readers wait for
+//! the first snapshot and wake on growth, without adopting a completion proof.
+//! Missing outcomes cannot justify exclusion. [`closed_summary`] requires the
+//! separately guarded [`SummaryClosures`] certificate and matching native output
+//! generation before returning a complete bound. [`discover_closed_summary`]
+//! supports optional precision with an independently valid fallback.
+
 mod composition;
 mod entry;
 mod error;
@@ -62,7 +70,8 @@ pub use facts::{Refinements, StackFacts, StackMeet};
 pub use global::Topology;
 pub use global::{
     Continuation, ContinuationId, Continuations, Direction, Edge, Generations, Neighbors, Points,
-    ProcedureId, Procedures, Subscriptions, Summaries, Summary, SummaryOutput,
+    ProcedureId, Procedures, Subscriptions, Summaries, Summary, SummaryClosure, SummaryClosures,
+    SummaryOutput,
 };
 pub use input::{
     ImmutableInputPolicy, Input, InputAlreadyInitialized, Inputs, Point, PointKind, Subject,
@@ -70,9 +79,13 @@ pub use input::{
 pub use navigation::{Callees, ProcedureEntries, ProcedureInfo};
 pub use ports::{
     CalleeRoute, ContinuationRoute, GenerationRoute, PointsRoute, Ports, ProcedureEntryRoute,
-    ProcedureRoute, SharedRoute, SubscriptionRoute, SummaryRoute, TopologyRoute,
+    ProcedureRoute, SharedRoute, SubscriptionRoute, SummaryClosureRoute, SummaryRoute,
+    TopologyRoute,
 };
-pub use query::{current_input, discover_input};
+pub use query::{
+    ClosedSummaryResult, SummaryReadError, closed_summary, current_input, discover_closed_summary,
+    discover_input,
+};
 pub use refinement::{InitializationError, LocalInput, RefinementError};
 
 use analysis_kernel::{Context, Here, Nil, There};
@@ -96,7 +109,9 @@ pub type EvmContext<'r, 'k, 'm, N, T, Tail = Nil, Global = Nil> =
     PortsContext<'r, 'k, EvmTask<T>, EvmMeter<'m>, N, Tail, Global>;
 
 pub(crate) use global::Shared;
-pub(crate) use refinement::{apply_refinements, initialize, initialize_readonly, read_refinements};
+pub(crate) use refinement::{
+    apply_refinements, initialize, initialize_feedback, initialize_readonly, read_refinements,
+};
 
 #[cfg(test)]
 mod tests;

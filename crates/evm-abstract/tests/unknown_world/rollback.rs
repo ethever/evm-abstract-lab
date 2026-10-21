@@ -98,7 +98,11 @@ fn world(outer_revert: bool) -> World {
 #[test]
 fn failed_callback_can_be_handled_by_unknown_u_that_later_succeeds() {
     let world = world(false);
-    let analysis = run(world.clone(), entry(ByteArray::empty()));
+    let analysis = run_config(
+        world.clone(),
+        entry(ByteArray::empty()),
+        callback_closure_config(),
+    );
     complete_unknown(&analysis);
     for (selectors, expected) in [(vec![2], 3), (vec![1, 2], 11)] {
         // Validate the concrete fixture before asking the abstract graph to
@@ -126,7 +130,11 @@ fn failed_callback_can_be_handled_by_unknown_u_that_later_succeeds() {
 #[test]
 fn successful_callback_is_rolled_back_when_unknown_u_reverts_without_losing_parent_write() {
     let world = world(false);
-    let analysis = run(world.clone(), entry(ByteArray::empty()));
+    let analysis = run_config(
+        world.clone(),
+        entry(ByteArray::empty()),
+        callback_closure_config(),
+    );
     complete_unknown(&analysis);
     let concrete = oracle::concrete_unknown(&world, U, &fixtures::callback_sequence(&[1], true));
     let observation = oracle::execute(&concrete, &entry(ByteArray::empty()));
@@ -227,7 +235,11 @@ fn successful_callback_is_rolled_back_when_unknown_u_reverts_without_losing_pare
 #[test]
 fn exceptional_unknown_u_failure_also_restores_only_its_own_subtree() {
     let world = world(false);
-    let analysis = run(world.clone(), entry(ByteArray::empty()));
+    let analysis = run_config(
+        world.clone(),
+        entry(ByteArray::empty()),
+        callback_closure_config(),
+    );
     complete_unknown(&analysis);
     let mut u = fixtures::callback_sequence(&[1], false);
     *u.bytes.last_mut().unwrap() = opcode::INVALID;
@@ -242,7 +254,11 @@ fn exceptional_unknown_u_failure_also_restores_only_its_own_subtree() {
 #[test]
 fn successful_unknown_u_effects_remain_inside_outer_a_rollback_scope() {
     let world = world(true);
-    let analysis = run(world.clone(), entry(ByteArray::empty()));
+    let analysis = run_config(
+        world.clone(),
+        entry(ByteArray::empty()),
+        callback_closure_config(),
+    );
     complete_unknown(&analysis);
     let concrete = oracle::concrete_unknown(&world, U, &fixtures::callback_sequence(&[1], false));
     let observation = oracle::execute(&concrete, &entry(ByteArray::empty()));
@@ -263,5 +279,12 @@ fn successful_unknown_u_effects_remain_inside_outer_a_rollback_scope() {
         only(&outcome.store.read_balance(address(U)), &[1_000_000]);
         assert!(outcome.store.possible_logs().is_empty());
         assert!(!outcome.store.logs_unknown());
+    }
+}
+
+#[test]
+fn callback_rollback_keeps_default_ledger_root_coverage() {
+    for outer_revert in [false, true] {
+        default_callback_coverage(world(outer_revert), entry(ByteArray::empty()));
     }
 }

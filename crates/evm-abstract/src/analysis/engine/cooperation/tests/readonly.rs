@@ -267,11 +267,11 @@ impl Harness {
                     Self::ID,
                     crate::analysis::cooperation::Summary::new(
                         7,
-                        closed,
                         std::collections::BTreeMap::new(),
                         8,
                     ),
                 )],
+                closed,
                 &mut self.runtime,
                 &mut producer,
                 &mut self.budget,
@@ -288,12 +288,46 @@ impl Harness {
     ) -> analysis_kernel::Availability<
         std::sync::Arc<crate::analysis::cooperation::Summary<NumericValue>>,
     > {
+        self.summary_answer().unwrap().state
+    }
+    fn summary_answer(
+        &mut self,
+    ) -> crate::analysis::cooperation::ClosedSummaryResult<
+        NumericValue,
+        KernelError<crate::analysis::MachineError>,
+    > {
         self.runtime
             .kernel()
             .retry(self.reader, &mut MachineMeter(&mut self.budget))
             .unwrap();
         let mut meter = MachineMeter(&mut self.budget);
         let world = self.runtime.world;
+        let mut run = self
+            .runtime
+            .kernel()
+            .begin(self.reader, &mut meter)
+            .unwrap();
+        let mut ports = crate::analysis::cooperation::Ports {
+            shared: self.cooperation.shared.as_mut().unwrap(),
+            local: &mut Nil,
+            global: self.cooperation.global.as_mut().unwrap(),
+        };
+        let mut cx = Context::new(&mut run, &mut ports);
+        let answer = crate::analysis::cooperation::closed_summary::<NumericValue, _>(
+            &mut cx,
+            world,
+            Self::ID,
+        );
+        run.finish(LocalClosure::Stable).unwrap();
+        answer
+    }
+    fn snapshot(
+        &mut self,
+    ) -> analysis_kernel::Availability<
+        std::sync::Arc<crate::analysis::cooperation::Summary<NumericValue>>,
+    > {
+        let world = self.runtime.world;
+        let mut meter = MachineMeter(&mut self.budget);
         let mut run = self
             .runtime
             .kernel()
@@ -371,6 +405,46 @@ impl Harness {
         run.finish(LocalClosure::Stable).unwrap();
         entry
     }
+}
+
+#[test]
+fn readonly_seed_replay_keeps_input_only_and_the_same_source_generation() {
+    let mut h = Harness::new();
+    let subject = h.publish().unwrap();
+    let entry = h.cooperation.readonly[&Harness::ID].entry.clone();
+    let materializations = h.materializations.get();
+    // Exercise the internal dispatch contract in an existing immutable entry
+    // scope. Its cumulative native slot assumptions still guard every job here.
+    let job = h
+        .runtime
+        .kernel()
+        .register(
+            subject.scope,
+            Task(TaskKind::Seed(subject)),
+            &mut MachineMeter(&mut h.budget),
+        )
+        .unwrap();
+    let (task, token) = h.runtime.next_external(&mut h.budget).unwrap().unwrap();
+    assert!(matches!(task.0, TaskKind::Seed(current) if current == subject));
+    h.cooperation
+        .evaluate(&mut h.runtime, task, token, &mut h.budget)
+        .unwrap();
+    assert!(
+        h.runtime
+            .view()
+            .task::<crate::analysis::MachineError>(job)
+            .is_ok()
+    );
+    assert_eq!(
+        h.cooperation.readonly[&Harness::ID].input.subject(),
+        subject
+    );
+    assert_eq!(h.cooperation.readonly[&Harness::ID].entry, entry);
+    assert_eq!(h.materializations.get(), materializations);
+    assert_eq!(h.tasks.get(), 0);
+    assert_eq!(h.locals.get(), 0);
+    assert!(h.cooperation.stores.is_empty());
+    assert_eq!(h.cooperation.shared.as_ref().unwrap().refinements.len(), 0);
 }
 
 #[test]

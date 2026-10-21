@@ -599,3 +599,6 @@ fn stop_between_client_readiness_and_retry_keeps_the_native_deferred_obligation(
         );
     }
 }
+
+#[path = "seed.rs"]
+mod seed;

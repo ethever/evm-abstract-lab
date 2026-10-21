@@ -31,6 +31,8 @@ use std::{cell::Cell, collections::BTreeSet, convert::Infallible, rc::Rc};
 type Infrastructure = KernelError<MachineError>;
 #[derive(Debug, thiserror::Error)]
 enum Failure {
+    #[error("{0}")]
+    Summary(#[from] evm_abstract::analysis::cooperation::SummaryReadError<Infrastructure>),
     #[error("capability operation failed: {0}")]
     Infrastructure(Infrastructure),
     #[error("bound publication failed: {0}")]

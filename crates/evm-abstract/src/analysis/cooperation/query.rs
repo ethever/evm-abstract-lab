@@ -87,3 +87,117 @@ where
         }),
     }
 }
+
+/// Failure of the native snapshot/certificate protocol. A mismatched ready
+/// pair is inconsistent, not an unresolved kernel read or an empty bound.
+#[derive(Debug, thiserror::Error)]
+pub enum SummaryReadError<E> {
+    /// An underlying required capability query failed.
+    #[error("summary capability query failed: {0}")]
+    Capability(#[from] E),
+    /// The publisher supplied a ready certificate for another native snapshot.
+    #[error("summary generation {snapshot} differs from certificate generation {certificate}")]
+    GenerationMismatch {
+        /// Native MAY snapshot generation.
+        snapshot: usize,
+        /// Native generation covered by the completion certificate.
+        certificate: usize,
+    },
+}
+
+/// A typed complete-bound query, distinct from an incremental MAY snapshot.
+pub type ClosedSummaryResult<N, E> =
+    Result<Answer<std::sync::Arc<super::Summary<N>>>, SummaryReadError<E>>;
+
+/// Require a complete procedure output bound, including complete-empty. The
+/// native snapshot alone is an incremental MAY observation. Both required reads
+/// below retain their real kernel dependencies and producer/source validity.
+/// A mismatched ready pair is a typed protocol error; it cannot manufacture a
+/// Pending answer whose underlying kernel reads are already satisfied.
+pub fn closed_summary<N, Cx>(
+    cx: &mut Cx,
+    universe: Scope,
+    procedure: super::ProcedureId,
+) -> ClosedSummaryResult<N, <Cx as Read<super::Summaries<N>, super::SummaryRoute>>::Error>
+where
+    N: WordElement,
+    Cx: Read<super::Summaries<N>, super::SummaryRoute>
+        + Read<
+            super::SummaryClosures,
+            super::SummaryClosureRoute,
+            Error = <Cx as Read<super::Summaries<N>, super::SummaryRoute>>::Error,
+        >,
+{
+    let snapshot = <Cx as Read<super::Summaries<N>, super::SummaryRoute>>::query(
+        cx,
+        Scoped::new(universe, procedure),
+    )?;
+    let proof = <Cx as Read<super::SummaryClosures, super::SummaryClosureRoute>>::query(
+        cx,
+        Scoped::new(universe, procedure),
+    )?;
+    Ok(match proof.state {
+        Availability::Value(proof) => {
+            if let Some(snapshot) = snapshot.value()
+                && snapshot.generation != proof.generation
+            {
+                return Err(SummaryReadError::GenerationMismatch {
+                    snapshot: snapshot.generation,
+                    certificate: proof.generation,
+                });
+            }
+            snapshot
+        }
+        Availability::Absent => Answer {
+            state: Availability::Absent,
+            version: proof.version,
+            scope: proof.scope,
+        },
+        _ => Answer {
+            state: Availability::Pending,
+            version: proof.version,
+            scope: proof.scope,
+        },
+    })
+}
+
+/// Explore completion without blocking its discovery. When a certificate is
+/// available, upgrade to required reads of both certificate and native snapshot;
+/// Value has exactly the same complete-bound contract as [`closed_summary`]. A
+/// Pending answer requires an independently sound fallback for optional feedback.
+pub fn discover_closed_summary<N, Cx>(
+    cx: &mut Cx,
+    universe: Scope,
+    procedure: super::ProcedureId,
+) -> ClosedSummaryResult<N, <Cx as Read<super::Summaries<N>, super::SummaryRoute>>::Error>
+where
+    N: WordElement,
+    Cx: Read<super::Summaries<N>, super::SummaryRoute>
+        + Read<
+            super::SummaryClosures,
+            super::SummaryClosureRoute,
+            Error = <Cx as Read<super::Summaries<N>, super::SummaryRoute>>::Error,
+        > + Discover<
+            super::SummaryClosures,
+            super::SummaryClosureRoute,
+            Error = <Cx as Read<super::Summaries<N>, super::SummaryRoute>>::Error,
+        >,
+{
+    let proof = <Cx as Discover<super::SummaryClosures, super::SummaryClosureRoute>>::discover(
+        cx,
+        Scoped::new(universe, procedure),
+    )?;
+    match proof.state {
+        Availability::Value(_) => closed_summary(cx, universe, procedure),
+        Availability::Pending => Ok(Answer {
+            state: Availability::Pending,
+            version: proof.version,
+            scope: proof.scope,
+        }),
+        Availability::Absent => Ok(Answer {
+            state: Availability::Absent,
+            version: proof.version,
+            scope: proof.scope,
+        }),
+    }
+}
