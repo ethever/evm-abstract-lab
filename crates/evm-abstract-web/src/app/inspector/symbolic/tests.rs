@@ -222,7 +222,17 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
                     && v.facts.iter().any(|fact| {
                         fact.status == api::SsaFactStatus::Current
                             && fact.constant.as_deref() == Some("0x7")
+                            && fact.value.is_some()
                     })
+            }));
+            assert!(installed.ssa.values.iter().any(|value| {
+                value.facts.iter().any(|fact| {
+                    fact.status == api::SsaFactStatus::Current
+                        && fact.scope == api::SsaFactScope::Definition
+                        && fact.source == api::SsaFactSource::Literal
+                        && fact.constant.as_deref() == Some("0x7")
+                        && fact.value.is_none()
+                })
             }));
         }
     }

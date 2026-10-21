@@ -51,7 +51,56 @@ fn folded_result_retains_original_inputs_effects_and_independent_source_dependen
             .iter()
             .any(|fact| fact.status == api::SsaFactStatus::Current
                 && fact.scope == api::SsaFactScope::Definition
-                && fact.constant.as_deref() == Some("0x5"))
+                && fact.source == api::SsaFactSource::Propagation
+                && fact.constant.as_deref() == Some("0x5")
+                && fact.value.is_none())
+    );
+    // Converged execution observations also have definition scope; their
+    // source distinguishes them from the independent constant-fold proof.
+    let observed = value
+        .facts
+        .iter()
+        .find(|fact| {
+            fact.status == api::SsaFactStatus::Current
+                && fact.scope == api::SsaFactScope::Definition
+                && fact.source == api::SsaFactSource::Execution
+        })
+        .unwrap();
+    assert_eq!(observed.constant.as_deref(), Some("0x5"));
+    let observed = observed.value.as_ref().unwrap();
+    let executed = report.states[0]
+        .exit
+        .as_ref()
+        .unwrap()
+        .frames
+        .last()
+        .unwrap()
+        .stack
+        .last()
+        .unwrap();
+    assert_eq!(
+        (
+            &observed.constants,
+            &observed.known_zero,
+            &observed.known_one,
+            &observed.unsigned,
+            &observed.signed,
+            &observed.congruence,
+            observed.nonzero,
+            &observed.origins,
+            observed.code_address_role,
+        ),
+        (
+            &executed.constants,
+            &executed.known_zero,
+            &executed.known_one,
+            &executed.unsigned,
+            &executed.signed,
+            &executed.congruence,
+            executed.nonzero,
+            &executed.origins,
+            executed.code_address_role,
+        )
     );
     for (index, value) in report.ssa.values.iter().enumerate() {
         assert_eq!(value.id, index);
