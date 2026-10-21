@@ -1,5 +1,10 @@
 //! Boundaries shared by selected rule work, root payment and scalar queries.
 
+fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+}
+use crate::domain::NumericValue;
+
 use super::super::test_support::CancelDuringRule;
 use super::*;
 use crate::{
@@ -14,8 +19,11 @@ use crate::{
 #[test]
 fn refused_or_cancelled_root_cannot_publish_a_later_numeric_operation() {
     let algebra = ValueAlgebra::new(ProductAlgebra::new(spec(8, 4096), KeepMasks, KeepBounds));
-    let args = [AbstractValue::top(), AbstractValue::constant(U256::ONE)];
-    let quote = algebra.operation_work(&args);
+    let args = [
+        EvmValue::<NumericValue>::top(),
+        EvmValue::<NumericValue>::constant(U256::ONE),
+    ];
+    let quote = algebra.operation_work(opcode::ADD, &args);
     let mut refused = WorkBudget::new(quote);
     assert!(!refused.charge(quote + 1));
     assert!(
@@ -85,11 +93,11 @@ fn scalar_cancellation_remains_a_stop_for_pure_and_captured_budget_callers() {
         );
         let limits = RelationLimits::default();
         let expression = ExprId::fresh().unwrap();
-        let value = AbstractValue::top().with_expression(expression.clone());
+        let value = EvmValue::<NumericValue>::top().with_expression(expression.clone());
         let mut relations = RelationState::default();
         assert_eq!(
             relations
-                .assume_checked(&expression, true, &limits)
+                .assume_checked(&expression, true, &limits, product_algebra().borrowed())
                 .unwrap(),
             CheckResult::MayBeFeasible
         );
@@ -100,7 +108,7 @@ fn scalar_cancellation_remains_a_stop_for_pure_and_captured_budget_callers() {
             analysis_control::with_cancellation(&unrelated, || {
                 assert!(
                     relations
-                        .refine_numeric_budgeted_with(
+                        .refine_numeric_budgeted(
                             &expression,
                             &value,
                             algebra.borrowed(),
@@ -114,12 +122,7 @@ fn scalar_cancellation_remains_a_stop_for_pure_and_captured_budget_callers() {
             assert!(root.used() > 100_000, "admitted work stays paid");
         } else {
             let answer = analysis_control::with_cancellation(&owner, || {
-                relations.refine_numeric_with(
-                    &expression,
-                    value.numeric(),
-                    algebra.borrowed(),
-                    &limits,
-                )
+                relations.refine_numeric(&expression, value.numeric(), algebra.borrowed(), &limits)
             });
             assert_eq!(answer, EvmScalarQuery::Unknown(QueryReason::Cancelled));
         }

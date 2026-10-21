@@ -3,9 +3,9 @@ use super::{
     close_order, test_support::Count,
 };
 use crate::domain::{
-    AbstractValue, Domain, DomainSpec, EvmNumericAlgebra, FiniteConstantSet, NumericValue, Profile,
-    ReductionStatus, ValueAlgebra, WordElement, WordObservation, congruence::Congruence,
-    interval::Interval, known_bits::KnownBits,
+    DomainSpec, EvmNumericAlgebra, EvmValue, FiniteConstantSet, NumericValue, ReductionStatus,
+    ValueAlgebra, WordElement, WordObservation, congruence::Congruence, interval::Interval,
+    known_bits::KnownBits,
 };
 use alloy_primitives::U256;
 use analysis_kernel::{LocalClosure, Reduction, Scope};
@@ -17,7 +17,6 @@ mod work;
 
 fn spec(rounds: usize, facts: usize) -> DomainSpec {
     DomainSpec::new(
-        Profile::Product,
         NonZeroUsize::new(1).unwrap(),
         NonZeroUsize::new(rounds).unwrap(),
         NonZeroUsize::new(facts).unwrap(),
@@ -37,7 +36,7 @@ fn cyclic_typed_rules_close_in_both_orders_without_finite_enumeration() {
         let masks = Cell::new(0);
         let bounds = Cell::new(0);
         let result = close_order(
-            Domain::from_spec(spec(8, 256)),
+            spec(8, 256),
             input(),
             Count {
                 rule: BoundsToMask,
@@ -82,7 +81,7 @@ fn replaceable_components_change_production_numeric_reduction() {
     ));
     let no_masks = ValueAlgebra::new(ProductAlgebra::new(spec(8, 256), KeepMasks, MaskToBounds));
     let no_bounds = ValueAlgebra::new(ProductAlgebra::new(spec(8, 256), BoundsToMask, KeepBounds));
-    let value = AbstractValue::from_numeric(input());
+    let value = EvmValue::<NumericValue>::from_numeric(input());
     let full = complete.reduce(&value);
     let maskless = no_masks.reduce(&value);
     let boundless = no_bounds.reduce(&value);
@@ -96,26 +95,34 @@ fn replaceable_components_change_production_numeric_reduction() {
     }
     // Both ordinary/default and explicit assembly use the same registered rules.
     assert_eq!(
-        Domain::from_spec(spec(8, 256)).reduce(&value).value,
+        ValueAlgebra::new(ProductAlgebra::from_spec(spec(8, 256)))
+            .reduce(&value)
+            .value,
         full.value
     );
 }
 
 #[test]
 fn bounded_statuses_and_fresh_inputs_preserve_safe_partial_values() {
-    let domain = Domain::from_spec(spec(1, 1024));
+    let domain = ValueAlgebra::new(ProductAlgebra::from_spec(spec(1, 1024)));
     let result = domain.apply_detailed(
         opcode::MUL,
-        &[AbstractValue::top(), AbstractValue::constant(U256::ZERO)],
+        &[
+            EvmValue::<NumericValue>::top(),
+            EvmValue::<NumericValue>::constant(U256::ZERO),
+        ],
     );
     assert_eq!(result.status, ReductionStatus::RoundLimit);
     assert_eq!(result.rounds, 1);
     assert!(result.strengthened > 0);
     assert_eq!(result.value.singleton(), Some(U256::ZERO));
     assert_eq!(domain.reduce(&result.value).status, ReductionStatus::Stable);
-    let limited = Domain::from_spec(spec(8, 1)).apply_detailed(
+    let limited = ValueAlgebra::new(ProductAlgebra::from_spec(spec(8, 1))).apply_detailed(
         opcode::MUL,
-        &[AbstractValue::top(), AbstractValue::constant(U256::ZERO)],
+        &[
+            EvmValue::<NumericValue>::top(),
+            EvmValue::<NumericValue>::constant(U256::ZERO),
+        ],
     );
     assert_eq!(limited.status, ReductionStatus::FactLimit);
     assert_eq!(limited.value.singleton(), Some(U256::ZERO));
@@ -131,7 +138,7 @@ fn bounded_statuses_and_fresh_inputs_preserve_safe_partial_values() {
 }
 
 #[test]
-fn default_observation_roundtrips_full_product_and_serialization() {
+fn observation_roundtrips_full_product_and_native_json_keeps_actual_components() {
     let sign = U256::ONE << 255;
     let values = [U256::from(3), U256::from(9), sign + U256::from(3)];
     let numeric = NumericValue {
@@ -143,9 +150,17 @@ fn default_observation_roundtrips_full_product_and_serialization() {
     };
     let observation = numeric.observation();
     assert_eq!(NumericValue::from_observation(&observation), numeric);
+    // An observation is a semantic projection, not the native carrier's JSON
+    // representation. The typed roundtrip above retains every component;
+    // native sparse JSON independently retains every nondefault component.
     assert_eq!(
         serde_json::to_value(&numeric).unwrap(),
-        serde_json::to_value(&observation).unwrap()
+        serde_json::json!({
+            "constants": values,
+            "known_bits": numeric.known_bits(),
+            "congruence": numeric.congruence(),
+            "nonzero": true,
+        })
     );
     let signed = NumericValue {
         interval: Interval::new_signed(U256::ONE, U256::from(19)).unwrap(),
@@ -165,16 +180,19 @@ fn default_observation_roundtrips_full_product_and_serialization() {
 fn large_default_operand_quotation_is_stable_and_does_not_run_reducers() {
     let _counter = super::PROTOCOL_WORK.scope();
     let values = (0u64..1024).map(U256::from).collect();
-    let value = AbstractValue::from_numeric(NumericValue {
+    let value = EvmValue::<NumericValue>::from_numeric(NumericValue {
         finite: FiniteConstantSet::try_from_values(values).unwrap(),
         ..NumericValue::top()
     });
     let before = value.clone();
-    let domain = ValueAlgebra::new(Domain::default());
-    let first = domain.operation_work(std::slice::from_ref(&value));
+    let domain = ValueAlgebra::new(ProductAlgebra::default());
+    let first = domain.operation_work(opcode::NOT, std::slice::from_ref(&value));
     assert_eq!(super::PROTOCOL_WORK.get(), (0, 0, 0));
     for _ in 0..8 {
-        assert_eq!(domain.operation_work(std::slice::from_ref(&value)), first);
+        assert_eq!(
+            domain.operation_work(opcode::NOT, std::slice::from_ref(&value)),
+            first
+        );
         assert_eq!(super::PROTOCOL_WORK.get(), (0, 0, 0));
     }
     assert_eq!(value, before);
@@ -183,7 +201,7 @@ fn large_default_operand_quotation_is_stable_and_does_not_run_reducers() {
 
 #[test]
 fn default_copy_and_singleton_hooks_keep_the_existing_admission_tariffs() {
-    let value = AbstractValue::constant(U256::from(7));
+    let value = EvmValue::<NumericValue>::constant(U256::from(7));
     assert_eq!(value.numeric().clone_work(), 12);
     assert_eq!(value.singleton_work(), 608);
     assert_eq!(

@@ -312,15 +312,15 @@ fn bounded_join_is_commutative_associative_idempotent_and_sound() {
 }
 
 #[test]
-fn serialized_and_displayed_candidates_keep_the_existing_contract() {
+fn native_serialization_keeps_structured_complete_candidates_and_top() {
     let set = finite(&[7, 2]);
     assert_eq!(
         serde_json::to_value(&set).unwrap(),
-        serde_json::to_value(BTreeSet::from([U256::from(2), U256::from(7)])).unwrap()
+        serde_json::json!({"constants": ["0x2", "0x7"]})
     );
     assert_eq!(
-        serde_json::to_string(&FiniteConstantSet::top()).unwrap(),
-        "\"Top\""
+        serde_json::to_value(FiniteConstantSet::top()).unwrap(),
+        serde_json::json!({})
     );
     assert_eq!(set.to_string(), "{0x2, 0x7}");
     assert_eq!(FiniteConstantSet::top().to_string(), "⊤");
@@ -397,14 +397,14 @@ fn derived_byte_candidate_sets_leave_shared_siblings_unchanged() {
 }
 
 #[test]
-fn shared_byte_candidates_keep_the_existing_json_and_debug_shape() {
+fn shared_byte_candidates_keep_complete_native_json_and_debug_values() {
     let set =
         FiniteConstantSet::collect_bounded((0_u16..256).map(U256::from), capacity(256)).unwrap();
-    let expected = serde_json::Value::Array(
+    let expected = serde_json::json!({"constants": serde_json::Value::Array(
         (0_u16..256)
             .map(|value| serde_json::Value::String(format!("0x{value:x}")))
             .collect(),
-    );
+    )});
     assert_eq!(serde_json::to_value(&set).unwrap(), expected);
     assert_eq!(serde_json::to_value(set.clone()).unwrap(), expected);
     assert_eq!(

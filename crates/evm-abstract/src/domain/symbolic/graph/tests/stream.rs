@@ -1,7 +1,8 @@
 use super::{
-    AbstractValue, ByteStateId, ExprId, ExprLimits, GraphLimits, SlotStateId, SourceId, Symbol,
+    ByteStateId, EvmValue, ExprId, ExprLimits, GraphLimits, SlotStateId, SourceId, Symbol,
     SymbolicGraph, U256, c,
 };
+use crate::domain::NumericValue;
 use crate::domain::symbolic::{ByteStateKind, SlotStateKind, StateBinding};
 
 #[test]
@@ -11,7 +12,7 @@ fn wide_observations_share_children_across_walk_rename_and_export() {
     let cell = ExprId::fresh().unwrap();
     let length = ExprId::input(u64::MAX, Symbol::CalldataLength);
     let source = SourceId::scoped(token.clone(), U256::from(0x123));
-    let numeric = AbstractValue::top().numeric().clone();
+    let numeric = EvmValue::<NumericValue>::top().numeric().clone();
     let limits = ExprLimits {
         max_nodes: 5 + WIDTH * (1 + numeric.work_size()),
         ..ExprLimits::default()
