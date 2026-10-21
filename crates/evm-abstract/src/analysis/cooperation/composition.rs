@@ -1,6 +1,49 @@
-use super::Subject;
-use analysis_kernel::{Analyzer, Either, Kernel, KernelError, LocalClosure, Meter, Nil};
+use super::{EvmContext, Subject};
+use crate::domain::WordElement;
+use analysis_kernel::{Analyzer, Either, Kernel, KernelError, LocalClosure, Meter, Nil, Pair};
 use std::{convert::Infallible, iter};
+
+/// Static EVM assembly bound; semantic work remains on the kernel traits.
+/// Tasks match the analyzer for every context lifetime. Generation-local stores
+/// and once-per-run shared stores retain their separate factories and routes.
+pub trait Composition<N: WordElement, E>:
+    InputTasks
+    + ExtraStores
+    + SharedStores
+    + for<'r, 'k, 'm> Analyzer<
+        EvmContext<
+            'r,
+            'k,
+            'm,
+            N,
+            <Self as InputTasks>::Task,
+            <Self as ExtraStores>::Stores,
+            <Self as SharedStores>::Shared,
+        >,
+        Task = <Self as InputTasks>::Task,
+        Error = E,
+    >
+{
+}
+impl<N: WordElement, E, X> Composition<N, E> for X where
+    X: InputTasks
+        + ExtraStores
+        + SharedStores
+        + for<'r, 'k, 'm> Analyzer<
+            EvmContext<
+                'r,
+                'k,
+                'm,
+                N,
+                <X as InputTasks>::Task,
+                <X as ExtraStores>::Stores,
+                <X as SharedStores>::Shared,
+            >,
+            Task = <X as InputTasks>::Task,
+            Error = E,
+        >
+{
+}
 
 /// Static registration of opaque component tasks for one immutable EVM input.
 /// This only routes tasks. Semantic work implements the ordinary kernel
@@ -37,22 +80,9 @@ impl InputTasks for PerInput {
 }
 
 /// Task routes matching the kernel's independently scheduled Pair composition.
-#[derive(Clone, Debug)]
-pub struct PairedTasks<L, R> {
-    /// Registration plan for the first component.
-    pub left: L,
-    /// Registration plan for the second component.
-    pub right: R,
-}
+pub type PairedTasks<L, R> = Pair<L, R>;
 
-impl<L, R> PairedTasks<L, R> {
-    /// Pair static task routes without hand-writing a semantic iteration loop.
-    pub const fn new(left: L, right: R) -> Self {
-        Self { left, right }
-    }
-}
-
-impl<L: InputTasks, R: InputTasks> InputTasks for PairedTasks<L, R> {
+impl<L: InputTasks, R: InputTasks> InputTasks for Pair<L, R> {
     type Task = Either<L::Task, R::Task>;
     const ENABLED: bool = L::ENABLED || R::ENABLED;
 

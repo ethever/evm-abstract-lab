@@ -226,6 +226,100 @@ fn scalar_fixture() -> (
 }
 
 #[test]
+fn cooperative_refinement_skips_discovery_and_checks_stop_before_interpreting_hooks() {
+    use crate::{
+        analysis::{
+            MachineError,
+            cooperation::{LocalInput, RefinementError, StackFacts, apply_refinements},
+        },
+        domain::{ReductionStatus, WordObservation},
+    };
+    use analysis_control::{Cancellation, with_cancellation};
+
+    let _receipt = RECEIPT.scope();
+    RECEIPT.update(|receipt| receipt.fee = usize::MAX);
+    let (_, before, _) = scalar_fixture();
+    let algebra = ValueAlgebra::new(Policy);
+    let mut input = crate::analysis::transfer::initial(
+        &EvmWorld::new(Fork::Osaka, "cooperative refinement"),
+        &EvmEntry::new(Address::ZERO),
+        algebra.borrowed(),
+    )
+    .unwrap();
+    input.active_mut().stack.push(before.clone());
+    let observation = WordObservation::constant(U256::from(7));
+    let facts = StackFacts::at(0, observation.clone());
+    let paid = algebra
+        .borrowed()
+        .refinement_work(&before, observation.work_size())
+        + before.clone_work();
+    let mut budget = WorkBudget::new(1_000_000);
+    let LocalInput::Reachable { payload, limited } =
+        apply_refinements(input.clone(), &facts, algebra.borrowed(), &mut budget).unwrap()
+    else {
+        panic!("a MAX standalone query quote cannot refuse an unused query")
+    };
+    assert!(limited.is_empty());
+    let refined = &payload.active().stack[0];
+    assert_eq!(
+        (refined.numeric().lower, refined.numeric().upper),
+        (U256::from(7), U256::from(7))
+    );
+    assert_eq!(refined.numeric().excluded, before.numeric().excluded);
+    assert_eq!(refined.expression(), before.expression());
+    assert!(refined.symbolic_limit_reached());
+    assert!(budget.used() > paid);
+
+    // charge(0) alone would accept this sticky exhausted ledger.
+    let mut exhausted = WorkBudget::new(1_000_000);
+    assert!(!exhausted.charge(1_000_001));
+    assert!(matches!(
+        apply_refinements(input.clone(), &facts, algebra.borrowed(), &mut exhausted),
+        Err(RefinementError::Stopped(MachineError::Work))
+    ));
+    assert_eq!(exhausted.used(), 0);
+
+    for captured in [false, true] {
+        for (status, word) in [
+            (ReductionStatus::Stable, 7),
+            (ReductionStatus::Empty, 7),
+            (ReductionStatus::Stable, 5),
+        ] {
+            let owner = Cancellation::new();
+            let current = Cancellation::new();
+            let mut budget = with_cancellation(&owner, || WorkBudget::new(1_000_000));
+            assert!(budget.charge(17));
+            let mut input = input.clone();
+            input.active_mut().stack[0] = before.clone().with_numeric(Word {
+                cancel_refinement_owner: captured.then_some(owner),
+                ..before.numeric().clone()
+            });
+            RECEIPT.update(|receipt| {
+                receipt.cancel_on_constrain = word == 5;
+                receipt.cancel_on_reduce = word == 7;
+                receipt.reduction_status = status;
+            });
+            let facts = StackFacts::at(0, WordObservation::constant(U256::from(word)));
+            let result = with_cancellation(&current, || {
+                apply_refinements(input, &facts, algebra.borrowed(), &mut budget)
+            });
+            assert!(matches!(
+                result,
+                Err(RefinementError::Stopped(MachineError::Relations(
+                    QueryReason::Cancelled
+                )))
+            ));
+            assert_eq!(
+                budget.used(),
+                17 + paid,
+                "hook cancellation retains only the paid prefix"
+            );
+        }
+    }
+    assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 0));
+}
+
+#[test]
 fn refined_result_has_one_paid_query_and_preserves_owned_constraints() {
     let _receipt = RECEIPT.scope();
     let (config, before, relations) = scalar_fixture();

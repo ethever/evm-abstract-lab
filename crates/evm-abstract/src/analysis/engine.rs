@@ -50,12 +50,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 pub(in crate::analysis) mod cooperation;
 pub(in crate::analysis) mod policy;
-use super::cooperation::ExtraStores;
-use super::cooperation::{
-    CooperationError, EvmContext, Extension, InputTasks, LocalInput, Point, PointKind,
-};
-use analysis_kernel::Analyzer;
-use cooperation::{Borrowed, Composition, Cooperation, Empty};
+use super::cooperation::{Composition, CooperationError, InputTasks, LocalInput, Point, PointKind};
+use cooperation::{Borrowed, Cooperation, Empty};
 mod input;
 mod installation;
 mod reuse;
@@ -212,13 +208,13 @@ pub(super) fn run_world_with<
 }
 
 /// Join the real interpreter with a caller-owned static analyzer assembly.
-pub(super) fn run_world_cooperating<D, C, P, H, A, S, F, G, E>(
+pub(super) fn run_world_cooperating<D, C, P, H, X, E>(
     world: EvmWorld<D::Element>,
     entry: EvmEntry<D::Element>,
     config: ExecutionConfig,
     domain: AlgebraRef<'_, D>,
     policies: &EnginePolicies<C, P, H>,
-    extension: &mut Extension<A, S, F, G>,
+    extension: &mut X,
     observer: &super::progress::Observer,
 ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>>
 where
@@ -226,15 +222,7 @@ where
     C: ContextPolicy,
     P: PartitionPolicy,
     H: StatePolicy<D, P::Class>,
-    S: InputTasks,
-    F: ExtraStores,
-    G: ExtraStores,
-    G::Stores: analysis_kernel::ReclaimScope,
-    for<'r, 'k, 'm> A: Analyzer<
-            EvmContext<'r, 'k, 'm, D::Element, S::Task, F::Stores, G::Stores>,
-            Task = S::Task,
-            Error = E,
-        >,
+    X: Composition<D::Element, E>,
 {
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::with_observer(observer);

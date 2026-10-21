@@ -214,6 +214,7 @@ impl<Cx: ReductionContext, R: Reduction<Cx>> Analyzer<Cx> for Registered<R> {
 }
 
 /// Compose independent analyzers/reductions without a universal shared enum.
+#[derive(Clone, Debug)]
 pub struct Pair<A, B> {
     /// First independent implementation.
     pub left: A,
@@ -222,7 +223,7 @@ pub struct Pair<A, B> {
 }
 impl<A, B> Pair<A, B> {
     /// Assemble components whose tasks/errors are kept statically distinct.
-    pub fn new(left: A, right: B) -> Self {
+    pub const fn new(left: A, right: B) -> Self {
         Self { left, right }
     }
 }

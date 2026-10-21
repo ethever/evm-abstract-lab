@@ -9,8 +9,8 @@ use crate::{
     analysis::{
         EvmMachinePayload, MachineError,
         cooperation::{
-            self as public, CooperationError, EvmContext, ExtraStores, Input, InputTasks,
-            LocalInput, Point, PointKind, Ports, Shared, SharedStores, Subject,
+            self as public, CooperationError, ExtraStores, Input, InputTasks, LocalInput, Point,
+            PointKind, Ports, Shared, SharedStores, Subject,
         },
         worklist::{
             MachineMeter,
@@ -29,45 +29,7 @@ use std::{
     sync::Arc,
 };
 
-/// A bound alias only: semantic implementations use the existing kernel traits.
-pub(in crate::analysis) trait Composition<N: WordElement, E>:
-    InputTasks
-    + ExtraStores
-    + SharedStores
-    + for<'r, 'k, 'm> Analyzer<
-        EvmContext<
-            'r,
-            'k,
-            'm,
-            N,
-            <Self as InputTasks>::Task,
-            <Self as ExtraStores>::Stores,
-            <Self as SharedStores>::Shared,
-        >,
-        Task = <Self as InputTasks>::Task,
-        Error = E,
-    >
-{
-}
-impl<N: WordElement, E, X> Composition<N, E> for X where
-    X: InputTasks
-        + ExtraStores
-        + SharedStores
-        + for<'r, 'k, 'm> Analyzer<
-            EvmContext<
-                'r,
-                'k,
-                'm,
-                N,
-                <X as InputTasks>::Task,
-                <X as ExtraStores>::Stores,
-                <X as SharedStores>::Shared,
-            >,
-            Task = <X as InputTasks>::Task,
-            Error = E,
-        >
-{
-}
+pub(in crate::analysis) use public::Composition;
 
 /// Borrow the caller's concrete assembly without cloning its mutable state.
 pub(super) struct Borrowed<'a, X>(pub &'a mut X);
