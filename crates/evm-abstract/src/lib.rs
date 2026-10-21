@@ -1,8 +1,9 @@
 //! 从多账户世界与根调用出发，学习跨合约抽象执行、调用图和 SSA。
 //!
 //! 阅读顺序：[`world`] → [`bytecode`] → [`domain`] → [`analysis`] → [`ssa`]。
-//! 主入口 [`analysis::analyze_world`] 将调用栈、账户状态、输入、返回与回滚
-//! 放在同一工作表中；单账户 CFG 是这台机器的学习视图。
+//! [`analysis::AnalysisInput`] 固定世界与根调用；主入口 [`analysis::AnalysisEngine`]
+//! 借用显式构造的数值代数、执行策略和协作组件，将调用栈、账户状态、输入、
+//! 返回与回滚放在同一工作表中。单程序 CFG 是原生执行结果的显式投影。
 //! 固定离线输入使用**普通 EVM 运行时字节码**，即操作码及其立即数组成的
 //! 指令流，不支持 EOF 容器格式。执行规则默认 Osaka，可选 Cancun/Prague；
 //! 格式与规则版本是不同概念。[EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) 单层代码解析保留 authority 的状态上下文。
@@ -13,27 +14,60 @@
 //! 前沿。结果是可能执行的图，不能直接当作安全证明。
 //! 见仓库的[模型边界文档](https://github.com/ethever/evm-abstract-lab/blob/main/docs/06-boundaries.md)。
 //!
+//! 直接构造世界与根入口，执行返回整数 `42` 的程序，并验证整个原生图的 SSA：
+//!
 //! ```
-//! use evm_abstract::{Address, Fork, analysis, world::{Account, Entry, World}, ssa};
+//! use evm_abstract::{
+//!     Address, Fork,
+//!     analysis::{AnalysisEngine, AnalysisInput, EnginePolicies, ExecutionConfig, Status,
+//!         control::Control, cooperation::NoExtension},
+//!     domain::{DomainSpec, NumericValue, ProductAlgebra, ValueAlgebra},
+//!     world::{EvmAccount, EvmEntry, EvmWorld}, ssa,
+//! };
+//!
+//! let values = ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::default()));
+//! let policies = EnginePolicies::default();
+//! let mut extension = NoExtension;
+//! let mut engine = AnalysisEngine::new(&values, &policies, &mut extension);
+//! let control = Control::default();
 //! let address = Address::repeat_byte(0x11);
-//! let mut world = World::new(Fork::Osaka, "offline example");
-//! world.insert(address, Account::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap()).unwrap();
-//! let graph = analysis::analyze_world(world, Entry::new(address),
-//!     analysis::ExecutionConfig::default()).unwrap();
-//! assert_eq!(graph.status(), analysis::Status::Converged);
-//! ssa::build_world(&graph).unwrap().verify(&graph).unwrap();
+//! let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "offline example");
+//! world.insert(address,
+//!     EvmAccount::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap()).unwrap();
+//! let input = AnalysisInput::new(world, EvmEntry::new(address)).unwrap();
+//! let graph = engine.run(input, ExecutionConfig::default(), &control).unwrap();
+//! assert_eq!(graph.status(), Status::Converged);
+//! control.scope(|| ssa::build_world(&graph).unwrap().verify(&graph).unwrap());
 //! ```
 //!
-//! 单字节码适配入口仍可用于栈 CFG/SSA 实验：
+//! 单程序输入也交给同一原生引擎执行；随后显式投影局部 CFG，验证栈 SSA。
+//! 投影在 `Control::scope` 内使用独立于执行预算的有限后处理账本，不再次执行程序。
 //!
 //! ```
-//! use evm_abstract::{analysis::{analyze, Config, Status}, bytecode::Program, ssa};
+//! use evm_abstract::{
+//!     analysis::{AnalysisEngine, AnalysisInput, EnginePolicies, EvmAnalysis, ExecutionConfig,
+//!         Status, control::Control, cooperation::NoExtension},
+//!     bytecode::Program,
+//!     domain::{DomainSpec, NumericValue, ProductAlgebra, ValueAlgebra},
+//!     resource::WorkBudget, world::EvmEnvironmentValues, ssa,
+//! };
+//!
+//! let values = ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::default()));
+//! let policies = EnginePolicies::default();
+//! let mut extension = NoExtension;
+//! let mut engine = AnalysisEngine::new(&values, &policies, &mut extension);
+//! let control = Control::default();
 //! let program = Program::from_hex("600160020100").unwrap();
-//! let analysis = analyze(program, Config::default()).unwrap();
-//! assert_eq!(analysis.status(), Status::Converged);
-//! let ir = ssa::build(&analysis).unwrap();
-//! assert_eq!(ir.value_count(), 3);
-//! ir.verify(&analysis).unwrap();
+//! let input = AnalysisInput::<NumericValue>::from_program(
+//!     program, EvmEnvironmentValues::default()).unwrap();
+//! let native = engine.run(input, ExecutionConfig::default(), &control).unwrap();
+//! control.scope(|| {
+//!     let mut postprocessing = WorkBudget::new(1_000_000);
+//!     let local = EvmAnalysis::from_execution(native, &mut postprocessing).unwrap();
+//!     assert_eq!(local.status(), Status::Converged);
+//!     let ir = ssa::build(&local).unwrap();
+//!     ir.verify(&local).unwrap();
+//! });
 //! ```
 
 pub mod analysis;
