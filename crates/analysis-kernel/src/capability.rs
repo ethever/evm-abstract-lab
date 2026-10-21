@@ -54,6 +54,21 @@ impl<V> Answer<V> {
             _ => None,
         }
     }
+
+    /// Follow a value, returning the callback's complete answer or error unchanged.
+    /// Pending and absent answers skip the callback and retain their scope/version.
+    pub fn try_then<U, E>(self, f: impl FnOnce(V) -> Result<Answer<U>, E>) -> Result<Answer<U>, E> {
+        let state = match self.state {
+            Availability::Value(value) => return f(value),
+            Availability::Pending => Availability::Pending,
+            Availability::Absent => Availability::Absent,
+        };
+        Ok(Answer {
+            state,
+            version: self.version,
+            scope: self.scope,
+        })
+    }
 }
 /// Whether a publication changed semantic information or declared coverage
 /// availability, rather than only representation. Restoring a known producer's
