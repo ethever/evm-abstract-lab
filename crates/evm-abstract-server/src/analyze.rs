@@ -23,9 +23,9 @@ use evm_abstract::{
 };
 use evm_abstract_protocol as api;
 
-/// Independent application allowance for normalized SSA construction and verification.
-/// It matches the CLI reporting policy and does not consume execution work.
-pub const POSTPROCESSING_MAX_WORK: usize = 2_000_000_000;
+/// Independent application allowance shared by requested native postprocessing.
+/// It matches the CLI policy and remains available after execution stops.
+pub const DEFAULT_POSTPROCESS_WORK: usize = 2_000_000_000;
 
 /// Analyze bytecode without an RPC registry; RPC inputs require `analyze_with_providers`.
 pub fn analyze(request: api::AnalyzeRequest) -> Result<api::AnalysisReport, api::ApiError> {

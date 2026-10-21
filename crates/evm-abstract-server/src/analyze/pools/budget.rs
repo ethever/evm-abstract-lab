@@ -1,6 +1,6 @@
-//! Native comparison/copy metering, distinct from expanding the report's DAG.
-//! Entries, map lookups and fixed-size node data are metering primitives; set
-//! contents and recursive scalar comparisons record their retained cardinality.
+//! Informational export statistics for native comparisons and copies.
+//! The postprocessing ledger separately admits native SSA work. These counts
+//! record retained payload sizes and keep cancellation observable.
 use super::symbolic;
 use evm_abstract::{
     domain::{

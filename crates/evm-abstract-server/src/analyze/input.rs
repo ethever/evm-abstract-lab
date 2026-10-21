@@ -239,14 +239,10 @@ pub(super) fn spec(input: &api::AnalysisLimits) -> Result<DomainSpec, api::ApiEr
         max_nodes: host_size(input.max_expression_nodes, "max_expression_nodes")?,
         max_depth: host_size(input.max_expression_depth, "max_expression_depth")?,
     };
-    if relations.max_constraints == 0 || relations.max_nodes == 0 || relations.max_depth == 0 {
-        return Err(api::ApiError {
-            code: api::ApiErrorCode::InvalidLimits,
-            message: "symbolic node/depth and relation limits must be positive".into(),
-            details: api::ErrorDetails::Configuration(api::ConfigurationFailure::Relations),
-        });
-    }
-    Ok(DomainSpec::new(capacity, rounds, facts).with_relations(relations))
+    let spec = DomainSpec::new(capacity, rounds, facts).with_relations(relations);
+    spec.validate()
+        .map_err(|error| super::errors::configuration(analysis::ConfigError::from(error)))?;
+    Ok(spec)
 }
 
 pub(super) fn rpc(

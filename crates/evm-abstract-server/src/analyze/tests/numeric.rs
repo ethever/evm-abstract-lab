@@ -7,13 +7,18 @@ fn typed_terminal<D: EvmNumericAlgebra>(
     numeric_model: api::NumericModel,
 ) {
     let owner = Address::repeat_byte(0x11);
-    let mut request = api::AnalyzeRequest::default();
-    request.input = api::AnalysisInput::Bytecode(api::BytecodeInput {
-        bytecode: "6003565b602a5f5260205ff3".into(),
-        address: Some(owner.to_string()),
-    });
-    request.limits.numeric_model = numeric_model;
-    request.limits.max_transfers = 1;
+    let request = api::AnalyzeRequest {
+        input: api::AnalysisInput::Bytecode(api::BytecodeInput {
+            bytecode: "6003565b602a5f5260205ff3".into(),
+            address: Some(owner.to_string()),
+        }),
+        limits: api::AnalysisLimits {
+            numeric_model,
+            max_transfers: 1,
+            ..api::AnalysisLimits::default()
+        },
+        ..api::AnalyzeRequest::default()
+    };
     let mut world = EvmWorld::<D::Element>::offline(
         Fork::Osaka,
         "typed terminal projection",
@@ -54,10 +59,28 @@ fn typed_terminal<D: EvmNumericAlgebra>(
     report.validate().unwrap();
     assert_eq!(
         report.metadata.postprocessing_max_work,
-        POSTPROCESSING_MAX_WORK as u64
+        DEFAULT_POSTPROCESS_WORK as u64
     );
     assert!(report.metadata.postprocessing_work <= report.metadata.postprocessing_max_work);
     let projected = &report.root_terminal_coverage.as_ref().unwrap().input;
+    let failure_data =
+        &report.byte_arrays[report.root_terminal_coverage.as_ref().unwrap().outcomes[2].data];
+    let failure_length = native.root_terminal_coverage().unwrap().outcomes()[2]
+        .data()
+        .len()
+        .numeric()
+        .observation();
+    assert_eq!(failure_length.singleton(), Some(evm_abstract::U256::ZERO));
+    assert_eq!(failure_data.length.constants, Some(vec!["0x0".into()]));
+    let (lower, upper) = failure_length.interval().unsigned_bounds();
+    assert_eq!(
+        failure_data.length.unsigned.lower,
+        crate::analyze::value::word(lower)
+    );
+    assert_eq!(
+        failure_data.length.unsigned.upper,
+        crate::analyze::value::word(upper)
+    );
     assert_eq!(projected.numeric_model, numeric_model);
     assert_eq!(projected.revision.0, binding.revision().value());
     assert_eq!(

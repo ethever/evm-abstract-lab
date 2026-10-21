@@ -280,7 +280,7 @@ fn explicit_opt_out_and_default_converged_none_preserve_honest_detail() {
 fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input() {
     let (native, request) = fixture(true, false, false);
     let report = project(&native, &request);
-    assert_eq!(report.schema_version, 16);
+    assert_eq!(report.schema_version, 17);
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(!report.ssa.complete);
     assert_eq!(report.cfg.len(), native.states().len());
@@ -1117,6 +1117,23 @@ fn projection_errors_and_cancellation_return_no_partial_report_or_certificate() 
         let error = super::project(source, api::NumericModel::Product, &mut pools).unwrap_err();
         assert!(matches!(error.details, api::ErrorDetails::Export(detail) if detail.kind == kind));
     }
+    // Keep the native execution fixture; refuse its SSA export through a
+    // separate empty postprocessing allowance.
+    let control = Control::default();
+    let mut pools = Pools::<NumericValue>::new(&control);
+    let mut postprocessing = evm_abstract::resource::WorkBudget::new(0);
+    let error = control
+        .scope(|| {
+            crate::analyze::ssa::report(&native, &control, &mut postprocessing, &mut pools.symbolic)
+        })
+        .unwrap_err();
+    assert_eq!(error.code, api::ApiErrorCode::Export);
+    assert_eq!(error.details, api::ErrorDetails::Ssa(api::SsaFailure::Work));
+    assert_eq!(postprocessing.used(), 0);
+    assert_eq!(
+        serde_json::from_slice::<api::ApiError>(&serde_json::to_vec(&error).unwrap()).unwrap(),
+        error
+    );
     let control = Control::new(Default::default());
     control.cancellation().cancel();
     let error = report::report(
@@ -1133,6 +1150,16 @@ fn projection_errors_and_cancellation_return_no_partial_report_or_certificate() 
     assert!(super::project(source, api::NumericModel::Product, &mut pools).is_err());
     assert!(pools.symbolic.graph.nodes.is_empty());
     assert!(pools.stores.is_empty());
+    let mut postprocessing = control.scope(|| {
+        evm_abstract::resource::WorkBudget::new(crate::analyze::DEFAULT_POSTPROCESS_WORK)
+    });
+    let error = control
+        .scope(|| {
+            crate::analyze::ssa::report(&native, &control, &mut postprocessing, &mut pools.symbolic)
+        })
+        .unwrap_err();
+    assert_eq!(error.code, api::ApiErrorCode::Cancelled);
+    assert_eq!(postprocessing.used(), 0);
     // The same immutable native record remains projectable after a failed export.
     project(&native, &request).validate().unwrap();
 }

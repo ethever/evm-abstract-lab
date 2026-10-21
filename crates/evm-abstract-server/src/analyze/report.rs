@@ -8,6 +8,7 @@ use super::{checkpoint, mapping, pools::Pools, rpc, ssa, value};
 use evm_abstract::{
     analysis::{self, control::Control, progress::Phase},
     domain::{EvmNumericAlgebra, ValueAlgebra, WordElement},
+    resource::WorkBudget,
     world::{EvmStore, SnapshotIdentity},
 };
 use evm_abstract_protocol as api;
@@ -21,6 +22,9 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     control: &Control,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     checkpoint(control)?;
+    // The request's Control.scope covers this ledger and every native output
+    // computation. There is no local execution projection on the server path.
+    let mut postprocessing = WorkBudget::new(super::DEFAULT_POSTPROCESS_WORK);
     let mut pools = Pools::<N>::new(control);
     pools.symbolic.charge(
         native
@@ -33,7 +37,7 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             .saturating_add(native.world().accounts().len()),
     )?;
     control.observer().phase(Phase::BuildingSsa);
-    let (ssa, postprocessing_work) = ssa::report(native, control, &mut pools.symbolic)?;
+    let ssa = ssa::report(native, control, &mut postprocessing, &mut pools.symbolic)?;
     checkpoint(control)?;
     control.observer().phase(Phase::Projecting);
     let initial =
@@ -264,8 +268,8 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             environment,
             limits: request.limits.clone(),
             work: native.work() as u64,
-            postprocessing_max_work: super::POSTPROCESSING_MAX_WORK as u64,
-            postprocessing_work,
+            postprocessing_max_work: super::DEFAULT_POSTPROCESS_WORK as u64,
+            postprocessing_work: postprocessing.used() as u64,
             timings: api::AnalysisTimings::default(),
             export_limits: pools.symbolic.limits,
             export_usage: pools.symbolic.usage,
