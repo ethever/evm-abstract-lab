@@ -15,6 +15,8 @@ use crate::{
     world::Account,
 };
 
+mod copy_proof;
+
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())
 }
