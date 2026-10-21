@@ -83,10 +83,10 @@ pub(in crate::analyze) fn error(source: SessionError<std::convert::Infallible>) 
         SessionError::Facts(FactError::Conflict { key }) => {
             api::SessionFailure::FactConflict(fact(key))
         }
-        SessionError::Refinement { key, source } => {
+        SessionError::Refinement { key, cause } => {
             api::SessionFailure::Refinement(api::SessionRefinementFailure {
                 location: fact(key),
-                source: super::super::mapping::fact_failure(&source),
+                source: super::super::mapping::fact_failure(&cause),
             })
         }
         SessionError::MissingCode(id) => api::SessionFailure::MissingCode(code(id)),
