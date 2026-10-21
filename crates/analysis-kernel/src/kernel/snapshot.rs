@@ -29,17 +29,9 @@ impl<J> KernelFork<J> {
 }
 
 impl<J> Kernel<J> {
-    /// Reserve metadata copying, then fork without cloning application tasks.
-    ///
-    /// Existing task values are immutable Arc handles. Each fork uses a fresh
-    /// allocation namespace while preserving the existing handles' identities.
-    /// Existing suspended tokens work in staged copies; commit invalidates a
-    /// stale live snapshot whenever any live graph transition has occurred.
-    pub fn fork<M: Meter>(&self, meter: &mut M) -> Result<KernelFork<J>, KernelError<M::Stop>> {
-        if self.revision == u64::MAX {
-            return Err(KernelError::VersionExhausted);
-        }
-        // Pay the outer scan before walking per-fact and per-job containers.
+    // Copying and destroying metadata visit the same retained containers. Pay
+    // the outer scan before inspecting adjacency; callers add their extra work.
+    fn metadata_work<M: Meter>(&self, meter: &mut M) -> Result<usize, KernelError<M::Stop>> {
         reserve(
             meter,
             self.facts
@@ -48,7 +40,7 @@ impl<J> Kernel<J> {
                 .saturating_add(self.scopes.len())
                 .saturating_add(1),
         )?;
-        let work = self
+        Ok(self
             .facts
             .iter()
             .fold(0usize, |n, f| {
@@ -73,9 +65,22 @@ impl<J> Kernel<J> {
             .saturating_add(self.obligations.len())
             .saturating_add(self.worklist.work_size())
             .saturating_add(self.facts.len())
-            .saturating_add(self.jobs.len().saturating_mul(2))
+            .saturating_add(self.jobs.len())
             .saturating_add(self.scopes.len())
-            .saturating_add(1);
+            .saturating_add(1))
+    }
+
+    /// Reserve metadata copying, then fork without cloning application tasks.
+    ///
+    /// Existing task values are immutable Arc handles. Each fork uses a fresh
+    /// allocation namespace while preserving the existing handles' identities.
+    /// Existing suspended tokens work in staged copies; commit invalidates a
+    /// stale live snapshot whenever any live graph transition has occurred.
+    pub fn fork<M: Meter>(&self, meter: &mut M) -> Result<KernelFork<J>, KernelError<M::Stop>> {
+        if self.revision == u64::MAX {
+            return Err(KernelError::VersionExhausted);
+        }
+        let work = self.metadata_work(meter)?.saturating_add(self.jobs.len());
         reserve(meter, work)?;
         let allocation = Epoch::fresh().map_err(|_| KernelError::VersionExhausted)?;
         Ok(KernelFork {
@@ -144,43 +149,7 @@ impl<J> Kernel<J> {
         }
         // Replacing the old metadata drops all its containers. That traversal is
         // real even when the adapter's semantic graph can be installed by swap.
-        reserve(
-            meter,
-            self.facts
-                .len()
-                .saturating_add(self.jobs.len())
-                .saturating_add(self.scopes.len())
-                .saturating_add(1),
-        )?;
-        let drop_work = self
-            .facts
-            .iter()
-            .fold(0usize, |n, f| {
-                n.saturating_add(f.readers.len())
-                    .saturating_add(f.providers.len())
-                    .saturating_add(f.demands.len())
-                    .saturating_add(f.assumptions.len())
-                    .saturating_add(f.coverage.len().saturating_mul(2))
-            })
-            .saturating_add(self.jobs.iter().fold(0usize, |n, j| {
-                n.saturating_add(j.reads.len())
-                    .saturating_add(j.required.len())
-                    .saturating_add(j.provides.len())
-            }))
-            .saturating_add(self.scopes.iter().fold(0usize, |n, s| {
-                n.saturating_add(s.jobs.len())
-                    .saturating_add(s.facts.len())
-                    .saturating_add(s.assumptions.len())
-                    .saturating_add(s.open_obligations.len())
-            }))
-            .saturating_add(self.scope_ids.len())
-            .saturating_add(self.obligations.len())
-            .saturating_add(self.worklist.work_size())
-            .saturating_add(self.facts.len())
-            .saturating_add(self.jobs.len())
-            .saturating_add(self.scopes.len())
-            .saturating_add(install_work)
-            .saturating_add(1);
+        let drop_work = self.metadata_work(meter)?.saturating_add(install_work);
         reserve(meter, drop_work)?;
         install();
         *self = fork.staged;

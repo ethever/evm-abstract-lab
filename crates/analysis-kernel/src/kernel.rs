@@ -126,7 +126,7 @@ struct Job<J> {
     scope: Scope,
     // Retired identities remain checked tombstones without owning task data.
     task: Option<Arc<J>>,
-    reads: BTreeMap<FactId, Version>,
+    reads: BTreeSet<FactId>,
     required: BTreeSet<FactId>,
     provides: BTreeSet<FactId>,
     state: JobState,
@@ -143,6 +143,7 @@ struct Generation {
     jobs: BTreeSet<JobId>,
     facts: BTreeSet<FactId>,
     assumptions: BTreeSet<FactId>,
+    // Sole unresolved-state authority; obligation records retain identity only.
     open_obligations: BTreeSet<ObligationId>,
     entry: Option<FactId>,
     entry_owner: bool,
@@ -153,7 +154,6 @@ struct Generation {
 struct Obligation {
     id: ObligationId,
     scope: Scope,
-    resolved: bool,
 }
 
 /// Typed-task scheduler and fact metadata; no semantic value is erased here.
@@ -358,9 +358,7 @@ impl<J> Kernel<J> {
         let head = self.scopes[scope.index].head;
         let work = self.retirement_work(scope, meter)?;
         let changes = self.prepare_changes(&[head], &[head], None, meter, work)?;
-        self.install_retirement(scope);
-        self.install_changes(changes);
-        self.release_generation(scope);
+        self.retire_generation(scope, changes);
         Ok(())
     }
     /// Construct an explicitly routed typed channel, including its directory fact.
@@ -407,7 +405,7 @@ impl<J> Kernel<J> {
             id,
             scope,
             task: Some(Arc::new(task)),
-            reads: BTreeMap::new(),
+            reads: BTreeSet::new(),
             required: BTreeSet::new(),
             provides: BTreeSet::new(),
             state: JobState::Idle,
@@ -682,11 +680,7 @@ impl<J> Kernel<J> {
             birth: self.allocation,
             index: self.obligations.len(),
         };
-        self.obligations.push(Obligation {
-            id,
-            scope,
-            resolved: false,
-        });
+        self.obligations.push(Obligation { id, scope });
         self.scopes[scope.index].open_obligations.insert(id);
         self.touch();
         Ok(id)
@@ -713,7 +707,6 @@ impl<J> Kernel<J> {
             meter,
             tree_work(self.scopes[scope.index].open_obligations.len()).saturating_add(1),
         )?;
-        self.obligations[id.index].resolved = true;
         self.scopes[scope.index].open_obligations.remove(&id);
         self.touch();
         Ok(())
@@ -768,25 +761,14 @@ impl<J> Kernel<J> {
                     })
             })
             .count();
-        open.unsealed = self
+        for generation in self
             .scopes
             .iter()
-            .filter(|g| g.active && !g.sealed && scope.is_none_or(|s| s == g.scope))
-            .count();
-        open.obligations = self
-            .scopes
-            .iter()
-            .filter(|g| g.active && g.stale && scope.is_none_or(|s| s == g.scope))
-            .count();
-        open.obligations += self
-            .obligations
-            .iter()
-            .filter(|o| {
-                !o.resolved
-                    && self.scopes[o.scope.index].active
-                    && scope.is_none_or(|s| s == o.scope)
-            })
-            .count();
+            .filter(|g| g.active && scope.is_none_or(|s| s == g.scope))
+        {
+            open.unsealed += usize::from(!generation.sealed);
+            open.obligations += generation.open_obligations.len() + usize::from(generation.stale);
+        }
         if open.is_empty() {
             Closure::Closed
         } else {

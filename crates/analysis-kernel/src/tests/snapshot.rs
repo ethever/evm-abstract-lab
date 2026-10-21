@@ -128,6 +128,37 @@ fn commit_refusal_and_live_changes_do_not_install_staged_side_effects() {
 }
 
 #[test]
+fn obligation_resolution_is_idempotent_and_fork_local_until_commit() {
+    let mut meter = Budget::default();
+    let mut kernel = Kernel::<()>::new().unwrap();
+    let s = scope(&mut kernel, &mut meter, 1, 0);
+    let other = scope(&mut kernel, &mut meter, 2, 0);
+    for scope in [s, other] {
+        kernel.seal_scope(scope, &mut meter).unwrap();
+    }
+    let obligation = kernel.obligation(s, &mut meter).unwrap();
+    let retired = kernel.obligation(other, &mut meter).unwrap();
+    let mut fork = kernel.fork(&mut meter).unwrap();
+    for _ in 0..2 {
+        fork.kernel()
+            .resolve_obligation(obligation, &mut meter)
+            .unwrap();
+    }
+    assert_eq!(fork.view().closure_in::<Stop>(s).unwrap(), Closure::Closed);
+    assert!(matches!(fork.view().closure(), Closure::Open(o) if o.obligations == 1));
+    assert!(matches!(kernel.closure(), Closure::Open(o) if o.obligations == 2));
+    kernel.commit(fork, &mut meter).unwrap();
+    assert_eq!(kernel.closure_in::<Stop>(s).unwrap(), Closure::Closed);
+    assert!(matches!(kernel.closure(), Closure::Open(o) if o.obligations == 1));
+    kernel.retire_scope(other, &mut meter).unwrap();
+    assert_eq!(kernel.closure(), Closure::Closed);
+    assert_eq!(
+        kernel.resolve_obligation(retired, &mut meter),
+        Err(KernelError::InactiveScope)
+    );
+}
+
+#[test]
 fn two_forks_cannot_alias_their_new_handles_or_overwrite_a_committed_sibling() {
     let mut meter = Budget::default();
     let mut kernel = Kernel::<()>::new().unwrap();

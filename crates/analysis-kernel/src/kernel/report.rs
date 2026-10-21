@@ -4,11 +4,11 @@ use super::{Kernel, Meter, reserve};
 use crate::{KernelError, SolveReport};
 
 // Logical visits bound pending membership, both job scans, facts, scopes,
-// obligations, nested readers and producer guards, including scope/job lookups.
-fn traversal_work(counts: [usize; 7]) -> Option<usize> {
+// nested readers and producer guards, including scope/job lookups.
+fn traversal_work(counts: [usize; 6]) -> Option<usize> {
     counts
         .into_iter()
-        .zip([4, 8, 12, 4, 5, 6, 8])
+        .zip([4, 8, 12, 4, 6, 8])
         .try_fold(16usize, |work, (count, visits)| {
             work.checked_add(count.checked_mul(visits)?)
         })
@@ -46,7 +46,6 @@ impl<J> Kernel<J> {
             self.jobs.len(),
             self.facts.len(),
             self.scopes.len(),
-            self.obligations.len(),
             readers,
             coverage,
         ])
@@ -68,8 +67,8 @@ mod tests {
 
     #[test]
     fn report_work_rejects_overflow_in_counts_and_accumulation() {
-        assert!(traversal_work([0; 7]).is_some());
-        assert_eq!(traversal_work([0, 0, usize::MAX, 0, 0, 0, 0]), None);
-        assert_eq!(traversal_work([usize::MAX / 4, 1, 0, 0, 0, 0, 0]), None);
+        assert!(traversal_work([0; 6]).is_some());
+        assert_eq!(traversal_work([0, 0, usize::MAX, 0, 0, 0]), None);
+        assert_eq!(traversal_work([usize::MAX / 4, 1, 0, 0, 0, 0]), None);
     }
 }
