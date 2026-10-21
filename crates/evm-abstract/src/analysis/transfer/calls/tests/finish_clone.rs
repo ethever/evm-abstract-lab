@@ -258,7 +258,12 @@ fn finite_declared_snapshot_price_preserves_raw_completed_payload_output_and_ato
             assert_eq!(completed.data, data);
             assert_eq!(completed.output_store, original.store);
             assert_eq!(completed.output_data, data);
-            assert_eq!(RECEIPT.get().bytes, 2 * 4096);
+            // Persistent map snapshots share their entries; std snapshots own
+            // two predicate copies. Both must preserve the complete store.
+            assert_eq!(
+                RECEIPT.get().bytes,
+                if cfg!(feature = "imbl") { 0 } else { 2 * 4096 }
+            );
             assert!(budget.used() >= 2 * 100_003);
             // Inspect the retained predicate after the measured clone receipt.
             let balance = completed
