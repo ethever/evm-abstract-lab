@@ -109,6 +109,70 @@ fn semantic_singleton_without_finite_constants_resolves_call_and_keeps_code_owne
 }
 
 #[test]
+fn nonexact_private_call_output_size_keeps_both_concrete_results() {
+    // CALLVALUE is the actual requested output extent, independently 0..=32.
+    let code = hex::decode("345f5f5f5f6102015af160405260605ff3").unwrap();
+    let mut world = world(&code);
+    world
+        .insert(
+            address(CALLEE),
+            EvmAccount::from_hex("602a5f5260205ff3", Fork::Osaka).unwrap(),
+        )
+        .unwrap();
+    let mut entry = entry();
+    entry.environment.value = evm_abstract::domain::EvmValue::from_numeric(
+        super::carrier::ExcludingWord::range(U256::ZERO, U256::from(32)),
+    );
+    let calls = Calls::default();
+    let algebra = ValueAlgebra::new(Policy::new(&calls));
+    let result = analyze_world_with(
+        world,
+        entry,
+        ExecutionConfig {
+            max_work: 1_000_000_000,
+            root_terminal_coverage: false,
+            ..ExecutionConfig::default()
+        },
+        &algebra,
+        &EnginePolicies::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        result.status(),
+        Status::Converged,
+        "{:?}",
+        result.frontiers()
+    );
+    let mut success = false;
+    for outcome in result
+        .outcomes()
+        .iter()
+        .filter(|o| o.kind == OutcomeKind::Return)
+    {
+        let status = outcome
+            .data
+            .read_word_with(&word(64), algebra.borrowed())
+            .singleton();
+        let data = outcome.data.read_word_with(&word(0), algebra.borrowed());
+        if status == Some(U256::ONE) {
+            success = true;
+            assert!(
+                data.contains(U256::ZERO),
+                "zero requested bytes leaves memory zero"
+            );
+            assert!(
+                data.contains(U256::from(42)),
+                "32 requested bytes copies the complete word"
+            );
+        }
+    }
+    assert!(
+        success,
+        "the actual successful CALL/resume path must remain"
+    );
+}
+
+#[test]
 fn existing_default_entry_and_memory_wrapper_still_execute_the_same_code() {
     let mut world = World::new(Fork::Osaka, "default wrapper comparison");
     world

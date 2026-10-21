@@ -141,6 +141,12 @@ impl<N: WordElement> EvmValue<N> {
         self.expression = Some(expression);
         self
     }
+
+    /// Install an already proved and budgeted term without copying numeric,
+    /// source or identity fields. The caller also owns the old term's release.
+    pub(crate) fn set_expression(&mut self, expression: ExprId) {
+        self.expression = Some(expression);
+    }
     /// Rename only a retained term; numeric facts and immutable input identity
     /// survive unchanged. A refused term leaves the complete value untouched.
     pub(crate) fn rename_fresh(
@@ -266,9 +272,9 @@ impl<N: WordElement> EvmValue<N> {
         self.provenance.set_origin(origin);
     }
     pub(crate) fn with_symbol(mut self, symbol: Symbol, scope: Option<u64>) -> Self {
-        if self.singleton().is_none()
-            && let Some(scope) = scope
-        {
+        // An explicit immutable-input binding is valid even when N is exact.
+        // Numeric discovery is neither needed nor funded by this metadata step.
+        if let Some(scope) = scope {
             self.identity = self.identity.with_input(InputIdentity::new(scope, symbol));
             if self.expression.is_none() {
                 self.expression = Some(ExprId::input(scope, symbol));

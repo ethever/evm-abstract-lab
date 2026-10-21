@@ -6,7 +6,7 @@ use evm_abstract::{
         Domain,
         relational::{CheckResult, RelationLimits},
     },
-    world::{Account, ByteArray},
+    world::{Account, ByteArray, World},
 };
 use revm_bytecode::opcode;
 
@@ -304,8 +304,7 @@ fn repeated_calls_keep_the_same_symbolic_target_identity_and_known_branch_guards
     assert!(!returns(&analysis).is_empty());
 }
 
-#[test]
-fn different_symbolic_targets_can_alias_the_same_known_storage_owner() {
+fn symbolic_alias_world() -> World {
     let mut a = Assembly::default();
     a.op(opcode::CALLER)
         .push(USER as u16)
@@ -339,19 +338,106 @@ fn different_symbolic_targets_can_alias_the_same_known_storage_owner() {
         &super::fixtures::external_cell(),
         &[(0, 5), (1, 1)],
     );
+    world
+}
+
+#[test]
+fn different_symbolic_targets_can_alias_the_same_known_storage_owner() {
+    let world = symbolic_alias_world();
     let mut concrete_input = Vec::new();
     concrete_input.extend(U256::from(C).to_be_bytes::<32>());
     concrete_input.extend(U256::from(C).to_be_bytes::<32>());
     let observed = super::oracle::execute(&world, &entry(ByteArray::exact(&concrete_input)));
     assert_eq!(observed.output_word(0), U256::from(9));
     assert_eq!(observed.output_word(32), U256::from(9));
-    let analysis = run_config(world, entry(ByteArray::unknown()), wide_symbolic_policy());
+    // The paid finite target/outcome closure consumes about 1.82B work; retain
+    // the same full address space and semantic contract on this detail ledger.
+    let policy = ExecutionConfig {
+        max_work: 2_000_000_000,
+        ..wide_symbolic_policy()
+    };
+    let analysis = run_config(world, entry(ByteArray::unknown()), policy);
     symbolic_with_native_input_gaps(&analysis);
     let root = &analysis.states()[0].entry.call_stack.root().state;
     let first = root.calldata.read_word(&word(0), Domain::default());
     let second = root.calldata.read_word(&word(32), Domain::default());
     assert_ne!(first.expression(), second.expression());
     observed.covers(&analysis);
+}
+
+#[test]
+fn symbolic_alias_original_ledger_keeps_input_bound_coverage_or_complete_detail() {
+    use evm_abstract::analysis::{OutcomeKind, RootTerminalScope, RootTerminalTrigger};
+    let world = symbolic_alias_world();
+    let mut concrete_input = Vec::new();
+    concrete_input.extend(U256::from(C).to_be_bytes::<32>());
+    concrete_input.extend(U256::from(C).to_be_bytes::<32>());
+    let observed = super::oracle::execute(&world, &entry(ByteArray::exact(&concrete_input)));
+    assert_eq!(observed.output_word(0), U256::from(9));
+    assert_eq!(observed.output_word(32), U256::from(9));
+    let config = wide_symbolic_policy();
+    assert_eq!(config.max_work, 1_000_000_000);
+    assert!(config.root_terminal_coverage);
+    let analysis = run_config(world, entry(ByteArray::unknown()), config.clone());
+    assert!(analysis.work() <= config.max_work);
+    let qualified_native = !analysis.frontiers().is_empty()
+        && analysis
+            .frontiers()
+            .iter()
+            .all(|frontier| matches!(frontier.reason, FrontierReason::PrecompileInput(_)));
+    if analysis.status() == Status::Converged || qualified_native {
+        // A later cheaper complete result must satisfy the original alias
+        // contract, including the joint concrete return pair.
+        symbolic_with_native_input_gaps(&analysis);
+        let calldata = &analysis.states()[0].entry.call_stack.root().state.calldata;
+        let first = calldata.read_word(&word(0), Domain::default());
+        let second = calldata.read_word(&word(32), Domain::default());
+        assert_ne!(first.expression(), second.expression());
+        observed.covers(&analysis);
+        return;
+    }
+    assert_eq!(analysis.status(), Status::Incomplete);
+    let coverage = analysis
+        .root_terminal_coverage()
+        .expect("the original ledger keeps the prepaid root relation");
+    let reason = match coverage.trigger() {
+        RootTerminalTrigger::Work => FrontierReason::Work,
+        RootTerminalTrigger::SummaryWork => FrontierReason::SummaryWork,
+        other => panic!("expected an actual shared-ledger work stop: {other:?}"),
+    };
+    assert!(
+        analysis
+            .frontiers()
+            .iter()
+            .any(|frontier| frontier.reason == reason)
+    );
+    assert_eq!(coverage.scope(), RootTerminalScope::AllInputStates);
+    assert_eq!(
+        coverage.outcomes().each_ref().map(|outcome| outcome.kind()),
+        [
+            OutcomeKind::Return,
+            OutcomeKind::Revert,
+            OutcomeKind::Failure
+        ]
+    );
+    let input = coverage.input();
+    let original = &analysis.states()[0].entry;
+    assert_eq!(input.entry(), analysis.entry());
+    assert_eq!(input.frame(), &original.active().key);
+    assert_eq!(input.program(), original.active().program.as_ref().unwrap());
+    assert_eq!(input.calldata(), &original.active().calldata);
+    assert_eq!(input.call_value(), &original.active().call_value);
+    assert_eq!(input.saved_store(), &original.active().saved_store);
+    assert_eq!(input.initial_store(), &original.store);
+    assert_eq!(input.domain_spec(), analysis.domain_spec());
+    assert_eq!(
+        serde_json::to_value(input.config()).unwrap(),
+        serde_json::to_value(config).unwrap()
+    );
+    assert_eq!(
+        coverage.outcomes()[2].data().len().singleton(),
+        Some(U256::ZERO)
+    );
 }
 
 #[test]

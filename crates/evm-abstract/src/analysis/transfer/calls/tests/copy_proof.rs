@@ -15,6 +15,9 @@ use std::fmt;
 static QUERIES: Counter<usize> = Counter::new(0);
 static QUERY_QUOTES: Counter<usize> = Counter::new(0);
 
+mod derived;
+mod nonzero;
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 struct Word(NumericValue);
 
@@ -97,6 +100,62 @@ impl EvmNumericAlgebra for Policy {
 
 type Value = EvmValue<Word>;
 type Bytes = EvmByteArray<Word>;
+
+/// Independent invoice for these non-creation completion fixtures. The actual
+/// finish consumer must retain this paid prefix if its last COPY fee refuses.
+pub(super) fn finish_prices<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    payload: &EvmMachinePayload<N>,
+    source: &EvmByteArray<N>,
+    kind: OutcomeKind,
+    domain: crate::domain::AlgebraRef<'_, D>,
+) -> (usize, usize) {
+    let child = payload.call_stack.active_child().unwrap();
+    assert!(child.continuation.creation.is_none());
+    let mut budget = WorkBudget::new(usize::MAX);
+    payload.pay_clone_with(&mut budget).unwrap();
+    source.pay_clone_with(&mut budget).unwrap();
+    let store = if kind == OutcomeKind::Return {
+        &payload.store
+    } else {
+        let saved = child.state.saved_store.state();
+        saved.pay_clone_with(&mut budget).unwrap();
+        saved
+    };
+    store.pay_clone_with(&mut budget).unwrap();
+    source.pay_clone_with(&mut budget).unwrap();
+    let remaining = payload
+        .call_stack
+        .parent()
+        .unwrap()
+        .memory
+        .prepared_return_copy_work_with(
+            source,
+            &child.continuation.output_offset,
+            &child.continuation.output_size,
+            domain,
+            &mut budget,
+        )
+        .unwrap();
+    let mut prefix = budget.used();
+    assert!(budget.charge(remaining));
+    let remaining = payload
+        .call_stack
+        .parent()
+        .unwrap()
+        .memory
+        .prepared_return_copy_stage_work_with(
+            source,
+            &child.continuation.output_offset,
+            &child.continuation.output_size,
+            domain,
+            &mut budget,
+        );
+    if remaining != 0 {
+        prefix = budget.used();
+        assert!(budget.charge(remaining));
+    }
+    (budget.used(), prefix)
+}
 
 fn value(number: u64) -> Value {
     Value::constant(U256::from(number))
@@ -349,12 +408,8 @@ fn production_finish_pays_the_full_quote_and_refuses_a_smaller_budget_atomically
         }
         let _queries = QUERIES.scope();
         let _quotes = QUERY_QUOTES.scope();
-        let fee = original.copy_return_data_work_with(
-            &source,
-            &value(32),
-            &requested,
-            algebra.borrowed(),
-        );
+        let (fee, prepared) =
+            finish_prices(&payload, &source, OutcomeKind::Return, algebra.borrowed());
         assert!(fee > 0 && fee < usize::MAX);
         for funded in [false, true] {
             let mut budget = WorkBudget::new(17 + fee - usize::from(!funded));
@@ -377,7 +432,7 @@ fn production_finish_pays_the_full_quote_and_refuses_a_smaller_budget_atomically
                 },
                 7,
             );
-            assert_eq!(budget.used(), 17 + if funded { fee } else { 0 });
+            assert_eq!(budget.used(), 17 + if funded { fee } else { prepared });
             assert_eq!(result.payload, payload);
             if funded {
                 assert!(result.frontiers.is_empty());
@@ -432,6 +487,9 @@ fn cancelled_production_finish_keeps_the_unresumed_parent() {
     assert_eq!(result.payload, payload);
     assert!(result.successors.is_empty());
     assert!(result.completed_calls.is_empty());
-    assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+    assert_eq!(
+        result.frontiers[0].reason,
+        FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+    );
     assert_eq!((QUERIES.get(), QUERY_QUOTES.get()), (0, 0));
 }

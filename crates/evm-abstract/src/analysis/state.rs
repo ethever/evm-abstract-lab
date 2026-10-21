@@ -4,7 +4,7 @@
 //! without executable source identities. Instantiation always creates fresh
 //! roots. Scheduling, retry admission and publication remain with callers.
 
-use crate::domain::WordElement;
+use crate::domain::{WordElement, provenance::Origin};
 
 use super::machine::{EvmFrame, FrameByteKind, FrameMapOrder};
 use crate::{
@@ -30,6 +30,8 @@ pub(super) mod projection;
 pub(super) mod query;
 pub(super) mod stack_alias;
 pub(super) mod storage_observations;
+#[cfg(test)]
+mod tests;
 mod transform;
 
 pub(super) use loop_bound::EvmLoopBound;
@@ -73,13 +75,25 @@ pub struct EvmPayloadSummary<N: WordElement> {
 }
 
 /// Establish a runtime value without equating separate executions of a PC.
-/// A fresh expression is valid even for a numerically exact value; discovering
-/// that precision is unnecessary for independent source identity.
+/// Keep cached canonical literal proofs usable by literal-only consumers.
+/// Exact observations and inputs still get independent expressions; optional
+/// identification never discovers an opaque numeric singleton.
 pub(super) fn identify<N: WordElement>(value: EvmValue<N>, enabled: bool) -> EvmValue<N> {
-    if enabled
-        && value.expression().is_none()
-        && let Some(expression) = ExprId::fresh()
-    {
+    if !enabled || value.expression().is_some() {
+        return value;
+    }
+    let literal = value.identity().input().is_none()
+        && !value.symbolic_limit_reached()
+        && !value.provenance().is_code_address()
+        && value
+            .provenance()
+            .origins()
+            .sources()
+            .is_some_and(|sources| sources.len() == 1 && sources.contains(&Origin::Constant))
+        && (value.constants().is_some_and(|values| values.len() == 1)
+            || value.known_bits().singleton().is_some()
+            || value.interval().singleton().is_some());
+    if !literal && let Some(expression) = ExprId::fresh() {
         return value.with_expression(expression);
     }
     value

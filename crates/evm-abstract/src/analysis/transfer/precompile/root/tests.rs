@@ -705,7 +705,7 @@ fn entered_child(code: &str, native: bool, config: &ExecutionConfig) -> MachineP
 }
 
 #[test]
-fn child_and_runtime_fallback_keep_the_legacy_atomic_summary_price() {
+fn child_and_runtime_fallback_pay_retention_and_each_native_input_copy() {
     let config = config();
     let child = entered_child("5f355f526020602060205f5f60065af100", true, &config);
     assert_eq!(child.active().code, FrameCode::Precompile(address(6)));
@@ -747,20 +747,15 @@ fn child_and_runtime_fallback_keep_the_legacy_atomic_summary_price() {
         );
         assert_eq!(at_price_budget.used(), work);
         assert_eq!(at_price.payload, payload);
-        if payload.call_stack.active_child().is_none() {
-            assert!(at_price.frontiers.is_empty());
-            assert_eq!(at_price.outcomes.len(), 3);
-        } else {
-            assert!(at_price_budget.exhausted());
-            assert!(!at_price.frontiers.is_empty());
-            assert!(
-                at_price
-                    .frontiers
-                    .iter()
-                    .all(|f| f.reason == FrontierReason::Work)
-            );
-            assert!(at_price.outcomes.is_empty());
-        }
+        // Retention alone cannot authorize the next owned native input.
+        assert!(at_price_budget.exhausted());
+        assert_refusal(
+            &at_price,
+            &payload,
+            FrontierReason::Work,
+            Some(payload.key()),
+        );
+        assert!(at_price.completed_calls.is_empty() && at_price.successors.is_empty());
 
         let mut result = empty_execution(payload.clone());
         let mut budget = WorkBudget::new(config.max_work);
@@ -797,6 +792,7 @@ fn child_and_runtime_fallback_keep_the_legacy_atomic_summary_price() {
         let mut expected = empty_execution(payload.clone());
         let mut finish_budget = WorkBudget::new(config.max_work);
         for (kind, data) in KINDS.into_iter().zip(data) {
+            payload.pay_clone_with(&mut finish_budget).unwrap();
             calls::finish(
                 &mut expected,
                 payload.clone(),

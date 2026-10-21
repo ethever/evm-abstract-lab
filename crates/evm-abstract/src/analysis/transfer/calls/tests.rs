@@ -16,6 +16,8 @@ use crate::{
 };
 
 mod copy_proof;
+mod finish_clone;
+mod range_proof;
 
 fn address(number: u64) -> Address {
     Address::from_word(U256::from(number).into())

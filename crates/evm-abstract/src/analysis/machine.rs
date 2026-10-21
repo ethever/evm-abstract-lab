@@ -18,6 +18,7 @@ mod evidence;
 pub(in crate::analysis) mod fixtures;
 mod frame;
 mod join;
+mod payload;
 mod range;
 mod stack;
 mod symbolic;

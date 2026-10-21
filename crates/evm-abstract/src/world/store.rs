@@ -17,6 +17,7 @@ use serde::{Serialize, Serializer, ser::SerializeSeq};
 use snapshot_state::SharedCheckpoint;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod clone_payment;
 mod effects;
 mod finalization;
 mod lifecycle;

@@ -577,36 +577,88 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
             .unwrap();
         assert_eq!(rejected_zero.numeric(), zero.numeric());
         assert!(!rejected_zero.symbolic_limit_reached());
-        let memory_source = continuations
-            .iter()
-            .flat_map(|state| {
-                state
-                    .execution_evidence()
-                    .unwrap()
-                    .instruction_values()
-                    .unwrap()
+        let memory_source = Provenance::source(Origin::Memory);
+        let assert_memory_source = |provenance: &Provenance| {
+            let origins = provenance
+                .origins()
+                .sources()
+                .expect("persistent read lost its finite origins");
+            assert!(origins.contains(&Origin::Memory));
+            // Literal evaluation may add Constant. Retaining a nonliteral
+            // exact-zero read does not; neither route changes its MLOAD source.
+            assert!(
+                origins
                     .iter()
-                    .filter(|value| {
-                        root_bytes[state.executed_pcs[value.instruction_index()]] == opcode::MLOAD
-                    })
-                    .map(|value| {
-                        assert_eq!(value.provenance(), &Provenance::source(Origin::Memory));
-                        value.provenance().clone()
-                    })
-            })
-            .reduce(|left, right| left.join(&right))
-            .unwrap();
-        // The first rejected CALL writes zero, preserving the initial zero
-        // slot root. Its later join with the first successful memory load adds
-        // Constant to slot0's source. All subsequent loads still include Memory.
+                    .all(|origin| matches!(origin, Origin::Constant | Origin::Memory)),
+                "persistent read gained an unrelated origin: {provenance:?}"
+            );
+            assert!(!provenance.is_code_address());
+        };
+        for state in &continuations {
+            let receipt = state.execution_evidence().unwrap();
+            let loads: Vec<_> = receipt
+                .instruction_values()
+                .unwrap()
+                .iter()
+                .filter(|value| {
+                    root_bytes[state.executed_pcs[value.instruction_index()]] == opcode::MLOAD
+                })
+                .collect();
+            assert_eq!(loads.len(), 1);
+            let load = loads[0];
+            assert_eq!(load.provenance(), &memory_source);
+            // Each resumed block stores this MLOAD immediately after pushing
+            // its constant slot key, before dispatching another call or STOP.
+            let store_index = load.instruction_index() + 2;
+            assert_eq!(root_bytes[state.executed_pcs[store_index]], opcode::SSTORE);
+            for index in [load.instruction_index(), store_index] {
+                assert_eq!(
+                    receipt.instructions()[index],
+                    evm_abstract::analysis::InstructionProgress::Completed
+                );
+            }
+            let slot = AbstractValue::constant(U256::from(state.active().basic_block_index - 1));
+            let stored = state
+                .exit
+                .as_ref()
+                .unwrap()
+                .store
+                .read_checked(address(0x101), &slot, domain)
+                .unwrap();
+            assert_eq!(stored.numeric(), load.numeric());
+            assert_memory_source(stored.provenance());
+            assert!(!stored.symbolic_limit_reached());
+        }
+        // Rejection rolls back every child's counter; the parent still stores
+        // its zero-valued MLOAD, overwriting the initial slot's source metadata.
         let initial_zero = graph.states()[0]
             .entry
             .store
             .read_checked(address(0x101), &zero, domain)
             .unwrap();
         assert_eq!(initial_zero, zero);
-        let historical_source = initial_zero.provenance().join(&memory_source);
-        assert_eq!(rejected_zero.provenance(), &historical_source);
+        assert_memory_source(rejected_zero.provenance());
+        for owner in [0x101, 0x201, 0x202, 0x300] {
+            for store in [
+                &first_rejected.entry.store,
+                &first_rejected.exit.as_ref().unwrap().store,
+            ] {
+                assert_eq!(
+                    store.slot_root(address(owner), true).unwrap(),
+                    graph.states()[0]
+                        .entry
+                        .store
+                        .slot_root(address(owner), true)
+                        .unwrap()
+                );
+                assert_eq!(
+                    store
+                        .read_transient_checked(address(owner), &zero, domain)
+                        .unwrap(),
+                    zero
+                );
+            }
+        }
         let continuations: Vec<_> = continuations
             .into_iter()
             .filter(|state| {
@@ -710,28 +762,7 @@ fn shared_implementation_transient_storage_is_isolated_between_proxies() {
                 assert!(read.constants().is_some());
                 assert!(read.contains(U256::from(expected)));
                 assert_eq!(read.numeric(), union(expected).numeric());
-                let origins = read
-                    .provenance()
-                    .origins()
-                    .sources()
-                    .expect("persistent read lost its finite origins");
-                let required = if slot == 0 {
-                    &historical_source
-                } else {
-                    &memory_source
-                };
-                assert!(required.origins().sources().unwrap().is_subset(origins));
-                // Literal operand normalization adds Constant; the slot reader
-                // unions root and pointwise-cache may-origins without changing
-                // numeric facts. Neither source can introduce another origin.
-                assert!(
-                    origins.is_subset(&std::collections::BTreeSet::from([
-                        Origin::Constant,
-                        Origin::Memory,
-                    ])),
-                    "slot {slot} gained an unrelated origin"
-                );
-                assert!(!read.provenance().is_code_address());
+                assert_memory_source(read.provenance());
                 // These literal counters and MLOAD results carry no immutable
                 // input identity or live block definition. Identity equality
                 // ignores runtime aliases, so check same_identity as well.
