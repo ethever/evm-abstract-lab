@@ -1,12 +1,10 @@
 //! Reservation for one fresh bounded lattice and one scalar import, without
 //! reduction rounds. Unsupported shapes retain the general refinement quote.
-//! The caller supplies `AbstractValue::from_numeric(known)`; `known` and `learn`
+//! The caller supplies `EvmValue::from_numeric(known)`; `known` and `learn`
 //! keep their independent charges. These are logical source actions, not time.
 
 use super::Fact;
 use crate::domain::facts::{BinaryPredicate, Symbol, Term, UnaryPredicate};
-#[cfg(test)]
-use crate::domain::{AbstractValue, Domain};
 use crate::domain::{AlgebraRef, EvmNumericAlgebra, EvmValue, WordElement};
 use alloy_primitives::U256;
 
@@ -96,16 +94,7 @@ struct Shape {
     binary: bool,
 }
 
-#[cfg(test)]
-pub(super) fn reservation(domain: Domain, input: &AbstractValue, fact: &Fact) -> usize {
-    reservation_with(
-        crate::domain::ValueAlgebra::new(domain).borrowed(),
-        input,
-        fact,
-    )
-}
-
-pub(super) fn reservation_with<D: EvmNumericAlgebra>(
+pub(super) fn reservation<D: EvmNumericAlgebra>(
     domain: AlgebraRef<'_, D>,
     input: &EvmValue<D::Element>,
     fact: &Fact,

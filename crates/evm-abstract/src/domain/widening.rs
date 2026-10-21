@@ -5,18 +5,4 @@
 //! remain guarantees of the widened input.
 
 #[cfg(test)]
-use super::{AbstractValue, Domain};
-
-#[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-impl Domain {
-    pub(crate) fn widen_procedure(
-        self,
-        old: &AbstractValue,
-        next: &AbstractValue,
-    ) -> AbstractValue {
-        self.algebra().widen_procedure(old, next)
-    }
-}

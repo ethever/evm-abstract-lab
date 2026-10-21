@@ -21,10 +21,27 @@ pub trait RuleWork {
 ///
 /// The same quote is used in outer transfer/refinement payment and in the local
 /// ledger. It covers setup, all rule/capability work and final kernel reporting;
-/// it is not another root budget. `finite` is at least the configured capacity.
+/// it is not another root budget. Generic work uses `finite` at least as large
+/// as the configured capacity; exact built-in schedules may prove a smaller cover.
 pub trait ProductWork<M, R>: std::fmt::Debug {
     /// Bound a whole closure, or return `usize::MAX` to refuse execution.
     fn closure_work(&self, spec: DomainSpec, masks: &M, bounds: &R, finite: usize) -> usize;
+}
+
+/// Work proof for exactly BoundsToMask + MaskToBounds + the built-in scalar
+/// rule. Replacement rules cannot attach this policy to a different assembly.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BuiltinWork;
+impl ProductWork<BoundsToMask, MaskToBounds> for BuiltinWork {
+    fn closure_work(
+        &self,
+        spec: DomainSpec,
+        _: &BoundsToMask,
+        _: &MaskToBounds,
+        finite: usize,
+    ) -> usize {
+        spec.numeric_closure_work(finite, None)
+    }
 }
 
 /// Compose the selected component bounds over the entire permitted schedule.
@@ -62,7 +79,7 @@ impl<M, R> ProductWork<M, R> for BoundedWork {
     }
 }
 
-// Shared by the generic assembly and Domain's separately proved schedules.
+// Shared by generic assembly and the exact built-in scheduling proof.
 // One unselected scope, three singleton channels and four jobs give ten facts:
 // a scope head, three global directories, three scoped directories and values.
 // A non-seed job has at most four read/required edges, and any value/head has

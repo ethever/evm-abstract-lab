@@ -9,8 +9,7 @@ use super::{
     Constraint, QueryReason, RelationLimits, RelationPath, RelationPathKind, RelationState,
 };
 use crate::domain::{
-    AlgebraRef, EvmNumericAlgebra, EvmValue, FiniteConstantSet, ValueAlgebra, WordElement,
-    WordObservation,
+    AlgebraRef, EvmNumericAlgebra, EvmValue, FiniteConstantSet, WordElement, WordObservation,
     facts::{Fact, FactError, FactLattice},
     symbolic::{ExprId, ExprKind},
 };
@@ -101,7 +100,7 @@ impl Work<'_> {
 
 /// `None` is proved bottom; a numeric result covers every remaining alternative.
 /// A candidate is checked against the original facts, never imported as a fact.
-pub(super) fn project_with<D: EvmNumericAlgebra>(
+pub(super) fn project<D: EvmNumericAlgebra>(
     state: &RelationState,
     expression: Option<&ExprId>,
     candidate: Option<U256>,
@@ -183,24 +182,6 @@ pub(super) fn project_with<D: EvmNumericAlgebra>(
     }
 }
 
-/// Compatibility query; production generic callers use project_with.
-pub(super) fn project(
-    state: &RelationState,
-    expression: Option<&ExprId>,
-    candidate: Option<U256>,
-    limits: &RelationLimits,
-    ledger: Option<&mut crate::resource::WorkBudget>,
-) -> Result<Option<crate::domain::NumericValue>, QueryReason> {
-    project_with(
-        state,
-        expression,
-        candidate,
-        limits,
-        ledger,
-        ValueAlgebra::new(crate::domain::Domain::default()).borrowed(),
-    )
-}
-
 struct Engine<'a, 'ledger, 'policy, D: EvmNumericAlgebra> {
     work: &'a mut Work<'ledger>,
     limits: &'a RelationLimits,
@@ -256,7 +237,7 @@ impl<'a, 'ledger, 'policy, D: EvmNumericAlgebra> Engine<'a, 'ledger, 'policy, D>
         if left.is_top() {
             return Ok(right.clone());
         }
-        if let Some(value) = singleton_meet::meet_with(left, right, self.domain, self.work)? {
+        if let Some(value) = singleton_meet::meet(left, right, self.domain, self.work)? {
             return Ok(value);
         }
         // Keep the existing right-side observation payment. The selected
@@ -387,7 +368,7 @@ impl<'a, 'ledger, 'policy, D: EvmNumericAlgebra> Engine<'a, 'ledger, 'policy, D>
         let known = self.known(expression)?;
         let input = EvmValue::from_numeric(known);
         self.work
-            .prepay(import_work::reservation_with(self.domain, &input, &fact))?;
+            .prepay(import_work::reservation(self.domain, &input, &fact))?;
         let mut lattice = FactLattice::new(self.domain.spec().fact_limit());
         lattice.insert(fact)?;
         let value = crate::domain::reduce::import(&input, &lattice)?;
@@ -848,8 +829,7 @@ impl<'a, 'ledger, 'policy, D: EvmNumericAlgebra> Engine<'a, 'ledger, 'policy, D>
             .cloned()
             .map(EvmValue::from_numeric)
             .collect::<Vec<_>>();
-        self.work
-            .prepay(self.domain.operation_work_for(op, &args))?;
+        self.work.prepay(self.domain.operation_work(op, &args))?;
         Ok(self.domain.apply(op, &args).numeric().clone())
     }
 
