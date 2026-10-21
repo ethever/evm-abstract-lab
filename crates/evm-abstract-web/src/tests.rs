@@ -117,6 +117,8 @@ pub(crate) fn empty_report() -> AnalysisReport {
             snapshot: None,
             fingerprint: format!("0x{}", "00".repeat(32)),
             work: 0,
+            postprocessing_max_work: 2_000_000_000,
+            postprocessing_work: 0,
             limits: api::AnalysisLimits::default(),
             environment: api::EnvironmentSnapshot {
                 to: address(api::InputSymbolKind::To),

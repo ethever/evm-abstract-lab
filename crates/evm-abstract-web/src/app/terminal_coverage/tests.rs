@@ -24,7 +24,13 @@ fn terminal_binding_checks_the_selected_model_and_actual_numeric_limits() {
             ..api::AnalyzeRequest::default()
         };
         let valid = evm_abstract_server::analyze::analyze(request).unwrap();
-        valid.validate().unwrap();
+        let coverage = valid.root_terminal_coverage.as_ref().unwrap();
+        assert_eq!(
+            valid.validate(),
+            Ok(()),
+            "{model:?}: failure data length {:?}",
+            valid.byte_arrays[coverage.outcomes[2].data].length
+        );
         let input = &valid.root_terminal_coverage.as_ref().unwrap().input;
         assert_eq!(input.numeric_model, model);
         assert_eq!(
@@ -486,6 +492,68 @@ fn invalid_schema_bindings_and_pool_sorts_never_replace_the_visible_report() {
     let before_account = workspace.account.clone();
     let before_program = workspace.program;
     let before_graph = workspace.graph.accessible_summary();
+    let failure_data = valid.root_terminal_coverage.as_ref().unwrap().outcomes[2].data;
+    for (constants, lower, upper, accepted) in [
+        (None, "0x00".to_owned(), "0x0".to_owned(), true),
+        (
+            Some(vec!["0x0000".into()]),
+            "0x0".into(),
+            format!("0x{}", "f".repeat(64)),
+            true,
+        ),
+        (
+            Some(vec!["0x0".into(), "0x1".into()]),
+            "0x0".into(),
+            format!("0x{}", "f".repeat(64)),
+            false,
+        ),
+        (None, "0x0".into(), format!("0x{}", "f".repeat(64)), false),
+        (Some(vec!["0x1".into()]), "0x1".into(), "0x1".into(), false),
+        (Some(vec![]), "0x0".into(), "0x1".into(), false),
+        (Some(vec!["0x".into()]), "0x0".into(), "0x1".into(), false),
+    ] {
+        let mut projected = valid.clone();
+        let length = &mut projected.byte_arrays[failure_data].length;
+        length.constants = constants;
+        length.unsigned = api::WordBounds { lower, upper };
+        length.known_zero = "0x0".into();
+        length.known_one = "0x0".into();
+        length.signed = api::WordBounds {
+            lower: format!("0x8{}", "0".repeat(63)),
+            upper: format!("0x7{}", "f".repeat(63)),
+        };
+        length.congruence = api::CongruenceValue::Any;
+        length.nonzero = false;
+        if accepted {
+            projected.validate().unwrap();
+            workspace.receive(Ok(api::AnalyzeReply {
+                result: Ok(projected.clone()),
+            }));
+            assert_eq!(workspace.report.as_ref(), Some(&projected));
+            workspace.receive(Ok(api::AnalyzeReply {
+                result: Ok(valid.clone()),
+            }));
+            workspace.selection = before_selection;
+            workspace.account.clone_from(&before_account);
+            workspace.inspector.tab = inspector::Tab::Outcomes;
+        } else {
+            assert_eq!(
+                projected.validate(),
+                Err(api::ReportValidationFailure::RootTerminal(
+                    api::RootTerminalValidationFailure::FailureData
+                ))
+            );
+            workspace.receive(Ok(api::AnalyzeReply {
+                result: Ok(projected),
+            }));
+            assert_eq!(workspace.report.as_ref(), Some(&valid));
+            assert_eq!(workspace.selection, before_selection);
+            assert_eq!(workspace.account, before_account);
+            assert_eq!(workspace.program, before_program);
+            assert_eq!(workspace.graph.accessible_summary(), before_graph);
+            assert!(workspace.inspector.tab == inspector::Tab::Outcomes);
+        }
+    }
     let mut invalid_reports = vec![];
     for version in [api::SCHEMA_VERSION - 1, api::SCHEMA_VERSION + 1] {
         let mut invalid = valid.clone();

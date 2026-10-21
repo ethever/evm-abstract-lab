@@ -196,7 +196,15 @@ impl Validation<'_> {
         let failure = &self.report.byte_arrays[source.outcomes[2].data];
         // Sparse cells outside the length are irrelevant; arbitrary Return and
         // Revert views need not be enumerated or exact-cell arrays.
-        if !zero(&failure.length.unsigned.lower) || !zero(&failure.length.unsigned.upper) {
+        // Numeric components are independent guarantees. A finite singleton
+        // need not also carry a reduced interval to prove this length is zero.
+        let length = &failure.length;
+        let finite_zero = length
+            .constants
+            .as_ref()
+            .is_some_and(|values| values.len() == 1 && zero(&values[0]));
+        let unsigned_zero = zero(&length.unsigned.lower) && zero(&length.unsigned.upper);
+        if !finite_zero && !unsigned_zero {
             return Err(invalid(Failure::FailureData));
         }
         Ok(())

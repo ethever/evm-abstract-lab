@@ -791,6 +791,88 @@ fn frontier_symbol_click_retains_original_state_and_instruction_coordinates() {
 }
 
 #[test]
+fn native_execution_and_preparation_failures_render_separate_categories() {
+    for (details, expected) in [
+        (
+            api::ErrorDetails::Execution(api::ExecutionFailureKind::Protocol),
+            "Protocol",
+        ),
+        (
+            api::ErrorDetails::Execution(api::ExecutionFailureKind::Initialization),
+            "Initialization",
+        ),
+        (
+            api::ErrorDetails::Execution(api::ExecutionFailureKind::Refinement),
+            "Refinement",
+        ),
+        (
+            api::ErrorDetails::Execution(api::ExecutionFailureKind::Unfinished),
+            "Unfinished",
+        ),
+        (
+            api::ErrorDetails::Ssa(api::SsaFailure::Work),
+            "Postprocessing work exhausted or unavailable",
+        ),
+        (
+            api::ErrorDetails::Session(Box::new(api::SessionFailure::Work)),
+            "Required preparation work could not be funded",
+        ),
+        (
+            api::ErrorDetails::Session(Box::new(api::SessionFailure::Refinement(
+                api::SessionRefinementFailure {
+                    location: api::InitialFactLocation::Balance(format!("0x{}", "11".repeat(20))),
+                    source: api::FactFailure::Capacity(api::FactCapacityFailure {
+                        max_atoms: 64,
+                        required: 65,
+                    }),
+                },
+            ))),
+            "Semantic atom capacity exceeded",
+        ),
+        (
+            api::ErrorDetails::Session(Box::new(api::SessionFailure::Refinement(
+                api::SessionRefinementFailure {
+                    location: api::InitialFactLocation::Nonce(format!("0x{}", "11".repeat(20))),
+                    source: api::FactFailure::UnsupportedOperation(0xfe),
+                },
+            ))),
+            "Unsupported pure word operation",
+        ),
+    ] {
+        let error = api::ApiError {
+            code: api::ApiErrorCode::Internal,
+            message: "Native contextual diagnostic".into(),
+            details,
+        };
+        let context = egui::Context::default();
+        crate::palette::configure(&context);
+        let mut time = 0.0;
+        let visible = rendered(&context, &mut time, vec![], |ui| errors::api(ui, &error));
+        assert!(visible.iter().any(|(label, _)| label == expected));
+        assert!(
+            visible
+                .iter()
+                .any(|(label, _)| label == "Native contextual diagnostic")
+        );
+        assert!(!visible.iter().any(|(label, _)| label == "Worker failure"));
+        if matches!(&error.details, api::ErrorDetails::Session(detail)
+            if matches!(detail.as_ref(), api::SessionFailure::Refinement(_)))
+        {
+            assert!(
+                visible
+                    .iter()
+                    .any(|(label, _)| label == "Refinement observation")
+            );
+            assert!(
+                !visible
+                    .iter()
+                    .any(|(label, _)| label == "Conflicting observation")
+            );
+        }
+    }
+}
+
+#[test]
 fn typed_ssa_error_coordinates_use_symbols_and_preserve_percent_values() {
     let error = api::ApiError {
         code: api::ApiErrorCode::Internal,

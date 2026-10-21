@@ -97,6 +97,9 @@ pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
                 "Relation and expression bounds must be positive",
             ),
         }),
+        api::ErrorDetails::Execution(kind) => fields(ui, |ui| {
+            value::text(ui, "Execution failure", format!("{kind:?}"));
+        }),
         api::ErrorDetails::Limit(detail) => fields(ui, |ui| {
             value::text(ui, "Field", &detail.field);
             value::text(ui, "Submitted", detail.value.to_string());
@@ -131,6 +134,9 @@ pub(super) fn api(ui: &mut Ui, error: &api::ApiError) {
         api::ErrorDetails::Ssa(api::SsaFailure::Coverage) => {
             ui.label("Closed SSA requires complete analysis coverage.");
         }
+        api::ErrorDetails::Ssa(api::SsaFailure::Work) => fields(ui, |ui| {
+            value::text(ui, "SSA", "Postprocessing work exhausted or unavailable");
+        }),
         api::ErrorDetails::Ssa(api::SsaFailure::Invariant(detail)) => fields(ui, |ui| {
             value::text(ui, "SSA contract", format!("{:?}", detail.kind));
             for (label, number) in [
