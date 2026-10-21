@@ -17,7 +17,7 @@ use std::{collections::BTreeSet, marker::PhantomData};
 pub struct Producer<N: WordElement> {
     enabled: bool,
     pub feedback_observed: usize,
-    numeric: PhantomData<fn() -> N>,
+    numeric: PhantomData<N>,
 }
 impl<N: WordElement> Producer<N> {
     pub fn new(enabled: bool) -> Self {

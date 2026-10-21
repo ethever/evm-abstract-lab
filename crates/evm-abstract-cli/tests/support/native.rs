@@ -127,30 +127,60 @@ fn sparse_components_require_an_object_valued_outer_numeric_payload() {
         let value = serde_json::json!({"numeric":payload});
         assert_eq!(numeric(&value), &payload);
     }
-    for malformed in [
-        serde_json::json!({}),
-        serde_json::json!({"numeric":null}),
-        serde_json::json!({"numeric":"Top"}),
-        serde_json::json!({"Constants":["0x1"]}),
-    ] {
-        assert!(std::panic::catch_unwind(|| numeric(&malformed)).is_err());
-    }
 }
 
 #[test]
-fn application_metadata_preserves_native_evidence_and_rejects_invalid_consumption() {
+#[should_panic(expected = "native EVM value requires numeric")]
+fn numeric_requires_outer_payload() {
+    numeric(&serde_json::json!({}));
+}
+
+#[test]
+#[should_panic(expected = "built-in numeric payload must be an object")]
+fn numeric_rejects_null_payload() {
+    numeric(&serde_json::json!({"numeric":null}));
+}
+
+#[test]
+#[should_panic(expected = "built-in numeric payload must be an object")]
+fn numeric_rejects_legacy_top_string() {
+    numeric(&serde_json::json!({"numeric":"Top"}));
+}
+
+#[test]
+#[should_panic(expected = "native EVM value requires numeric")]
+fn numeric_rejects_flattened_constants() {
+    numeric(&serde_json::json!({"Constants":["0x1"]}));
+}
+
+#[test]
+fn application_metadata_preserves_native_evidence() {
     let native = serde_json::json!({"schema_version":12,"work":3,"status":"Incomplete"});
     let mut application = native.clone();
     application["numeric_model"] = serde_json::json!("finite-set");
     application["postprocessing_max_work"] = serde_json::json!(2_000_000_000_u64);
     application["postprocessing_work"] = serde_json::json!(17);
     assert_eq!(without_application_metadata(&application), native);
-    let mut excessive = application.clone();
-    excessive["postprocessing_work"] = serde_json::json!(2_000_000_001_u64);
-    assert!(std::panic::catch_unwind(|| without_application_metadata(&excessive)).is_err());
-    application
-        .as_object_mut()
-        .unwrap()
-        .remove("postprocessing_max_work");
-    assert!(std::panic::catch_unwind(|| without_application_metadata(&application)).is_err());
+}
+
+#[test]
+#[should_panic(expected = "assertion failed: work <= maximum")]
+fn application_metadata_rejects_excessive_consumption() {
+    let excessive = serde_json::json!({
+        "schema_version":12,"work":3,"status":"Incomplete",
+        "numeric_model":"finite-set",
+        "postprocessing_max_work":2_000_000_000_u64,
+        "postprocessing_work":2_000_000_001_u64,
+    });
+    without_application_metadata(&excessive);
+}
+
+#[test]
+#[should_panic(expected = "postprocessing allowance is recorded")]
+fn application_metadata_requires_postprocessing_allowance() {
+    let missing = serde_json::json!({
+        "schema_version":12,"work":3,"status":"Incomplete",
+        "numeric_model":"finite-set","postprocessing_work":17,
+    });
+    without_application_metadata(&missing);
 }
