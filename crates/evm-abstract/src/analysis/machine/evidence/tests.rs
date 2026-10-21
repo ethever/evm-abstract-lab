@@ -8,11 +8,9 @@ use crate::{
         transfer::{self, StorageReadPolicy, WorkBudget},
     },
     domain::{AbstractValue, provenance::Origin},
+    test_instrumentation::work_boundary,
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
-
-#[path = "../../../../tests/support/work_boundary.rs"]
-mod work_boundary;
 
 fn address(value: u64) -> Address {
     Address::from_word(U256::from(value).into())

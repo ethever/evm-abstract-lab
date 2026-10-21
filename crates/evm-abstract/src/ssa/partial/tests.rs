@@ -7,12 +7,10 @@ use crate::{
     },
     domain::{AbstractValue, relational::QueryReason},
     ssa::{self, SsaError, SsaInvariantKind as Kind},
+    test_instrumentation::work_boundary,
     world::{Account, ByteArray, Entry, EvmEnvironment, World},
 };
 use revm_bytecode::opcode;
-
-#[path = "../../../tests/support/work_boundary.rs"]
-mod work_boundary;
 
 fn address(value: u64) -> Address {
     Address::from_word(U256::from(value).into())
