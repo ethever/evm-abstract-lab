@@ -83,16 +83,29 @@ pub(in crate::analyze) fn error(source: SessionError<std::convert::Infallible>) 
         SessionError::Facts(FactError::Conflict { key }) => {
             api::SessionFailure::FactConflict(fact(key))
         }
+        SessionError::Refinement { key, source } => {
+            api::SessionFailure::Refinement(api::SessionRefinementFailure {
+                location: fact(key),
+                source: super::super::mapping::fact_failure(&source),
+            })
+        }
         SessionError::MissingCode(id) => api::SessionFailure::MissingCode(code(id)),
         SessionError::InitcodeBinding(id) => api::SessionFailure::InitcodeBinding(code(id)),
         SessionError::EntryCode(address) => api::SessionFailure::EntryCode(address.to_string()),
         SessionError::Seed => api::SessionFailure::Seed,
     };
     api::ApiError {
-        code: if matches!(detail, api::SessionFailure::Work) {
-            api::ApiErrorCode::Internal
-        } else {
-            api::ApiErrorCode::InvalidRequest
+        // Capacity is a limit refusal; other numeric import refusals identify
+        // unavailable native capability. Keep both distinct from fact conflicts.
+        code: match &detail {
+            api::SessionFailure::Refinement(api::SessionRefinementFailure {
+                source: api::FactFailure::Capacity(_),
+                ..
+            }) => api::ApiErrorCode::InvalidLimits,
+            api::SessionFailure::Work | api::SessionFailure::Refinement(_) => {
+                api::ApiErrorCode::Internal
+            }
+            _ => api::ApiErrorCode::InvalidRequest,
         },
         message,
         details: api::ErrorDetails::Session(Box::new(detail)),
