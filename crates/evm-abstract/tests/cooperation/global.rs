@@ -32,13 +32,18 @@ type Infrastructure = KernelError<MachineError>;
 #[derive(Debug, thiserror::Error)]
 enum Failure {
     #[error("{0}")]
-    Summary(#[from] evm_abstract::analysis::cooperation::SummaryReadError<Infrastructure>),
+    Summary(evm_abstract::analysis::cooperation::SummaryReadError<Infrastructure>),
     #[error("capability operation failed: {0}")]
     Infrastructure(Infrastructure),
     #[error("bound publication failed: {0}")]
     Bound(PublishError<Infallible, MachineError>),
     #[error("feedback publication failed: {0}")]
     Feedback(PublishError<FactError, MachineError>),
+}
+impl From<evm_abstract::analysis::cooperation::SummaryReadError<Infrastructure>> for Failure {
+    fn from(error: evm_abstract::analysis::cooperation::SummaryReadError<Infrastructure>) -> Self {
+        Self::Summary(error)
+    }
 }
 impl From<Infrastructure> for Failure {
     fn from(error: Infrastructure) -> Self {

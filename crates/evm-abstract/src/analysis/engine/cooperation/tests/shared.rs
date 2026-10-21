@@ -159,9 +159,19 @@ impl ExtraStores for Factory {
 #[derive(Debug, thiserror::Error)]
 enum Failure {
     #[error("{0}")]
-    Kernel(#[from] KernelError<MachineError>),
+    Kernel(KernelError<MachineError>),
     #[error("{0}")]
-    Publication(#[from] PublishError<Infallible, MachineError>),
+    Publication(PublishError<Infallible, MachineError>),
+}
+impl From<KernelError<MachineError>> for Failure {
+    fn from(error: KernelError<MachineError>) -> Self {
+        Self::Kernel(error)
+    }
+}
+impl From<PublishError<Infallible, MachineError>> for Failure {
+    fn from(error: PublishError<Infallible, MachineError>) -> Self {
+        Self::Publication(error)
+    }
 }
 struct Watch {
     counts: Rc<Counts>,
