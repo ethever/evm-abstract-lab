@@ -51,7 +51,7 @@ fn raw(command: &str, code: &str, extra: &[&str]) -> Json {
 
 fn constant(value: &Json, expected: U256) {
     assert_eq!(
-        value["Constants"],
+        value["numeric"]["constants"],
         json!([format!("{expected:#x}")]),
         "{value}"
     );
@@ -59,6 +59,33 @@ fn constant(value: &Json, expected: U256) {
 
 fn word(address: &str) -> U256 {
     address.parse().unwrap()
+}
+
+fn assert_arbitrary_byte(value: &Json) {
+    let numeric = crate::native::numeric(value);
+    if let Some(constants) = numeric.get("constants") {
+        let constants = constants.as_array().unwrap();
+        for byte in 0..=255 {
+            assert!(constants.contains(&json!(format!("0x{byte:x}"))), "{value}");
+        }
+    }
+    if let Some(bits) = numeric.get("known_bits") {
+        let zero = bits["zero"].as_str().unwrap().parse::<U256>().unwrap();
+        assert_eq!(zero & U256::from(255), U256::ZERO);
+        assert_eq!(bits["one"], "0x0");
+    }
+    if let Some(interval) = numeric.get("interval") {
+        let word = |field: &str| interval[field].as_str().unwrap().parse::<U256>().unwrap();
+        assert_eq!(word("unsigned_lo"), U256::ZERO);
+        assert!(word("unsigned_hi") >= U256::from(255));
+        // Interval serializes signed bounds in XOR-2^255 order coordinates.
+        let sign = U256::ONE << 255;
+        assert!(word("signed_lo") <= sign);
+        assert!(word("signed_hi") >= (sign | U256::from(255)));
+    }
+    // No nontrivial congruence or nonzero fact can hold for all 256 bytes.
+    assert!(numeric.get("congruence").is_none());
+    assert!(numeric.get("nonzero").is_none());
 }
 
 fn assert_symbolic_environment(analysis: &Json) {
@@ -83,18 +110,28 @@ fn assert_symbolic_environment(analysis: &Json) {
     ] {
         assert!(!environment[field].is_null(), "missing {field}");
         assert!(
-            environment[field]["Constants"].is_null(),
+            crate::native::numeric(&environment[field])
+                .get("constants")
+                .is_none(),
             "{field} must remain symbolic"
         );
     }
     assert!(!environment["calldata"].is_null());
-    assert!(environment["calldata"]["length"]["Constants"].is_null());
-    assert!(environment["calldata"]["default"]["Constants"].is_null());
+    assert!(
+        crate::native::numeric(&environment["calldata"]["length"])
+            .get("constants")
+            .is_none()
+    );
+    assert_arbitrary_byte(&environment["calldata"]["default"]);
     assert!(environment["chain_id"].is_null());
     assert_eq!(environment["gas"], "Unknown");
     assert_eq!(environment["is_static"], false);
     assert_eq!(environment["block_hashes"], json!({}));
-    assert!(environment["blob_hashes"]["length"]["Constants"].is_null());
+    assert!(
+        crate::native::numeric(&environment["blob_hashes"]["length"])
+            .get("constants")
+            .is_none()
+    );
     assert_eq!(environment["blob_hashes"]["hashes"], json!({}));
     assert!(environment.get("input_scope").is_none());
 }
@@ -182,13 +219,16 @@ fn raw_and_world_defaults_keep_inputs_symbolic_and_origin_aliases_caller() {
     // Keep two distinct constraints: shared sender/origin and arbitrary value,
     // arbitrary calldata bytes/length, and an unknown raw ADDRESS.
     for command in ["cfg", "ssa"] {
-        for profile in ["product", "constants-only"] {
-            let analysis = raw(command, "33321434365f353000", &["--domain", profile]);
+        for profile in ["product", "finite-set"] {
+            let analysis = raw(command, "33321434365f353000", &["--numeric-model", profile]);
             assert_symbolic_environment(&analysis);
             let stack = analysis["states"][0]["exit_stack"].as_array().unwrap();
             constant(&stack[0], U256::from(1));
             for value in &stack[1..] {
-                assert!(value["Constants"].is_null(), "{value}");
+                assert!(
+                    crate::native::numeric(value).get("constants").is_none(),
+                    "{value}"
+                );
             }
         }
     }
@@ -197,15 +237,26 @@ fn raw_and_world_defaults_keep_inputs_symbolic_and_origin_aliases_caller() {
     success(&output);
     let analysis: Json = serde_json::from_slice(&output.stdout).unwrap();
     let environment = &analysis["entry"]["environment"];
-    assert!(environment["value"]["Constants"].is_null());
-    assert!(environment["calldata"]["length"]["Constants"].is_null());
+    assert!(
+        crate::native::numeric(&environment["value"])
+            .get("constants")
+            .is_none()
+    );
+    assert!(
+        crate::native::numeric(&environment["calldata"]["length"])
+            .get("constants")
+            .is_none()
+    );
     assert!(environment["origin"].is_null());
     assert_eq!(environment["to"], json!({"Concrete":TO}));
     assert_eq!(environment["caller"], json!({"Symbolic":"Caller"}));
     let stack = analysis["states"][0]["exit_stack"].as_array().unwrap();
     constant(&stack[0], U256::from(1));
     for value in &stack[1..4] {
-        assert!(value["Constants"].is_null(), "{value}");
+        assert!(
+            crate::native::numeric(value).get("constants").is_none(),
+            "{value}"
+        );
     }
     constant(&stack[4], word(TO));
     for source in [
@@ -327,13 +378,13 @@ fn assert_supplied(stack: &[Json], to: &str, caller: &str, value: U256, calldata
     }
     // GAS is an observation bounded by the supplied entry budget, not a fabricated exact remainder.
     let gas = stack.last().unwrap();
-    if let Some(constants) = gas["Constants"].as_array() {
+    if let Some(constants) = gas["numeric"]["constants"].as_array() {
         for value in constants {
             assert!(value.as_str().unwrap().parse::<U256>().unwrap() <= U256::from(1_000_000));
         }
     } else {
-        assert_eq!(gas["interval"]["unsigned_lo"], "0x0");
-        let upper = gas["interval"]["unsigned_hi"]
+        assert_eq!(gas["numeric"]["interval"]["unsigned_lo"], "0x0");
+        let upper = gas["numeric"]["interval"]["unsigned_hi"]
             .as_str()
             .unwrap()
             .parse::<U256>()
@@ -443,7 +494,11 @@ fn blob_list_length_and_blockhash_window_preserve_evm_zero_rules() {
         constant(value, U256::ZERO);
     }
     let open = raw("cfg", "60014900", &["--evm.blob-hash", &blob]);
-    assert!(open["states"][0]["exit_stack"][0]["Constants"].is_null());
+    assert!(
+        crate::native::numeric(&open["states"][0]["exit_stack"][0])
+            .get("constants")
+            .is_none()
+    );
 }
 
 #[test]

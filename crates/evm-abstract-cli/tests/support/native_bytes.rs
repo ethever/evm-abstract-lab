@@ -5,7 +5,7 @@
 
 use alloy_primitives::U256;
 use evm_abstract::domain::{
-    NumericValue, WordObservation,
+    EvmValue, NumericValue, WordObservation,
     symbolic::{
         ByteStateId, ByteView, ExprId, ExprLimits, SlotStateId, SlotStateKind, SourceId,
         StateBinding,
@@ -338,12 +338,20 @@ fn literal(value: &Json, scope: &str) -> Option<U256> {
 // need exact literals and the captured unknown-byte presentation. Provenance is
 // metadata, not a numeric proof, and remains in the untouched native relation.
 fn numeric_matches(value: &Json, expected: NumericValue, scope: &str) -> Option<()> {
-    let mut numeric = value.as_object()?.clone();
-    numeric.remove("provenance")?.as_object()?;
-    if let Some(expression) = numeric.remove("expression") {
+    let mut envelope = value.as_object()?.clone();
+    envelope.get("numeric")?.as_object()?;
+    if let Some(provenance) = envelope.remove("provenance") {
+        provenance.as_object()?;
+    }
+    if let Some(expression) = envelope.remove("expression") {
         (literal(&expression, scope)? == expected.singleton()?).then_some(())?;
     }
-    (Json::Object(numeric) == serde_json::to_value(expected).ok()?).then_some(())
+    // Compare actual sparse carrier data and absence metadata against the typed
+    // native producer; no missing outer numeric or flattened decoder is allowed.
+    let mut native = serde_json::to_value(EvmValue::from_numeric(expected)).ok()?;
+    native.as_object_mut()?.remove("provenance");
+    native.as_object_mut()?.remove("expression");
+    (Json::Object(envelope) == native).then_some(())
 }
 
 fn read_fact_matches(
@@ -352,14 +360,20 @@ fn read_fact_matches(
     scope: &str,
     limits: ExprLimits,
 ) -> Option<()> {
-    let mut numeric = value.as_object()?.clone();
-    numeric.remove("provenance")?.as_object()?;
-    // Unlike literal presentation, a read requires its complete original graph
-    // inside the numeric fact too. Equal scalar values do not identify sources.
-    let expression = numeric.remove("expression")?;
+    let mut envelope = value.as_object()?.clone();
+    envelope.get("numeric")?.as_object()?;
+    if let Some(provenance) = envelope.remove("provenance") {
+        provenance.as_object()?;
+    }
+    // A read requires its complete original graph inside the value fact too.
+    // Equal scalar values do not identify the same source or snapshot binding.
+    let expression = envelope.remove("expression")?;
     (read_scalar(&expression, scope, limits)? == *expected).then_some(())?;
-    (Json::Object(numeric) == serde_json::to_value(NumericValue::constant(expected.exact)).ok()?)
-        .then_some(())
+    let mut native =
+        serde_json::to_value(EvmValue::<NumericValue>::constant(expected.exact)).ok()?;
+    native.as_object_mut()?.remove("provenance");
+    native.as_object_mut()?.remove("expression");
+    (Json::Object(envelope) == native).then_some(())
 }
 
 fn read_word(data: &Json) -> Option<[u8; 32]> {
@@ -448,14 +462,17 @@ mod tests {
         ByteStateId, ByteView, ExprId, ExprLimits, Json, SlotStateId, SourceId, StateBinding, U256,
         WordObservation, word_matches,
     };
-    use evm_abstract::{domain::AbstractValue, world::ByteArray};
+    use evm_abstract::{
+        domain::{EvmValue, NumericValue},
+        world::EvmByteArray,
+    };
     use serde_json::json;
 
     fn snapshot(root: ByteStateId) -> Json {
-        let mut data = serde_json::to_value(ByteArray::exact(&[0; 32])).unwrap();
+        let mut data = serde_json::to_value(EvmByteArray::<NumericValue>::exact(&[0; 32])).unwrap();
         data["root"] = serde_json::to_value(root).unwrap();
         data["bytes"] = json!({});
-        data["default"] = serde_json::to_value(AbstractValue::unknown_byte()).unwrap();
+        data["default"] = serde_json::to_value(EvmValue::<NumericValue>::unknown_byte()).unwrap();
         data
     }
 
@@ -484,7 +501,8 @@ mod tests {
         for length in [31usize, 33] {
             let mut data = data.clone();
             data["length"] =
-                serde_json::to_value(AbstractValue::constant(U256::from(length))).unwrap();
+                serde_json::to_value(EvmValue::<NumericValue>::constant(U256::from(length)))
+                    .unwrap();
             assert!(!word_matches(&data, expected));
         }
     }
@@ -534,12 +552,12 @@ mod tests {
         let mut data = snapshot(written(42));
         data["operands"] = json!([{
             "expression": ExprId::constant(expected),
-            "value": AbstractValue::constant(expected)
+            "value": EvmValue::<NumericValue>::constant(expected)
         }]);
         assert!(word_matches(&data, expected));
         let mut wrong_fact = data.clone();
         wrong_fact["operands"][0]["value"] =
-            serde_json::to_value(AbstractValue::constant(U256::from(7))).unwrap();
+            serde_json::to_value(EvmValue::<NumericValue>::constant(U256::from(7))).unwrap();
         assert!(!word_matches(&wrong_fact, expected));
         data["operands"][0]["expression"]["identity_scope"] = json!("another-producer");
         assert!(!word_matches(&data, expected));
@@ -574,6 +592,24 @@ mod tests {
         assert!(!word_matches(&truncated, expected));
     }
 
+    #[test]
+    fn rejects_executable_values_without_the_native_numeric_component() {
+        let expected = U256::from(42);
+        let data = snapshot(written(42));
+        assert!(word_matches(&data, expected));
+        let mut flattened = data.clone();
+        let mut length = flattened["length"]["numeric"].as_object().unwrap().clone();
+        length.insert(
+            "provenance".into(),
+            flattened["length"]["provenance"].clone(),
+        );
+        flattened["length"] = Json::Object(length);
+        assert!(!word_matches(&flattened, expected));
+        let mut string_top = data;
+        string_top["default"] = json!("Top");
+        assert!(!word_matches(&string_top, expected));
+    }
+
     fn slot_snapshot(token: u64, namespace: u64, value: u64) -> Json {
         let limits = ExprLimits::default();
         let value = U256::from(value);
@@ -603,7 +639,7 @@ mod tests {
             )
             .unwrap();
         let mut data = snapshot(root);
-        let mut numeric = serde_json::to_value(AbstractValue::constant(value)).unwrap();
+        let mut numeric = serde_json::to_value(EvmValue::<NumericValue>::constant(value)).unwrap();
         numeric["expression"] = serde_json::to_value(&read).unwrap();
         data["operands"] = json!([{"expression": read, "value": numeric}]);
         data
@@ -634,7 +670,7 @@ mod tests {
             .remove("expression");
         assert!(!word_matches(&missing_expression, expected));
         let mut incomplete_fact = data.clone();
-        incomplete_fact["operands"][0]["value"]
+        incomplete_fact["operands"][0]["value"]["numeric"]
             .as_object_mut()
             .unwrap()
             .remove("known_bits");
@@ -709,7 +745,7 @@ mod tests {
         let mut literal_fact = data;
         literal_fact["operands"] = json!([{
             "expression": ExprId::constant(expected),
-            "value": AbstractValue::constant(expected)
+            "value": EvmValue::<NumericValue>::constant(expected)
         }]);
         assert!(!word_matches(&literal_fact, expected));
     }

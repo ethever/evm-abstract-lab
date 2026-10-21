@@ -12,6 +12,43 @@ pub fn root(graph: &Json) -> &Json {
         .expect("native expression is flat")[index]
 }
 
+/// The CLI selects two built-in carriers with object payloads. Schema 12 keeps
+/// the outer numeric field even when all their sparse components are absent.
+pub fn numeric(value: &Json) -> &Json {
+    let numeric = value
+        .get("numeric")
+        .expect("native EVM value requires numeric");
+    assert!(
+        numeric.is_object(),
+        "built-in numeric payload must be an object: {value}"
+    );
+    numeric
+}
+
+/// Compare native evidence independently of requested presentation work, after
+/// validating the command's separate, finite postprocessing metadata.
+pub fn without_application_metadata(value: &Json) -> Json {
+    let mut report = value
+        .as_object()
+        .expect("application report is an object")
+        .clone();
+    let model = report
+        .remove("numeric_model")
+        .expect("selected model is recorded");
+    assert!(matches!(model.as_str(), Some("product" | "finite-set")));
+    let maximum = report
+        .remove("postprocessing_max_work")
+        .and_then(|v| v.as_u64())
+        .expect("postprocessing allowance is recorded");
+    let work = report
+        .remove("postprocessing_work")
+        .and_then(|v| v.as_u64())
+        .expect("postprocessing consumption is recorded");
+    assert_eq!(maximum, 2_000_000_000);
+    assert!(work <= maximum);
+    Json::Object(report)
+}
+
 pub fn canonical(value: &Json) -> Json {
     let mut value = value.clone();
     rename(&mut value, None, &mut BTreeMap::new(), &mut BTreeMap::new());
@@ -79,4 +116,41 @@ fn renaming_preserves_shared_and_independent_fresh_sources() {
         canonical(&independent),
         "separate graphs/outcomes must use the same source bijection"
     );
+}
+
+#[test]
+fn sparse_components_require_an_object_valued_outer_numeric_payload() {
+    for payload in [
+        serde_json::json!({}),
+        serde_json::json!({"constants":["0x1"]}),
+    ] {
+        let value = serde_json::json!({"numeric":payload});
+        assert_eq!(numeric(&value), &payload);
+    }
+    for malformed in [
+        serde_json::json!({}),
+        serde_json::json!({"numeric":null}),
+        serde_json::json!({"numeric":"Top"}),
+        serde_json::json!({"Constants":["0x1"]}),
+    ] {
+        assert!(std::panic::catch_unwind(|| numeric(&malformed)).is_err());
+    }
+}
+
+#[test]
+fn application_metadata_preserves_native_evidence_and_rejects_invalid_consumption() {
+    let native = serde_json::json!({"schema_version":12,"work":3,"status":"Incomplete"});
+    let mut application = native.clone();
+    application["numeric_model"] = serde_json::json!("finite-set");
+    application["postprocessing_max_work"] = serde_json::json!(2_000_000_000_u64);
+    application["postprocessing_work"] = serde_json::json!(17);
+    assert_eq!(without_application_metadata(&application), native);
+    let mut excessive = application.clone();
+    excessive["postprocessing_work"] = serde_json::json!(2_000_000_001_u64);
+    assert!(std::panic::catch_unwind(|| without_application_metadata(&excessive)).is_err());
+    application
+        .as_object_mut()
+        .unwrap()
+        .remove("postprocessing_max_work");
+    assert!(std::panic::catch_unwind(|| without_application_metadata(&application)).is_err());
 }

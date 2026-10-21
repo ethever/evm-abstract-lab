@@ -448,7 +448,7 @@ fn blocked_memory_instruction_is_pending_without_a_normal_result() {
         .as_array()
         .unwrap();
     assert_eq!(stack.len(), 1);
-    assert_eq!(stack[0]["Constants"], json!(["0x2a"]));
+    assert_eq!(stack[0]["numeric"]["constants"], json!(["0x2a"]));
     let outcomes = json["analysis"]["outcomes"].as_array().unwrap();
     assert_eq!(outcomes.len(), 1);
     assert!(outcomes.iter().all(|outcome| outcome["kind"] == "Failure"));

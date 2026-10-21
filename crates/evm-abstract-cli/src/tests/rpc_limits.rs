@@ -1,6 +1,6 @@
 //! Exercise RPC CLI overrides at the actual socket/typed-error boundary.
 
-use super::{Cli, CliError, Command, ENTRY};
+use super::{Cli, CliError, ENTRY};
 use clap::Parser;
 use evm_abstract::world::rpc::RpcError;
 use std::{
@@ -37,11 +37,11 @@ fn read_request(stream: &mut TcpStream) {
 }
 
 fn execute(parsed: Cli) -> CliError {
-    match parsed.command {
-        Command::Analyze { args, .. } => args.analyze().unwrap_err(),
-        Command::Explain { args } => args.run().unwrap_err(),
-        _ => panic!("expected RPC-capable command"),
-    }
+    crate::execute(
+        parsed.command,
+        &evm_abstract::analysis::control::Control::default(),
+    )
+    .unwrap_err()
 }
 
 #[test]

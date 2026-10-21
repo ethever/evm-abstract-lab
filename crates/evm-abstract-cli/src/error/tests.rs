@@ -44,3 +44,13 @@ fn rejected_fact_refinement_remains_a_typed_session_input_error() {
     };
     assert_eq!(key, FactKey::Balance(owner));
 }
+
+#[test]
+fn native_engine_and_session_cooperation_preserve_typed_cancellation() {
+    let direct = CliError::from(CooperationError::<Infallible>::Cancelled);
+    assert!(matches!(direct, CliError::Cancelled(_)));
+    let nested = CliError::from(RpcAnalysisError::Session(SessionError::Cooperation(
+        CooperationError::<Infallible>::Cancelled,
+    )));
+    assert!(matches!(nested, CliError::Cancelled(_)));
+}
