@@ -3,9 +3,8 @@
 use super::{Bits, Budget, Inputs, Stop, Union, refine, scope};
 use crate::{
     Answer, Ascending, Availability, Change, Descending, GenerationEntry, JobId, Kernel,
-    KernelError, LocalClosure, Meter, PublishError, Scope, Scoped,
+    KernelError, LocalClosure, PublishError, Scope, Scoped,
 };
-use std::cell::Cell;
 
 struct Topology {
     kernel: Kernel<()>,
@@ -107,31 +106,6 @@ impl Topology {
 }
 
 #[test]
-fn own_scope_foreign_topology_growth_must_invalidate() {
-    let mut t = Topology::observed(true);
-    assert!(!t.stale(1));
-    t.publish(t.later, 1);
-    assert!(
-        t.stale(1),
-        "same-family foreign membership growth must retire B's old topology premise"
-    );
-    assert!(!t.stale(0) && !t.stale(2));
-    assert!(t.kernel.worklist().contains(&t.owner));
-    assert!(!t.kernel.worklist().contains(&t.reader));
-}
-
-#[test]
-fn own_scope_foreign_topology_new_family_must_invalidate() {
-    let mut t = Topology::observed(false);
-    assert_eq!(t.publish(t.third, 0), Change::Changed);
-    assert!(
-        t.stale(1),
-        "equivalent new-family coverage changes the adopted foreign topology"
-    );
-    assert!(!t.stale(0) && !t.stale(2));
-}
-
-#[test]
 fn empty_own_scope_directory_retains_the_first_foreign_membership_premise() {
     for absent in [false, true] {
         let mut t = Topology::new();
@@ -216,12 +190,27 @@ fn own_scope_multisource_directory_still_adopts_producer_retirement() {
 
 fn publication_reservations(new_key: bool) -> usize {
     let mut t = Topology::observed(new_key);
+    drop(t.answers(new_key)); // Match the fault cases' discovery subscriptions.
+    assert!(!t.stale(1));
     let job = if new_key { t.later } else { t.third };
     let mut run = t.kernel.begin(job, &mut t.meter).unwrap();
     let before = run.meter().calls;
-    run.publish(&mut t.values, Scoped::new(t.consumer, u8::from(new_key)), 1)
-        .unwrap();
-    run.meter().calls - before
+    assert_eq!(
+        run.publish(&mut t.values, Scoped::new(t.consumer, u8::from(new_key)), 1)
+            .unwrap(),
+        Change::Changed
+    );
+    let phases = run.meter().calls - before;
+    run.finish(LocalClosure::Stable).unwrap();
+    assert!(
+        t.stale(1),
+        "foreign membership or a new family changes B's premise"
+    );
+    assert!(!t.stale(0) && !t.stale(2));
+    assert!(t.kernel.worklist().contains(&t.owner));
+    assert!(!t.kernel.worklist().contains(&t.reader));
+    assert!(phases > 0);
+    phases
 }
 
 fn unchanged(t: &mut Topology, len: usize, new_key: bool, before: &[Answer<u8>]) {
@@ -236,78 +225,34 @@ fn unchanged(t: &mut Topology, len: usize, new_key: bool, before: &[Answer<u8>])
 }
 
 #[test]
-fn every_foreign_directory_growth_or_family_refusal_is_atomic() {
+fn every_foreign_directory_publication_refusal_and_cancellation_is_atomic() {
     for new_key in [false, true] {
-        for phase in 1..=publication_reservations(new_key) {
-            let mut t = Topology::observed(new_key);
-            let len = t.values.len();
-            let before = t.answers(new_key);
-            let job = if new_key { t.later } else { t.third };
-            let mut run = t.kernel.begin(job, &mut t.meter).unwrap();
-            let queue = run.kernel().worklist().clone();
-            run.meter().fail_on = Some(run.meter().calls + phase);
-            assert_eq!(
-                run.publish(&mut t.values, Scoped::new(t.consumer, u8::from(new_key)), 1),
-                Err(PublishError::Kernel(KernelError::Stopped(Stop::Work)))
-            );
-            drop(run);
-            t.meter.fail_on = None;
-            assert_eq!(t.kernel.worklist(), &queue);
-            unchanged(&mut t, len, new_key, &before);
-            // A refused C declaration must not become a producer premise.
-            let mut run = t.kernel.begin(t.owner, &mut t.meter).unwrap();
-            run.withdraw_generation(&mut t.entries[2]).unwrap();
-            run.finish(LocalClosure::Stable).unwrap();
-            assert!(!t.stale(1));
-        }
-    }
-}
-
-struct CancelAfter<'a> {
-    root: &'a mut Budget,
-    at: usize,
-    cancelled: Cell<bool>,
-}
-impl Meter for CancelAfter<'_> {
-    type Stop = Stop;
-    fn reserve(&mut self, work: usize) -> Result<(), Stop> {
-        self.root.reserve(work)?;
-        self.cancelled.set(self.root.calls == self.at);
-        Ok(())
-    }
-    fn checkpoint(&self) -> Result<(), Stop> {
-        if self.cancelled.get() {
-            Err(Stop::Cancelled)
-        } else {
-            self.root.checkpoint()
-        }
-    }
-}
-
-#[test]
-fn cancellation_at_every_foreign_directory_publication_phase_is_atomic() {
-    for new_key in [false, true] {
-        for phase in 1..=publication_reservations(new_key) {
-            let mut t = Topology::observed(new_key);
-            let len = t.values.len();
-            let before = t.answers(new_key);
-            let job = if new_key { t.later } else { t.third };
-            let mut token = t.kernel.begin(job, &mut t.meter).unwrap().suspend();
-            let queue = t.kernel.worklist().clone();
-            let at = t.meter.calls + 1 + phase; // resume reservation
-            let mut meter = CancelAfter {
-                root: &mut t.meter,
-                at,
-                cancelled: Cell::new(false),
-            };
-            let mut run = t.kernel.resume(&mut token, &mut meter).unwrap();
-            assert_eq!(
-                run.publish(&mut t.values, Scoped::new(t.consumer, u8::from(new_key)), 1),
-                Err(PublishError::Kernel(KernelError::Stopped(Stop::Cancelled)))
-            );
-            drop(run);
-            assert_eq!(t.kernel.worklist(), &queue);
-            unchanged(&mut t, len, new_key, &before);
+        let phases = publication_reservations(new_key);
+        for stop in [Stop::Work, Stop::Cancelled] {
+            for phase in 1..=phases {
+                let mut t = Topology::observed(new_key);
+                let len = t.values.len();
+                let before = t.answers(new_key);
+                let job = if new_key { t.later } else { t.third };
+                let mut token = t.kernel.begin(job, &mut t.meter).unwrap().suspend();
+                let queue = t.kernel.worklist().clone();
+                let mut run = t.kernel.resume(&mut token, &mut t.meter).unwrap();
+                run.meter().stop_after(phase, stop);
+                assert_eq!(
+                    run.publish(&mut t.values, Scoped::new(t.consumer, u8::from(new_key)), 1),
+                    Err(PublishError::Kernel(KernelError::Stopped(stop))),
+                    "new key {new_key}, {stop:?} at reservation {phase}"
+                );
+                drop(run);
+                t.meter.clear_stop();
+                assert_eq!(t.kernel.worklist(), &queue);
+                unchanged(&mut t, len, new_key, &before);
+                // Refused or cancelled declarations must never become premises.
+                let mut run = t.kernel.begin(t.owner, &mut t.meter).unwrap();
+                run.withdraw_generation(&mut t.entries[2]).unwrap();
+                run.finish(LocalClosure::Stable).unwrap();
+                assert!(!t.stale(1));
+            }
         }
     }
 }

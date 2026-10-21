@@ -1,46 +1,7 @@
-use analysis_kernel::{
-    Capability, JoinPolicy, Kernel, KernelError, Meter, PublishError, Scope, ScopeKey,
-};
+use analysis_kernel::{Capability, JoinPolicy, Kernel, KernelError, PublishError, Scope, ScopeKey};
 use std::{error::Error, fmt};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stop {
-    Work,
-    Cancelled,
-}
-impl fmt::Display for Stop {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-impl Error for Stop {}
-
-#[derive(Default)]
-pub struct Ledger {
-    pub used: usize,
-    pub calls: usize,
-    pub deny_next: bool,
-    pub deny_call: Option<usize>,
-    pub cancelled: bool,
-}
-impl Meter for Ledger {
-    type Stop = Stop;
-    fn reserve(&mut self, cost: usize) -> Result<(), Stop> {
-        self.calls += 1;
-        if std::mem::take(&mut self.deny_next) || self.deny_call == Some(self.calls) {
-            return Err(Stop::Work);
-        }
-        self.used = self.used.checked_add(cost).expect("test ledger overflow");
-        Ok(())
-    }
-    fn checkpoint(&self) -> Result<(), Stop> {
-        if self.cancelled {
-            Err(Stop::Cancelled)
-        } else {
-            Ok(())
-        }
-    }
-}
+pub use crate::meter::{Budget as Ledger, Stop};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Conflict;

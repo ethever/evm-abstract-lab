@@ -39,7 +39,7 @@ impl<'r, 'k> Analyzer<Context<'r, 'k, Task, Budget, Nil>> for Discover {
                 let meter = cx.run().meter();
                 meter.fail_on = Some(meter.calls + 1);
             }
-            Some(Stop::Cancelled) => cx.run().meter().cancelled = true,
+            Some(Stop::Cancelled) => cx.run().meter().cancelled.set(true),
             None => {}
         }
         Ok(LocalClosure::Stable)
@@ -76,7 +76,7 @@ fn generic_solver_exposes_recoverable_self_invalidation_and_preserves_real_root_
         );
         assert!(kernel.worklist().contains(&coordinator));
         assert!(matches!(kernel.closure(), Closure::Open(o) if o.obligations == 1));
-        meter.cancelled = false;
+        meter.cancelled.set(false);
         meter.fail_on = None;
         assert!(kernel.scope_stale(old, &mut meter).unwrap());
         let next = scope(&mut kernel, &mut meter, 12, 1);

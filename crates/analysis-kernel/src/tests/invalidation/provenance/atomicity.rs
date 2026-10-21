@@ -1,6 +1,5 @@
 use super::*;
-use crate::{Meter, PublishError};
-use std::cell::Cell;
+use crate::PublishError;
 
 fn missing_coverage() -> Scenario {
     let mut s = Scenario::new();
@@ -22,78 +21,37 @@ fn renewal_reservations() -> usize {
 }
 
 #[test]
-fn every_coverage_refresh_refusal_keeps_old_guard_version_value_and_notifications() {
-    for fail_at in 1..=renewal_reservations() {
-        let mut s = missing_coverage();
-        let before = s.read_b();
-        let queue = s.f.kernel.worklist().clone();
-        let mut run = s.f.kernel.begin(s.f.reader, &mut s.f.meter).unwrap();
-        run.observe_slot(&s.anchor).unwrap();
-        run.meter().fail_on = Some(run.meter().calls + fail_at);
-        assert_eq!(
-            run.publish(&mut s.shared, Scoped::new(s.f.source, 0), 1),
-            Err(PublishError::Kernel(KernelError::Stopped(Stop::Work)))
-        );
-        drop(run);
-        s.f.meter.fail_on = None;
-        assert_eq!(s.f.kernel.worklist(), &queue);
-        assert_eq!(s.read_b(), before);
-        assert!(!s.f.stale(0) && !s.f.stale(1));
-        assert_eq!(s.renew(), Change::Changed);
-        assert_eq!(s.read_b().value(), Some(&1));
-    }
-}
-
-struct CancelAfter<'a> {
-    root: &'a mut Budget,
-    at: usize,
-    cancelled: Cell<bool>,
-}
-impl Meter for CancelAfter<'_> {
-    type Stop = Stop;
-    fn reserve(&mut self, work: usize) -> Result<(), Stop> {
-        self.root.reserve(work)?;
-        if self.root.calls == self.at {
-            self.cancelled.set(true);
+fn every_coverage_refresh_refusal_and_cancellation_keeps_guard_version_value_and_notifications() {
+    let phases = renewal_reservations();
+    assert!(phases > 0);
+    for stop in [Stop::Work, Stop::Cancelled] {
+        for phase in 1..=phases {
+            let mut s = missing_coverage();
+            let before = s.read_b();
+            let queue = s.f.kernel.worklist().clone();
+            // Resume with the same native premise for both failure modes.
+            let mut token = {
+                let mut run = s.f.kernel.begin(s.f.reader, &mut s.f.meter).unwrap();
+                run.observe_slot(&s.anchor).unwrap();
+                run.suspend()
+            };
+            let mut run = s.f.kernel.resume(&mut token, &mut s.f.meter).unwrap();
+            run.meter().stop_after(phase, stop);
+            assert_eq!(
+                run.publish(&mut s.shared, Scoped::new(s.f.source, 0), 1),
+                Err(PublishError::Kernel(KernelError::Stopped(stop))),
+                "{stop:?} at reservation {phase}"
+            );
+            drop(run);
+            s.f.meter.clear_stop();
+            assert_eq!(s.f.kernel.worklist(), &queue);
+            assert_eq!(s.read_b(), before);
+            assert!(!s.f.stale(0) && !s.f.stale(1));
+            assert_eq!(s.renew(), Change::Changed);
+            let renewed = s.read_b();
+            assert_eq!(renewed.value(), Some(&1));
+            assert!(renewed.version > before.version);
         }
-        Ok(())
-    }
-    fn checkpoint(&self) -> Result<(), Stop> {
-        if self.cancelled.get() {
-            Err(Stop::Cancelled)
-        } else {
-            self.root.checkpoint()
-        }
-    }
-}
-
-#[test]
-fn cancellation_at_every_refresh_phase_including_final_payment_is_atomic() {
-    for cancel_after in 1..=renewal_reservations() {
-        let mut s = missing_coverage();
-        let before = s.read_b();
-        let queue = s.f.kernel.worklist().clone();
-        // Attach the native premise before the operation whose phases we count.
-        let mut token = {
-            let mut run = s.f.kernel.begin(s.f.reader, &mut s.f.meter).unwrap();
-            run.observe_slot(&s.anchor).unwrap();
-            run.suspend()
-        };
-        let at = s.f.meter.calls + 1 + cancel_after; // resume reservation
-        let mut meter = CancelAfter {
-            root: &mut s.f.meter,
-            at,
-            cancelled: Cell::new(false),
-        };
-        let mut run = s.f.kernel.resume(&mut token, &mut meter).unwrap();
-        assert_eq!(
-            run.publish(&mut s.shared, Scoped::new(s.f.source, 0), 1),
-            Err(PublishError::Kernel(KernelError::Stopped(Stop::Cancelled)))
-        );
-        drop(run);
-        assert_eq!(s.f.kernel.worklist(), &queue);
-        assert_eq!(s.read_b(), before);
-        assert!(!s.f.stale(1));
     }
 }
 

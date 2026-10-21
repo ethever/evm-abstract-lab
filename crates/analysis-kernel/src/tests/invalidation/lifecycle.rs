@@ -64,15 +64,7 @@ fn semantic_growth_invalidates_exact_transitive_adopters_and_withholds_stale_gua
     ));
     run.finish(LocalClosure::Stable).unwrap();
     assert_eq!(f.local.len(), len);
-    struct NoOp;
-    impl<Cx> Analyzer<Cx> for NoOp {
-        type Task = ();
-        type Error = Infallible;
-        fn evaluate(&mut self, _: &(), _: &mut Cx) -> Result<LocalClosure, Infallible> {
-            Ok(LocalClosure::Stable)
-        }
-    }
-    let report = solve(&mut f.kernel, &mut NoOp, &mut Nil, &mut f.meter, 20).unwrap();
+    let report = solve(&mut f.kernel, &mut Noop, &mut Nil, &mut f.meter, 20).unwrap();
     assert_eq!(report.steps, 2, "only the two owners remain schedulable");
     assert!(matches!(report.closure, Closure::Open(o) if o.obligations == 2 && o.pending == 0));
 }
@@ -172,6 +164,21 @@ fn new_semantic_topology_invalidates_its_directory_adopters_without_payload_grow
 fn descending_refinement_wakes_external_consumers_without_reseeding_either_scope() {
     let mut f = Fixture::new();
     f.adopt();
+    let selections = |f: &mut Fixture| {
+        [
+            (f.owner, &f.entry),
+            (f.downstream_owner, &f.downstream_entry),
+        ]
+        .map(|(job, entry)| {
+            let mut run = f.kernel.begin(job, &mut f.meter).unwrap();
+            let answer = run.current_generation(entry).unwrap();
+            run.finish(LocalClosure::Stable).unwrap();
+            answer
+        })
+    };
+    let before = selections(&mut f);
+    assert_eq!(before[0].value(), Some(&f.target));
+    assert_eq!(before[1].value(), Some(&f.downstream));
     // The concrete allowed input is {0}; {0,1} -> {0} is a lawful precision
     // improvement. Never use an empty meet to model this nonempty universe.
     let mut coarse = f.kernel.channel(Descending(Meet), &mut f.meter).unwrap();
@@ -207,7 +214,11 @@ fn descending_refinement_wakes_external_consumers_without_reseeding_either_scope
         run.finish(LocalClosure::Stable).unwrap();
     }
     assert_eq!(f.kernel.closure(), Closure::Closed);
-    assert_eq!(f.entry, f.entry.clone());
+    assert_eq!(
+        selections(&mut f),
+        before,
+        "refinement preserves both selected scopes and selector versions"
+    );
     assert_ne!(f.entry, f.downstream_entry);
 }
 

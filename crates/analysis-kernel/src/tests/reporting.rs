@@ -1,14 +1,11 @@
-use super::Stop;
-use crate::{
-    Analyzer, Closure, Kernel, KernelError, LocalClosure, Meter, Nil, ScopeKey, SolveError, solve,
-};
-use std::{cell::Cell, convert::Infallible};
+use super::{Noop, Stop};
+use crate::{Closure, Kernel, KernelError, Meter, Nil, ScopeKey, SolveError, solve};
+use std::cell::Cell;
 
 #[derive(Default)]
 struct Ledger {
     calls: usize,
     used: usize,
-    refuse: bool,
     fail_on: Option<usize>,
     checkpoints: Cell<usize>,
     cancel_at: Option<usize>,
@@ -17,7 +14,7 @@ impl Meter for Ledger {
     type Stop = Stop;
     fn reserve(&mut self, cost: usize) -> Result<(), Stop> {
         self.calls += 1;
-        if self.refuse || self.fail_on == Some(self.calls) {
+        if self.fail_on == Some(self.calls) {
             return Err(Stop::Work);
         }
         self.used = self.used.checked_add(cost).ok_or(Stop::Work)?;
@@ -33,15 +30,6 @@ impl Meter for Ledger {
         } else {
             Ok(())
         }
-    }
-}
-
-struct Noop;
-impl<Cx> Analyzer<Cx> for Noop {
-    type Task = ();
-    type Error = Infallible;
-    fn evaluate(&mut self, _: &(), _: &mut Cx) -> Result<LocalClosure, Infallible> {
-        Ok(LocalClosure::Stable)
     }
 }
 
@@ -66,44 +54,58 @@ fn closed_kernel() -> (Kernel<()>, Ledger) {
 }
 
 #[test]
-fn public_4096_slot_probe_cannot_return_reports_on_a_refusing_meter() {
-    let (mut kernel, mut meter) = closed_kernel();
-    let used = meter.used;
-    meter.refuse = true;
-    for max_steps in [0, 1, 1] {
-        let calls = meter.calls;
+fn every_report_payment_refusal_retains_root_charges_and_can_retry() {
+    for phase in [1, 2] {
+        let (mut kernel, mut meter) = closed_kernel();
+        for max_steps in [0, 1, 1] {
+            let (calls, used) = (meter.calls, meter.used);
+            meter.fail_on = Some(calls + phase);
+            assert_eq!(
+                solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, max_steps),
+                Err(SolveError::Kernel(KernelError::Stopped(Stop::Work)))
+            );
+            assert_eq!(meter.calls, calls + phase);
+            if phase == 1 {
+                assert_eq!(meter.used, used, "no failed payment is charged");
+            } else {
+                assert!(meter.used > used, "the paid quotation is not refunded");
+            }
+        }
+        meter.fail_on = None;
+        let paid = meter.used;
         assert_eq!(
-            solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, max_steps),
-            Err(SolveError::Kernel(KernelError::Stopped(Stop::Work)))
+            solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, 0)
+                .unwrap()
+                .closure,
+            Closure::Closed
         );
-        assert!(
-            meter.calls > calls,
-            "even an empty ready queue must reserve report work"
-        );
-        assert_eq!(
-            meter.used, used,
-            "the cumulative ledger is neither reset nor refunded"
-        );
+        assert!(meter.used > paid);
     }
 }
 
 #[test]
-fn zero_step_and_empty_queue_reports_check_cancellation() {
+fn every_report_cancellation_boundary_retains_exactly_the_already_paid_work() {
     let (mut kernel, mut meter) = closed_kernel();
-    let before = (meter.calls, meter.used);
-    meter.cancel_at = Some(meter.checkpoints.get() + 1);
-    for max_steps in [0, 1, 1] {
+    // Repeated zero-step/empty-queue attempts and both paid-report checkpoints.
+    for (max_steps, checkpoint) in [(0, 1), (1, 1), (1, 1), (0, 2), (0, 3)] {
+        let before = (meter.calls, meter.used);
         let checks = meter.checkpoints.get();
+        meter.cancel_at = Some(checks + checkpoint);
         assert_eq!(
             solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, max_steps),
             Err(SolveError::Kernel(KernelError::Stopped(Stop::Cancelled)))
         );
-        assert!(meter.checkpoints.get() > checks);
-        assert_eq!(
-            (meter.calls, meter.used),
-            before,
-            "reject before scanning graph metadata"
-        );
+        assert_eq!(meter.checkpoints.get(), checks + checkpoint);
+        if checkpoint == 1 {
+            assert_eq!(
+                (meter.calls, meter.used),
+                before,
+                "reject before graph scans"
+            );
+        } else {
+            assert!(meter.used > before.1, "already paid work is not refunded");
+        }
+        meter.cancel_at = None;
     }
 }
 
@@ -124,44 +126,5 @@ fn every_successful_report_prepays_traversal_on_the_same_root_ledger() {
             meter.used > before.1 + 4096,
             "retained facts contribute even without ready jobs"
         );
-    }
-}
-
-#[test]
-fn refusal_after_paid_metadata_quotation_cannot_return_an_uncharged_report() {
-    let (mut kernel, mut meter) = closed_kernel();
-    let used = meter.used;
-    meter.fail_on = Some(meter.calls + 2);
-    assert_eq!(
-        solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, 0),
-        Err(SolveError::Kernel(KernelError::Stopped(Stop::Work)))
-    );
-    assert!(
-        meter.used > used,
-        "the successful quotation pass remains charged"
-    );
-    meter.fail_on = None;
-    let paid = meter.used;
-    assert_eq!(
-        solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, 0)
-            .unwrap()
-            .closure,
-        Closure::Closed
-    );
-    assert!(meter.used > paid);
-}
-
-#[test]
-fn cancellation_during_quotation_or_final_reporting_never_returns_success() {
-    let (mut kernel, mut meter) = closed_kernel();
-    for checkpoint in [2, 3] {
-        let used = meter.used;
-        meter.cancel_at = Some(meter.checkpoints.get() + checkpoint);
-        assert_eq!(
-            solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, 0),
-            Err(SolveError::Kernel(KernelError::Stopped(Stop::Cancelled)))
-        );
-        assert!(meter.used > used, "already performed work is not refunded");
-        meter.cancel_at = None;
     }
 }

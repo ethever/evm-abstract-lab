@@ -11,7 +11,7 @@ mod publication;
 mod readiness;
 mod self_callback;
 
-use super::{Budget, Stop, scope};
+use super::{Budget, Noop, Stop, scope};
 use crate::{
     Accepts, Analyzer, Ascending, Capability, Channel, Context, Descending, GenerationEntry, JobId,
     JoinPolicy, Kernel, LocalClosure, ReadGeneration, Reduction, RefinePolicy, Registered, Run,
@@ -223,6 +223,43 @@ impl Fixture {
             downstream_entry,
             unrelated_entry,
         }
+    }
+    fn next_generation(&mut self, old: Scope, top: u8) -> (Scope, JobId) {
+        let next = scope(
+            &mut self.kernel,
+            &mut self.meter,
+            old.key().context,
+            old.key().generation + 1,
+        );
+        let job = self.kernel.register(next, (), &mut self.meter).unwrap();
+        seed(&mut self.kernel, &mut self.meter, job, &mut self.local, top);
+        self.kernel.seal_scope(next, &mut self.meter).unwrap();
+        (next, job)
+    }
+    // Seed and seal before selecting; each scenario owns its sidecar cleanup.
+    fn replace(&mut self, producer: bool, top: u8) -> Scope {
+        let old = if producer {
+            self.target
+        } else {
+            self.downstream
+        };
+        let (next, job) = self.next_generation(old, top);
+        let (owner, entry) = if producer {
+            (self.owner, &mut self.entry)
+        } else {
+            (self.downstream_owner, &mut self.downstream_entry)
+        };
+        let mut run = self.kernel.begin(owner, &mut self.meter).unwrap();
+        run.replace_generation(entry, next).unwrap();
+        run.finish(LocalClosure::Stable).unwrap();
+        if producer {
+            self.target = next;
+            self.reader = job;
+        } else {
+            self.downstream = next;
+            self.downstream_reader = job;
+        }
+        old
     }
     fn adopt(&mut self) {
         let mut run = self.kernel.begin(self.reader, &mut self.meter).unwrap();

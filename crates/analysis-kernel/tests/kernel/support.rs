@@ -1,53 +1,7 @@
-use analysis_kernel::{Capability, JoinPolicy, Kernel, Meter, Scope, ScopeKey};
-use std::{cell::Cell, convert::Infallible, fmt, rc::Rc};
+use analysis_kernel::{Capability, JoinPolicy, Kernel, Scope, ScopeKey};
+use std::convert::Infallible;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stop {
-    Work,
-    Cancelled,
-}
-impl fmt::Display for Stop {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-impl std::error::Error for Stop {}
-
-pub struct Budget {
-    pub used: usize,
-    pub calls: usize,
-    pub fail_on: Option<usize>,
-    pub cancelled: Rc<Cell<bool>>,
-}
-impl Default for Budget {
-    fn default() -> Self {
-        Self {
-            used: 0,
-            calls: 0,
-            fail_on: None,
-            cancelled: Rc::new(Cell::new(false)),
-        }
-    }
-}
-impl Meter for Budget {
-    type Stop = Stop;
-    fn reserve(&mut self, cost: usize) -> Result<(), Stop> {
-        self.checkpoint()?;
-        self.calls += 1;
-        if self.fail_on == Some(self.calls) {
-            return Err(Stop::Work);
-        }
-        self.used = self.used.checked_add(cost).ok_or(Stop::Work)?;
-        Ok(())
-    }
-    fn checkpoint(&self) -> Result<(), Stop> {
-        if self.cancelled.get() {
-            Err(Stop::Cancelled)
-        } else {
-            Ok(())
-        }
-    }
-}
+pub use crate::meter::{Budget, Stop};
 
 pub fn scope<J>(kernel: &mut Kernel<J>, budget: &mut Budget, generation: u64) -> Scope {
     kernel

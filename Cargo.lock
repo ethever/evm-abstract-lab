@@ -695,6 +695,9 @@ version = "0.4.0"
 [[package]]
 name = "analysis-kernel"
 version = "0.4.0"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "android-activity"

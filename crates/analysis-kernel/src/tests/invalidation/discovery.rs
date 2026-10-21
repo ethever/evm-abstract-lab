@@ -188,7 +188,7 @@ fn discovery_observes_cancel_before_interning_an_optional_future_fact() {
     let mut f = Fixture::new();
     let before = f.inputs.len();
     let mut run = f.kernel.begin(f.reader, &mut f.meter).unwrap();
-    run.meter().cancelled = true;
+    run.meter().cancelled.set(true);
     assert_eq!(
         run.query_discovery(&mut f.inputs, Scoped::new(f.source, 42)),
         Err(KernelError::Stopped(Stop::Cancelled))

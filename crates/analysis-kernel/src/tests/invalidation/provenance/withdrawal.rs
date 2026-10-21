@@ -27,17 +27,7 @@ fn empty() -> Scenario {
     s
 }
 fn next_source(s: &mut Scenario, top: u8) -> (Scope, JobId) {
-    let old = s.f.target;
-    let next = scope(
-        &mut s.f.kernel,
-        &mut s.f.meter,
-        old.key().context,
-        old.key().generation + 1,
-    );
-    let job = s.f.kernel.register(next, (), &mut s.f.meter).unwrap();
-    seed(&mut s.f.kernel, &mut s.f.meter, job, &mut s.f.local, top);
-    s.f.kernel.seal_scope(next, &mut s.f.meter).unwrap();
-    (next, job)
+    s.f.next_generation(s.f.target, top)
 }
 
 #[test]

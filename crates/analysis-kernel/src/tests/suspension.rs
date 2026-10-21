@@ -38,6 +38,7 @@ fn suspended_outer_consumer_and_nested_jobs_share_real_dependencies() {
         kernel.closure_in::<Stop>(body_scope).unwrap(),
         Closure::Closed
     );
+    assert!(matches!(kernel.closure(), Closure::Open(o) if o.in_flight == 1));
     assert!(kernel.worklist().contains(&outer));
     assert_eq!(
         kernel.next(&mut meter).unwrap(),
@@ -72,12 +73,12 @@ fn abandoning_a_token_and_failed_resume_never_fabricate_closure() {
     let job = kernel.register(s, (), &mut meter).unwrap();
     kernel.seal_scope(s, &mut meter).unwrap();
     let mut token = kernel.begin(job, &mut meter).unwrap().suspend();
-    meter.cancelled = true;
+    meter.cancelled.set(true);
     assert!(matches!(
         kernel.resume(&mut token, &mut meter),
         Err(KernelError::Stopped(Stop::Cancelled))
     ));
-    meter.cancelled = false;
+    meter.cancelled.set(false);
     assert!(matches!(kernel.closure(), Closure::Open(o) if o.in_flight == 1));
     drop(kernel.resume(&mut token, &mut meter).unwrap());
     assert!(matches!(kernel.closure(), Closure::Open(o) if o.interrupted == 1));

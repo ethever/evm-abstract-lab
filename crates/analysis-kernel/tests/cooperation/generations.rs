@@ -3,7 +3,7 @@ use super::{
     support::{Conflict, Ledger, RuleError, Stop, scope},
 };
 use analysis_kernel::{
-    Accepts, Analyzer, Ascending, Availability, Closure, Cons, Context, Descending, Here, Kernel,
+    Accepts, Analyzer, Availability, Change, Closure, Cons, Context, Descending, Here, Kernel,
     KernelError, LocalClosure, Nil, PublishError, Reduction, Registered, Scope, Scoped,
 };
 
@@ -120,6 +120,15 @@ fn replacement_uses_the_kernel_stable_entry_and_fresh_registered_seed() {
         },
     )
     .unwrap();
+    let mut run = kernel.begin(reader, &mut meter).unwrap();
+    assert_eq!(
+        run.query(&mut stores.head, Scoped::new(old, Variable::X))
+            .unwrap()
+            .value(),
+        Some(&Interval::new(0, 0)),
+        "same-generation refinement cannot enlarge the original input"
+    );
+    run.finish(LocalClosure::Stable).unwrap();
     let gap = kernel.obligation(owner, &mut meter).unwrap();
     let new = scope(&mut kernel, &mut meter, 20, 2);
     seed(
@@ -141,7 +150,10 @@ fn replacement_uses_the_kernel_stable_entry_and_fresh_registered_seed() {
     run.finish(LocalClosure::Stable).unwrap();
     kernel.seal_scope(new, &mut meter).unwrap();
     let mut run = kernel.begin(updater, &mut meter).unwrap();
-    run.replace_generation(&mut current, new).unwrap();
+    assert_eq!(
+        run.replace_generation(&mut current, new).unwrap(),
+        Change::Changed
+    );
     run.finish(LocalClosure::Stable).unwrap();
     assert_eq!(kernel.next(&mut meter).unwrap(), Some(reader));
     let mut run = kernel.begin(reader, &mut meter).unwrap();
@@ -166,26 +178,6 @@ fn replacement_uses_the_kernel_stable_entry_and_fresh_registered_seed() {
     kernel.resolve_obligation(gap, &mut meter).unwrap();
     kernel.seal_scope(owner, &mut meter).unwrap();
     assert_eq!(kernel.closure(), Closure::Closed);
-}
-
-#[test]
-fn equal_context_numbers_in_two_kernel_epochs_do_not_share_channels() {
-    let mut meter = Ledger::default();
-    let mut a = Kernel::<()>::new().unwrap();
-    let mut b = Kernel::new().unwrap();
-    let sa = scope(&mut a, &mut meter, 8, 1);
-    let sb = scope(&mut b, &mut meter, 8, 1);
-    assert_ne!(sa, sb);
-    let mut values = a
-        .channel::<super::support::Numbers, _, _>(Ascending(super::support::Maximum), &mut meter)
-        .unwrap();
-    let job = b.register(sb, (), &mut meter).unwrap();
-    let mut run = b.begin(job, &mut meter).unwrap();
-    assert_eq!(
-        run.query(&mut values, Scoped::new(sa, 0)),
-        Err(KernelError::WrongEpoch)
-    );
-    run.finish(LocalClosure::Stable).unwrap();
 }
 
 #[test]

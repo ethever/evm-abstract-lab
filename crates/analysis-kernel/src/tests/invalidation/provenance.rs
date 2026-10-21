@@ -54,50 +54,11 @@ impl Scenario {
         self.replace_with_top(producer, 3);
     }
     fn replace_with_top(&mut self, producer: bool, top: u8) {
-        let old = if producer {
-            self.f.target
-        } else {
-            self.f.downstream
-        };
-        let next = scope(
-            &mut self.f.kernel,
-            &mut self.f.meter,
-            old.key().context,
-            old.key().generation + 1,
-        );
-        let job = self.f.kernel.register(next, (), &mut self.f.meter).unwrap();
-        seed(
-            &mut self.f.kernel,
-            &mut self.f.meter,
-            job,
-            &mut self.f.local,
-            top,
-        );
-        self.f.kernel.seal_scope(next, &mut self.f.meter).unwrap();
-        let owner = if producer {
-            self.f.owner
-        } else {
-            self.f.downstream_owner
-        };
-        let entry = if producer {
-            &mut self.f.entry
-        } else {
-            &mut self.f.downstream_entry
-        };
-        let mut run = self.f.kernel.begin(owner, &mut self.f.meter).unwrap();
-        run.replace_generation(entry, next).unwrap();
-        run.finish(LocalClosure::Stable).unwrap();
+        let old = self.f.replace(producer, top);
         self.f
             .kernel
             .reclaim_channel_scope(&mut self.f.local, old, &mut self.f.meter)
             .unwrap();
-        if producer {
-            self.f.target = next;
-            self.f.reader = job;
-        } else {
-            self.f.downstream = next;
-            self.f.downstream_reader = job;
-        }
     }
     fn read_b(&mut self) -> Answer<u8> {
         let mut run = self
@@ -138,14 +99,5 @@ impl Scenario {
             self.f.downstream_owner,
             &self.f.downstream_entry,
         );
-    }
-}
-
-struct NoOp;
-impl<Cx> Analyzer<Cx> for NoOp {
-    type Task = ();
-    type Error = Infallible;
-    fn evaluate(&mut self, _: &(), _: &mut Cx) -> Result<LocalClosure, Infallible> {
-        Ok(LocalClosure::Stable)
     }
 }

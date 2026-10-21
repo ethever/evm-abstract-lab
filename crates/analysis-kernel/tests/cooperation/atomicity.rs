@@ -1,47 +1,38 @@
 use super::support::{Ledger, Maximum, Numbers, Stop, scope};
+use crate::analyzer::Noop;
 use analysis_kernel::{
-    Analyzer, Ascending, Availability, Change, Closure, Kernel, KernelError, LocalClosure, Nil,
-    Scoped, SolveError, solve,
+    Ascending, Availability, Change, Closure, Kernel, KernelError, LocalClosure, Nil, Scoped,
+    SolveError, solve,
 };
-use std::convert::Infallible;
-
-struct NoOp;
-impl<Cx> Analyzer<Cx> for NoOp {
-    type Task = ();
-    type Error = Infallible;
-    fn evaluate(&mut self, _: &(), _: &mut Cx) -> Result<LocalClosure, Infallible> {
-        Ok(LocalClosure::Stable)
-    }
-}
 
 #[test]
 fn zero_step_and_empty_queue_closure_reports_still_pay_and_observe_cancellation() {
     let mut meter = Ledger::default();
     let mut kernel = Kernel::new().unwrap();
     let used = meter.used;
-    let report = solve(&mut kernel, &mut NoOp, &mut Nil, &mut meter, 0).unwrap();
+    let report = solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, 0).unwrap();
     assert_eq!(report.closure, Closure::Closed);
     assert!(
         meter.used > used,
         "closure traversal cannot be a free report after work exhaustion"
     );
-    meter.deny_next = true;
+    meter.stop_after(1, Stop::Work);
     assert_eq!(
-        solve(&mut kernel, &mut NoOp, &mut Nil, &mut meter, 0),
+        solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, 0),
         Err(SolveError::Kernel(KernelError::Stopped(Stop::Work)))
     );
-    meter.cancelled = true;
+    meter.cancelled.set(true);
     assert_eq!(
-        solve(&mut kernel, &mut NoOp, &mut Nil, &mut meter, 0),
+        solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, 0),
         Err(SolveError::Kernel(KernelError::Stopped(Stop::Cancelled)))
     );
-    meter.cancelled = false;
+    meter.cancelled.set(false);
     let pending = scope(&mut kernel, &mut meter, 84, 1);
     kernel.register(pending, (), &mut meter).unwrap();
     kernel.seal_scope(pending, &mut meter).unwrap();
-    meter.deny_next = true;
+    meter.stop_after(1, Stop::Work);
     assert_eq!(
-        solve(&mut kernel, &mut NoOp, &mut Nil, &mut meter, 0),
+        solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, 0),
         Err(SolveError::Kernel(KernelError::Stopped(Stop::Work)))
     );
     assert!(matches!(kernel.closure(), Closure::Open(open) if open.pending == 1));
@@ -60,7 +51,7 @@ fn earlier_sound_publication_survives_a_later_failure_in_the_same_job() {
     run.publish(&mut values, Scoped::new(scope, 0), 7).unwrap();
     let retained = run.query(&mut values, Scoped::new(scope, 0)).unwrap();
     run.query(&mut values, Scoped::new(scope, 1)).unwrap();
-    run.meter().deny_next = true;
+    run.meter().stop_after(1, Stop::Work);
     assert!(run.publish(&mut values, Scoped::new(scope, 1), 9).is_err());
     assert_eq!(
         run.query(&mut values, Scoped::new(scope, 0)).unwrap(),
@@ -104,7 +95,7 @@ fn prepared_value_metadata_and_version_are_atomic_before_notification_fanout() {
     kernel.seal_scope(scope, &mut meter).unwrap();
     let mut run = kernel.begin(writer, &mut meter).unwrap();
     let before = run.read_slot(&slot, &current, 8).unwrap();
-    run.meter().deny_next = true;
+    run.meter().stop_after(1, Stop::Work);
     assert_eq!(
         run.publish_prepared(
             &slot,
@@ -215,10 +206,16 @@ fn cancellation_during_read_keeps_the_job_unfinished_without_inventing_bottom() 
         .unwrap();
     let job = kernel.register(scope, (), &mut meter).unwrap();
     let mut run = kernel.begin(job, &mut meter).unwrap();
-    run.meter().cancelled = true;
+    let before = (run.meter().calls, run.meter().used);
+    run.meter().cancelled.set(true);
     assert_eq!(
         run.query(&mut values, Scoped::new(scope, 0)),
         Err(KernelError::Stopped(Stop::Cancelled))
+    );
+    assert_eq!(
+        (run.meter().calls, run.meter().used),
+        before,
+        "pre-cancelled reads must not reserve work"
     );
     assert!(values.is_empty());
     drop(run);

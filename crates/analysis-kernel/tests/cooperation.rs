@@ -1,4 +1,6 @@
 //! Downstream semantic and protocol acceptance; no access to kernel internals.
+use analysis_kernel::{Analyzer, LocalClosure, Meter};
+
 #[path = "cooperation/atomicity.rs"]
 mod atomicity;
 #[path = "cooperation/bounds.rs"]
@@ -21,3 +23,9 @@ mod protocol;
 mod staging;
 #[path = "cooperation/support.rs"]
 mod support;
+
+#[path = "support/meter.rs"]
+mod meter;
+
+#[path = "support/analyzer.rs"]
+mod analyzer;

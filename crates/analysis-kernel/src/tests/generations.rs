@@ -1,4 +1,4 @@
-use super::{Budget, Stop, scope};
+use super::{Budget, scope};
 use crate::{Change, Closure, Kernel, KernelError, LocalClosure};
 
 #[test]
@@ -66,29 +66,6 @@ fn stable_entry_discovers_fresh_input_instead_of_reusing_old_narrowed_guarantees
     kernel.resolve_obligation(obligation, &mut meter).unwrap();
     kernel.seal_scope(owner, &mut meter).unwrap();
     assert_eq!(kernel.closure(), Closure::Closed);
-}
-
-#[test]
-fn failed_selector_publication_keeps_old_generation_and_entry_live() {
-    let mut meter = Budget::default();
-    let mut kernel = Kernel::new().unwrap();
-    let owner = scope(&mut kernel, &mut meter, 1, 0);
-    let old = scope(&mut kernel, &mut meter, 2, 0);
-    let next = scope(&mut kernel, &mut meter, 2, 1);
-    kernel.seal_scope(next, &mut meter).unwrap();
-    let job = kernel.register(owner, (), &mut meter).unwrap();
-    let mut entry = kernel.generation_entry(owner, old, &mut meter).unwrap();
-    let mut run = kernel.begin(job, &mut meter).unwrap();
-    let before = run.current_generation(&entry).unwrap();
-    run.meter().fail_on = Some(run.meter().calls + 2); // retirement quote, combined publication
-    assert_eq!(
-        run.replace_generation(&mut entry, next),
-        Err(KernelError::Stopped(Stop::Work))
-    );
-    run.meter().fail_on = None;
-    assert_eq!(run.current_generation(&entry).unwrap(), before);
-    run.finish(LocalClosure::Stable).unwrap();
-    assert_eq!(kernel.scope(old.key(), &mut meter).unwrap(), old);
 }
 
 #[test]
