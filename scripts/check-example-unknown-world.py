@@ -8,8 +8,10 @@ import sys
 
 WORD_MAX = (1 << 256) - 1
 SIGN = 1 << 255
-# These captures need at most 19 nodes, 64 bytes, one read and three choices.
+# These captures need at most 19 nodes, 64 bytes, one read and three choices,
+# plus one runtime word whose explicit numeric certificate is a singleton.
 MAX_NODES, MAX_BYTES, MAX_CHOICES = 19, 64, 3
+MAX_RUNTIME_WORDS = 1
 NUMERIC_FIELDS = {"Constants", "known_bits", "interval", "congruence", "nonzero"}
 OWNER_A = "0x0000000000000000000000000000000000000101"
 OWNER_C = "0x0000000000000000000000000000000000000301"
@@ -75,8 +77,15 @@ class Read:
     choices: frozenset
 
 
+@dataclass(frozen=True)
+class RuntimeWord:
+    # Fresh's payload is an identity, not the word's numeric value.
+    scope: str
+    token: int
+
+
 class Graph:
-    """Typed backward DAGs only; Fresh is an opaque source token, never a word."""
+    """Typed backward DAGs with distinct source-token and runtime-word roles."""
 
     rules = {
         "SlotRead": ("word", {"state": "slots", "key": "word"}),
@@ -94,6 +103,7 @@ class Graph:
         self.scope, self.nodes, self.root = scope, graph["nodes"], graph["root"]
         assert isinstance(self.nodes, list) and 1 <= len(self.nodes) <= MAX_NODES, "graph size"
         assert type(self.root) is int and self.root == len(self.nodes) - 1, "graph root"
+        self.roles = {}
         sorts, edges = [], []
         for index, node in enumerate(self.nodes):
             refs = []
@@ -101,8 +111,12 @@ class Graph:
             def ref(child, sort, token=False):
                 assert type(child) is int and 0 <= child < index, ("backward reference", child)
                 assert sorts[child] == sort, ("reference sort", child, sort)
-                if isinstance(self.nodes[child], dict) and "Fresh" in self.nodes[child]:
-                    assert token, "Fresh is only a source identity"
+                fresh = isinstance(self.nodes[child], dict) and "Fresh" in self.nodes[child]
+                if token:
+                    assert fresh, "source identity must be Fresh"
+                if fresh:
+                    assert sort == "word", "Fresh word reference"
+                    self.fresh_role(child, "source" if token else "runtime")
                 refs.append(child)
 
             if node in ("BytesZero", "SlotsZero"):
@@ -114,7 +128,7 @@ class Graph:
                     number(payload)
                     sort = "word"
                 elif kind == "Fresh":
-                    assert type(payload) is int and 0 < payload < 1 << 64, "source token"
+                    assert type(payload) is int and 0 < payload < 1 << 64, "Fresh identity"
                     sort = "word"
                 elif kind == "BytesExact":
                     assert isinstance(payload, list) and len(payload) <= MAX_BYTES, "exact bytes size"
@@ -142,6 +156,8 @@ class Graph:
                         ref(payload[field], child_sort)
             sorts.append(sort)
             edges.append(refs)
+        if isinstance(self.nodes[self.root], dict) and "Fresh" in self.nodes[self.root]:
+            self.fresh_role(self.root, "runtime")
         reached = {self.root}
         for index in range(self.root, -1, -1):
             if index in reached:
@@ -160,6 +176,11 @@ class Graph:
             elif kind == "SlotsInput":
                 self.source(payload)
 
+    def fresh_role(self, index, role):
+        token = self.node(index, "Fresh")
+        assert self.roles.get(token, role) == role, "Fresh source/runtime role collision"
+        self.roles[token] = role
+
     def node(self, index, kind):
         node = self.nodes[index]
         assert isinstance(node, dict) and node.keys() == {kind}, ("expected", kind, node)
@@ -176,6 +197,10 @@ class Graph:
     def word(self, index):
         if isinstance(self.nodes[index], dict) and "Constant" in self.nodes[index]:
             return self.literal(index)
+        if isinstance(self.nodes[index], dict) and "Fresh" in self.nodes[index]:
+            token = self.node(index, "Fresh")
+            assert self.roles.get(token) == "runtime", "source token is not a runtime word"
+            return RuntimeWord(self.scope, token)
         read = self.node(index, "SlotRead")
         key = self.literal(read["key"])
         state = self.node(read["state"], "SlotsInput")
@@ -199,6 +224,8 @@ class Graph:
         for index, node in enumerate(self.nodes):
             if isinstance(node, dict) and "Constant" in node:
                 terms.add(self.literal(index))
+            elif isinstance(node, dict) and "Fresh" in node and self.roles.get(node["Fresh"]) == "runtime":
+                terms.add(self.word(index))
             elif isinstance(node, dict) and "SlotRead" in node:
                 state = self.node(node["SlotRead"]["state"], "SlotsInput")
                 if state["bindings"]:
@@ -267,6 +294,14 @@ class Outcome:
                        for ins in block["instructions"] if ins["pc"] == pc]
             assert opcodes == [0xf3 if outcome["kind"] == "Return" else 0xfd], "source terminal"
         self.domains = {}
+        self.runtime_values, self.roles = {}, {}
+
+    def graph(self, graph):
+        carrier = Graph(graph, self.scope)
+        for token, role in carrier.roles.items():
+            assert self.roles.get(token, role) == role, "Fresh source/runtime role collision"
+            self.roles[token] = role
+        return carrier
 
     def constrain(self, term, values):
         if isinstance(term, Read):
@@ -274,33 +309,44 @@ class Outcome:
             assert values, "inconsistent source facts"
             self.domains[term.source] = values
             assert len(self.domains) <= 1, "only one explicit finite source read is supported"
+        elif isinstance(term, RuntimeWord):
+            assert len(values) == 1, "runtime word needs an exact numeric certificate"
+            value, = values
+            assert self.runtime_values.get(term, value) == value, "inconsistent runtime word facts"
+            self.runtime_values[term] = value
+            assert len(self.runtime_values) <= MAX_RUNTIME_WORDS, "runtime word count"
         else:
             assert term in values, ("literal fact disagrees", term, values)
 
     def facts(self, operands, carrier):
-        assert isinstance(operands, list) and len(operands) <= MAX_CHOICES, "operand count"
+        assert isinstance(operands, list) and len(operands) <= MAX_CHOICES + MAX_RUNTIME_WORDS, "operand count"
         terms = carrier.words()
         facts = set()
         for fact in operands:
             assert fact.keys() == {"expression", "value"}, fact
-            graph = Graph(fact["expression"], self.scope)
+            graph = self.graph(fact["expression"])
             term = graph.word(graph.root)
             assert term in terms, "operand absent from carrier"
             value = fact["value"]
             _, values = numeric(value)
-            if isinstance(term, Read) or "expression" in value:
-                original = Graph(value["expression"], self.scope)
+            if isinstance(term, (Read, RuntimeWord)) or "expression" in value:
+                original = self.graph(value["expression"])
                 assert original.word(original.root) == term, "operand original expression"
             assert term not in facts, "duplicate operand"
             self.constrain(term, values)
             facts.add(term)
-        assert all(term in facts for term in terms if isinstance(term, Read)), "missing original read fact"
+        assert sum(not isinstance(term, RuntimeWord) for term in facts) <= MAX_CHOICES, "operand count"
+        assert all(term in facts for term in terms if isinstance(term, (Read, RuntimeWord))), "missing original word fact"
         return facts
 
     def certified(self, term, facts):
         if isinstance(term, Read):
             assert term in facts, "missing original read fact"
             self.constrain(term, term.choices)
+        elif isinstance(term, RuntimeWord):
+            assert term in facts, "missing original runtime word fact"
+            # Resolve only the proven numeric singleton, never the Fresh token.
+            return self.runtime_values[term]
         return term
 
     def data(self, data, lengths):
@@ -311,9 +357,9 @@ class Outcome:
         length = next(iter(values))
         # Native empty buffers carry the exact numeric length without an ExprId.
         if "expression" in data["length"]:
-            expression = Graph(data["length"]["expression"], self.scope)
+            expression = self.graph(data["length"]["expression"])
             assert expression.word(expression.root) == length, "length expression"
-        graph = Graph(data["root"], self.scope)
+        graph = self.graph(data["root"])
         facts = self.facts(data["operands"], graph)
         root = graph.nodes[graph.root]
         if isinstance(root, dict) and "Slice" in root:
@@ -331,11 +377,12 @@ class Outcome:
     def slots(self, store, owner, keys):
         plane = store["persistent"]
         assert plane["failure"] is None, "unsuccessful store"
-        graph = Graph(plane["roots"][owner], self.scope)
+        graph = self.graph(plane["roots"][owner])
         facts = self.facts(plane["operands"], graph)
         return tuple(self.certified(graph.slot(graph.root, key), facts) for key in keys)
 
     def rows(self, terms):
+        assert not any(isinstance(term, RuntimeWord) for term in terms), "uncertified runtime word"
         if not self.domains:
             return {terms}
         source, choices = next(iter(self.domains.items()))
