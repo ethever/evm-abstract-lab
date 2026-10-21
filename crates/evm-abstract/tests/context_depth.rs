@@ -362,6 +362,8 @@ fn large_requested_depth_obeys_state_and_transfer_limits() {
 
 #[test]
 fn large_requested_depth_also_obeys_the_shared_work_limit() {
+    use analysis::progress::{Event, Observer};
+
     let config = ExecutionConfig {
         analysis: Config {
             context_depth: usize::MAX,
@@ -373,29 +375,127 @@ fn large_requested_depth_also_obeys_the_shared_work_limit() {
         use_summaries: false,
         ..ExecutionConfig::default()
     };
-    let graph = native(SELF_LOOP, config.clone());
-    assert_eq!(graph.config().analysis.context_depth, usize::MAX);
-    assert_eq!(graph.status(), Status::Incomplete);
-    assert!(graph.work() <= config.max_work);
-    assert!(graph.work() > 0);
+    // Retain the original 5k resource control. Paid entry/input preparation can
+    // refuse before any instruction, so it cannot witness jump-history work.
+    let admission = native(SELF_LOOP, config.clone());
+    assert_eq!(admission.transfers(), 0);
+    assert!(admission.edges().is_empty());
+    assert!(
+        admission
+            .states()
+            .iter()
+            .all(|state| state.executed_pcs.is_empty())
+    );
+
+    // Independently measure one complete transfer with a transfer cap, keeping
+    // the same original inputs, default root coverage and precision policies.
+    // The first execution checkpoint follows paid entry/input admission; the
+    // report also includes the first jump's successor and pending-stop work.
+    let (sender, events) = std::sync::mpsc::sync_channel(32);
+    let observer = Observer::new(sender);
+    let mut one_transfer_config = config.clone();
+    one_transfer_config.max_work = ExecutionConfig::default().max_work;
+    one_transfer_config.analysis.max_transfers = 1;
+    let one_transfer = analysis::analyze_world_with_observer(
+        admission.world().clone(),
+        admission.entry().clone(),
+        one_transfer_config,
+        &observer,
+    )
+    .unwrap();
+    assert_eq!(one_transfer.transfers(), 1);
+    assert_eq!(one_transfer.frontiers().len(), 1);
+    assert_eq!(
+        one_transfer.frontiers()[0].reason,
+        FrontierReason::Budget(Limit::Transfers)
+    );
+    let entry_work = events
+        .try_iter()
+        .find_map(|event| match event {
+            Event::Execution {
+                transfers: 0, work, ..
+            } => Some(work),
+            _ => None,
+        })
+        .unwrap();
+    assert!(entry_work > config.max_work);
+    let one_transfer_work = one_transfer.work();
+    assert!(one_transfer_work > entry_work);
+    let mut funded_config = config.clone();
+    funded_config.max_work = one_transfer_work;
+    let graph = analyze_world(
+        admission.world().clone(),
+        admission.entry().clone(),
+        funded_config.clone(),
+    )
+    .unwrap();
     assert!(graph.transfers() > 0);
-    assert!(graph.states().len() < config.analysis.max_states);
-    assert!(graph.transfers() < config.analysis.max_transfers);
-    for state in graph.states() {
-        assert_eq!(state.key.frames.len(), 1);
-        assert_eq!(state.active().basic_block_index, 0);
-        assert!(state.active().jump_history.is_empty() || state.active().jump_history == [0]);
-    }
     assert!(
         graph
-            .frontiers()
+            .states()
             .iter()
-            .any(|frontier| frontier.reason == FrontierReason::Work)
+            .any(|state| state.active().jump_history.is_empty() && state.executed_pcs == [0, 1, 3])
     );
-    assert!(matches!(
-        ssa::build_world(&graph),
-        Err(ssa::SsaError::IncompleteAnalysis)
-    ));
+    assert!(graph.edges().iter().any(|edge| {
+        edge.kind == analysis::MachineEdgeKind::Intraprocedural(EdgeKind::Jump)
+            && graph.states()[edge.from].active().jump_history.is_empty()
+            && graph.states()[edge.to].active().jump_history == [0]
+    }));
+    for (graph, config) in [(&admission, &config), (&graph, &funded_config)] {
+        assert_eq!(graph.config().analysis.context_depth, usize::MAX);
+        assert!(!graph.config().use_summaries);
+        assert!(graph.config().root_terminal_coverage);
+        assert_eq!(
+            serde_json::to_value(graph.config()).unwrap(),
+            serde_json::to_value(config).unwrap()
+        );
+        assert_eq!(graph.status(), Status::Incomplete);
+        assert!(graph.work() <= config.max_work);
+        assert!(graph.work() > 0);
+        assert!(graph.states().len() < config.analysis.max_states);
+        assert!(graph.transfers() < config.analysis.max_transfers);
+        for state in graph.states() {
+            assert_eq!(state.key.frames.len(), 1);
+            assert_eq!(state.active().basic_block_index, 0);
+            assert!(state.active().jump_history.is_empty() || state.active().jump_history == [0]);
+        }
+        assert!(
+            graph
+                .frontiers()
+                .iter()
+                .any(|frontier| frontier.reason == FrontierReason::Work)
+        );
+        assert!(matches!(
+            ssa::build_world(graph),
+            Err(ssa::SsaError::IncompleteAnalysis)
+        ));
+    }
+    let coverage = graph.root_terminal_coverage().unwrap();
+    assert_eq!(
+        coverage.scope(),
+        analysis::RootTerminalScope::AllInputStates
+    );
+    assert_eq!(coverage.trigger(), &analysis::RootTerminalTrigger::Work);
+    assert_eq!(
+        serde_json::to_value(coverage.input().config()).unwrap(),
+        serde_json::to_value(&funded_config).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(coverage.input().entry()).unwrap(),
+        serde_json::to_value(admission.entry()).unwrap()
+    );
+    assert_eq!(
+        coverage.input().initial_store(),
+        &graph.states()[0].entry.store
+    );
+    assert_eq!(coverage.input().call_value().singleton(), Some(U256::ZERO));
+    assert_eq!(coverage.input().calldata().exact_bytes(), Some(Vec::new()));
+    eprintln!(
+        "5k admission work={}, entry/input checkpoint={entry_work}, one-transfer receipt={one_transfer_work}, funded work={}, transfers={}",
+        admission.work(),
+        graph.work(),
+        graph.transfers()
+    );
 
     let chain = analysis::analyze(
         jump_chain(12, None),
