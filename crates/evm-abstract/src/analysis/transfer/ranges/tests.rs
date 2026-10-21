@@ -751,26 +751,17 @@ mod literal_memory {
                         );
                     }
                     receipts.push(quote);
-                    // Product output release: bounded candidates, inline fields,
-                    // provenance and the expanded expression nodes, plus 32.
-                    let candidates = if op == opcode::SUB {
-                        args.iter()
-                            .try_fold(1usize, |tuples, arg| {
-                                arg.finite_constants()
-                                    .cardinality()
-                                    .map(|len| tuples.saturating_mul(len))
-                            })
-                            .unwrap_or(capacity)
-                            .min(capacity)
-                    } else {
-                        2
-                    };
+                    // The selected numeric operation quote bounds the actual
+                    // output structure; its release is an independent owner.
+                    use crate::domain::EvmNumericAlgebra as _;
+                    let numeric = domain
+                        .numeric_algebra()
+                        .operation_work(op, args.iter().map(TestValue::numeric));
                     let nodes = args.iter().fold(1usize, |nodes, arg| {
                         nodes.saturating_add(arg.expression().map_or(1, |expr| expr.nodes()))
                     });
                     receipts.push(
-                        candidates
-                            .saturating_add(12)
+                        numeric
                             .saturating_add(crate::domain::provenance::MAX_ORIGINS)
                             .saturating_add(nodes)
                             .saturating_add(32),

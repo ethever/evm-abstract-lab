@@ -110,11 +110,15 @@ impl<D: EvmNumericAlgebra> Builder<'_, D> {
         args: &[EvmValue<D::Element>],
     ) -> Result<(EvmValue<D::Element>, SingletonProof), FrontierReason> {
         self.pay(QUOTE_WORK)?;
+        let numeric_work = self
+            .domain
+            .numeric_algebra()
+            .operation_work(op, args.iter().map(EvmValue::numeric));
         // The algebra owns creation/retention; this pays only the caller's eventual
-        // release, even if a later stage refuses. Successful copy/release
-        // prepayments also keep the algebra's unchanged small-slice work sum finite.
-        self.pay(output_release_work(self.domain, op, args))?;
-        let work = self.domain.operation_work(op, args);
+        // release, even if a later stage refuses. Reusing the numeric quote as
+        // a structural bound does not transfer the execution payment to release.
+        self.pay(output_release_work(self.domain, numeric_work, args))?;
+        let work = self.domain.operation_envelope(args.iter(), numeric_work);
         self.pay(work)?;
         let (reduction, singleton) = self.domain.apply_detailed_with_singleton(op, args);
         query::checkpoint(self.budget)?;
@@ -133,26 +137,15 @@ fn value_copy_work<N: WordElement>(value: &EvmValue<N>) -> usize {
         .saturating_add(release_work(value.work_size()))
 }
 
-/// Only the eight operations below use this bound. Their Boolean outputs have
-/// at most two candidates. SUB has at most the finite input tuple count, or the
-/// domain's existing candidate limit when reduction starts from an open value.
+/// The selected algebra's operation quote bounds its actual numeric result's
+/// `work_size`, including facade-installed literals. Candidate cardinalities and
+/// copy fees cannot bound arbitrary carriers. Output provenance and expressions
+/// belong to the facade; these operations create no input identity.
 fn output_release_work<D: EvmNumericAlgebra>(
     domain: AlgebraRef<'_, D>,
-    op: u8,
+    numeric_work: usize,
     args: &[EvmValue<D::Element>],
 ) -> usize {
-    let candidates = if op == opcode::SUB {
-        args.iter()
-            .try_fold(1usize, |tuples, arg| {
-                arg.finite_constants()
-                    .cardinality()
-                    .map(|len| tuples.saturating_mul(len))
-            })
-            .unwrap_or_else(|| domain.capacity())
-            .min(domain.capacity())
-    } else {
-        2.min(domain.capacity())
-    };
     let nodes = if domain.spec().relations().enabled {
         args.iter().fold(1usize, |nodes, arg| {
             nodes.saturating_add(arg.expression().map_or(1, |expr| expr.nodes()))
@@ -161,8 +154,7 @@ fn output_release_work<D: EvmNumericAlgebra>(
         0
     };
     release_work(
-        candidates
-            .saturating_add(12)
+        numeric_work
             .saturating_add(crate::domain::provenance::MAX_ORIGINS)
             .saturating_add(nodes),
     )
