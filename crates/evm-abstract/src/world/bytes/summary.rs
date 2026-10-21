@@ -228,8 +228,8 @@ impl<N: WordElement> EvmByteArray<N> {
                         }
                         let value = reader.read(&self.root, &ExprId::constant(U256::from(index)));
                         let value = restore_presentation(value, self.bytes.get(&index));
-                        // Apply the caller's profile/capacity last, including
-                        // when the presentation came from a larger old policy.
+                        // Apply the selected algebra's policy and capacity last,
+                        // including presentation retained under a larger capacity.
                         let value = scalar(&value, domain);
                         if value.numeric() != EvmValue::<N>::unknown_byte().numeric() {
                             cells.insert(index, value);
