@@ -833,7 +833,7 @@ impl<
             let Some((task, token)) = self.runtime.next(false, self.budget)? else {
                 return Ok(None);
             };
-            if matches!(&task.0, TaskKind::Extension(_)) {
+            if matches!(&task.0, TaskKind::Extension(_) | TaskKind::Seed(_)) {
                 let cooperation = self.cooperation.as_mut().ok_or(MachineError::Shape)?;
                 if let Err(error) =
                     cooperation.evaluate(&mut self.runtime, task, token, self.budget)

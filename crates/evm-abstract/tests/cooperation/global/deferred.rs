@@ -5,8 +5,8 @@ use evm_abstract::analysis::{
     FrontierReason, OutcomeKind,
     control::Control,
     cooperation::{
-        PointKind, ProcedureRoute, Procedures, Summaries, SummaryRoute,
-        analyze_world_cooperating_with_control,
+        PointKind, ProcedureRoute, Procedures, Summaries, SummaryClosureRoute, SummaryClosures,
+        SummaryRoute, analyze_world_cooperating_with_control, discover_closed_summary,
     },
     progress::Observer,
 };
@@ -67,6 +67,8 @@ where
         + Discover<Procedures, ProcedureRoute, Error = Infrastructure>
         + Discover<Summaries<ExcludingWord>, SummaryRoute, Error = Infrastructure>
         + Read<Summaries<ExcludingWord>, SummaryRoute, Error = Infrastructure>
+        + Read<SummaryClosures, SummaryClosureRoute, Error = Infrastructure>
+        + Discover<SummaryClosures, SummaryClosureRoute, Error = Infrastructure>
         + Accepts<GuardBound, Route, Error = PublishError<Infallible, MachineError>>
         + Charges<Error = Infrastructure>,
 {
@@ -94,18 +96,23 @@ where
                     cx,
                     Scoped::new(input.universe(), *id),
                 )?;
-                let complete = summary
-                    .value()
-                    .is_some_and(|summary| summary.closed && !summary.outputs.is_empty());
+                let proof = <Cx as Discover<SummaryClosures, SummaryClosureRoute>>::discover(
+                    cx,
+                    Scoped::new(input.universe(), *id),
+                )?;
+                let complete = summary.value().is_some_and(|summary| {
+                    !summary.outputs.is_empty()
+                        && proof
+                            .value()
+                            .is_some_and(|proof| proof.generation == summary.generation)
+                });
                 if complete && self.adopt_closed {
                     // A real must consumer adopts only an available closed
                     // certificate. Pending has an independent invariant below,
                     // so this feedback cycle does not require its own closure.
-                    let adopted = <Cx as Read<Summaries<ExcludingWord>, SummaryRoute>>::query(
-                        cx,
-                        Scoped::new(input.universe(), *id),
-                    )?;
-                    if !adopted.value().is_some_and(|summary| summary.closed) {
+                    let adopted =
+                        discover_closed_summary::<ExcludingWord, _>(cx, input.universe(), *id)?;
+                    if adopted.value().is_none() {
                         return Ok(LocalClosure::Stable);
                     }
                 }

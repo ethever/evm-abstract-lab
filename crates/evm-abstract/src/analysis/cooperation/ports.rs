@@ -3,7 +3,8 @@ use super::{
     ImmutableInputPolicy, Inputs, Refinements, StackMeet,
     global::{
         Continuation, Continuations, Edge, EntryPolicy, Generations, ObservationPolicy, Points,
-        Procedures, SetUnion, Shared, Subscriptions, Summaries, Summary, Topology,
+        Procedures, SetUnion, Shared, Subscriptions, Summaries, SummaryClosure, SummaryClosures,
+        SummaryPolicy, Topology,
     },
 };
 use crate::domain::WordElement;
@@ -21,6 +22,8 @@ pub struct GenerationRoute;
 pub struct TopologyRoute;
 /// Explicit route of native global procedure-output observations.
 pub struct SummaryRoute;
+/// Explicit route of source-guarded procedure completion certificates.
+pub struct SummaryClosureRoute;
 /// Explicit route of the open procedure-key directory.
 pub struct ProcedureRoute;
 /// Explicit route of structural origin-to-callee relationships.
@@ -88,7 +91,12 @@ global_route!(TopologyRoute, topology, Channel<Topology, Ascending<SetUnion<Edge
 global_route!(
     SummaryRoute,
     summaries,
-    Channel<Summaries<N>, Ascending<ObservationPolicy<Arc<Summary<N>>>>>
+    Channel<Summaries<N>, SummaryPolicy<N>>
+);
+global_route!(
+    SummaryClosureRoute,
+    closures,
+    Channel<SummaryClosures, Ascending<ObservationPolicy<SummaryClosure>>>
 );
 global_route!(
     ContinuationRoute,
