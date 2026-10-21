@@ -52,10 +52,11 @@ where
         };
         let mut zero = !edges.is_empty();
         for edge in edges {
-            let source = current_input::<ExcludingWord, _>(cx, input.universe(), edge.from)?;
-            let Some(source) = source.value() else {
+            let source_answer = current_input::<ExcludingWord, _>(cx, input.universe(), edge.from)?;
+            let Some(source) = source_answer.value() else {
                 return Ok(LocalClosure::Stable);
             };
+            assert_eq!(source_answer.scope, source.subject().scope);
             cx.charge(source.work_size().saturating_mul(4))?;
             match fixtures::input_pc(source) {
                 Some(pc) if pc == self.source => {

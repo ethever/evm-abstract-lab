@@ -1,7 +1,5 @@
 //! Behavioral contracts for typed cooperative solving and production adapter primitives.
 
-#[path = "kernel/answer.rs"]
-mod answer;
 #[path = "kernel/cooperation.rs"]
 mod cooperation;
 #[path = "kernel/publication_drop.rs"]
