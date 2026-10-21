@@ -91,19 +91,28 @@ fn reserved<N: WordElement>(world: &EvmWorld<N>, address: Address) -> bool {
         || (world.fork() == crate::Fork::Osaka && number == U256::from(0x100))
 }
 
+/// A prefix can reject runtime code without materializing the unknown suffix.
+enum Materialized {
+    Bytes(Vec<u8>),
+    ForbiddenPrefix,
+    Unknown,
+}
+
 /// Consume the caller's existing extraction reservation and proved host extent.
 /// Constructing the view does not rediscover its numeric length.
 /// Each newly read opaque byte still needs its own independent query payment.
 fn materialize<D: EvmNumericAlgebra>(
     data: &EvmByteArray<D::Element>,
     length: usize,
+    forbidden_prefix: Option<u8>,
     context: &mut TransferContext<'_, D>,
-) -> Result<Option<Vec<u8>>, FrontierReason> {
+) -> Result<Materialized, FrontierReason> {
     query::checkpoint(context.budget)?;
     data.check_existing(context.domain.spec().relations().expressions())
         .map_err(super::errors::bytes)?;
-    if length > context.config.max_memory_bytes {
-        return Ok(None);
+    let over_cap = length > context.config.max_memory_bytes;
+    if over_cap && forbidden_prefix.is_none() {
+        return Ok(Materialized::Unknown);
     }
     let view = ByteView::new(
         data.state_root().clone(),
@@ -116,13 +125,19 @@ fn materialize<D: EvmNumericAlgebra>(
             .max(view.nodes()),
         max_depth: data.state_root().depth().saturating_add(2),
     };
-    let known = view.known_bytes(limits);
-    query::checkpoint(context.budget)?;
-    if let Some(bytes) = known.map_err(super::errors::expression)? {
-        return Ok(Some(bytes));
+    if !over_cap {
+        let known = view.known_bytes(limits);
+        query::checkpoint(context.budget)?;
+        if let Some(bytes) = known.map_err(super::errors::expression)? {
+            return Ok(Materialized::Bytes(bytes));
+        }
     }
     let mut bytes = Vec::new();
-    for index in 0..length {
+    // A forbidden first byte settles runtime rejection without extracting the
+    // unknown suffix, even above the full-buffer host cap. Reuse this actual
+    // byte's paid proof; the length proof cannot classify a different N.
+    let reads = if over_cap { 1 } else { length };
+    for index in 0..reads {
         query::checkpoint(context.budget)?;
         let value = data
             .read_byte_checked_with(&EvmValue::constant(U256::from(index)), context.domain)
@@ -130,14 +145,20 @@ fn materialize<D: EvmNumericAlgebra>(
         query::checkpoint(context.budget)?;
         let (_, mut proof) = candidates::prepare(&value, context.budget)?;
         let Some(byte) = query::resolve(value.numeric(), &mut proof, context.budget)? else {
-            return Ok(None);
+            return Ok(Materialized::Unknown);
         };
         let Ok(byte) = u8::try_from(byte) else {
-            return Ok(None);
+            return Ok(Materialized::Unknown);
         };
+        if index == 0 && forbidden_prefix == Some(byte) {
+            return Ok(Materialized::ForbiddenPrefix);
+        }
+        if over_cap {
+            return Ok(Materialized::Unknown);
+        }
         bytes.push(byte);
     }
-    Ok(Some(bytes))
+    Ok(Materialized::Bytes(bytes))
 }
 
 /// Suspend the caller and enter arbitrary concrete EVM initcode. Nonce bump
@@ -305,10 +326,11 @@ fn create_prepared<D: EvmNumericAlgebra>(
                     match materialize(
                         &bytes,
                         usize::try_from(*size).expect("bounded initcode size"),
+                        None,
                         context,
                     )? {
-                        Some(bytes) => bytes,
-                        None => {
+                        Materialized::Bytes(bytes) => bytes,
+                        Materialized::Unknown | Materialized::ForbiddenPrefix => {
                             incomplete(result, pc, CreationBoundary::UnknownInitCode);
                             continue;
                         }
@@ -550,9 +572,19 @@ pub(super) fn finish_creation<D: EvmNumericAlgebra>(
         .ok_or(FrontierReason::Creation(
             CreationBoundary::UnknownRuntimeCode,
         ))?;
-    let bytes = materialize(data, length, context)?.ok_or(FrontierReason::Creation(
-        CreationBoundary::UnknownRuntimeCode,
-    ))?;
+    let bytes = match materialize(data, length, Some(0xef), context)? {
+        Materialized::Bytes(bytes) => bytes,
+        Materialized::ForbiddenPrefix => {
+            *kind = OutcomeKind::Failure;
+            *data = EvmByteArray::<D::Element>::empty();
+            return Ok(());
+        }
+        Materialized::Unknown => {
+            return Err(FrontierReason::Creation(
+                CreationBoundary::UnknownRuntimeCode,
+            ));
+        }
+    };
     if bytes.len() > 24_576 || bytes.first() == Some(&0xef) {
         *kind = OutcomeKind::Failure;
         *data = EvmByteArray::<D::Element>::empty();

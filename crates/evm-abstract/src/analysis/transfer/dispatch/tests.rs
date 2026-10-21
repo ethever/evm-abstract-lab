@@ -1098,6 +1098,140 @@ fn every_creation_candidate_refuses_before_discovery_and_keeps_the_paid_prefix()
     }
 }
 
+fn runtime_prefix_fixture(
+    cap: usize,
+    owner: Option<analysis_control::Cancellation>,
+) -> (
+    Fixture,
+    crate::analysis::EvmMachinePayload<Opaque>,
+    EvmByteArray<Opaque>,
+) {
+    let mut fixture = fixture("f000", false);
+    fixture.config.max_memory_bytes = cap;
+    fixture
+        .world
+        .insert(address(0x101).create(0), EvmAccount::absent())
+        .unwrap();
+    fixture.input =
+        transfer::initial(&fixture.world, &fixture.entry, fixture.algebra.borrowed()).unwrap();
+    let result = create(
+        &fixture,
+        opcode::CREATE,
+        &[word(0), word(0), word(0)],
+        &mut WorkBudget::new(fixture.config.max_work),
+    );
+    let child = result
+        .successors
+        .into_iter()
+        .find(|successor| successor.kind == MachineEdgeKind::Call)
+        .unwrap()
+        .payload;
+    let domain = fixture.algebra.borrowed();
+    let mut data = EvmByteArray::unknown()
+        .slice_with(&word(0), &word(2), 2, domain)
+        .unwrap();
+    let prefix = EvmValue::from_numeric(Opaque {
+        watched: true,
+        cancel_owner: owner,
+        ..Opaque::constant(U256::from(0xef))
+    })
+    .with_expression(ExprId::fresh().unwrap());
+    data.write_byte_with(&word(0), &prefix, 2, domain).unwrap();
+    assert!(data.exact_bytes_bounded_with(2, domain).is_none());
+    (fixture, child, data)
+}
+
+#[test]
+fn runtime_forbidden_prefix_rejects_unknown_suffix_even_above_extraction_cap() {
+    for cap in [1, 2] {
+        let (fixture, mut child, mut data) = runtime_prefix_fixture(cap, None);
+        let before = child.clone();
+        let _receipt = RECEIPT.scope();
+        let mut budget = WorkBudget::new(fixture.config.max_work);
+        let mut kind = OutcomeKind::Return;
+        transfer::create::finish_creation(
+            &mut child,
+            &mut kind,
+            &mut data,
+            &mut context(&fixture, &mut budget),
+            1,
+        )
+        .unwrap();
+        assert_eq!(kind, OutcomeKind::Failure);
+        assert_eq!(data, EvmByteArray::empty());
+        assert_eq!(child, before, "prefix rejection cannot install any runtime");
+        assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (1, 1));
+        assert!(!budget.exhausted());
+    }
+}
+
+#[test]
+fn runtime_prefix_refusal_and_both_cancellation_owners_leave_deployment_unchanged() {
+    for point in 0..6 {
+        let token = analysis_control::Cancellation::new();
+        let captured = point >= 4;
+        let (fixture, child, original) = runtime_prefix_fixture(1, captured.then(|| token.clone()));
+        let _receipt = RECEIPT.scope();
+        let mut complete = WorkBudget::new(fixture.config.max_work);
+        transfer::create::finish_creation(
+            &mut child.clone(),
+            &mut OutcomeKind::Return,
+            &mut original.clone(),
+            &mut context(&fixture, &mut complete),
+            1,
+        )
+        .unwrap();
+        let prefix = complete.used() - 313;
+        RECEIPT.update(|receipt| {
+            receipt.quotes = 0;
+            receipt.queries = 0;
+            receipt.fee = if point == 0 { usize::MAX } else { 313 };
+            receipt.on_quote = point == 2 || point == 4;
+            receipt.on_query = point == 3 || point == 5;
+        });
+        let limit = if point == 1 { prefix + 312 } else { usize::MAX };
+        let mut budget = if captured {
+            analysis_control::with_cancellation(&token, || WorkBudget::new(limit))
+        } else {
+            WorkBudget::new(limit)
+        };
+        let active = if captured {
+            analysis_control::Cancellation::new()
+        } else {
+            token.clone()
+        };
+        let mut payload = child.clone();
+        let mut data = original.clone();
+        let mut kind = OutcomeKind::Return;
+        let error = analysis_control::with_cancellation(&active, || {
+            transfer::create::finish_creation(
+                &mut payload,
+                &mut kind,
+                &mut data,
+                &mut context(&fixture, &mut budget),
+                1,
+            )
+        })
+        .unwrap_err();
+        assert_eq!(
+            error,
+            if point < 2 {
+                FrontierReason::Work
+            } else {
+                FrontierReason::Relations(QueryReason::Cancelled)
+            }
+        );
+        assert_eq!(payload, child);
+        assert_eq!(kind, OutcomeKind::Return);
+        assert_eq!(data, original);
+        assert_eq!(RECEIPT.get().queries, usize::from(point == 3 || point == 5));
+        assert_eq!(
+            budget.used(),
+            prefix + if point == 3 || point == 5 { 313 } else { 0 }
+        );
+    }
+}
+
 #[test]
 fn call_target_balance_and_selfdestruct_queries_refuse_without_published_effects() {
     for site in 0..4 {
