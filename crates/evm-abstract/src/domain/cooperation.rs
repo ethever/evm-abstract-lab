@@ -22,6 +22,8 @@ pub(super) mod cost;
 mod policy;
 mod scalar;
 #[cfg(test)]
+pub(super) mod test_support;
+#[cfg(test)]
 mod tests;
 mod work;
 pub use bits::{BoundsToMask, KeepMasks};

@@ -3,7 +3,7 @@ use crate::{
         AbstractValue, Domain, DomainSpec, EvmNumericAlgebra, FiniteConstantSet, NumericValue,
         Profile, ReductionStatus, ValueAlgebra, WordElement, WordObservation,
         congruence::Congruence,
-        cooperation::{self, BoundsToMask, MaskToBounds, ProductAlgebra, RuleError, RuleWork},
+        cooperation::{self, BoundsToMask, MaskToBounds, ProductAlgebra, test_support::Count},
         interval::Interval,
         known_bits::KnownBits,
         relational::{CheckResult, EvmScalarQuery, RelationLimits, RelationState},
@@ -12,7 +12,6 @@ use crate::{
     resource::WorkBudget,
 };
 use alloy_primitives::U256;
-use analysis_kernel::{LocalClosure, Reduction, Scope};
 use revm_bytecode::opcode;
 use std::{cell::Cell, num::NonZeroUsize, rc::Rc};
 
@@ -40,44 +39,6 @@ fn finite(size: usize) -> NumericValue {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct CountMasks<'a>(&'a Cell<usize>);
-impl RuleWork for CountMasks<'_> {
-    fn evaluation_work(&self, spec: DomainSpec, finite: usize) -> usize {
-        BoundsToMask.evaluation_work(spec, finite)
-    }
-}
-impl<Cx> Reduction<Cx> for CountMasks<'_>
-where
-    BoundsToMask: Reduction<Cx, Task = Scope, Error = RuleError>,
-{
-    type Task = Scope;
-    type Error = RuleError;
-    fn reduce(&mut self, task: &Scope, cx: &mut Cx) -> Result<LocalClosure, RuleError> {
-        self.0.set(self.0.get() + 1);
-        BoundsToMask.reduce(task, cx)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CountBounds<'a>(&'a Cell<usize>);
-impl RuleWork for CountBounds<'_> {
-    fn evaluation_work(&self, spec: DomainSpec, finite: usize) -> usize {
-        MaskToBounds.evaluation_work(spec, finite)
-    }
-}
-impl<Cx> Reduction<Cx> for CountBounds<'_>
-where
-    MaskToBounds: Reduction<Cx, Task = Scope, Error = RuleError>,
-{
-    type Task = Scope;
-    type Error = RuleError;
-    fn reduce(&mut self, task: &Scope, cx: &mut Cx) -> Result<LocalClosure, RuleError> {
-        self.0.set(self.0.get() + 1);
-        MaskToBounds.reduce(task, cx)
-    }
-}
-
 #[test]
 fn closure_quote_funds_rule_and_graph_reservations_across_capacity_and_step_limits() {
     let _counter = cooperation::PROTOCOL_WORK.scope();
@@ -95,8 +56,17 @@ fn closure_quote_funds_rule_and_graph_reservations_across_capacity_and_step_limi
             ] {
                 let masks = Cell::new(0);
                 let bounds = Cell::new(0);
-                let algebra =
-                    ProductAlgebra::new(domain.spec(), CountMasks(&masks), CountBounds(&bounds));
+                let algebra = ProductAlgebra::new(
+                    domain.spec(),
+                    Count {
+                        rule: BoundsToMask,
+                        calls: &masks,
+                    },
+                    Count {
+                        rule: MaskToBounds,
+                        calls: &bounds,
+                    },
+                );
                 let result = algebra.reduce_numeric(&input);
                 let (used, dependencies, steps) = cooperation::PROTOCOL_WORK.get();
                 let quote = domain.numeric_refinement_work(&input, 0);
@@ -256,7 +226,13 @@ fn arithmetic_reservation_is_atomic_and_covers_the_actual_cooperative_schedule()
                     );
                     assert_eq!(paid.used(), quote);
                     assert!(!paid.exhausted());
-                    assert!(cooperation::PROTOCOL_WORK.get().0 <= quote);
+                    let (used, dependencies, steps) = cooperation::PROTOCOL_WORK.get();
+                    assert!(used <= quote);
+                    assert!(
+                        dependencies <= 32,
+                        "one scalar generation has only three facts and four jobs"
+                    );
+                    assert!(steps <= 1 + 3 * rounds);
                     let expected = domain.apply_detailed(op, &args);
                     assert_eq!(actual.value, expected.value);
                     assert_eq!(actual.status, expected.status);
@@ -308,8 +284,14 @@ fn literal_and_top_binary_transfers_need_at_most_two_complete_cycles() {
                     let bounds = Cell::new(0);
                     let algebra = ProductAlgebra::new(
                         domain.spec(),
-                        CountMasks(&masks),
-                        CountBounds(&bounds),
+                        Count {
+                            rule: BoundsToMask,
+                            calls: &masks,
+                        },
+                        Count {
+                            rule: MaskToBounds,
+                            calls: &bounds,
+                        },
                     );
                     cooperation::PROTOCOL_WORK.set((0, 0, 0));
                     let result = algebra.apply_numeric(op, &args);

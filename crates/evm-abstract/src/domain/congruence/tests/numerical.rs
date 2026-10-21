@@ -1,6 +1,10 @@
 use super::super::{Congruence, Kind, gcd};
 use crate::domain::evaluate;
 use alloy_primitives::U256;
+use proptest::{
+    prelude::*,
+    test_runner::{Config, TestCaseResult, TestRunner},
+};
 use revm_bytecode::opcode;
 use std::collections::BTreeSet;
 
@@ -62,29 +66,22 @@ fn old_from_values(values: &BTreeSet<U256>) -> Congruence {
     })
 }
 
-fn next_word(state: &mut u64) -> U256 {
-    U256::from_limbs(std::array::from_fn(|_| {
-        *state ^= *state << 13;
-        *state ^= *state >> 7;
-        *state ^= *state << 17;
-        *state
-    }))
-}
-
-fn assert_gcd_matches_old(a: U256, b: U256) {
+fn gcd_matches_old(a: U256, b: U256) -> TestCaseResult {
     let expected = old_gcd(a, b);
-    assert_eq!(gcd(a, b), expected, "a={a}, b={b}");
-    assert_eq!(gcd(b, a), expected, "a={b}, b={a}");
+    prop_assert_eq!(gcd(a, b), expected, "a={}, b={}", a, b);
+    prop_assert_eq!(gcd(b, a), expected, "a={}, b={}", b, a);
+    Ok(())
 }
 
-fn assert_hull_matches_old(values: &BTreeSet<U256>) {
+fn hull_matches_old(values: &BTreeSet<U256>) -> TestCaseResult {
     let actual = Congruence::from_values(values);
-    assert_eq!(actual, old_from_values(values), "values={values:?}");
-    assert!(values.iter().all(|value| actual.contains(*value)));
+    prop_assert_eq!(&actual, &old_from_values(values), "values={:?}", values);
+    prop_assert!(values.iter().all(|value| actual.contains(*value)));
+    Ok(())
 }
 
 #[test]
-fn gcd_zero_powers_and_limb_edges_match_old_euclid() {
+fn gcd_edges_and_generated_wide_factors_match_independent_euclid() {
     let samples = [
         U256::ZERO,
         U256::ONE,
@@ -97,36 +94,43 @@ fn gcd_zero_powers_and_limb_edges_match_old_euclid() {
     ];
     for a in samples {
         for b in samples {
-            assert_gcd_matches_old(a, b);
+            gcd_matches_old(a, b).unwrap();
         }
     }
     for bit in 0..256 {
         let power = U256::ONE << bit;
         for other_bit in [0, 1, 63, 64, 65, 127, 128, 129, 191, 192, 193, 254, 255] {
-            assert_gcd_matches_old(power, U256::ONE << other_bit);
+            gcd_matches_old(power, U256::ONE << other_bit).unwrap();
         }
         for other in samples
             .into_iter()
             .chain([power, power - U256::ONE, power | U256::ONE])
         {
-            assert_gcd_matches_old(power, other);
+            gcd_matches_old(power, other).unwrap();
         }
     }
-}
-
-#[test]
-fn gcd_generated_wide_pairs_match_old_euclid() {
-    let mut state = 0x9e37_79b9_7f4a_7c15;
-    for case in 0..512 {
-        let a = next_word(&mut state);
-        let b = next_word(&mut state);
-        assert_gcd_matches_old(a, b);
-        assert_gcd_matches_old(a << (case % 256), b << (case % 256));
-        // Exact products retain a generated wide common factor, so random
-        // coprime inputs alone cannot hide a faulty general-case fallback.
-        let common = next_word(&mut state) >> 128;
-        assert_gcd_matches_old((a >> 128) * common, (b >> 128) * common);
-    }
+    let strategy = (
+        any::<[u64; 4]>(),
+        any::<[u64; 4]>(),
+        any::<u128>(),
+        0usize..256,
+    );
+    TestRunner::new(Config {
+        cases: 512,
+        source_file: Some(file!()),
+        ..Config::default()
+    })
+    .run(&strategy, |(a, b, common, shift)| {
+        let a = U256::from_limbs(a);
+        let b = U256::from_limbs(b);
+        gcd_matches_old(a, b)?;
+        gcd_matches_old(a << shift, b << shift)?;
+        // Exact products exercise a wide common factor as well as random
+        // coprime inputs; shrinking retains the factor construction.
+        let common = U256::from(common);
+        gcd_matches_old((a >> 128) * common, (b >> 128) * common)
+    })
+    .unwrap();
 }
 
 #[test]
@@ -143,7 +147,6 @@ fn normalization_matches_old_remainder_and_singleton_canonicalization() {
         (U256::ONE << 255) - U256::ONE,
         (U256::ONE << 255) + U256::ONE,
     ];
-    let mut state = 0xd1b5_4a32_d192_ed03;
     for modulus in moduli
         .into_iter()
         .chain((0..256).map(|bit| U256::ONE << bit))
@@ -156,7 +159,6 @@ fn normalization_matches_old_remainder_and_singleton_canonicalization() {
             modulus.wrapping_sub(U256::ONE),
             modulus,
             modulus.wrapping_add(U256::ONE),
-            next_word(&mut state),
         ] {
             assert_eq!(
                 Congruence::new(modulus, residue),
@@ -165,19 +167,34 @@ fn normalization_matches_old_remainder_and_singleton_canonicalization() {
             );
         }
     }
-    for _ in 0..512 {
-        let modulus = next_word(&mut state);
-        let residue = next_word(&mut state);
-        assert_eq!(
-            Congruence::new(modulus, residue),
-            old_new(modulus, residue),
-            "modulus={modulus}, residue={residue}"
-        );
-    }
+    TestRunner::new(Config {
+        cases: 512,
+        source_file: Some(file!()),
+        ..Config::default()
+    })
+    .run(
+        &(
+            any::<[u64; 4]>(),
+            any::<[u64; 4]>(),
+            0usize..256,
+            prop::sample::select(moduli.to_vec()),
+        ),
+        |(modulus, residue, bit, edge)| {
+            let modulus = U256::from_limbs(modulus);
+            let residue = U256::from_limbs(residue);
+            // General moduli almost never hit the mask path or limb/word
+            // edges. Every generated residue also exercises both target kinds.
+            for modulus in [modulus, U256::ONE << bit, edge] {
+                prop_assert_eq!(Congruence::new(modulus, residue), old_new(modulus, residue));
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
 }
 
 #[test]
-fn hull_empty_singleton_sparse_and_word_edges_match_old_fold() {
+fn hull_edges_and_generated_wide_sets_match_independent_join_fold() {
     let half = U256::ONE << 255;
     let high = U256::ONE << 200;
     for values in [
@@ -193,37 +210,40 @@ fn hull_empty_singleton_sparse_and_word_edges_match_old_fold() {
         BTreeSet::from([17, 23, 32].map(|offset| high + U256::from(offset))),
         BTreeSet::from([12, 6, 0].map(|offset| U256::MAX - U256::from(offset))),
     ] {
-        assert_hull_matches_old(&values);
+        hull_matches_old(&values).unwrap();
     }
-}
-
-#[test]
-fn hull_generated_wide_sets_match_old_fold() {
-    let mut state = 0xa076_1d64_78bd_642f;
-    for case in 0..256 {
-        let arbitrary = (0..case % 33).map(|_| next_word(&mut state)).collect();
-        assert_hull_matches_old(&arbitrary);
-
+    let strategy = (
+        prop::collection::btree_set(any::<[u64; 4]>(), 0..33),
+        any::<[u64; 4]>(),
+        any::<[u64; 4]>(),
+    );
+    TestRunner::new(Config {
+        cases: 512,
+        source_file: Some(file!()),
+        ..Config::default()
+    })
+    .run(&strategy, |(values, first, spacing)| {
+        hull_matches_old(&values.into_iter().map(U256::from_limbs).collect())?;
+        let first = U256::from_limbs(first);
+        let spacing = U256::from_limbs(spacing);
         // No wrap: first < 2^255 and 28 * spacing < 2^253. These sparse
         // progressions keep a non-power modulus and change the gcd late.
-        let first = next_word(&mut state) >> 1;
-        let spacing = (next_word(&mut state) >> 8) | U256::from(3);
+        let small_first = first >> 1;
+        let small_spacing = (spacing >> 8) | U256::from(3);
         let spaced = [0, 6, 15, 28]
-            .map(|factor| first + spacing * U256::from(factor))
+            .map(|factor| small_first + small_spacing * U256::from(factor))
             .into();
-        assert_hull_matches_old(&spaced);
-        assert_eq!(
+        hull_matches_old(&spaced)?;
+        prop_assert_eq!(
             Congruence::from_values(&spaced),
-            old_new(spacing, first).unwrap()
+            old_new(small_spacing, small_first).unwrap()
         );
-
-        let first = next_word(&mut state);
-        let spacing = next_word(&mut state);
         let wrapped = [0, 1, 3, 8, 21]
             .map(|factor| first.wrapping_add(spacing.wrapping_mul(U256::from(factor))))
             .into();
-        assert_hull_matches_old(&wrapped);
-    }
+        hull_matches_old(&wrapped)
+    })
+    .unwrap();
 }
 
 #[test]
@@ -256,7 +276,7 @@ fn all_byte_shift_covers_and_sparse_wrapped_shl_hulls_match_old_fold() {
                 .iter()
                 .map(|value| evaluate(opcode::SHL, shift, *value, U256::ZERO))
                 .collect();
-            assert_hull_matches_old(&shifted);
+            hull_matches_old(&shifted).unwrap();
         }
         let shifted_bytes = bytes
             .iter()

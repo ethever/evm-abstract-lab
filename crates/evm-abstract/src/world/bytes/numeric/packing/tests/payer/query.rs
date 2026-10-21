@@ -377,69 +377,73 @@ fn successful_custom_pack_pays_one_opaque_query_and_reuses_it_for_metadata() {
 }
 
 #[test]
-fn custom_result_query_receipt_minus_one_refuses_before_query_and_publication() {
-    for path in PATHS {
-        let probe = Probe::new(Interrupt::None);
-        let policy = policy(Shape::Exact, true, &probe);
-        let (_, setup, _) = context(path, usize::MAX, &policy, |_| ());
-        let (_, used, exhausted) = context(path, setup + FEE + QUERY_FEE - 1, &policy, |context| {
-            let before = context.demand_usage();
-            assert!(pack_in(&bytes(Shape::Exact), context.algebra(), context).is_none());
-            assert!(context.work_exhausted());
-            assert!(!context.cache_refused());
-            assert_eq!(context.demand_usage(), before);
-            if matches!(path, Path::Prepared) {
-                assert_eq!(numeric_receipts(path, context), [FEE]);
-            }
-            assert!(pack_in(&bytes(Shape::Exact), context.algebra(), &context.clone()).is_none());
-        });
-        assert_eq!(used, setup + FEE);
-        assert!(exhausted);
-        assert_eq!(policy.packs.get(), 1);
-        assert_eq!(probe.quotes.get(), 1);
-        assert_eq!(probe.queries.get(), 0);
-        assert_eq!(probe.visits.get(), 0);
-        assert_eq!(probe.copies.get(), 0);
-        assert_eq!(probe.observations.get(), 0);
-        assert!(policy.actions.borrow().is_empty());
-    }
-}
-
-#[test]
-fn actual_reader_query_refusal_never_starts_scalar_fallback_or_publishes_a_result() {
+fn query_receipt_minus_one_stops_direct_and_reader_paths_before_query_or_publication() {
     let state = ByteStateId::exact(Arc::from([7u8; 32]));
     let offset = ExprId::constant(U256::ZERO);
     for path in PATHS {
-        let pilot = Probe::new(Interrupt::None);
-        let pilot_policy = policy(Shape::Exact, false, &pilot);
-        let (_, full, _) = context(path, usize::MAX, &pilot_policy, |context| {
-            let actual =
-                Reader::with_context(context.clone(), context.algebra()).word(&state, &offset);
-            assert_eq!(actual.numeric().members.len(), MEMBERS);
-            assert_eq!(pilot.queries.get(), 1);
-            assert!(!context.stopped());
-        });
-        let probe = Probe::new(Interrupt::None);
-        let policy = policy(Shape::Exact, false, &probe);
-        let (_, used, exhausted) = context(path, full - 1, &policy, |context| {
-            let mut reader = Reader::with_context(context.clone(), context.algebra());
-            let caches = reader.cache_stats();
-            assert_eq!(reader.word(&state, &offset), EvmValue::top());
-            assert_eq!(reader.cache_stats(), caches);
-            assert!(context.work_exhausted());
-            let usage = context.demand_usage();
-            assert_eq!(
-                word_plan::evaluate(&state, None, &offset, context, context.algebra()),
-                Ok(None)
-            );
-            assert_eq!(context.demand_usage(), usage);
-        });
-        assert_eq!(used, full - QUERY_FEE);
-        assert!(exhausted);
-        assert_eq!(policy.packs.get(), 1);
-        assert_eq!(probe.queries.get(), 0);
-        assert_eq!(probe.copies.get(), 0);
-        assert!(policy.actions.borrow().is_empty());
+        for through_reader in [false, true] {
+            let read = |context: &Context<'_, Queried, Paid<Successful>>| {
+                if through_reader {
+                    let mut reader = Reader::with_context(context.clone(), context.algebra());
+                    let caches = reader.cache_stats();
+                    let result = reader.word(&state, &offset);
+                    if context.stopped() {
+                        assert_eq!(result, EvmValue::top());
+                        assert_eq!(reader.cache_stats(), caches);
+                        None
+                    } else {
+                        Some(result)
+                    }
+                } else {
+                    pack_in(&bytes(Shape::Exact), context.algebra(), context)
+                }
+            };
+            let pilot = Probe::new(Interrupt::None);
+            let pilot_policy = policy(Shape::Exact, !through_reader, &pilot);
+            let (_, full, exhausted) = context(path, usize::MAX, &pilot_policy, |context| {
+                let result = read(context).unwrap();
+                assert_eq!(result.numeric().members.len(), MEMBERS);
+                assert_eq!(pilot.queries.get(), 1);
+                assert!(!context.stopped());
+            });
+            assert!(!exhausted);
+            if !through_reader {
+                let (_, setup, _) = context(path, usize::MAX, &pilot_policy, |_| ());
+                assert_eq!(full, setup + FEE + QUERY_FEE);
+            }
+            let probe = Probe::new(Interrupt::None);
+            let policy = policy(Shape::Exact, !through_reader, &probe);
+            let (_, used, exhausted) = context(path, full - 1, &policy, |context| {
+                let before = context.demand_usage();
+                assert!(read(context).is_none());
+                assert!(context.work_exhausted());
+                assert!(!context.cache_refused());
+                if !through_reader {
+                    assert_eq!(context.demand_usage(), before);
+                }
+                if matches!(path, Path::Prepared) {
+                    assert_eq!(numeric_receipts(path, context), [FEE]);
+                }
+                let usage = context.demand_usage();
+                let clone = context.clone();
+                assert!(read(&clone).is_none());
+                assert_eq!(
+                    word_plan::evaluate(&state, None, &offset, &clone, clone.algebra()),
+                    Ok(None)
+                );
+                assert_eq!(context.demand_usage(), usage);
+            });
+            assert_eq!(used, full - QUERY_FEE);
+            assert!(exhausted);
+            assert_eq!(policy.quotes.get(), 1);
+            assert_eq!(policy.packs.get(), 1);
+            assert_eq!(probe.quotes.get(), 1);
+            assert_eq!(probe.queries.get(), 0);
+            assert_eq!(probe.visits.get(), 0);
+            assert_eq!(probe.copies.get(), 0);
+            assert_eq!(probe.observations.get(), 0);
+            assert!(policy.actions.borrow().is_empty());
+        }
     }
 }
 

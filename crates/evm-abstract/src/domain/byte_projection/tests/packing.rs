@@ -1,6 +1,7 @@
 //! Differential default-policy proof cases; no timing or contract fixture.
 use super::*;
 use crate::domain::{EvmNumericAlgebra, EvmValue, ReductionStatus, ValueAlgebra};
+use proptest::{prelude::*, test_runner::TestCaseResult};
 
 fn policy(profile: Profile, capacity: usize, rounds: usize, facts: usize) -> Domain {
     Domain::from_spec(
@@ -108,23 +109,6 @@ fn captured_low_five_zero_and_all_unknown_match_full_scalar_fold() {
 }
 
 #[test]
-fn mixed_constants_cubes_and_redundant_components_match_in_arbitrary_lanes() {
-    for capacity in [1, 8, 512] {
-        let domain = policy(Profile::Product, capacity, 16, 4096);
-        for position in [0, 1, 7, 8, 15, 16, 23, 30, 31] {
-            let mut bytes = std::array::from_fn(|i| NumericValue::constant(U256::from(i * 7)));
-            bytes[position] = cube(0x81, 0x24, position % 2 == 0);
-            bytes[(position + 17) % 32] = cube(0x12, 0x80, position % 2 != 0);
-            // The positive low prefix makes both this congruence and NonZero
-            // redundant, while the finite component can be present or absent.
-            bytes[position].congruence = Congruence::top();
-            bytes[position].nonzero = true;
-            equivalent(domain, &bytes);
-        }
-    }
-}
-
-#[test]
 fn every_word_limb_and_sign_boundary_keeps_full_finite_presentation() {
     for bit in [0, 1, 7, 8, 63, 64, 127, 128, 247, 248, 254, 255] {
         for capacity in [1, 2, 8, 512] {
@@ -142,31 +126,106 @@ fn every_word_limb_and_sign_boundary_keeps_full_finite_presentation() {
     }
 }
 
-#[test]
-fn bounded_cube_concatenation_agrees_with_independent_concrete_bytes() {
-    let domain = policy(Profile::Product, 512, 16, 4096);
-    for (left, right) in [(0, 31), (1, 30), (8, 16)] {
-        let mut bytes = std::array::from_fn(|i| NumericValue::constant(U256::from(i)));
-        bytes[left] = cube(0x81, 0x24, true);
-        bytes[right] = cube(0x12, 0x80, false);
-        let packed = equivalent(domain, &bytes);
-        let mut concrete = BTreeSet::new();
-        for a in 0..=255u8 {
-            for b in 0..=255u8 {
-                let mut word: [u8; 32] = std::array::from_fn(|i| i as u8);
-                word[left] = a;
-                word[right] = b;
-                let valid =
-                    bytes[left].contains(U256::from(a)) && bytes[right].contains(U256::from(b));
-                let word = U256::from_be_bytes(word);
-                assert_eq!(packed.contains(word), valid);
-                if valid {
-                    concrete.insert(word);
-                }
-            }
+fn assert_two_lane_cube(
+    capacity: usize,
+    bytes: &[NumericValue; 32],
+    literals: [u8; 32],
+    [left, right]: [usize; 2],
+    free: [u8; 2],
+    one: [u8; 2],
+) -> TestCaseResult {
+    assert_ne!(left, right);
+    let domain = policy(Profile::Product, capacity, 16, 4096);
+    let packed = equivalent(domain, bytes);
+    // Enumerate concrete bytes by a direct mask predicate, independently of
+    // NumericValue::contains and both the scalar and packing algorithms.
+    let members = |lane: usize| (0..=u8::MAX).filter(move |byte| byte & !free[lane] == one[lane]);
+    let mut concrete = BTreeSet::new();
+    for a in members(0) {
+        for b in members(1) {
+            let mut word = literals;
+            word[left] = a;
+            word[right] = b;
+            concrete.insert(U256::from_be_bytes(word));
         }
-        assert_eq!(packed.constants(), Some(&concrete));
-        assert_eq!(concrete.len(), 16);
+    }
+    prop_assert_eq!(
+        concrete.len(),
+        1usize << (free[0].count_ones() + free[1].count_ones())
+    );
+    prop_assert!(concrete.iter().all(|word| packed.contains(*word)));
+    prop_assert_eq!(
+        packed.constants(),
+        (concrete.len() <= capacity).then_some(&concrete)
+    );
+    let all_one = concrete.iter().fold(U256::MAX, |bits, word| bits & word);
+    let all_zero = concrete.iter().fold(U256::MAX, |bits, word| bits & !word);
+    prop_assert_eq!(packed.known_bits().one(), all_one);
+    prop_assert_eq!(packed.known_bits().zero(), all_zero);
+    for (lane, index) in [left, right].into_iter().enumerate() {
+        for byte in 0..=u8::MAX {
+            let mut word = literals;
+            word[left] = one[0];
+            word[right] = one[1];
+            word[index] = byte;
+            prop_assert_eq!(
+                packed.contains(U256::from_be_bytes(word)),
+                byte & !free[lane] == one[lane],
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn fixed_two_lane_cubes_match_scalar_fold_and_independent_concrete_bytes() {
+    let free = [0x81, 0x12];
+    let one = [0x24, 0x80];
+    for capacity in [1, 8, 512] {
+        for position in [0, 1, 7, 8, 15, 16, 23, 30, 31] {
+            let lanes = [position, (position + 17) % 32];
+            let literals = std::array::from_fn(|i| (i * 7) as u8);
+            let mut bytes = literals.map(|byte| NumericValue::constant(U256::from(byte)));
+            bytes[lanes[0]] = cube(free[0], one[0], position % 2 == 0);
+            bytes[lanes[1]] = cube(free[1], one[1], position % 2 != 0);
+            bytes[lanes[0]].congruence = Congruence::top();
+            bytes[lanes[0]].nonzero = true;
+            assert_two_lane_cube(capacity, &bytes, literals, lanes, free, one).unwrap();
+        }
+    }
+    for lanes in [[0, 31], [1, 30], [8, 16]] {
+        let literals = std::array::from_fn(|i| i as u8);
+        let mut bytes = literals.map(|byte| NumericValue::constant(U256::from(byte)));
+        bytes[lanes[0]] = cube(free[0], one[0], true);
+        bytes[lanes[1]] = cube(free[1], one[1], false);
+        assert_two_lane_cube(512, &bytes, literals, lanes, free, one).unwrap();
+    }
+}
+
+proptest! {
+    #[test]
+    fn bounded_cubes_match_scalar_fold_and_independent_concrete_bytes(
+        literals in any::<[u8; 32]>(),
+        left in 0usize..32,
+        distance in 1usize..32,
+        bits in any::<[u8; 4]>(),
+        finite in any::<[bool; 2]>(),
+        capacity in prop::sample::select(vec![1usize, 8, 512]),
+    ) {
+        let right = (left + distance) % 32;
+        let free = [
+            (1u8 << (bits[0] % 8)) | (1u8 << (bits[1] % 8)),
+            (1u8 << (bits[2] % 8)) | (1u8 << (bits[3] % 8)),
+        ];
+        let one = [literals[left] & !free[0], literals[right] & !free[1]];
+        let mut bytes = literals.map(|byte| NumericValue::constant(U256::from(byte)));
+        for (lane, index) in [left, right].into_iter().enumerate() {
+            bytes[index] = cube(free[lane], one[lane], finite[lane]);
+            // A fixed positive bit makes NonZero redundant, even without a
+            // finite view. Preserve that raw presentation in the scalar oracle.
+            bytes[index].nonzero = one[lane] != 0;
+        }
+        assert_two_lane_cube(capacity, &bytes, literals, [left, right], free, one)?;
     }
 }
 
