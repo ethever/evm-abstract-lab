@@ -295,7 +295,14 @@ fn operation_work_prepared<D: EvmNumericAlgebra>(
     let range_size = || {
         if extent == usize::MAX {
             usize::MAX
-        } else if extent <= config.max_memory_bytes {
+        } else if extent
+            <= config
+                .max_memory_bytes
+                .max(domain.spec().relations().max_nodes)
+        {
+            // The symbolic hash constructor can fold an exact ByteView before
+            // the ordinary host extraction cap is checked. Its materialization
+            // bound is max_nodes; either admitted path must have byte funding.
             extent
         } else {
             0

@@ -20,7 +20,7 @@ use crate::{
         LogSourceKind, Symbol,
     },
 };
-use alloy_primitives::{Address, U256, keccak256};
+use alloy_primitives::{Address, U256};
 use revm_bytecode::opcode;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -35,8 +35,8 @@ fn identity_scope() -> Option<u64> {
 mod budget;
 mod calls;
 mod candidates;
-use candidates::complete as complete_candidates;
 pub(super) mod create;
+mod dispatch;
 mod errors;
 mod hash;
 #[cfg(test)]
@@ -357,25 +357,40 @@ fn environment_targets<D: EvmNumericAlgebra>(
     entry: &EvmEntry<D::Element>,
     mut read: impl FnMut(Address) -> EvmValue<D::Element>,
 ) -> EvmValue<D::Element> {
+    try_environment_targets(value, values, domain, entry, |target| {
+        Ok::<_, std::convert::Infallible>(read(target))
+    })
+    .unwrap_or_else(|never| match never {})
+}
+
+fn try_environment_targets<D: EvmNumericAlgebra, E>(
+    value: &EvmValue<D::Element>,
+    values: Option<&candidates::Candidates<'_>>,
+    domain: AlgebraRef<'_, D>,
+    entry: &EvmEntry<D::Element>,
+    mut read: impl FnMut(Address) -> Result<EvmValue<D::Element>, E>,
+) -> Result<EvmValue<D::Element>, E> {
     let symbolic_owner = entry.environment.to.as_concrete().is_none();
     if candidates::is_self(value, entry) {
         return read(entry.address);
     }
     let Some(values) = values else {
-        return EvmValue::<D::Element>::top();
+        return Ok(EvmValue::<D::Element>::top());
     };
-    values
-        .iter()
-        .map(|v| {
-            let target = address(*v);
-            if symbolic_owner && target == entry.address {
-                EvmValue::<D::Element>::top()
-            } else {
-                read(target)
-            }
-        })
-        .reduce(|a, b| domain.join(&a, &b))
-        .expect("AbstractValue constant sets are nonempty")
+    let mut output = None;
+    for word in values.iter() {
+        let target = address(*word);
+        let value = if symbolic_owner && target == entry.address {
+            EvmValue::<D::Element>::top()
+        } else {
+            read(target)?
+        };
+        output = Some(match output {
+            Some(previous) => domain.join(&previous, &value),
+            None => value,
+        });
+    }
+    Ok(output.expect("AbstractValue constant sets are nonempty"))
 }
 
 #[expect(
@@ -725,6 +740,36 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
         }
         match op {
             opcode::JUMP | opcode::JUMPI => {
+                let condition = args.get(1);
+                let truth = match condition
+                    .map(|condition| {
+                        dispatch::Truth::prepare(
+                            condition,
+                            crate::domain::SingletonProof::NotQueried,
+                            context.budget,
+                        )
+                    })
+                    .transpose()
+                {
+                    Ok(truth) => truth,
+                    Err(reason) => {
+                        boundary(&mut result, pc, reason);
+                        return result;
+                    }
+                };
+                // A zero JUMPI never observes its destination. Resolve a taken
+                // target before changing history or publishing either edge.
+                let targets = if truth.as_ref().is_none_or(|truth| truth.nonzero) {
+                    match candidates::prepare(&args[0], context.budget) {
+                        Ok((targets, _)) => targets,
+                        Err(reason) => {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
+                    }
+                } else {
+                    None
+                };
                 let history_work =
                     context_policy.work(result.payload.active().key.jump_history.len());
                 if !context.budget.charge(history_work) {
@@ -739,10 +784,16 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                     block.start_pc,
                     config.analysis.context_depth,
                 );
-                let condition = args.get(1);
-                let constrained = if condition.is_none_or(EvmValue::<D::Element>::may_be_nonzero) {
+                let constrained = if truth.as_ref().is_none_or(|truth| truth.nonzero) {
                     if let Some(condition) = condition {
-                        relations::branch(&mut result, condition, true, context, pc)
+                        relations::branch_with_singleton(
+                            &mut result,
+                            condition,
+                            true,
+                            truth.as_ref().expect("JUMPI condition").singleton,
+                            context,
+                            pc,
+                        )
                     } else {
                         Some(result.payload.clone())
                     }
@@ -755,7 +806,7 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                     } else {
                         EdgeKind::BranchTrue
                     };
-                    match complete_candidates(&args[0]) {
+                    match targets {
                         Some(targets) => {
                             for target in targets.iter() {
                                 if !context.budget.charge(1) {
@@ -777,7 +828,18 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                             result.diagnostics.push((pc, DiagnosticKind::UnknownJump));
                             failure(&mut result, context, pc);
                             for (target_pc, target) in program.jumpdest_blocks() {
-                                if !args[0].contains(U256::from(*target_pc)) {
+                                let contains = match query::contains(
+                                    args[0].numeric(),
+                                    U256::from(*target_pc),
+                                    context.budget,
+                                ) {
+                                    Ok(contains) => contains,
+                                    Err(reason) => {
+                                        boundary(&mut result, pc, reason);
+                                        return result;
+                                    }
+                                };
+                                if !contains {
                                     continue;
                                 }
                                 if !context.budget.charge(1) {
@@ -789,11 +851,16 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         }
                     }
                 }
-                if condition.is_some_and(EvmValue::<D::Element>::may_be_zero) {
-                    let Some(payload) = relations::branch(
+                if let Err(reason) = query::checkpoint(context.budget) {
+                    boundary(&mut result, pc, reason);
+                    return result;
+                }
+                if truth.as_ref().is_some_and(|truth| truth.zero) {
+                    let Some(payload) = relations::branch_with_singleton(
                         &mut result,
                         condition.expect("JUMPI condition"),
                         false,
+                        truth.as_ref().expect("JUMPI condition").singleton,
                         context,
                         pc,
                     ) else {
@@ -890,11 +957,37 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                     boundary(&mut result, pc, FrontierReason::UnknownTarget);
                     return result;
                 }
-                let Some(beneficiaries) = complete_candidates(&args[0]) else {
+                let beneficiaries = match candidates::prepare(&args[0], context.budget) {
+                    Ok((beneficiaries, _)) => beneficiaries,
+                    Err(reason) => {
+                        boundary(&mut result, pc, reason);
+                        return result;
+                    }
+                };
+                let Some(beneficiaries) = beneficiaries else {
                     boundary(&mut result, pc, FrontierReason::UnknownTarget);
                     return result;
                 };
                 let owner = result.payload.active().key.address;
+                let balance = result.payload.store.read_balance(owner);
+                let truth = if beneficiaries
+                    .iter()
+                    .any(|beneficiary| address(*beneficiary) != owner)
+                {
+                    match dispatch::Truth::prepare(
+                        &balance,
+                        crate::domain::SingletonProof::NotQueried,
+                        context.budget,
+                    ) {
+                        Ok(truth) => Some(truth),
+                        Err(reason) => {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
+                    }
+                } else {
+                    None
+                };
                 result.mark_instruction(InstructionProgress::Dispatched);
                 for beneficiary in beneficiaries.iter() {
                     if !context
@@ -905,9 +998,25 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         break;
                     }
                     let mut payload = result.payload.clone();
-                    payload
-                        .store
-                        .selfdestruct_with(owner, address(*beneficiary), domain);
+                    let update = payload.store.selfdestruct_with_balance_truth(
+                        owner,
+                        address(*beneficiary),
+                        domain,
+                        truth.as_ref().is_some_and(|truth| truth.zero),
+                        truth.as_ref().is_some_and(|truth| truth.nonzero),
+                        |value, proof| {
+                            let truth = dispatch::Truth::prepare(&value, proof, context.budget)?;
+                            Ok::<_, FrontierReason>((value, truth.zero, truth.nonzero))
+                        },
+                    );
+                    if let Err(reason) = update {
+                        boundary(&mut result, pc, reason);
+                        return result;
+                    }
+                    if let Err(reason) = query::checkpoint(context.budget) {
+                        boundary(&mut result, pc, reason);
+                        return result;
+                    }
                     if !late_failure::after_selfdestruct(&mut result, &payload, context, pc) {
                         break;
                     }
@@ -1296,36 +1405,19 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                             _ => EvmValue::<D::Element>::top(),
                         },
                     ),
-                    opcode::EXTCODEHASH => environment_targets(
+                    opcode::EXTCODEHASH => match try_environment_targets(
                         &args[0],
                         quote.targets.as_ref(),
                         domain,
                         entry,
-                        |target| {
-                            code_bytes(&result.payload.store, target)
-                                .map(|bytes| {
-                                    let hash = EvmValue::<D::Element>::constant(
-                                        U256::from_be_slice(keccak256(&bytes).as_slice()),
-                                    );
-                                    if !bytes.is_empty() {
-                                        return hash;
-                                    }
-                                    let balance = result.payload.store.read_balance(target);
-                                    let nonce = result.payload.store.nonce(target);
-                                    let may_be_empty = balance.may_be_zero() && nonce.may_be_zero();
-                                    let may_exist =
-                                        balance.may_be_nonzero() || nonce.may_be_nonzero();
-                                    if may_be_empty && may_exist {
-                                        domain.join(&hash, &zero())
-                                    } else if may_be_empty {
-                                        zero()
-                                    } else {
-                                        hash
-                                    }
-                                })
-                                .unwrap_or_else(EvmValue::<D::Element>::top)
-                        },
-                    ),
+                        |target| dispatch::code_hash(&result.payload.store, target, context),
+                    ) {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            boundary(&mut result, pc, reason);
+                            return result;
+                        }
+                    },
                     opcode::MLOAD => {
                         let plan = match frame.memory.prepare_word_read_with(
                             &args[0],

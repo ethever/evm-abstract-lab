@@ -1,6 +1,6 @@
 //! Guarded target partitioning leaves caller roots and their identities intact.
 
-use crate::domain::{EvmNumericAlgebra, WordElement};
+use crate::domain::{EvmNumericAlgebra, SingletonProof, WordElement};
 
 use super::{EvmExecution, EvmMachinePayload, EvmValue, FrontierReason, TransferContext, boundary};
 
@@ -36,8 +36,18 @@ pub(super) fn target_guard<D: EvmNumericAlgebra>(
         boundary(result, pc, FrontierReason::Work);
         return None;
     }
-    let condition = context.domain.apply(opcode::EQ, &operands);
-    if equal && !condition.may_be_nonzero() || !equal && !condition.may_be_zero() {
+    let (reduced, proof) = context
+        .domain
+        .apply_detailed_with_singleton(opcode::EQ, &operands);
+    let condition = reduced.value;
+    let truth = match super::Truth::prepare(&condition, proof, context.budget) {
+        Ok(truth) => truth,
+        Err(reason) => {
+            boundary(result, pc, reason);
+            return None;
+        }
+    };
+    if equal && !truth.nonzero || !equal && !truth.zero {
         return None;
     }
     if !context.budget.charge(payload.work_size()) {
@@ -46,10 +56,10 @@ pub(super) fn target_guard<D: EvmNumericAlgebra>(
     }
     let mut guarded = payload.clone();
     let limits = context.config.analysis.relations;
-    if !limits.enabled || condition.singleton().is_some() {
+    if !limits.enabled || matches!(truth.singleton, SingletonProof::Answer(Some(_))) {
         return Some(guarded);
     }
-    let Some(expression) = condition.symbolic_expression() else {
+    let Some(expression) = condition.expression().cloned() else {
         return Some(guarded);
     };
     let observed = guarded

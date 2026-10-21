@@ -1,11 +1,11 @@
 //! CREATE/CREATE2 lifecycle. Initcode is a fresh frame of the shared machine;
 //! the destination's code remains empty until a successful RETURN installs it.
 
-use crate::domain::{EvmNumericAlgebra, WordElement};
+use crate::domain::{EvmNumericAlgebra, SingletonProof, WordElement};
 
 use super::budget::{byte_work, maximum};
-use super::complete_candidates;
-use super::{EvmExecution, EvmSuccessor, TransferContext, boundary, touch_memory, zero};
+use super::{EvmExecution, EvmSuccessor, TransferContext, boundary, zero};
+use super::{candidates, query};
 
 use crate::{
     analysis::{
@@ -13,7 +13,10 @@ use crate::{
         FrontierReason, MachineEdgeKind, OutcomeKind,
     },
     bytecode::Program,
-    domain::EvmValue,
+    domain::{
+        EvmValue,
+        symbolic::{ByteView, ExprId, ExprLimits},
+    },
     world::{AddressInput, EvmByteArray, EvmWorld},
 };
 use alloy_primitives::{Address, U256, keccak256};
@@ -47,6 +50,19 @@ fn incomplete<N: WordElement>(result: &mut EvmExecution<N>, pc: usize, reason: C
     boundary(result, pc, FrontierReason::Creation(reason));
 }
 
+fn write_balance_literal<N: WordElement>(
+    store: &mut crate::world::EvmStore<N>,
+    address: Address,
+    word: U256,
+) {
+    store.write_balance_with_truth(
+        address,
+        EvmValue::constant(word),
+        word.is_zero(),
+        !word.is_zero(),
+    );
+}
+
 fn immediate_failure<N: WordElement>(
     result: &mut EvmExecution<N>,
     mut payload: EvmMachinePayload<N>,
@@ -75,6 +91,76 @@ fn reserved<N: WordElement>(world: &EvmWorld<N>, address: Address) -> bool {
         || (world.fork() == crate::Fork::Osaka && number == U256::from(0x100))
 }
 
+/// A prefix can reject runtime code without materializing the unknown suffix.
+enum Materialized {
+    Bytes(Vec<u8>),
+    ForbiddenPrefix,
+    Unknown,
+}
+
+/// Consume the caller's existing extraction reservation and proved host extent.
+/// Constructing the view does not rediscover its numeric length.
+/// Each newly read opaque byte still needs its own independent query payment.
+fn materialize<D: EvmNumericAlgebra>(
+    data: &EvmByteArray<D::Element>,
+    length: usize,
+    forbidden_prefix: Option<u8>,
+    context: &mut TransferContext<'_, D>,
+) -> Result<Materialized, FrontierReason> {
+    query::checkpoint(context.budget)?;
+    data.check_existing(context.domain.spec().relations().expressions())
+        .map_err(super::errors::bytes)?;
+    let over_cap = length > context.config.max_memory_bytes;
+    if over_cap && forbidden_prefix.is_none() {
+        return Ok(Materialized::Unknown);
+    }
+    let view = ByteView::new(
+        data.state_root().clone(),
+        ExprId::constant(U256::ZERO),
+        ExprId::constant(U256::from(length)),
+    );
+    let limits = ExprLimits {
+        max_nodes: length
+            .saturating_mul(data.state_root().nodes().saturating_add(2))
+            .max(view.nodes()),
+        max_depth: data.state_root().depth().saturating_add(2),
+    };
+    if !over_cap {
+        let known = view.known_bytes(limits);
+        query::checkpoint(context.budget)?;
+        if let Some(bytes) = known.map_err(super::errors::expression)? {
+            return Ok(Materialized::Bytes(bytes));
+        }
+    }
+    let mut bytes = Vec::new();
+    // A forbidden first byte settles runtime rejection without extracting the
+    // unknown suffix, even above the full-buffer host cap. Reuse this actual
+    // byte's paid proof; the length proof cannot classify a different N.
+    let reads = if over_cap { 1 } else { length };
+    for index in 0..reads {
+        query::checkpoint(context.budget)?;
+        let value = data
+            .read_byte_checked_with(&EvmValue::constant(U256::from(index)), context.domain)
+            .map_err(super::errors::bytes)?;
+        query::checkpoint(context.budget)?;
+        let (_, mut proof) = candidates::prepare(&value, context.budget)?;
+        let Some(byte) = query::resolve(value.numeric(), &mut proof, context.budget)? else {
+            return Ok(Materialized::Unknown);
+        };
+        let Ok(byte) = u8::try_from(byte) else {
+            return Ok(Materialized::Unknown);
+        };
+        if index == 0 && forbidden_prefix == Some(byte) {
+            return Ok(Materialized::ForbiddenPrefix);
+        }
+        if over_cap {
+            return Ok(Materialized::Unknown);
+        }
+        bytes.push(byte);
+    }
+    Ok(Materialized::Bytes(bytes))
+}
+
 /// Suspend the caller and enter arbitrary concrete EVM initcode. Nonce bump
 /// precedes the child's savepoint: failed initcode keeps that bump, while an
 /// enclosing REVERT still restores it through the enclosing frame's savepoint.
@@ -87,13 +173,32 @@ pub(super) fn create<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) {
+    if let Err(reason) = create_prepared(result, world, op, args, program, context, pc) {
+        // Completed alternatives remain evidence for the original input:
+        // a later stop can follow a static-value fault, oversize initcode or
+        // an already completed gas-failure branch. Only the remaining path
+        // becomes a frontier; no partial child state is published after stop.
+        boundary(result, pc, reason);
+    }
+}
+
+fn create_prepared<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    world: &EvmWorld<D::Element>,
+    op: u8,
+    args: &[EvmValue<D::Element>],
+    program: &Program,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) -> Result<(), FrontierReason> {
     let config = context.config;
     let domain = context.domain;
     let next = result.payload.active().key.basic_block_index + 1;
     debug_assert!(next <= program.blocks().len());
-    let Some(sizes) = complete_candidates(&args[2]) else {
+    let (sizes, _) = candidates::prepare(&args[2], context.budget)?;
+    let Some(sizes) = sizes else {
         incomplete(result, pc, CreationBoundary::UnknownInitCode);
-        return;
+        return Ok(());
     };
     if sizes.iter().any(|size| *size > U256::from(49_152)) {
         // EIP-3860 oversize initcode faults the CREATE opcode's current frame.
@@ -110,65 +215,92 @@ pub(super) fn create<D: EvmNumericAlgebra>(
         .map(EvmValue::<D::Element>::constant)
         .reduce(|left, right| domain.join(&left, &right))
     else {
-        return;
+        return Ok(());
     };
-    let offsets = if sizes.iter().all(U256::is_zero) {
-        vec![U256::ZERO]
-    } else if let Some(offsets) = complete_candidates(&args[1]) {
-        offsets.iter().copied().collect()
+    let (offsets, offset_proof) = if sizes.iter().all(U256::is_zero) {
+        (vec![U256::ZERO], SingletonProof::NotQueried)
     } else {
-        incomplete(result, pc, CreationBoundary::UnknownInitCode);
-        return;
+        let (offsets, proof) = candidates::prepare(&args[1], context.budget)?;
+        let Some(offsets) = offsets else {
+            incomplete(result, pc, CreationBoundary::UnknownInitCode);
+            return Ok(());
+        };
+        (offsets.iter().copied().collect(), proof)
     };
-    if !touch_memory(result, &args[1], &memory_size, context, pc) {
-        return;
+    let size_proof = if sizes.len() == 1 {
+        // memory_size was constructed from this independent host literal.
+        SingletonProof::Answer(Some(sizes[0]))
+    } else {
+        SingletonProof::NotQueried
+    };
+    if !super::ranges::memory_after_queries(
+        result,
+        &args[1],
+        &memory_size,
+        offset_proof,
+        size_proof,
+        context,
+        pc,
+    ) || !super::expand_memory(result, &args[1], &memory_size, context, pc)
+    {
+        return Ok(());
     }
     // revm/Yellow-Paper depth starts at zero for the transaction entry. Child
     // depth equals the current frame count and must not exceed 1024.
     if result.payload.call_stack.depth() > 1024 {
         immediate_failure(result, result.payload.clone(), next);
-        return;
+        return Ok(());
     }
     if result.payload.call_stack.depth() >= config.max_call_depth {
         boundary(result, pc, FrontierReason::CallDepth);
-        return;
+        return Ok(());
     }
     // Abstract execution can carry an address expression beyond the fixed
     // environment vocabulary. Its storage namespace is not a concrete creator.
     let frame = result.payload.active();
     let caller_address = match &frame.address_operand {
-        Some(value) => value.singleton().map(super::address),
+        Some(value) => {
+            let (_, mut proof) = candidates::prepare(value, context.budget)?;
+            query::resolve(value.numeric(), &mut proof, context.budget)?.map(super::address)
+        }
         None => frame.key.address_value.as_concrete(),
     };
     let Some(caller_address) = caller_address else {
         incomplete(result, pc, CreationBoundary::UnknownCreator);
-        return;
+        return Ok(());
     };
     let nonce = result.payload.store.nonce(caller_address);
-    let Some(nonces) = complete_candidates(&nonce) else {
+    let (nonces, _) = candidates::prepare(&nonce, context.budget)?;
+    let Some(nonces) = nonces else {
         incomplete(result, pc, CreationBoundary::UnknownNonce(caller_address));
-        return;
+        return Ok(());
     };
-    let Some(values) = complete_candidates(&args[0]) else {
+    let (values, _) = candidates::prepare(&args[0], context.budget)?;
+    let Some(values) = values else {
         incomplete(result, pc, CreationBoundary::UnknownEndowment);
-        return;
+        return Ok(());
     };
     let salts = if op == opcode::CREATE2 {
-        let Some(salts) = complete_candidates(&args[3]) else {
+        let (salts, _) = candidates::prepare(&args[3], context.budget)?;
+        let Some(salts) = salts else {
             incomplete(result, pc, CreationBoundary::UnknownSalt);
-            return;
+            return Ok(());
         };
         salts.iter().copied().collect::<Vec<_>>()
     } else {
         vec![U256::ZERO]
     };
     let balance = result.payload.store.read_balance(caller_address);
-    let balances = match complete_candidates(&balance) {
-        Some(balances) => balances.iter().copied().map(Some).collect::<Vec<_>>(),
-        None if values.iter().all(U256::is_zero) => vec![None],
-        None => {
-            incomplete(result, pc, CreationBoundary::UnknownEndowment);
-            return;
+    let balances = if values.iter().all(U256::is_zero) {
+        // Zero endowment preserves the complete balance, including identities.
+        vec![None]
+    } else {
+        match candidates::prepare(&balance, context.budget)?.0 {
+            Some(balances) => balances.iter().copied().map(Some).collect::<Vec<_>>(),
+            None => {
+                incomplete(result, pc, CreationBoundary::UnknownEndowment);
+                return Ok(());
+            }
         }
     };
     for size in &sizes {
@@ -182,8 +314,7 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                 result.payload.active().memory.work_size(),
                 domain,
             )) {
-                boundary(result, pc, FrontierReason::Work);
-                return;
+                return Err(FrontierReason::Work);
             }
             let initcode = match result.payload.active().memory.slice_with(
                 &EvmValue::<D::Element>::constant(*offset),
@@ -192,9 +323,14 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                 domain,
             ) {
                 Ok(bytes) => {
-                    match bytes.exact_bytes_bounded_with(config.max_memory_bytes, domain) {
-                        Some(bytes) => bytes,
-                        None => {
+                    match materialize(
+                        &bytes,
+                        usize::try_from(*size).expect("bounded initcode size"),
+                        None,
+                        context,
+                    )? {
+                        Materialized::Bytes(bytes) => bytes,
+                        Materialized::Unknown | Materialized::ForbiddenPrefix => {
                             incomplete(result, pc, CreationBoundary::UnknownInitCode);
                             continue;
                         }
@@ -226,12 +362,10 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                                 caller_address,
                                 EvmValue::<D::Element>::constant(*nonce),
                             );
-                            payload.store.write_balance(
+                            write_balance_literal(
+                                &mut payload.store,
                                 caller_address,
-                                EvmValue::<D::Element>::constant(
-                                    balance
-                                        .expect("insufficient funds require an observed balance"),
-                                ),
+                                balance.expect("insufficient funds require an observed balance"),
                             );
                             immediate_failure(result, payload, next);
                             continue;
@@ -244,8 +378,7 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                                     .saturating_add(initcode.len())
                                     .saturating_add(1),
                             ) {
-                                boundary(result, pc, FrontierReason::Work);
-                                return;
+                                return Err(FrontierReason::Work);
                             }
                             let destination = if op == opcode::CREATE {
                                 caller_address.create(nonce.to::<u64>())
@@ -255,10 +388,7 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                             };
                             let mut payload = result.payload.clone();
                             if let Some(balance) = balance {
-                                payload.store.write_balance(
-                                    caller_address,
-                                    EvmValue::<D::Element>::constant(*balance),
-                                );
+                                write_balance_literal(&mut payload.store, caller_address, *balance);
                             }
                             // The creator's nonce change survives a failed
                             // initcode child, but rolls back with its own frame.
@@ -282,18 +412,15 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                             }
                             let destination_nonce = payload.store.nonce(destination);
                             let code = payload.store.raw_account_code(destination);
-                            if code.as_ref().is_some_and(|code| !code.is_empty())
-                                || complete_candidates(&destination_nonce).is_some_and(|nonces| {
-                                    nonces.iter().all(|nonce| !nonce.is_zero())
-                                })
-                            {
+                            if code.as_ref().is_some_and(|code| !code.is_empty()) {
                                 // Either known fact alone proves a collision; the
                                 // other account observation need not be present.
                                 immediate_failure(result, payload, next);
                                 continue;
                             }
-                            let Some(destination_nonces) = complete_candidates(&destination_nonce)
-                            else {
+                            let (destination_nonces, _) =
+                                candidates::prepare(&destination_nonce, context.budget)?;
+                            let Some(destination_nonces) = destination_nonces else {
                                 incomplete(
                                     result,
                                     pc,
@@ -301,6 +428,10 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                                 );
                                 continue;
                             };
+                            if destination_nonces.iter().all(|nonce| !nonce.is_zero()) {
+                                immediate_failure(result, payload, next);
+                                continue;
+                            }
                             let Some(code) = code else {
                                 incomplete(
                                     result,
@@ -326,14 +457,17 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                             let init_program = Program::decode_with_fork(&initcode, world.fork())
                                 .expect("EVM initcode with a non-EF first byte always decodes");
                             let recipient = payload.store.read_balance(destination);
-                            let recipients = match complete_candidates(&recipient) {
-                                Some(balances) => {
-                                    balances.iter().copied().map(Some).collect::<Vec<_>>()
-                                }
-                                None if value.is_zero() => vec![None],
-                                None => {
-                                    incomplete(result, pc, CreationBoundary::UnknownEndowment);
-                                    continue;
+                            let recipients = if value.is_zero() {
+                                vec![None]
+                            } else {
+                                match candidates::prepare(&recipient, context.budget)?.0 {
+                                    Some(balances) => {
+                                        balances.iter().copied().map(Some).collect::<Vec<_>>()
+                                    }
+                                    None => {
+                                        incomplete(result, pc, CreationBoundary::UnknownEndowment);
+                                        continue;
+                                    }
                                 }
                             };
                             for recipient in recipients {
@@ -343,15 +477,13 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                                         immediate_failure(result, branch, next);
                                         continue;
                                     };
-                                    branch.store.write_balance(
-                                        destination,
-                                        EvmValue::<D::Element>::constant(total),
-                                    );
+                                    write_balance_literal(&mut branch.store, destination, total);
                                 }
                                 if let Some(balance) = balance {
-                                    branch.store.write_balance(
+                                    write_balance_literal(
+                                        &mut branch.store,
                                         caller_address,
-                                        EvmValue::<D::Element>::constant(*balance - *value),
+                                        *balance - *value,
                                     );
                                 }
                                 branch.store.begin_creation(destination);
@@ -388,7 +520,9 @@ pub(super) fn create<D: EvmNumericAlgebra>(
                                         creation: Some(destination),
                                     },
                                 });
+                                query::checkpoint(context.budget)?;
                                 branch.normalize();
+                                query::checkpoint(context.budget)?;
                                 result.successors.push(EvmSuccessor {
                                     payload: branch,
                                     kind: MachineEdgeKind::Call,
@@ -400,6 +534,8 @@ pub(super) fn create<D: EvmNumericAlgebra>(
             }
         }
     }
+    query::checkpoint(context.budget)?;
+    Ok(())
 }
 
 /// Validate and deploy initcode's RETURN before normal frame completion. Invalid
@@ -421,7 +557,7 @@ pub(super) fn finish_creation<D: EvmNumericAlgebra>(
     if *kind != OutcomeKind::Return {
         return Ok(());
     }
-    let (lengths, _) = super::candidates::prepare(data.len(), context.budget)?;
+    let (lengths, mut proof) = candidates::prepare(data.len(), context.budget)?;
     let work = data.work_size().saturating_add(maximum(lengths.as_ref()));
     if work == usize::MAX || !context.budget.charge(work) {
         return Err(FrontierReason::Work);
@@ -431,11 +567,24 @@ pub(super) fn finish_creation<D: EvmNumericAlgebra>(
         *data = EvmByteArray::<D::Element>::empty();
         return Ok(());
     }
-    let bytes = data
-        .exact_bytes_bounded_with(context.config.max_memory_bytes, context.domain)
+    let length = query::resolve(data.len().numeric(), &mut proof, context.budget)?
+        .and_then(|length| usize::try_from(length).ok())
         .ok_or(FrontierReason::Creation(
             CreationBoundary::UnknownRuntimeCode,
         ))?;
+    let bytes = match materialize(data, length, Some(0xef), context)? {
+        Materialized::Bytes(bytes) => bytes,
+        Materialized::ForbiddenPrefix => {
+            *kind = OutcomeKind::Failure;
+            *data = EvmByteArray::<D::Element>::empty();
+            return Ok(());
+        }
+        Materialized::Unknown => {
+            return Err(FrontierReason::Creation(
+                CreationBoundary::UnknownRuntimeCode,
+            ));
+        }
+    };
     if bytes.len() > 24_576 || bytes.first() == Some(&0xef) {
         *kind = OutcomeKind::Failure;
         *data = EvmByteArray::<D::Element>::empty();

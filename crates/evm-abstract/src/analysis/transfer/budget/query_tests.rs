@@ -178,6 +178,71 @@ fn hidden_extent_is_paid_before_quote_and_saved_for_range_admission() {
 }
 
 #[test]
+fn literal_expression_extent_prices_real_hash_work_when_numeric_discovery_declines() {
+    let mut fixture = fixture(opcode::KECCAK256);
+    // Admitted by the actual symbolic folding limit, above the host extraction
+    // cap: that separate cap cannot justify quoting zero byte work here.
+    let bytes = 16;
+    fixture.config.max_memory_bytes = 8;
+    let source = vec![0xaa; bytes];
+    fixture.execution.payload.active_mut().memory = EvmByteArray::exact(&source);
+    let algebra = ValueAlgebra::new(Policy);
+    let args = [
+        EvmValue::constant(U256::ZERO),
+        EvmValue::<Word>::top().with_expression(ExprId::constant(U256::from(bytes))),
+    ];
+    let _receipt = RECEIPT.scope();
+    let _literals = LITERALS.scope();
+    RECEIPT.update(|receipt| {
+        receipt.watched = None;
+        receipt.fee = usize::MAX;
+    });
+    let mut budget = WorkBudget::new(10_000_000);
+    let quote = operation_work_budgeted(
+        &fixture.execution,
+        opcode::KECCAK256,
+        &args,
+        &fixture.program,
+        algebra.borrowed(),
+        &fixture.config,
+        &fixture.entry,
+        &mut budget,
+    )
+    .unwrap();
+    let frame = fixture.execution.payload.active();
+    let retained =
+        frame.memory.work_size() + frame.calldata.work_size() + frame.returndata.work_size();
+    assert_eq!(
+        quote.work,
+        byte_work(&[&args[0], &args[1]], bytes, retained, algebra.borrowed())
+    );
+    assert!(quote.work > byte_work(&[&args[0], &args[1]], 0, retained, algebra.borrowed()));
+    assert_eq!(quote.size, SingletonProof::Answer(Some(U256::from(bytes))));
+    assert_eq!(
+        (
+            budget.used(),
+            RECEIPT.get().quotes,
+            RECEIPT.get().queries,
+            LITERALS.get()
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(budget.charge(quote.work));
+    // This is the actual symbolic hash consumer: it can materialize the exact
+    // source from the literal view length without asking N for a singleton.
+    let view = crate::domain::symbolic::ByteView::new(
+        frame.memory.state_root().clone(),
+        ExprId::constant(U256::ZERO),
+        args[1].expression().unwrap().clone(),
+    );
+    let hash = ExprId::keccak(view, fixture.config.analysis.relations.expressions()).unwrap();
+    assert_eq!(
+        hash.as_constant(),
+        Some(U256::from_be_slice(keccak256(&source).as_slice()))
+    );
+}
+
+#[test]
 fn extent_and_target_discovery_refuse_max_or_insufficient_work_without_effects() {
     let algebra = ValueAlgebra::new(Policy);
     for op in [opcode::KECCAK256, opcode::EXTCODEHASH, opcode::EXTCODECOPY] {
