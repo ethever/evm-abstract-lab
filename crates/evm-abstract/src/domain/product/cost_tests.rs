@@ -254,6 +254,205 @@ fn filtered_finite_covers_stabilize_without_capacity_truncation() {
 }
 
 #[test]
+fn max_exp_quote_prepays_exact_and_facade_evaluation_before_execution() {
+    use crate::domain::concrete::{EVALUATIONS, evaluation_work};
+
+    fn check(numeric: impl EvmNumericAlgebra<Element = NumericValue>) {
+        let _evaluations = EVALUATIONS.scope();
+        let _cooperation = cooperation::PROTOCOL_WORK.scope();
+        let domain = ValueAlgebra::new(numeric);
+        // For odd 3, exponent 2^256-1 is -1 modulo its power-of-two period.
+        let inverse = (U256::MAX / U256::from(3)) * U256::from(2) + U256::ONE;
+        for args in [
+            [
+                EvmValue::constant(U256::from(3)),
+                EvmValue::constant(U256::MAX),
+            ],
+            [U256::from(3), U256::MAX].map(|word| {
+                EvmValue::from_numeric(NumericValue {
+                    bits: KnownBits::exact(word),
+                    ..NumericValue::top()
+                })
+            }),
+            [U256::from(3), U256::MAX].map(|word| {
+                EvmValue::<NumericValue>::top().with_expression(ExprId::constant(word))
+            }),
+        ] {
+            assert!(!args[0].same_identity(&args[1]));
+            EVALUATIONS.set((0, 0));
+            cooperation::PROTOCOL_WORK.set((0, 0, 0));
+            let numeric_quote = domain
+                .numeric_algebra()
+                .operation_work(opcode::EXP, args.iter().map(EvmValue::numeric));
+            let quote = domain.operation_work(opcode::EXP, &args);
+            assert!(numeric_quote >= evaluation_work(opcode::EXP));
+            assert_eq!(EVALUATIONS.get(), (0, 0), "quotation must not evaluate");
+            for available in [evaluation_work(opcode::EXP) - 1, quote - 1] {
+                let mut budget = WorkBudget::new(available);
+                assert!(
+                    domain
+                        .apply_budgeted(opcode::EXP, &args, &mut budget)
+                        .is_err()
+                );
+                assert_eq!(budget.used(), 0);
+                assert!(budget.exhausted());
+                assert_eq!(EVALUATIONS.get(), (0, 0));
+                assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+            }
+            let mut budget = WorkBudget::new(quote);
+            let result = domain
+                .apply_budgeted(opcode::EXP, &args, &mut budget)
+                .unwrap();
+            assert_eq!(result.status, ReductionStatus::Stable);
+            assert_eq!(result.value.singleton(), Some(inverse));
+            assert!(result.value.numeric().work_size() <= numeric_quote);
+            assert_eq!(EVALUATIONS.get(), (1, evaluation_work(opcode::EXP)));
+            assert!(EVALUATIONS.get().1 + cooperation::PROTOCOL_WORK.get().0 <= quote);
+            assert_eq!(budget.used(), quote);
+            assert!(!budget.exhausted());
+        }
+    }
+
+    let policy = domain(8, 4);
+    check(policy);
+    check(ProductAlgebra::new(
+        policy.spec(),
+        BoundsToMask,
+        MaskToBounds,
+    ));
+}
+
+#[test]
+fn finite_exp_quote_covers_cartesian_visits_and_a_separate_facade_fold() {
+    use crate::domain::concrete::{EVALUATIONS, evaluation_work};
+
+    let _evaluations = EVALUATIONS.scope();
+    let _cooperation = cooperation::PROTOCOL_WORK.scope();
+    let inverse = (U256::MAX / U256::from(3)) * U256::from(2) + U256::ONE;
+    let expected = [U256::ZERO, inverse, inverse.wrapping_mul(inverse)];
+    for capacity in [1, 2, 3, 4, 8] {
+        let domain = ValueAlgebra::new(domain(capacity, 4));
+        for fold in [false, true] {
+            let args = [
+                ([U256::from(2), U256::from(3)], U256::from(3)),
+                ([U256::MAX - U256::ONE, U256::MAX], U256::MAX),
+            ]
+            .map(|(values, expression)| {
+                let value = EvmValue::from_numeric(NumericValue {
+                    finite: FiniteConstantSet::try_from_values(values.into_iter().collect())
+                        .unwrap(),
+                    ..NumericValue::top()
+                });
+                if fold {
+                    value.with_expression(ExprId::constant(expression))
+                } else {
+                    value
+                }
+            });
+            EVALUATIONS.set((0, 0));
+            cooperation::PROTOCOL_WORK.set((0, 0, 0));
+            let numeric_quote = domain
+                .numeric_algebra()
+                .operation_work(opcode::EXP, args.iter().map(EvmValue::numeric));
+            // Four numeric evaluations plus a possible retained-expression fold
+            // are distinct work, even if capacity can stop enumeration early.
+            assert!(numeric_quote >= 5 * evaluation_work(opcode::EXP));
+            let quote = domain.operation_work(opcode::EXP, &args);
+            assert_eq!(EVALUATIONS.get(), (0, 0));
+            let mut denied = WorkBudget::new(quote - 1);
+            assert!(
+                domain
+                    .apply_budgeted(opcode::EXP, &args, &mut denied)
+                    .is_err()
+            );
+            assert_eq!(denied.used(), 0);
+            assert_eq!(EVALUATIONS.get(), (0, 0));
+
+            let mut budget = WorkBudget::new(quote);
+            let result = domain
+                .apply_budgeted(opcode::EXP, &args, &mut budget)
+                .unwrap();
+            assert_eq!(result.status, ReductionStatus::Stable);
+            if fold {
+                assert_eq!(result.value.singleton(), Some(inverse));
+            } else if capacity < expected.len() {
+                assert!(result.value.numeric().is_top());
+            } else {
+                assert_eq!(
+                    result.value.constants().unwrap(),
+                    &expected.into_iter().collect()
+                );
+            }
+            if capacity >= expected.len() {
+                assert_eq!(EVALUATIONS.get().0, 4 + usize::from(fold));
+            } else {
+                assert!(EVALUATIONS.get().0 <= 4 + usize::from(fold));
+            }
+            assert!(EVALUATIONS.get().1 + cooperation::PROTOCOL_WORK.get().0 <= quote);
+            assert!(result.value.numeric().work_size() <= numeric_quote);
+            assert_eq!(budget.used(), quote);
+            assert!(!budget.exhausted());
+        }
+    }
+}
+
+#[test]
+fn exact_modular_and_division_quotes_use_the_real_opcode_and_keep_add_cheap() {
+    use crate::domain::concrete::{EVALUATIONS, evaluation_work};
+
+    let _evaluations = EVALUATIONS.scope();
+    let domain = ValueAlgebra::new(domain(8, 4));
+    let add = [
+        NumericValue::constant(U256::from(3)),
+        NumericValue::constant(U256::from(7)),
+    ];
+    assert_eq!(
+        domain
+            .numeric_algebra()
+            .operation_work(opcode::ADD, add.iter()),
+        282
+    );
+    for (op, words, expected) in [
+        (
+            opcode::DIV,
+            vec![U256::MAX, U256::from(3)],
+            U256::MAX / U256::from(3),
+        ),
+        (opcode::MOD, vec![U256::MAX, U256::from(3)], U256::ZERO),
+        (opcode::SDIV, vec![U256::MAX, U256::from(3)], U256::ZERO),
+        (opcode::SMOD, vec![U256::MAX, U256::from(3)], U256::MAX),
+        (
+            opcode::ADDMOD,
+            vec![U256::MAX, U256::MAX, U256::from(7)],
+            U256::from(2),
+        ),
+        (
+            opcode::MULMOD,
+            vec![U256::MAX, U256::MAX, U256::from(7)],
+            U256::ONE,
+        ),
+    ] {
+        let args = words
+            .into_iter()
+            .map(EvmValue::constant)
+            .collect::<Vec<_>>();
+        EVALUATIONS.set((0, 0));
+        let quote = domain.operation_work(op, &args);
+        assert!(quote >= evaluation_work(op));
+        assert_eq!(EVALUATIONS.get(), (0, 0));
+        let mut denied = WorkBudget::new(quote - 1);
+        assert!(domain.apply_budgeted(op, &args, &mut denied).is_err());
+        assert_eq!(denied.used(), 0);
+        assert_eq!(EVALUATIONS.get(), (0, 0));
+        let result = domain
+            .apply_budgeted(op, &args, &mut WorkBudget::new(quote))
+            .unwrap();
+        assert_eq!(result.value.singleton(), Some(expected));
+        assert_eq!(EVALUATIONS.get(), (1, evaluation_work(op)));
+    }
+}
+
+#[test]
 fn arithmetic_reservation_is_atomic_and_covers_the_actual_cooperative_schedule() {
     let _counter = cooperation::PROTOCOL_WORK.scope();
     for capacity in [1, 8, 512] {
@@ -359,7 +558,7 @@ fn literal_and_top_binary_transfers_need_at_most_two_complete_cycles() {
                     );
                     cooperation::PROTOCOL_WORK.set((0, 0, 0));
                     let result = algebra.apply_numeric(op, args.iter());
-                    let quote = domain.spec().numeric_transfer_work(args.iter(), None);
+                    let quote = domain.spec().numeric_transfer_work(op, args.iter(), None);
                     assert!(cooperation::PROTOCOL_WORK.get().0 <= quote);
                     assert!(
                         result.rounds <= 2 && masks.get() <= 2 && bounds.get() <= 2,
@@ -374,8 +573,12 @@ fn literal_and_top_binary_transfers_need_at_most_two_complete_cycles() {
     }
     let args = [NumericValue::constant(U256::ZERO), NumericValue::top()];
     assert_eq!(
-        domain(8, 2).spec().numeric_transfer_work(args.iter(), None),
-        domain(8, 8).spec().numeric_transfer_work(args.iter(), None)
+        domain(8, 2)
+            .spec()
+            .numeric_transfer_work(opcode::ADD, args.iter(), None),
+        domain(8, 8)
+            .spec()
+            .numeric_transfer_work(opcode::ADD, args.iter(), None)
     );
 }
 
@@ -404,7 +607,9 @@ fn dyadic_fact_normalization_can_require_a_third_scalar_pass() {
     );
     assert!(cooperation::PROTOCOL_WORK.get().0 <= domain.refinement_work(&input, 0));
     let args = [input, NumericValue::constant(U256::ZERO)];
-    let quote = domain.spec().numeric_transfer_work(args.iter(), None);
+    let quote = domain
+        .spec()
+        .numeric_transfer_work(opcode::ADD, args.iter(), None);
     let result = domain.apply_numeric(opcode::ADD, args.iter());
     assert_eq!(result.status, ReductionStatus::Stable);
     assert_eq!(result.rounds, 3);
@@ -557,9 +762,11 @@ fn opcode_quotes_pay_real_closed_jobs_and_decline_at_byte_capacity_boundaries() 
                 let quote = algebra.operation_work(op, &args);
                 assert!(
                     policy.operation_work(op, args.iter().map(EvmValue::numeric))
-                        <= policy
-                            .spec()
-                            .numeric_transfer_work(args.iter().map(EvmValue::numeric), None)
+                        <= policy.spec().numeric_transfer_work(
+                            op,
+                            args.iter().map(EvmValue::numeric),
+                            None
+                        )
                 );
                 let mut budget = WorkBudget::new(quote);
                 cooperation::PROTOCOL_WORK.set((0, 0, 0));
@@ -588,9 +795,11 @@ fn opcode_quotes_pay_real_closed_jobs_and_decline_at_byte_capacity_boundaries() 
         policy
             .numeric_algebra()
             .operation_work(opcode::BYTE, overflow.iter().map(EvmValue::numeric)),
-        policy
-            .spec()
-            .numeric_transfer_work(overflow.iter().map(EvmValue::numeric), None)
+        policy.spec().numeric_transfer_work(
+            opcode::BYTE,
+            overflow.iter().map(EvmValue::numeric),
+            None
+        )
     );
 }
 
@@ -615,9 +824,11 @@ fn address_cube_eq_literal_quote_keeps_four_real_jobs_and_declines_other_shapes(
                         algebra
                             .numeric_algebra()
                             .operation_work(opcode::EQ, args.iter().map(EvmValue::numeric))
-                            <= algebra
-                                .spec()
-                                .numeric_transfer_work(args.iter().map(EvmValue::numeric), None)
+                            <= algebra.spec().numeric_transfer_work(
+                                opcode::EQ,
+                                args.iter().map(EvmValue::numeric),
+                                None
+                            )
                     );
                     cooperation::PROTOCOL_WORK.set((0, 0, 0));
                     let result = algebra.apply_detailed(opcode::EQ, &args);
@@ -646,9 +857,11 @@ fn address_cube_eq_literal_quote_keeps_four_real_jobs_and_declines_other_shapes(
             algebra
                 .numeric_algebra()
                 .operation_work(opcode::EQ, args.iter().map(EvmValue::numeric)),
-            algebra
-                .spec()
-                .numeric_transfer_work(args.iter().map(EvmValue::numeric), None)
+            algebra.spec().numeric_transfer_work(
+                opcode::EQ,
+                args.iter().map(EvmValue::numeric),
+                None
+            )
         );
     }
     let outside = [
@@ -659,9 +872,11 @@ fn address_cube_eq_literal_quote_keeps_four_real_jobs_and_declines_other_shapes(
         algebra
             .numeric_algebra()
             .operation_work(opcode::EQ, outside.iter().map(EvmValue::numeric)),
-        algebra
-            .spec()
-            .numeric_transfer_work(outside.iter().map(EvmValue::numeric), None)
+        algebra.spec().numeric_transfer_work(
+            opcode::EQ,
+            outside.iter().map(EvmValue::numeric),
+            None
+        )
     );
 }
 

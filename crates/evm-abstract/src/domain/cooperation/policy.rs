@@ -117,7 +117,7 @@ where
             self.spec.numeric_operation_work(op, args)
         } else {
             self.spec
-                .numeric_transfer_work(args, Some(self.closure_work(self.spec.capacity())))
+                .numeric_transfer_work(op, args, Some(self.closure_work(self.spec.capacity())))
         }
     }
     fn literal_quote_work(&self, _literal: crate::U256) -> usize {
