@@ -173,11 +173,10 @@ fn tree_work(entries: usize) -> usize {
 fn range_key_nodes<N: WordElement>(value: &EvmValue<N>) -> usize {
     if let Some(expression) = value.expression() {
         expression.nodes()
-    } else if value.singleton().is_some() || value.numeric().is_top() {
-        1
     } else {
         // expr(): one observed slot with a fresh binding and numeric payload,
-        // followed by a read at zero. No operand-map census is needed.
+        // followed by a read at zero. This also bounds a literal key without
+        // discovering whether an opaque element would take that shortcut.
         value.numeric().work_size().saturating_add(8)
     }
 }
@@ -210,11 +209,9 @@ impl<N: WordElement> EvmByteArray<N> {
             .saturating_add(12);
         let range = offset.work_size().saturating_add(size.work_size());
         let facts = self.operands.len().saturating_add(2);
-        let cached = if offset.singleton().is_some() {
-            self.bytes.len().min(COPY_FACT_LIMIT)
-        } else {
-            0
-        };
+        // Translation may become exact only during execution. Reserve its
+        // bounded presentation work without querying the offset while quoting.
+        let cached = self.bytes.len().min(COPY_FACT_LIMIT);
         // One canonicalization chain and checked root construction. Six
         // retained handles/checks per node cover view fields and the chain;
         // range normalization/observed-scalar construction has four passes.

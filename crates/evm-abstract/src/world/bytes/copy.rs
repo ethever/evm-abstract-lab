@@ -393,14 +393,21 @@ impl<N: WordElement> EvmByteArray<N> {
         requested: &EvmValue<N>,
         domain: AlgebraRef<'_, D>,
     ) -> usize {
-        if requested.singleton() == Some(U256::ZERO) {
+        // Complete cached membership can independently certify zero. Opaque
+        // carriers use the general envelope without discovery during quotation.
+        let zero = |value: &EvmValue<N>| {
+            value
+                .constants()
+                .is_some_and(|set| set.len() == 1 && set.contains(&U256::ZERO))
+        };
+        if zero(requested) {
             // Both normalizations still run, including numeric-only sources.
             return scalar_work(destination)
                 .saturating_add(scalar_work(requested))
                 .saturating_add(8)
                 .saturating_mul(4);
         }
-        if source.length.singleton() == Some(U256::ZERO) {
+        if zero(&source.length) {
             let ranges = scalar_work(requested)
                 .saturating_add(scalar_work(&self.length))
                 .saturating_add(scalar_work(destination))

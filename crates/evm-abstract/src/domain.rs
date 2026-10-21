@@ -32,6 +32,7 @@ mod transfer;
 mod value;
 mod widening;
 
+pub(crate) use algebra::SingletonProof;
 pub use algebra::{AlgebraRef, EvmNumericAlgebra, NumericReduction, ValueAlgebra};
 use concrete::evaluate;
 pub use element::WordElement;

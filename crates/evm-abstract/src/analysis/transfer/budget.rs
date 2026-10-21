@@ -1,13 +1,17 @@
 //! Shared work accounting before domain, byte-range and join operations.
 
 use super::EvmExecution;
-use super::{address, complete_candidates};
+use super::{
+    address,
+    candidates::{self, Candidates},
+    query,
+};
 use crate::domain::{EvmNumericAlgebra, WordElement};
 
 use crate::{
-    analysis::ExecutionConfig,
+    analysis::{ExecutionConfig, FrontierReason},
     bytecode::Program,
-    domain::{AlgebraRef, EvmValue},
+    domain::{AlgebraRef, EvmValue, SingletonProof},
     resource::WorkBudget,
     world::{Code, EvmStore},
 };
@@ -16,10 +20,14 @@ use revm_bytecode::opcode;
 #[cfg(test)]
 mod cost_tests;
 #[cfg(test)]
+mod query_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod uniform_tests;
 
-/// Literal construction for quotation is a separate paid phase. A uniform
-/// declaration permits one quote; opaque policies price all actual indices.
+/// Literal construction for quotation is a separate paid phase. A certified
+/// fresh-word fee needs no temporary operands; other policies price real indices.
 pub(super) fn quotation_work<D: EvmNumericAlgebra>(
     result: &EvmExecution<D::Element>,
     op: u8,
@@ -35,6 +43,8 @@ pub(super) fn quotation_work<D: EvmNumericAlgebra>(
                 .uniform_word_write_work_with(&args[0], &args[1], domain)
                 .is_some() =>
         {
+            // The injected algebra owns this cached-only complete quote,
+            // including all literal construction in the certified writer.
             0
         }
         opcode::MSTORE | opcode::MSTORE8
@@ -57,47 +67,92 @@ pub(super) fn quotation_work<D: EvmNumericAlgebra>(
     }
 }
 
-/// Reserve temporary operand construction before computing the real operation
-/// quote. Refusal never constructs N or changes a memory/store payload.
+/// A fee and the word discoveries used to compute it. Dispatch reuses the
+/// target cover; logical range admission reuses the unchanged size proof.
+pub(super) struct OperationQuote<'a> {
+    pub(super) work: usize,
+    pub(super) targets: Option<Candidates<'a>>,
+    pub(super) size: SingletonProof,
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "same explicit metered operation inputs as the transfer dispatcher"
 )]
-pub(super) fn operation_work_budgeted<D: EvmNumericAlgebra>(
+/// Reserve discovery and temporary literal construction before the real quote.
+/// Refusal retains prior payments and publishes no executable effects.
+pub(super) fn operation_work_budgeted<'a, D: EvmNumericAlgebra>(
     result: &EvmExecution<D::Element>,
     op: u8,
-    args: &[EvmValue<D::Element>],
+    args: &'a [EvmValue<D::Element>],
     program: &Program,
     domain: AlgebraRef<'_, D>,
     config: &ExecutionConfig,
     entry: &crate::world::EvmEntry<D::Element>,
     budget: &mut WorkBudget,
-) -> Result<usize, crate::domain::WorkExhausted> {
+) -> Result<OperationQuote<'a>, FrontierReason> {
+    query::checkpoint(budget)?;
     let prepare = quotation_work(result, op, args, domain);
-    if prepare == usize::MAX || budget.exhausted() || !budget.charge(prepare) {
-        return Err(crate::domain::WorkExhausted);
+    query::checkpoint(budget)?;
+    if prepare == usize::MAX || !budget.charge(prepare) {
+        return Err(FrontierReason::Work);
     }
-    let work = operation_work(result, op, args, program, domain, config, entry);
-    if work == usize::MAX {
-        Err(crate::domain::WorkExhausted)
+    query::checkpoint(budget)?;
+    let (extent, size) = if op == opcode::KECCAK256 {
+        let (values, proof) = candidates::prepare(&args[1], budget)?;
+        (maximum(values.as_ref()), proof)
     } else {
-        Ok(work)
+        (0, SingletonProof::NotQueried)
+    };
+    let targets = if matches!(
+        op,
+        opcode::EXTCODECOPY | opcode::EXTCODEHASH | opcode::EXTCODESIZE | opcode::BALANCE
+    ) {
+        if candidates::is_self(&args[0], entry) {
+            Some(Candidates::single(crate::U256::from_be_slice(
+                entry.address.as_slice(),
+            )))
+        } else {
+            candidates::prepare(&args[0], budget)?.0
+        }
+    } else {
+        None
+    };
+    let work = operation_work_prepared(
+        result,
+        op,
+        args,
+        program,
+        domain,
+        config,
+        extent,
+        targets.as_ref(),
+        entry,
+    );
+    query::checkpoint(budget)?;
+    if work == usize::MAX {
+        Err(FrontierReason::Work)
+    } else {
+        Ok(OperationQuote {
+            work,
+            targets,
+            size,
+        })
     }
 }
 
 pub(super) fn arithmetic_work<N: WordElement>(args: &[EvmValue<N>]) -> usize {
-    args.iter()
-        .try_fold(1usize, |size, value| {
-            complete_candidates(value).map(|set| size.saturating_mul(set.len()))
-        })
-        .unwrap_or(1)
+    args.iter().fold(1usize, |size, value| {
+        size.saturating_mul(candidates::count(value))
+    })
 }
 
-pub(super) fn maximum<N: WordElement>(value: &EvmValue<N>) -> usize {
-    complete_candidates(value)
+/// Words are already discovered or borrowed from a complete finite cover.
+/// An unrepresentable known extent refuses; an unknown cover selects no scan.
+pub(super) fn maximum(values: Option<&Candidates<'_>>) -> usize {
+    values
         .and_then(|values| values.iter().max().copied())
-        .and_then(|v| usize::try_from(v).ok())
-        .unwrap_or(0)
+        .map_or(0, |v| usize::try_from(v).unwrap_or(usize::MAX))
 }
 
 // A conservative precharge includes finite domain combinations, byte visits,
@@ -109,7 +164,7 @@ pub(super) fn byte_work<D: EvmNumericAlgebra>(
     domain: AlgebraRef<'_, D>,
 ) -> usize {
     let branches = args.iter().fold(1usize, |cost, value| {
-        cost.saturating_mul(complete_candidates(value).map_or(1, |set| set.len()))
+        cost.saturating_mul(candidates::count(value))
     });
     branches.saturating_mul(
         bytes
@@ -124,7 +179,8 @@ pub(super) fn byte_work<D: EvmNumericAlgebra>(
     )
 }
 
-// The caller prepays quotation_work before entering this unbudgeted calculator.
+// Pure/caller-funded test adapter. Production uses the prepared boundary above.
+#[cfg(test)]
 pub(super) fn operation_work<D: EvmNumericAlgebra>(
     result: &EvmExecution<D::Element>,
     op: u8,
@@ -132,6 +188,53 @@ pub(super) fn operation_work<D: EvmNumericAlgebra>(
     program: &Program,
     domain: AlgebraRef<'_, D>,
     config: &ExecutionConfig,
+    entry: &crate::world::EvmEntry<D::Element>,
+) -> usize {
+    let extent = if op == opcode::KECCAK256 {
+        maximum(candidates::complete(&args[1]).as_ref())
+    } else {
+        0
+    };
+    let targets = if matches!(
+        op,
+        opcode::EXTCODECOPY | opcode::EXTCODEHASH | opcode::EXTCODESIZE | opcode::BALANCE
+    ) {
+        if candidates::is_self(&args[0], entry) {
+            Some(Candidates::single(crate::U256::from_be_slice(
+                entry.address.as_slice(),
+            )))
+        } else {
+            candidates::complete(&args[0])
+        }
+    } else {
+        None
+    };
+    operation_work_prepared(
+        result,
+        op,
+        args,
+        program,
+        domain,
+        config,
+        extent,
+        targets.as_ref(),
+        entry,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "operation inputs plus already-paid word-dependent quotation data"
+)]
+fn operation_work_prepared<D: EvmNumericAlgebra>(
+    result: &EvmExecution<D::Element>,
+    op: u8,
+    args: &[EvmValue<D::Element>],
+    program: &Program,
+    domain: AlgebraRef<'_, D>,
+    config: &ExecutionConfig,
+    extent: usize,
+    targets: Option<&Candidates<'_>>,
     entry: &crate::world::EvmEntry<D::Element>,
 ) -> usize {
     let frame = result.payload.active();
@@ -171,7 +274,7 @@ pub(super) fn operation_work<D: EvmNumericAlgebra>(
         };
     }
     if op == opcode::EXTCODECOPY {
-        let (bytes, accounts) = external_code_shape(&result.payload.store, &args[0], entry);
+        let (bytes, accounts) = external_code_shape(&result.payload.store, targets);
         return frame
             .memory
             .copy_code_work_with(bytes, accounts, &args[1], &args[2], &args[3], domain)
@@ -189,10 +292,11 @@ pub(super) fn operation_work<D: EvmNumericAlgebra>(
         .work_size()
         .saturating_add(frame.calldata.work_size())
         .saturating_add(frame.returndata.work_size());
-    let range_size = |index: usize| {
-        let size = maximum(&args[index]);
-        if size <= config.max_memory_bytes {
-            size
+    let range_size = || {
+        if extent == usize::MAX {
+            usize::MAX
+        } else if extent <= config.max_memory_bytes {
+            extent
         } else {
             0
         }
@@ -204,7 +308,7 @@ pub(super) fn operation_work<D: EvmNumericAlgebra>(
             .saturating_add(
                 domain
                     .operation_work(&[])
-                    .saturating_mul(complete_candidates(&args[0]).map_or(1, |set| set.len())),
+                    .saturating_mul(candidates::count(&args[0])),
             ),
         opcode::ADDRESS
         | opcode::CALLER
@@ -276,14 +380,14 @@ pub(super) fn operation_work<D: EvmNumericAlgebra>(
             )
         }
         opcode::EXTCODEHASH => {
-            external_code_work(&result.payload.store, &args[0], domain, false, entry)
+            let (bytes, accounts) = external_code_shape(&result.payload.store, targets);
+            external_code_fee(bytes, accounts, domain, false)
         }
-        opcode::EXTCODESIZE | opcode::BALANCE => complete_candidates(&args[0])
-            .map_or(1, |values| values.len())
+        opcode::EXTCODESIZE | opcode::BALANCE => candidates::count(&args[0])
             .saturating_mul(domain.capacity())
             .saturating_add(1),
         opcode::CALLDATALOAD => byte_work(&[&args[0]], 32, array_size, domain),
-        opcode::KECCAK256 => byte_work(&[&args[0], &args[1]], range_size(1), array_size, domain),
+        opcode::KECCAK256 => byte_work(&[&args[0], &args[1]], range_size(), array_size, domain),
         opcode::SLOAD | opcode::SSTORE | opcode::TLOAD | opcode::TSTORE => result
             .payload
             .store
@@ -300,36 +404,11 @@ pub(super) fn operation_work<D: EvmNumericAlgebra>(
     }
 }
 
-fn external_code_work<D: EvmNumericAlgebra>(
-    store: &EvmStore<D::Element>,
-    targets: &EvmValue<D::Element>,
-    domain: AlgebraRef<'_, D>,
-    copied: bool,
-    entry: &crate::world::EvmEntry<D::Element>,
-) -> usize {
-    let (bytes, accounts) = external_code_shape(store, targets, entry);
-    external_code_fee(bytes, accounts, domain, copied)
-}
-
 fn external_code_shape<N: WordElement>(
     store: &EvmStore<N>,
-    targets: &EvmValue<N>,
-    entry: &crate::world::EvmEntry<N>,
+    targets: Option<&Candidates<'_>>,
 ) -> (usize, usize) {
-    let actual;
-    let targets = if entry.environment.to.as_concrete().is_none()
-        && targets.identity().same_identity(
-            entry
-                .environment
-                .address_value(entry.environment.to)
-                .identity(),
-        ) {
-        actual = EvmValue::<N>::constant(crate::U256::from_be_slice(entry.address.as_slice()));
-        &actual
-    } else {
-        targets
-    };
-    let Some(targets) = complete_candidates(targets) else {
+    let Some(targets) = targets else {
         return (0, 0);
     };
     let source_bytes = targets.iter().fold(0usize, |cost, target| {

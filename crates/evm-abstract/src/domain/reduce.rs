@@ -30,6 +30,12 @@ pub enum ReductionStatus {
     OriginConflict,
     /// Numeric facts remain sound, but an operation expression exceeded its policy.
     SymbolicLimit,
+    /// The prepaid closure work allowance or a resource counter was exhausted.
+    WorkLimit,
+    /// The captured operation cancellation was observed during closure.
+    Cancelled,
+    /// A kernel protocol failure prevented closure without proving bottom.
+    KernelFailure,
 }
 /// 数值结果及可核对的交换计数。
 #[derive(Clone, Debug)]
@@ -201,12 +207,7 @@ pub(super) fn import<N: WordElement>(
 }
 
 pub(super) fn numeric(domain: Domain, value: NumericValue) -> NumericReduction<NumericValue> {
-    super::cooperation::close(
-        domain,
-        value,
-        super::cooperation::BoundsToMask,
-        super::cooperation::MaskToBounds,
-    )
+    super::cooperation::close(domain, value)
 }
 
 pub(super) fn error_status(error: &FactError) -> ReductionStatus {

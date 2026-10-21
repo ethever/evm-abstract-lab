@@ -10,7 +10,9 @@ use evm_abstract::{
     domain::{
         AbstractValue, DomainSpec, EvmNumericAlgebra, NumericValue, Profile, ValueAlgebra,
         WordElement, WordObservation,
-        cooperation::{BoundsToMask, KeepBounds, KeepMasks, MaskToBounds, ProductAlgebra},
+        cooperation::{
+            BoundsToMask, KeepBounds, KeepMasks, MaskToBounds, ProductAlgebra, RuleWork,
+        },
         known_bits::KnownBits,
         relational::RelationLimits,
     },
@@ -23,6 +25,11 @@ use std::{cell::Cell, num::NonZeroUsize};
 struct Counted<'a, R> {
     calls: &'a Cell<usize>,
     rule: R,
+}
+impl<R: RuleWork> RuleWork for Counted<'_, R> {
+    fn evaluation_work(&self, spec: DomainSpec, finite: usize) -> usize {
+        self.rule.evaluation_work(spec, finite)
+    }
 }
 impl<Cx, R: Reduction<Cx>> Reduction<Cx> for Counted<'_, R> {
     type Task = R::Task;

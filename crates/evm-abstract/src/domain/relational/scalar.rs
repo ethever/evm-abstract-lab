@@ -265,22 +265,35 @@ impl RelationState {
         limits: &RelationLimits,
         budget: &mut crate::resource::WorkBudget,
     ) -> Result<EvmScalarQuery<D::Element>, crate::domain::WorkExhausted> {
-        let staged = self.refinement_import_work_with(expression, value, domain);
-        let work = staged.unwrap_or_else(|| domain.refinement_work(value, self.len()));
-        if work == usize::MAX || budget.exhausted() || !budget.charge(work) {
+        let current = analysis_control::current_cancellation();
+        if budget.exhausted() || current.is_cancelled() {
             return Err(crate::domain::WorkExhausted);
         }
-        let prepared = match self.prepare_scalar(expression, value.numeric(), domain, limits) {
-            Ok(prepared) => prepared,
-            Err(answer) => return Ok(answer),
-        };
-        if staged.is_some() {
-            let closure = domain.numeric_reduction_work(prepared.value.numeric());
-            if closure == usize::MAX || !budget.charge(closure) {
-                return Err(crate::domain::WorkExhausted);
-            }
+        let staged = self.refinement_import_work_with(expression, value, domain);
+        let work = staged.unwrap_or_else(|| domain.refinement_work(value, self.len()));
+        if work == usize::MAX || current.is_cancelled() || !budget.charge(work) {
+            return Err(crate::domain::WorkExhausted);
         }
-        Ok(Self::finish_scalar(prepared, domain))
+        // The detached import and selected closure belong to this ledger even
+        // when its original cancellation scope has already ended.
+        let cancellation = budget.cancellation();
+        let answer = analysis_control::with_cancellation(&cancellation, || {
+            let prepared = match self.prepare_scalar(expression, value.numeric(), domain, limits) {
+                Ok(prepared) => prepared,
+                Err(answer) => return Ok(answer),
+            };
+            if staged.is_some() {
+                let closure = domain.numeric_reduction_work(prepared.value.numeric());
+                if closure == usize::MAX || !budget.charge(closure) {
+                    return Err(crate::domain::WorkExhausted);
+                }
+            }
+            Ok(Self::finish_scalar(prepared, domain))
+        });
+        if budget.exhausted() || current.is_cancelled() {
+            return Err(crate::domain::WorkExhausted);
+        }
+        answer
     }
 
     /// Borrowed first-phase quote. Closure is quoted separately after detached
@@ -452,10 +465,14 @@ impl RelationState {
         let reduced = domain.reduce(&prepared.value);
         let complete = prepared.complete;
         match reduced.status {
+            ReductionStatus::Cancelled => EvmScalarQuery::Unknown(QueryReason::Cancelled),
             ReductionStatus::Empty => EvmScalarQuery::Infeasible,
             // These limits only stop further reductions. The already imported
             // conjunction remains sound and must not be mistaken for bottom.
-            ReductionStatus::FactLimit | ReductionStatus::RoundLimit => EvmScalarQuery::Refined {
+            ReductionStatus::FactLimit
+            | ReductionStatus::RoundLimit
+            | ReductionStatus::WorkLimit
+            | ReductionStatus::KernelFailure => EvmScalarQuery::Refined {
                 numeric: Box::new(domain.project(&reduced.value).numeric().clone()),
                 complete: false,
             },

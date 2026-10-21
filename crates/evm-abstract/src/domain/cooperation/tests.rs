@@ -1,5 +1,6 @@
 use super::{
-    BoundsToMask, KeepBounds, KeepMasks, MaskToBounds, ProductAlgebra, RuleError, close_order,
+    BoundsToMask, KeepBounds, KeepMasks, MaskToBounds, ProductAlgebra, RuleError, RuleWork,
+    close_order,
 };
 use crate::domain::{
     AbstractValue, Domain, DomainSpec, EvmNumericAlgebra, FiniteConstantSet, NumericValue, Profile,
@@ -10,6 +11,9 @@ use alloy_primitives::U256;
 use analysis_kernel::{LocalClosure, Reduction, Scope};
 use revm_bytecode::opcode;
 use std::{cell::Cell, num::NonZeroUsize};
+
+mod integration;
+mod work;
 
 fn spec(rounds: usize, facts: usize) -> DomainSpec {
     DomainSpec::new(
@@ -28,6 +32,11 @@ fn input() -> NumericValue {
 }
 #[derive(Clone, Copy)]
 struct CountedMask<'a>(&'a Cell<usize>);
+impl RuleWork for CountedMask<'_> {
+    fn evaluation_work(&self, spec: DomainSpec, finite: usize) -> usize {
+        BoundsToMask.evaluation_work(spec, finite)
+    }
+}
 impl<Cx> Reduction<Cx> for CountedMask<'_>
 where
     BoundsToMask: Reduction<Cx, Task = Scope, Error = RuleError>,
@@ -41,6 +50,11 @@ where
 }
 #[derive(Clone, Copy)]
 struct CountedBounds<'a>(&'a Cell<usize>);
+impl RuleWork for CountedBounds<'_> {
+    fn evaluation_work(&self, spec: DomainSpec, finite: usize) -> usize {
+        MaskToBounds.evaluation_work(spec, finite)
+    }
+}
 impl<Cx> Reduction<Cx> for CountedBounds<'_>
 where
     MaskToBounds: Reduction<Cx, Task = Scope, Error = RuleError>,
@@ -251,6 +265,11 @@ fn default_copy_and_singleton_hooks_keep_the_existing_admission_tariffs() {
 
 #[derive(Clone, Copy, Debug)]
 struct UnsupportedBounds;
+impl RuleWork for UnsupportedBounds {
+    fn evaluation_work(&self, _: DomainSpec, _: usize) -> usize {
+        0
+    }
+}
 impl<Cx> Reduction<Cx> for UnsupportedBounds {
     type Task = Scope;
     type Error = RuleError;
