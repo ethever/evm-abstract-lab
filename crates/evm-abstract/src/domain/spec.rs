@@ -2,6 +2,14 @@
 use serde::Serialize;
 use std::num::NonZeroUsize;
 
+/// Invalid limits in a frozen numeric/shared policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DomainSpecError {
+    /// Relation bounds remain mandatory even when relational queries are disabled.
+    #[error("relation constraint count, node count, and depth must all be nonzero")]
+    InvalidRelationLimits,
+}
+
 /// 数值语义和有界交换策略。私有字段确保运行中不切换策略。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct DomainSpec {
@@ -61,6 +69,13 @@ impl DomainSpec {
     pub fn relations(self) -> super::relational::RelationLimits {
         self.relations
     }
+    /// Validate shared limits, including the bounds of disabled relations.
+    pub fn validate(&self) -> Result<(), DomainSpecError> {
+        if !self.relations.valid() {
+            return Err(DomainSpecError::InvalidRelationLimits);
+        }
+        Ok(())
+    }
     /// 已有节点发生多少次严格增强后扩大不断移动的区间端点。
     pub fn widening_after_updates(self) -> usize {
         self.widening_after_updates
@@ -94,3 +109,6 @@ impl Default for DomainSpec {
         )
     }
 }
+
+#[cfg(test)]
+mod tests;
