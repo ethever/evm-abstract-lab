@@ -1,9 +1,8 @@
 //! Pending fixed-point obligations, independent of node identity and payload joins.
 //!
-//! Only this owner mutates FIFO records and pending membership. A certificate may
-//! satisfy a node without removing its record; a later semantic change requeues
-//! it, and its older record keeps its original scheduling position. Retain those
-//! records for the engine's scan and replay-copy charges as well.
+//! The kernel owns removable FIFO records and pending membership. Satisfying a
+//! node removes its live record; a later semantic change requeues it at a fresh
+//! tail position. Scan and replay-copy charges depend only on live obligations.
 
 use super::{FrontierReason, Limit, MachineError};
 use crate::resource::WorkBudget;
