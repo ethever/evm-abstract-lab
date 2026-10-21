@@ -1,8 +1,8 @@
 # Trait cooperation migration acceptance
 
-This guide maps the reusable semantic kernel, independently defined cooperating analyzers and production EVM scalar carriers to committed implementation and regression evidence. The [architecture guide](trait-cooperation.md) explains the public API and its contracts. The frozen full-gate and controlled replay results below distinguish implementation, precision, resource stops and delivery validation.
+This guide maps the reusable semantic kernel, independently defined cooperating analyzers and production EVM scalar carriers to committed implementation and regression evidence. The [architecture guide](trait-cooperation.md) explains the public API and its contracts. The gate and replay results below identify their historical source revisions. They do not validate later audit corrections; the final PR must bind its new clean head to fresh gate, artifact and performance evidence.
 
-## Frozen checked results
+## Historical focused results
 
 The integrated test run used clean commit `67ad711cb5980b054e0ea5c56dc1a3c0ee343c32`, with the same commit and clean state recorded after execution:
 
@@ -24,7 +24,7 @@ Its actual exit code was **0**. These are historical focused results. The later 
 
 The standalone interpreter source corresponding to commit `73e3e58aa9c2e18600f6858ea5b2f1df88198a4e` passed focused Nix kernel tests, strict Clippy, formatting and `no_dyn`: **74 tests passed**, including three complete-client interpreter cases. Source hashes bind the checked files to that commit. The witness supplements the production EVM checks; it does not replace the final integrated gate.
 
-## Complete code-freeze gate
+## Historical complete code-freeze gate
 
 The complete implementation at clean commit `20505f19efe8cae5d2472d347a2e65b1ec5a830d` (tree `293f8eb927e610031b8ef48e08bed67606c333dd`) includes the performance repairs and caller cost contracts. It contains the synchronized main baseline `c81b04e96cbab358a52c519285ca6f8ddef2b063`. The same clean commit was recorded before and after:
 
@@ -66,7 +66,7 @@ The public concrete oracle requires one terminal outcome to cover the checked da
 
 Read results at each delivery boundary: native exit or external termination, detailed status/frontiers and pending work, summary inputs/outputs and closed flags, optional root coverage, and report/consumer validation. Native exit 2 accompanies an Incomplete report. Preserve a whole-report guard rejection and any streaming supplement as separate observations.
 
-## Controlled replay results
+## Historical controlled replay results
 
 The [complete compact record](trait-cooperation-performance.json) retains all 84 sample identities and hashes, per-cell timing samples, memory/output sizes, semantic summaries, exact policy/argv templates, guards and Nix/ELF identities. A is original main `c81b04e96cbab358a52c519285ca6f8ddef2b063`; B is repaired code `20505f19efe8cae5d2472d347a2e65b1ec5a830d`.
 
