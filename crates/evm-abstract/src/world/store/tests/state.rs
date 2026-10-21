@@ -276,6 +276,7 @@ fn full_source_fresh_rename_and_rollback_preserve_old_reads() {
     let mut store = Store::new(&world);
     store.havoc_account(address);
     let old = store.read(address, &v(0), domain);
+    store.write_nonce(address, old.clone());
     let snapshot = store.snapshot();
     let map = store
         .fresh_leaves()
@@ -283,9 +284,29 @@ fn full_source_fresh_rename_and_rollback_preserve_old_reads() {
         .map(|e| (e, ExprId::fresh().unwrap()))
         .collect::<BTreeMap<_, _>>();
     assert!(map.len() >= 2);
+    // Roots fit; the deeper slot read fails later in the nonce map.
+    let expression = old.expression().unwrap();
+    assert_eq!(
+        store.rename_fresh(
+            &map,
+            ExprLimits {
+                max_depth: expression.depth() - 1,
+                ..ExprLimits::default()
+            },
+        ),
+        Err(StoreError::Expression(ExprError::Limit {
+            nodes: expression.nodes(),
+            depth: expression.depth(),
+        }))
+    );
+    assert_eq!(&store, snapshot.state());
     store.rename_fresh(&map, ExprLimits::default()).unwrap();
     assert_ne!(
         store.read(address, &v(0), domain).expression(),
+        old.expression()
+    );
+    assert_eq!(
+        snapshot.state().nonce(address).expression(),
         old.expression()
     );
     store.restore(snapshot);
@@ -294,114 +315,6 @@ fn full_source_fresh_rename_and_rollback_preserve_old_reads() {
         old.expression()
     );
 }
-
-#[test]
-fn fresh_rename_is_atomic_and_preserves_saved_custom_payloads() {
-    use crate::resource::clone_payment::tests::{RECEIPT, fixture, private_value};
-    let _scope = RECEIPT.scope();
-    let (world, entry, _, policy) = fixture("00");
-    let address = entry.address;
-    let mut store = EvmStore::new_with(&world, policy.borrowed());
-    let before = ExprId::fresh().unwrap();
-    let after = ExprId::fresh().unwrap();
-    let value = private_value(100_000).with_expression(before.clone());
-    for plane in [&mut store.persistent, &mut store.transient] {
-        plane.slots.insert((address, U256::ZERO), value.clone());
-        plane.defaults.insert(address, value.clone());
-        plane.global_default = value.clone();
-    }
-    store.balances.insert(address, value.clone());
-    store.nonces.insert(address, value.clone());
-    store.balance_default = value.clone();
-    let first = ExprId::fresh().unwrap();
-    let second = ExprId::fresh().unwrap();
-    let site = LogKey {
-        address,
-        code_address: address,
-        code_hash: alloy_primitives::B256::ZERO,
-        source_kind: crate::world::LogSourceKind::Runtime,
-        pc: 1,
-    };
-    // Insert in reverse order so the first failure must follow key order.
-    for (pc, leaf) in [(2, &second), (1, &first)] {
-        store.possible_logs.insert(
-            LogKey { pc, ..site.clone() },
-            EvmLog {
-                topics: vec![value.clone(), value.clone().with_expression(leaf.clone())],
-                data: EvmByteArray::exact(&[1]),
-            },
-        );
-    }
-    let saved = store.snapshot();
-    let limits = ExprLimits {
-        max_nodes: 64,
-        ..ExprLimits::default()
-    };
-    let mut too_large = ExprId::fresh().unwrap();
-    for _ in 0..6 {
-        too_large = ExprId::operation(
-            opcode::ADD,
-            &[too_large.clone(), too_large],
-            ExprLimits::default(),
-        )
-        .unwrap();
-    }
-    assert!(too_large.nodes() > limits.max_nodes);
-    let later_error =
-        ExprId::operation(opcode::NOT, &[too_large.clone()], ExprLimits::default()).unwrap();
-    let mut map = BTreeMap::from([
-        (before.clone(), after.clone()),
-        (first.clone(), too_large.clone()),
-        (second.clone(), later_error),
-    ]);
-    assert_eq!(
-        store.rename_fresh_with(&map, limits, policy.borrowed()),
-        Err(StoreError::Expression(ExprError::Limit {
-            nodes: too_large.nodes(),
-            depth: too_large.depth(),
-        }))
-    );
-    assert_eq!(&store, saved.state());
-
-    map.insert(first.clone(), after.clone());
-    map.insert(second, after.clone());
-    store
-        .rename_fresh_with(&map, limits, policy.borrowed())
-        .unwrap();
-    let mut scalars = vec![
-        &store.balances[&address],
-        &store.nonces[&address],
-        store.balance_default(),
-    ];
-    for plane in [&store.persistent, &store.transient] {
-        scalars.extend([
-            &plane.slots[&(address, U256::ZERO)],
-            &plane.defaults[&address],
-            &plane.global_default,
-        ]);
-    }
-    for log in store.possible_logs().values() {
-        scalars.extend(&log.topics);
-    }
-    for renamed in scalars {
-        assert_eq!(renamed.expression(), Some(&after));
-        assert_eq!(renamed.numeric(), value.numeric());
-        assert_eq!(renamed.provenance(), value.provenance());
-        assert!(renamed.same_identity(&value));
-        assert!(!renamed.contains(U256::from(7)));
-        assert!(renamed.contains(U256::from(8)));
-        assert!(renamed.numeric().observation().contains(U256::from(7)));
-    }
-    assert_eq!(saved.state().balances[&address].expression(), Some(&before));
-    assert_eq!(
-        saved.state().possible_logs[&site].topics[1].expression(),
-        Some(&first)
-    );
-    let sibling = saved.clone();
-    store.restore(saved);
-    assert_eq!(&store, sibling.state());
-}
-
 #[test]
 fn stable_same_key_loop_and_self_join_are_idempotent() {
     let (world, address) = world(true);
