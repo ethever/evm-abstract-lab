@@ -82,7 +82,11 @@ fn semantic_identity_cancel_and_label_only_frontiers_cannot_start_a_retry() {
         RangeError::Expression(ExprError::Unsupported(0xff)),
     ] {
         let mut h = Harness::new("525b00");
-        let input = instantiate(&h.table.nodes[0].payload, crate::analysis::testing::product(h.config_numeric.spec()).borrowed()).unwrap();
+        let input = instantiate(
+            &h.table.nodes[0].payload,
+            crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+        )
+        .unwrap();
         let mut execution = transfer::empty_execution(input);
         transfer::boundary_bytes(&mut execution, 0, error);
         assert!(execution.retention_failures.is_empty());
@@ -99,7 +103,11 @@ fn semantic_identity_cancel_and_label_only_frontiers_cannot_start_a_retry() {
     // This is also the missing-guard/inherited-marker control: a public label
     // without a raw producer cause supplies no retry permission.
     let mut h = Harness::new("525b00");
-    let input = instantiate(&h.table.nodes[0].payload, crate::analysis::testing::product(h.config_numeric.spec()).borrowed()).unwrap();
+    let input = instantiate(
+        &h.table.nodes[0].payload,
+        crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+    )
+    .unwrap();
     let mut execution = transfer::empty_execution(input);
     transfer::boundary(
         &mut execution,
@@ -204,7 +212,7 @@ fn incoming_growth_and_duplicate_inputs_keep_one_fixed_coarse_mode() {
         _ => panic!("must have promoted"),
     };
     let domain = crate::analysis::testing::product(h.config_numeric.spec());
-let domain = domain.borrowed();
+    let domain = domain.borrowed();
     let shared = domain
         .join(&word(7), &word(9))
         .with_expression(ExprId::fresh().unwrap());
@@ -240,7 +248,11 @@ let domain = domain.borrowed();
         };
         assert!(semantic_eq(&layout, coarse.layout()));
         let roundtrip = form(
-            &instantiate(&node.payload, crate::analysis::testing::product(h.config_numeric.spec()).borrowed()).unwrap(),
+            &instantiate(
+                &node.payload,
+                crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+            )
+            .unwrap(),
             &h.entry,
             crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
         )
@@ -301,7 +313,11 @@ fn the_last_allowed_transfer_can_publish_a_complete_coarse_execution() {
 #[test]
 fn replacing_a_local_attempt_does_not_clear_earlier_table_evidence() {
     let mut h = Harness::new("525b00");
-    let input = instantiate(&h.table.nodes[0].payload, crate::analysis::testing::product(h.config_numeric.spec()).borrowed()).unwrap();
+    let input = instantiate(
+        &h.table.nodes[0].payload,
+        crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+    )
+    .unwrap();
     h.solver()
         .frontier(input.clone(), FrontierReason::UnsupportedOpcode(0xfe), 99);
     h.solver()
