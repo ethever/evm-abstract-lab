@@ -175,7 +175,7 @@ fn native_refinement_refusals_keep_numeric_reason_and_location_through_wire() {
                 address: owner,
                 slot,
             },
-            source,
+            cause: source,
         };
         let message = source.to_string();
         let projected = super::super::rpc_error(RpcAnalysisError::Session(source));
