@@ -37,6 +37,8 @@ mod arithmetic_proof_tests;
 mod budget;
 mod calls;
 mod candidates;
+#[cfg(test)]
+mod clone_payment_tests;
 pub(super) mod create;
 mod dispatch;
 mod environment;
@@ -194,6 +196,18 @@ fn resume_summary_inner<D: EvmNumericAlgebra>(
     budget: &mut WorkBudget,
     procedure: bool,
 ) -> EvmExecution<D::Element> {
+    if let Err(error) = payload.pay_clone_with(budget) {
+        let pc = payload
+            .active()
+            .program
+            .as_ref()
+            .and_then(|program| program.blocks().get(payload.active().key.basic_block_index))
+            .and_then(|block| block.instructions.last())
+            .map_or(0, |instruction| instruction.pc);
+        let mut result = empty_execution(payload);
+        boundary(&mut result, pc, error.into());
+        return result;
+    }
     let mut result = EvmExecution {
         payload: payload.clone(),
         executed_pcs: Vec::new(),
@@ -513,6 +527,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
         return result;
     }
     if code == FrameCode::Empty {
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(&mut result, 0, error.into());
+            return result;
+        }
         let payload = result.payload.clone();
         finish(
             &mut result,
@@ -533,6 +551,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
     let program = &program;
     let basic_block_index = result.payload.active().key.basic_block_index;
     let Some(block) = program.blocks().get(basic_block_index) else {
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(&mut result, program.byte_len(), error.into());
+            return result;
+        }
         let payload = result.payload.clone();
         finish(
             &mut result,
@@ -908,6 +930,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                 return result;
             }
             opcode::STOP => {
+                if let Err(error) = result.payload.pay_clone_with(context.budget) {
+                    boundary(&mut result, pc, error.into());
+                    return result;
+                }
                 result.mark_instruction(InstructionProgress::Dispatched);
                 let payload = result.payload.clone();
                 finish(
@@ -936,6 +962,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         return result;
                     }
                 };
+                if let Err(error) = result.payload.pay_clone_with(context.budget) {
+                    boundary(&mut result, pc, error.into());
+                    return result;
+                }
                 result.mark_instruction(InstructionProgress::Dispatched);
                 let payload = result.payload.clone();
                 finish(
@@ -1652,6 +1682,10 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
             EdgeKind::Fallthrough,
         );
     } else {
+        if let Err(error) = result.payload.pay_clone_with(context.budget) {
+            boundary(&mut result, program.byte_len(), error.into());
+            return result;
+        }
         let payload = result.payload.clone();
         finish(
             &mut result,
