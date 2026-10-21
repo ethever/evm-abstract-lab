@@ -5,7 +5,8 @@ use super::{
 };
 use analysis_kernel::{Availability, Change, There};
 use evm_abstract::analysis::cooperation::{
-    PointKind, ProcedureId, ProcedureRoute, Procedures, Summaries, SummaryRoute,
+    PointKind, ProcedureId, ProcedureRoute, Procedures, Summaries, SummaryClosureRoute,
+    SummaryClosures, SummaryRoute, closed_summary,
 };
 use std::{cell::RefCell, collections::BTreeMap};
 
@@ -88,6 +89,7 @@ where
     Cx: Read<Inputs<ExcludingWord>, InputRoute, Error = Infrastructure>
         + Discover<Procedures, ProcedureRoute, Error = Infrastructure>
         + Discover<Summaries<ExcludingWord>, SummaryRoute, Error = Infrastructure>
+        + Discover<SummaryClosures, SummaryClosureRoute, Error = Infrastructure>
         + Discover<Generations, GenerationRoute, Error = Infrastructure>
         + ReadGeneration<Error = Infrastructure>
         + Accepts<GuardBound, BoundRoute, Error = PublishError<Infallible, MachineError>>
@@ -136,10 +138,16 @@ where
                             cx,
                             Scoped::new(input.universe(), *id),
                         )?;
-                    let Some(summary) = answer
-                        .value()
-                        .filter(|summary| summary.closed && !summary.outputs.is_empty())
-                    else {
+                    let proof = <Cx as Discover<SummaryClosures, SummaryClosureRoute>>::discover(
+                        cx,
+                        Scoped::new(input.universe(), *id),
+                    )?;
+                    let Some(summary) = answer.value().filter(|summary| {
+                        !summary.outputs.is_empty()
+                            && proof
+                                .value()
+                                .is_some_and(|proof| proof.generation == summary.generation)
+                    }) else {
                         continue;
                     };
                     let (body, body_evaluations) = {
@@ -258,6 +266,8 @@ where
 
 #[derive(Debug, thiserror::Error)]
 enum ReaderError {
+    #[error("{0}")]
+    Summary(#[from] evm_abstract::analysis::cooperation::SummaryReadError<Infrastructure>),
     #[error("capability operation failed: {0}")]
     Infrastructure(Infrastructure),
     #[error("old closed Summary is still available: generation={generation}, revision={revision}")]
@@ -278,6 +288,7 @@ where
     Cx: Read<Inputs<ExcludingWord>, InputRoute, Error = Infrastructure>
         + Discover<Trigger, TriggerRoute, Error = Infrastructure>
         + Read<Summaries<ExcludingWord>, SummaryRoute, Error = Infrastructure>
+        + Read<SummaryClosures, SummaryClosureRoute, Error = Infrastructure>
         + Charges<Error = Infrastructure>,
 {
     type Task = Subject;
@@ -316,10 +327,7 @@ where
             );
             audit.probes += 1;
         }
-        let answer = <Cx as Read<Summaries<ExcludingWord>, SummaryRoute>>::query(
-            cx,
-            Scoped::new(input.universe(), wake.procedure),
-        )?;
+        let answer = closed_summary::<ExcludingWord, _>(cx, input.universe(), wake.procedure)?;
         match answer.state {
             Availability::Pending | Availability::Absent => {
                 assert!(
@@ -334,17 +342,13 @@ where
                     "native output bound must not grow before this query"
                 );
                 eprintln!(
-                    "SUMMARY_VALIDITY reader=Value closed={} generation={} revision={} body_evaluations={}",
-                    summary.closed, summary.generation, summary.revision, wake.body_evaluations
+                    "SUMMARY_VALIDITY reader=complete generation={} revision={} body_evaluations={}",
+                    summary.generation, summary.revision, wake.body_evaluations
                 );
                 if !wake.invalidated {
-                    assert!(
-                        summary.closed,
-                        "equivalent provider refresh cannot erase valid completion"
-                    );
                     assert_eq!(summary.revision, wake.revision);
                 }
-                if summary.closed && wake.invalidated {
+                if wake.invalidated {
                     assert_eq!(
                         summary.revision, wake.revision,
                         "old completion snapshot is unchanged"

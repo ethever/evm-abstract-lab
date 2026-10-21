@@ -77,7 +77,16 @@ pub(crate) fn initialize<N: WordElement, J, M: Meter, Tail, Global>(
     input: Input<N>,
 ) -> Result<(), InitializationError<M::Stop>> {
     initialize_input(run, ports, &input)?;
-    let subject = input.subject();
+    initialize_feedback(run, ports, input.subject())
+}
+
+/// Resume a bootstrap interrupted after Input publication, without overwriting
+/// that immutable Input or resetting any already published local guarantees.
+pub(crate) fn initialize_feedback<N: WordElement, J, M: Meter, Tail, Global>(
+    run: &mut Run<'_, J, M>,
+    ports: &mut Ports<'_, N, Tail, Global>,
+    subject: Subject,
+) -> Result<(), InitializationError<M::Stop>> {
     let mut cx = Context::new(run, ports);
     Registered::new(InitializeFeedback)
         .evaluate(&subject, &mut cx)

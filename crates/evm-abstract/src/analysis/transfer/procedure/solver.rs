@@ -626,7 +626,7 @@ impl<
                     false
                 }
             },
-            TaskKind::Extension(_) => {
+            TaskKind::Extension(_) | TaskKind::Seed(_) => {
                 let token = self.active.take().expect("external evaluation admitted");
                 if let Err(error) =
                     self.cooperation
@@ -654,7 +654,7 @@ impl<
                     false
                 }
             },
-            TaskKind::World { .. } | TaskKind::Seed(_) | TaskKind::SummaryProof => {
+            TaskKind::World { .. } | TaskKind::SummaryProof => {
                 unreachable!("uninitialized or foreign task")
             }
         };

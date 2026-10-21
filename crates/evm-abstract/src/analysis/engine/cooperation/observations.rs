@@ -5,7 +5,7 @@ use crate::{
         MachineError,
         cooperation::{
             Continuation, ContinuationId, CooperationError, Direction, Edge, InputTasks, Neighbors,
-            Point, ProcedureId, Shared, Summary,
+            Point, ProcedureId, Shared,
         },
         worklist::{
             MachineMeter,
@@ -223,56 +223,6 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             .map_err(publication_error)?;
             Ok(())
         })
-    }
-
-    pub(in crate::analysis) fn summary(
-        &mut self,
-        id: ProcedureId,
-        mut summary: Summary<N>,
-        runtime: &mut Runtime<<X as InputTasks>::Task>,
-        consumer: &mut RunningJob,
-        budget: &mut WorkBudget,
-    ) -> Result<(), CooperationError<E>> {
-        if !X::ENABLED {
-            return Ok(());
-        }
-        let native_revision = summary.revision;
-        let closed = summary.closed;
-        analysis_kernel::Meter::reserve(
-            &mut MachineMeter(budget),
-            ((usize::BITS as usize) + 1) * 16,
-        )
-        .map_err(KernelError::Stopped)?;
-        let previous = self.summary_publications.get(&id).copied();
-        if previous.is_some_and(|(native, was_closed, _)| {
-            native == native_revision && was_closed == closed
-        }) {
-            return Ok(());
-        }
-        let revision = previous
-            .map_or(Some(1), |(_, _, revision)| revision.checked_add(1))
-            .ok_or(KernelError::VersionExhausted)?;
-        summary.revision = revision;
-        // Native clone/construction was paid at the adapter seam; retain only
-        // one globally visible immutable snapshot for this stable procedure.
-        self.with_shared(runtime, consumer, budget, |run, shared, universe| {
-            run.publish(
-                &mut shared.procedures,
-                Scoped::new(universe, ()),
-                BTreeSet::from([id]),
-            )
-            .map_err(publication_error)?;
-            run.publish(
-                &mut shared.summaries,
-                Scoped::new(universe, id),
-                Arc::new(summary),
-            )
-            .map_err(publication_error)?;
-            Ok(())
-        })?;
-        self.summary_publications
-            .insert(id, (native_revision, closed, revision));
-        Ok(())
     }
 
     pub(in crate::analysis) fn continuation(
