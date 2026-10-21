@@ -1,8 +1,8 @@
-use crate::domain::ProductAlgebra;
 //! Relative root rollback is owned by the common termination boundary.
 
 use super::super::*;
 use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
     analysis::{

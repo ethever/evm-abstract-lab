@@ -1,5 +1,6 @@
-use crate::domain::ProductAlgebra;
 //! Source-only regressions; Root owns compilation and execution of these cases.
+
+use crate::domain::ProductAlgebra;
 
 #[cfg(test)]
 use crate::analysis::testing::{Entry, World};
@@ -81,6 +82,7 @@ impl Harness {
     }
 
     fn first(&mut self) -> Execution {
+        self.table.configure(self.config_numeric.spec());
         let domain = self.table.algebra();
         let input = instantiate(&self.table.nodes[0].payload, domain).unwrap();
         self.counters.transfers += 1;
@@ -170,7 +172,10 @@ fn actual_runtime_mstore_cap_retries_to_a_known_successor_once() {
     let written = post
         .active()
         .memory
-        .read_word_checked(&word(0), ProductAlgebra::default())
+        .read_word_checked(
+            &word(0),
+            crate::analysis::testing::product(crate::domain::DomainSpec::default()).borrowed(),
+        )
         .unwrap();
     assert_eq!(written.singleton(), Some(U256::from(7)));
     assert_eq!(written.expression(), Some(value));
@@ -181,7 +186,7 @@ fn actual_runtime_mstore_cap_retries_to_a_known_successor_once() {
     )
     .unwrap();
     let domain = crate::analysis::testing::product(h.config_numeric.spec());
-let domain = domain.borrowed();
+    let domain = domain.borrowed();
     let current = post
         .store
         .read_checked(address(0x101), &word(0), domain)
@@ -342,7 +347,12 @@ fn max_transfers_keeps_first_result_and_does_not_run_or_install_a_retry() {
         Some(&original.location)
     );
     let checkpoint = stopped.frontiers[1].payload.as_ref().unwrap();
-    let retained = form(checkpoint, &h.entry, crate::analysis::testing::product(h.config_numeric.spec()).borrowed()).unwrap();
+    let retained = form(
+        checkpoint,
+        &h.entry,
+        crate::analysis::testing::product(h.config_numeric.spec()).borrowed(),
+    )
+    .unwrap();
     assert!(semantic_eq(&original, &retained));
     assert!(
         stopped

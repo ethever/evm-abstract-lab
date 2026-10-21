@@ -1,5 +1,6 @@
-use crate::domain::ProductAlgebra;
 //! Production subscriptions depend on caller templates and callee outputs.
+
+use crate::domain::ProductAlgebra;
 
 use super::*;
 use crate::analysis::worklist::runtime::TaskKind;
@@ -61,7 +62,7 @@ fn output_growth_wakes_the_retained_outer_world_consumer() {
     let payload = super::super::testing::initial(&world, &entry, domain).unwrap();
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
-    let mut table = Table::default();
+    let mut table = Table::with_algebra(crate::analysis::testing::product(config_numeric.spec()));
     let (_, record) = table.execute(
         0,
         &world,
@@ -104,7 +105,7 @@ fn caller_growth_redelivers_an_unchanged_callee_generation() {
     let mut payload = super::super::testing::initial(&world, &entry, domain).unwrap();
     payload.active_mut().stack = vec![word(7)];
     payload.normalize();
-    let mut table = Table::default();
+    let mut table = Table::with_algebra(crate::analysis::testing::product(config_numeric.spec()));
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
     let mut solver = table.solver(
@@ -197,7 +198,7 @@ fn late_feedback_redelivers_an_unchanged_template_and_callee_output() {
     let mut payload = super::super::testing::initial(&world, &entry, domain).unwrap();
     payload.active_mut().stack = vec![word(7)];
     payload.normalize();
-    let mut table = Table::default();
+    let mut table = Table::with_algebra(crate::analysis::testing::product(config_numeric.spec()));
     let mut budget = WorkBudget::new(config.max_work);
     let mut counters = Counters::default();
     let mut solver = table.solver(

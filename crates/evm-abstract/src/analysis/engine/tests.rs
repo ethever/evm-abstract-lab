@@ -4,7 +4,6 @@
 use crate::domain::ProductAlgebra;
 
 use super::{Cache, Counters, Engine, SummaryAttempt};
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{FrontierReason, Status, WorldAnalysis, machine::fixtures, summary::Certificate},
     domain::relational::QueryReason,
@@ -24,8 +23,9 @@ fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {
     let caller = "5f355f5260005f5f5f5f6102006207a120f15060205f5f5f5f6102006207a120f11560295760205ff35b5f5ffd";
     let (empty, mut entry) = fixtures::fixture(&[]);
     entry.environment.calldata = crate::analysis::testing::ByteArray::unknown();
-    let mut world = crate::analysis::testing::World::new(empty.fork(), "call result partition regression");
-    let domain = crate::domain::ProductAlgebra::default();
+    let mut world =
+        crate::analysis::testing::World::new(empty.fork(), "call result partition regression");
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     for (address, code) in [(0x101, caller), (0x200, "5f545f5260205ff3")] {
         let mut account = crate::analysis::testing::Account::from_hex(code, world.fork()).unwrap();
         account.balance = fixtures::word(1_000_000);
@@ -67,16 +67,17 @@ fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {
             .collect::<Vec<_>>();
         assert!(!returns.is_empty());
         for output in returns {
-            let value = output.data.read_word(&fixtures::word(0), domain);
+            let value = output.data.read_word(&fixtures::word(0), domain.borrowed());
             assert_eq!(
                 output.data.len().singleton(),
                 Some(alloy_primitives::U256::from(32))
             );
             assert_eq!(
                 value.constants(),
-                domain
-                    .join(&fixtures::word(5), &fixtures::word(9))
-                    .constants()
+                Some(&BTreeSet::from([
+                    alloy_primitives::U256::from(5),
+                    alloy_primitives::U256::from(9),
+                ]))
             );
         }
         let graph = crate::ssa::build_world(&analysis).unwrap();
@@ -150,7 +151,9 @@ fn engine<'a>(
         selectors: BTreeSet::new(),
         ids,
         runtime,
-        cooperation: Some(super::Cooperation::new(super::Empty::default())),
+        cooperation: Some(super::Cooperation::new(
+            crate::analysis::cooperation::NoExtension,
+        )),
         inputs: Vec::new(),
         active: None,
         active_node: None,
@@ -465,10 +468,9 @@ impl Engine<'_> {
         let Some((task, token)) = self.runtime.next(false, self.budget)? else {
             return Ok(None);
         };
-        let super::TaskKind::World { node, .. } = &task.0 else {
+        let super::TaskKind::World { node, .. } = task.0 else {
             return Ok(None);
         };
-        let node = *node;
         self.runtime.finish(token, self.budget)?;
         Ok(Some(node))
     }

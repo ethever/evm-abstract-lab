@@ -23,6 +23,7 @@ fn v(n: usize) -> TestValue {
 }
 
 fn before() -> ByteArray {
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let mut memory = ByteArray::memory();
     let mut bytes = vec![0xaa; 32];
     bytes.extend([0xbb; 32]);
@@ -32,7 +33,7 @@ fn before() -> ByteArray {
             &ByteArray::exact(&bytes),
             &v(0),
             &v(64),
-            ProductAlgebra::default(),
+            algebra.borrowed(),
         )
         .unwrap();
     memory

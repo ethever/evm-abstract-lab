@@ -313,16 +313,29 @@ fn bounded_join_is_commutative_associative_idempotent_and_sound() {
 
 #[test]
 fn native_serialization_keeps_structured_complete_candidates_and_top() {
-    let set = finite(&[7, 2]);
-    assert_eq!(
-        serde_json::to_value(&set).unwrap(),
-        serde_json::json!({"constants": ["0x2", "0x7"]})
-    );
+    for (input, expected, display) in [
+        (
+            [7, 2],
+            serde_json::json!({"constants": ["0x2", "0x7"]}),
+            "{0x2, 0x7}",
+        ),
+        (
+            [2, 9],
+            serde_json::json!({"constants": ["0x2", "0x9"]}),
+            "{0x2, 0x9}",
+        ),
+    ] {
+        let set = finite(&input);
+        let serialized = serde_json::to_value(&set).unwrap();
+        assert_eq!(serialized, expected);
+        assert_eq!(serialized.as_object().unwrap().len(), 1);
+        assert_eq!(serialized["constants"].as_array().unwrap().len(), 2);
+        assert_eq!(set.to_string(), display);
+    }
     assert_eq!(
         serde_json::to_value(FiniteConstantSet::top()).unwrap(),
         serde_json::json!({})
     );
-    assert_eq!(set.to_string(), "{0x2, 0x7}");
     assert_eq!(FiniteConstantSet::top().to_string(), "⊤");
 }
 

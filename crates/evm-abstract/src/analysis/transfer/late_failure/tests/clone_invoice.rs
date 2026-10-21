@@ -1,8 +1,8 @@
-use crate::domain::ProductAlgebra;
 //! Each exceptional completion has one owner for every actual native copy.
 
 use super::super::*;
 use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
     analysis::{

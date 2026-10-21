@@ -1,8 +1,8 @@
-use crate::domain::ProductAlgebra;
 //! Executable carrier substitution through transfer, checkpoints and completion.
 
 use super::*;
 use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
     analysis::engine::policy::{ContextInsensitive, RecentDistinctJumps},

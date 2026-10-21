@@ -5,7 +5,6 @@ use crate::analysis::testing::{Account, Entry, World};
 use crate::domain::EvmNumericAlgebra as _;
 
 use crate::{
-
     analysis::{
         ExecutionConfig, FrameCode, FrontierReason, OutcomeKind, ProcedureSummaryKind, Status,
         machine::fixtures::{address, fixture, word},
@@ -61,9 +60,8 @@ fn check_entry_gas_failure(
         // cleanup. These fixtures never touch RIPEMD, so no sticky exception
         // may distinguish their rollback from the finalized root checkpoint.
         let mut expected = checkpoint.state().clone();
-        expected
-            .finalize_transaction(ProductAlgebra::from_spec(result.domain_spec()))
-            .unwrap();
+        let algebra = crate::analysis::testing::product(result.domain_spec());
+        expected.finalize_transaction(algebra.borrowed()).unwrap();
         assert_eq!(outcome.store, expected);
     }
 }
@@ -84,6 +82,8 @@ fn direct_known_recursion_closes_with_default_depth_and_without_unknown_effects(
         let mut config_numeric = crate::analysis::testing::NumericLimits::default();
         let result =
             crate::analysis::testing::execute(world, entry, config, config_numeric.spec()).unwrap();
+        let algebra = crate::analysis::testing::product(result.domain_spec());
+        let domain = algebra.borrowed();
         assert_eq!(
             result.status(),
             Status::Converged,
@@ -134,23 +134,20 @@ fn direct_known_recursion_closes_with_default_depth_and_without_unknown_effects(
                 result.diagnostics()
             );
             assert_eq!(
-                outcome
-                    .data
-                    .read_word(&word(0), ProductAlgebra::default())
-                    .singleton(),
+                outcome.data.read_word(&word(0), domain).singleton(),
                 Some(U256::from(42))
             );
             assert_eq!(
                 outcome
                     .store
-                    .read(address(0x101), &word(0), ProductAlgebra::default())
+                    .read(address(0x101), &word(0), domain)
                     .singleton(),
                 Some(U256::from(11))
             );
             assert_eq!(
                 outcome
                     .store
-                    .read(address(0x102), &word(0), ProductAlgebra::default())
+                    .read(address(0x102), &word(0), domain)
                     .singleton(),
                 Some(U256::from(5))
             );
@@ -169,6 +166,8 @@ fn no_base_return_recursion_derives_revert_and_rollback_from_call_rejection() {
         crate::domain::DomainSpec::default(),
     )
     .unwrap();
+    let algebra = crate::analysis::testing::product(result.domain_spec());
+    let domain = algebra.borrowed();
     assert_eq!(
         result.status(),
         Status::Converged,
@@ -202,16 +201,13 @@ fn no_base_return_recursion_derives_revert_and_rollback_from_call_rejection() {
             result.diagnostics()
         );
         assert_eq!(
-            outcome
-                .data
-                .read_word(&word(0), ProductAlgebra::default())
-                .singleton(),
+            outcome.data.read_word(&word(0), domain).singleton(),
             Some(U256::from(99))
         );
         assert_eq!(
             outcome
                 .store
-                .read(address(0x101), &word(0), ProductAlgebra::default())
+                .read(address(0x101), &word(0), domain)
                 .singleton(),
             Some(U256::from(7))
         );

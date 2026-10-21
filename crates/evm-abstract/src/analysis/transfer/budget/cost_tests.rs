@@ -157,13 +157,8 @@ impl EvmNumericAlgebra for Indexed {
                 },
             });
         }
-        let numeric = ProductAlgebra::default().apply_numeric(
-            op,
-            &args
-                .iter()
-                .map(|value| value.numeric.clone())
-                .collect::<Vec<_>>(),
-        );
+        let numeric =
+            ProductAlgebra::default().apply_numeric(op, args.iter().map(|value| &value.numeric));
         NumericReduction {
             value: Word {
                 numeric: numeric.value,

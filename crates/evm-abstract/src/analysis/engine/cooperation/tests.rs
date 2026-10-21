@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, ByteArray, Entry, TestValue, World};
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork,
     analysis::{

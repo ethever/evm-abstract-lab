@@ -5,12 +5,9 @@ use crate::analysis::testing::ByteArray;
 use crate::domain::EvmNumericAlgebra as _;
 
 use super::super::is_recursive_entry;
-use crate::{
-    analysis::{
-        ChildFrame, Continuation, FrameCode, MachinePayload,
-        machine::fixtures::{address, payload, word},
-    },
-    domain::ProductAlgebra,
+use crate::analysis::{
+    ChildFrame, Continuation, FrameCode, MachinePayload,
+    machine::fixtures::{address, payload, word},
 };
 use alloy_primitives::B256;
 
@@ -34,7 +31,8 @@ fn enter(payload: &mut MachinePayload, site: usize, return_block: usize, code: u
 }
 
 fn repeated() -> MachinePayload {
-    let mut out = payload(ProductAlgebra::default());
+    let mut out =
+        payload(crate::analysis::testing::product(crate::domain::DomainSpec::default()).borrowed());
     enter(&mut out, 3, 4, 0x101, 0x101);
     enter(&mut out, 3, 4, 0x101, 0x101);
     out
@@ -42,7 +40,8 @@ fn repeated() -> MachinePayload {
 
 #[test]
 fn one_self_child_is_not_a_repeated_active_call_edge() {
-    let mut out = payload(ProductAlgebra::default());
+    let mut out =
+        payload(crate::analysis::testing::product(crate::domain::DomainSpec::default()).borrowed());
     assert!(!is_recursive_entry(&out));
     enter(&mut out, 3, 4, 0x101, 0x101);
     assert!(!is_recursive_entry(&out));
@@ -53,7 +52,8 @@ fn one_self_child_is_not_a_repeated_active_call_edge() {
 
 #[test]
 fn returned_self_children_do_not_accumulate_recursion_evidence() {
-    let mut out = payload(ProductAlgebra::default());
+    let mut out =
+        payload(crate::analysis::testing::product(crate::domain::DomainSpec::default()).borrowed());
     for _ in 0..8 {
         enter(&mut out, 3, 4, 0x101, 0x101);
         assert!(!is_recursive_entry(&out));
@@ -64,7 +64,8 @@ fn returned_self_children_do_not_accumulate_recursion_evidence() {
 
 #[test]
 fn mutual_recursion_folds_when_the_first_call_edge_repeats() {
-    let mut out = payload(ProductAlgebra::default());
+    let mut out =
+        payload(crate::analysis::testing::product(crate::domain::DomainSpec::default()).borrowed());
     enter(&mut out, 3, 4, 0x102, 0x102);
     assert!(!is_recursive_entry(&out));
     enter(&mut out, 7, 8, 0x101, 0x101);

@@ -1,5 +1,3 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::{MachineError, Policy, Projection};
 #[cfg(test)]
 use crate::analysis::testing::TestValue;
@@ -423,8 +421,7 @@ fn call_guard_survives_a_stored_word_projection_without_fixing_high_bits() {
     let domain = domain.borrowed();
     let algebra = domain;
     let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
-    let limits = &config_numeric.relations;
+    let limits = &domain.spec().relations();
     let mut input = payload(domain);
     let original = ExprId::fresh().unwrap();
     let value = TestValue::top().with_expression(original.clone());
@@ -447,7 +444,7 @@ fn call_guard_survives_a_stored_word_projection_without_fixing_high_bits() {
     .unwrap();
     input
         .relations
-        .assume_checked(&equal, true, limits)
+        .assume_checked(&equal, true, limits, domain)
         .unwrap();
     let mut refined = input.clone();
     let mut budget = WorkBudget::new(config.max_work);
@@ -476,8 +473,7 @@ fn failed_projection_preserves_original_path_and_roots() {
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let domain = domain.borrowed();
     let algebra = domain;
-    let config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let limits = domain.spec().relations();
     let mut input = payload(domain);
     let expression = ExprId::fresh().unwrap();
     input.store.write(
@@ -489,12 +485,12 @@ fn failed_projection_preserves_original_path_and_roots() {
     let equal = ExprId::operation(
         opcode::EQ,
         &[expression, ExprId::constant(U256::ONE)],
-        config_numeric.relations.expressions(),
+        limits.expressions(),
     )
     .unwrap();
     input
         .relations
-        .assume_checked(&equal, true, &config_numeric.relations)
+        .assume_checked(&equal, true, &limits, domain)
         .unwrap();
     let original = input.clone();
     let mut refined = input.clone();
@@ -502,7 +498,7 @@ fn failed_projection_preserves_original_path_and_roots() {
     let mut projection = Projection::new(
         &input.relations,
         algebra.borrowed(),
-        &config_numeric.relations,
+        &limits,
         &mut budget,
         Policy::Summary,
     );

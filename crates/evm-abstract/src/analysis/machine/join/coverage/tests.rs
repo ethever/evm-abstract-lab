@@ -1,12 +1,8 @@
 //! Coverage may discard an incoming alternative only after a complete proof.
 
+use super::{MachineError, covers, same_byte_roots, shape};
 #[cfg(test)]
 use crate::analysis::testing::{ByteArray, TestValue};
-use crate::domain::EvmNumericAlgebra as _;
-
-use crate::domain::ValueAlgebra;
-
-use super::{MachineError, covers, same_byte_roots, shape};
 use crate::{
     analysis::{Continuation, MachinePayload, RootFrame, machine::fixtures},
     domain::{
@@ -29,9 +25,9 @@ fn pair(
     ExprId,
     ExprId,
 ) {
-    let config = fixtures::config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
-    let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let algebra =
+        crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = algebra.borrowed();
     let old = ExprId::fresh().unwrap();
     let new = ExprId::fresh().unwrap();
@@ -43,7 +39,7 @@ fn pair(
         assert_eq!(
             incoming
                 .relations
-                .add_equal(&old, &new, &domain.spec().relations()),
+                .add_equal(&old, &new, &domain.spec().relations(), domain),
             CheckResult::MayBeFeasible
         );
     }
@@ -53,7 +49,7 @@ fn pair(
 #[test]
 fn direct_coverage_proofs_pay_local_work_and_preserve_both_inputs() {
     let (algebra, previous, incoming, _, _) = pair(true);
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let old_previous = previous.clone();
     let old_incoming = incoming.clone();
     let mut budget = WorkBudget::new(100_000_000);
@@ -70,7 +66,7 @@ let domain = algebra.borrowed();
 #[test]
 fn unknown_coverage_keeps_the_complete_incoming_alternative() {
     let (algebra, previous, incoming, old, new) = pair(false);
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let equality = ExprId::operation(
         opcode::EQ,
         &[old.clone(), new.clone()],
@@ -80,7 +76,7 @@ let domain = algebra.borrowed();
     assert_eq!(
         incoming
             .relations
-            .can_equal(&equality, U256::ZERO, &domain.spec().relations()),
+            .can_equal(&equality, U256::ZERO, &domain.spec().relations(), domain),
         CheckResult::MayBeFeasible
     );
     let before_previous = previous.clone();
@@ -105,7 +101,7 @@ let domain = algebra.borrowed();
 #[test]
 fn guardless_and_cancelled_coverage_cannot_reuse_a_warm_proof() {
     let (algebra, previous, incoming, _, _) = pair(true);
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let mut budget = WorkBudget::new(100_000_000);
     assert!(covers(&previous, &incoming, domain, &mut budget).unwrap());
 
@@ -139,7 +135,7 @@ let domain = algebra.borrowed();
 #[test]
 fn every_frame_byte_plane_mismatch_rejects_before_the_full_shape_fee() {
     let (algebra, mut previous, _, _, _) = pair(true);
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     let child = RootFrame {
         state: previous.active().clone(),
     }
@@ -188,7 +184,7 @@ let domain = algebra.borrowed();
 #[test]
 fn matching_byte_roots_still_pay_for_and_compare_the_complete_shape() {
     let (algebra, previous, mut incoming, _, _) = pair(true);
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     incoming.active_mut().environment_calldata = !previous.active().environment_calldata;
     let mut roots = WorkBudget::new(5);
     assert!(same_byte_roots(&previous, &incoming, &mut roots).unwrap());
@@ -214,7 +210,7 @@ let domain = algebra.borrowed();
 #[test]
 fn byte_root_rejection_requires_payment_and_preserves_typed_interruptions() {
     let (algebra, previous, mut incoming, _, _) = pair(true);
-let domain = algebra.borrowed();
+    let domain = algebra.borrowed();
     incoming.active_mut().returndata = ByteArray::exact(&[7]);
     let before = (previous.clone(), incoming.clone());
     for maximum in [0, 1, 2, 4] {

@@ -1,6 +1,5 @@
 //! Typed producer evidence routes relative resumes without numeric discovery.
 
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     Fork, U256,
     analysis::{
@@ -16,8 +15,8 @@ use crate::{
         },
     },
     domain::{
-        DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue, ProductAlgebra,
-        ValueAlgebra, WordElement,
+        DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, ValueAlgebra, WordElement,
+        concrete::{arity, evaluate},
     },
     resource::WorkBudget,
     world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
@@ -25,14 +24,10 @@ use crate::{
 use std::rc::Rc;
 
 // The metadata-only carrier refuses numeric transfer by default. This fixture
-// uses actual built-in EVM arithmetic, conservatively imported into its interval
-// carrier, so real CALL/CREATE producers can run before the status is watched.
+// evaluates exact words directly in the custom carrier, so real CALL/CREATE
+// producers can run before the status is watched.
 #[derive(Debug)]
 struct StatusAlgebra;
-
-fn numeric(value: &Word) -> NumericValue {
-    NumericValue::from_observation(&value.observation())
-}
 
 impl EvmNumericAlgebra for StatusAlgebra {
     type Element = Word;
@@ -59,23 +54,33 @@ impl EvmNumericAlgebra for StatusAlgebra {
         op: u8,
         args: impl ExactSizeIterator<Item = &'a Word>,
     ) -> NumericReduction<Word> {
-        let args: Vec<&Word> = args.collect();
-        let args = args.iter().map(numeric).collect::<Vec<_>>();
-        let result = ProductAlgebra::default().apply_numeric(op, args.iter());
-        NumericReduction {
-            value: Word::from_observation(&result.value.observation()),
-            status: result.status,
-            rounds: result.rounds,
-            strengthened: result.strengthened,
+        if arity(op) != Some(args.len()) {
+            return NumericReduction::stable(Word::top());
         }
+        let mut words = [U256::ZERO; 3];
+        for (word, argument) in words.iter_mut().zip(args) {
+            let Some(exact) = argument.singleton() else {
+                return NumericReduction::stable(Word::top());
+            };
+            *word = exact;
+        }
+        NumericReduction::stable(Word::constant(evaluate(op, words[0], words[1], words[2])))
     }
     fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
-        let args = args.map(numeric).collect::<Vec<_>>();
-        <ProductAlgebra as EvmNumericAlgebra>::operation_work(
-            &ProductAlgebra::default(),
-            op,
-            args.iter(),
-        )
+        // Own exact evaluation, a possible facade expression fold and its
+        // fresh result query; quoting never exports or copies an operand.
+        let evaluations = match op {
+            revm_bytecode::opcode::EXP => 2 * 16_384,
+            revm_bytecode::opcode::ADDMOD | revm_bytecode::opcode::MULMOD => 2 * 4096,
+            revm_bytecode::opcode::DIV
+            | revm_bytecode::opcode::SDIV
+            | revm_bytecode::opcode::MOD
+            | revm_bytecode::opcode::SMOD => 2 * 1024,
+            _ => 2 * 64,
+        };
+        args.fold(1024usize + evaluations, |work, value| {
+            work.saturating_add(value.singleton_work().saturating_mul(2))
+        })
     }
     fn literal_quote_work(&self, literal: U256) -> usize {
         Algebra.literal_quote_work(literal)
@@ -84,11 +89,17 @@ impl EvmNumericAlgebra for StatusAlgebra {
         Algebra.projection_work(value)
     }
     fn refinement_work(&self, value: &Word, facts: usize) -> usize {
-        <ProductAlgebra as EvmNumericAlgebra>::refinement_work(
-            &ProductAlgebra::default(),
-            &numeric(value),
-            facts,
-        )
+        // Word's native constraint import preserves hidden exclusions. Its
+        // singleton check and the clone/reduce/project stages are all prepaid.
+        value
+            .clone_work()
+            .saturating_mul(6)
+            .saturating_add(
+                value
+                    .singleton_work()
+                    .saturating_mul(facts.saturating_add(1)),
+            )
+            .saturating_add(facts.saturating_add(1).saturating_mul(1024))
     }
 }
 

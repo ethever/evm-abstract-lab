@@ -237,7 +237,7 @@ fn literal_expression_extent_prices_real_hash_work_when_numeric_discovery_declin
         ExprId::constant(U256::ZERO),
         args[1].expression().unwrap().clone(),
     );
-    let hash = ExprId::keccak(view, fixture.config_numeric.relations.expressions()).unwrap();
+    let hash = ExprId::keccak(view, algebra.spec().relations().expressions()).unwrap();
     assert_eq!(
         hash.as_constant(),
         Some(U256::from_be_slice(keccak256(&source).as_slice()))
@@ -297,9 +297,9 @@ fn extent_and_target_discovery_refuse_max_or_insufficient_work_without_effects()
 fn hidden_external_target_prices_real_code_and_dispatch_reuses_the_cover() {
     let algebra = ValueAlgebra::new(Policy);
     let mut fixture = fixture(opcode::EXTCODEHASH);
-    // Entry identity preparation belongs to the state-policy lane. Isolate
-    // this operation's quote/dispatch boundary from that separate discovery.
-    fixture.config_numeric.relations.enabled = false;
+    // Native identification keeps opaque inputs query-free; dispatch must
+    // still reuse the one paid target answer with relations enabled.
+    assert!(algebra.spec().relations().enabled);
     let args = [EvmValue::constant(U256::from(TARGET))];
     fixture.execution.payload.active_mut().stack = args.to_vec();
     let _receipt = RECEIPT.scope();

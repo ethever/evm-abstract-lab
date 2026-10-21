@@ -7,7 +7,7 @@ use super::{MAX_ENTRIES, QueryCache};
 use crate::resource::WorkBudget;
 mod payload;
 use crate::domain::{
-    NumericValue,
+    DomainSpec, NumericValue, ProductAlgebra, ValueAlgebra,
     relational::{CheckResult, QueryReason, RelationLimits, RelationState},
     symbolic::{ExprId, SlotStateId, SourceId},
 };
@@ -33,6 +33,9 @@ fn observe(expression: &ExprId, value: u64, limits: &RelationLimits) -> Relation
 #[test]
 fn complete_snapshot_and_policy_changes_invalidate_answers() {
     let limits = RelationLimits::default();
+    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(
+        DomainSpec::default().with_relations(limits),
+    ));
     let expression = ExprId::fresh().unwrap();
     let state = RelationState::default();
     let changed_constraints = observe(&expression, 7, &limits);
@@ -47,7 +50,12 @@ fn complete_snapshot_and_policy_changes_invalidate_answers() {
     assert_ne!(changed_path.path(), state.path());
     let mut bottom = state.clone();
     assert_eq!(
-        bottom.assume(&ExprId::constant(U256::ZERO), true, &limits),
+        bottom.assume(
+            &ExprId::constant(U256::ZERO),
+            true,
+            &limits,
+            algebra.borrowed()
+        ),
         CheckResult::ProvenImpossible
     );
     for changed in [&changed_constraints, &changed_path, &bottom] {
@@ -232,6 +240,9 @@ fn entry_and_retained_work_bounds_evict_only_optional_proofs() {
     ] {
         let mut cache = QueryCache::default();
         let expressions: Vec<_> = (0..count).map(|_| ExprId::fresh().unwrap()).collect();
+        let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(
+            DomainSpec::default().with_relations(limits),
+        ));
         for expression in &expressions {
             cache.remember(
                 &state,
@@ -263,7 +274,7 @@ fn entry_and_retained_work_bounds_evict_only_optional_proofs() {
         );
         // A missed proof is obtained from the original query again, then fits
         // exactly the same bounded cache without changing the query policy.
-        let answer = state.local_value(&expressions[0], &limits);
+        let answer = state.local_value(&expressions[0], &limits, algebra.borrowed());
         assert_eq!(
             answer,
             TestValueQuery::Bounds(Box::new(NumericValue::top()))

@@ -1,5 +1,3 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 #[cfg(test)]
 use crate::analysis::testing::{ByteArray, Snapshot, TestValue, TestValueQuery};
 use crate::domain::ValueAlgebra;
@@ -8,7 +6,6 @@ mod byte_roots;
 
 use super::{EntryAlternatives, MachineError};
 use crate::{
-
     analysis::{
         Continuation, OutcomeKind, RootFrame, Status, engine::policy::RecentDistinctJumps,
         machine::fixtures,
@@ -156,11 +153,11 @@ fn one_selector_pairs_every_frame_value_root_checkpoint_and_continuation() {
     let predicate = ExprId::fresh().unwrap();
     let policy = domain.spec().relations();
     assert_eq!(
-        left.relations.assume(&predicate, true, &policy),
+        left.relations.assume(&predicate, true, &policy, domain),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        right.relations.assume(&predicate, false, &policy),
+        right.relations.assume(&predicate, false, &policy, domain),
         CheckResult::MayBeFeasible
     );
     for (payload, at, marker) in [(&mut left, 0x80, 11), (&mut right, 0xc0, 22)] {
@@ -247,23 +244,24 @@ fn one_selector_pairs_every_frame_value_root_checkpoint_and_continuation() {
     assert_eq!(loaded.singleton(), Some(U256::from(7)), "{loaded:?}");
     let loaded_expression = loaded.symbolic_expression().unwrap();
     assert_eq!(
-        joined.relations.local_value(&loaded_expression, &policy),
+        joined
+            .relations
+            .local_value(&loaded_expression, &policy, domain),
         TestValueQuery::Exact(U256::from(7))
     );
     let mut chosen = joined.relations.clone();
     assert_eq!(
-        chosen.assume(&selector, true, &policy),
+        chosen.assume(&selector, true, &policy, domain),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        chosen.can_equal(&predicate, U256::ZERO, &policy),
+        chosen.can_equal(&predicate, U256::ZERO, &policy, domain),
         CheckResult::ProvenImpossible
     );
 }
 
 #[test]
 fn checked_join_and_rename_leave_all_original_fields_unchanged_on_failure() {
-    let mut config = fixtures::config();
     let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
     let domain = domain.borrowed();
@@ -276,12 +274,8 @@ fn checked_join_and_rename_leave_all_original_fields_unchanged_on_failure() {
         .unwrap();
     let before = (left.clone(), right.clone());
     config_numeric.relations.max_nodes = 1;
-    let failure = left
-        .join(
-            &right,
-            ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec())).borrowed(),
-        )
-        .unwrap_err();
+    let failing_algebra = crate::analysis::testing::product(config_numeric.spec());
+    let failure = left.join(&right, failing_algebra.borrowed()).unwrap_err();
     assert!(matches!(
         failure,
         MachineError::Expression(_) | MachineError::Bytes(_)
@@ -307,7 +301,11 @@ fn checked_join_and_rename_leave_all_original_fields_unchanged_on_failure() {
     let map = std::collections::BTreeMap::from([(local, ExprId::fresh().unwrap())]);
     assert!(
         right
-            .rename_fresh(&map, config_numeric.relations.expressions())
+            .rename_fresh(
+                &map,
+                failing_algebra.spec().relations().expressions(),
+                failing_algebra.borrowed(),
+            )
             .is_err()
     );
     assert_eq!(right, snapshot);
@@ -347,9 +345,11 @@ fn previously_represented_whole_payload_is_absorbed_without_a_new_selector() {
 #[test]
 fn repeated_same_word_write_loop_closes_in_finite_transfers_in_both_modes() {
     for enabled in [true, false] {
-        let mut config = fixtures::config();
+        let config = fixtures::config();
         let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
         config_numeric.relations.enabled = enabled;
+        let algebra = crate::analysis::testing::product(config_numeric.spec());
+        let domain = algebra.borrowed();
         let analysis = fixtures::run("5b60075f525f56", config, config_numeric.spec());
         assert_eq!(
             analysis.status(),
@@ -366,7 +366,7 @@ fn repeated_same_word_write_loop_closes_in_finite_transfers_in_both_modes() {
                 .unwrap()
                 .active()
                 .memory
-                .read_word(&fixtures::word(0), ProductAlgebra::default())
+                .read_word(&fixtures::word(0), domain)
                 .singleton(),
             Some(U256::from(7))
         );
@@ -375,16 +375,16 @@ fn repeated_same_word_write_loop_closes_in_finite_transfers_in_both_modes() {
 
 #[test]
 fn bytecode_branch_join_keeps_the_pointer_paired_with_its_memory() {
+    let algebra = crate::analysis::testing::product(
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    );
+    let domain = algebra.borrowed();
     let code = "5f35600f5760076080526080601a565b600760c05260c0601a565b515f5260205ff3";
     let (world, mut entry) = fixtures::fixture(&[(0x101, code)]);
     entry.environment.calldata = ByteArray::unknown();
-    let analysis = crate::analysis::testing::execute(
-        world,
-        entry,
-        fixtures::config(),
-        crate::analysis::testing::NumericLimits::machine().spec(),
-    )
-    .unwrap();
+    let analysis =
+        crate::analysis::testing::execute(world, entry, fixtures::config(), algebra.spec())
+            .unwrap();
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -401,7 +401,7 @@ fn bytecode_branch_join_keeps_the_pointer_paired_with_its_memory() {
         assert_eq!(
             outcome
                 .data
-                .read_word(&fixtures::word(0), ProductAlgebra::default())
+                .read_word(&fixtures::word(0), domain)
                 .singleton(),
             Some(U256::from(7))
         );
@@ -430,10 +430,14 @@ fn bytecode_branch_join_keeps_the_pointer_paired_with_its_memory() {
 
 #[test]
 fn repeated_two_memory_words_reach_a_whole_machine_fixed_point() {
+    let algebra = crate::analysis::testing::product(
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    );
+    let domain = algebra.borrowed();
     let analysis = fixtures::run(
         "5b60075f5260096020525f56",
         fixtures::config(),
-        crate::analysis::testing::NumericLimits::machine().spec(),
+        algebra.spec(),
     );
     assert_eq!(
         analysis.status(),
@@ -447,7 +451,7 @@ fn repeated_two_memory_words_reach_a_whole_machine_fixed_point() {
     for (offset, expected) in [(0, 7), (32, 9)] {
         assert_eq!(
             memory
-                .read_word(&fixtures::word(offset), ProductAlgebra::default())
+                .read_word(&fixtures::word(offset), domain)
                 .singleton(),
             Some(U256::from(expected))
         );
@@ -460,10 +464,14 @@ fn repeated_two_memory_words_reach_a_whole_machine_fixed_point() {
 
 #[test]
 fn repeated_two_storage_slots_reach_a_whole_machine_fixed_point() {
+    let algebra = crate::analysis::testing::product(
+        crate::analysis::testing::NumericLimits::machine().spec(),
+    );
+    let domain = algebra.borrowed();
     let analysis = fixtures::run(
         "5b60075f5560096001555f56",
         fixtures::config(),
-        crate::analysis::testing::NumericLimits::machine().spec(),
+        algebra.spec(),
     );
     assert_eq!(
         analysis.status(),
@@ -477,11 +485,7 @@ fn repeated_two_storage_slots_reach_a_whole_machine_fixed_point() {
     for (slot, expected) in [(0, 7), (1, 9)] {
         assert_eq!(
             store
-                .read_checked(
-                    fixtures::address(0x101),
-                    &fixtures::word(slot),
-                    ProductAlgebra::default()
-                )
+                .read_checked(fixtures::address(0x101), &fixtures::word(slot), domain,)
                 .unwrap()
                 .singleton(),
             Some(U256::from(expected))
@@ -1149,7 +1153,7 @@ fn an_incoming_leaf_is_retained_when_the_old_guard_selects_a_different_root() {
     let mut incoming = old.clone();
     incoming.active_mut().memory = seven;
     assert_eq!(
-        incoming.relations.assume(&guard, false, &policy),
+        incoming.relations.assume(&guard, false, &policy, domain),
         CheckResult::MayBeFeasible
     );
     let mut alternatives = EntryAlternatives::new(&old);
@@ -1160,7 +1164,7 @@ fn an_incoming_leaf_is_retained_when_the_old_guard_selects_a_different_root() {
         .expect("root leaf membership does not prove complete guarded coverage");
     let mut path = joined.relations.clone();
     assert_eq!(
-        path.assume(&guard, false, &policy),
+        path.assume(&guard, false, &policy, domain),
         CheckResult::MayBeFeasible
     );
     let word = joined
@@ -1169,11 +1173,11 @@ fn an_incoming_leaf_is_retained_when_the_old_guard_selects_a_different_root() {
         .read_word_checked(&fixtures::word(0), domain)
         .unwrap();
     assert_eq!(
-        path.can_equal(word.expression().unwrap(), U256::from(7), &policy),
+        path.can_equal(word.expression().unwrap(), U256::from(7), &policy, domain),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        path.can_equal(word.expression().unwrap(), U256::from(9), &policy),
+        path.can_equal(word.expression().unwrap(), U256::from(9), &policy, domain),
         CheckResult::MayBeFeasible
     );
 }

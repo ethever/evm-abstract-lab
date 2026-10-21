@@ -1,5 +1,5 @@
-use crate::domain::ProductAlgebra;
 use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 
 #[cfg(test)]
 use crate::analysis::testing::TestValue;
@@ -66,7 +66,7 @@ fn callee_subscription_projects_the_actual_target_guard_before_erasing_relations
     .unwrap();
     input
         .relations
-        .assume_checked(&equal, true, &config_numeric.relations)
+        .assume_checked(&equal, true, &config_numeric.relations, domain)
         .unwrap();
     let mut child = input.active().clone();
     child.key.caller = address(0x101).into();

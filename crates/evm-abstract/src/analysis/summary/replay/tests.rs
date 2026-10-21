@@ -1,5 +1,3 @@
-use crate::domain::EvmNumericAlgebra as _;
-
 use super::Replay;
 #[cfg(test)]
 use crate::analysis::testing::{ByteArray, TestValue};
@@ -64,7 +62,7 @@ fn certificate(
     exit.active_mut().call_value = key.clone();
     assert!(
         exit.relations
-            .assume(&guard, true, &domain.spec().relations())
+            .assume(&guard, true, &domain.spec().relations(), domain)
             != crate::domain::relational::CheckResult::ProvenImpossible
     );
     let nested = RootFrame {
@@ -288,6 +286,8 @@ fn call(output: u8) -> String {
 
 #[test]
 fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
+    let algebra = crate::analysis::testing::product(crate::domain::DomainSpec::default());
+    let domain = algebra.borrowed();
     let caller = format!("{}50{}5060405ff3", call(0), call(32));
     let (world, entry) = fixtures::fixture(&[(0x101, &caller), (0x200, "5a5f5260205ff3")]);
     let mut enabled = fixtures::config();
@@ -327,7 +327,7 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
                     && [0, 32].into_iter().all(|offset| {
                         outcome
                             .data
-                            .read_word(&fixtures::word(offset), ProductAlgebra::default())
+                            .read_word(&fixtures::word(offset), domain)
                             .contains(alloy_primitives::U256::from(1))
                     })
             })
@@ -338,17 +338,17 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
         );
         let first = returned
             .data
-            .read_word_checked(&fixtures::word(0), ProductAlgebra::default())
+            .read_word_checked(&fixtures::word(0), domain)
             .unwrap();
         let second = returned
             .data
-            .read_word_checked(&fixtures::word(32), ProductAlgebra::default())
+            .read_word_checked(&fixtures::word(32), domain)
             .unwrap();
         assert_ne!(first.expression(), second.expression());
         // Independent leaves may have equal concrete valuations. This test
         // checks identity, not an unsupported inequality assumption.
         assert!(returned.data.fresh_leaves().len() >= 2);
-        let policy = fixtures::config().analysis.relations;
+        let policy = domain.spec().relations();
         let mut models = Vec::new();
         for outcome in result
             .outcomes()
@@ -358,7 +358,7 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
             let words = [0, 32].map(|offset| {
                 outcome
                     .data
-                    .read_word_checked(&fixtures::word(offset), ProductAlgebra::default())
+                    .read_word_checked(&fixtures::word(offset), domain)
                     .unwrap()
             });
             let cases = [(1u64, 2u64), (1, 1)].map(|(left, right)| {
@@ -379,7 +379,12 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
                     policy.expressions(),
                 )
                 .unwrap();
-                RelationState::default().can_equal(&pair, alloy_primitives::U256::from(1), &policy)
+                RelationState::default().can_equal(
+                    &pair,
+                    alloy_primitives::U256::from(1),
+                    &policy,
+                    domain,
+                )
             });
             models.push((outcome.state, cases));
         }
@@ -407,11 +412,11 @@ fn cached_calls_keep_independent_fresh_results_and_summary_switch_agrees() {
             assert_eq!(
                 cached
                     .data
-                    .read_word(&fixtures::word(offset), ProductAlgebra::default())
+                    .read_word(&fixtures::word(offset), domain)
                     .numeric(),
                 direct
                     .data
-                    .read_word(&fixtures::word(offset), ProductAlgebra::default())
+                    .read_word(&fixtures::word(offset), domain)
                     .numeric()
             );
         }
@@ -491,8 +496,12 @@ fn budget_interrupted_import_is_atomic_and_keeps_all_input_paths_recoverable() {
         assert!(!root.executed_pcs.is_empty());
     }
     assert!(crate::ssa::build_world(&interrupted).is_err());
-    let partial = crate::ssa::build_partial_world(&interrupted).unwrap();
-    partial.verify(&interrupted).unwrap();
+    let partial = crate::analysis::control::Control::default().scope(|| {
+        let mut postprocessing = WorkBudget::new(2_000_000_000);
+        let partial = crate::ssa::build_partial_world(&interrupted, &mut postprocessing).unwrap();
+        partial.verify(&interrupted, &mut postprocessing).unwrap();
+        partial
+    });
     assert_eq!(partial.status(), Status::Incomplete);
 }
 
@@ -501,7 +510,8 @@ fn rejected_world_fingerprint_runs_without_a_summary_or_a_guessed_key() {
     use crate::domain::symbolic::{ByteStateId, ByteView, ExprLimits, GraphLimits};
     let caller = format!("{}50{}5000", call(0), call(0));
     let (_, entry) = fixtures::fixture(&[(0x101, &caller), (0x200, "00")]);
-    let mut world = crate::analysis::testing::World::new(crate::Fork::Osaka, "uncacheable symbolic world");
+    let mut world =
+        crate::analysis::testing::World::new(crate::Fork::Osaka, "uncacheable symbolic world");
     let size = GraphLimits::default().max_exact_bytes + 1;
     let input = ByteView::new(
         ByteStateId::exact(Arc::from(vec![0u8; size])),

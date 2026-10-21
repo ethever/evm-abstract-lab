@@ -1,13 +1,9 @@
-use crate::domain::ProductAlgebra;
 //! Rejected roots cannot absorb an alternative or prepare incoming content.
 
+use super::{EntryAlternatives, MachineError, fixtures};
 #[cfg(test)]
 use crate::analysis::testing::ByteArray;
-use crate::domain::EvmNumericAlgebra as _;
-
-use crate::domain::ValueAlgebra;
-
-use super::{EntryAlternatives, MachineError, fixtures};
+use crate::domain::ProductAlgebra;
 use crate::{
     domain::{relational::QueryReason, symbolic::ExprId},
     resource::WorkBudget,

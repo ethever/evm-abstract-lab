@@ -82,6 +82,7 @@ fn changed_bounds_keep_full_refinement_work_and_reject_disjoint_values_atomicall
             .map_or(0, |values| values.len())
             + bounds.constants().map_or(0, |values| values.len());
         let import = domain
+            .numeric_algebra()
             .refinement_import_work(before.numeric(), 1, finite, 0)
             .unwrap()
             + before.work_size()

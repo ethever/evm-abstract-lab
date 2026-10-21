@@ -2,12 +2,11 @@
 
 #[cfg(test)]
 use crate::analysis::testing::{Account, Entry, EvmEnvironment, TestValue, World};
-use crate::domain::EvmNumericAlgebra as _;
 
 use crate::{
     Fork,
     analysis::{ExecutionConfig, OutcomeKind, Status, machine::fixtures},
-    domain::relational::RelationLimits,
+    domain::{DomainSpec, ProductAlgebra, relational::RelationLimits},
 };
 use alloy_primitives::U256;
 
@@ -29,7 +28,7 @@ fn code_only(code: &str) -> (World, Entry) {
     (world, entry)
 }
 
-fn screen_policy() -> ExecutionConfig {
+fn screen_policy() -> (ExecutionConfig, DomainSpec) {
     let mut config = ExecutionConfig {
         max_work: 1_000_000_000_000,
         max_call_depth: 1025,
@@ -49,7 +48,7 @@ fn screen_policy() -> ExecutionConfig {
         max_nodes: 16384,
         max_depth: 256,
     };
-    config
+    (config, config_numeric.spec())
 }
 
 fn same_word_witness(returned: &TestValue, stored: &TestValue, value: U256) -> bool {
@@ -62,7 +61,7 @@ fn same_word_witness(returned: &TestValue, stored: &TestValue, value: U256) -> b
 
 #[test]
 fn marginal_word_bounds_do_not_certify_a_joint_witness() {
-    use crate::domain::{ProductAlgebra, symbolic::ExprId};
+    use crate::domain::symbolic::ExprId;
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     let domain = domain.borrowed();
     let x = TestValue::top().with_expression(ExprId::fresh().unwrap());
@@ -89,12 +88,10 @@ fn symbolic_countdown_closes_with_unknown_initial_state_and_joint_witnesses() {
     assert_eq!((code.len() - 2) / 2, 33);
     let (world, entry) = code_only(code);
     let owner = entry.address;
-    let config = screen_policy();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let (config, spec) = screen_policy();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(spec));
     let domain = domain.borrowed();
-    let analysis =
-        crate::analysis::testing::execute(world, entry, config, config_numeric.spec()).unwrap();
+    let analysis = crate::analysis::testing::execute(world, entry, config, spec).unwrap();
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -154,12 +151,10 @@ fn unknown_input_witnesses_share_one_return_and_storage_outcome() {
     let (world, entry) = code_only(input["accounts"][0]["code"].as_str().unwrap());
     assert!(entry.environment.calldata.len().numeric().is_top());
     let owner = entry.address;
-    let config = screen_policy();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let (config, spec) = screen_policy();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(spec));
     let domain = domain.borrowed();
-    let analysis =
-        crate::analysis::testing::execute(world, entry, config, config_numeric.spec()).unwrap();
+    let analysis = crate::analysis::testing::execute(world, entry, config, spec).unwrap();
     assert_eq!(
         analysis.status(),
         Status::Converged,
@@ -188,7 +183,7 @@ fn unknown_input_witnesses_share_one_return_and_storage_outcome() {
 #[test]
 fn ordinary_jump_context_keeps_only_latest_sources_at_the_configured_depth() {
     let mut config = fixtures::config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let config_numeric = crate::analysis::testing::NumericLimits::machine();
     config.analysis.context_depth = 128;
     config.max_work = 1_000_000_000_000;
     let result = fixtures::run(

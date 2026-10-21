@@ -1,9 +1,8 @@
-use crate::domain::ProductAlgebra;
 //! One interrupted evaluation and its queued successor are separate obligations.
+use crate::domain::ProductAlgebra;
 
 #[cfg(test)]
 use crate::analysis::testing::TestValue;
-use crate::domain::EvmNumericAlgebra as _;
 
 use super::{Engine, engine, interrupted_fixture};
 use crate::{

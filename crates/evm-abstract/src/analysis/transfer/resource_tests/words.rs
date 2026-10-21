@@ -173,11 +173,9 @@ impl EvmNumericAlgebra for Policy {
         {
             return NumericReduction::stable(Heavy::costly_byte_bound());
         }
-        let words = args
-            .iter()
-            .map(|value| value.word.clone())
-            .collect::<Vec<_>>();
-        let result = self.0.apply_numeric(op, words.iter());
+        let result = self
+            .0
+            .apply_numeric(op, args.iter().map(|value| &value.word));
         NumericReduction {
             value: Heavy::payload(result.value, 0),
             status: result.status,

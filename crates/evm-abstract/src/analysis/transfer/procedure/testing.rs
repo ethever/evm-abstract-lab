@@ -14,7 +14,7 @@ pub(super) type Solver<'a, D = ProductAlgebra> = EvmSolver<
     crate::analysis::engine::RecentDistinctJumps,
     crate::analysis::engine::FirstResumeStatus,
     crate::analysis::engine::SemanticPolicies,
-    crate::analysis::engine::cooperation::Empty,
+    crate::analysis::cooperation::NoExtension,
     std::convert::Infallible,
 >;
 
@@ -26,7 +26,7 @@ pub(super) struct Table<D: EvmNumericAlgebra = ProductAlgebra> {
     policies: EnginePolicies,
     cooperation: Cooperation<
         D::Element,
-        crate::analysis::engine::cooperation::Empty,
+        crate::analysis::cooperation::NoExtension,
         std::convert::Infallible,
     >,
 }
@@ -38,7 +38,9 @@ impl Default for Table {
 }
 
 impl<D: EvmNumericAlgebra> Table<D> {
-    pub(super) fn algebra(&self) -> AlgebraRef<'_, D> { self.domain.borrowed() }
+    pub(super) fn algebra(&self) -> AlgebraRef<'_, D> {
+        self.domain.borrowed()
+    }
 
     pub(super) fn with_algebra(domain: ValueAlgebra<D>) -> Self {
         let mut setup = WorkBudget::new(usize::MAX);
@@ -100,7 +102,9 @@ impl<D: EvmNumericAlgebra> DerefMut for Table<D> {
 }
 
 impl Table {
-    pub(super) fn configure(&mut self, spec: crate::domain::DomainSpec) { self.domain = crate::analysis::testing::product(spec); }
+    pub(super) fn configure(&mut self, spec: crate::domain::DomainSpec) {
+        self.domain = crate::analysis::testing::product(spec);
+    }
 
     #[expect(
         clippy::too_many_arguments,

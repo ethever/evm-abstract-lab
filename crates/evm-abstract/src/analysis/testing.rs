@@ -18,7 +18,7 @@ pub(in crate::analysis) type EvmEnvironment = crate::world::EvmEnvironmentValues
 pub(in crate::analysis) type TestValueQuery =
     crate::domain::relational::EvmValueQuery<NumericValue>;
 pub(in crate::analysis) type TestScalarQuery =
-    crate::domain::symbolic::EvmScalarQuery<NumericValue>;
+    crate::domain::relational::EvmScalarQuery<NumericValue>;
 
 /// Editable numbers used only to construct an explicit test algebra spec.
 /// It has no value operations, forwarding implementation or engine entrypoint.

@@ -1,8 +1,7 @@
-use crate::domain::ProductAlgebra;
 //! Two separately paid phases share the kernel's unchanged atomic publication.
+use crate::domain::ProductAlgebra;
 
 use super::{Engine, engine, fixtures};
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{
         MachineError,

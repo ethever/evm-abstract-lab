@@ -1,11 +1,12 @@
-use crate::domain::ProductAlgebra;
 //! Evidence regressions for partial numerical procedure closure.
+
+use crate::domain::ProductAlgebra;
 
 use super::*;
 use crate::analysis::machine::fixtures::{address, fixture, word};
-use crate::domain::EvmNumericAlgebra as _;
 use crate::analysis::testing::AbstractLog;
-use crate::world::{ LogKey};
+use crate::domain::EvmNumericAlgebra as _;
+use crate::world::LogKey;
 use alloy_primitives::U256;
 use std::collections::VecDeque;
 

@@ -1,8 +1,8 @@
-use crate::domain::ProductAlgebra;
 //! Fresh range results have copy prices independent of the original operands.
 
 use super::*;
 use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use std::{
     sync::Mutex,
     thread::{self, ThreadId},
@@ -176,11 +176,9 @@ impl EvmNumericAlgebra for DerivedPolicy {
         op: u8,
         args: impl ExactSizeIterator<Item = &'a DerivedWord>,
     ) -> NumericReduction<DerivedWord> {
-        let args: Vec<&DerivedWord> = args.collect();
-        let args: Vec<_> = args.iter().map(|value| value.native.clone()).collect();
         NumericReduction::stable(DerivedWord::cheap(
             ProductAlgebra::default()
-                .apply_numeric(op, args.iter())
+                .apply_numeric(op, args.map(|value| &value.native))
                 .value,
         ))
     }

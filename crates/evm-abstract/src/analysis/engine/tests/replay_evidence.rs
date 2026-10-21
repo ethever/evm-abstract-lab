@@ -1,8 +1,7 @@
-use crate::domain::ProductAlgebra;
 //! Procedure reports remain immutable across atomic graph import transactions.
+use crate::domain::ProductAlgebra;
 
 use super::{Counters, FrontierReason, Status, WorkBudget, WorldAnalysis, engine, fixtures};
-use crate::domain::EvmNumericAlgebra as _;
 use crate::{
     analysis::{
         CallStack, Limit, OutcomeKind, RootFrame,

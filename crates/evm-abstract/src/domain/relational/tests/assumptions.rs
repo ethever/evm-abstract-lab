@@ -1,9 +1,7 @@
 //! Assumption retention and optional feasibility work have different outcomes.
 
-fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
-    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
-}
 use super::super::{CheckResult, Constraint, QueryReason, RelationLimits, RelationState};
+use super::product_algebra;
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SourceId};
 use alloy_primitives::U256;
 use revm_bytecode::opcode;

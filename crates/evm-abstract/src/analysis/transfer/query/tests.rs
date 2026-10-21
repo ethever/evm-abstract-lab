@@ -139,6 +139,7 @@ fn refinement_prepays_opaque_singletons_and_leaves_refused_values_intact() {
         &expression,
         &ExprId::constant(U256::from(7)),
         &config_numeric.relations,
+        algebra.borrowed(),
     );
     let before = EvmValue::constant(U256::from(7)).with_expression(expression);
     let mut value = before.clone();
@@ -209,6 +210,7 @@ fn scalar_fixture() -> (
 ) {
     let config = ExecutionConfig::default();
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
+    let algebra = ValueAlgebra::new(Policy);
     let expression = ExprId::fresh().unwrap();
     let before = EvmValue::from_numeric(Word {
         lower: U256::ONE,
@@ -223,6 +225,7 @@ fn scalar_fixture() -> (
         &expression,
         &ExprId::constant(U256::from(7)),
         &config_numeric.relations,
+        algebra.borrowed(),
     );
     (config, before, relations)
 }
@@ -526,7 +529,7 @@ fn complete_operation_envelope_owns_internal_queries_without_a_second_payment() 
     let arg = EvmValue::<Word>::top()
         .with_expression(ExprId::fresh().unwrap())
         .with_symbolic_limit();
-    let work = algebra.operation_work(std::slice::from_ref(&arg));
+    let work = algebra.operation_work(revm_bytecode::opcode::ISZERO, std::slice::from_ref(&arg));
     let mut budget = WorkBudget::new(work);
     let result = algebra
         .apply_budgeted(revm_bytecode::opcode::ISZERO, &[arg], &mut budget)

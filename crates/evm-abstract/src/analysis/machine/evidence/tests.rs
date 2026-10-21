@@ -1,10 +1,8 @@
 use crate::domain::ProductAlgebra;
-use crate::domain::EvmNumericAlgebra as _;
 
 use super::{InstructionProgress, InstructionValue};
 #[cfg(test)]
 use crate::analysis::testing::{Account, ByteArray, Entry, EvmEnvironment, TestValue, World};
-use crate::domain::ValueAlgebra;
 use crate::{
     Address, Fork, U256,
     analysis::{
@@ -22,11 +20,15 @@ fn address(value: u64) -> Address {
 
 fn config() -> ExecutionConfig {
     let mut config = ExecutionConfig::default();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config.analysis.context_depth = 0;
-    config_numeric.relations.enabled = false;
     config.use_summaries = false;
     config
+}
+
+fn numeric_spec() -> crate::domain::DomainSpec {
+    let mut limits = crate::analysis::testing::NumericLimits::default();
+    limits.relations.enabled = false;
+    limits.spec()
 }
 
 fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
@@ -52,19 +54,19 @@ fn fixture(accounts: &[(u64, &str)]) -> (World, Entry) {
     (world, entry)
 }
 
-fn run(code: &str, config: ExecutionConfig) -> WorldAnalysis {
+fn run(code: &str, config: ExecutionConfig, spec: crate::domain::DomainSpec) -> WorldAnalysis {
     let (world, entry) = fixture(&[(0x101, code)]);
-    crate::analysis::testing::execute(world, entry, config, config_numeric.spec()).unwrap()
+    crate::analysis::testing::execute(world, entry, config, spec).unwrap()
 }
 
 fn pending_mload() -> WorldAnalysis {
     const CODE: &str = "602a60405100";
     let mut config = config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let spec = numeric_spec();
     // Bisect the detailed MLOAD receipt without optional preparation fees.
     config.root_terminal_coverage = false;
     config.max_memory_bytes = 32;
-    let complete = run(CODE, config.clone());
+    let complete = run(CODE, config.clone(), spec);
     assert_eq!(complete.status(), Status::Converged);
     assert_eq!(complete.states()[0].executed_pcs, [0, 2, 4, 5]);
     // Locate the first budget that visits MLOAD in this acyclic prefix. Its
@@ -72,19 +74,19 @@ fn pending_mload() -> WorldAnalysis {
     // The upper bound is measured under the unchanged successful policy.
     let minimum = work_boundary::first_work_reaching(complete.work(), |allowance| {
         config.max_work = allowance;
-        let candidate = run(CODE, config.clone());
+        let candidate = run(CODE, config.clone(), spec);
         candidate
             .states()
             .iter()
             .any(|state| state.executed_pcs.contains(&4))
     });
     config.max_work = minimum;
-    run(CODE, config)
+    run(CODE, config, spec)
 }
 
 #[test]
 fn popped_intermediate_definitions_retain_numeric_constraints_and_sources() {
-    let analysis = run("600260030150345000", config());
+    let analysis = run("600260030150345000", config(), numeric_spec());
     assert_eq!(analysis.status(), Status::Converged);
     let state = &analysis.states()[0];
     assert!(state.exit_stack.is_empty());
@@ -128,7 +130,7 @@ fn popped_intermediate_definitions_retain_numeric_constraints_and_sources() {
 
 #[test]
 fn stack_aliases_do_not_allocate_definition_observations() {
-    let analysis = run("60028090505000", config());
+    let analysis = run("60028090505000", config(), numeric_spec());
     let evidence = analysis.states()[0].execution_evidence().unwrap();
     let values = evidence.instruction_values().unwrap();
     assert_eq!(values.len(), 1);
@@ -161,11 +163,15 @@ fn pending_memory_and_faulted_instructions_have_no_normal_result() {
     for (analysis, expected_phase, expected_indices) in [
         (pending, InstructionProgress::OperandsConsumed, vec![0, 1]),
         (
-            run("5f01600100", config()),
+            run("5f01600100", config(), numeric_spec()),
             InstructionProgress::Faulted,
             vec![0],
         ),
-        (run("fe", config()), InstructionProgress::Faulted, vec![]),
+        (
+            run("fe", config(), numeric_spec()),
+            InstructionProgress::Faulted,
+            vec![],
+        ),
     ] {
         let evidence = analysis.states()[0].execution_evidence().unwrap();
         assert_eq!(evidence.instructions().last(), Some(&expected_phase));
@@ -184,9 +190,9 @@ fn pending_memory_and_faulted_instructions_have_no_normal_result() {
 #[test]
 fn changed_joined_entry_hides_the_old_receipt_values() {
     let mut config = config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
+    let spec = numeric_spec();
     config.analysis.max_transfers = 2;
-    let analysis = run("5f5b600101600156", config);
+    let analysis = run("5f5b600101600156", config, spec);
     let stale = analysis
         .states()
         .iter()
@@ -203,8 +209,8 @@ fn changed_joined_entry_hides_the_old_receipt_values() {
 #[test]
 fn result_observations_preserve_small_work_budget_receipts() {
     let config = config();
-    let mut config_numeric = crate::analysis::testing::NumericLimits::machine();
-    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
+    let spec = numeric_spec();
+    let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(spec));
     let domain = domain.borrowed();
     let admission_work = |world: &World, entry: &Entry, input: &analysis::MachinePayload| {
         assert_eq!(input.store.touched_in_transaction(address(3)), Some(false));
@@ -263,7 +269,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
     let initial = transfer::initial(&world, &entry, domain).unwrap();
     let admission = admission_work(&world, &entry, &initial);
     let pushed = U256::from(2);
-    let push_setup_work = ValueAlgebra::new(domain)
+    let push_setup_work = domain
         .literal_quote_work(pushed)
         .saturating_add(TestValue::constant(pushed).clone_work());
     let mut stop_payload = initial.clone();
@@ -457,7 +463,10 @@ fn result_observations_preserve_small_work_budget_receipts() {
             assert!(execution.frontiers.is_empty());
             assert_eq!(execution.outcomes.len(), 1);
             assert_eq!(execution.outcomes[0].kind, OutcomeKind::Return);
-            assert_eq!(execution.outcomes[0].data.exact_bytes(), Some(Vec::new()));
+            assert_eq!(
+                execution.outcomes[0].data.exact_bytes(domain),
+                Some(Vec::new())
+            );
             assert_eq!(execution.outcomes[0].store, finalized_store);
         } else {
             assert_eq!(expected_store, initial.store);
@@ -479,7 +488,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
     let initial = transfer::initial(&world, &entry, domain).unwrap();
     let admission = admission_work(&world, &entry, &initial);
     let pushed = U256::from(3);
-    let push_setup_work = ValueAlgebra::new(domain)
+    let push_setup_work = domain
         .literal_quote_work(pushed)
         .saturating_add(TestValue::constant(pushed).clone_work());
     // JUMP pays its history-navigation work before dispatch, then reserves a
@@ -556,7 +565,7 @@ fn result_observations_preserve_small_work_budget_receipts() {
     let initial = transfer::initial(&world, &entry, domain).unwrap();
     let admission = admission_work(&world, &entry, &initial);
     let pushed = U256::from(0);
-    let push_setup_work = ValueAlgebra::new(domain)
+    let push_setup_work = domain
         .literal_quote_work(pushed)
         .saturating_add(TestValue::constant(pushed).clone_work());
     let initial_snapshots = serde_json::to_value((
@@ -659,16 +668,11 @@ fn summary_replay_shares_numeric_and_source_receipts_without_dispatch_results() 
         world.clone(),
         entry.clone(),
         enabled_config,
-        crate::domain::DomainSpec::default(),
+        numeric_spec(),
     )
     .unwrap();
-    let disabled = crate::analysis::testing::execute(
-        world,
-        entry,
-        config(),
-        crate::domain::DomainSpec::default(),
-    )
-    .unwrap();
+    let disabled =
+        crate::analysis::testing::execute(world, entry, config(), numeric_spec()).unwrap();
     assert_eq!(enabled.status(), Status::Converged);
     assert_eq!(disabled.status(), Status::Converged);
     assert!(enabled.summary_stats().hits > 0);

@@ -62,7 +62,7 @@ fn memory_guard_distinguishes_zero_size_and_word_rounded_u256_end() {
 }
 
 fn execution() -> crate::analysis::transfer::Execution {
-    use crate::{ Fork};
+    use crate::Fork;
     use alloy_primitives::Address;
     let address = Address::from([0x11; 20]);
     let mut world = World::new(Fork::Osaka, "range partition unit test");
@@ -100,7 +100,7 @@ fn symbolic_logical_partition_retains_success_and_pre_effect_failure() {
     };
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     let mut budget = super::super::WorkBudget::new(10_000_000);
-    let transfer_numeric = ProductAlgebra::default();
+    let transfer_numeric = ProductAlgebra::from_spec(config_numeric.spec());
     let mut context = crate::analysis::transfer::testing::context(
         &config,
         &mut budget,
@@ -138,10 +138,12 @@ fn symbolic_logical_partition_retains_success_and_pre_effect_failure() {
         // The retained OR/AND guard keeps both partitions. A candidate is not
         // imported into F to search its compound Boolean alternatives.
         assert_eq!(
-            result
-                .payload
-                .relations
-                .can_equal(&source, word, &config_numeric.relations),
+            result.payload.relations.can_equal(
+                &source,
+                word,
+                &config_numeric.relations,
+                context.domain
+            ),
             CheckResult::MayBeFeasible
         );
     }
@@ -160,24 +162,21 @@ fn assumption_capacity_failure_preserves_the_whole_unmodified_input() {
     };
     let mut config_numeric = crate::analysis::testing::NumericLimits::default();
     config_numeric.relations.max_constraints = 1;
+    let algebra = crate::analysis::testing::product(config_numeric.spec());
+    let domain = algebra.borrowed();
     let other = ExprId::fresh().unwrap();
     assert_eq!(
         result
             .payload
             .relations
-            .assume(&other, true, &config_numeric.relations),
+            .assume(&other, true, &config_numeric.relations, domain),
         CheckResult::MayBeFeasible
     );
     let before = result.payload.clone();
     let source = ExprId::fresh().unwrap();
     let size = TestValue::top().with_expression(source);
     let mut budget = super::super::WorkBudget::new(10_000_000);
-    let transfer_numeric = ProductAlgebra::default();
-    let mut context = crate::analysis::transfer::testing::context(
-        &config,
-        &mut budget,
-        ValueAlgebra::new(&transfer_numeric),
-    );
+    let mut context = crate::analysis::transfer::testing::context(&config, &mut budget, domain);
     assert!(!super::memory(
         &mut result,
         &value(U256::ZERO),
@@ -242,7 +241,7 @@ fn encoder_limit_keeps_success_guard_and_gas_failure_coverage() {
     let expression = condition.symbolic_expression().unwrap();
     assert!(expression.nodes() <= config_numeric.relations.max_nodes);
     let mut budget = super::super::WorkBudget::new(10_000_000);
-    let transfer_numeric = ProductAlgebra::default();
+    let transfer_numeric = ProductAlgebra::from_spec(config_numeric.spec());
     let mut context = crate::analysis::transfer::testing::context(
         &config,
         &mut budget,
@@ -281,7 +280,7 @@ fn encoder_limit_keeps_success_guard_and_gas_failure_coverage() {
 }
 
 mod literal_memory {
-    use super::{execution, value};
+    use super::{TestValue, execution, value};
     use crate::{
         U256,
         analysis::{
@@ -289,7 +288,7 @@ mod literal_memory {
             transfer::{Execution, WorkBudget},
         },
         domain::{
-            DomainSpec, ProductAlgebra, Profile, ReductionStatus, SingletonProof, ValueAlgebra,
+            DomainSpec, ProductAlgebra, ReductionStatus, SingletonProof, ValueAlgebra,
             facts::{UnaryPredicate, WordBounds},
             relational::{Constraint, QueryReason},
             symbolic::ExprId,
@@ -303,13 +302,13 @@ mod literal_memory {
 
     // Construct operands with independent component facts still retained. This
     // does not change any execution policy, complete-analysis fixture or budget.
-    fn component_fixture_domain() -> ProductAlgebra {
+    fn component_fixture_domain() -> ValueAlgebra<ProductAlgebra> {
         use std::num::NonZeroUsize;
-        ProductAlgebra::from_spec(DomainSpec::new(
+        ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::new(
             NonZeroUsize::new(512).unwrap(),
             NonZeroUsize::new(4).unwrap(),
             NonZeroUsize::new(2).unwrap(),
-        ))
+        )))
     }
 
     use crate::analysis::transfer::testing::context;

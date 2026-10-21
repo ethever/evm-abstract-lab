@@ -1,9 +1,9 @@
-use crate::domain::ProductAlgebra;
 //! Paid arithmetic answers must reach the real stack without rediscovery.
 
 use super::query::tests::{LITERALS, Policy, RECEIPT, Word};
 use super::*;
 use crate::domain::EvmNumericAlgebra as _;
+use crate::domain::ProductAlgebra;
 use crate::{
     Fork,
     domain::{
@@ -249,7 +249,8 @@ fn cancellation_during_the_paid_result_query_cannot_publish_a_literal() {
         assert!(result.payload.active().stack.is_empty());
         assert!(
             budget.used()
-                >= ValueAlgebra::new(&policy).operation_work(&fixture.input.active().stack)
+                >= ValueAlgebra::new(&policy)
+                    .operation_work(opcode::ADD, &fixture.input.active().stack)
         );
         assert_eq!((RECEIPT.get().quotes, RECEIPT.get().queries), (0, 1));
         assert_eq!(LITERALS.get(), 0);
