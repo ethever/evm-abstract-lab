@@ -26,7 +26,7 @@ fn address(value: u8) -> Address {
     Address::from([value; 20])
 }
 
-// 字节搬运保留数值精度，同时增加运算来源；不能用常量来源替代完整 AbstractValue。
+// 字节搬运保留数值精度，同时增加运算来源；不能用常量来源替代完整 EvmValue。
 fn assert_numeric_eq(actual: &EvmValue<NumericValue>, expected: &EvmValue<NumericValue>) {
     assert_eq!(actual.constants(), expected.constants());
     assert_eq!(actual.known_bits(), expected.known_bits());

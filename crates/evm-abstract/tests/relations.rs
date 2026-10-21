@@ -147,7 +147,9 @@ fn complete<N: WordElement>(analysis: &analysis::EvmAnalysis<N>) {
     assert_eq!(
         analysis.status(),
         Status::Converged,
-        "{:?}",
+        "{} work={} {:?}",
+        std::any::type_name::<N>(),
+        analysis.execution().work(),
         analysis.frontiers()
     );
     assert!(!analysis.states().is_empty());

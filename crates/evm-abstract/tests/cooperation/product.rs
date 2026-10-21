@@ -5,7 +5,7 @@ use evm_abstract::analysis::control::Control;
 use evm_abstract::analysis::{AnalysisEngine, AnalysisInput};
 use evm_abstract::{
     Fork,
-    analysis::{Config, EnginePolicies, EvmWorldAnalysis, ExecutionConfig, OutcomeKind, Status},
+    analysis::{EnginePolicies, EvmWorldAnalysis, ExecutionConfig, OutcomeKind, Status},
     domain::{
         DomainSpec, EvmNumericAlgebra, EvmValue, NumericValue, ValueAlgebra, WordElement,
         WordObservation,
@@ -86,7 +86,6 @@ fn run<D: EvmNumericAlgebra<Element = NumericValue>>(
     let limits = ExecutionConfig {
         max_work: 1_000_000_000,
         root_terminal_coverage: false,
-        analysis: Config::default(),
         ..ExecutionConfig::default()
     };
     let result = {

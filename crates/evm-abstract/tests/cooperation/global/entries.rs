@@ -244,7 +244,9 @@ fn true_entries_support_multicaller_growth_and_distinct_body_policy_keys() {
         let calls = Calls::default();
         let mut numeric = Policy::new(&calls);
         numeric.exclusion_queries = false;
-        numeric.relations.enabled = false;
+        // This authored proof inspects immutable EQ expressions. The selected
+        // native algebra must retain those expressions; disabling relations
+        // intentionally erases them at policy projection.
         let algebra = evm_abstract::domain::ValueAlgebra::new(numeric);
         let state = SemanticPolicies::new(
             BodyKeys(split),
