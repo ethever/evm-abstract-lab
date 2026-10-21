@@ -161,9 +161,9 @@ fn json_distinguishes_a_top_component_from_the_whole_product() {
     );
     assert_eq!(json["domain_spec"]["profile"], "product");
     assert_eq!(json["domain_spec"]["word_bits"], 256);
-    // Billing policy 5 does not change the domain policy's serialized schema.
+    // Billing policy 6 does not change the domain policy's serialized schema.
     assert_eq!(json["domain_spec"]["schema_version"], 2);
-    assert_eq!(json["domain_spec"]["cost_version"], 5);
+    assert_eq!(json["domain_spec"]["cost_version"], 6);
     assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
 }
 
@@ -309,7 +309,7 @@ fn summaries_guard_the_entire_frozen_domain_policy() {
         );
         let json = serde_json::to_value(&record.input).unwrap();
         assert_eq!(json["domain_spec"]["schema_version"], 2);
-        assert_eq!(json["domain_spec"]["cost_version"], 5);
+        assert_eq!(json["domain_spec"]["cost_version"], 6);
         assert_eq!(json["domain_spec"]["widening_after_updates"], 2);
         assert_eq!(
             json["domain_spec"]["provenance_policy"],

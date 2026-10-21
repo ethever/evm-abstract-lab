@@ -236,6 +236,9 @@ KnownBits 在路径汇合时只保留共有的固定位。连续低 k 位全部�
 | --- | --- |
 | Stable | 当前支持的交换规则没有进一步变化 |
 | RoundLimit | 局部任务额度用完，保留已经完成导入的安全约束，不声称依赖已经稳定 |
+| WorkLimit | 共享逻辑工作付款被拒绝，与局部任务额度耗尽区分 |
+| Cancelled | 规约收到取消信号 |
+| KernelFailure | 共享 kernel 返回失败，不能解释为局部任务额度耗尽 |
 | FactLimit | 事实容量不足，保留此前完整导入的安全结果 |
 | Empty | 数值约束已证明矛盾 |
 | OriginConflict | 来源声明不相容，数值是否不可达仍未知 |
@@ -271,7 +274,7 @@ nix run . -- analyze \
 jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
-结果的 `schema_version` 为 10；其中 `domain_spec.schema_version` 为 2，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `cost_version` 为 5，`provenance_policy` 是 `scoped-expressions-and-value-identities-v3`。费用版本 5 标记类型化依赖传播及其共享工作计费规则，不能把它读成分析 JSON 或域策略格式升级到 schema 5。`domain_spec.relations` 冻结关系开关、表达式/约束预算，同样参与摘要资格。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求它相等。
+结果的 `schema_version` 为 11；其中 `domain_spec.schema_version` 仍为 2，它描述域策略的格式，两者含义不同。`domain_spec` 保存 profile、word 宽度、常量容量、交换上限、widening、费用版本与来源策略；当前 `cost_version` 为 6，`provenance_policy` 是 `scoped-expressions-and-value-identities-v3`。费用版本 5 曾标记类型化依赖传播及其共享工作计费规则；版本 6 更新共享 kernel 的逻辑工作模型，显式计入自定义规则与独立数值查询的费用。不同费用版本的原始 work 数字不是同一计量单位，不能直接相除解释为提速，也不能把费用版本读成报告或域策略 schema。`domain_spec.relations` 冻结关系开关、表达式/约束预算，同样参与摘要资格。子调用沿用同一份策略，[第 10 课的调用摘要](10-snapshots-summaries-creation.md#什么条件下允许命中)也要求完整策略相等。
 
 `--max-constants` 接受 `1..=usize::MAX`，上限由运行平台决定，没有额外的 64 上限。集合按实际候选增长，参数不会直接预分配容量。提高容量可能保留更多完整候选，例如 constants-only 的未知输入 CLZ 在容量至少为 257 且执行预算足够时能保存 `0..=256`；CLI 默认容量 512 可以容纳全部候选；显式降至 8 时则为 Top。product 可由其他组件保存范围、位或同余约束，不能把常量容量当作全部数值精度。
 

@@ -2,7 +2,7 @@
 
 本目录固定输入、命令策略、外部资源 guard 和报告验收边界，用于比较已有 SMT 基线与当前 no-SMT 分层抽象解释实现。[命令生成器](../../scripts/generate-no-smt-scale-commands.py)生成当前 CLI profile；[benchmark](../../scripts/benchmark-no-smt-scale.py)默认只核对输入，显式传入 `--execute` 才顺序启动已有 ELF。两者都不构建、不访问 RPC；benchmark 不翻译策略、不调用 shell、不计算速度倍数。
 
-基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**；当前接口为 **native10 / wire15 / cost4**。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。Cost3 移除了 SMT 额度预收费；Cost4 调整共享回放证据与规范数值上界的累计收费。**不能把不同 cost 版本的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
+基线源码为 `e3251ffc9009dd751b4d0d998e31e1830908828a`，版本为 **native8 / wire13 / cost2**；当前接口为 **native11 / wire16 / cost6**。native 与 wire 分别是原生 JSON 和 Web 协议版本，cost 是逻辑工作计费版本。Cost3 移除了 SMT 额度预收费；Cost4 调整共享回放证据与规范数值上界的累计收费；Cost5 标记类型化标量依赖和操作数克隆；Cost6 更新共享 kernel、规则与独立数值查询的工作模型。跨 cost 版本的原始 work 不是同一单位，**不能把不同 cost 版本的 work 相除来表示提速**。性能结论须绑定实际源码、ELF、完整策略和经校验的报告。
 
 ## 固定输入与事实边界
 
@@ -52,7 +52,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
   --commands "$COMMAND_PROFILE"
 ```
 
-生成器检查 native10/wire15/cost4 和 CLI 关系参数，记录 interface source commit 及 CLI、关系配置、版本文件的 SHA256。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中记录 `root_terminal_coverage: false`，向新生成的 argv 显式追加 `--no-root-terminal-coverage`，保留原 1T/OFF 对照策略；这不是当前 CLI/Web 的默认值。每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
+生成器检查 native11/wire16/cost6 和 CLI 关系参数，记录 interface source commit 及 CLI、关系配置、版本文件的 SHA256。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中记录 `root_terminal_coverage: false`，向新生成的 argv 显式追加 `--no-root-terminal-coverage`，保留原 1T/OFF 对照策略；这不是当前 CLI/Web 的默认值。每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
 
 每份 profile 提供完整 `argv`；仅有首参数 `BINARY` 和一个 `WORLD` 两个占位符，同时绑定 input identity、interface commit、完整 policy、policy 到参数的映射、`expected_native_config` 和允许的 Report 退出码。`input_mapping` 仍须对照入口与事实语义审核；harness 不证明任意 argv 实现了声明边界。生成器也不证明 ELF 来源或源码干净，最终构建提交确定后须重新生成匹配 profile。
 
@@ -94,7 +94,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 
 [`wire14/weth-original-request.json`](wire14/weth-original-request.json)和 [`wire14/usdc-original-request.json`](wire14/usdc-original-request.json)是原捕获请求的显式 schema 派生。仅移除 `/limits/smt_provider`、`/limits/smt_rlimit`，保留 RPC 的 `input.Rpc.provider_id`、固定 block、accounts、caller/value 及任意长度/内容的 Unknown calldata。manifest 记录原始/派生 raw SHA256 和删除 pointer；默认输入检查验证除这两项外请求完全相同。它们仍是 RPC acquisition 请求，不是 offline CLI 输入。
 
-当前 server/Web 使用 wire15。上述 wire14 文件保留原派生字节与 hash；为保留历史 1T/OFF 策略而发送当前请求时，还需显式添加 `limits.root_terminal_coverage: false`；使用新默认则另存相应完整请求，不能改写这些捕获。旧请求的 SMT 字段仍会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
+当前 server/Web 使用 wire16。上述 wire14 文件保留原派生字节与 hash；为保留历史 1T/OFF 策略而发送当前请求时，还需显式添加 `limits.root_terminal_coverage: false`；使用新默认则另存相应完整请求，不能改写这些捕获。旧请求的 SMT 字段仍会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
 
 ## 报告交付、计时与验收
 

@@ -353,7 +353,7 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 15);
+    assert_eq!(SCHEMA_VERSION, 16);
 }
 
 #[test]

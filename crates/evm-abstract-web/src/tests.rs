@@ -579,11 +579,9 @@ fn unsupported_schema_is_rejected_and_partial_coverage_is_explicit() {
         workspace.receive(Ok(AnalyzeReply {
             result: Ok(unsupported),
         }));
-        assert!(
-            workspace
-                .accessible_status()
-                .contains("Unsupported response schema")
-        );
+        assert!(workspace.accessible_status().contains(&format!(
+            "Unsupported response schema {version}; expected {SCHEMA_VERSION}"
+        )));
     }
     let mut partial = report();
     partial.status = AnalysisStatus::Incomplete;

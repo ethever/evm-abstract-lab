@@ -205,7 +205,9 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 
 协议 9 加入 report-local mixed symbolic DAG。scalar refs、byte views、persistent/transient roots 和完整 path guards 在同一目录中共享；range/join 的待处理 payload 引用有限 pending machine pool。前端校验 node sort、依赖顺序和 pool refs，按可见行显示来源、写入和复制范围。typed export error 保留策略与实耗；MemoryPolicy 的未展开输入与 EVM Failure 分开显示。详情见[第 17 课](17-symbolic-state.md)。
 
-版本 15 新增必填布尔 `AnalysisLimits.root_terminal_coverage` 与必填可选 `AnalysisReport.root_terminal_coverage`（无记录为 null）；当前用户默认请求显式设置前者为 true，保留旧关闭策略的对照请求显式设置为 false。`StoreSnapshot` 在所有报告中增加全局 storage/transient base refs、nonce/code/existence/created/pending-destruction defaults，旧字段继续保留。`InputIdentity.scope` 和新增 snapshot namespace/revision/input scope 均为规范十进制字符串，数字编码、前导零、溢出及未知字段会被拒绝；work、transfer 等计数仍是原整数类型。旧报告不能只改版本号。迁移细节见[wire 15 身份与 Store 契约](19-root-terminal-coverage.md)。
+当前 Web 协议版本为 16，原生分析 JSON 为 11，域策略格式仍为 2，成本版本为 6。协议 16 新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，分别保留共享工作耗尽、取消与 kernel 失败，与局部 `RoundLimit` 区分。cost 6 更新共享 kernel、规则和独立数值查询的逻辑收费；跨成本版本的原始 work 不是同一单位。
+
+此前版本 15 新增必填布尔 `AnalysisLimits.root_terminal_coverage` 与必填可选 `AnalysisReport.root_terminal_coverage`（无记录为 null）；当前用户默认请求显式设置前者为 true，保留旧关闭策略的对照请求显式设置为 false。`StoreSnapshot` 在所有报告中增加全局 storage/transient base refs、nonce/code/existence/created/pending-destruction defaults，旧字段继续保留。`InputIdentity.scope` 和新增 snapshot namespace/revision/input scope 均为规范十进制字符串，数字编码、前导零、溢出及未知字段会被拒绝；work、transfer 等计数仍是原整数类型。旧报告不能只改版本号。迁移细节见[wire 15 身份与 Store 契约](19-root-terminal-coverage.md)。
 
 共享协议版本为 15。版本 14 删除 `AnalysisLimits.smt_provider`、`smt_rlimit` 与原生 solver 诊断枚举；旧请求中的这些字段会在任务入队前明确拒绝，旧报告也不能作为版本 14 安装。表达式、byte/slot 根、路径、scalar facts 和真实精度边界继续保留。 LOG 的 `code_hash` 和 `source_kind` 为必填来源字段，配合 emitter、code account 与 pc 区分初始化和部署后代码；前端面板使用完整身份。传输使用 JSON，但请求、结果、进度、任务状态和错误都使用具体 Rust 结构与枚举；不使用无类型 JSON 树，也不解析 CLI、DOT 或 SSA 文本。`ApiError.details` 保留具体错误类别与参数，`message` 只补充人类可读说明。
 

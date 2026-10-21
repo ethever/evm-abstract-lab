@@ -116,7 +116,7 @@ def _binding(report, request, *, is_static):
     assert config["root_terminal_coverage"] is True
     assert binding["domain_spec"] == {
         "schema_version": 2, "word_bits": 256, "profile": "Product", "capacity": 512,
-        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 5,
+        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 6,
         "widening_after_updates": 2, "provenance_policy": "scoped-expressions-and-value-identities-v3",
         "relations": config["relations"]}
     original = next(state for state in report["states"] if state["state"] == 0)["entry"]
@@ -515,14 +515,14 @@ def _schema_control(page, canvas, output, expected_request):
         response = route.fetch()
         native_text = response.text()
         envelope = json.loads(native_text)
-        assert envelope["result"]["Ok"]["schema_version"] == 15
-        envelope["result"]["Ok"]["schema_version"] = 14
+        assert envelope["result"]["Ok"]["schema_version"] == 16
+        envelope["result"]["Ok"]["schema_version"] = 15
         replacement = json.dumps(envelope)
         headers = dict(response.headers)
         headers.pop("content-encoding", None)
         headers.pop("content-length", None)
         # This body is a deliberately invalid client control, never evidence
-        # of a live native schema-14 report or of an attached certificate.
+        # of a live native schema-15 report or of an attached certificate.
         (output / "coverage-schema-control-native.json").write_text(native_text + "\n")
         (output / "coverage-schema-control-mutated.json").write_text(replacement + "\n")
         route.fulfill(status=response.status, headers=headers, body=replacement)
@@ -539,7 +539,7 @@ def _schema_control(page, canvas, output, expected_request):
         assert json.loads(submitted.value.request.post_data) == expected_request
         current_id = _decimal_identity(str(submitted.value.json()["result"]["Ok"]["id"]))
         try:
-            expect(status).to_contain_text("Unsupported response schema 14; expected 15", timeout=60000)
+            expect(status).to_contain_text("Unsupported response schema 15; expected 16", timeout=60000)
         finally:
             canvas.screenshot(path=str(output / "coverage-schema-rejected.png"))
         after_status = status.text_content()
@@ -551,7 +551,7 @@ def _schema_control(page, canvas, output, expected_request):
         evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
         assert intercepted == [True], intercepted
         assert len(posts) == 1 and json.loads(posts[0]) == expected_request, posts
-        assert after_status.startswith("Error: Unsupported response schema 14; expected 15; "), after_status
+        assert after_status.startswith("Error: Unsupported response schema 15; expected 16; "), after_status
         current_ids = re.findall(r"(?:^|; )Current Job ID: ([^;]+)(?=;|$)", after_status)
         retained_ids = re.findall(r"(?:^|; )Result Job ID: ([^;]+)(?=;|$)", after_status)
         assert len(current_ids) == len(retained_ids) == 1, after_status
@@ -587,7 +587,7 @@ def root_terminal_coverage_interactions(context):
     assert defaults["limits"] == LAYOUT_DEFAULT_LIMITS
     assert defaults["limits"]["root_terminal_coverage"] is True
     ordinary = first.json()["result"]["Ok"]
-    assert ordinary["schema_version"] == 15 and ordinary["root_terminal_coverage"] is None
+    assert ordinary["schema_version"] == 16 and ordinary["root_terminal_coverage"] is None
     assert ordinary["status"] == "Converged" and ordinary["ssa"]["complete"] is True
     assert ordinary["frontiers"] == []
     _stores(ordinary)
@@ -712,7 +712,7 @@ def root_terminal_coverage_interactions(context):
                                "root_terminal_coverage": enabled}}
         assert request == expected, (name, request, expected)
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 15 and report["metadata"]["limits"] == expected["limits"]
+        assert report["schema_version"] == 16 and report["metadata"]["limits"] == expected["limits"]
         assert report["fork"] == request["fork"] == "Osaka"
         (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report, request
