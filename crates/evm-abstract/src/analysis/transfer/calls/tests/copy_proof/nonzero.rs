@@ -46,12 +46,7 @@ fn check_completion(requested: Value, exact: bool) {
     assert_eq!(requested.singleton_work(), usize::MAX);
     let _queries = QUERIES.scope();
     let _quotes = QUERY_QUOTES.scope();
-    let fee = payload
-        .call_stack
-        .parent()
-        .unwrap()
-        .memory
-        .copy_return_data_work_with(&source, &value(0), &requested, algebra.borrowed());
+    let (fee, prepared) = finish_prices(&payload, &source, OutcomeKind::Return, algebra.borrowed());
     assert!(fee > 0 && fee < usize::MAX);
     assert_eq!((QUERIES.get(), QUERY_QUOTES.get()), (0, 0));
     eprintln!("COPY_QUOTE exact={exact} fee={fee} queries=0 quotes=0");
@@ -91,7 +86,16 @@ fn check_completion(requested: Value, exact: bool) {
         );
         assert_eq!((QUERIES.get(), QUERY_QUOTES.get()), (0, 0));
         assert_eq!(result.payload, payload);
-        assert_eq!(budget.used(), if funded { fee } else { 0 });
+        assert_eq!(
+            budget.used(),
+            if funded {
+                fee
+            } else if cancelled {
+                0
+            } else {
+                prepared
+            }
+        );
         if funded {
             assert!(result.frontiers.is_empty());
             assert_eq!(result.completed_calls.len(), 1);
@@ -105,7 +109,14 @@ fn check_completion(requested: Value, exact: bool) {
         } else {
             assert!(result.successors.is_empty());
             assert!(result.completed_calls.is_empty());
-            assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+            assert_eq!(
+                result.frontiers[0].reason,
+                if cancelled {
+                    FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+                } else {
+                    FrontierReason::Work
+                }
+            );
             assert!(budget.exhausted());
         }
     }
@@ -134,6 +145,83 @@ fn check_completion(requested: Value, exact: bool) {
 #[test]
 fn finite_nonzero_completion_has_no_opaque_queries_and_preserves_bytes() {
     check_completion(value(1), true);
+}
+
+#[test]
+fn real_finish_pays_the_census_and_complete_copy_before_publication() {
+    use crate::domain::provenance::Origin;
+    let algebra = ValueAlgebra::new(Policy);
+    let config = ExecutionConfig::default();
+    let offset = value(32).with_expression(ExprId::constant(U256::from(32)));
+    let requested = value(32).with_expression(ExprId::constant(U256::from(32)));
+    let mut payload = child(offset.clone(), requested.clone());
+    let nested = payload.call_stack.pop_child().unwrap();
+    payload
+        .active_mut()
+        .memory
+        .write_word_with(
+            &value(0),
+            &value(7)
+                .with_origin(Origin::Storage)
+                .with_expression(ExprId::fresh().unwrap()),
+            0,
+            algebra.borrowed(),
+        )
+        .unwrap();
+    payload.call_stack.push_child(nested);
+    let mut source = Bytes::memory();
+    source
+        .write_word_with(
+            &value(0),
+            &value(9)
+                .with_origin(Origin::Calldata)
+                .with_expression(ExprId::fresh().unwrap()),
+            0,
+            algebra.borrowed(),
+        )
+        .unwrap();
+    let parent = &payload.call_stack.parent().unwrap().memory;
+    assert!(parent.symbolic_facts().len() > 0 && source.symbolic_facts().len() > 0);
+    let first_prefix = payload.relations.constraints().len() + 1;
+    let mut expected = parent.clone();
+    expected
+        .copy_return_data_with(&offset, &source, &requested, 0, algebra.borrowed())
+        .unwrap();
+    let _queries = QUERIES.scope();
+    let _quotes = QUERY_QUOTES.scope();
+    let (total, prepared) =
+        finish_prices(&payload, &source, OutcomeKind::Return, algebra.borrowed());
+    assert_eq!((QUERIES.get(), QUERY_QUOTES.get()), (0, 0));
+    for maximum in [first_prefix - 1, total - 1, total] {
+        let mut budget = WorkBudget::new(maximum);
+        let result = complete(
+            payload.clone(),
+            source.clone(),
+            &config,
+            algebra.borrowed(),
+            &mut budget,
+        );
+        assert_eq!(result.payload, payload);
+        assert_eq!((QUERIES.get(), QUERY_QUOTES.get()), (0, 0));
+        if maximum == total {
+            assert_eq!(budget.used(), total);
+            assert!(result.frontiers.is_empty());
+            assert_eq!(
+                (result.completed_calls.len(), result.successors.len()),
+                (1, 1)
+            );
+            assert_eq!(result.successors[0].payload.active().memory, expected);
+            assert_eq!(result.successors[0].payload.active().returndata, source);
+        } else {
+            assert_eq!(
+                budget.used(),
+                if maximum < first_prefix { 0 } else { prepared }
+            );
+            assert!(result.completed_calls.is_empty() && result.successors.is_empty());
+            assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+            assert!(budget.exhausted());
+        }
+    }
 }
 
 #[test]
@@ -207,12 +295,8 @@ fn no_finite_source_length_and_input_need_no_minimum_discovery() {
                 r.watched = watched;
                 r.fee = usize::MAX;
             });
-            let fee = parent.active().memory.copy_return_data_work_with(
-                &source,
-                &word(0),
-                &requested,
-                algebra.borrowed(),
-            );
+            let (fee, _) =
+                finish_prices(&payload, &source, OutcomeKind::Return, algebra.borrowed());
             assert_eq!((RECEIPT.get().queries, RECEIPT.get().quotes), (0, 0));
             assert!(fee > 0 && fee < usize::MAX);
             RECEIPT.update(|r| {

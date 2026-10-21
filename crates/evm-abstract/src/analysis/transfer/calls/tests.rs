@@ -16,6 +16,7 @@ use crate::{
 };
 
 mod copy_proof;
+mod finish_clone;
 mod range_proof;
 
 fn address(number: u64) -> Address {
