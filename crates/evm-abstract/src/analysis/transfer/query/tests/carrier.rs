@@ -4,7 +4,8 @@
 use crate::{
     U256,
     domain::{
-        DomainSpec, EvmNumericAlgebra, NumericReduction, WordElement, WordObservation,
+        DomainSpec, EvmNumericAlgebra, NumericReduction, ReductionStatus, WordElement,
+        WordObservation,
         facts::{FactError, Symbol},
     },
     test_instrumentation::Counter,
@@ -22,6 +23,7 @@ pub(in crate::analysis::transfer) struct Receipt {
     pub cancel_on_query: bool,
     pub cancel_on_constrain: bool,
     pub cancel_on_reduce: bool,
+    pub reduction_status: ReductionStatus,
     pub literal_fee: usize,
     pub cancel_on_apply: bool,
     pub query_tag: Option<u64>,
@@ -36,6 +38,7 @@ pub(in crate::analysis::transfer) static RECEIPT: Counter<Receipt> = Counter::ne
     cancel_on_query: false,
     cancel_on_constrain: false,
     cancel_on_reduce: false,
+    reduction_status: ReductionStatus::Stable,
     literal_fee: 64,
     cancel_on_apply: false,
     query_tag: None,
@@ -49,6 +52,8 @@ pub(in crate::analysis::transfer) struct Word {
     pub lower: U256,
     pub upper: U256,
     pub excluded: Option<U256>,
+    #[serde(skip)]
+    pub cancel_refinement_owner: Option<analysis_control::Cancellation>,
     #[serde(skip)]
     pub cancel_query_owner: Option<analysis_control::Cancellation>,
     #[serde(skip)]
@@ -87,6 +92,7 @@ impl WordElement for Word {
             lower: U256::ZERO,
             upper: U256::MAX,
             excluded: None,
+            cancel_refinement_owner: None,
             cancel_query_owner: None,
             cancel_quote_owner: None,
             query_tag: None,
@@ -118,7 +124,10 @@ impl WordElement for Word {
     fn constrain(&self, facts: &WordObservation) -> Result<Self, FactError> {
         RECEIPT.update(|receipt| {
             if receipt.cancel_on_constrain {
-                analysis_control::current_cancellation().cancel();
+                self.cancel_refinement_owner
+                    .as_ref()
+                    .unwrap_or(&analysis_control::current_cancellation())
+                    .cancel();
             }
         });
         let (lower, upper) = facts.interval().unsigned_bounds();
@@ -126,6 +135,7 @@ impl WordElement for Word {
             lower: self.lower.max(lower),
             upper: self.upper.min(upper),
             excluded: self.excluded,
+            cancel_refinement_owner: self.cancel_refinement_owner.clone(),
             cancel_query_owner: self.cancel_query_owner.clone(),
             cancel_quote_owner: self.cancel_quote_owner.clone(),
             query_tag: self.query_tag,
@@ -235,12 +245,21 @@ impl EvmNumericAlgebra for Policy {
         self.widen_numeric(old, next)
     }
     fn reduce_numeric(&self, value: &Word) -> NumericReduction<Word> {
+        let mut status = ReductionStatus::Stable;
         RECEIPT.update(|receipt| {
+            status = receipt.reduction_status;
             if receipt.cancel_on_reduce {
-                analysis_control::current_cancellation().cancel();
+                value
+                    .cancel_refinement_owner
+                    .as_ref()
+                    .unwrap_or(&analysis_control::current_cancellation())
+                    .cancel();
             }
         });
-        NumericReduction::stable(value.clone())
+        NumericReduction {
+            status,
+            ..NumericReduction::stable(value.clone())
+        }
     }
     fn apply_numeric(&self, _op: u8, _args: &[Word]) -> NumericReduction<Word> {
         RECEIPT.update(|receipt| {

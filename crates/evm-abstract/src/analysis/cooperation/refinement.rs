@@ -8,7 +8,7 @@ use crate::{
         AlgebraRef, EvmNumericAlgebra, ReductionStatus, WordElement,
         facts::{FactError, Symbol},
     },
-    resource::WorkBudget,
+    resource::{WorkBudget, clone_payment},
 };
 use analysis_kernel::{
     Accepts, Analyzer, Answer, Capability, Context, KernelError, LocalClosure, Meter, PublishError,
@@ -177,7 +177,7 @@ pub enum RefinementError {
 }
 
 fn reserve(budget: &mut WorkBudget, work: usize) -> Result<(), RefinementError> {
-    MachineError::check_cancelled().map_err(RefinementError::Stopped)?;
+    clone_payment::checkpoint(budget).map_err(|error| RefinementError::Stopped(error.into()))?;
     if work == usize::MAX || !budget.charge(work) {
         return Err(RefinementError::Stopped(MachineError::work_failure()));
     }
@@ -211,7 +211,12 @@ pub(crate) fn apply_refinements<D: EvmNumericAlgebra>(
                 .refinement_work(value, observation.work_size())
                 .saturating_add(value.clone_work()),
         )?;
-        let numeric = match domain.constrain_numeric(value.numeric(), observation) {
+        let numeric = domain.constrain_numeric(value.numeric(), observation);
+        // Opaque hooks may cancel either owner, even when returning an error or
+        // a refused reduction. Preserve the paid prefix and stop before copying.
+        clone_payment::checkpoint(budget)
+            .map_err(|error| RefinementError::Stopped(error.into()))?;
+        let numeric = match numeric {
             Ok(result) => result,
             Err(FactError::Contradiction { .. }) => return Ok(LocalInput::Unreachable),
             Err(error) => return Err(RefinementError::Facts(error)),
@@ -235,9 +240,6 @@ pub(crate) fn apply_refinements<D: EvmNumericAlgebra>(
                 limited.push(status);
             }
         }
-        // with_numeric updates singleton retention metadata, so quote that
-        // actual custom-element query before cloning/installing the value.
-        reserve(budget, numeric.value.singleton_work())?;
         let next = payload.active().stack[*slot]
             .clone()
             .with_numeric(numeric.value);

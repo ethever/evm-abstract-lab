@@ -58,8 +58,8 @@ mod query;
 mod refinement;
 
 pub use composition::{
-    Extension, ExtraStores, InputTasks, NoExtension, NoStores, NoTasks, PairedTasks, PerInput,
-    SharedStores,
+    Composition, Extension, ExtraStores, InputTasks, NoExtension, NoStores, NoTasks, PairedTasks,
+    PerInput, SharedStores,
 };
 pub use entry::{
     analyze_world_cooperating, analyze_world_cooperating_with_control,
