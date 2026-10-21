@@ -565,11 +565,15 @@ record! {
         pub limits: crate::AnalysisLimits,
         /// Consumed logical execution work.
         pub work: u64,
+        /// Application-owned postprocessing allowance, separate from execution and export.
+        pub postprocessing_max_work: u64,
+        /// Charged postprocessing work; does not certify execution closure or source identity.
+        pub postprocessing_work: u64,
         /// Frozen processing and queue durations; excluded from world identity.
         pub timings: crate::AnalysisTimings,
         /// Frozen projection policy, independent of execution limits.
         pub export_limits: crate::ExportLimits,
-        /// Actual bounded projection work.
+        /// Projection counters; work is informational, separate from the postprocessing ledger.
         pub export_usage: crate::ExportUsage,
     }
 }

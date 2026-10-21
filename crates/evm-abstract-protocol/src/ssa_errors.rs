@@ -273,6 +273,8 @@ record! {
 variant! {
     /// SSA conversion failure with no string-only structural reasons.
     pub enum SsaFailure {
+        /// Required native postprocessing work was exhausted or unavailable.
+        Work,
         /// Closed-world SSA requires complete graph coverage.
         Coverage,
         /// Exact verifier invariant and contextual coordinates.

@@ -97,6 +97,22 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
 }
 
 pub(super) fn environment(ui: &mut Ui, report: &AnalysisReport) {
+    ui.label(RichText::new("Report work").strong());
+    egui::Grid::new("report_work")
+        .num_columns(2)
+        .show(ui, |ui| {
+            for (label, work) in [
+                ("Execution work", report.metadata.work),
+                (
+                    "Postprocessing allowance",
+                    report.metadata.postprocessing_max_work,
+                ),
+                ("Postprocessing work", report.metadata.postprocessing_work),
+                ("Projection work", report.metadata.export_usage.work),
+            ] {
+                value::text(ui, label, work.to_string());
+            }
+        });
     if let Some(snapshot) = &report.metadata.snapshot {
         ui.label(RichText::new("Captured chain snapshot").strong());
         egui::Grid::new("snapshot_context")

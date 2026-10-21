@@ -87,6 +87,13 @@ fn session_cancellation_is_cancelled_before_report_generation() {
         })
     ));
     roundtrip(&projected);
+    let refused = super::super::rpc_error(RpcAnalysisError::Session(SessionError::Work));
+    assert_eq!(refused.code, api::ApiErrorCode::Internal);
+    assert_eq!(
+        refused.details,
+        api::ErrorDetails::Session(Box::new(api::SessionFailure::Work))
+    );
+    roundtrip(&refused);
 }
 
 #[test]

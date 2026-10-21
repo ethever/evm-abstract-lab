@@ -389,7 +389,7 @@ fn query(ui: &mut Ui, reason: &api::QueryBoundary) {
     }
 }
 
-fn fact(ui: &mut Ui, error: &api::FactFailure) {
+pub(super) fn fact(ui: &mut Ui, error: &api::FactFailure) {
     use api::FactFailure as F;
     match error {
         F::InvalidBitIndex(index) => {

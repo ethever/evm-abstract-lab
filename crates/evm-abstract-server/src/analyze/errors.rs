@@ -6,6 +6,7 @@ use super::value;
 use evm_abstract::{
     analysis::{ConfigError, cooperation::CooperationError},
     bytecode::DecodeError,
+    domain::DomainSpecError,
     world::environment::EnvironmentError,
 };
 use evm_abstract_protocol as api;
@@ -36,6 +37,9 @@ pub(super) fn environment(source: EnvironmentError) -> api::ApiError {
 pub(super) fn configuration(source: ConfigError) -> api::ApiError {
     let message = source.to_string();
     let detail = match source {
+        ConfigError::DomainSpec(DomainSpecError::InvalidRelationLimits) => {
+            api::ConfigurationFailure::Relations
+        }
         ConfigError::Environment(error) => return environment(error),
         ConfigError::Budget => api::ConfigurationFailure::Budget,
     };
