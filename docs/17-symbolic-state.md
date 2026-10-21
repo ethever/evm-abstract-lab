@@ -11,7 +11,7 @@ nix run . -- cfg --hex 366000803700 --format json
 
 ## 一次写入产生新状态，旧读取仍绑定旧状态
 
-`ByteArray` 的内容根是 `ByteStateId`；length、显式数值字节和 default 是配套的数值事实与观察。`SlotStateId` 表示某个账户、某个 storage plane 的初始状态和有序更新。两种状态都是不可变 DAG：写入产生新根，读取捕获当时的根。后面的写入不会修改早先读出的 word。
+`EvmByteArray<N>` 的内容根是 `ByteStateId`；length、显式数值字节和 default 是配套的数值事实与观察。`SlotStateId` 表示某个账户、某个 storage plane 的初始状态和有序更新。两种状态都是不可变 DAG：写入产生新根，读取捕获当时的根。后面的写入不会修改早先读出的 word。
 
 | 节点 | 保留的关系 |
 | --- | --- |
@@ -61,7 +61,7 @@ KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同�
 
 普通循环反馈由 [`Engine::successor`](../crates/evm-abstract/src/analysis/engine.rs) 根据实际图中的回路识别；同一入口出现重复增长后，[`EntryAlternatives::join_loop`](../crates/evm-abstract/src/analysis/machine/join.rs) 将其提升为 [`LoopBound`](../crates/evm-abstract/src/analysis/state/loop_bound.rs)。它持有数值整机上界，并与过程保留失败重试共用 [`BoundedState`](../crates/evm-abstract/src/analysis/state/bounded.rs) 的冻结布局、规范化及独立物化机制。后续输入都更新这份上界；重试准入和结果发布仍由各自调用方负责。反复到达同一个 pc 本身不足以宣告固定点。
 
-首次扩大用已有入口和新输入确定布局：包括帧与 continuation 的结构、选定的账户/槽键、各帧 memory/calldata/returndata 的字节坐标，以及每个回滚 Store 的独立布局。后续出现的新位置不继续增加坐标，而由 [`StoreSummary::project_to_layout`](../crates/evm-abstract/src/world/store/summary/layout.rs) 和 [`ByteArraySummary::project_to_layout`](../crates/evm-abstract/src/world/bytes/summary/layout.rs) 归入默认上界。Store 的布局外写入需要扩大相应 owner 或全局默认值；未知 owner/key 的写入还必须覆盖所有可能别名的已选单元和默认区域。字节数组未保留的单元为任意字节，不能解释成零。内容与逻辑长度分别概括，代码与账户生命周期还受结构键约束。
+首次扩大用已有入口和新输入确定布局：包括帧与 continuation 的结构、选定的账户/槽键、各帧 memory/calldata/returndata 的字节坐标，以及每个回滚 Store 的独立布局。后续出现的新位置不继续增加坐标，而由 [`EvmStoreSummary::project_to_layout`](../crates/evm-abstract/src/world/store/summary/layout.rs) 和 [`EvmByteArraySummary::project_to_layout`](../crates/evm-abstract/src/world/bytes/summary/layout.rs) 归入默认上界。Store 的布局外写入需要扩大相应 owner 或全局默认值；未知 owner/key 的写入还必须覆盖所有可能别名的已选单元和默认区域。字节数组未保留的单元为任意字节，不能解释成零。内容与逻辑长度分别概括，代码与账户生命周期还受结构键约束。
 
 投影从 byte/slot 根取得数值上界，随后舍弃旧表达式、写入历史、来源身份、路径公式及跨组件关联。当前实现同时忘掉可选栈别名类和 storage 观察关联，避免仍引用已被抹去的根。保留的是数值约束、控制结构和可能效果的包络；日志摘要不是精确的有限事件序列，`logs_unknown` 也不表示没有日志。这里不能沿用普通 guarded join 对所有字段精确配对的读法。
 
@@ -73,27 +73,31 @@ KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同�
 
 摘要重放共享一张 rename map，遍历隐藏在 state source、view、rollback 和返回数据中的 fresh token。固定输入身份保持绑定，调用中新产生的未知来源每次重放使用新身份。重命名和导入按完整变换提交，失败不能安装一半状态。
 
-## 原生 JSON 11 与 Web 协议 16
+## 原生 JSON 12 与 Web 协议 17
 
-此前 Native 10 新增可选的原始根终止覆盖；wire 15 引入同一真实 data/store 池，并为普通 Store 也导出全局 unscoped `storage_root` / `transient_root`、nonce/code/existence/lifecycle 默认值。当前 Native 11 / wire 16 保留这些字段，新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason。`code_default: null` 是 Unknown；共用 base template 的不同 owner 不因此共享槽值。wire 的 `InputIdentity.scope`、offline namespace、revision 和 input scope 使用严格规范十进制 `DecimalU64` 字符串，完整保留 `u64::MAX`，统计计数不变。字段迁移、绑定与联合语义见[根终止覆盖](19-root-terminal-coverage.md)。
+此前 Native 10 新增可选的原始根终止覆盖；wire 15 引入同一真实 data/store 池，并为普通 Store 也导出全局 unscoped `storage_root` / `transient_root`、nonce/code/existence/lifecycle 默认值。当前 Native 12 / wire 17 保留这些字段，新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason。`code_default: null` 是 Unknown；共用 base template 的不同 owner 不因此共享槽值。wire 的 `InputIdentity.scope`、offline namespace、revision 和 input scope 使用严格规范十进制 `DecimalU64` 字符串，完整保留 `u64::MAX`，统计计数不变。字段迁移、绑定与联合语义见[根终止覆盖](19-root-terminal-coverage.md)。
 
-Native analysis schema 为 11；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或局部表达式遍历超限。
+Native analysis schema 为 12；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或局部表达式遍历超限。
+
+原生机器值只有 `.numeric` 必填；未知来源、空身份、无表达式与 false 标志可省略，实际非默认元数据仍保留。product 与 finite-set 的默认数值 Top 都写成空对象。product 仅省略 Top/false 组件，每个非默认组件仍完整保留。来源图的 `WordObservation` 使用独立观察编码；Web `ValueInfo` 是展示投影，不能用它替换实际载体的原生数据。
 
 原生 graph 的 `identity_scope`、Fresh 编号及 Input scope/symbol 保留同一进程中的身份。source 的 `token` 是本图中的表达式引用，须先解析它指向的身份，再结合 namespace 判断来源；不能直接比较两个图的 token 或 root 索引，也不能用同名打印叶跨报告绑定输入。原生 CLI JSON 通过 `render::json` 的流式 writer 输出，整份 UTF-8 输出不设置字节上限，每次追加前检查取消。`pretty` 与 `compact` 沿用当前线程的取消作用域；应用可用 `with_control(value, control)` 或 `compact_with_control(value, control)` 明确传入控制。取消返回 `JsonError::Cancelled` 并记录已写字节，保留已计算的分析事实；值序列化失败继续返回 `JsonError::Serialization`。原生 pending Arc 快照仍可能重复其程序和状态，Web 使用下面的共享目录。
 
-世界指纹保留原 v2 编码和全部初始观察；`World::fingerprint` 返回 `Result<B256, FingerprintError>`。取消、值编码失败和长度前缀溢出分别是 `Cancelled`、`Encoding`、`LengthOverflow`，不生成替代 digest。`render::world::evidence` 在报告输出前有界计算该指纹并返回可失败的借用视图，原生 JSON 通过 `JsonError::Fingerprint` 传播；文本和 DOT 明确显示 unavailable 和错误并停止渲染。Server 使用 `ErrorDetails::Fingerprint` 保存类型与编码坐标，取消映射为 Cancelled，其余失败映射为 Export。调用方须在适用的 `Control.scope` 内计算 evidence，随后 writer 仍逐次检查取消。
+世界指纹保留原 v2 编码和全部初始观察；`EvmWorld::fingerprint` 返回 `Result<B256, FingerprintError>`。取消、值编码失败和长度前缀溢出分别是 `Cancelled`、`Encoding`、`LengthOverflow`，不生成替代 digest。`render::world::evidence` 在报告输出前有界计算该指纹并返回可失败的借用视图，原生 JSON 通过 `JsonError::Fingerprint` 传播；文本和 DOT 明确显示 unavailable 和错误并停止渲染。Server 使用 `ErrorDetails::Fingerprint` 保存类型与编码坐标，取消映射为 Cancelled，其余失败映射为 Export。调用方须在适用的 `Control.scope` 内计算 evidence，随后 writer 仍逐次检查取消。
 
 Web/server 的单份 `AnalysisReport.symbolic.nodes` 共享所有 scalar、byte、slot、view 和 path。引用按语义分为 `ExpressionRef`、`ByteStateRef`、`SlotStateRef`、`ByteViewRef`、`PathRef`；依赖指向较早节点。`ValueInfo.expression` 是 scalar ref；`ByteArraySnapshot.symbolic` 是 view ref；账户 `storage_root`、`transient_root` 分开。状态局部 `symbolic_facts` / `storage_facts` / `transient_facts` 还保存已被指令消耗的 symbolic operand 数值信息，不能跨快照错误复用。来源 token、namespace、非 singleton 常量集、位、signed/unsigned bounds、nonzero、congruence、provenance 和 equality identity 均保留。
 
 `MachineSnapshot.path` 表达完整状态条件。`Frontier.range` 保留 offset/size/limit、condition 和 nonzero side；其 payload 与一般 join 的 `Frontier.payload` 都引用 `pending_machines`。Program、store、byte source 仍在原共享目录中，不在每个 frontier 递归倾倒完整分析。
 
-导出独立计量实际 DAG 节点、exact bytes 与遍历/池化工作，默认上限为 65,536 节点、深度 256、16 MiB exact payload。策略和实耗分别在 `metadata.export_limits`、`metadata.export_usage`；其中 `export_usage.work` 仅作诊断统计，没有累计工作硬上限，也不会因 work 总量拒绝导出，执行分析的 `AnalysisLimits.max_work` 继续生效。Web 协议 16 的 `ExportLimits` 只声明节点、深度和 exact payload 策略，HTTP 整份报告 JSON 不设置字节上限。编码取消仍报告 typed `Cancelled` export failure，保留 `required` / `written`、图实耗和原策略，缓存中的分析事实不变。图或 exact payload 超限仍报告相应 typed export failure，不把成功分析改写成数值 Top。UI 校验版本、节点 sort、依赖顺序和 pool refs 后安装结果；DAG 与 byte/slot 行按可见区渲染，exact payload 只显示有界预览。
+导出独立计量实际 DAG 节点、exact bytes 与遍历/池化工作，默认上限为 65,536 节点、深度 256、16 MiB exact payload。策略和实耗分别在 `metadata.export_limits`、`metadata.export_usage`；其中 `export_usage.work` 仅作诊断统计，没有累计工作硬上限，也不会因 work 总量拒绝导出，执行分析的 `AnalysisLimits.max_work` 继续生效。Web 协议 17 的 `ExportLimits` 只声明节点、深度和 exact payload 策略，HTTP 整份报告 JSON 不设置字节上限。编码取消仍报告 typed `Cancelled` export failure，保留 `required` / `written`、图实耗和原策略，缓存中的分析事实不变。图或 exact payload 超限仍报告相应 typed export failure，不把成功分析改写成数值 Top。UI 校验版本、节点 sort、依赖顺序和 pool refs 后安装结果；DAG 与 byte/slot 行按可见区渲染，exact payload 只显示有界预览。
+
+应用的局部 CFG 投影、SSA 构建与验证以及请求的渲染计算，另使用 `DEFAULT_POSTPROCESS_WORK = 2_000_000_000` 的有限共享后处理账本。它在实际复制或查询之前付费，与执行 `max_work` 分开，在这些阶段之间不重置；`postprocessing_max_work` 与 `postprocessing_work` 记录该边界。导出池已有的 `export_usage.work` 只是统计，不能充当这份预付账本，也不表示所有外部序列化都已被计费。后处理 Work/Cancelled 保留为类型化输出失败，不能把未完成 SSA 改成完整结果。
 
 `LogicalMemory` 范围证据使用 word-rounded U256 可表示上界，和物化策略分开；可表示域内的精确 gas 充足性仍未证明，成功与保守 Failure 分支可以同时存在。历史 `MemoryPolicy` 证据继续按旧 footprint 策略解释，不能当作 EVM Failure。`ByteRange` 描述表示层错误，`StateJoin` 描述完整机器输入无法合并；正常 alias 的未定精度不能显示成已证明成功。
 
 未知执行过程的闭合关系、摘要返回边与过程覆盖目录见[第 18 课](18-unknown-world.md)。关系表会显式进行数值投影，保留保守上界；这种投影与原有完整图摘要的身份重命名有不同精度边界。
 
-Native schema 11 与 Web schema 16 的 LOG 来源身份同时包含 emitter、code account、captured code hash、Init/Runtime 和 pc。初始化与部署后代码即使在同一地址和偏移发出 LOG，也保留不同来源；Web 日志面板按完整身份分开，展示捕获的代码 hash。Native `source_kind` 为 `init` / `runtime`，Web 共享枚举为 `Init` / `Runtime`。
+Native schema 12 与 Web schema 17 的 LOG 来源身份同时包含 emitter、code account、captured code hash、Init/Runtime 和 pc。初始化与部署后代码即使在同一地址和偏移发出 LOG，也保留不同来源；Web 日志面板按完整身份分开，展示捕获的代码 hash。Native `source_kind` 为 `init` / `runtime`，Web 共享枚举为 `Init` / `Runtime`。
 
 ## 验证边界与证据
 

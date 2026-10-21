@@ -12,7 +12,8 @@ SIGN = 1 << 255
 # plus one runtime word whose explicit numeric certificate is a singleton.
 MAX_NODES, MAX_BYTES, MAX_CHOICES = 19, 64, 3
 MAX_RUNTIME_WORDS = 1
-NUMERIC_FIELDS = {"Constants", "known_bits", "interval", "congruence", "nonzero"}
+NUMERIC_FIELDS = {"constants", "known_bits", "interval", "congruence", "nonzero"}
+OBSERVATION_FIELDS = {"Constants", "known_bits", "interval", "congruence", "nonzero"}
 OWNER_A = "0x0000000000000000000000000000000000000101"
 OWNER_C = "0x0000000000000000000000000000000000000301"
 TRUE = {"constraints": [], "bottom": False, "path": {"root": 0, "nodes": ["True"]}}
@@ -28,22 +29,41 @@ def number(value):
 
 
 def numeric(value):
+    """Native sparse components; absent components have their documented Top."""
+    assert isinstance(value, dict) and value.keys() <= NUMERIC_FIELDS, value
+    return numeric_components(value, value.get("constants"))
+
+
+def observation(value):
+    """The representation-independent WordObservation stored in a source DAG."""
+    assert isinstance(value, dict) and value.keys() == OBSERVATION_FIELDS, value
+    return numeric_components(value, value["Constants"])
+
+
+def evm_numeric(value):
+    """Return the required native payload; all common metadata may be absent."""
+    assert isinstance(value, dict) and "numeric" in value, value
+    assert value.keys() <= {"numeric", "provenance", "identity", "expression", "symbolic_limit"}, value
+    payload = value["numeric"]
+    assert isinstance(payload, dict) and payload.keys() <= NUMERIC_FIELDS, payload
+    return payload
+
+
+def numeric_components(value, constants):
     """Intersect every numeric component; no interval/Top fallback for reads."""
-    required = NUMERIC_FIELDS
-    assert isinstance(value, dict) and required <= value.keys(), ("incomplete numeric", value)
-    assert value.keys() <= required | {"provenance", "expression"}, value
-    constants = value["Constants"]
     assert isinstance(constants, list) and 1 <= len(constants) <= MAX_CHOICES, value
     constants = tuple(number(item) for item in constants)
     assert constants == tuple(sorted(set(constants))), value
-    bits, interval = value["known_bits"], value["interval"]
+    bits = value.get("known_bits", {"zero": "0x0", "one": "0x0"})
+    interval = value.get("interval", {"unsigned_lo": "0x0", "unsigned_hi": hex(WORD_MAX),
+                                     "signed_lo": "0x0", "signed_hi": hex(WORD_MAX)})
     assert bits.keys() == {"zero", "one"}, bits
     assert interval.keys() == {"unsigned_lo", "unsigned_hi", "signed_lo", "signed_hi"}, interval
     zero, one = number(bits["zero"]), number(bits["one"])
     lo, hi = number(interval["unsigned_lo"]), number(interval["unsigned_hi"])
     slo, shi = number(interval["signed_lo"]), number(interval["signed_hi"])
     assert not zero & one and lo <= hi and slo <= shi, value
-    relation = value["congruence"]
+    relation = value.get("congruence", "Top")
     if relation == "Top":
         congruence = ("Top",)
     elif isinstance(relation, dict) and relation.keys() == {"Exact"}:
@@ -55,7 +75,7 @@ def numeric(value):
         modulus, residue = number(modulo["modulus"]), number(modulo["residue"])
         assert modulus > 0 and residue < modulus, modulo
         congruence = ("Modulo", modulus, residue)
-    nonzero = value["nonzero"]
+    nonzero = value.get("nonzero", False)
     assert type(nonzero) is bool, value
     # Native signed bounds use the order-preserving sign-bit bias (Interval).
     values = frozenset(item for item in constants
@@ -145,8 +165,7 @@ class Graph:
                         assert binding.keys() == {"index", "value", "numeric"}, binding
                         number(binding["index"])
                         ref(binding["value"], "word")
-                        assert binding["numeric"].keys() == NUMERIC_FIELDS, "binding numeric fields"
-                        numeric(binding["numeric"])
+                        observation(binding["numeric"])
                     sort = "slots"
                 else:
                     assert kind in self.rules, ("unsupported node", kind)
@@ -211,7 +230,7 @@ class Graph:
         raw = self.node(original["state"], "SlotsInput")
         assert raw["bindings"] == [] and self.source(raw) == self.source(state), "original source"
         assert self.literal(original["key"]) == key, "original key"
-        certificate, choices = numeric(binding["numeric"])
+        certificate, choices = observation(binding["numeric"])
         return Read(self.source(state) + (key,), certificate, choices)
 
     def coordinate(self, index):
@@ -328,8 +347,8 @@ class Outcome:
             term = graph.word(graph.root)
             assert term in terms, "operand absent from carrier"
             value = fact["value"]
-            _, values = numeric(value)
-            if isinstance(term, (Read, RuntimeWord)) or "expression" in value:
+            _, values = numeric(evm_numeric(value))
+            if isinstance(term, (Read, RuntimeWord)) or value.get("expression") is not None:
                 original = self.graph(value["expression"])
                 assert original.word(original.root) == term, "operand original expression"
             assert term not in facts, "duplicate operand"
@@ -352,11 +371,11 @@ class Outcome:
     def data(self, data, lengths):
         assert data["failure"] is None and data["memory"] is False, "unsuccessful data"
         assert data["conditional"] == [], "conditional data facts"
-        _, values = numeric(data["length"])
+        _, values = numeric(evm_numeric(data["length"]))
         assert len(values) == 1 and values <= set(lengths), ("exact data length", values)
         length = next(iter(values))
         # Native empty buffers carry the exact numeric length without an ExprId.
-        if "expression" in data["length"]:
+        if data["length"].get("expression") is not None:
             expression = self.graph(data["length"]["expression"])
             assert expression.word(expression.root) == length, "length expression"
         graph = self.graph(data["root"])

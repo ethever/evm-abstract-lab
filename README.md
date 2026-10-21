@@ -34,7 +34,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 在 `pc=0x000e` 的状态找到 `stack in [{0x1, 0x2}]`。外层是栈，内层是**一个栈槽的可能值集合**；不是栈上同时有两个值。这一步连接具体执行与抽象分析。
 
-小集合只是描述可能值的一种方式。候选太多时，默认分析还会保留固定的位、数值范围和同余性质；例如，即使不能逐个列出所有偶数，也能知道最低位为零。[第 02 课](docs/02-domain.md)从集合手算过渡到这些性质，并用 `--domain constants-only` 比较仅保存有限集合的结果。
+小集合只是描述可能值的一种方式。候选太多时，默认分析还会保留固定的位、数值范围和同余性质；例如，即使不能逐个列出所有偶数，也能知道最低位为零。[第 02 课](docs/02-domain.md)从集合手算过渡到这些性质，并用 `--numeric-model finite-set` 比较仅保存有限集合的结果。
 
 位约束用完整的 64 个十六进制位置表示：一个位置全部已知时显示 `0`–`f`，全部未知时显示 `*`，部分已知时用四个二进制位显示，如 `[01**]`。其中 `[01**]` 只占一个十六进制位置，表示从高到低的两位确定为 0、1，另外两位未知；位模式中的所有未知位置都保留，不使用省略号。整个值没有数值约束时显示 `⊤`（Top）；有限候选仍显示为 `{0x1, 0x2}`。有其他数值约束时，`bits=` 后的全未知位模式仍保留 64 个 `*`。[第 12 课的位模式](docs/12-product-domains-facts.md#怎样读十六进制位模式)给出逐位读法。
 
@@ -111,9 +111,11 @@ flowchart TD
 
 用 `nix run . -- analyze --help` 查看全部参数。调用环境统一使用 `--evm.*`：`--evm.to` 确定执行 root frame 的合约，省略 caller、value、calldata 时分别覆盖未知调用者、任意 U256 金额、未知长度与内容的输入；origin 默认与 caller 是同一个输入。显式 `--evm.calldata 0x --evm.value 0` 才表示空数据、零金额。交易与区块环境、索引 hash 和 gas 上界的全部参数见[第 13 课](docs/13-evm-environment.md)；精度与预算参数见[第 05 课](docs/05-sensitivity.md)和[第 06 课](docs/06-boundaries.md)。
 
-`NumericValue` 默认使用 `--domain product`，组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和非零保证。`AbstractValue` 在数值摘要之外保存来源、角色、独立值身份和符号表达式。CLI 与 Web 共用同一套分析配置：`--max-constants` 默认 512，接受运行平台能表示的任意正 `usize`，配置容量不会直接预分配集合。`--reduction-rounds` 默认 16，`--max-facts` 默认 4096，两者限制临时数值事实交换。
+CLI 默认选择 `--numeric-model product`：`ProductAlgebra` 的实际载体 `NumericValue` 组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和非零保证。`--numeric-model finite-set` 选择独立的 `FiniteSetAlgebra`，实际载体为 `FiniteConstantSet`。两者共用 `ValueAlgebra<D>` 的来源、角色、值身份和表达式处理，执行状态始终保留 `EvmValue<D::Element>`。
 
-机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过局部表达式与数值事实推理排除已证明矛盾的路径，并将已证明的数值上界投影回执行值。未证明矛盾的路径继续保留。两种数值 profile 默认都启用这层能力；`--no-relations` 用于关闭它的对照。表达式节点、深度和关系数量有独立上限，真实的取消、配置与精度边界仍保留类型化原因。`cfg`、`ssa`、`analyze`、`explain` 与 Web 的 `max_work` 默认 2000000000，覆盖执行、数值与符号工作，并默认启用保守根终止覆盖；仍可显式设置预算。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
+应用构造数值策略后，将 `AnalysisInput`、借用的代数、`EnginePolicies` 和组件交给 `AnalysisEngine::run`。单程序 CFG 是原生结果的显式 `EvmAnalysis::from_execution` 投影，保留底层图和状态 ID 映射。该投影、SSA 和所需计算共用独立的有限后处理账本，应用默认 `DEFAULT_POSTPROCESS_WORK=2_000_000_000`；它与执行预算分别计量。CLI 与 Web 的 `--max-constants` 默认 512，接受平台能表示的任意正 `usize`，不会按配置预分配集合；`--reduction-rounds` 默认 16，`--max-facts` 默认 4096。数值与关系限制冻结在代数的 `DomainSpec` 中。
+
+机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过局部表达式与数值事实推理排除已证明矛盾的路径，并将已证明的数值上界投影回执行值。未证明矛盾的路径继续保留。两种数值模型 默认都启用这层能力；`--no-relations` 用于关闭它的对照。表达式节点、深度和关系数量有独立上限，真实的取消、配置与精度边界仍保留类型化原因。`cfg`、`ssa`、`analyze`、`explain` 与 Web 的 `max_work` 默认 2000000000，覆盖执行、数值与符号工作，并默认启用保守根终止覆盖；仍可显式设置预算。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
 
 CLI 的数量参数 `--evm.value` 和 `--slot ADDRESS:SLOT` 中的 SLOT 接受无前缀十进制或带 `0x` / `0X` 前缀的十六进制，范围为 `0` 到 `2^256−1`；`--block-number` 接受相同进制写法，范围为 `0` 到 `2^64−1`。十进制只用数字 `0`–`9`，允许零和前导零；例如 `001` 仍表示 1。可以写 `--evm.value 1000`（单位 wei）、`--block-number 26000000`、`--slot 0x0000000000000000000000000000000000000200:0`。地址、block hash 和 calldata 仍按各自的十六进制字节格式输入；world JSON 的 `chain_id`、余额、nonce、storage 键和值仍使用原有的 `0x` 十六进制格式。
 
@@ -160,7 +162,7 @@ nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 | `Incomplete` | 缺少事实、遇到模型无法处理的输入或耗尽预算；输出保留原因与停止位置 | `2` |
 | 输入错误 | JSON、参数或初始 RPC 采集失败，未得到有效分析结果 | `1`；参数语法错误由 clap 报告并退出 `2` |
 
-`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 11，`domain_spec.schema_version` 是 2。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
+`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 12，独立 Web 协议是 17，`domain_spec.schema_version` 是 3。原生机器值始终是对象：实际载体在 `.numeric`，来源、身份和表达式分别保存；product 与 finite-set 的完整候选都在 `.numeric.constants`，省略该键表示没有有限集合约束。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
 
 RPC 分析已开始后，仍被需要的补查失败或采集额度耗尽会留下 `RpcAcquisition` 前沿，结果为 `Incomplete`、退出 `2`。采集失败的类型与来源另外保存在累计记录中，后续预算中断也不会丢失。输出中的已完成分支不能替代尚未展开的调用。
 
@@ -278,4 +280,4 @@ nix develop --command lychee --offline=false --scheme http --scheme https --incl
 
 [MIT license](LICENSE)。
 
-符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。Native schema 11 与 Web schema 16 使用 flat typed graphs；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，累计 projection work 仅作诊断统计。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
+符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。Native schema 12 与 Web schema 17 使用 flat typed graphs；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，导出池的累计 work 仅作诊断统计；原生局部投影、SSA 构建与验证使用显式后处理账本预付费。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。

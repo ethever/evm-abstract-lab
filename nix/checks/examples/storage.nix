@@ -40,7 +40,7 @@ let
 in
 {
   checks = regular // {
-    example-storage-symbolic-key-calldata = symbolic "key" ''.status == "Converged" and .states[0].exit.call_stack.root.state.stack[0].Constants == ["0x7"] and .states[0].exit.call_stack.root.state.stack[0].provenance.origins.Sources == ["Storage"]'';
-    example-storage-symbolic-value-calldata = symbolic "value" ''.status == "Converged" and .states[0].exit.call_stack.root.state.stack[0].Constants == ["0x1"]'';
+    example-storage-symbolic-key-calldata = symbolic "key" ''.status == "Converged" and .states[0].exit.call_stack.root.state.stack[0].numeric.constants == ["0x7"] and .states[0].exit.call_stack.root.state.stack[0].provenance.origins.Sources == ["Storage"]'';
+    example-storage-symbolic-value-calldata = symbolic "value" ''.status == "Converged" and .states[0].exit.call_stack.root.state.stack[0].numeric.constants == ["0x1"]'';
   };
 }

@@ -22,7 +22,7 @@ def unknown_world_interactions(browser, url, output):
              "call_value": "0x0", "calldata": "0x"}
     report = layout_submission(page, canvas, code, output, "unknown-world", entry=entry,
                                source_height_offset=-62)
-    assert report["schema_version"] == 16 and report["status"] == "Converged"
+    assert report["schema_version"] == 17 and report["status"] == "Converged"
     assert report["frontiers"] == [] and report["ssa"]["complete"]
     summaries = report["abstract_summaries"]
     assert summaries and all(summary["closed"] and summary["procedures"] for summary in summaries)

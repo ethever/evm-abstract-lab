@@ -60,7 +60,7 @@
 
 | 理论看什么 | 实现查什么 |
 | --- | --- |
-| 未指定的输入表示允许范围，不能自行补零。两个未知值仍可来自同一个输入；未知数值与身份相同并不矛盾。 | 在 [`EvmEnvironment::default` / `resolved_origin`](../../crates/evm-abstract/src/world/environment.rs) 核对未知 calldata、value 与默认 caller/origin 关联，再看 [`EvmArgs::environment`](../../crates/evm-abstract-cli/src/evm.rs) 怎样接收显式值。 |
+| 未指定的输入表示允许范围，不能自行补零。两个未知值仍可来自同一个输入；未知数值与身份相同并不矛盾。 | 在 [`EvmEnvironmentValues::default` / `resolved_origin`](../../crates/evm-abstract/src/world/environment.rs) 核对未知 calldata、value 与默认 caller/origin 关联，再看 [`EvmArgs::environment`](../../crates/evm-abstract-cli/src/evm.rs) 怎样接收显式值。 |
 
 **完成产物：**按[JSON 环境字段位置](../13-evm-environment.md#在-json-中查输入范围)给一份报告填写“代码、fork、to、caller、origin、value、calldata”输入卡。逐项写“具体值”“允许范围”或“与哪个输入相同”，并解释为什么 world/RPC 的账户初始事实不能代替调用环境。
 

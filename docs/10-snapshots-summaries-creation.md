@@ -6,7 +6,7 @@
 
 [摘要](#1-调用摘要复用完整结果关系)、[创建](#2-create先执行构造代码再安装运行时代码)、[销毁](#3-selfdestruct转账和删除发生在不同时间)、[预编译](#4-预编译没有普通字节码也有调用帧)四个实验均使用离线合成事实，根帧地址为 A=`0x...0101`，命令明确给出 caller、零 value 和空 calldata，默认预算可完成。省略这些参数会得到符号输入，不等同于这组具体约束。所有命令在仓库根目录执行，需要 `jq`。返回结果仍包含保守 gas 模型允许的失败可能；下文会区分具体成功轨迹与抽象输出。
 
-直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 11 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+直接阅读时使用 `explain --world ... --evm.to ...`，默认得到捕获代码的反汇编、简明 CFG 与栈、分开的入口结果和已验证图的 TAC/SSA。需要完整快照、帧上下文、摘要证据和原始效果 SSA 时，追加 `--verbose`；`analyze` 的默认文本与 `analyze --ssa` 仍提供完整报告，以下 `analyze --format json` 命令用于查询当前 schema 12 的字段。显示方式不改变分析语义；这些入口接受相同的调用环境、摘要开关、数值域和执行预算参数。`--verbose` 仅用于世界或 RPC 的 `explain`，单程序 `explain --hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 所有反汇编与 SSA 基本块指令列表共用顶格的 `Bᵢ @ 0xPC:` 标题，下面的 pc 不带 `0x`，数字列随 Bᵢ 编号宽度与标题对齐。SSA 先显示独立的状态元数据与入口 φ，再显示 Bᵢ 标题、指令和对齐的 `stack out`。单程序与世界教学 SSA 共用归一化后的赋值式指令正文；世界视图保留 Cᵢ、fᵢ、state owner、context，以及按 Tᵢ 标记并带 fᵢ/slot 的 φ。完整视图展开所有帧元数据和原始效果链，字节码行与效果行也使用这套布局；原始指令字段、最终计算与值依赖保留在 JSON 中。编号与证据的读法见[第 04 课](04-ssa.md)、[第 09 课](09-cross-contract.md#默认文本怎样读)和[SSA 值归一化](ssa-normalization.md)。
 
@@ -98,7 +98,7 @@ cmp /tmp/summary-on-relations.json /tmp/summary-off-relations.json
 | 入口关系约束及值表达式 | 在较弱或不同的分支假设下复用依赖旧条件的结果 |
 | 剩余调用深度和冻结的分析策略 | 复用时得到额外深度，或改变数值域、facts 交换、关系资源、内存、跳转历史及费用策略 |
 
-A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入，所以本例的输出长度 0/32 不妨碍命中。callee 的其他帧事实和回滚保存点仍需相等。登记候选后，输入若经 join 扩大，就不能按旧前提发表证书；需要以更新后的输入重新登记、完成分析并认证。callee 未完成或预算中断时也不能发表完整证书。[第 12 课](12-product-domains-facts.md)会解释为什么同一字节码用组合域和 constants-only 得到的精度可能不同；摘要输入也绑定这份完整策略，不能仅按常量容量判定兼容。
+A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入，所以本例的输出长度 0/32 不妨碍命中。callee 的其他帧事实和回滚保存点仍需相等。登记候选后，输入若经 join 扩大，就不能按旧前提发表证书；需要以更新后的输入重新登记、完成分析并认证。callee 未完成或预算中断时也不能发表完整证书。[第 12 课](12-product-domains-facts.md)会解释为什么同一字节码用组合域和 finite-set 得到的精度可能不同；摘要输入也绑定这份完整策略，不能仅按常量容量判定兼容。
 
 摘要中的入口帧是相对于子图而言的：B 在 A→B 的全图里是子帧，在单独保存的 B 子图里成为入口。保存时保留 B 的执行数据与回滚点，外层返回契约不属于摘要输入与子图；复用时使用当前 caller 的继续信息，再把 B 接回调用栈。更深的子帧仍需保留各自的继续信息。这样既能复用 B 的行为，又能把这次结果复制到 A 新指定的输出区。状态归一化会清除临时复制身份；不可变环境输入的稳定身份则保留，并随完整环境参与摘要限定。独立环境各有自己的符号作用域；同一环境的克隆与 RPC 重跑保留原作用域。JSON 中同名的 `Caller` 只是报告内的标签，不能跨独立报告据此证明相等。callee 保存成相对入口时，也不会把其 memory 派生的 calldata 当成原根调用的 calldata。关系约束同样保留；重放时，输入绑定的符号继续指向同一输入，摘要内部新产生的 fresh 叶则统一改名，避免不同调用误用同一个未知运行时值。
 
@@ -115,11 +115,11 @@ jq '{schema_version,
                | {environment, relations, frame: .frame.state.key})}' /tmp/summary-on.json
 ```
 
-分析 `schema_version` 为 11。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
+分析 `schema_version` 为 12。world/RPC 的根输入在 `.entry.environment`；根 `.entry.address` 和帧 `.address` 是具体状态账户，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。例如已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`。这两类输入不能都按裸地址字符串读取。
 
 本实验 `.entry.environment.origin` 为 `null`，表示使用 caller 的默认别名，不表示未知而独立的 origin；显式 `--evm.origin` 会记录地址输入。`.summaries[].input.environment` 仍是全局根调用、交易和区块环境，callee 自己的 caller/value/calldata 在 `.summaries[].input.frame.state` 中，入口关系在 `.summaries[].input.relations`。上面的环境 caller 是外部地址 `0x...1000`，而 B 帧 caller 是 A=`0x...0101`。
 
-单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本仍在 `domain_spec.schema_version`，当前为 2；它与分析 JSON 的 schema 11 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
+单程序 `cfg --format json` 在 `.environment` 记录同一环境模型；`ssa --format json` 则在 `.analysis.environment`。world/RPC 的 `analyze --format json --ssa` 也使用外层 `.analysis` 包装，根环境在 `.analysis.entry.environment`。域策略版本在 `domain_spec.schema_version`，当前为 3；它与分析 JSON 的 schema 12 各自描述不同结构。帧在执行状态中的路径是 `.states[].entry.call_stack.root.state` 与 `.states[].entry.call_stack.children[].state`，不是旧的 `.entry.frames`。
 
 环境类型与输入作用域见 [`world/environment.rs`](../crates/evm-abstract/src/world/environment.rs)，JSON 边界见 [`analysis.rs`](../crates/evm-abstract/src/analysis.rs)，帧结构见 [`machine/frame.rs`](../crates/evm-abstract/src/analysis/machine/frame.rs)。
 
@@ -170,7 +170,7 @@ jq '[.analysis.outcomes[].store.account_observations[]
 
 `explain` 的 `Execution code` 也分别列出实际捕获的 InitCode 与后续 Runtime 指令，使用各自的 hash 和模式；它从分析时保存的代码字节反汇编，不会用初始 world 中的空代码替代新安装的 runtime。同一账户地址可以对应多个代码版本，代码地址也可能与使用代码的状态账户不同。两个代码版本都可以有 B₀，必须结合 C、mode 和 hash 判断身份。默认 CFG 通过代码目录编号连接到抽象图；`--verbose` 另保留每个捕获帧的入口、出口引用。这些引用都不是具体部署交易的逐指令轨迹。SSA 的返回转移还区分 CREATE 地址结果和普通 CALL 的成功位。
 
-`account_observations` 是方便阅读的账户汇总，不包含 storage slot；slot 仍在 `store.persistent.slots`。nonce 和余额是抽象值，JSON 中确定的数值仍写成含 `Constants` 的对象；已知的 `code_size` 则是整数，本例为 8。代码 hash 为零表示已确认 absent；代码为空但账户存在时，hash 是空字节的 Keccak，两者不同。
+`account_observations` 是方便阅读的账户汇总，不包含 storage slot；slot 仍在 `store.persistent.slots`。nonce 和余额是抽象值，JSON 中确定的数值位于机器值的 `.numeric.constants`；已知的 `code_size` 则是整数，本例为 8。代码 hash 为零表示已确认 absent；代码为空但账户存在时，hash 是空字节的 Keccak，两者不同。
 
 ### 第三步：跟着成功生命周期读结果
 

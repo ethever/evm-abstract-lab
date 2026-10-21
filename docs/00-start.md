@@ -114,7 +114,7 @@ B₀ @ 0x0000:
 
 ```text
 status=Converged fork=osaka states=1 edges=0 transfers=1 context_depth=128
-domain=Product | domain schema=2 | reduction rounds=16 | fact atoms=4096
+numeric capacity=512 | domain schema=3 | reduction rounds=16 | fact atoms=4096
 relations=true | local propagation | expression nodes=16384 | depth=256 | constraints=2048
 
 EVM inputs
@@ -137,13 +137,13 @@ EVM inputs
 | `transfers=1` | 分析器处理这个块一次 |
 | `context=[]` | 尚未经过 JUMP/JUMPI，所以历史为空；默认最多保留 128 个最近来源，[第 05 课](05-sensitivity.md) 再比较 |
 | `Converged` | 本抽象模型的待处理工作已经完成；不是合约安全结论 |
-| `domain=Product` | 默认数值层保存位、范围等性质；本例常量仍显示为 `{0x...}` |
-| `relations=true` / `local propagation` | 两种数值 profile 都默认开启独立关系层；当前关系精化使用受节点、深度和约束容量限制的局部传播 |
+| `numeric capacity=512` | 最多保留 512 个完整候选；默认 product 还保存位、范围等性质，本例常量仍显示为 `{0x...}` |
+| `relations=true` / `local propagation` | 两种数值模型都默认开启独立关系层；当前关系精化使用受节点、深度和约束容量限制的局部传播 |
 | `relations in=0 out=0` | 本状态入口/出口没有额外路径约束；本例不需要关系推理 |
 
 `stack in` / `stack out` 在这里表示**栈状态**，不是调用的输入字节和返回字节。
 
-`EVM inputs` 记录本次允许的输入；`⊤` 表示未知，未写 calldata 也不等于空 calldata。本程序不读取这些输入，所以未知环境仍不影响 `2+3=5`。文本 `domain schema=2` 是域策略的格式版本；结果 JSON 的 `schema_version` 为 11，`cfg` 的输入记录在 `.environment`，`ssa --format json` 的记录在 `.analysis.environment`。
+`EVM inputs` 记录本次允许的输入；`⊤` 表示未知，未写 calldata 也不等于空 calldata。本程序不读取这些输入，所以未知环境仍不影响 `2+3=5`。文本 `domain schema=3` 是域策略的格式版本；结果 JSON 的 `schema_version` 为 12，`cfg` 的输入记录在 `.environment`，`ssa --format json` 的记录在 `.analysis.environment`。
 
 `reduction rounds` 和 `fact atoms` 限制这些性质之间的一次信息交换，先保持默认值即可。[第 05 课](05-sensitivity.md)再区分精度参数与执行预算。
 

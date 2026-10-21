@@ -38,10 +38,10 @@ nix run . -- explain --world examples/worlds/call-return-branch.json \
 ```bash
 nix run . -- cfg --hex 336004565b321400 --format json > /tmp/evm-default.json
 jq '.environment | {to, caller, origin, value, calldata}' /tmp/evm-default.json
-jq '.states[-1].exit_stack[0].Constants' /tmp/evm-default.json
+jq '.states[-1].exit_stack[0].numeric.constants' /tmp/evm-default.json
 ```
 
-第一条查询包含 `to={"Symbolic":"To"}`、`caller={"Symbolic":"Caller"}`、`origin=null`、`value="Top"`，calldata 的 length 和 default 都为 `"Top"`。第二条输出 `["0x1"]`。原始字节码没有给定 to，所以逻辑 ADDRESS 未知；其内部状态键不会被当作用户提供的地址。
+第一条查询包含 `to={"Symbolic":"To"}`、`caller={"Symbolic":"Caller"}`、`origin=null`。`value`、calldata 的 `length` 与 `default` 都是 `EvmValue` 对象；默认 product 的数值 Top 写成 `.numeric={}`，省略的数值组件采用各自的 Top/false 默认约束，来源和身份在对象的其他字段。第二条输出 `["0x1"]`。原始字节码没有给定 to，所以逻辑 ADDRESS 未知；其内部状态键不会被当作用户提供的地址。
 
 不同 origin 可以显式提供。例如，caller 与 origin 分别为下面两个具体地址时，EQ 结果为零：
 
@@ -50,7 +50,7 @@ nix run . -- cfg --hex 33321400 \
   --evm.caller 0x0000000000000000000000000000000000001000 \
   --evm.origin 0x0000000000000000000000000000000000001001 \
   --format json > /tmp/evm-distinct-origin.json
-jq '.states[0].exit_stack[0].Constants' /tmp/evm-distinct-origin.json
+jq '.states[0].exit_stack[0].numeric.constants' /tmp/evm-distinct-origin.json
 ```
 
 ## 2. 参数与指令
@@ -85,7 +85,7 @@ PC、CODESIZE/CODECOPY、MSIZE、RETURNDATASIZE/RETURNDATACOPY 根据执行中�
 
 ### 在 JSON 中查输入范围
 
-分析结果格式的 `schema_version` 是 11，数值域策略中的 `domain_spec.schema_version` 是 2。输入环境所在位置随输出入口变化：
+分析结果格式的 `schema_version` 是 12，数值域策略中的 `domain_spec.schema_version` 是 3。输入环境所在位置随输出入口变化：
 
 | 命令 | 环境路径 |
 | --- | --- |
@@ -100,7 +100,7 @@ PC、CODESIZE/CODECOPY、MSIZE、RETURNDATASIZE/RETURNDATACOPY 根据执行中�
 
 RPC 启动时读取 chain ID，并把所选区块解析为一个固定 hash，同时保存该区块的有类型 header 观测。省略 `--block-hash` 和 `--block-number` 时，`latest` 只解析一次；后续采集、callee 发现和分析重跑沿用同一个 hash。
 
-`--block-number` / `--block-hash` 选择账户状态快照。核心世界入口从这份快照填入省略的 NUMBER、TIMESTAMP、COINBASE、PREVRANDAO、GASLIMIT 和可用费用字段，并保留父块 hash 供 BLOCKHASH 使用；CLI、Web、`rpc::load` 后调用 `analyze_world` 都遵循同一规则。header 报告 blob 字段时，采集固定高度的 `eth_feeHistory` 费用观测，并在前后验证 canonical hash，避免把同一 VM fork 内不同 blob 参数阶段混为一谈。缺失的可选费用观测不被伪造为零。
+`--block-number` / `--block-hash` 选择账户状态快照。核心世界入口从这份快照填入省略的 NUMBER、TIMESTAMP、COINBASE、PREVRANDAO、GASLIMIT 和可用费用字段，并保留父块 hash 供 BLOCKHASH 使用；CLI、Web、`rpc::load` 后构造 `AnalysisInput` 并调用 `AnalysisEngine::run` 都遵循同一规则。header 报告 blob 字段时，采集固定高度的 `eth_feeHistory` 费用观测，并在前后验证 canonical hash，避免把同一 VM fork 内不同 blob 参数阶段混为一谈。缺失的可选费用观测不被伪造为零。
 
 显式 `--evm.number`、`--evm.timestamp` 等参数优先于快照默认值；`--evm.chain-id` 也可以覆盖执行 CHAINID。这些覆盖不会改变 RPC 查询的数据来源，输出同时保留固定快照身份、原始 header 观测和有效执行环境。caller、origin、calldata、value、交易 gas price 和 blob 列表仍是交易输入，不能从区块头推定；省略时继续遵循上表的符号输入规则。
 
@@ -117,13 +117,13 @@ LAB_HISTORY_HASH=0x1111111111111111111111111111111111111111111111111111111111111
 nix run . -- cfg --hex 60634060644000 --evm.number 100 \
   --evm.block-hash "99:$LAB_HISTORY_HASH" \
   --format json > /tmp/evm-block-hashes.json
-jq '[.states[0].exit_stack[].Constants]' /tmp/evm-block-hashes.json
+jq '[.states[0].exit_stack[].numeric.constants]' /tmp/evm-block-hashes.json
 
 LAB_BLOB_HASH=0x0111111111111111111111111111111111111111111111111111111111111111
 nix run . -- cfg --hex 5f4960014900 --evm.blob-count 1 \
   --evm.blob-hash "0:$LAB_BLOB_HASH" \
   --format json > /tmp/evm-blob-hashes.json
-jq '[.states[0].exit_stack[].Constants]' /tmp/evm-blob-hashes.json
+jq '[.states[0].exit_stack[].numeric.constants]' /tmp/evm-blob-hashes.json
 ```
 
 两份结果的第一个栈槽都是所提供 hash 的 U256 值，第二个槽都是零：区块 100 不属于当前 NUMBER=100 的历史窗口，blob 索引 1 则超出 count=1。JSON 的 U256 会去掉前导零，因此 blob hash 的字串外观可能短于原始 32 字节输入。
@@ -145,7 +145,7 @@ CALL/STATICCALL 的子帧 caller 来自父帧 ADDRESS，子帧 calldata 来自�
 
 ### 数值策略与关系策略分别选择
 
-默认符号/关系模式对 product 和 constants-only 都生效。下面只比较同一个 CALLVALUE 在两个分支中的一致性：
+默认符号/关系模式对 product 和 finite-set 都生效。下面只比较同一个 CALLVALUE 在两个分支中的一致性：
 
 ```bash
 LAB_RELATIONAL_HEX=3480600114600957005b80600214601257005b00

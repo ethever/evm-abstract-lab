@@ -4,14 +4,14 @@
 
 [数值摘要一课](02-domain.md)解释了一个块内的值如何汇合。这一课跟踪这些摘要怎样流到其他块、怎样重访循环，以及分析没有完成时留下什么证据。
 
-这里使用单字节码的 `cfg` 视图，先学习局部控制流。[diamond](../examples/diamond.hex) 和 [loop](../examples/loop.hex) 用 `constants-only --no-relations` 延续[数值摘要一课](02-domain.md)的纯数值手算，再用默认组合域观察数值精度怎样改变分支。它们与跨合约分析共用抽象核心；本课样例没有外部调用，不需要先掌握调用帧。所有命令在仓库根目录运行，地址以十六进制写，栈按**栈底 → 栈顶**排列。
+这里使用单字节码的 `cfg` 视图，先学习局部控制流。[diamond](../examples/diamond.hex) 和 [loop](../examples/loop.hex) 用 `finite-set --no-relations` 延续[数值摘要一课](02-domain.md)的纯数值手算，再用默认组合域观察数值精度怎样改变分支。它们与跨合约分析共用抽象核心；本课样例没有外部调用，不需要先掌握调用帧。所有命令在仓库根目录运行，地址以十六进制写，栈按**栈底 → 栈顶**排列。
 
 ## 1. 先看一张能手算的图
 
 运行[数值摘要一课](02-domain.md)的菱形分支：
 
 ```bash
-nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relations --context-depth 0
+nix run . -- cfg --numeric-model finite-set --file examples/diamond.hex --no-relations --context-depth 0
 ```
 
 按基本块画出的流程是：
@@ -38,6 +38,8 @@ flowchart TD
 “True”在这里指非零，不只指数字 1。这张图包含分析允许的正常转移；它不保证每条拼接路径都有具体输入能实现。
 
 <a id="2-分清代码块-b-与分析状态-s"></a>
+
+局部 CFG 是原生执行的显式投影；边的 `kind` 使用 `MachineEdgeKind`。上表的普通控制流种类位于 `Intraprocedural` 内，投影还保留两端均被选中的真实 Summary、Call、Return、Revert 和 Failure 边。底层完整图与局部到原生状态 ID 的映射同时保留，便于追踪跨帧执行证据。
 
 ## 2. 分清代码块 Bᵢ 与分析状态 σᵖᵢ
 
@@ -125,7 +127,7 @@ join 扩大入口所代表的可能性，已有边只增加。普通传播在图
 **固定点（fixed point）**是再次执行和传播也不会新增摘要或边的状态。分析器需要稳定摘要，而不是把循环展开固定次数后假定结束。
 
 ```bash
-nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations --context-depth 0 --max-constants 8
+nix run . -- cfg --numeric-model finite-set --file examples/loop.hex --no-relations --context-depth 0 --max-constants 8
 ```
 
 这个程序先设 `i=0`，然后重复 `i=i+1`，在 `i<10` 时跳回 pc=`0x02`。具体执行的 i 依次为 0、1、2……，最后到 10 时退出。
@@ -135,17 +137,17 @@ nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations
 ```text
 入口 {0}        执行后得到 {1}       join → {0,1}
 入口 {0,1}      执行后得到 {1,2}     出现重复增长
-数值 widening   覆盖旧值和新值       constants-only 可扩大为 ⊤
+数值 widening   覆盖旧值和新值       finite-set 可扩大为 ⊤
 入口 ⊤          后续摘要仍被 ⊤ 覆盖   不再新增信息
 ```
 
 容量 8 限制有限常量列表；它不要求引擎一定逐个收集到第 9 个值才扩大。widening 可以提前放弃细节；只有完整上界覆盖后续输入，相关传播也已完成，才能据此讨论固定点。
 
-阅读命令输出时，先用 `domain=ConstantsOnly` 确认数值 profile，用 `relations=false | local propagation` 确认关系配置，再查看循环节点的入口、出口、回边和可能退出的边。`transfers` 记录实际块转换次数，包含重访；它不是循环次数。栈槽若显示 `⊤`，表示整个数值为 Top，没有保留固定位或其他数值约束。完成情况须同时核对 `status` 与未完成前沿。
+阅读命令输出时，先从请求的 `--numeric-model finite-set` 或 JSON 的 `numeric_model` 确认数值模型，用 `relations=false | local propagation` 确认关系配置，再查看循环节点的入口、出口、回边和可能退出的边。`transfers` 记录实际块转换次数，包含重访；它不是循环次数。栈槽若显示 `⊤`，表示整个数值为 Top，没有保留固定位或其他数值约束。完成情况须同时核对 `status` 与未完成前沿。
 
 本实验显式关闭关系传播，没有在非零分支上给 i 附加 `i<10` 的约束，因此摘要会包含实际循环中不会出现的值。`Converged` 表示已完成当前抽象模型的传播，不表示每个数值都已精确，也不表示合约安全。增大 `--max-constants` 只改变保存常量的容量，不会自动加入分支约束。
 
-去掉 `--domain constants-only` 可以比较默认 product。比较时记录各自的状态、边、transfer、前沿和最终数值；widening 可能放弃组件刚刚得到的细节，增加数值组件不能保证每个循环的最终答案更精确，也不能据此保证任意循环的收敛或成本。
+去掉 `--numeric-model finite-set` 可以比较默认 product。比较时记录各自的状态、边、transfer、前沿和最终数值；widening 可能放弃组件刚刚得到的细节，增加数值组件不能保证每个循环的最终答案更精确，也不能据此保证任意循环的收敛或成本。
 
 ## 5. 数值精度怎样改变候选边
 
@@ -153,26 +155,26 @@ nix run . -- cfg --domain constants-only --file examples/loop.hex --no-relations
 
 ```bash
 nix run . -- cfg --file examples/known-bits-branch.hex --no-relations --context-depth 0
-nix run . -- cfg --file examples/known-bits-branch.hex --no-relations --context-depth 0 --domain constants-only
+nix run . -- cfg --file examples/known-bits-branch.hex --no-relations --context-depth 0 --numeric-model finite-set
 ```
 
-默认 product 使用位等约束，只有 `BranchTrue`。constants-only 在未知 x 上丢失 AND/OR 的位信息，所以保留 `BranchTrue` 与 `BranchFalse`。精度影响的是哪些候选能被排除；没有证明条件为零或非零时，两边都要保留。
+默认 product 使用位等约束，只有 `BranchTrue`。finite-set 在未知 x 上丢失 AND/OR 的位信息，所以保留 `BranchTrue` 与 `BranchFalse`。精度影响的是哪些候选能被排除；没有证明条件为零或非零时，两边都要保留。
 
 再区分固定输入身份与基本块内的复制身份：
 
 ```bash
 nix run . -- cfg --file examples/copy-identity.hex --no-relations --context-depth 0
-nix run . -- cfg --file examples/copy-identity.hex --no-relations --context-depth 0 --domain constants-only
+nix run . -- cfg --file examples/copy-identity.hex --no-relations --context-depth 0 --numeric-model finite-set
 ```
 
-这段代码读取一次根 calldata word，再执行 `DUP1; XOR`。读取保留同一固定输入的符号身份，因此 product 和 constants-only 现在都证明 `x XOR x = 0`，只保留 `BranchFalse`。要单独观察共用的块内复制身份，可先计算派生值 `x+1`，再复制并 XOR：
+这段代码读取一次根 calldata word，再执行 `DUP1; XOR`。读取保留同一固定输入的符号身份，因此 product 和 finite-set 现在都证明 `x XOR x = 0`，只保留 `BranchFalse`。要单独观察共用的块内复制身份，可先计算派生值 `x+1`，再复制并 XOR：
 
 ```bash
 nix run . -- cfg --hex 5f356001018018600b57005b00 --no-relations --context-depth 0
-nix run . -- cfg --hex 5f356001018018600b57005b00 --no-relations --context-depth 0 --domain constants-only
+nix run . -- cfg --hex 5f356001018018600b57005b00 --no-relations --context-depth 0 --numeric-model finite-set
 ```
 
-派生运算不保留原 calldata 输入身份，但 DUP 仍复制同一个当前定义。临时复制身份属于共用的 AbstractValue，两种数值 profile 即使在 `--no-relations` 下也只保留 false 边；不能把复制语义当作 product 独有的数值性质。
+派生运算不保留原 calldata 输入身份，但 DUP 仍复制同一个当前定义。临时复制身份属于共用的 EvmValue<N>，两种数值模型 即使在 `--no-relations` 下也只保留 false 边；不能把复制语义当作 product 独有的数值性质。
 
 这两种精度都发生在分支**之前**：先计算条件，再查询“零是否仍可能、非零是否仍可能”。本节关闭关系层，因此 JUMPI 不保留原值的分支假设。默认开启的关系模式则会在 true/false 后继各自记录条件，按有界局部传播已证明的事实收窄后续值或排除矛盾分支；未证明矛盾时保留该后继，无法保留条件或继续执行时才留下未完成前沿，见[第 15 课](15-symbolic-relations.md)。临时复制关系会在块边界失效；同一环境中身份一致的固定输入符号可跨块保留。更多组件的含义见[第 12 课](12-product-domains-facts.md)，跨路径如何少合并见[第 05 课](05-sensitivity.md)。
 
@@ -228,7 +230,7 @@ Top 也包括非法目标。`UnknownJump` 因此还表示存在异常终止的�
 故意缩小预算：
 
 ```bash
-nix run . -- cfg --domain constants-only --file examples/diamond.hex --no-relations --context-depth 0 --max-states 1 --format json
+nix run . -- cfg --numeric-model finite-set --file examples/diamond.hex --no-relations --context-depth 0 --max-states 1 --format json
 ```
 
 此命令预期**退出码为 2**，JSON 仍会输出。看三个字段：

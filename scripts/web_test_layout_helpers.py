@@ -15,7 +15,7 @@ LAYOUT_DEFAULT_LIMITS = {
     "max_states":100_000, "max_transfers":10_000_000, "context_depth":128,
     "max_constants":512, "max_work":2_000_000_000, "max_call_depth":1025,
     "max_memory_bytes":64*1024*1024, "use_summaries":True, "root_terminal_coverage":True,
-    "domain_profile":"Product",
+    "numeric_model":"Product",
     "reduction_rounds":16, "max_facts":4096, "relations_enabled":True,
     "max_constraints":2048, "max_expression_nodes":16_384, "max_expression_depth":256,
     "rpc_max_accounts":4096,

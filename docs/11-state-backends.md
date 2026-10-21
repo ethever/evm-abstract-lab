@@ -2,15 +2,15 @@
 
 学习入口：[模块：调用、状态归属与回滚](modules/calls-state.md) · [理论：状态与保存点](routes/theory.md#calls-state) · [实现：容器后端与回滚](routes/implementation.md#calls-state) · [选择路线](learning-routes.md)。
 
-`A → B → C` 的状态回滚需要两层约定：容器能保留旧版本，执行器知道哪一层调用失败。仓库把前一层放入本地 crate [`snapshot-state`](../crates/snapshot-state)，后一层仍由 [`Store`](../crates/evm-abstract/src/world/store.rs) 和[调用处理](../crates/evm-abstract/src/analysis/transfer/calls.rs)负责。
+`A → B → C` 的状态回滚需要两层约定：容器能保留旧版本，执行器知道哪一层调用失败。仓库把前一层放入本地 crate [`snapshot-state`](../crates/snapshot-state)，后一层仍由 [`EvmStore<N>`](../crates/evm-abstract/src/world/store.rs) 和[调用处理](../crates/evm-abstract/src/analysis/transfer/calls.rs)负责。
 
-本课的 std / imbl 选择改变状态怎样保存和复制；[第 12 课](12-product-domains-facts.md)的 product / constants-only 选择改变 NumericValue 保存哪些数值性质，来源、值身份和表达式属于共用的 AbstractValue。比较容器时固定同一份输入、数值策略和关系模式，才能把结果差异或时间差异归到正确的原因。
+本课的 std / imbl 选择改变状态怎样保存和复制；[第 12 课](12-product-domains-facts.md)的 product / finite-set 选择实际使用 `NumericValue` 或 `FiniteConstantSet`，来源、值身份和表达式属于共用的 `EvmValue<N>`。比较容器时固定同一份输入、数值策略和关系模式，才能把结果差异或时间差异归到正确的原因。
 
 ## 从同一份 Store 切换底层实现
 
 `OrderedMap<K, V>` 是仓库拥有的有序映射包装。默认使用标准库 `BTreeMap`；启用 Cargo feature `imbl` 后使用 `imbl::OrdMap`。两种实现暴露同一组读取、插入、范围更新、遍历与序列化操作。键保持排序，因此更换底层不会改变分析输出的顺序。
 
-`Store::snapshot()` 返回 [`SharedCheckpoint<Store>`](../crates/snapshot-state/src/shared_checkpoint.rs)，覆盖整个事务状态，包括 persistent/transient storage、余额、代码、nonce、账户存在性、创建与待删除标记，以及日志。`capture` 调用一次 `Store::clone` 保存旧版本；随后复制检查点句柄只共享这份不可变状态。`Store::restore(snapshot)` 消费检查点：唯一持有者直接移出旧 Store；还有其他检查点共享它时，先克隆 Store，再替换当前状态，让恢复后的写入与其他检查点隔离。容器不决定调用是否成功，也不负责抽象值的 `join`。
+`EvmStore::snapshot()` 返回 [`SharedCheckpoint<EvmStore<N>>`](../crates/snapshot-state/src/shared_checkpoint.rs)，覆盖整个事务状态，包括 persistent/transient storage、余额、代码、nonce、账户存在性、创建与待删除标记，以及日志。`capture` 调用一次 `EvmStore::clone` 保存旧版本；随后复制检查点句柄只共享这份不可变状态。`EvmStore::restore(snapshot)` 消费检查点：唯一持有者直接移出旧 Store；还有其他检查点共享它时，先克隆 Store，再替换当前状态，让恢复后的写入与其他检查点隔离。容器不决定调用是否成功，也不负责抽象值的 `join`。
 
 原有 [`Checkpoint<T>`](../crates/snapshot-state/src/checkpoint.rs) 仍保存独占的泛型状态；`from_state` 与消费式 `restore` 不要求 `T: Clone`，恢复时直接移动状态。它与 Store 使用的共享检查点是两个不同的类型。
 
@@ -39,7 +39,7 @@ cargo run --release --locked -p evm-abstract-cli --features imbl -- \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x --format json
 ```
 
-以上两个命令把 caller、value 和 calldata 明确限定为同一具体输入。省略这些参数会分析符号输入；比较两种后端时也必须保留相同范围。结果 JSON 的 `schema_version` 为 11，调用环境在 `.entry.environment`，帧键 `.states[].key.frames[].caller` 用 `{"Concrete": "0x..."}` 或 `{"Symbolic": "Caller"}` 表示；`.address_value` 是逻辑 ADDRESS，`.address` 是状态账户键。每次环境的私有编号不进入 JSON；同名符号不构成不同分析之间的相等证明。
+以上两个命令把 caller、value 和 calldata 明确限定为同一具体输入。省略这些参数会分析符号输入；比较两种后端时也必须保留相同范围。结果 JSON 的 `schema_version` 为 12，调用环境在 `.entry.environment`，帧键 `.states[].key.frames[].caller` 用 `{"Concrete": "0x..."}` 或 `{"Symbolic": "Caller"}` 表示；`.address_value` 是逻辑 ADDRESS，`.address` 是状态账户键。每次环境的私有编号不进入 JSON；同名符号不构成不同分析之间的相等证明。
 
 feature 在一次构建中统一选择后端；同一个进程里的 Store 使用同一实现。并行比较使用独立 target 目录，避免后一次构建覆盖前一次的二进制。
 
@@ -69,7 +69,7 @@ STATE_BACKEND_REPEATS=3 \
 
 ## 测量边界
 
-[`state-backends` example](../crates/evm-abstract/examples/state-backends.rs) 构造一个拥有完整初始 storage 的账户，使用真实 `Store` 与默认抽象域。输入、写入值、join 的另一个 Store，以及每项开始前的状态复制都在计时外准备。
+[`state-backends` example](../crates/evm-abstract/examples/state-backends.rs) 构造一个拥有完整初始 storage 的账户，使用真实 `EvmStore<N>` 与显式构造的 `ValueAlgebra<ProductAlgebra>`。输入、写入值、join 的另一个 Store，以及每项开始前的状态复制都在计时外准备。
 
 | 工作负载 | 一次计时操作包含什么 |
 | --- | --- |

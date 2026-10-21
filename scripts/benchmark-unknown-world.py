@@ -23,8 +23,10 @@ CASES = ["static-reuse", "busy-x", "busy-x-nested", "external-change"]
 
 
 def constants(value):
-    assert isinstance(value, dict) and "Constants" in value, value
-    return {int(item, 0) for item in value["Constants"]}
+    assert isinstance(value, dict) and isinstance(value.get("numeric"), dict), value
+    candidates = value["numeric"]["constants"]
+    assert isinstance(candidates, list) and candidates, value
+    return {int(item, 0) for item in candidates}
 
 
 def word(data, offset, allowed):

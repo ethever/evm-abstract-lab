@@ -69,7 +69,7 @@ parity
       ''
         mkdir "$out"
         ${package}/bin/evm-abstract cfg --hex 00 --format json > "$out/report.json"
-        jq -e '.config.relations == {
+        jq -e '.domain_spec.relations == {
           enabled: true, max_constraints: 2048, max_nodes: 16384, max_depth: 256
         }' "$out/report.json" > /dev/null
       '';

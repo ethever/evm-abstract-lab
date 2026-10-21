@@ -106,15 +106,15 @@ jq '(.states[] | select(.key.basic_block_index == 2) | .id) as $source
 
 ```bash
 jq '.states[] | select(.key.basic_block_index == 2)
-    | {entry_constants: .entry_stack[0].Constants,
+    | {entry_constants: .entry_stack[0].numeric.constants,
        constraints: .entry_relations.constraints}' /tmp/relations.json
 ```
 
 `entry_constants` 为 `["0x1"]`。constraints 中的 `Truth` 保存 `nonzero:true` 和一份 flat expression graph：`root` 指向 `nodes` 中的 Operation，opcode 20 即 EQ，`args` 是常量 1 与 Input(CallValue) 的本图索引。Input 还带 scope，图带 identity_scope。输入表达式仍表示原来的 v，数值层证明它在这个状态里只能为 1；不能把不同图中的同一个索引当成同一节点，也不会为每条分支伪造新交易。
 
-结果 JSON 的 `schema_version` 为 11；`domain_spec.schema_version` 为 2，`cost_version` 为 6。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
+结果 JSON 的 `schema_version` 为 12；`domain_spec.schema_version` 为 3，`cost_version` 为 7。原始字节码的输入记录在 `.environment`，world 分析的输入记录在 `.entry.environment`。输入和预算必须一起保留，才能解释某条边为何被排除或尚未完成。
 
-当前 Native schema 11 和独立的 Web schema 16 延续此前的移除：provider / `rlimit` 与 solver 结果不再导出。数值事实错误继续保留为带参数的 `ScalarFactError`；配置、约束容量、事实容量和表达式界限仍类型化传输。新 reduction reason `WorkLimit`、`Cancelled`、`KernelFailure` 分别表示共享工作额度不足、取消和 kernel 失败，与局部调度额度 `RoundLimit` 区分。费用版本 6 更新共享 kernel、规则和独立数值查询的收费，跨费用版本的原始 work 不是相同单位；历史测量保留原版本。旧 solver/provider/model 结果不再属于当前协议。
+当前 Native schema 12 和独立的 Web schema 17 延续此前的移除：provider / `rlimit` 与 solver 结果不再导出。数值事实错误继续保留为带参数的 `ScalarFactError`；配置、约束容量、事实容量和表达式界限仍类型化传输。新 reduction reason `WorkLimit`、`Cancelled`、`KernelFailure` 分别表示共享工作额度不足、取消和 kernel 失败，与局部调度额度 `RoundLimit` 区分。费用版本 6 更新共享 kernel、规则和独立数值查询的收费，跨费用版本的原始 work 不是相同单位；历史测量保留原版本。旧 solver/provider/model 结果不再属于当前协议。
 
 ## 2. 五层信息分别保存什么
 
@@ -126,7 +126,7 @@ jq '.states[] | select(.key.basic_block_index == 2)
 | 符号表达式 | `ExprId` | 常量、输入、fresh、ITE、byte/word/slot read、Keccak 与纯 EVM 运算 |
 | 跨值约束 | `RelationState` | 继承公式、当前条件合取和 guarded alternatives |
 
-`AbstractValue` 把数值、来源、身份和可选表达式放在一起。完整关系约束属于 `MachinePayload`，因为一个条件可以同时涉及栈、内存、账户状态与调用输入中的多个值。
+`EvmValue<N>` 把数值、来源、身份和可选表达式放在一起。完整关系约束属于 `EvmMachinePayload<N>`，因为一个条件可以同时涉及栈、内存、账户状态与调用输入中的多个值。
 
 先分别回答几个问题，就能理解上表为什么需要多层：
 
@@ -147,7 +147,7 @@ nix run . -- cfg --hex 5f356001015f356001011400 \
   --format json > /tmp/expression-repeat-on.json
 nix run . -- cfg --hex 5f356001015f356001011400 \
   --no-relations --format json > /tmp/expression-repeat-off.json
-jq '.states[0].exit_stack[0].Constants' \
+jq '.states[0].exit_stack[0].numeric.constants' \
   /tmp/expression-repeat-on.json /tmp/expression-repeat-off.json
 ```
 
@@ -269,7 +269,7 @@ nix run . -- cfg --hex 3480600114600957005b80600214601257005b00 \
   --max-symbolic-depth 256 --max-relations 2048
 ```
 
-CLI 不再接受 `--smt.provider`、`--smt.rlimit`，Web 不再提供 solver 下拉框或资源额度输入；当前协议 16 的旧字段会在请求解码时拒绝。JSON 中，单段字节码的策略仍位于 `.config.relations`，world/RPC 位于 `.config.analysis.relations`；带 SSA 的 JSON 外层再包一层 `.analysis`。策略只包含 `enabled`、`max_nodes`、`max_depth`、`max_constraints`。
+CLI 不再接受 `--smt.provider`、`--smt.rlimit`，Web 不再提供 solver 下拉框或资源额度输入；当前协议 16 的旧字段会在请求解码时拒绝。JSON 中，单段字节码的策略仍位于 `.domain_spec.relations`，world/RPC 位于 `.config.analysis.relations`；带 SSA 的 JSON 外层再包一层 `.analysis`。策略只包含 `enabled`、`max_nodes`、`max_depth`、`max_constraints`。
 
 | 参数 | CLI / Web 默认值 | 限制什么 |
 | --- | --- | --- |

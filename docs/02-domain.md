@@ -4,7 +4,7 @@
 
 [字节码一课](01-bytecode.md)按字节切出了指令和块。这一课先手算两条路径的汇合，再解释分析器用什么值来概括它们。目标是读懂 `{...}`、`⊤`、join，以及“结果保守”具体意味着什么。
 
-本课用 `--no-relations` 隔离数值层，先以 `--domain constants-only` 手算有限常量集合，再解释默认分析为什么能在“列不完候选值”时继续保留信息。默认 `product` 将常量集合、KnownBits、Interval、Congruence 和非零保证组合为 NumericValue；AbstractValue 另外保存来源、角色、身份与表达式；这些组件的分工与交换机制见[第 12 课](12-product-domains-facts.md)。
+本课用 `--no-relations` 隔离数值层，先以 `--numeric-model finite-set` 手算有限常量集合，再解释默认分析为什么能在“列不完候选值”时继续保留信息。`ProductAlgebra` 将常量集合、KnownBits、Interval、Congruence 和非零保证组合为 `NumericValue`；`FiniteSetAlgebra` 则直接使用 `FiniteConstantSet`。共用的 `EvmValue<N>` 另外保存来源、角色、身份与表达式；这些组件的分工与交换机制见[第 12 课](12-product-domains-facts.md)。
 
 本课命令在仓库根目录运行。手算中的无前缀数字是十进制；CLI 用 `0x` 显示十六进制。栈仍按**栈底 → 栈顶**排列。
 
@@ -32,7 +32,7 @@
 运行：
 
 ```bash
-nix run . -- cfg --no-relations --domain constants-only --file examples/diamond.hex --context-depth 0
+nix run . -- cfg --no-relations --numeric-model finite-set --file examples/diamond.hex --context-depth 0
 ```
 
 本课显式使用 `--context-depth 0`，不按跳转历史分组，以便观察同一状态内的值集合汇合。默认值 128 的分组方式留到[第 05 课](05-sensitivity.md)比较。找到 pc=`0x000e` 的汇合状态，当前输出为：
@@ -52,7 +52,7 @@ nix run . -- cfg --no-relations --domain constants-only --file examples/diamond.
 
 一次具体执行的槽位里只有一个数。**抽象值**用一个摘要覆盖多次具体执行中的可能值；指令直接在这些摘要上运算，这就是本实验中的抽象解释。
 
-在 constants-only 对照中，数值有两种形式：非空有限常量集合，以及 `Top`。它仅切换数值层；符号和关系层默认仍启用，需要隔离数值效果时加 `--no-relations`。它仍保留同一固定输入的符号身份，例如默认 caller 与 origin 的关联；身份不把一个未知数值变成常量，却能证明两个读取来自同一个输入。
+在 finite-set 对照中，数值有两种形式：非空有限常量集合，以及 `Top`。它仅切换数值层；符号和关系层默认仍启用，需要隔离数值效果时加 `--no-relations`。它仍保留同一固定输入的符号身份，例如默认 caller 与 origin 的关联；身份不把一个未知数值变成常量，却能证明两个读取来自同一个输入。
 
 允许使用哪些摘要，以及如何比较、汇合和转换这些摘要，共同定义了**抽象域（abstract domain）**。本课使用有限常量集合域解释这些概念。
 
@@ -72,7 +72,7 @@ Top **不是**“没有值”，也不是分析停止。比如未知 calldata wo
 
 默认组合域需要再区分两件事：**列不出一个完整有限集合**，以及**没有任何数值限制**。前者只是常量集合组件为 Top；其他组件仍可能知道“高 248 位为零”“在 0…255 内”或“最低位为 1”。这些限制共同约束同一个值，数值含义取它们的交集，而不是并集。整个数值没有限制时，文本只显示 `⊤`；存在其他数值限制且没有完整常量集合时，显示区间、`bits=` 位模式和同余等约束。JSON 仍可能保存 Calldata 等来源标签；来源本身不缩小候选数值。固定输入还可带有受本次环境范围限定的符号身份；它与泛来源标签不同，数值为 Top 时也会在 JSON 中保留。单看 `bits=` 后的 64 个 `*`，不能忽略同一值的区间或同余约束。
 
-另一个符号 `⊥` 读作 Bottom，通常表示“没有执行状态”。本实现没有把它做成 `AbstractValue`：一个可传播的栈槽位不允许是空集合，私有字段和受控构造函数保证有限集合非空；组合约束可能尚未求解联合存在性，不能把每个组件非空当作整体可达证明；未到达的位置由没有对应状态来表示。
+另一个符号 `⊥` 读作 Bottom，通常表示“没有执行状态”。本实现没有把它做成 `EvmValue<N>`：一个可传播的栈槽位不允许是空集合，私有字段和受控构造函数保证有限集合非空；组合约束可能尚未求解联合存在性，不能把每个组件非空当作整体可达证明；未到达的位置由没有对应状态来表示。
 
 这里有个重要前提：如果分析是 `Incomplete`，没有状态也可能只是尚未展开。必须先检查分析状态与未完成前沿，再讨论不可达，不能把“尚未分析”读成“不会执行”。
 
@@ -88,10 +88,10 @@ Top **不是**“没有值”，也不是分析停止。比如未知 calldata wo
 
 `⊔` 叫 **join（汇合运算）**。它返回当前表示法中覆盖两个输入的最精确摘要。取交集会丢失某条路径；只保留先到达的值也会漏掉后到达的路径。
 
-CLI 默认每个集合最多保存 512 个不同常量。`--max-constants` 接受运行平台能表示的任意正 `usize`，没有额外的 64 上限。超过容量时，常量集合组件升到 Top，而不是删掉部分元素。constants-only 的数值分析只使用这个组件，因此整个数值也变成 Top。用同一个程序缩小容量：
+CLI 默认每个集合最多保存 512 个不同常量。`--max-constants` 接受运行平台能表示的任意正 `usize`，没有额外的 64 上限。超过容量时，常量集合组件升到 Top，而不是删掉部分元素。finite-set 的数值分析只使用这个组件，因此整个数值也变成 Top。用同一个程序缩小容量：
 
 ```bash
-nix run . -- cfg --no-relations --domain constants-only --file examples/diamond.hex --context-depth 0 --max-constants 1
+nix run . -- cfg --no-relations --numeric-model finite-set --file examples/diamond.hex --context-depth 0 --max-constants 1
 ```
 
 pc=`0x000e` 现在显示：
@@ -125,7 +125,7 @@ pc=`0x000e` 现在显示：
 结果：{11,12,21,22}
 ```
 
-枚举所有输入组合叫笛卡尔积。在 constants-only 中，结果超过容量仍升到 Top；输入包含 Top 时，普通算术通常也返回 Top。比较结果本来只可能是 0 或 1，因此容量至少为 2 时，未知比较仍能表示为 `{0,1}`。
+枚举所有输入组合叫笛卡尔积。在 finite-set 中，结果超过容量仍升到 Top；输入包含 Top 时，普通算术通常也返回 Top。比较结果本来只可能是 0 或 1，因此容量至少为 2 时，未知比较仍能表示为 `{0,1}`。
 
 按程序顺序串起每条指令的转换，就得到整个基本块的 transfer；[控制流一课](03-cfg.md)的队列以块为单位执行它。
 
@@ -142,7 +142,7 @@ pc=`0x000e` 现在显示：
 非交换运算尤其要手算顺序：
 
 ```bash
-nix run . -- cfg --no-relations --domain constants-only --hex 600260030300
+nix run . -- cfg --no-relations --numeric-model finite-set --hex 600260030300
 ```
 
 ```text
@@ -154,11 +154,11 @@ STOP
 
 预期 `stack out [{0x1}]`。交换律会让 ADD 的顺序错误不易被发现，SUB 可以直接揭示它。
 
-Osaka 的 `CLZ` 计算 256 位数的前导零数量：最高位为 1 得 0，只有最低位为 1 得 255，全零得 256。未知输入的结果只可能在 `0..=256`，完整集合需要 257 个常量。下面显式设置 `--max-constants 8` 时，constants-only 返回 Top；容量至少为 257 且执行预算足够时，可保留这 257 个完整候选。组合域在相同的小容量下即使无法列完，也能由区间和固定位组件保留范围 `0..=256` 与结果高位为零的性质：
+Osaka 的 `CLZ` 计算 256 位数的前导零数量：最高位为 1 得 0，只有最低位为 1 得 255，全零得 256。未知输入的结果只可能在 `0..=256`，完整集合需要 257 个常量。下面显式设置 `--max-constants 8` 时，finite-set 返回 Top；容量至少为 257 且执行预算足够时，可保留这 257 个完整候选。组合域在相同的小容量下即使无法列完，也能由区间和固定位组件保留范围 `0..=256` 与结果高位为零的性质：
 
 ```bash
-nix run . -- cfg --no-relations --hex 5f351e00 --domain constants-only --max-constants 8
-nix run . -- explain --no-relations --hex 5f351e00 --domain constants-only --max-constants 257
+nix run . -- cfg --no-relations --hex 5f351e00 --numeric-model finite-set --max-constants 8
+nix run . -- explain --no-relations --hex 5f351e00 --numeric-model finite-set --max-constants 257
 nix run . -- cfg --no-relations --hex 5f351e00 --max-constants 8
 ```
 
@@ -173,10 +173,10 @@ nix run . -- cfg --no-relations --hex 5f351e00 --max-constants 8
 容量也可以设为 1000：
 
 ```bash
-nix run . -- explain --no-relations --hex 5f351e00 --domain constants-only --max-constants 1000 --max-work 20000000
+nix run . -- explain --no-relations --hex 5f351e00 --numeric-model finite-set --max-constants 1000 --max-work 20000000
 ```
 
-这个参数不会再因超过 64 而被拒绝，但接受配置不等于完成执行。这条命令显式把共享工作预算降到 2000 万；容量 1000 的分析会在执行到 CLZ 前耗尽预算，输出 `status=Incomplete` 与 `Work` 前沿，显示 `SSA unavailable`，退出码为 2。较大的容量会增加工作估算，其他输入也可能发生预算中断。因此要同时检查状态与最终数值，不能只凭容量足够就宣称已完整枚举。
+容量 1000 是有效配置，不会预分配 1000 个候选。此命令另外指定了 2000 万共享工作预算：配置容量与实际工作报价是不同约束，不能仅凭容量推断是否会耗尽预算。先检查 `status`；完成时应保留 CLZ 的全部 257 个候选，工作被拒绝时则保留 `Incomplete` 与 `Work` 前沿，完整 SSA 不可用，退出码为 2。数值运算按当前操作数和 opcode 报价；预算中断的独立实验见[第 06 课](06-boundaries.md#实验-b预算用尽传播尚未完成)。
 
 ## 5. 为什么摘要会包含实际不会出现的组合
 
@@ -200,13 +200,13 @@ nix run . -- explain --no-relations --hex 5f351e00 --domain constants-only --max
 
 将这些数值摘要用于内存时，还要决定读写哪个字节，以及能否保留字节之间的关联。[第 14 课](14-memory-model.md)从 MSTORE/MLOAD 的具体读写开始，说明抽象字节数组怎样处理这些问题。
 
-即使关闭表达式和关系传播，执行值仍保留两种有限的相等证据。**固定输入符号**表示同一环境中的同一个未知输入；product 和 constants-only 都能保留它。根帧在相同偏移重复读取 calldata，或读取默认关联的 caller 与 origin，可以据此证明相等；不同偏移、不同环境或不相关的子帧输入不能只凭名称相同就关联。**块内复制身份**则由共用的 AbstractValue 为一次运行时定义签发，DUP 复制它；派生值的复制也可使用 `x XOR x = 0`，但这种临时身份在块边界、join 和调用边界失效。固定输入符号在身份一致时可跨块保留，不会因此恢复任意路径约束或内存别名。[控制流一课](03-cfg.md)会观察这种局部关系怎样影响分支，[第 04 课](04-ssa.md)再区分它与 SSA 名字。
+即使关闭表达式和关系传播，执行值仍保留两种有限的相等证据。**固定输入符号**表示同一环境中的同一个未知输入；product 和 finite-set 都能保留它。根帧在相同偏移重复读取 calldata，或读取默认关联的 caller 与 origin，可以据此证明相等；不同偏移、不同环境或不相关的子帧输入不能只凭名称相同就关联。**块内复制身份**则由共用的 EvmValue<N> 为一次运行时定义签发，DUP 复制它；派生值的复制也可使用 `x XOR x = 0`，但这种临时身份在块边界、join 和调用边界失效。固定输入符号在身份一致时可跨块保留，不会因此恢复任意路径约束或内存别名。[控制流一课](03-cfg.md)会观察这种局部关系怎样影响分支，[第 04 课](04-ssa.md)再区分它与 SSA 名字。
 
 [第五课](05-sensitivity.md)会比较保留路径、上下文和数值关系的不同方法。增加集合容量能少丢常量，却不会自动恢复这些配对关系。
 
 ## 6. 为什么循环不会要求无限扩大的集合
 
-先把常量容量设为 8，看 constants-only 中不断把计数器加 1 的循环。循环入口反复汇合新值时，摘要可能这样增长：
+先把常量容量设为 8，看 finite-set 中不断把计数器加 1 的循环。循环入口反复汇合新值时，摘要可能这样增长：
 
 ```text
 {0} → {0,1} → {0,1,2} → … → {0,…,7} → ⊤
@@ -224,7 +224,9 @@ nix run . -- explain --no-relations --hex 5f351e00 --domain constants-only --max
 
 建议先读 [`FiniteConstantSet`](../crates/evm-abstract/src/domain/finite_constant_set.rs)：它把常量组件封装为 Top 或非空有限集合，集合求交或筛选为空时返回错误。容量由 [`DomainSpec`](../crates/evm-abstract/src/domain/spec.rs) 决定，不保存在每个集合里；有界收集与 join 超过容量时放弃整个常量列表。
 
-再读 [`NumericValue`](../crates/evm-abstract/src/domain/numeric.rs) 的 `finite_constants()`、`contains`、`singleton`：第一个接口查看这个组件，后两个查询同时检查数值约束。执行值 [`AbstractValue`](../crates/evm-abstract/src/domain/value.rs) 显式转交这些数值查询，并另外保存来源、身份和表达式。旧 `constants()` 仍可借用 `BTreeSet<U256>`；返回 None 只说明常量组件为 Top。然后读 [`domain.rs`](../crates/evm-abstract/src/domain.rs) 的 `Domain::join`、`collect` 和 `finite_apply`，核对本课手算。数值组合 profile 的转换转到 [`domain/transfer.rs`](../crates/evm-abstract/src/domain/transfer.rs)，各数值组件在这里传播结果，再进行有界交换。可信复制身份的通用相等规则则由 Domain 在选择数值 profile 之前处理。具体 EVM 规则在 [`domain/concrete.rs`](../crates/evm-abstract/src/domain/concrete.rs) 的 `evaluate`；大整数计算由 alloy/ruint 提供。
+数值策略有两个独立实现：[`FiniteSetAlgebra`](../crates/evm-abstract/src/domain/finite_algebra.rs) 的实际载体是 `FiniteConstantSet`；[`ProductAlgebra`](../crates/evm-abstract/src/domain/cooperation/policy.rs) 的实际载体是 [`NumericValue`](../crates/evm-abstract/src/domain/numeric.rs)。前者适合核对本课的有限并集、笛卡尔积和容量手算，后者在不能列完候选时继续传播位、区间与同余约束。两者都实现 [`EvmNumericAlgebra`](../crates/evm-abstract/src/domain/algebra.rs)，以借用的操作数执行 `apply_numeric(op, args)`，并按 opcode 给出完整工作报价。
+
+执行值 [`EvmValue<N>`](../crates/evm-abstract/src/domain/value.rs) 保存真实的数值载体 `N`；[`ValueAlgebra<D>`](../crates/evm-abstract/src/domain/algebra.rs) 统一处理来源、可信复制身份与表达式，再调用选定的数值代数。容量和关系限制来自这份代数的 `spec()`。应用只在入口选择一次 `product` 或 `finite-set`，随后世界、栈、字节数组和结果都保留相应的类型。具体 EVM 规则在 [`domain/concrete.rs`](../crates/evm-abstract/src/domain/concrete.rs) 的 `evaluate`；大整数计算由 alloy/ruint 提供。
 
 [`concrete.rs`](../crates/evm-abstract/tests/concrete.rs) 用 revm 对照已支持纯操作的边界值和随机 256 位输入；这是核对 EVM 语义的证据，不等于所有环境、内存、跨合约行为都已精确建模。
 
