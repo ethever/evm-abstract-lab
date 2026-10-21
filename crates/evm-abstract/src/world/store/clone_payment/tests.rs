@@ -67,7 +67,10 @@ fn live_store_prices_every_owned_numeric_container_and_preserves_saved_source() 
     let mut budget = WorkBudget::new(fee);
     store.pay_clone_with(&mut budget).unwrap();
     let copied = store.clone();
-    assert_eq!(RECEIPT.get().bytes, count * 4096);
+    // imbl shares the owner maps and log entries. The two operand BTreeMaps
+    // and three inline defaults still own their numeric copies.
+    let owned = if cfg!(feature = "imbl") { 2 + 3 } else { count };
+    assert_eq!(RECEIPT.get().bytes, owned * 4096);
     assert_eq!(copied, original);
     assert!(copied.balance_default.same_identity(&store.balance_default));
     assert_eq!(budget.used(), fee);
