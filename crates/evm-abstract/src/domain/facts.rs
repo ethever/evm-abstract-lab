@@ -265,14 +265,8 @@ pub struct OperationRelation {
 impl OperationRelation {
     /// 验证操作码与操作数个数；不接受带存储、调用等效果的操作。
     pub fn new(opcode: u8, result: Symbol, operands: Vec<Term>) -> Result<Self, FactError> {
-        if !matches!(opcode, 0x01..=0x0b | 0x10..=0x1e) {
-            return Err(FactError::UnsupportedOperation(opcode));
-        }
-        let expected = match opcode {
-            0x15 | 0x19 | 0x1e => 1,
-            0x08 | 0x09 => 3,
-            _ => 2,
-        };
+        let expected =
+            super::concrete::arity(opcode).ok_or(FactError::UnsupportedOperation(opcode))?;
         if operands.len() != expected {
             return Err(FactError::InvalidOperation {
                 opcode,

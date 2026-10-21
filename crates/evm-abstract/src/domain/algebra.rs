@@ -58,18 +58,9 @@ impl<N: WordElement> NumericReduction<N> {
             strengthened: 0,
         }
     }
-    fn attach(self, value: &EvmValue<N>) -> EvmReduction<N> {
+    fn with_metadata(self, wrap: impl FnOnce(N) -> EvmValue<N>) -> EvmReduction<N> {
         EvmReduction {
-            value: value.copy_metadata(self.value),
-            status: self.status,
-            rounds: self.rounds,
-            strengthened: self.strengthened,
-            symbolic_error: None,
-        }
-    }
-    fn into_value(self) -> EvmReduction<N> {
-        EvmReduction {
-            value: EvmValue::from_numeric(self.value),
+            value: wrap(self.value),
             status: self.status,
             rounds: self.rounds,
             strengthened: self.strengthened,
@@ -488,8 +479,22 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         left: &EvmValue<D::Element>,
         right: &EvmValue<D::Element>,
     ) -> EvmValue<D::Element> {
+        self.join_metadata(
+            left,
+            right,
+            self.numeric.join_numeric(left.numeric(), right.numeric()),
+        )
+    }
+    // Join and acceleration share metadata laws, independently of the selected
+    // numeric operation. In particular, identity.join drops runtime identities.
+    fn join_metadata(
+        &self,
+        left: &EvmValue<D::Element>,
+        right: &EvmValue<D::Element>,
+        numeric: D::Element,
+    ) -> EvmValue<D::Element> {
         EvmValue {
-            numeric: self.numeric.join_numeric(left.numeric(), right.numeric()),
+            numeric,
             provenance: left.provenance.join(&right.provenance),
             identity: left.identity.join(&right.identity),
             expression: left
@@ -506,26 +511,11 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         old: &EvmValue<D::Element>,
         next: &EvmValue<D::Element>,
     ) -> EvmValue<D::Element> {
-        self.widen_metadata(
+        self.join_metadata(
             old,
             next,
             self.numeric.widen_numeric(old.numeric(), next.numeric()),
         )
-    }
-    fn widen_metadata(
-        &self,
-        old: &EvmValue<D::Element>,
-        next: &EvmValue<D::Element>,
-        numeric: D::Element,
-    ) -> EvmValue<D::Element> {
-        let mut out = next.copy_metadata(numeric);
-        out.identity = old.identity.join(&next.identity);
-        out.provenance = old.provenance.join(&next.provenance);
-        out.symbolic_limit = old.symbolic_limit || next.symbolic_limit;
-        if old.expression != next.expression {
-            out.forget_expression();
-        }
-        out
     }
     /// Procedure acceleration preserves the selected algebra's convergence policy.
     pub fn widen_procedure(
@@ -548,11 +538,13 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         if self.spec().profile() == super::Profile::ConstantsOnly {
             return EvmValue::from_numeric(numeric);
         }
-        self.widen_metadata(old, next, numeric)
+        self.join_metadata(old, next, numeric)
     }
     /// Sound local closure; input and all metadata remain independently owned.
     pub fn reduce(&self, value: &EvmValue<D::Element>) -> EvmReduction<D::Element> {
-        self.numeric.reduce_numeric(value.numeric()).attach(value)
+        self.numeric
+            .reduce_numeric(value.numeric())
+            .with_metadata(|numeric| value.copy_metadata(numeric))
     }
     /// Construct from validated guarantees; unsupported custom constraints may coarsen.
     pub fn from_facts(
@@ -597,12 +589,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
         op: u8,
         args: &[EvmValue<D::Element>],
     ) -> (EvmReduction<D::Element>, SingletonProof) {
-        let expected = match op {
-            opcode::ISZERO | opcode::NOT | opcode::CLZ => 1,
-            opcode::ADDMOD | opcode::MULMOD => 3,
-            _ => 2,
-        };
-        let supported = matches!(op,0x01..=0x0b|0x10..=0x1e) && args.len() == expected;
+        let supported = super::concrete::arity(op) == Some(args.len());
         let exact = (supported && args.len() > 1 && args[0].same_identity(&args[1]))
             .then(|| match op {
                 opcode::EQ => Some(U256::from(1)),
@@ -618,7 +605,7 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
             self.numeric
                 .apply_numeric_borrowed(op, args.iter().map(EvmValue::numeric))
         };
-        let mut reduced = numeric.into_value();
+        let mut reduced = numeric.with_metadata(EvmValue::from_numeric);
         let limits = self.spec().relations();
         let inherited_limit = args.iter().any(EvmValue::symbolic_limit_reached);
         // One discovery belongs to the enclosing operation envelope. Reuse it
@@ -1052,29 +1039,12 @@ impl<D: EvmNumericAlgebra> AlgebraRef<'_, D> {
                 .numeric
                 .refinement_work(left, 1)
                 .saturating_add(metadata_work))?;
-            return Ok(super::relational::intersect_numeric(left, right, self));
+            return super::relational::intersect_numeric_with(left, right, self, |_| Ok(()));
         };
         pay(import.saturating_add(metadata_work))?;
-        let numeric = match left.constrain(&right.observation()) {
-            Ok(numeric) => numeric,
-            Err(
-                facts::FactError::Contradiction { .. }
-                | facts::FactError::ConflictingBits
-                | facts::FactError::InvalidBounds
-                | facts::FactError::EmptyFiniteSet,
-            ) => return Ok(None),
-            Err(_) => return Ok(Some(left.clone())),
-        };
-        if numeric
-            .constants()
-            .is_some_and(|values| !values.iter().any(|word| numeric.contains(*word)))
-        {
-            return Ok(None);
-        }
-        pay(self.numeric_reduction_work(&numeric))?;
-        let reduced = self.numeric.reduce_numeric(&numeric);
-        Ok((reduced.status != ReductionStatus::Empty)
-            .then(|| self.numeric.project_numeric(&reduced.value)))
+        super::relational::intersect_numeric_with(left, right, self, |numeric| {
+            pay(self.numeric_reduction_work(numeric))
+        })
     }
     /// Same borrowed policy and view type, with expression construction disabled.
     pub fn without_relations(mut self) -> Self {
