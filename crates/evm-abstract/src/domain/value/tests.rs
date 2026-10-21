@@ -62,7 +62,11 @@ fn native_serialization_keeps_numeric_components_and_metadata_separate() {
     let top = serde_json::to_value(EvmValue::<NumericValue>::top()).unwrap();
     assert!(top.is_object());
     assert_eq!(top["numeric"], numeric_top);
-    assert!(top.get("provenance").is_some());
+    assert_eq!(top, serde_json::json!({"numeric": {}}));
+    assert_eq!(
+        serde_json::to_value(EvmValue::<FiniteConstantSet>::top()).unwrap(),
+        top
+    );
 }
 
 #[test]
@@ -261,6 +265,13 @@ fn symbolic_limit_survives_numeric_only_callers_and_clears_on_exact_results() {
 fn transient_copy_identity_is_shared_by_native_carriers_and_relation_switches() {
     fn check<D: EvmNumericAlgebra>(domain: ValueAlgebra<D>) {
         let input = EvmValue::<D::Element>::top().with_identity(3, 4);
+        assert!(
+            serde_json::to_value(&input)
+                .unwrap()
+                .get("identity")
+                .is_none(),
+            "runtime identities do not cross persistent serialization boundaries"
+        );
         assert_eq!(
             domain
                 .apply(revm_bytecode::opcode::XOR, &[input.clone(), input.clone()])

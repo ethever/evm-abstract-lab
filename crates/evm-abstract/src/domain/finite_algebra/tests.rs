@@ -1,6 +1,9 @@
 use super::*;
 use std::{collections::BTreeSet, fmt, num::NonZeroUsize};
 
+pub(super) static NUMERIC_EXECUTIONS: crate::test_instrumentation::Counter<(usize, usize)> =
+    crate::test_instrumentation::Counter::new((0, 0));
+
 fn algebra(capacity: usize) -> FiniteSetAlgebra {
     FiniteSetAlgebra::from_spec(DomainSpec::new(
         NonZeroUsize::new(capacity).unwrap(),
@@ -180,30 +183,50 @@ fn output_overflow_discards_the_whole_set() {
 }
 
 #[test]
-fn duplicate_heavy_cartesian_execution_is_admitted_before_enumeration() {
-    let domain = algebra(128);
-    let low = finite((0u64..64).map(U256::from));
-    let high = finite((1u64..=64).map(|word| U256::from(word) << 128));
-    assert_eq!(cartesian_visits(&[&low, &high]), Some(MAX_CARTESIAN_VISITS));
-    assert_eq!(
-        domain
-            .apply_numeric(opcode::AND, [&low, &high].into_iter())
-            .value,
-        FiniteConstantSet::constant(U256::ZERO)
-    );
+fn complete_cartesian_transfer_is_admitted_by_the_root_budget() {
+    use crate::{
+        domain::{EvmValue, ValueAlgebra},
+        resource::WorkBudget,
+    };
 
-    let low = finite((0u64..65).map(U256::from));
-    assert_eq!(cartesian_visits(&[&low, &high]), None);
-    let result = domain
-        .apply_numeric(opcode::AND, [&low, &high].into_iter())
-        .value;
-    assert!(result.is_top());
-    // The refusal is cheap and quoted as such; no 65*64 evaluations are paid
-    // or executed merely to discover their single distinct result.
-    assert_eq!(
-        domain.operation_work(opcode::AND, [&low, &high].into_iter()),
-        domain.operation_work(opcode::AND, [&high, &low].into_iter())
+    let domain = ValueAlgebra::new(algebra(512));
+    let args = [
+        EvmValue::from_numeric(finite((0u64..=64).map(U256::from))),
+        EvmValue::from_numeric(finite((0u64..=64).map(U256::from))),
+    ];
+    let _scope = NUMERIC_EXECUTIONS.scope();
+    let quote = domain.operation_work(opcode::ADD, &args);
+    assert!(quote < usize::MAX);
+    assert_eq!(NUMERIC_EXECUTIONS.get(), (0, 0));
+
+    let mut denied = WorkBudget::new(quote - 1);
+    assert!(
+        domain
+            .apply_budgeted(opcode::ADD, &args, &mut denied)
+            .is_err()
     );
+    assert!(denied.exhausted());
+    assert_eq!(denied.used(), 0);
+    assert_eq!(NUMERIC_EXECUTIONS.get(), (0, 0));
+
+    let mut paid = WorkBudget::new(quote);
+    let result = domain
+        .apply_budgeted(opcode::ADD, &args, &mut paid)
+        .unwrap();
+    assert_eq!(
+        result.value.numeric(),
+        &finite((0u64..=128).map(U256::from))
+    );
+    assert_eq!(result.value.constants().unwrap().len(), 129);
+    assert_eq!(paid.used(), quote);
+    assert_eq!(NUMERIC_EXECUTIONS.get(), (1, 65 * 65));
+
+    // The unmetered entrypoint is caller-funded and has the same precision.
+    assert_eq!(
+        domain.apply(opcode::ADD, &args).numeric(),
+        result.value.numeric()
+    );
+    assert_eq!(NUMERIC_EXECUTIONS.get(), (2, 2 * 65 * 65));
 }
 
 #[test]
@@ -298,6 +321,76 @@ fn work_quotes_price_opcode_queries_shared_copies_and_overflow() {
     let large_domain = FiniteSetAlgebra::from_spec(large_spec);
     assert_eq!(large_domain.refinement_work(&many, 1), usize::MAX);
     assert!(large_domain.operation_work(opcode::ADD, [&one, &one].into_iter()) < usize::MAX);
+    // These cached sizes exercise true cardinality overflow without allocating
+    // enormous fixtures. The same checked product serves transfer and quote;
+    // a fully finite overflow is explicitly quoted MAX before root execution.
+    assert_eq!(
+        cartesian_visits([Some(usize::MAX / 2 + 1), Some(2)].into_iter()),
+        None
+    );
+}
+
+#[test]
+fn facade_exp_quote_prepays_retained_constant_folding() {
+    use crate::{
+        domain::{EvmValue, ValueAlgebra, symbolic::ExprId},
+        resource::WorkBudget,
+    };
+
+    let domain = ValueAlgebra::new(algebra(8));
+    // For odd 3, 3^(2^256 - 1) is its inverse modulo 2^256. This independent
+    // closed form avoids deriving the expected value from the evaluated path.
+    let expected = (U256::MAX / U256::from(3)) * U256::from(2) + U256::ONE;
+    for [base, exponent] in [
+        [EvmValue::<FiniteConstantSet>::top(), EvmValue::top()],
+        [
+            EvmValue::from_numeric(words(&[2, 3])),
+            EvmValue::from_numeric(finite([U256::from(2), U256::MAX])),
+        ],
+    ] {
+        let _scope = NUMERIC_EXECUTIONS.scope();
+        let args = [
+            base.with_expression(ExprId::constant(U256::from(3))),
+            exponent.with_expression(ExprId::constant(U256::MAX)),
+        ];
+        let quote = domain.operation_work(opcode::EXP, &args);
+        assert_eq!(NUMERIC_EXECUTIONS.get(), (0, 0));
+
+        // Even the single possible facade EXP exceeds this reservation. The
+        // previous Top quote admitted it and actually performed the operation.
+        let mut too_small = WorkBudget::new(evaluation_work(opcode::EXP) - 1);
+        assert!(
+            domain
+                .apply_budgeted(opcode::EXP, &args, &mut too_small)
+                .is_err()
+        );
+        assert!(too_small.exhausted());
+        assert_eq!(too_small.used(), 0);
+        assert_eq!(NUMERIC_EXECUTIONS.get(), (0, 0));
+
+        let mut almost = WorkBudget::new(quote - 1);
+        assert!(
+            domain
+                .apply_budgeted(opcode::EXP, &args, &mut almost)
+                .is_err()
+        );
+        assert_eq!(almost.used(), 0);
+        assert_eq!(NUMERIC_EXECUTIONS.get(), (0, 0));
+
+        let mut paid = WorkBudget::new(quote);
+        let result = domain
+            .apply_budgeted(opcode::EXP, &args, &mut paid)
+            .unwrap();
+        assert_eq!(result.value.singleton(), Some(expected));
+        assert_eq!(result.status, super::super::ReductionStatus::Stable);
+        assert_eq!(paid.used(), quote);
+        let (transfers, evaluations) = NUMERIC_EXECUTIONS.get();
+        assert_eq!(transfers, 1);
+        // The actual numeric evaluations alone do not produce a singleton for
+        // either input shape. The extra evaluation is the facade's exact fold.
+        assert_eq!(evaluations, if args[0].numeric().is_top() { 0 } else { 4 });
+        assert!(quote >= (evaluations + 1) * evaluation_work(opcode::EXP));
+    }
 }
 
 #[test]
