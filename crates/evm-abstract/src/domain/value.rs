@@ -1,4 +1,10 @@
 //! An abstract value separates numeric constraints, source metadata and identity.
+//!
+//! Native serialization always includes `numeric` using the actual carrier's
+//! serialization. For every carrier, absent `provenance` means `Provenance::top()`,
+//! absent `identity` means no persistent input, absent `expression` means `None`,
+//! and absent `symbolic_limit` means `false`.
+//! Runtime-only identities are intentionally excluded from persistent data.
 
 use super::{
     AlgebraRef, EvmNumericAlgebra, WordElement,
@@ -294,12 +300,28 @@ impl<N: WordElement> EvmValue<N> {
 }
 impl<N: WordElement> Serialize for EvmValue<N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(5))?;
+        let has_provenance = !self.provenance.is_top();
+        let has_identity = self.identity.input().is_some();
+        let has_expression = self.expression.is_some();
+        let fields = 1
+            + usize::from(has_provenance)
+            + usize::from(has_identity)
+            + usize::from(has_expression)
+            + usize::from(self.symbolic_limit);
+        let mut map = serializer.serialize_map(Some(fields))?;
         map.serialize_entry("numeric", &self.numeric)?;
-        map.serialize_entry("provenance", &self.provenance)?;
-        map.serialize_entry("identity", &self.identity)?;
-        map.serialize_entry("expression", &self.expression)?;
-        map.serialize_entry("symbolic_limit", &self.symbolic_limit)?;
+        if has_provenance {
+            map.serialize_entry("provenance", &self.provenance)?;
+        }
+        if has_identity {
+            map.serialize_entry("identity", &self.identity)?;
+        }
+        if has_expression {
+            map.serialize_entry("expression", &self.expression)?;
+        }
+        if self.symbolic_limit {
+            map.serialize_entry("symbolic_limit", &self.symbolic_limit)?;
+        }
         map.end()
     }
 }

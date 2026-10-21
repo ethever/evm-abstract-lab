@@ -178,7 +178,6 @@ pub trait WordElement: Clone + fmt::Debug + Eq + fmt::Display + Serialize {
 }
 
 impl WordElement for NumericValue {
-    // Preserve the exact legacy default value JSON, including the Top string.
     fn top() -> Self {
         Self::top()
     }

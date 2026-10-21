@@ -246,10 +246,16 @@ fn custom_native_serialization_keeps_exact_exclusions_without_cloning() {
         json["numeric"],
         serde_json::to_value(value.numeric()).unwrap()
     );
+    assert_eq!(
+        json.as_object().unwrap().len(),
+        1,
+        "default metadata is omitted for custom carriers too"
+    );
     assert_eq!(value.numeric().copies.get(), 0);
     assert!(value.numeric().observation().contains(U256::from(42)));
     assert!(!value.numeric().contains(U256::from(42)));
     let top = serde_json::to_value(EvmValue::<ExcludingWord>::top()).unwrap();
+    assert_eq!(top.as_object().unwrap().len(), 1);
     assert_eq!(
         top["numeric"],
         serde_json::json!({
