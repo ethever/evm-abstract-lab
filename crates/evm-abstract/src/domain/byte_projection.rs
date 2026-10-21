@@ -27,14 +27,10 @@ impl Domain {
     }
 }
 
-pub(super) fn observe(domain: Domain, op: u8, args: &[NumericValue]) -> NumericValue {
-    observe_with(domain, op, args, || domain.numeric_apply(op, args).value)
-}
-
 pub(super) fn observe_with(
     domain: Domain,
     op: u8,
-    args: &[NumericValue],
+    args: &[&NumericValue],
     fallback: impl FnOnce() -> NumericValue,
 ) -> NumericValue {
     let [left, right] = args else {
@@ -71,12 +67,16 @@ fn projection_side(
             .singleton()
             .filter(|v| value.contains(*v))
     };
+    // Finite scalar operands use ordinary transfer. Test this cached tag before
+    // literal membership, preserving the former finite path's query envelope.
     let (scalar, is_left) = match op {
-        opcode::BYTE if literal(left).is_some() => (right, false),
-        opcode::AND if literal(right) == Some(U256::from(255)) => (left, true),
+        opcode::BYTE if right.constants().is_none() && literal(left).is_some() => (right, false),
+        opcode::AND if left.constants().is_none() && literal(right) == Some(U256::from(255)) => {
+            (left, true)
+        }
         _ => return None,
     };
-    (scalar.constants().is_none() && scalar.singleton().is_none()).then_some(is_left)
+    scalar.singleton().is_none().then_some(is_left)
 }
 
 // The legacy facade still gates this shortcut on its effective expression policy.

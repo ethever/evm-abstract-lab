@@ -7,14 +7,11 @@ use super::{
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
-// Both entrypoints validate arity first. Query the complete product before raw
+// The common entrypoint validates arity first. Query the complete product before raw
 // finite enumeration: another component can narrow that finite cover further.
-pub(super) fn exact<'a>(
-    op: u8,
-    args: impl Iterator<Item = &'a NumericValue>,
-) -> Option<NumericValue> {
+fn exact(op: u8, args: &[&NumericValue]) -> Option<NumericValue> {
     let mut words = [U256::ZERO; 3];
-    for (i, value) in args.enumerate() {
+    for (i, value) in args.iter().enumerate() {
         if op == opcode::ISZERO && (!value.may_be_zero() || !value.may_be_nonzero()) {
             return Some(NumericValue::constant(U256::from(u8::from(
                 !value.may_be_nonzero(),
@@ -30,10 +27,10 @@ pub(super) fn exact<'a>(
 pub(super) fn apply(
     domain: Domain,
     op: u8,
-    args: &[NumericValue],
+    args: &[&NumericValue],
     reduce: impl FnOnce(NumericValue) -> NumericReduction<NumericValue>,
 ) -> NumericReduction<NumericValue> {
-    if let Some(exact) = exact(op, args.iter()) {
+    if let Some(exact) = exact(op, args) {
         return NumericReduction::stable(exact);
     }
     let finite_value = domain.numeric_finite_apply(op, args);

@@ -71,6 +71,7 @@ fn expensive_custom_rules_use_their_explicit_work_contract_at_every_round_cap() 
 
 #[test]
 fn exact_custom_operation_quote_is_atomic_and_stays_on_the_original_root_budget() {
+    let _copies = crate::domain::algebra::OPERAND_COPIES.scope();
     let calls = Cell::new(0);
     let algebra = ValueAlgebra::new(ProductAlgebra::new(
         spec(8, 4096),
@@ -82,9 +83,18 @@ fn exact_custom_operation_quote_is_atomic_and_stays_on_the_original_root_budget(
     ));
     let args = [AbstractValue::top(), AbstractValue::constant(U256::from(7))];
     let quote = algebra.operation_work(&args);
+    let numeric = algebra
+        .numeric_algebra()
+        .operation_work(args.iter().map(AbstractValue::numeric));
+    let metadata = args
+        .iter()
+        .map(|v| v.work_size() - v.numeric().work_size())
+        .sum::<usize>();
+    assert_eq!(quote, numeric + 3 * 256 + metadata);
     assert!(quote >= 200_000);
     assert_eq!(algebra.operation_work_for(opcode::ADD, &args), quote);
     assert_eq!(calls.get(), 0);
+    assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 0);
     let mut denied = WorkBudget::new(quote - 1);
     assert!(
         algebra
@@ -110,6 +120,17 @@ fn exact_custom_operation_quote_is_atomic_and_stays_on_the_original_root_budget(
     );
     assert_eq!(paid.used(), quote + 17);
     assert_eq!(calls.get(), 1, "a second call cannot reset the root budget");
+    assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 0);
+
+    let before = calls.get();
+    algebra
+        .numeric_algebra()
+        .observe_byte_numeric_borrowed(opcode::AND, args.iter().map(AbstractValue::numeric));
+    assert!(
+        calls.get() > before,
+        "a declined byte projection must retain the custom reducer"
+    );
+    assert_eq!(crate::domain::algebra::OPERAND_COPIES.get(), 0);
 }
 
 #[test]
