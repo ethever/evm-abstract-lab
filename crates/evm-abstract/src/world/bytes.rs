@@ -542,6 +542,24 @@ impl<N: WordElement> EvmByteArray<N> {
         self.expand_with_queries(offset, size, max_bytes, domain, ranges::Queries::Discover)
     }
 
+    /// Caller-prepaid allocation using independent proofs/observations, without
+    /// opaque numeric singleton discovery. Retention and range checks still run.
+    pub(crate) fn expand_independent_with<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        offset: &EvmValue<N>,
+        size: &EvmValue<N>,
+        max_bytes: usize,
+        domain: AlgebraRef<'_, D>,
+    ) -> Result<(), RangeError> {
+        self.expand_with_queries(
+            offset,
+            size,
+            max_bytes,
+            domain,
+            ranges::Queries::Independent,
+        )
+    }
+
     fn expand_with_queries<D: EvmNumericAlgebra<Element = N>>(
         &mut self,
         offset: &EvmValue<N>,
@@ -746,20 +764,41 @@ impl<N: WordElement> EvmByteArray<N> {
         max_bytes: usize,
         domain: AlgebraRef<'_, D>,
     ) -> Result<(), RangeError> {
+        self.copy_from_with_queries(
+            target_offset,
+            (source, source_offset),
+            size,
+            max_bytes,
+            domain,
+            ranges::Queries::Discover,
+        )
+    }
+
+    // CALL's policy must also govern the nested allocation and normalization.
+    fn copy_from_with_queries<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        target_offset: &EvmValue<N>,
+        source: (&Self, &EvmValue<N>),
+        size: &EvmValue<N>,
+        max_bytes: usize,
+        domain: AlgebraRef<'_, D>,
+        queries: ranges::Queries,
+    ) -> Result<(), RangeError> {
         if ranges::known_singleton(size) == Some(U256::ZERO) {
             return Ok(());
         }
+        let (source, source_offset) = source;
         if let Some(error) = self.failure.as_ref().or(source.failure.as_ref()) {
             return Err(error.clone());
         }
-        let target_offset = &ranges::normalized(target_offset)?;
-        let source_offset = &ranges::normalized(source_offset)?;
-        let size = &ranges::normalized(size)?;
+        let target_offset = &queries.normalized(target_offset)?;
+        let source_offset = &queries.normalized(source_offset)?;
+        let size = &queries.normalized(size)?;
         let mut out = self.clone();
-        out.expand_with(target_offset, size, max_bytes, domain)?;
-        let dst = expr(target_offset)?;
-        let at = expr(source_offset)?;
-        let len = expr(size)?;
+        out.expand_with_queries(target_offset, size, max_bytes, domain, queries)?;
+        let dst = queries.expression(target_offset)?;
+        let at = queries.expression(source_offset)?;
+        let len = queries.expression(size)?;
         if out.operands.is_empty() {
             out.operands = operands::import_empty(&source.operands, domain, limits(domain))?;
         } else {
@@ -800,21 +839,16 @@ impl<N: WordElement> EvmByteArray<N> {
             return Ok(());
         }
         let mut out = self.clone();
-        out.expand_with_queries(
-            target_offset,
-            requested,
-            max_bytes,
-            domain,
-            ranges::Queries::Independent,
-        )?;
+        out.expand_independent_with(target_offset, requested, max_bytes, domain)?;
         let copied = ranges::minimum(requested, returndata.len(), domain)?;
-        out.copy_from_with(
+        let source_offset = zero_with().with_expression(ExprId::constant(U256::ZERO));
+        out.copy_from_with_queries(
             target_offset,
-            returndata,
-            &zero_with(),
+            (returndata, &source_offset),
             &copied,
             max_bytes,
             domain,
+            ranges::Queries::Independent,
         )?;
         *self = out;
         Ok(())
