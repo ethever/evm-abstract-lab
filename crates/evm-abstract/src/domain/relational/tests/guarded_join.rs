@@ -1,8 +1,11 @@
 //! Common conjunctions stay unconditional; every residual uses the machine guard.
 
+fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+}
 use super::super::{
-    CheckResult, Constraint, QueryReason, RelationLimits, RelationPath, RelationPathKind,
-    RelationState, ValueQuery,
+    CheckResult, Constraint, EvmValueQuery, QueryReason, RelationLimits, RelationPath,
+    RelationPathKind, RelationState,
 };
 use super::{c, limits, op};
 use crate::domain::symbolic::{ByteStateId, ByteView, ExprId, SlotStateId};
@@ -44,11 +47,14 @@ fn common_guarantees_preserve_word_memory_and_storage_selection_with_local_facts
             RelationPathKind::Ite { selector, .. } if *selector == guard
         ));
         assert_eq!(
-            joined.local_value(&common_word, &policy),
-            ValueQuery::Exact(U256::from(5)),
+            joined.local_value(&common_word, &policy, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(5)),
             "local: common guarantee"
         );
-        super::bounds_include(joined.local_value(&branch_word, &policy), &[7, 9]);
+        super::bounds_include(
+            joined.local_value(&branch_word, &policy, product_algebra().borrowed()),
+            &[7, 9],
+        );
 
         let memory = ByteStateId::zero()
             .write_word(c(0), c(7), bounds.into())
@@ -81,11 +87,15 @@ fn common_guarantees_preserve_word_memory_and_storage_selection_with_local_facts
         // projection uses common facts rather than proving their correlation.
         for expression in &expressions {
             assert!(expression.fresh_leaves().contains(&guard));
-            super::bounds_include(joined.local_value(expression, &policy), &[7, 9]);
+            super::bounds_include(
+                joined.local_value(expression, &policy, product_algebra().borrowed()),
+                &[7, 9],
+            );
             super::bounds_include(
                 joined.local_value(
                     &op(opcode::EQ, &[branch_word.clone(), expression.clone()]),
                     &policy,
+                    product_algebra().borrowed(),
                 ),
                 &[1],
             );
@@ -93,26 +103,27 @@ fn common_guarantees_preserve_word_memory_and_storage_selection_with_local_facts
         for (nonzero, expected) in [(true, 7), (false, 9)] {
             let mut selected = joined.clone();
             assert_eq!(
-                selected.assume(&guard, nonzero, &policy),
+                selected.assume(&guard, nonzero, &policy, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
             assert_eq!(
-                selected.local_value(&branch_word, &policy),
-                ValueQuery::Exact(U256::from(expected)),
+                selected.local_value(&branch_word, &policy, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::from(expected)),
                 "local: branch {nonzero}"
             );
             for expression in &expressions {
                 assert_eq!(
-                    selected.local_value(expression, &policy),
-                    ValueQuery::Exact(U256::from(expected)),
+                    selected.local_value(expression, &policy, product_algebra().borrowed()),
+                    EvmValueQuery::Exact(U256::from(expected)),
                     "local: selected value/state {nonzero}"
                 );
                 assert_eq!(
                     selected.local_value(
                         &op(opcode::EQ, &[branch_word.clone(), expression.clone()]),
-                        &policy
+                        &policy,
+                        product_algebra().borrowed()
                     ),
-                    ValueQuery::Exact(U256::ONE)
+                    EvmValueQuery::Exact(U256::ONE)
                 );
             }
         }
@@ -135,15 +146,18 @@ fn disjoint_branch_guarantees_are_never_unconditional_with_local_facts() {
         {
             let mut selected = joined.clone();
             assert_eq!(
-                selected.assume(&guard, nonzero, &policy),
+                selected.assume(&guard, nonzero, &policy, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
             assert_eq!(
-                selected.local_value(fixed, &policy),
-                ValueQuery::Exact(U256::from(expected)),
+                selected.local_value(fixed, &policy, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::from(expected)),
                 "local: selected branch guarantee"
             );
-            super::bounds_include(selected.local_value(free, &policy), &[0, 17]);
+            super::bounds_include(
+                selected.local_value(free, &policy, product_algebra().borrowed()),
+                &[0, 17],
+            );
         }
     }
 }
@@ -192,47 +206,68 @@ fn nested_conditional_guarantees_keep_their_original_selectors_with_local_facts(
             then_path.kind(),
             RelationPathKind::Ite { selector, .. } if *selector == inner_guard
         ));
-        super::bounds_include(joined.local_value(&branch_word, &policy), &[1, 2, 3]);
+        super::bounds_include(
+            joined.local_value(&branch_word, &policy, product_algebra().borrowed()),
+            &[1, 2, 3],
+        );
         // Local projection does not discharge a whole-formula equality across
         // both unknown selectors; the selectors still retain every relation.
         let equality = op(opcode::EQ, &[branch_word.clone(), expected.clone()]);
-        super::bounds_include(joined.local_value(&equality, &policy), &[1]);
+        super::bounds_include(
+            joined.local_value(&equality, &policy, product_algebra().borrowed()),
+            &[1],
+        );
         for candidate in 1..=3 {
             assert_eq!(
-                joined.can_equal(&branch_word, U256::from(candidate), &policy),
+                joined.can_equal(
+                    &branch_word,
+                    U256::from(candidate),
+                    &policy,
+                    product_algebra().borrowed()
+                ),
                 CheckResult::MayBeFeasible,
                 "local: retained alternative {candidate}"
             );
         }
         assert_eq!(
-            joined.can_equal(&branch_word, U256::from(4), &policy),
+            joined.can_equal(
+                &branch_word,
+                U256::from(4),
+                &policy,
+                product_algebra().borrowed()
+            ),
             CheckResult::MayBeFeasible,
             "unknown selectors do not supply a feasibility witness or a global exclusion"
         );
         for (outer, inner, value) in [(true, true, 1), (true, false, 2), (false, false, 3)] {
             let mut selected = joined.clone();
             assert_eq!(
-                selected.assume(&outer_guard, outer, &policy),
+                selected.assume(&outer_guard, outer, &policy, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
             if outer {
                 assert_eq!(
-                    selected.assume(&inner_guard, inner, &policy),
+                    selected.assume(&inner_guard, inner, &policy, product_algebra().borrowed()),
                     CheckResult::MayBeFeasible
                 );
             }
             for expression in [&branch_word, &expected] {
                 assert_eq!(
-                    selected.local_value(expression, &policy),
-                    ValueQuery::Exact(U256::from(value))
+                    selected.local_value(expression, &policy, product_algebra().borrowed()),
+                    EvmValueQuery::Exact(U256::from(value))
                 );
             }
             assert_eq!(
-                selected.local_value(&equality, &policy),
-                ValueQuery::Exact(U256::ONE)
+                selected.local_value(&equality, &policy, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::ONE)
             );
             assert_eq!(
-                selected.can_equal(&branch_word, U256::from(4), &policy),
+                selected.can_equal(
+                    &branch_word,
+                    U256::from(4),
+                    &policy,
+                    product_algebra().borrowed()
+                ),
                 CheckResult::ProvenImpossible
             );
         }
@@ -340,14 +375,22 @@ fn factoring_preserves_bottom_alternatives_and_constant_selectors_with_local_fac
         ] {
             let joined = yes.join_guarded(no, guard.clone(), &policy).unwrap();
             assert!(!joined.is_bottom());
-            assert_eq!(joined.check(&policy), CheckResult::MayBeFeasible);
             assert_eq!(
-                joined.local_value(&branch_word, &policy),
-                ValueQuery::Exact(U256::from(9))
+                joined.check(&policy, product_algebra().borrowed()),
+                CheckResult::MayBeFeasible
+            );
+            assert_eq!(
+                joined.local_value(&branch_word, &policy, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::from(9))
             );
             let mut infeasible = joined.clone();
             assert_eq!(
-                infeasible.assume(&guard, !feasible_nonzero, &policy),
+                infeasible.assume(
+                    &guard,
+                    !feasible_nonzero,
+                    &policy,
+                    product_algebra().borrowed()
+                ),
                 CheckResult::ProvenImpossible,
                 "local: impossible branch stays false"
             );
@@ -358,7 +401,10 @@ fn factoring_preserves_bottom_alternatives_and_constant_selectors_with_local_fac
             .join_guarded(&another_impossible, guard, &policy)
             .unwrap();
         assert!(both.is_bottom());
-        assert_eq!(both.check(&policy), CheckResult::ProvenImpossible);
+        assert_eq!(
+            both.check(&policy, product_algebra().borrowed()),
+            CheckResult::ProvenImpossible
+        );
         assert_eq!(
             impossible.join_guarded(&possible, c(0), &policy).unwrap(),
             possible

@@ -1,12 +1,16 @@
+fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+}
 use super::{GraphLimits, SymbolicGraph};
+use crate::domain::NumericValue;
 use crate::{
     domain::{
-        AbstractValue, Domain,
+        EvmValue, ProductAlgebra,
         identity::Symbol,
         relational::{CheckResult, RelationLimits, RelationState},
         symbolic::{ByteStateId, ByteView, ExprError, ExprId, ExprLimits, SlotStateId, SourceId},
     },
-    world::ByteArray,
+    world::EvmByteArray,
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
@@ -92,13 +96,13 @@ fn native_input_atoms_preserve_scope_and_symbol() {
 fn native_byte_array_view_and_word_read_share_source_and_length() {
     #[derive(Serialize)]
     struct Report<'a> {
-        bytes: &'a ByteArray,
+        bytes: &'a EvmByteArray<NumericValue>,
         view: ByteView,
-        word: AbstractValue,
+        word: EvmValue<NumericValue>,
         source: &'a SourceId,
-        independent: ByteArray,
+        independent: EvmByteArray<NumericValue>,
     }
-    let bytes = ByteArray::unknown();
+    let bytes = EvmByteArray::<NumericValue>::unknown();
     let source = match bytes.state_root().kind() {
         crate::domain::symbolic::ByteStateKind::Input { source, .. } => source,
         other => panic!("unexpected input {other:?}"),
@@ -107,10 +111,13 @@ fn native_byte_array_view_and_word_read_share_source_and_length() {
         bytes: &bytes,
         view: bytes.view(),
         word: bytes
-            .read_word_checked(&AbstractValue::constant(U256::ZERO), Domain::default())
+            .read_word_checked(
+                &EvmValue::<NumericValue>::constant(U256::ZERO),
+                crate::domain::ValueAlgebra::new(ProductAlgebra::default()).borrowed(),
+            )
             .unwrap(),
         source,
-        independent: ByteArray::unknown(),
+        independent: EvmByteArray::<NumericValue>::unknown(),
     })
     .unwrap();
     let graph = &report["bytes"]["root"];
@@ -189,7 +196,7 @@ fn native_history_storage_and_path_keep_shared_leaves_and_sources() {
         ..RelationLimits::default()
     };
     assert_eq!(
-        path.add_equal(&value, &c(7), &policy),
+        path.add_equal(&value, &c(7), &policy, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     let before_export = serde_json::to_value(&before).unwrap();
@@ -372,7 +379,7 @@ fn export_keeps_node_depth_and_aggregate_exact_payload_budgets() {
 
 #[test]
 fn native_outer_serialization_propagates_cancellation() {
-    let bytes = ByteArray::unknown();
+    let bytes = EvmByteArray::<NumericValue>::unknown();
     let view = bytes.view();
     let read = ExprId::word_read(view.clone(), c(0), ExprLimits::default()).unwrap();
     let cancellation = analysis_control::Cancellation::new();
@@ -435,11 +442,16 @@ fn exported_distinct_identities_do_not_assert_disequality_or_hash_injectivity() 
     .unwrap();
     let mut collision = RelationState::default();
     assert_eq!(
-        collision.assume(&different_content, false, &policy),
+        collision.assume(
+            &different_content,
+            false,
+            &policy,
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        collision.assume(&same_hash, true, &policy),
+        collision.assume(&same_hash, true, &policy, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     let pairs = [
@@ -456,7 +468,12 @@ fn exported_distinct_identities_do_not_assert_disequality_or_hash_injectivity() 
             ExprId::operation(opcode::EQ, &[left, right], ExprLimits::default()).unwrap();
         for nonzero in [true, false] {
             assert_eq!(
-                RelationState::default().assume(&equality, nonzero, &policy),
+                RelationState::default().assume(
+                    &equality,
+                    nonzero,
+                    &policy,
+                    product_algebra().borrowed()
+                ),
                 CheckResult::MayBeFeasible
             );
         }

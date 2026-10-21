@@ -1,6 +1,10 @@
 //! Mechanism-level soundness checks for local consequences and conservative ITEs.
+
+fn product_algebra() -> crate::domain::ValueAlgebra<crate::domain::ProductAlgebra> {
+    crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default())
+}
 use super::super::{
-    CheckResult, Constraint, QueryReason, RelationLimits, RelationState, ValueQuery,
+    CheckResult, Constraint, EvmValueQuery, QueryReason, RelationLimits, RelationState,
 };
 use crate::{
     domain::{
@@ -19,12 +23,12 @@ fn c(value: u64) -> ExprId {
 fn op(code: u8, args: &[ExprId]) -> ExprId {
     ExprId::operation(code, args, RelationLimits::default().expressions()).unwrap()
 }
-fn includes(answer: &ValueQuery, expected: U256) -> bool {
+fn includes(answer: &EvmValueQuery<NumericValue>, expected: U256) -> bool {
     match answer {
-        ValueQuery::Exact(value) => *value == expected,
-        ValueQuery::Bounds(bounds) => bounds.contains(expected),
-        ValueQuery::Undetermined(_) => true,
-        ValueQuery::ProvenImpossible => false,
+        EvmValueQuery::Exact(value) => *value == expected,
+        EvmValueQuery::Bounds(bounds) => bounds.contains(expected),
+        EvmValueQuery::Undetermined(_) => true,
+        EvmValueQuery::ProvenImpossible => false,
     }
 }
 
@@ -34,18 +38,25 @@ fn equality_chains_and_bijective_arithmetic_prove_exact_words() {
     let x = ExprId::fresh().unwrap();
     let y = ExprId::fresh().unwrap();
     let mut state = RelationState::default();
-    assert_eq!(state.add_equal(&x, &y, &limits), CheckResult::MayBeFeasible);
+    assert_eq!(
+        state.add_equal(&x, &y, &limits, product_algebra().borrowed()),
+        CheckResult::MayBeFeasible
+    );
     assert_eq!(
         state.assume(
             &op(opcode::EQ, &[op(opcode::ADD, &[y, c(1)]), c(0)]),
             true,
-            &limits
+            &limits,
+            product_algebra().borrowed()
         ),
         CheckResult::MayBeFeasible
     );
-    assert_eq!(state.local_value(&x, &limits), ValueQuery::Exact(U256::MAX));
     assert_eq!(
-        state.can_equal(&x, U256::ZERO, &limits),
+        state.local_value(&x, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::MAX)
+    );
+    assert_eq!(
+        state.can_equal(&x, U256::ZERO, &limits, product_algebra().borrowed()),
         CheckResult::ProvenImpossible
     );
 }
@@ -59,16 +70,20 @@ fn masks_exclude_impossible_bits_and_keep_every_unproved_high_bit() {
         &op(opcode::EQ, &[op(opcode::AND, &[x.clone(), c(255)]), c(7)]),
         true,
         &limits,
+        product_algebra().borrowed(),
     );
     assert_eq!(
-        state.can_equal(&x, U256::from(8), &limits),
+        state.can_equal(&x, U256::from(8), &limits, product_algebra().borrowed()),
         CheckResult::ProvenImpossible
     );
     for value in [
         U256::from(7),
         (U256::MAX & !U256::from(255)) | U256::from(7),
     ] {
-        assert!(includes(&state.local_value(&x, &limits), value));
+        assert!(includes(
+            &state.local_value(&x, &limits, product_algebra().borrowed()),
+            value
+        ));
     }
 }
 
@@ -82,15 +97,25 @@ fn observed_zero_comparison_retains_the_target_exclusion() {
         .observe(&comparison, &NumericValue::constant(U256::ZERO), &limits)
         .unwrap();
     assert_eq!(
-        state.local_value(&comparison, &limits),
-        ValueQuery::Exact(U256::ZERO)
+        state.local_value(&comparison, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::ZERO)
     );
     assert_eq!(
-        state.can_equal(&target, U256::from(7), &limits),
+        state.can_equal(
+            &target,
+            U256::from(7),
+            &limits,
+            product_algebra().borrowed()
+        ),
         CheckResult::ProvenImpossible
     );
     assert_eq!(
-        state.can_equal(&target, U256::from(8), &limits),
+        state.can_equal(
+            &target,
+            U256::from(8),
+            &limits,
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
 }
@@ -113,17 +138,23 @@ fn finite_exclusion_preserves_ite_identity_and_every_unexcluded_candidate() {
             state.assume(
                 &op(opcode::EQ, &[value.clone(), c(excluded)]),
                 false,
-                &limits
+                &limits,
+                product_algebra().borrowed()
             ),
             CheckResult::MayBeFeasible
         );
         let before = state.clone();
-        let answer = state.local_value(&value, &limits);
+        let answer = state.local_value(&value, &limits, product_algebra().borrowed());
         if let Some(expected) = expected {
-            assert_eq!(answer, ValueQuery::Exact(U256::from(expected)));
+            assert_eq!(answer, EvmValueQuery::Exact(U256::from(expected)));
             let mut budget = WorkBudget::new(20_000_000);
             assert_eq!(
-                state.local_value_budgeted(&value, &limits, &mut budget),
+                state.local_value_budgeted(
+                    &value,
+                    &limits,
+                    &mut budget,
+                    product_algebra().borrowed()
+                ),
                 answer
             );
             assert!(!budget.exhausted());
@@ -134,7 +165,7 @@ fn finite_exclusion_preserves_ite_identity_and_every_unexcluded_candidate() {
         }
         for candidate in [0, 1] {
             assert!(includes(
-                &state.local_value(&selector, &limits),
+                &state.local_value(&selector, &limits, product_algebra().borrowed()),
                 U256::from(candidate)
             ));
         }
@@ -164,11 +195,11 @@ fn retained_ite_bounds_select_disjoint_branches_and_keep_paired_roots_and_guaran
         let mut yes = RelationState::default();
         let mut no = RelationState::default();
         assert_eq!(
-            yes.assume(&predicate, true, &limits),
+            yes.assume(&predicate, true, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            no.assume(&predicate, false, &limits),
+            no.assume(&predicate, false, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         let mut state = yes.join_guarded(&no, selector.clone(), &limits).unwrap();
@@ -180,8 +211,8 @@ fn retained_ite_bounds_select_disjoint_branches_and_keep_paired_roots_and_guaran
             )
             .unwrap();
         let before = state.clone();
-        let answer = state.local_value(&chosen, &limits);
-        let ValueQuery::Bounds(bounds) = answer else {
+        let answer = state.local_value(&chosen, &limits, product_algebra().borrowed());
+        let EvmValueQuery::Bounds(bounds) = answer else {
             panic!("chosen branch retains the result range: {answer:?}");
         };
         assert_eq!(
@@ -189,7 +220,7 @@ fn retained_ite_bounds_select_disjoint_branches_and_keep_paired_roots_and_guaran
             (U256::from(lower), U256::from(upper))
         );
         assert_eq!(
-            state.can_equal(&selector, U256::ZERO, &limits),
+            state.can_equal(&selector, U256::ZERO, &limits, product_algebra().borrowed()),
             if nonzero {
                 CheckResult::ProvenImpossible
             } else {
@@ -197,7 +228,7 @@ fn retained_ite_bounds_select_disjoint_branches_and_keep_paired_roots_and_guaran
             }
         );
         assert_eq!(
-            state.can_equal(&selector, U256::ONE, &limits),
+            state.can_equal(&selector, U256::ONE, &limits, product_algebra().borrowed()),
             if nonzero {
                 CheckResult::MayBeFeasible
             } else {
@@ -205,7 +236,12 @@ fn retained_ite_bounds_select_disjoint_branches_and_keep_paired_roots_and_guaran
             }
         );
         assert_eq!(
-            state.can_equal(&predicate, U256::ZERO, &limits),
+            state.can_equal(
+                &predicate,
+                U256::ZERO,
+                &limits,
+                product_algebra().borrowed()
+            ),
             if nonzero {
                 CheckResult::ProvenImpossible
             } else {
@@ -215,8 +251,8 @@ fn retained_ite_bounds_select_disjoint_branches_and_keep_paired_roots_and_guaran
         let paired = ExprId::ite(selector.clone(), c(11), c(22), limits.expressions()).unwrap();
         let mut budget = WorkBudget::new(20_000_000);
         assert_eq!(
-            state.local_value_budgeted(&paired, &limits, &mut budget),
-            ValueQuery::Exact(U256::from(if nonzero { 11 } else { 22 }))
+            state.local_value_budgeted(&paired, &limits, &mut budget, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(if nonzero { 11 } else { 22 }))
         );
         assert!(budget.used() > 0);
         assert!(!budget.exhausted());
@@ -225,8 +261,8 @@ fn retained_ite_bounds_select_disjoint_branches_and_keep_paired_roots_and_guaran
         let slots = yes.join_guarded(&no, selector.clone(), states).unwrap();
         let read = ExprId::slot_read(slots, c(0), limits.expressions()).unwrap();
         assert_eq!(
-            state.local_value(&read, &limits),
-            ValueQuery::Exact(U256::from(if nonzero { 11 } else { 22 }))
+            state.local_value(&read, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(if nonzero { 11 } else { 22 }))
         );
         let yes = ByteStateId::zero().write_word(c(0), c(7), states).unwrap();
         let no = ByteStateId::zero().write_word(c(0), c(9), states).unwrap();
@@ -238,8 +274,8 @@ fn retained_ite_bounds_select_disjoint_branches_and_keep_paired_roots_and_guaran
         )
         .unwrap();
         assert_eq!(
-            state.local_value(&read, &limits),
-            ValueQuery::Exact(U256::from(if nonzero { 7 } else { 9 }))
+            state.local_value(&read, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(if nonzero { 7 } else { 9 }))
         );
         assert_eq!(state, before);
     }
@@ -263,15 +299,15 @@ fn nonzero_ite_result_excludes_exact_zero_without_booleanizing_the_selector() {
     );
     let mut unknown = RelationState::default();
     assert_eq!(
-        unknown.assume(&chosen, true, &limits),
+        unknown.assume(&chosen, true, &limits, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     let mut state = unknown.clone();
     state.observe(&selected, &nonzero, &limits).unwrap();
     let before = state.clone();
     for expression in [&selector, &chosen] {
-        let answer = state.local_value(expression, &limits);
-        let ValueQuery::Bounds(bounds) = answer else {
+        let answer = state.local_value(expression, &limits, product_algebra().borrowed());
+        let EvmValueQuery::Bounds(bounds) = answer else {
             panic!("nonzero words retain their full range: {answer:?}");
         };
         assert!(!bounds.contains(U256::ZERO));
@@ -289,10 +325,12 @@ fn nonzero_ite_result_excludes_exact_zero_without_booleanizing_the_selector() {
     )
     .unwrap();
     assert_eq!(
-        state.local_value(&read, &limits),
-        ValueQuery::Exact(U256::from(7))
+        state.local_value(&read, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::from(7))
     );
-    let ValueQuery::Bounds(bounds) = unknown.local_value(&selector, &limits) else {
+    let EvmValueQuery::Bounds(bounds) =
+        unknown.local_value(&selector, &limits, product_algebra().borrowed())
+    else {
         panic!("an unknown result leaves the selector unknown");
     };
     assert!(bounds.contains(U256::ZERO));
@@ -300,12 +338,12 @@ fn nonzero_ite_result_excludes_exact_zero_without_booleanizing_the_selector() {
     for (truth, expected) in [(true, 7), (false, 9)] {
         let mut direct = unknown.clone();
         assert_eq!(
-            direct.assume(&selector, truth, &limits),
+            direct.assume(&selector, truth, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            direct.local_value(&read, &limits),
-            ValueQuery::Exact(U256::from(expected))
+            direct.local_value(&read, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(expected))
         );
     }
     assert_eq!(state, before);
@@ -333,26 +371,36 @@ fn overlapping_ite_branch_bounds_do_not_select_or_narrow_either_branch() {
         )
         .unwrap();
     let before = state.clone();
-    let answer = state.local_value(&selector, &limits);
-    let ValueQuery::Bounds(bounds) = answer else {
+    let answer = state.local_value(&selector, &limits, product_algebra().borrowed());
+    let EvmValueQuery::Bounds(bounds) = answer else {
         panic!("overlapping upper bounds leave the selector unknown: {answer:?}");
     };
     assert!(bounds.contains(U256::ZERO));
     assert!(bounds.contains(U256::ONE));
     for (branch, maximum) in [(yes, 255), (no, 511)] {
-        let answer = state.local_value(&branch, &limits);
-        let ValueQuery::Bounds(bounds) = answer else {
+        let answer = state.local_value(&branch, &limits, product_algebra().borrowed());
+        let EvmValueQuery::Bounds(bounds) = answer else {
             panic!("neither branch inherits the result without a determined selector: {answer:?}");
         };
         assert!(bounds.contains(U256::ZERO));
         assert!(bounds.contains(U256::from(maximum)));
     }
     assert_eq!(
-        state.can_equal(&selected, U256::from(7), &limits),
+        state.can_equal(
+            &selected,
+            U256::from(7),
+            &limits,
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        state.can_equal(&selected, U256::from(10), &limits),
+        state.can_equal(
+            &selected,
+            U256::from(10),
+            &limits,
+            product_algebra().borrowed()
+        ),
         CheckResult::ProvenImpossible
     );
     assert_eq!(state, before);
@@ -391,30 +439,36 @@ fn determined_copy_lengths_preserve_hash_identity_without_fixing_unknown_selecto
     let equality = op(opcode::EQ, &[copied_hash.clone(), source_hash]);
     let mut state = RelationState::default();
     assert_eq!(
-        state.add_unsigned_bounds(&length, U256::from(32), U256::from(512), &limits),
+        state.add_unsigned_bounds(
+            &length,
+            U256::from(32),
+            U256::from(512),
+            &limits,
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
-    let unknown = state.local_value(&equality, &limits);
-    assert!(matches!(unknown, ValueQuery::Bounds(_)));
+    let unknown = state.local_value(&equality, &limits, product_algebra().borrowed());
+    assert!(matches!(unknown, EvmValueQuery::Bounds(_)));
     assert!(includes(&unknown, U256::ZERO));
     assert!(includes(&unknown, U256::ONE));
     let mut empty = state.clone();
     assert_eq!(
-        empty.assume(&selector, true, &limits),
+        empty.assume(&selector, true, &limits, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        empty.local_value(&copied_hash, &limits),
-        ValueQuery::Exact(U256::from_be_bytes(alloy_primitives::keccak256([]).0))
+        empty.local_value(&copied_hash, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::from_be_bytes(alloy_primitives::keccak256([]).0))
     );
     assert_eq!(
-        state.assume(&selector, false, &limits),
+        state.assume(&selector, false, &limits, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     let before = state.clone();
     assert_eq!(
-        state.local_value(&equality, &limits),
-        ValueQuery::Exact(U256::ONE)
+        state.local_value(&equality, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::ONE)
     );
     assert_eq!(state, before);
 }
@@ -450,33 +504,42 @@ fn initial_source_observations_keep_namespace_length_writes_and_guards() {
         state.add_equal(
             &hash(observed.clone(), 2),
             &ExprId::constant(digest),
-            &limits
+            &limits,
+            product_algebra().borrowed()
         ),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        state.local_value(&hash(initial.clone(), 2), &limits),
-        ValueQuery::Exact(digest)
+        state.local_value(
+            &hash(initial.clone(), 2),
+            &limits,
+            product_algebra().borrowed()
+        ),
+        EvmValueQuery::Exact(digest)
     );
     for unrelated in [
         ByteStateId::input(SourceId::scoped(token, U256::from(2)), c(2)),
         ByteStateId::input(source, c(1)),
     ] {
         assert!(matches!(
-            state.local_value(&hash(unrelated, 2), &limits),
-            ValueQuery::Bounds(_)
+            state.local_value(&hash(unrelated, 2), &limits, product_algebra().borrowed()),
+            EvmValueQuery::Bounds(_)
         ));
     }
     assert_eq!(
-        state.local_value(&hash(initial.clone(), 3), &limits),
-        ValueQuery::Exact(U256::from_be_bytes(
+        state.local_value(
+            &hash(initial.clone(), 3),
+            &limits,
+            product_algebra().borrowed()
+        ),
+        EvmValueQuery::Exact(U256::from_be_bytes(
             alloy_primitives::keccak256([0xaa, 0xbb, 0]).0
         ))
     );
     let written = initial.clone().write_byte(c(0), c(0x11), states).unwrap();
     assert_eq!(
-        state.local_value(&hash(written, 2), &limits),
-        ValueQuery::Exact(U256::from_be_bytes(
+        state.local_value(&hash(written, 2), &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::from_be_bytes(
             alloy_primitives::keccak256([0x11, 0xbb]).0
         ))
     );
@@ -491,30 +554,35 @@ fn initial_source_observations_keep_namespace_length_writes_and_guards() {
     .unwrap();
     let mut guarded_state = RelationState::default();
     assert_eq!(
-        guarded_state.add_equal(&guarded, &ExprId::constant(digest), &limits),
+        guarded_state.add_equal(
+            &guarded,
+            &ExprId::constant(digest),
+            &limits,
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     let old_hash = hash(initial, 2);
     assert!(matches!(
-        guarded_state.local_value(&old_hash, &limits),
-        ValueQuery::Bounds(_)
+        guarded_state.local_value(&old_hash, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Bounds(_)
     ));
     let mut unselected = guarded_state.clone();
     assert_eq!(
-        unselected.assume(&selector, false, &limits),
+        unselected.assume(&selector, false, &limits, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     assert!(matches!(
-        unselected.local_value(&old_hash, &limits),
-        ValueQuery::Bounds(_)
+        unselected.local_value(&old_hash, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Bounds(_)
     ));
     assert_eq!(
-        guarded_state.assume(&selector, true, &limits),
+        guarded_state.assume(&selector, true, &limits, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        guarded_state.local_value(&old_hash, &limits),
-        ValueQuery::Exact(digest)
+        guarded_state.local_value(&old_hash, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(digest)
     );
 }
 
@@ -533,20 +601,31 @@ fn concrete_slot_alias_reuses_guarded_history_without_choosing_its_selector() {
     for alias in [0, 1] {
         let mut state = RelationState::default();
         assert_eq!(
-            state.add_equal(&key, &c(alias), &limits),
+            state.add_equal(&key, &c(alias), &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         let expected = if alias == 0 { c(13) } else { old.clone() };
         assert_eq!(
-            state.local_value(&op(opcode::EQ, &[latest.clone(), expected]), &limits),
-            ValueQuery::Exact(U256::ONE)
+            state.local_value(
+                &op(opcode::EQ, &[latest.clone(), expected]),
+                &limits,
+                product_algebra().borrowed()
+            ),
+            EvmValueQuery::Exact(U256::ONE)
         );
         for candidate in [U256::ZERO, U256::ONE] {
-            assert!(includes(&state.local_value(&selector, &limits), candidate));
+            assert!(includes(
+                &state.local_value(&selector, &limits, product_algebra().borrowed()),
+                candidate
+            ));
         }
     }
-    let answer = RelationState::default().local_value(&op(opcode::EQ, &[latest, old]), &limits);
-    assert!(matches!(answer, ValueQuery::Bounds(_)));
+    let answer = RelationState::default().local_value(
+        &op(opcode::EQ, &[latest, old]),
+        &limits,
+        product_algebra().borrowed(),
+    );
+    assert!(matches!(answer, EvmValueQuery::Bounds(_)));
     assert!(includes(&answer, U256::ZERO));
     assert!(includes(&answer, U256::ONE));
 }
@@ -572,12 +651,15 @@ fn shared_byte_overlay_preserves_the_original_word_selection() {
     .unwrap();
     for (guard, exact) in [(selector.clone(), true), (ExprId::fresh().unwrap(), false)] {
         let expected = ExprId::ite(guard, c(0x11aa), c(0x22aa), limits.expressions()).unwrap();
-        let answer = RelationState::default()
-            .local_value(&op(opcode::EQ, &[word.clone(), expected]), &limits);
+        let answer = RelationState::default().local_value(
+            &op(opcode::EQ, &[word.clone(), expected]),
+            &limits,
+            product_algebra().borrowed(),
+        );
         if exact {
-            assert_eq!(answer, ValueQuery::Exact(U256::ONE));
+            assert_eq!(answer, EvmValueQuery::Exact(U256::ONE));
         } else {
-            assert!(matches!(answer, ValueQuery::Bounds(_)));
+            assert!(matches!(answer, EvmValueQuery::Bounds(_)));
             assert!(includes(&answer, U256::ZERO));
             assert!(includes(&answer, U256::ONE));
         }
@@ -585,12 +667,12 @@ fn shared_byte_overlay_preserves_the_original_word_selection() {
     for (branch, expected) in [(true, 0x11aau64), (false, 0x22aau64)] {
         let mut state = RelationState::default();
         assert_eq!(
-            state.assume(&selector, branch, &limits),
+            state.assume(&selector, branch, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            state.local_value(&word, &limits),
-            ValueQuery::Exact(U256::from(expected))
+            state.local_value(&word, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(expected))
         );
     }
 }
@@ -611,7 +693,7 @@ fn known_source_word_registration_leaves_byte_facts_unmaterialized() {
         cancellation: analysis_control::current_cancellation(),
         ledger: None,
     };
-    let algebra = crate::domain::ValueAlgebra::new(crate::domain::Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let mut engine = super::Engine::new(&mut work, &limits, algebra.borrowed());
     engine
         .atom(&Constraint::Equal {
@@ -651,16 +733,20 @@ fn demanded_source_word_bytes_preserve_identity_guards_and_nonwrapping_windows()
         .observe(&original, &NumericValue::constant(U256::from(7)), &limits)
         .unwrap();
     assert_eq!(
-        state.local_value(&byte(initial.clone(), c(31)), &limits),
-        ValueQuery::Exact(U256::from(7))
+        state.local_value(
+            &byte(initial.clone(), c(31)),
+            &limits,
+            product_algebra().borrowed()
+        ),
+        EvmValueQuery::Exact(U256::from(7))
     );
     for other in [
         ByteStateId::input(SourceId::scoped(token, U256::from(2)), c(64)),
         ByteStateId::input(source.clone(), c(63)),
         ByteStateId::input(SourceId::fresh().unwrap(), c(64)),
     ] {
-        let answer = state.local_value(&byte(other, c(31)), &limits);
-        let ValueQuery::Bounds(bounds) = answer else {
+        let answer = state.local_value(&byte(other, c(31)), &limits, product_algebra().borrowed());
+        let EvmValueQuery::Bounds(bounds) = answer else {
             panic!("a different source or length has no word guarantee: {answer:?}");
         };
         assert!(bounds.contains(U256::from(255)));
@@ -672,8 +758,8 @@ fn demanded_source_word_bytes_preserve_identity_guards_and_nonwrapping_windows()
     guarded
         .observe(&selected, &NumericValue::constant(U256::from(7)), &limits)
         .unwrap();
-    let answer = guarded.local_value(&byte(initial, c(31)), &limits);
-    assert!(matches!(answer, ValueQuery::Bounds(bounds) if bounds.contains(U256::from(255))));
+    let answer = guarded.local_value(&byte(initial, c(31)), &limits, product_algebra().borrowed());
+    assert!(matches!(answer, EvmValueQuery::Bounds(bounds) if bounds.contains(U256::from(255))));
 
     let initial = ByteStateId::input(source, ExprId::constant(U256::MAX));
     let edge = word(initial.clone(), ExprId::constant(U256::MAX));
@@ -681,8 +767,9 @@ fn demanded_source_word_bytes_preserve_identity_guards_and_nonwrapping_windows()
     edge_state
         .observe(&edge, &NumericValue::constant(U256::ZERO), &limits)
         .unwrap();
-    let answer = edge_state.local_value(&byte(initial, c(0)), &limits);
-    assert!(matches!(answer, ValueQuery::Bounds(bounds) if bounds.contains(U256::from(255))));
+    let answer =
+        edge_state.local_value(&byte(initial, c(0)), &limits, product_algebra().borrowed());
+    assert!(matches!(answer, EvmValueQuery::Bounds(bounds) if bounds.contains(U256::from(255))));
 }
 
 #[test]
@@ -714,16 +801,22 @@ fn overlapping_source_words_reuse_only_their_guaranteed_initial_bytes() {
     .unwrap();
     let mut state = RelationState::default();
     assert_eq!(
-        state.add_unsigned_bounds(&length, U256::from(33), U256::from(128), &limits),
+        state.add_unsigned_bounds(
+            &length,
+            U256::from(33),
+            U256::from(128),
+            &limits,
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     assert_eq!(
-        state.add_equal(&original, &c(7), &limits),
+        state.add_equal(&original, &c(7), &limits, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     let before = state.clone();
-    let answer = state.local_value(&shifted, &limits);
-    let ValueQuery::Bounds(bounds) = answer else {
+    let answer = state.local_value(&shifted, &limits, product_algebra().borrowed());
+    let EvmValueQuery::Bounds(bounds) = answer else {
         panic!("shifted byte remains unknown: {answer:?}");
     };
     assert_eq!(
@@ -731,11 +824,21 @@ fn overlapping_source_words_reuse_only_their_guaranteed_initial_bytes() {
         (U256::from(0x700), U256::from(0x7ff))
     );
     assert_eq!(
-        state.can_equal(&shifted, U256::from(7), &limits),
+        state.can_equal(
+            &shifted,
+            U256::from(7),
+            &limits,
+            product_algebra().borrowed()
+        ),
         CheckResult::ProvenImpossible
     );
     assert_eq!(
-        state.can_equal(&shifted, U256::from(0x7aa), &limits),
+        state.can_equal(
+            &shifted,
+            U256::from(0x7aa),
+            &limits,
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     let independent = ByteStateId::input(SourceId::fresh().unwrap(), length.clone());
@@ -746,7 +849,7 @@ fn overlapping_source_words_reuse_only_their_guaranteed_initial_bytes() {
     )
     .unwrap();
     assert!(includes(
-        &state.local_value(&independent, &limits),
+        &state.local_value(&independent, &limits, product_algebra().borrowed()),
         U256::from(7)
     ));
     assert_eq!(state, before);
@@ -760,11 +863,11 @@ fn overlapping_source_words_reuse_only_their_guaranteed_initial_bytes() {
     let last = ExprId::byte_read(initial.clone(), c(31), limits.expressions()).unwrap();
     let mut short_state = RelationState::default();
     assert_eq!(
-        short_state.add_equal(&short, &c(0), &limits),
+        short_state.add_equal(&short, &c(0), &limits, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
-    let answer = short_state.local_value(&last, &limits);
-    assert!(matches!(answer, ValueQuery::Bounds(_)));
+    let answer = short_state.local_value(&last, &limits, product_algebra().borrowed());
+    assert!(matches!(answer, EvmValueQuery::Bounds(_)));
     assert!(includes(&answer, U256::from(255)));
     let written = initial.write_word(c(0), c(7), states).unwrap();
     let written = ExprId::word_read(
@@ -775,11 +878,11 @@ fn overlapping_source_words_reuse_only_their_guaranteed_initial_bytes() {
     .unwrap();
     let mut written_state = RelationState::default();
     assert_eq!(
-        written_state.add_equal(&written, &c(7), &limits),
+        written_state.add_equal(&written, &c(7), &limits, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     assert!(includes(
-        &written_state.local_value(&original, &limits),
+        &written_state.local_value(&original, &limits, product_algebra().borrowed()),
         U256::from(42)
     ));
 }
@@ -795,26 +898,37 @@ fn candidate_equality_cannot_supply_its_own_compound_value() {
     let read = ExprId::slot_read(slots, c(0), limits.expressions()).unwrap();
     let mut state = RelationState::default();
     assert_eq!(
-        state.add_equal(&base, &c(3), &limits),
+        state.add_equal(&base, &c(3), &limits, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     let before = state.clone();
     for expression in [square, read] {
         assert_eq!(
-            state.local_value(&expression, &limits),
-            ValueQuery::Exact(U256::from(9))
+            state.local_value(&expression, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(9))
         );
         for (candidate, expected) in [
             (8, CheckResult::ProvenImpossible),
             (9, CheckResult::MayBeFeasible),
         ] {
             assert_eq!(
-                state.can_equal(&expression, U256::from(candidate), &limits),
+                state.can_equal(
+                    &expression,
+                    U256::from(candidate),
+                    &limits,
+                    product_algebra().borrowed()
+                ),
                 expected
             );
             let mut budget = WorkBudget::new(20_000_000);
             assert_eq!(
-                state.can_equal_budgeted(&expression, U256::from(candidate), &limits, &mut budget),
+                state.can_equal_budgeted(
+                    &expression,
+                    U256::from(candidate),
+                    &limits,
+                    &mut budget,
+                    product_algebra().borrowed()
+                ),
                 expected
             );
             assert!(!budget.exhausted());
@@ -829,12 +943,23 @@ fn unknown_candidate_queries_keep_typed_interruption_without_a_witness() {
     let expression = op(opcode::MUL, &[ExprId::fresh().unwrap(), c(3)]);
     let state = RelationState::default();
     assert_eq!(
-        state.can_equal(&expression, U256::from(7), &limits),
+        state.can_equal(
+            &expression,
+            U256::from(7),
+            &limits,
+            product_algebra().borrowed()
+        ),
         CheckResult::MayBeFeasible
     );
     let mut budget = WorkBudget::new(0);
     assert_eq!(
-        state.can_equal_budgeted(&expression, U256::from(7), &limits, &mut budget),
+        state.can_equal_budgeted(
+            &expression,
+            U256::from(7),
+            &limits,
+            &mut budget,
+            product_algebra().borrowed()
+        ),
         CheckResult::Undetermined(QueryReason::ExpressionLimit)
     );
     assert_eq!(budget.used(), 0);
@@ -843,7 +968,12 @@ fn unknown_candidate_queries_keep_typed_interruption_without_a_witness() {
     token.cancel();
     analysis_control::with_cancellation(&token, || {
         assert_eq!(
-            state.can_equal(&expression, U256::from(7), &limits),
+            state.can_equal(
+                &expression,
+                U256::from(7),
+                &limits,
+                product_algebra().borrowed()
+            ),
             CheckResult::Undetermined(QueryReason::Cancelled)
         );
     });
@@ -875,17 +1005,23 @@ fn assumptions_check_definitions_instead_of_their_own_imported_truth() {
     ] {
         let mut state = RelationState::default();
         assert_eq!(
-            state.add_equal(&base, &c(3), &limits),
+            state.add_equal(&base, &c(3), &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         let mut budgeted = state.clone();
         let mut budget = WorkBudget::new(20_000_000);
         assert_eq!(
-            state.assume_checked(&condition, truth, &limits),
+            state.assume_checked(&condition, truth, &limits, product_algebra().borrowed()),
             Ok(CheckResult::ProvenImpossible)
         );
         assert_eq!(
-            budgeted.assume_checked_budgeted(&condition, truth, &limits, &mut budget),
+            budgeted.assume_checked_budgeted(
+                &condition,
+                truth,
+                &limits,
+                &mut budget,
+                product_algebra().borrowed()
+            ),
             Ok(CheckResult::ProvenImpossible)
         );
         assert!(!budget.exhausted());
@@ -915,10 +1051,10 @@ fn check_rejects_an_observed_compound_result_only_from_its_definition() {
         // Ordinary projection may trust an explicit result guarantee. Only a
         // feasibility check needs to compare that guarantee to its definition.
         assert_eq!(
-            state.local_value(&product, &limits),
-            ValueQuery::Exact(U256::from(result))
+            state.local_value(&product, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(result))
         );
-        assert_eq!(state.check(&limits), expected);
+        assert_eq!(state.check(&limits, product_algebra().borrowed()), expected);
     }
 }
 
@@ -936,12 +1072,12 @@ fn nonzero_symbolic_storage_key_cannot_alias_zero() {
     for (zero, expected) in [(false, 7), (true, 9)] {
         let mut state = RelationState::default();
         assert_eq!(
-            state.assume(&guard, zero, &limits),
+            state.assume(&guard, zero, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            state.local_value(&read, &limits),
-            ValueQuery::Exact(U256::from(expected))
+            state.local_value(&read, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(expected))
         );
     }
 }
@@ -980,20 +1116,26 @@ fn copied_long_view_reuses_the_original_full_word_fact() {
     for original in [original, long_original] {
         let mut state = RelationState::default();
         assert_eq!(
-            state.add_unsigned_bounds(&length, U256::from(32), U256::from(64), &limits),
+            state.add_unsigned_bounds(
+                &length,
+                U256::from(32),
+                U256::from(64),
+                &limits,
+                product_algebra().borrowed()
+            ),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            state.add_equal(&original, &c(7), &limits),
+            state.add_equal(&original, &c(7), &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         assert_eq!(
-            state.local_value(&read, &limits),
-            ValueQuery::Exact(U256::from(7))
+            state.local_value(&read, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(7))
         );
         assert_eq!(
-            state.local_value(&original, &limits),
-            ValueQuery::Exact(U256::from(7))
+            state.local_value(&original, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(7))
         );
     }
 }
@@ -1018,11 +1160,12 @@ fn unconstrained_word_and_concrete_padding_need_no_generic_numeric_operations() 
         .unwrap();
         // Less than one generic operation reservation in the measured trace.
         let mut budget = WorkBudget::new(30_000);
-        let answer = state.local_value_budgeted(&read, &limits, &mut budget);
+        let answer =
+            state.local_value_budgeted(&read, &limits, &mut budget, product_algebra().borrowed());
         match expected {
-            Some(value) => assert_eq!(answer, ValueQuery::Exact(value)),
+            Some(value) => assert_eq!(answer, EvmValueQuery::Exact(value)),
             None => {
-                let ValueQuery::Bounds(bounds) = answer else {
+                let EvmValueQuery::Bounds(bounds) = answer else {
                     panic!("unknown bytes should complete as ordinary bounds");
                 };
                 assert!(bounds.is_top());
@@ -1043,9 +1186,12 @@ fn unknown_byte_with_padding_keeps_its_word_bits_and_both_signs() {
     )
     .unwrap();
     let mut budget = WorkBudget::new(30_000);
-    let ValueQuery::Bounds(bounds) =
-        RelationState::default().local_value_budgeted(&read, &limits, &mut budget)
-    else {
+    let EvmValueQuery::Bounds(bounds) = RelationState::default().local_value_budgeted(
+        &read,
+        &limits,
+        &mut budget,
+        product_algebra().borrowed(),
+    ) else {
         panic!("one unknown byte should keep its complete padded-word bounds");
     };
     for byte in 0u64..=255 {
@@ -1074,10 +1220,10 @@ fn symbolic_slot_alias_and_guarded_history_keep_the_original_key_identity() {
     let equal = op(opcode::EQ, &[x, y]);
     for (alias, expected) in [(true, 9u64), (false, 7)] {
         let mut state = RelationState::default();
-        state.assume(&equal, alias, &limits);
+        state.assume(&equal, alias, &limits, product_algebra().borrowed());
         assert_eq!(
-            state.local_value(&read, &limits),
-            ValueQuery::Exact(U256::from(expected))
+            state.local_value(&read, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(expected))
         );
     }
 }
@@ -1089,20 +1235,20 @@ fn unknown_selector_never_leaks_an_alternatives_facts() {
     let selector = ExprId::fresh().unwrap();
     let mut yes = RelationState::default();
     let mut no = RelationState::default();
-    yes.add_equal(&x, &c(1), &limits);
-    no.add_equal(&x, &c(2), &limits);
+    yes.add_equal(&x, &c(1), &limits, product_algebra().borrowed());
+    no.add_equal(&x, &c(2), &limits, product_algebra().borrowed());
     let joined = yes.join_guarded(&no, selector.clone(), &limits).unwrap();
     for candidate in [1u64, 2] {
         assert!(includes(
-            &joined.local_value(&x, &limits),
+            &joined.local_value(&x, &limits, product_algebra().borrowed()),
             U256::from(candidate)
         ));
     }
     let mut selected = joined;
-    selected.assume(&selector, true, &limits);
+    selected.assume(&selector, true, &limits, product_algebra().borrowed());
     assert_eq!(
-        selected.local_value(&x, &limits),
-        ValueQuery::Exact(U256::ONE)
+        selected.local_value(&x, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::ONE)
     );
 }
 
@@ -1117,7 +1263,7 @@ fn statically_impossible_alternative_implies_its_guard_without_search() {
     };
     let mut possible = RelationState::default();
     assert_eq!(
-        possible.add_equal(&value, &c(9), &limits),
+        possible.add_equal(&value, &c(9), &limits, product_algebra().borrowed()),
         CheckResult::MayBeFeasible
     );
     for (then_state, else_state, expected) in [
@@ -1128,16 +1274,18 @@ fn statically_impossible_alternative_implies_its_guard_without_search() {
             .join_guarded(else_state, guard.clone(), &limits)
             .unwrap();
         assert_eq!(
-            joined.local_value(&value, &limits),
-            ValueQuery::Exact(U256::from(9))
+            joined.local_value(&value, &limits, product_algebra().borrowed()),
+            EvmValueQuery::Exact(U256::from(9))
         );
         if expected == U256::ZERO {
             assert_eq!(
-                joined.local_value(&guard, &limits),
-                ValueQuery::Exact(U256::ZERO)
+                joined.local_value(&guard, &limits, product_algebra().borrowed()),
+                EvmValueQuery::Exact(U256::ZERO)
             );
         } else {
-            let ValueQuery::Bounds(bounds) = joined.local_value(&guard, &limits) else {
+            let EvmValueQuery::Bounds(bounds) =
+                joined.local_value(&guard, &limits, product_algebra().borrowed())
+            else {
                 panic!("nonzero guard should preserve every unproved nonzero word");
             };
             assert!(!bounds.contains(U256::ZERO));
@@ -1145,7 +1293,12 @@ fn statically_impossible_alternative_implies_its_guard_without_search() {
             assert!(bounds.contains(U256::MAX));
         }
         assert_eq!(
-            joined.can_equal(&guard, U256::ONE - expected, &limits),
+            joined.can_equal(
+                &guard,
+                U256::ONE - expected,
+                &limits,
+                product_algebra().borrowed()
+            ),
             CheckResult::ProvenImpossible
         );
     }
@@ -1156,9 +1309,9 @@ fn local_infeasibility_is_distinct_from_an_interrupted_retained_assumption() {
     let limits = RelationLimits::default();
     let x = ExprId::fresh().unwrap();
     let mut impossible = RelationState::default();
-    impossible.assume(&x, true, &limits);
+    impossible.assume(&x, true, &limits, product_algebra().borrowed());
     assert_eq!(
-        impossible.assume(&x, false, &limits),
+        impossible.assume(&x, false, &limits, product_algebra().borrowed()),
         CheckResult::ProvenImpossible
     );
     let token = analysis_control::Cancellation::new();
@@ -1166,15 +1319,15 @@ fn local_infeasibility_is_distinct_from_an_interrupted_retained_assumption() {
     let mut pending = RelationState::default();
     analysis_control::with_cancellation(&token, || {
         assert_eq!(
-            pending.assume_checked(&x, false, &limits),
+            pending.assume_checked(&x, false, &limits, product_algebra().borrowed()),
             Ok(CheckResult::Undetermined(QueryReason::Cancelled))
         )
     });
     assert!(!pending.is_bottom());
     assert_eq!(pending.len(), 1);
     assert_eq!(
-        pending.local_value(&x, &limits),
-        ValueQuery::Exact(U256::ZERO)
+        pending.local_value(&x, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::ZERO)
     );
 }
 
@@ -1186,13 +1339,18 @@ fn independent_unknowns_and_hashes_never_claim_satisfiability_or_distinct_models
     for truth in [true, false] {
         let mut state = RelationState::default();
         assert_eq!(
-            state.assume(&op(opcode::EQ, &[a.clone(), b.clone()]), truth, &limits),
+            state.assume(
+                &op(opcode::EQ, &[a.clone(), b.clone()]),
+                truth,
+                &limits,
+                product_algebra().borrowed()
+            ),
             CheckResult::MayBeFeasible
         );
     }
     assert!(matches!(
-        RelationState::default().local_value(&a, &limits),
-        ValueQuery::Bounds(_)
+        RelationState::default().local_value(&a, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Bounds(_)
     ));
 }
 
@@ -1214,10 +1372,15 @@ fn demanded_word_reads_do_not_wrap_mathematical_addresses() {
     )
     .unwrap();
     let mut relations = RelationState::default();
-    relations.add_equal(&at, &ExprId::constant(U256::MAX), &limits);
+    relations.add_equal(
+        &at,
+        &ExprId::constant(U256::MAX),
+        &limits,
+        product_algebra().borrowed(),
+    );
     assert_eq!(
-        relations.local_value(&read, &limits),
-        ValueQuery::Exact(U256::from(255) << 248)
+        relations.local_value(&read, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::from(255) << 248)
     );
 }
 
@@ -1232,8 +1395,8 @@ fn optional_local_projection_refusal_cannot_be_returned_as_a_local_proof() {
     let before = state.clone();
     let mut budget = WorkBudget::new(0);
     assert!(matches!(
-        state.local_value_budgeted(&x, &limits, &mut budget),
-        ValueQuery::Undetermined(_)
+        state.local_value_budgeted(&x, &limits, &mut budget, product_algebra().borrowed()),
+        EvmValueQuery::Undetermined(_)
     ));
     assert!(!budget.exhausted());
     assert_eq!(budget.used(), 0);
@@ -1358,8 +1521,8 @@ fn exact_compound_guarantee_does_not_reconstruct_the_unknown_word() {
         .observe(&read, &NumericValue::constant(U256::from(7)), &limits)
         .unwrap();
     assert_eq!(
-        state.local_value(&read, &limits),
-        ValueQuery::Exact(U256::from(7))
+        state.local_value(&read, &limits, product_algebra().borrowed()),
+        EvmValueQuery::Exact(U256::from(7))
     );
 }
 
@@ -1377,7 +1540,7 @@ fn retained_inconsistent_bits_are_a_real_local_contradiction() {
         ..Default::default()
     };
     assert_eq!(
-        state.check(&RelationLimits::default()),
+        state.check(&RelationLimits::default(), product_algebra().borrowed()),
         CheckResult::ProvenImpossible
     );
 }
@@ -1417,7 +1580,8 @@ fn literal_representatives_override_both_real_fingerprint_orderings() {
                 cancellation: analysis_control::current_cancellation(),
                 ledger: None,
             };
-            let algebra = crate::domain::ValueAlgebra::new(crate::domain::Domain::default());
+            let algebra =
+                crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
             let mut engine = super::Engine::new(&mut work, &limits, algebra.borrowed());
             engine.equal(left, right).unwrap();
             assert_eq!(engine.root(&input).unwrap(), literal);
@@ -1446,7 +1610,7 @@ fn equality_root_chains_decrease_by_literal_rank_then_existing_order() {
         cancellation: analysis_control::current_cancellation(),
         ledger: None,
     };
-    let algebra = crate::domain::ValueAlgebra::new(crate::domain::Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let mut engine = super::Engine::new(&mut work, &limits, algebra.borrowed());
     // A numeric singleton is still a nonliteral and keeps the old ExprId order.
     engine
@@ -1498,12 +1662,12 @@ fn literal_root_conflicts_remain_impossible_in_both_argument_orders() {
             (&zero, &one)
         };
         assert_eq!(
-            direct.add_equal(left, right, &limits),
+            direct.add_equal(left, right, &limits, product_algebra().borrowed()),
             CheckResult::ProvenImpossible
         );
         let mut indirect = RelationState::default();
         assert_eq!(
-            indirect.add_equal(&input, &zero, &limits),
+            indirect.add_equal(&input, &zero, &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         let (left, right) = if reversed {
@@ -1512,7 +1676,7 @@ fn literal_root_conflicts_remain_impossible_in_both_argument_orders() {
             (&input, &one)
         };
         assert_eq!(
-            indirect.add_equal(left, right, &limits),
+            indirect.add_equal(left, right, &limits, product_algebra().borrowed()),
             CheckResult::ProvenImpossible
         );
     }
@@ -1546,21 +1710,21 @@ fn literal_source_length_aliases_use_only_the_current_complete_facts() {
         let mut state = RelationState::default();
         if let Some(bound) = bound {
             assert_eq!(
-                state.add_equal(&length, &c(bound), &limits),
+                state.add_equal(&length, &c(bound), &limits, product_algebra().borrowed()),
                 CheckResult::MayBeFeasible
             );
         }
         assert_eq!(
-            state.add_equal(&original, &c(value), &limits),
+            state.add_equal(&original, &c(value), &limits, product_algebra().borrowed()),
             CheckResult::MayBeFeasible
         );
         let before = state.clone();
         for _ in 0..2 {
-            let answer = state.local_value(&alias, &limits);
+            let answer = state.local_value(&alias, &limits, product_algebra().borrowed());
             if let Some(expected) = expected {
-                assert_eq!(answer, ValueQuery::Exact(U256::from(expected)));
+                assert_eq!(answer, EvmValueQuery::Exact(U256::from(expected)));
             } else {
-                let ValueQuery::Bounds(bounds) = answer else {
+                let EvmValueQuery::Bounds(bounds) = answer else {
                     panic!("a different or unproved length must keep byte bounds: {answer:?}");
                 };
                 for candidate in [0u64, 7, 9, 255] {
@@ -1585,7 +1749,7 @@ fn literal_rank_work_refuses_before_linking_and_preserves_cancellation_priority(
         cancellation: analysis_control::Cancellation::new(),
         ledger: None,
     };
-    let algebra = crate::domain::ValueAlgebra::new(crate::domain::Domain::default());
+    let algebra = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
     let mut engine = super::Engine::new(&mut work, &limits, algebra.borrowed());
     assert!(matches!(
         engine.equal(&input, &literal),

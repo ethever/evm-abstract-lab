@@ -1,26 +1,26 @@
-use super::super::{AbstractValue, Domain, DomainSpec, Profile};
+use super::super::{DomainSpec, EvmValue, ProductAlgebra, ValueAlgebra};
+use crate::domain::NumericValue;
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::num::NonZeroUsize;
 
-fn domain() -> Domain {
-    Domain::from_spec(DomainSpec::new(
-        Profile::Product,
+fn domain() -> ValueAlgebra<ProductAlgebra> {
+    ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::new(
         NonZeroUsize::new(512).unwrap(),
         NonZeroUsize::new(4).unwrap(),
         NonZeroUsize::new(256).unwrap(),
-    ))
+    )))
 }
 
 #[test]
 fn a_word_counter_stabilizes_before_enumerating_512_constants_or_256_bit_prefixes() {
     let domain = domain();
-    let mut value = AbstractValue::constant(U256::ZERO);
+    let mut value = EvmValue::<NumericValue>::constant(U256::ZERO);
     let mut stable = false;
     for update in 0..12 {
         let next = domain.apply(
             opcode::ADD,
-            &[value.clone(), AbstractValue::constant(U256::ONE)],
+            &[value.clone(), EvmValue::<NumericValue>::constant(U256::ONE)],
         );
         let joined = domain.join(&value, &next);
         let widened = if update >= domain.spec().widening_after_updates() {
@@ -45,7 +45,7 @@ fn a_word_counter_stabilizes_before_enumerating_512_constants_or_256_bit_prefixe
 fn expanding_high_bits_keep_the_fixed_low_160_bit_target() {
     let domain = domain();
     let target = U256::from(0x101);
-    let value = |high| AbstractValue::constant((U256::from(high) << 160usize) | target);
+    let value = |high| EvmValue::<NumericValue>::constant((U256::from(high) << 160usize) | target);
     let old = [1_u64, 2, 3]
         .into_iter()
         .map(value)
@@ -67,10 +67,10 @@ fn expanding_high_bits_keep_the_fixed_low_160_bit_target() {
 fn small_finite_unions_and_unchanged_words_keep_all_facts() {
     let domain = domain();
     for values in [[0_u64, 1, 2], [5, 9, 9]] {
-        let old = AbstractValue::constant(U256::from(values[0]));
+        let old = EvmValue::<NumericValue>::constant(U256::from(values[0]));
         let joined = values
             .into_iter()
-            .map(|value| AbstractValue::constant(U256::from(value)))
+            .map(|value| EvmValue::<NumericValue>::constant(U256::from(value)))
             .reduce(|left, right| domain.join(&left, &right))
             .unwrap();
         assert_eq!(
