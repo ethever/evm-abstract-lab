@@ -136,7 +136,7 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
         if !X::ENABLED {
             return Ok(());
         }
-        self.with_shared(runtime, consumer, budget, |run, shared, universe| {
+        let changed = self.with_shared(runtime, consumer, budget, |run, shared, universe| {
             run.publish(
                 &mut shared.points,
                 Scoped::new(universe, ()),
@@ -153,19 +153,26 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
                     .map_err(publication_error)?;
                 }
             }
+            let mut changed = false;
             for (point, direction) in [
                 (edge.from, Direction::Successors),
                 (edge.to, Direction::Predecessors),
             ] {
-                run.publish(
-                    &mut shared.topology,
-                    Scoped::new(universe, Neighbors { point, direction }),
-                    BTreeSet::from([edge]),
-                )
-                .map_err(publication_error)?;
+                changed |= run
+                    .publish(
+                        &mut shared.topology,
+                        Scoped::new(universe, Neighbors { point, direction }),
+                        BTreeSet::from([edge]),
+                    )
+                    .map_err(publication_error)?
+                    == analysis_kernel::Change::Changed;
             }
-            Ok(())
-        })
+            Ok(changed)
+        })?;
+        if changed && edge.from.kind == crate::analysis::cooperation::PointKind::Body {
+            self.structure_changed(runtime, consumer, budget)?;
+        }
+        Ok(())
     }
 
     pub(in crate::analysis) fn procedure_entry(
@@ -216,12 +223,6 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
             .map_err(publication_error)?;
             Ok(())
         })
-    }
-
-    pub(in crate::analysis) fn summary_closed(&self, id: ProcedureId) -> bool {
-        self.summary_publications
-            .get(&id)
-            .is_some_and(|(_, closed, _)| *closed)
     }
 
     pub(in crate::analysis) fn summary(
@@ -303,7 +304,9 @@ impl<N: WordElement, X: Composition<N, E>, E> Cooperation<N, X, E> {
     }
 }
 
-fn publication_error<E>(error: PublishError<Infallible, MachineError>) -> CooperationError<E> {
+pub(super) fn publication_error<E>(
+    error: PublishError<Infallible, MachineError>,
+) -> CooperationError<E> {
     match error {
         PublishError::Kernel(error) => CooperationError::Protocol(error),
         PublishError::Policy(never) => match never {},

@@ -25,7 +25,7 @@ where
         + Read<Generations, GenerationRoute, Error = Infrastructure>
         + ReadGeneration<Error = Infrastructure>
         + Read<Subscriptions, SubscriptionRoute, Error = Infrastructure>
-        + Read<Summaries<ExcludingWord>, SummaryRoute, Error = Infrastructure>
+        + Discover<Summaries<ExcludingWord>, SummaryRoute, Error = Infrastructure>
         + Read<Continuations<ExcludingWord>, ContinuationRoute, Error = Infrastructure>
         + Charges<Error = Infrastructure>,
 {
@@ -78,7 +78,7 @@ where
             <Cx as Read<Procedures, ProcedureRoute>>::query(cx, Scoped::new(input.universe(), ()))?;
         if let Some(ids) = ids.value() {
             for id in ids {
-                let summary = <Cx as Read<Summaries<ExcludingWord>, SummaryRoute>>::query(
+                let summary = <Cx as Discover<Summaries<ExcludingWord>, SummaryRoute>>::discover(
                     cx,
                     Scoped::new(input.universe(), *id),
                 )?;

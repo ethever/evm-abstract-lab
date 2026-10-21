@@ -1,8 +1,8 @@
 use super::{CooperationError, EvmContext, Extension, ExtraStores, InputTasks};
 use crate::{
     analysis::{
-        ContextPolicy, EnginePolicies, EvmWorldAnalysis, ExecutionConfig, PartitionPolicy, StatePolicy,
-        control::Control, engine, progress::Observer,
+        ContextPolicy, EnginePolicies, EvmWorldAnalysis, ExecutionConfig, PartitionPolicy,
+        StatePolicy, control::Control, engine, progress::Observer,
     },
     domain::{EvmNumericAlgebra, ValueAlgebra},
     world::{EvmEntry, EvmWorld},

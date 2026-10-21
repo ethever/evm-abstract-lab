@@ -221,7 +221,10 @@ impl<
             .ok_or(MachineError::IdentityExhausted)?;
         let old = &mut self.table.procedures[procedure];
         self.runtime.with_run(
-            self.active.as_mut().or(self.caller.as_deref_mut()).ok_or(MachineError::Shape)?,
+            self.active
+                .as_mut()
+                .or(self.caller.as_deref_mut())
+                .ok_or(MachineError::Shape)?,
             self.budget,
             |run| {
                 run.publish_prepared_with(&old.output, Change::Changed, install_work, || {
@@ -233,6 +236,7 @@ impl<
                 .map_err(kernel_failure)
             },
         )?;
+        self.observe_summary(procedure, false)?;
         Ok(())
     }
 }

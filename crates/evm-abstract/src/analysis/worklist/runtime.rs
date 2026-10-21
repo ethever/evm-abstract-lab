@@ -28,6 +28,7 @@ pub(in crate::analysis) enum TaskKind<T = std::convert::Infallible> {
     Seed(crate::analysis::cooperation::Subject),
     Extension(T),
     SummaryObservation,
+    SummaryProof,
 }
 
 type Scheduled<T> = Option<(std::sync::Arc<Task<T>>, RunningJob)>;
@@ -158,6 +159,21 @@ impl<T> Runtime<T> {
         }
     }
 
+    /// Readiness can change without a semantic fact version changing. Wake an
+    /// existing producer; a nested drain already checks readiness on its token.
+    pub fn notify_observation(
+        &mut self,
+        budget: &mut WorkBudget,
+    ) -> Result<(), analysis_kernel::KernelError<MachineError>> {
+        if let Some(job) = self.observation {
+            match self.kernel().retry(job, &mut MachineMeter(budget)) {
+                Ok(()) | Err(analysis_kernel::KernelError::AlreadyRunning) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     pub fn register_relative(
         &mut self,
         task: TaskKind<T>,
@@ -182,6 +198,9 @@ impl<T> Runtime<T> {
                 TaskKind::World { depth, .. } if !relative_only => *depth,
                 TaskKind::World { .. } => 0,
                 TaskKind::SummaryObservation => 1,
+                // Its real queue obligation is consumed synchronously by the
+                // persistent observation owner, which tracks the same wakes.
+                TaskKind::SummaryProof => 0,
                 TaskKind::Body(_)
                 | TaskKind::Resume(_)
                 | TaskKind::Extension(_)
