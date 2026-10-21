@@ -6,7 +6,7 @@
 //! Pending, absence and routing never acquire semantic value premises. Topology
 //! observations adopt the directory plus producer validity of resolved members.
 
-use super::{FactId, JobId, Kernel, Meter, reserve, tree_work};
+use super::{FactId, JobId, Kernel, Meter, Selection, reserve, tree_work};
 use crate::{KernelError, Scope};
 use std::collections::BTreeSet;
 
@@ -18,7 +18,20 @@ impl<J> Kernel<J> {
         source: Scope,
         meter: &mut M,
     ) -> Result<(), KernelError<M::Stop>> {
-        self.adopt(job, fact, Some(source), meter)
+        self.adopt(job, fact, Some(source), false, meter)
+    }
+
+    /// Directory membership is a topology premise even in the reader's own
+    /// scope, including an empty directory before the first foreign publication.
+    /// Publication exempts genuine same-scope feedback from this premise only.
+    pub(super) fn assume_directory<M: Meter>(
+        &mut self,
+        job: JobId,
+        directory: FactId,
+        source: Scope,
+        meter: &mut M,
+    ) -> Result<(), KernelError<M::Stop>> {
+        self.adopt(job, directory, Some(source), true, meter)
     }
 
     pub(super) fn assume_producers<M: Meter>(
@@ -27,7 +40,7 @@ impl<J> Kernel<J> {
         fact: FactId,
         meter: &mut M,
     ) -> Result<(), KernelError<M::Stop>> {
-        self.adopt(job, fact, None, meter)
+        self.adopt(job, fact, None, false, meter)
     }
 
     fn adopt<M: Meter>(
@@ -35,6 +48,7 @@ impl<J> Kernel<J> {
         job: JobId,
         fact: FactId,
         source: Option<Scope>,
+        directory: bool,
         meter: &mut M,
     ) -> Result<(), KernelError<M::Stop>> {
         let target = self.jobs[job.index].scope;
@@ -43,7 +57,9 @@ impl<J> Kernel<J> {
         }
         self.check_usable_scope(target)?;
         self.check_fact(fact)?;
-        if self.facts[fact.index].coverage.is_empty() && source.is_none_or(|scope| scope == target)
+        if !directory
+            && self.facts[fact.index].coverage.is_empty()
+            && source.is_none_or(|scope| scope == target)
         {
             return Ok(());
         }
@@ -59,7 +75,7 @@ impl<J> Kernel<J> {
                 .coverage
                 .values()
                 .any(|producer| *producer != target);
-            if source != target || foreign {
+            if directory || source != target || foreign {
                 premises.insert(fact);
             }
             if source != target {
@@ -70,8 +86,17 @@ impl<J> Kernel<J> {
             if !self.producer_ready(*entry, *published) {
                 return Err(KernelError::PendingCoverage);
             }
-            if *published != target {
-                premises.insert(self.scopes[published.index].head);
+            match self.facts[entry.index]
+                .selected
+                .expect("covered stable entry")
+            {
+                Selection::Absent { .. } => {
+                    premises.insert(*entry);
+                }
+                Selection::Active(scope) if scope != target => {
+                    premises.insert(self.scopes[scope.index].head);
+                }
+                _ => {}
             }
         }
         let cost = premises.iter().fold(1usize, |cost, id| {

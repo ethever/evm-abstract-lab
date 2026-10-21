@@ -22,6 +22,7 @@ impl<J> Kernel<J> {
                 .len()
                 .saturating_add(generation.facts.len())
                 .saturating_add(generation.assumptions.len())
+                .saturating_add(generation.open_obligations.len())
                 .saturating_add(1),
         )?;
         // All reverse sets are bounded by retained identities; only logarithmic
@@ -29,13 +30,15 @@ impl<J> Kernel<J> {
         let edge_work = tree_work(self.facts.len())
             .saturating_add(tree_work(self.jobs.len()))
             .saturating_add(tree_work(self.scopes.len()))
-            .saturating_add(6);
+            .saturating_add(6)
+            .saturating_mul(2);
         let mut cost = generation
             .assumptions
             .len()
             .saturating_mul(edge_work)
             .saturating_add(generation.facts.len())
-            .saturating_add(generation.jobs.len());
+            .saturating_add(generation.jobs.len())
+            .saturating_add(generation.open_obligations.len());
         for id in &generation.jobs {
             let job = &self.jobs[id.index];
             cost = cost
@@ -43,6 +46,7 @@ impl<J> Kernel<J> {
                     job.reads
                         .len()
                         .saturating_add(job.provides.len())
+                        .saturating_add(job.required.len())
                         .saturating_mul(edge_work),
                 )
                 .saturating_add(self.worklist.removal_work())
@@ -55,6 +59,7 @@ impl<J> Kernel<J> {
                 .saturating_add(
                     fact.readers
                         .len()
+                        .saturating_add(fact.demands.len())
                         .saturating_add(fact.providers.len())
                         .saturating_add(fact.assumptions.len())
                         .saturating_mul(edge_work),
@@ -65,6 +70,7 @@ impl<J> Kernel<J> {
 
     pub(super) fn install_retirement(&mut self, scope: Scope) {
         self.scopes[scope.index].active = false;
+        self.scopes[scope.index].open_obligations.clear();
         for id in std::mem::take(&mut self.scopes[scope.index].jobs) {
             let job = &mut self.jobs[id.index];
             job.state = JobState::Retired;
@@ -72,7 +78,9 @@ impl<J> Kernel<J> {
             self.worklist.satisfy(id);
             for (fact, _) in std::mem::take(&mut job.reads) {
                 self.facts[fact.index].readers.remove(&id);
+                self.facts[fact.index].demands.remove(&id);
             }
+            job.required.clear();
             for fact in std::mem::take(&mut job.provides) {
                 self.facts[fact.index].providers.remove(&id);
             }
@@ -87,8 +95,10 @@ impl<J> Kernel<J> {
         for id in std::mem::take(&mut self.scopes[scope.index].facts) {
             let fact = &mut self.facts[id.index];
             fact.coverage.clear();
+            fact.demands.clear();
             for reader in std::mem::take(&mut fact.readers) {
                 self.jobs[reader.index].reads.remove(&id);
+                self.jobs[reader.index].required.remove(&id);
             }
             for provider in std::mem::take(&mut fact.providers) {
                 self.jobs[provider.index].provides.remove(&id);

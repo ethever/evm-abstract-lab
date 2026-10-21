@@ -1,9 +1,9 @@
 //! Static independent analyzers, explicit capability routes and joint solving.
 
 use crate::{
-    Accepts, Answer, Capability, Change, Channel, Charges, Kernel, KernelError, LocalClosure,
-    Meter, PublishError, Read, ReadGeneration, Run, Scope, Scoped, SolveError, SolveReport,
-    algebra::PublicationPolicy,
+    Accepts, Answer, Capability, Change, Channel, Charges, Discover, Kernel, KernelError,
+    LocalClosure, Meter, PublishError, Read, ReadGeneration, Run, Scope, Scoped, SolveError,
+    SolveReport, algebra::PublicationPolicy,
 };
 use std::{fmt, marker::PhantomData};
 
@@ -111,6 +111,18 @@ where
     type Error = KernelError<M::Stop>;
     fn query(&mut self, key: Scoped<Q::Key>) -> Result<Answer<Q::Value>, Self::Error> {
         self.run.query(self.stores.select_mut(), key)
+    }
+}
+impl<J, M, S, Q, P, Path> Discover<Q, Path> for Context<'_, '_, J, M, S>
+where
+    M: Meter,
+    Q: Capability,
+    P: PublicationPolicy<Value = Q::Value>,
+    S: Select<Path, Output = Channel<Q, P>>,
+{
+    type Error = KernelError<M::Stop>;
+    fn discover(&mut self, key: Scoped<Q::Key>) -> Result<Answer<Q::Value>, Self::Error> {
+        self.run.query_discovery(self.stores.select_mut(), key)
     }
 }
 impl<J, M, S, Q, P, Path> Accepts<Q, Path> for Context<'_, '_, J, M, S>

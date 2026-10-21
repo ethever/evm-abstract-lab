@@ -4,8 +4,10 @@
 mod api;
 mod atomicity;
 mod convergence;
+mod discovery;
 mod lifecycle;
 mod provenance;
+mod readiness;
 mod self_callback;
 
 use super::{Budget, Stop, scope};
