@@ -36,10 +36,13 @@ pub(in crate::world) fn scalar_in_paid<N: WordElement, D: EvmNumericAlgebra<Elem
     domain: AlgebraRef<'_, D>,
     payer: &mut ReadPayment<'_>,
 ) -> ReadResult<EvmValue<N>> {
-    let mut tasks = vec![Task::Evaluate(expression)];
+    // The first Evaluate must pass its existing context/reservation before
+    // any continuation stack grows. Keep it inline and charge it only once.
+    let mut first = Some(Task::Evaluate(expression));
+    let mut tasks = Vec::new();
     let mut values = Vec::new();
     let mut branches = Vec::new();
-    while let Some(task) = tasks.pop() {
+    while let Some(task) = first.take().or_else(|| tasks.pop()) {
         let context = branches.last().unwrap_or(context);
         let result = match task {
             Task::Evaluate(expression) => {
