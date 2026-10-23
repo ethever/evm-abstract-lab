@@ -50,6 +50,12 @@ where
         )
         .map_err(MachineError::frontier_reason)?;
         let targets: Vec<_> = catalogue.unknown_targets().collect();
+        let root_address = Arc::clone(
+            self.table
+                .process_root_address
+                .as_ref()
+                .ok_or_else(|| MachineError::Shape.frontier_reason())?,
+        );
         let parent = payload.active();
         let parent_owner = parent
             .key
@@ -108,14 +114,7 @@ where
             };
             let target_address = match target {
                 ProcessOwner::Named(address) if address == self.entry.address => {
-                    match self.entry.environment.to {
-                        AddressInput::Concrete(actual) => ProcessTargetAddress::Exact(actual),
-                        AddressInput::Symbolic(_) => {
-                            // This named namespace denotes the original root
-                            // operand, which may differ from the current frame.
-                            ProcessTargetAddress::Independent
-                        }
-                    }
+                    ProcessTargetAddress::Operand(root_address.as_ref())
                 }
                 ProcessOwner::Named(address) => ProcessTargetAddress::Exact(address),
                 ProcessOwner::Residual => ProcessTargetAddress::Independent,

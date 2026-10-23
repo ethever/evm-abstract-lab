@@ -236,6 +236,7 @@ fn cheap_constructor_cannot_prepay_its_actual_high_private_result_copy() {
             &BTreeSet::new(),
             None,
             false,
+            false,
             domain.borrowed(),
             &mut budget,
         )
@@ -276,6 +277,7 @@ fn paid_result_copy_does_not_prepay_its_actual_high_query() {
             &BTreeSet::new(),
             None,
             false,
+            false,
             domain.borrowed(),
             &mut budget,
         )
@@ -312,6 +314,7 @@ fn funded_actual_result_hooks_run_and_original_cancellation_stays_typed() {
             &BTreeSet::new(),
             None,
             false,
+            false,
             domain.borrowed(),
             &mut budget,
         )
@@ -329,6 +332,7 @@ fn funded_actual_result_hooks_run_and_original_cancellation_stays_typed() {
         staged.process_effects_with_payment(
             &BTreeSet::new(),
             None,
+            false,
             false,
             domain.borrowed(),
             &mut cancelled

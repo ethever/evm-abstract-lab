@@ -22,49 +22,50 @@ pub struct EvmProcessInvocation<N: WordElement> {
 pub enum ProcessSource {
     /// The original captured runtime and decoder fork.
     Runtime {
-        /// Account supplying the captured executable bytes.
+        /// Original captured account or input code namespace.
         source: Address,
-        /// Complete hash of those executable bytes.
+        /// Digest of its original executable bytes.
         hash: B256,
-        /// Decoder and execution rules captured with this source.
+        /// Decoder and execution rules for these bytes.
         fork: Fork,
     },
     /// Captured constructor bytes, distinct from account runtime code.
     InitCode {
-        /// Complete hash of the constructor bytes.
+        /// Digest of the constructor bytes, independent of account runtime.
         hash: B256,
-        /// Decoder and execution rules captured with this constructor.
+        /// Constructor decoder and execution rules.
         fork: Fork,
     },
     /// Unobserved runtime, including future deployed code in the complement.
     AnyRuntime {
-        /// Frozen execution rules for this opaque runtime class.
+        /// Rules for the complete unresolved account-execution remainder,
+        /// including empty/native targets hidden by target abstraction.
         fork: Fork,
     },
     /// Arbitrary constructor bytes; no Program or source hash is invented.
     AnyInitCode {
-        /// Frozen execution rules for this opaque constructor class.
+        /// Rules for every represented constructor byte sequence.
         fork: Fork,
     },
     /// Actual empty account execution.
     Empty {
-        /// Frozen execution rules for empty account code.
+        /// Rules of the account-code resolution that established emptiness.
         fork: Fork,
     },
     /// Native precompile interpretation under the frozen fork.
     Precompile {
-        /// Actual native precompile selected by account resolution.
+        /// Actual native precompile selected by account-code resolution.
         address: Address,
-        /// Frozen precompile set and execution rules.
+        /// Fork selecting this native implementation.
         fork: Fork,
     },
     /// A second delegation marker executes an invalid EF instruction.
     InvalidDelegation {
         /// Account supplying the second delegation marker.
         source: Address,
-        /// Complete hash of that captured invalid marker.
+        /// Digest of that original marker's raw bytes.
         hash: B256,
-        /// Frozen rules under which the marker faults.
+        /// Rules under which its EF byte exceptionally fails.
         fork: Fork,
     },
 }
@@ -100,7 +101,7 @@ pub struct ProcessCreation {
 pub enum CreationContinuation {
     /// Ordinary native initcode deployment.
     Native {
-        /// Concrete account allocated by the native CREATE/CREATE2 rule.
+        /// Actual deployment destination computed by the native CREATE path.
         destination: Address,
     },
     /// Native Body/Resume process constructor dependency.

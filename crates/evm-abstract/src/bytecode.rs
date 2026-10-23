@@ -355,6 +355,12 @@ impl Program {
         &self.data.bytes
     }
 
+    /// Identity of one immutable captured allocation, including its fork and
+    /// complete decoded stream. Cloned handles preserve this identity.
+    pub(crate) fn shares_capture(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+    }
+
     /// Keccak of the literal captured bytes, shared by all handles of this
     /// immutable program. Callers retain their cold-byte work allowance even
     /// after initialization; cache warmth must never change analysis quotes.

@@ -257,6 +257,8 @@ pub(in crate::analysis) struct EvmTable<
     procedures: Vec<EvmProcedure<N, Key>>,
     /// Frozen before the first process admission; discoveries stay opaque.
     process_catalogue: Option<Arc<crate::world::process::OwnerCatalogue>>,
+    /// One immutable logical root binding, distinct from residual instances.
+    process_root_address: Option<Arc<EvmValue<N>>>,
     procedures_by_key: KeyIndex<(usize, Key)>,
     nodes: Vec<EvmNode<N>>,
     subscribers: Vec<EvmSubscriber<N>>,
@@ -291,6 +293,7 @@ impl<N: WordElement, Key: PolicyKey> Default for EvmTable<N, Key> {
         Self {
             procedures: Vec::new(),
             process_catalogue: None,
+            process_root_address: None,
             procedures_by_key: KeyIndex::new(),
             nodes: Vec::new(),
             subscribers: Vec::new(),
