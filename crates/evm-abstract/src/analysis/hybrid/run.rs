@@ -23,6 +23,8 @@ use super::{
     input, local, policy,
 };
 
+type HybridResult<N, E> = Result<HybridAnalysis<N>, CooperationError<E>>;
+
 /// Source currency is already computed by the kernel adapter. Fund just this
 /// bounded receipt walk; failure retains the actual baseline/detail status and
 /// withholds the additional positive certificate.
@@ -67,8 +69,7 @@ where
         config: ExecutionConfig,
         hybrid: HybridConfig,
         control: &Control,
-    ) -> Result<HybridAnalysis<D::Element>, CooperationError<<X as Composition<D::Element>>::Error>>
-    {
+    ) -> HybridResult<D::Element, <X as Composition<D::Element>>::Error> {
         control.scope(|| {
             control
                 .checkpoint()
@@ -101,8 +102,7 @@ where
         budget: &mut WorkBudget,
         counters: &mut engine::Counters,
         storage_reads: StorageReadPolicy,
-    ) -> Result<HybridAnalysis<D::Element>, CooperationError<<X as Composition<D::Element>>::Error>>
-    {
+    ) -> HybridResult<D::Element, <X as Composition<D::Element>>::Error> {
         crate::resource::clone_payment::checkpoint(budget).map_err(|error| match error {
             CloneError::Cancelled => CooperationError::Cancelled,
             CloneError::Work => CooperationError::Protocol(analysis_kernel::KernelError::Stopped(
