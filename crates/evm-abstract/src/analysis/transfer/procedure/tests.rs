@@ -10,6 +10,7 @@ use alloy_primitives::U256;
 use std::collections::VecDeque;
 
 mod context;
+mod no_terminal_proof;
 mod policy;
 mod projection;
 mod relation_boundary_probe;
