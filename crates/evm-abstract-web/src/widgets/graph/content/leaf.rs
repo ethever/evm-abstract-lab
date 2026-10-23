@@ -32,7 +32,10 @@ pub(super) fn preview(
     let location = if abstract_environment {
         "Abstract environment".into()
     } else {
-        Symbol::Block(block.basic_block).to_string()
+        block.basic_block.map_or_else(
+            || "Process control".into(),
+            |id| Symbol::Block(id).to_string(),
+        )
     };
     let title = format!(
         "{}  ·  {}{}",
@@ -294,10 +297,13 @@ pub(super) fn tooltip(
     format!(
         "State {} · basic block {}\nFrame depth: {} · code: {}\nStorage owner: {}\nContext: {:?} · coverage: {:?}\nCurrent entry stack (bottom → top): {}\n{}\n\n{}",
         Symbol::State(block.id),
-        Symbol::Block(block.basic_block),
+        block.basic_block.map_or_else(
+            || "Process control".into(),
+            |id| Symbol::Block(id).to_string()
+        ),
         block.frame_depth,
-        block.code_address,
-        block.storage_address,
+        block.code_label(),
+        block.storage_label(),
         block.context,
         coverage,
         block.entry_stack.join(", "),

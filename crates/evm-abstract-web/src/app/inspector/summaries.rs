@@ -75,12 +75,25 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selected: Option<usize>
                 ui.collapsing(
                     format!("Procedure {index} · {:?}{root}", procedure.kind),
                     |ui| {
-                        ui.monospace(format!("Code: {}", procedure.code_address));
+                        if let Some(key) = &procedure.process {
+                            process::frame(ui, key);
+                        }
+                        if let Some(input) = &procedure.process_input {
+                            ui.label(format!(
+                                "Joined ADDRESS: {} · CALLER: {} · CALLVALUE: {}",
+                                input.address.summary, input.caller.summary, input.value.summary
+                            ));
+                        }
+                        if let Some(address) = &procedure.code_address {
+                            ui.monospace(format!("Code: {address}"));
+                        }
                         if let Some(hash) = &procedure.code_hash {
                             ui.monospace(format!("Captured code hash: {hash}"));
                         }
                         ui.label(process::interpretation(procedure.semantics));
-                        ui.monospace(format!("Storage namespace: {}", procedure.storage_address));
+                        if let Some(address) = &procedure.storage_address {
+                            ui.monospace(format!("Storage namespace: {address}"));
+                        }
                         ui.label(format!("Static: {}", procedure.is_static));
                         if procedure.semantics == evm_abstract_protocol::TransferSemantics::Native {
                             ui.label(format!(

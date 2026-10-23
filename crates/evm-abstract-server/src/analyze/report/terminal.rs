@@ -52,6 +52,11 @@ pub(super) fn project<N: WordElement>(
     let config = input.config();
     let domain = input.domain_spec();
     let frame = input.frame();
+    if frame.process.is_some() {
+        return Err(super::super::process::invalid(
+            api::ProcessValidationKind::Identity,
+        ));
+    }
     pools.symbolic.charge(frame.jump_history.len())?;
     pools.symbolic.payload(domain.provenance_policy().len())?;
     let program = pools.program(

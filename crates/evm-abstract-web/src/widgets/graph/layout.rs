@@ -93,7 +93,8 @@ pub(super) fn prepare(
             id: node.id,
             size: geometry::Size::new(f64::from(size.x), f64::from(size.y)),
             program: node.program,
-            block: node.basic_block,
+            // Geometry needs an ordering key; a process display ID is not a code block.
+            block: node.basic_block.unwrap_or(node.id),
             frame_depth: if depths.len() == 1 {
                 depths.first().copied()
             } else {
@@ -139,7 +140,8 @@ pub(super) fn prepare(
 
 fn kind(kind: EdgeKind) -> geometry::EdgeKind {
     match kind {
-        EdgeKind::Fallthrough => geometry::EdgeKind::Fallthrough,
+        // This selects geometric routing only; the wire kind and process label stay intact.
+        EdgeKind::Process(_) | EdgeKind::Fallthrough => geometry::EdgeKind::Fallthrough,
         EdgeKind::Jump => geometry::EdgeKind::Jump,
         EdgeKind::BranchTrue => geometry::EdgeKind::BranchTrue,
         EdgeKind::BranchFalse => geometry::EdgeKind::BranchFalse,

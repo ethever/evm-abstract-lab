@@ -122,7 +122,7 @@ pub(crate) fn report() -> AnalysisReport {
     assert_eq!(known.address, coverage.input.entry_address);
     assert_eq!(known.code_kind, api::CodeKind::Runtime);
     assert_eq!(known.program, root.program);
-    assert_eq!(known.code_hash.as_ref(), Some(&root.code_hash));
+    assert_eq!(known.code_hash, root.code_hash);
     assert_eq!(
         report.programs[coverage.input.program].bytecode,
         format!("0x{TWO_BLOCK_RETURN}")

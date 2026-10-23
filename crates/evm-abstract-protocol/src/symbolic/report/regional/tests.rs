@@ -10,15 +10,18 @@ fn invalid_delegation_node() -> RegionalNode {
         id: 0,
         procedure: 0,
         frame: RegionalFrame {
-            code_address: "0x0000000000000000000000000000000000000104".into(),
+            process: None,
+            code_address: Some("0x0000000000000000000000000000000000000104".into()),
             code_hash: Some(format!("0x{}", "ab".repeat(32))),
-            storage_address: owner.clone(),
-            address_value: AddressValue::Concrete(owner),
-            caller: AddressValue::Concrete("0x0000000000000000000000000000000000000102".into()),
+            storage_address: Some(owner.clone()),
+            address_value: Some(AddressValue::Concrete(owner)),
+            caller: Some(AddressValue::Concrete(
+                "0x0000000000000000000000000000000000000102".into(),
+            )),
             kind: CodeKind::InvalidDelegation,
             is_static: false,
             basic_block: None,
-            stack_height: 0,
+            stack_height: Some(0),
             context: vec![],
         },
         input_revision: DecimalU64(1),
@@ -36,6 +39,41 @@ fn invalid_delegation_node() -> RegionalNode {
             outcomes: vec![OutcomeKind::Failure],
         }),
     }
+}
+
+fn process_source(node: &mut RegionalNode) {
+    let fork = crate::ProcessForkSource {
+        fork: crate::Fork::Osaka,
+    };
+    let captured = crate::ProcessCapturedSource {
+        source: "0x0000000000000000000000000000000000000104".into(),
+        hash: crate::ProcessDigest([0xab; 32]),
+        fork: crate::Fork::Osaka,
+    };
+    let source = match node.frame.kind {
+        CodeKind::Runtime => crate::ProcessSource::Runtime(captured),
+        CodeKind::Initcode => crate::ProcessSource::AnyInitCode(fork),
+        CodeKind::Empty => crate::ProcessSource::Empty(fork),
+        CodeKind::Precompile => crate::ProcessSource::Precompile(crate::ProcessPrecompileSource {
+            address: "0x4".into(),
+            fork: crate::Fork::Osaka,
+        }),
+        CodeKind::InvalidDelegation => crate::ProcessSource::InvalidDelegation(captured),
+        _ => crate::ProcessSource::AnyRuntime(fork),
+    };
+    node.frame.process = Some(crate::ProcessFrameKey {
+        epoch: crate::ProcessDigest([1; 32]),
+        owner: crate::ProcessOwner::Residual,
+        source,
+        is_static: node.frame.is_static,
+    });
+    node.frame.code_address = None;
+    node.frame.code_hash = None;
+    node.frame.storage_address = None;
+    node.frame.address_value = None;
+    node.frame.caller = None;
+    node.frame.stack_height = None;
+    node.frame.context.clear();
 }
 
 #[test]
@@ -69,6 +107,8 @@ fn interpretation_preserves_native_modes_without_fabricating_process_block_visit
             TransferSemantics::Native,
             TransferSemantics::Environment,
             TransferSemantics::KnownProcess,
+            TransferSemantics::ConstructorProcess,
+            TransferSemantics::BoundaryProcess,
         ] {
             let mut node = invalid_delegation_node();
             node.frame.kind = kind;
@@ -82,7 +122,22 @@ fn interpretation_preserves_native_modes_without_fabricating_process_block_visit
                 TransferSemantics::Native => kind != CodeKind::AbstractEnvironment,
                 TransferSemantics::Environment => kind == CodeKind::AbstractEnvironment,
                 TransferSemantics::KnownProcess => kind == CodeKind::Runtime,
+                TransferSemantics::ConstructorProcess => kind == CodeKind::Initcode,
+                TransferSemantics::BoundaryProcess => matches!(
+                    kind,
+                    CodeKind::Empty | CodeKind::Precompile | CodeKind::InvalidDelegation
+                ),
             };
+            if compatible
+                && matches!(
+                    semantics,
+                    TransferSemantics::KnownProcess
+                        | TransferSemantics::ConstructorProcess
+                        | TransferSemantics::BoundaryProcess
+                )
+            {
+                process_source(&mut node);
+            }
             assert_eq!(
                 block_evidence(&node, semantics),
                 if compatible {
@@ -107,9 +162,11 @@ fn interpretation_preserves_native_modes_without_fabricating_process_block_visit
 fn process_rules_cannot_be_native_or_complete_with_unresolved_obligations() {
     let mut node = invalid_delegation_node();
     node.frame.kind = CodeKind::Runtime;
+    process_source(&mut node);
     let transfer = node.transfer.as_mut().unwrap();
     transfer.semantics = TransferSemantics::KnownProcess;
     transfer.process = Some(crate::ProcessTransfer {
+        creations: vec![],
         repeat: true,
         actions: vec![crate::ProcessAction::StaticCall],
         unresolved: vec![crate::ProcessBoundary::ResidualOwner(

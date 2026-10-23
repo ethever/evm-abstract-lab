@@ -85,10 +85,19 @@ pub(super) fn show(ui: &mut Ui, cfg: &RegionalCfg, source: SummarySourceStatus) 
                     if let Some(action) = call.action {
                         ui.label(format!("Possible action: {}", process::action(action)));
                     }
+                    ui.label(match call.scope {
+                        Some(evm_abstract_protocol::ProcessControlScope::Primitive) => {
+                            "Control scope: one primitive action"
+                        }
+                        None => "Control scope: not recorded",
+                    });
                     if let Some(target) = &call.target {
                         ui.monospace(format!("Action target: {}", process::owner(target)));
                     }
                     for delivery in &call.deliveries {
+                        for case in &delivery.creation {
+                            process::completion(ui, case);
+                        }
                         let local_current =
                             delivery.current && delivery.input_revision == call.input_revision;
                         let label = match source {
@@ -117,15 +126,24 @@ pub(super) fn show(ui: &mut Ui, cfg: &RegionalCfg, source: SummarySourceStatus) 
 
 fn node_details(ui: &mut Ui, node: &RegionalNode, source: SummarySourceStatus) {
     let frame = &node.frame;
-    ui.monospace(format!("Code: {}", frame.code_address));
+    if let Some(key) = &frame.process {
+        process::frame(ui, key);
+    }
+    if let Some(address) = &frame.code_address {
+        ui.monospace(format!("Code: {address}"));
+    }
     if let Some(hash) = &frame.code_hash {
         ui.monospace(format!("Frame identity hash: {hash}"));
     }
-    ui.monospace(format!("Storage namespace: {}", frame.storage_address));
-    ui.label(format!(
-        "ADDRESS: {:?} · CALLER: {:?}",
-        frame.address_value, frame.caller
-    ));
+    if let Some(address) = &frame.storage_address {
+        ui.monospace(format!("Storage namespace: {address}"));
+    }
+    if frame.process.is_none() {
+        ui.label(format!(
+            "ADDRESS: {:?} · CALLER: {:?}",
+            frame.address_value, frame.caller
+        ));
+    }
     ui.label(format!(
         "Mode: {:?} · static: {}",
         frame.kind, frame.is_static
@@ -133,7 +151,10 @@ fn node_details(ui: &mut Ui, node: &RegionalNode, source: SummarySourceStatus) {
     if let Some(block) = frame.basic_block {
         ui.label(format!(
             "Program block: {block} · stack height: {} · jump context: {:?}",
-            frame.stack_height, frame.context
+            frame
+                .stack_height
+                .map_or_else(|| "Not recorded".into(), |height| height.to_string()),
+            frame.context
         ));
     }
     if frame.kind == CodeKind::AbstractEnvironment
@@ -153,6 +174,30 @@ fn node_details(ui: &mut Ui, node: &RegionalNode, source: SummarySourceStatus) {
     if let Some(transfer) = &node.transfer {
         ui.label(process::interpretation(transfer.semantics));
         if let Some(receipt) = &transfer.process {
+            for allocation in &receipt.creations {
+                ui.label(format!(
+                    "Allocation action: {} · creator: {}",
+                    process::action(allocation.action),
+                    process::owner(&allocation.creator)
+                ));
+                ui.monospace(format!("Allocation epoch: {}", allocation.epoch));
+                ui.label(format!(
+                    "Creating-frame exceptions: {:?}",
+                    allocation.exceptions
+                ));
+                for rejection in &allocation.rejections {
+                    ui.label(format!(
+                        "Creation result: zero · {:?} · nonce increment retained: {}",
+                        rejection.reason, rejection.increments_nonce
+                    ));
+                    if let Some(target) = &rejection.destination {
+                        ui.label(format!(
+                            "Rejected destination class: {}",
+                            process::owner(target)
+                        ));
+                    }
+                }
+            }
             ui.label("Conservative process rules describe possible control; instruction visits are recorded separately.");
             ui.label(format!(
                 "Actions may repeat before an exit: {}",

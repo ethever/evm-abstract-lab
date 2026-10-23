@@ -451,6 +451,8 @@ record! {
 variant! {
     /// Compatibility failure before consuming a report.
     pub enum ReportValidationFailure {
+        /// Process identity, private-state or constructor representation failure.
+        Process(crate::ProcessValidationKind),
         /// Unsupported schema version.
         Schema(u16),
         /// Incoherent application postprocessing allowance and usage.
@@ -468,6 +470,7 @@ variant! {
 impl std::fmt::Display for ReportValidationFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Process(kind) => write!(f, "invalid process evidence: {kind:?}"),
             Self::Schema(version) => write!(
                 f,
                 "report schema {version} is unsupported; expected {}",

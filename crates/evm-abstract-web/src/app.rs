@@ -421,7 +421,7 @@ impl Workspace {
                     state: report
                         .cfg
                         .iter()
-                        .find(|state| state.storage_address == address)
+                        .find(|state| state.storage_address.as_deref() == Some(address.as_str()))
                         .map(|state| state.id),
                     pc: None,
                 };

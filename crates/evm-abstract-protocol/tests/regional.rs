@@ -3,21 +3,22 @@ use evm_abstract_protocol::*;
 
 fn frame() -> RegionalFrame {
     RegionalFrame {
-        code_address: "0x0000000000000000000000000000000000000102".into(),
+        process: None,
+        code_address: Some("0x0000000000000000000000000000000000000102".into()),
         code_hash: Some(format!("0x{}", "ab".repeat(32))),
-        storage_address: "0x0000000000000000000000000000000000000101".into(),
-        address_value: AddressValue::Symbolic(InputSymbol {
+        storage_address: Some("0x0000000000000000000000000000000000000101".into()),
+        address_value: Some(AddressValue::Symbolic(InputSymbol {
             kind: InputSymbolKind::To,
             index: None,
-        }),
-        caller: AddressValue::Symbolic(InputSymbol {
+        })),
+        caller: Some(AddressValue::Symbolic(InputSymbol {
             kind: InputSymbolKind::Caller,
             index: None,
-        }),
+        })),
         kind: CodeKind::Runtime,
         is_static: true,
         basic_block: Some(7),
-        stack_height: 2,
+        stack_height: Some(2),
         context: vec![41, 9],
     }
 }
@@ -104,6 +105,7 @@ fn regional_records_are_strict_including_nullable_and_empty_evidence() {
         transfer: Some(transfer.clone()),
     };
     let delivery = RegionalReturn {
+        creation: vec![],
         kind: OutcomeKind::Revert,
         input_revision: DecimalU64(u64::MAX),
         output_generation: 17,
@@ -114,6 +116,7 @@ fn regional_records_are_strict_including_nullable_and_empty_evidence() {
         }],
     };
     let call = RegionalCall {
+        scope: None,
         action: None,
         target: None,
         id: 0,
@@ -158,6 +161,7 @@ fn regional_revisions_are_canonical_decimal_strings_and_edge_kinds_are_lossless(
         strict(RegionalEdge { to: 19, kind });
     }
     let call = RegionalCall {
+        scope: None,
         action: None,
         target: None,
         id: 0,
@@ -200,6 +204,7 @@ fn process_rules_and_targets_keep_strict_typed_boundaries() {
         unresolved.push(ProcessBoundary::Creation(*action));
     }
     let process = ProcessTransfer {
+        creations: vec![],
         repeat: true,
         actions,
         unresolved,
@@ -217,10 +222,11 @@ fn process_rules_and_targets_keep_strict_typed_boundaries() {
         outcomes: vec![OutcomeKind::Failure],
     });
     for target in [
-        ProcessOwner::Named(frame().code_address),
+        ProcessOwner::Named(frame().code_address.unwrap()),
         ProcessOwner::Residual,
     ] {
         strict(RegionalCall {
+            scope: None,
             action: Some(ProcessAction::StaticCall),
             target: Some(target),
             id: 0,
@@ -244,4 +250,124 @@ fn process_rules_and_targets_keep_strict_typed_boundaries() {
         serde_json::from_value::<ProcessBoundary>(serde_json::json!({"Unsupported": "Call"}))
             .is_err()
     );
+}
+
+#[test]
+fn process_frames_preserve_full_epoch_and_source_without_native_anchors() {
+    let fork = ProcessForkSource { fork: Fork::Osaka };
+    let captured = ProcessCapturedSource {
+        source: frame().code_address.unwrap(),
+        hash: ProcessDigest([0xab; 32]),
+        fork: Fork::Osaka,
+    };
+    let sources = [
+        ProcessSource::Runtime(captured.clone()),
+        ProcessSource::InitCode(ProcessInitCodeSource {
+            hash: captured.hash,
+            fork: Fork::Osaka,
+        }),
+        ProcessSource::AnyRuntime(fork.clone()),
+        ProcessSource::AnyInitCode(fork.clone()),
+        ProcessSource::Empty(fork),
+        ProcessSource::Precompile(ProcessPrecompileSource {
+            address: "0x0000000000000000000000000000000000000004".into(),
+            fork: Fork::Osaka,
+        }),
+        ProcessSource::InvalidDelegation(captured),
+    ];
+    for source in sources {
+        let key = ProcessFrameKey {
+            epoch: ProcessDigest([0xfe; 32]),
+            owner: ProcessOwner::Residual,
+            source,
+            is_static: true,
+        };
+        strict(key.clone());
+        let value = serde_json::to_value(&key).unwrap();
+        assert_eq!(value["owner"], "Residual");
+        assert_eq!(value["epoch"], format!("0x{}", "fe".repeat(32)));
+        for forbidden in [
+            "code_address",
+            "code_hash",
+            "storage_address",
+            "address_value",
+            "caller",
+            "basic_block",
+            "stack_height",
+            "context",
+        ] {
+            assert!(value.get(forbidden).is_none());
+            let mut invalid = value.clone();
+            invalid[forbidden] = serde_json::json!(0);
+            assert!(
+                serde_json::from_value::<ProcessFrameKey>(invalid).is_err(),
+                "{forbidden}"
+            );
+        }
+        let encoded = serde_json::to_value(&key.source).unwrap();
+        if matches!(
+            key.source,
+            ProcessSource::AnyRuntime(_)
+                | ProcessSource::AnyInitCode(_)
+                | ProcessSource::Empty(_)
+                | ProcessSource::Precompile(_)
+        ) {
+            let payload = encoded.as_object().unwrap().values().next().unwrap();
+            assert!(payload.get("hash").is_none() && payload.get("source").is_none());
+        }
+    }
+}
+
+#[test]
+fn process_epoch_never_truncates_and_constructor_results_are_class_valued() {
+    let mut other = [0u8; 32];
+    other[0] = 1;
+    assert_ne!(ProcessDigest([0; 32]), ProcessDigest(other));
+    for digest in [
+        ProcessDigest([0; 32]),
+        ProcessDigest(other),
+        ProcessDigest([0xff; 32]),
+    ] {
+        assert_eq!(
+            serde_json::from_value::<ProcessDigest>(serde_json::to_value(digest).unwrap()).unwrap(),
+            digest
+        );
+    }
+    for invalid in [
+        serde_json::json!(1),
+        serde_json::json!("0x01"),
+        serde_json::json!(format!("0x{}", "AB".repeat(32))),
+        serde_json::json!("0x😀"),
+    ] {
+        assert!(serde_json::from_value::<ProcessDigest>(invalid).is_err());
+    }
+    strict(CreationContinuation::Native(NativeCreation {
+        destination: frame().storage_address.unwrap(),
+    }));
+    strict(CreationContinuation::Process(ProcessCreation {
+        action: ProcessAction::Create2,
+        creator: ProcessOwner::Residual,
+        destination: ProcessOwner::Residual,
+        epoch: ProcessDigest(other),
+    }));
+    let source = ProcessSource::AnyInitCode(ProcessForkSource { fork: Fork::Osaka });
+    assert_eq!(source.kind(), CodeKind::Initcode);
+    assert_eq!(source.semantics(), TransferSemantics::ConstructorProcess);
+    for result in [
+        ProcessCreationResult::Address(ProcessOwner::Residual),
+        ProcessCreationResult::Zero,
+    ] {
+        assert_eq!(
+            serde_json::from_value::<ProcessCreationResult>(serde_json::to_value(&result).unwrap())
+                .unwrap(),
+            result
+        );
+    }
+    for invalid in [
+        serde_json::json!(1),
+        serde_json::json!(true),
+        serde_json::json!("0x1"),
+    ] {
+        assert!(serde_json::from_value::<ProcessCreationResult>(invalid).is_err());
+    }
 }
