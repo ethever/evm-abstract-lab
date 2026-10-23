@@ -18,6 +18,7 @@ use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestVa
 use {crate::world::test_support::TestBytes, crate::world::test_support::TestWorld};
 
 mod clone_payment;
+mod creation;
 mod effects;
 mod finalization;
 mod lifecycle;
@@ -373,10 +374,13 @@ impl<N: WordElement> Plane<N> {
     }
 
     fn reset_account(&mut self, address: Address) {
+        self.reset_account_with_zero(address, EvmValue::<N>::constant(U256::ZERO));
+    }
+
+    fn reset_account_with_zero(&mut self, address: Address, zero: EvmValue<N>) {
         self.roots.insert(address, SlotStateId::zero());
         self.slots.retain(|(owner, _), _| *owner != address);
-        self.defaults
-            .insert(address, EvmValue::<N>::constant(U256::ZERO));
+        self.defaults.insert(address, zero);
         self.initial_independence.replace_account(address);
     }
 
@@ -915,12 +919,28 @@ impl<N: WordElement> EvmStore<N> {
     /// Prepare a collision-free destination for initcode execution. A prefunded
     /// balance survives; persistent and transient slots start at zero.
     pub fn begin_creation(&mut self, address: Address) {
+        self.begin_creation_with_values(
+            address,
+            EvmValue::<N>::constant(U256::ZERO),
+            EvmValue::<N>::constant(U256::ZERO),
+            EvmValue::<N>::constant(U256::from(1)),
+        );
+    }
+
+    fn begin_creation_with_values(
+        &mut self,
+        address: Address,
+        persistent_zero: EvmValue<N>,
+        transient_zero: EvmValue<N>,
+        nonce: EvmValue<N>,
+    ) {
         self.touch_account(address);
-        self.persistent.reset_account(address);
-        self.transient.reset_account(address);
+        self.persistent
+            .reset_account_with_zero(address, persistent_zero);
+        self.transient
+            .reset_account_with_zero(address, transient_zero);
         self.codes.insert(address, Code::Empty);
-        self.nonces
-            .insert(address, EvmValue::<N>::constant(U256::from(1)));
+        self.nonces.insert(address, nonce);
         self.existence.insert(address, Existence::Present);
         self.created.insert(address, Some(true));
         self.pending_destruction.insert(address, Some(false));
