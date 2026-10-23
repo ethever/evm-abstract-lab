@@ -640,6 +640,8 @@ fn symbolic_root_native_currency_cannot_replace_alias_covering_process_relation(
             "baseline_joint_a5_u9":joint(report.baseline()), "chosen_joint_a5_u9":joint(report.chosen()),
         })
     );
+    assert!(joint(report.baseline()));
+    assert!(joint(report.chosen()));
     assert_accounting(&report, 100_000_000);
 }
 
