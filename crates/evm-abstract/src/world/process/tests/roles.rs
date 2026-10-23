@@ -1,6 +1,6 @@
 use super::{address, budget, catalogue, domain, prepare, store, word};
 use crate::{
-    domain::{NumericValue, WordElement},
+    domain::NumericValue,
     world::{
         AddressInput,
         process::{

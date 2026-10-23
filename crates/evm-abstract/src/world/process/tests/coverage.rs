@@ -47,8 +47,8 @@ fn outside_storage_is_independent_and_local_effects_preserve_named_state_and_rol
             Some(U256::from(expected))
         );
         assert_eq!(
-            replay.read_balance(address(owner)),
-            input.read_balance(address(owner))
+            replay.read_balance(address(owner)).numeric(),
+            input.read_balance(address(owner)).numeric()
         );
         assert_eq!(replay.code(address(owner)), input.code(address(owner)));
         assert_eq!(
@@ -237,7 +237,7 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                         root.extend([opcode::POP, opcode::STOP]);
                         let mut world = EvmWorld::<NumericValue>::new(fork, "process-owner-revm");
                         for (owner, bytes, slot) in
-                            [(0x100, root.clone(), 11), (0x200, leaf.clone(), 22)]
+                            [(0x101, root.clone(), 11), (0x200, leaf.clone(), 22)]
                         {
                             let mut account =
                                 EvmAccount::from_hex(&alloy_primitives::hex::encode(bytes), fork)
@@ -253,10 +253,10 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                             world.insert(address(owner), account).unwrap();
                         }
                         let catalogue = OwnerCatalogue::freeze(
-                            &[address(0x100), address(0x200)],
+                            &[address(0x101), address(0x200)],
                             &[
                                 CapturedProcessCode {
-                                    source: address(0x100),
+                                    source: address(0x101),
                                     hash: keccak256(&root),
                                     fork,
                                 },
@@ -303,7 +303,7 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                             .bind(
                                 ProcessTargetAddress::Independent,
                                 &ProcessCallOperands {
-                                    address: word(0x100),
+                                    address: word(0x101),
                                     caller: word(0x900),
                                     value: word(0),
                                 },
@@ -313,7 +313,7 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                             .unwrap();
                         let parent = ProcessCallOperands {
                             address: parent.address,
-                            caller: word(0x100),
+                            caller: word(0x101),
                             value: word(if is_static { 0 } else { 7 }),
                         };
                         let operands = roles
@@ -326,7 +326,7 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                             .unwrap();
 
                         let mut db = InMemoryDB::default();
-                        insert(&mut db, address(0x100), root, 11);
+                        insert(&mut db, address(0x101), root, 11);
                         insert(&mut db, address(0x200), leaf.clone(), 22);
                         for (outside_owner, slot) in [(0xaaa, 33), (0xbbb, 44)] {
                             insert(&mut db, address(outside_owner), driver.clone(), slot);
@@ -348,7 +348,7 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                             .inspect_tx(
                                 TxEnv::builder()
                                     .caller(address(0x900))
-                                    .kind(TxKind::Call(address(0x100)))
+                                    .kind(TxKind::Call(address(0x101)))
                                     .gas_limit(10_000_000)
                                     .build()
                                     .unwrap(),
@@ -364,7 +364,7 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                         assert_eq!(
                             source_frames.len(),
                             1,
-                            "oracle must actually enter the captured code"
+                            "oracle must enter captured code: {fork:?} {action:?} static={is_static} terminal={terminal}"
                         );
                         let (_, actual_owner, actual_caller, actual_value) = *source_frames[0];
                         assert_eq!(owner, catalogue.classify(actual_owner));
@@ -379,9 +379,29 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                                 .contains(U256::from_be_slice(actual_caller.as_slice()))
                         );
                         assert!(operands.value.contains(actual_value));
+                        let initial = if actual_owner == address(0x200) {
+                            22
+                        } else if actual_owner == address(0xaaa) {
+                            33
+                        } else {
+                            44
+                        };
+                        let actual_slot = result.state[&actual_owner]
+                            .storage
+                            .get(&U256::ZERO)
+                            .map_or(U256::from(initial), |slot| slot.present_value());
+                        assert_eq!(
+                            actual_slot,
+                            U256::from(if terminal == 0 && !is_static {
+                                99
+                            } else {
+                                initial
+                            }),
+                            "oracle storage/rollback: {fork:?} {action:?} static={is_static} terminal={terminal}"
+                        );
                         for (actual_owner, account) in &result.state {
                             if [
-                                address(0x100),
+                                address(0x101),
                                 address(0x200),
                                 address(0xaaa),
                                 address(0xbbb),
@@ -404,7 +424,7 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                         }
                         assert_eq!(
                             bound
-                                .read(address(0x100), &word(0), domain.borrowed())
+                                .read(address(0x101), &word(0), domain.borrowed())
                                 .singleton(),
                             Some(U256::from(11))
                         );

@@ -142,7 +142,7 @@ fn independent_address_binding_pays_its_native_constructor_and_original_cancella
         constructor_fee: 1_000_000,
         ..Policy::default()
     });
-    let token = analysis_control::Cancellation::default();
+    let token = analysis_control::Cancellation::new();
     let cancelled = analysis_control::with_cancellation(&token, || WorkBudget::new(2_000_000));
     token.cancel();
     for (mut budget, expected) in [
