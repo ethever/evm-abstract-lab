@@ -13,6 +13,7 @@ mod engine;
 mod input;
 pub mod layers;
 mod machine;
+pub mod process;
 pub mod progress;
 mod rpc;
 mod single;
@@ -40,12 +41,12 @@ pub use config::{Config, ConfigError, ValidatedConfig};
 pub use engine::{
     Acceleration, AccelerationInput, AccelerationPolicy, Arrival, BoundedJoin, CoarseSummaries,
     ContextInsensitive, ContextPolicy, CorrelatedJoin, EagerAcceleration, EnginePolicies,
-    FeedbackAcceleration, FirstResumeStatus, ForgetJumpHistory, MachinePartition,
-    MergeResumeStatus, NoAcceleration, PartitionPolicy, PartitionRefusal, PartitionResult,
-    Partitioned, PartitionedRelative, PolicyContext, PolicyKey, PolicySite, ProcedureOutput,
-    ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey, RecentDistinctJumps, RegionalSummaries,
-    RelativePartitionResult, RelativeState, SemanticPolicies, StatePolicy, StructuralPartition,
-    WholeStateMetadata, WholeStatePolicy,
+    FeedbackAcceleration, FirstResumeStatus, ForgetJumpHistory, KnownProcessSummaries,
+    MachinePartition, MergeResumeStatus, NoAcceleration, PartitionPolicy, PartitionRefusal,
+    PartitionResult, Partitioned, PartitionedRelative, PolicyContext, PolicyKey, PolicySite,
+    ProcedureOutput, ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey, RecentDistinctJumps,
+    RegionalSummaries, RelativePartitionResult, RelativeState, SemanticPolicies, StatePolicy,
+    StructuralPartition, WholeStateMetadata, WholeStatePolicy,
 };
 pub use input::AnalysisInput;
 pub use machine::{
@@ -64,6 +65,11 @@ pub use machine::{
     EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord, EvmRangeRequest,
     EvmRangeWitness, EvmRootFrame, EvmWorldAnalysis,
 };
+pub use process::{
+    CreationContinuation, EvmProcessInvocation, EvmProcessTransfer, ProcessAction, ProcessBoundary,
+    ProcessControlScope, ProcessCreation, ProcessCreationTransfer, ProcessFrameKey, ProcessOwner,
+    ProcessSource, RuntimeExecution, TransferSemantics,
+};
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
 };
@@ -74,18 +80,21 @@ pub use terminal::{
     RootTerminalRetention, RootTerminalScope, RootTerminalTrigger,
 };
 pub use transfer::create::CreationBoundary;
+pub use transfer::procedure::process::creation as process_creation;
 pub use transfer::procedure::{
     EvmRegionalCall, EvmRegionalCfg, EvmRegionalEdge, EvmRegionalNode, EvmRegionalReturn,
     EvmRegionalTransfer,
 };
 
-/// Serialized EVM analysis format. Version 13 adds compact regional CFG receipts
+/// Serialized EVM analysis format. Version 14 adds explicit process semantics,
+/// coarse action receipts and typed unresolved process obligations.
+/// Version 13 adds compact regional CFG receipts
 /// with native revisions, separate call continuations and explicit source validity.
 /// Version 11 distinguishes reduction work
 /// exhaustion, cancellation and kernel failure from the local round limit.
 /// Version 10 introduced optional root terminal coverage with owned original
 /// input binding and finalized tuples. The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 13;
+pub const SCHEMA_VERSION: u16 = 14;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

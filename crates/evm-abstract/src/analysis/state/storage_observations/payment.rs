@@ -1,6 +1,11 @@
 //! Paid native observations on one immutable replay snapshot.
 
-use super::*;
+use super::{
+    AlgebraRef, EvmMachinePayload, EvmNumericAlgebra, EvmStorageObservations, EvmValue, ExprId,
+    MAX_FACT_WORK, MAX_POSITIONS, MAX_ROOT_WORK, MachineError, Observation, QueryReason, ReadFact,
+    StackAliases, WordElement, drop_read_error, form_work, in_scope, key_expression, key_work,
+    latest_literal, read_fact, read_work,
+};
 use crate::{
     domain::summary,
     resource::{

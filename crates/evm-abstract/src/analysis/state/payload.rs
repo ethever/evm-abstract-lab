@@ -107,6 +107,7 @@ pub(in crate::analysis) fn form<N: WordElement, D: EvmNumericAlgebra<Element = N
 /// Form a bound after the caller applies its immutable context policy. Keeping
 /// these histories unchanged prevents a default canonicalizer from overriding
 /// a custom context. Unknown-environment roots still erase private context.
+#[cfg(test)]
 pub(in crate::analysis) fn form_normalized<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     payload: &EvmMachinePayload<N>,
     entry: &EvmEntry<N>,
@@ -115,6 +116,7 @@ pub(in crate::analysis) fn form_normalized<N: WordElement, D: EvmNumericAlgebra<
     form_with_history(payload, entry, domain, false)
 }
 
+#[cfg(test)]
 fn form_with_history<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     payload: &EvmMachinePayload<N>,
     entry: &EvmEntry<N>,
@@ -174,6 +176,11 @@ fn form_with_history<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                 summary.key.basic_block_index = 0;
             }
             Ok(EvmFrameSummary {
+                semantics: if unknown {
+                    super::super::TransferSemantics::Environment
+                } else {
+                    super::super::TransferSemantics::Native
+                },
                 frame: summary,
                 stack_aliases,
             })
@@ -221,7 +228,10 @@ pub(in crate::analysis) fn join<N: WordElement, D: EvmNumericAlgebra<Element = N
             .join(&next.storage_observations, domain, widen)?;
     let mut frames = Vec::with_capacity(old.frames.len());
     for (left, right) in old.frames.iter().zip(&next.frames) {
-        if !left.same_shape(right) || left.environment_calldata != right.environment_calldata {
+        if !left.same_shape(right)
+            || left.semantics != right.semantics
+            || left.environment_calldata != right.environment_calldata
+        {
             return Err(MachineError::Shape);
         }
         let stack = left
@@ -232,6 +242,7 @@ pub(in crate::analysis) fn join<N: WordElement, D: EvmNumericAlgebra<Element = N
             .collect();
         let stack_aliases = left.stack_aliases.intersect(&right.stack_aliases)?;
         frames.push(EvmFrameSummary {
+            semantics: left.semantics,
             frame: left.try_zip(
                 right,
                 stack,

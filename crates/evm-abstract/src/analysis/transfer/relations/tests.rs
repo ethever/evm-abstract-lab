@@ -27,6 +27,8 @@ fn execution() -> Execution {
     let mut world = World::offline(Fork::Osaka, "branch-limit", "unknown condition");
     world.insert(address, Account::empty()).unwrap();
     Execution {
+        process: None,
+        process_calls: Vec::new(),
         payload: initial(
             &world,
             &Entry::new(address),

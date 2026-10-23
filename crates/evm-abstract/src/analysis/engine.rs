@@ -62,11 +62,12 @@ pub use policy::ContextPolicy as EvmContextPolicy;
 use policy::KeyIndex;
 pub use policy::{
     Acceleration, AccelerationInput, AccelerationPolicy, BoundedJoin, CoarseSummaries,
-    CorrelatedJoin, EagerAcceleration, FeedbackAcceleration, ForgetJumpHistory, MachinePartition,
-    NoAcceleration, PartitionRefusal, PartitionResult, Partitioned, PartitionedRelative,
-    PolicyContext, PolicyKey, PolicySite, ProcedureOutput, ProcedureSummaryPolicy,
-    ProjectedSummaries, QuotedKey, RegionalSummaries, RelativePartitionResult, RelativeState,
-    SemanticPolicies, StatePolicy, StructuralPartition, WholeStateMetadata, WholeStatePolicy,
+    CorrelatedJoin, EagerAcceleration, FeedbackAcceleration, ForgetJumpHistory,
+    KnownProcessSummaries, MachinePartition, NoAcceleration, PartitionRefusal, PartitionResult,
+    Partitioned, PartitionedRelative, PolicyContext, PolicyKey, PolicySite, ProcedureOutput,
+    ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey, RegionalSummaries,
+    RelativePartitionResult, RelativeState, SemanticPolicies, StatePolicy, StructuralPartition,
+    WholeStateMetadata, WholeStatePolicy,
 };
 pub use policy::{
     Arrival, ContextInsensitive, ContextPolicy, EnginePolicies, FirstResumeStatus,
@@ -959,7 +960,13 @@ impl<
             if let Some(reuse) = &mut self.reuse {
                 reuse.record_dependencies(id, entry);
             }
-            let relative_procedure = entry.active().code == super::FrameCode::Unknown
+            let relative_procedure = (self.policies.state.runtime_execution()
+                == super::RuntimeExecution::Process
+                && matches!(
+                    entry.active().code,
+                    super::FrameCode::Runtime | super::FrameCode::InitCode
+                ))
+                || entry.active().code == super::FrameCode::Unknown
                 || transfer::procedure::is_recursive_entry(entry)
                 || (self.policies.state.supports_early_known_admission()
                     && transfer::procedure::is_known_call_entry(entry));

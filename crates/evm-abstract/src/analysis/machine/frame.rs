@@ -106,6 +106,7 @@ impl<N: WordElement, Bytes, Checkpoint, Operand> EvmFrame<N, Bytes, Checkpoint, 
                     })
             })
             .saturating_add(self.key.jump_history.len())
+            .saturating_add(self.key.process_work())
     }
 
     pub(crate) fn byte_arrays(&self) -> [&Bytes; 3] {
@@ -200,7 +201,9 @@ impl<N: WordElement> EvmFrameState<N> {
         pay(budget, self.stack.len().saturating_add(4))?;
         // FrameKey owns jump_history. Program and saved_store clone handles,
         // including snapshots containing arbitrarily expensive private N.
-        let mut work = 32usize.saturating_add(self.key.jump_history.len().saturating_mul(2));
+        let mut work = 32usize
+            .saturating_add(self.key.jump_history.len().saturating_mul(2))
+            .saturating_add(self.key.process_work());
         for value in self.values() {
             work = work.saturating_add(value_work(value, budget)?);
         }

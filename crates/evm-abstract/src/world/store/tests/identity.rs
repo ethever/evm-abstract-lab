@@ -21,6 +21,99 @@ fn initial() -> TestStore {
     )
 }
 
+// Literal pre-cache encoding for the fixture's one owner. Runtime records
+// deliberately hash the supplied bytes directly, independently of Program.
+fn runtime_record(bytes: &[u8]) -> Vec<u8> {
+    let mut record = vec![1];
+    record.extend(keccak256(bytes).as_slice());
+    record
+}
+
+fn literal_identity(code_record: &[u8], lifecycle: [u8; 3]) -> B256 {
+    let mut record = vec![1, 1]; // Both global lifecycle defaults are false.
+    record.extend(address(0x101).as_slice());
+    record.extend(code_record);
+    record.extend(lifecycle);
+    keccak256(record)
+}
+
+#[test]
+fn every_code_variant_keeps_the_literal_identity_encoding() {
+    let mut delegation = vec![2];
+    delegation.extend(address(0x300).as_slice());
+    let mut store = initial();
+    let mut identities = BTreeSet::new();
+    for (code, record) in [
+        (Code::Unknown, vec![4]),
+        (Code::Empty, vec![3]),
+        (
+            Code::Runtime(Program::decode(&[]).unwrap()),
+            runtime_record(&[]),
+        ),
+        (
+            Code::Runtime(Program::decode(&[0]).unwrap()),
+            runtime_record(&[0]),
+        ),
+        (Code::Delegation(address(0x300)), delegation),
+    ] {
+        store.codes.insert(address(0x101), code);
+        let expected = literal_identity(&record, [1, 1, 1]);
+        assert_eq!(store.code_identity(), expected);
+        assert_eq!(store.clone().code_identity(), expected);
+        identities.insert(expected);
+    }
+    assert_eq!(identities.len(), 5);
+}
+
+#[test]
+fn runtime_digest_preserves_deployment_deletion_and_rollback_identities() {
+    let domain = crate::domain::ValueAlgebra::new(crate::domain::ProductAlgebra::default());
+    let owner = address(0x101);
+    let mut store = initial();
+    let original = store.snapshot();
+    let original_identity = literal_identity(&runtime_record(&[0]), [1, 1, 1]);
+    assert_eq!(store.code_identity(), original_identity);
+
+    store.begin_creation(owner);
+    assert_eq!(store.code_identity(), literal_identity(&[3], [1, 2, 1]));
+    let runtime = Program::from_hex("61ab").unwrap();
+    store.deploy_code(owner, runtime.clone());
+    let deployed_identity = literal_identity(&runtime_record(&[0x61, 0xab]), [1, 2, 1]);
+    // Quote before the first identity call initializes this program's digest.
+    let quoted_bytes = store.code_identity_bytes();
+    assert_eq!(quoted_bytes, runtime.byte_len());
+    assert_eq!(store.code_identity(), deployed_identity);
+    let deployed = store.snapshot();
+    runtime.bytes_digest();
+    assert_eq!(store.code_identity_bytes(), quoted_bytes);
+    assert_eq!(store.code_identity(), deployed_identity);
+
+    // PUSH padding gives these programs the same listing but different source
+    // bytes. Replacing runtime at the same owner must change the key.
+    let replaced = Program::from_hex("61ab00").unwrap();
+    assert_eq!(runtime.blocks(), replaced.blocks());
+    store.deploy_code(owner, replaced);
+    assert_eq!(
+        store.code_identity(),
+        literal_identity(&runtime_record(&[0x61, 0xab, 0]), [1, 2, 1])
+    );
+    assert_ne!(store.code_identity(), deployed_identity);
+    assert_eq!(deployed.state().code_identity(), deployed_identity);
+
+    store.restore(deployed);
+    store.selfdestruct(owner, owner, domain.borrowed());
+    assert_eq!(
+        store.code_identity(),
+        literal_identity(&runtime_record(&[0x61, 0xab]), [1, 2, 2])
+    );
+    store.finalize_transaction(domain.borrowed()).unwrap();
+    assert_eq!(store.code_identity(), literal_identity(&[3], [2, 1, 1]));
+    store.restore(original);
+    assert_eq!(store.code_identity(), original_identity);
+    store.deploy_code(owner, Program::decode(&[]).unwrap());
+    assert_eq!(store.code_identity(), literal_identity(&[3], [1, 1, 1]));
+}
+
 #[test]
 fn explicit_defaults_and_touch_only_joins_preserve_code_identity() {
     let original = initial();

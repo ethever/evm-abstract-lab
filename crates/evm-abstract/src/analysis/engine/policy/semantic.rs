@@ -535,6 +535,12 @@ impl<D: EvmNumericAlgebra> WholeStatePolicy<D> for BoundedJoin {
 /// Results cover both inputs and retain justified execution shapes; refusals
 /// preserve the caller's pending obligation. The caller stages publication.
 pub trait ProcedureSummaryPolicy<D: EvmNumericAlgebra> {
+    /// Select runtime interpretation before detailed execution spends the ledger.
+    /// This frozen choice never changes the original code kind or source.
+    fn runtime_execution(&self) -> crate::analysis::RuntimeExecution {
+        crate::analysis::RuntimeExecution::Native
+    }
+
     /// Admit known callees into the relative solver before active recursion is
     /// discovered. The engine still owns body execution evidence and global
     /// closure obligations; this capability changes routing, not their proof.
@@ -691,6 +697,41 @@ impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for RegionalSummaries {
     }
 }
 
+/// Explicit opt-in whole-runtime process checkpoint. Detailed execution remains
+/// the default provider; uncovered process rules remain typed frontiers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KnownProcessSummaries;
+
+impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for KnownProcessSummaries {
+    fn runtime_execution(&self) -> crate::analysis::RuntimeExecution {
+        crate::analysis::RuntimeExecution::Process
+    }
+    fn supports_early_known_admission(&self) -> bool {
+        true
+    }
+    fn admit_relative(
+        &self,
+        current: &RelativeState<D::Element>,
+        incoming: &RelativeState<D::Element>,
+        _site: PolicySite,
+        acceleration: Acceleration,
+        cx: &mut PolicyContext<'_, D>,
+    ) -> Result<RelativeState<D::Element>, MachineError> {
+        current.regional_join(incoming, acceleration, cx)
+    }
+    fn admit_output(
+        &self,
+        current: Option<&ProcedureOutput<D::Element>>,
+        incoming: &ProcedureOutput<D::Element>,
+        acceleration: Acceleration,
+        cx: &mut PolicyContext<'_, D>,
+    ) -> Result<ProcedureOutput<D::Element>, MachineError> {
+        current
+            .unwrap_or(incoming)
+            .regional_join(incoming, acceleration, cx)
+    }
+}
+
 /// An owned assembly whose independent components may borrow caller data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticPolicies<
@@ -831,6 +872,9 @@ where
     D: EvmNumericAlgebra,
     R: ProcedureSummaryPolicy<D>,
 {
+    fn runtime_execution(&self) -> crate::analysis::RuntimeExecution {
+        self.summary.runtime_execution()
+    }
     fn supports_early_known_admission(&self) -> bool {
         self.summary.supports_early_known_admission()
     }

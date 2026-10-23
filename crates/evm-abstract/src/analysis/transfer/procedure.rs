@@ -57,6 +57,7 @@ mod cycles;
 mod effects;
 mod environment;
 mod evidence;
+pub(in crate::analysis) mod process;
 pub use evidence::{
     EvmRegionalCall, EvmRegionalCfg, EvmRegionalEdge, EvmRegionalNode, EvmRegionalReturn,
     EvmRegionalTransfer,
@@ -67,12 +68,8 @@ mod solver;
 mod tests;
 
 #[cfg(test)]
-use crate::analysis::state::payload::instantiate;
-use crate::analysis::state::{
-    EvmPayloadSummary,
-    payload::{self, semantic_eq},
-    storage_observations,
-};
+use crate::analysis::state::payload::{instantiate, semantic_eq};
+use crate::analysis::state::{EvmPayloadSummary, payload, storage_observations};
 #[cfg(test)]
 use crate::analysis::state::{context, stack_alias};
 #[cfg(test)]
@@ -132,6 +129,7 @@ struct EvmProcedure<N: WordElement, Key: PolicyKey> {
     entry_payload: EvmPayloadSummary<N>,
     /// Complete captured-program proof, independent of numerical input growth.
     store_effect: effects::StoreEffect,
+    process: Option<process::Capabilities>,
     entry_updates: usize,
     entry_feedback: bool,
     entry_revision: usize,
@@ -229,9 +227,16 @@ fn export_frontiers<N: WordElement>(
     })
 }
 
+type ProcessCall = (
+    crate::analysis::ProcessAction,
+    crate::analysis::ProcessOwner,
+);
+type SubscriberKey<K> = (usize, usize, (Option<ProcessCall>, K));
+
 struct EvmSubscriber<N: WordElement> {
     from: usize,
     callee: usize,
+    action: Option<ProcessCall>,
     /// A relative parent plus one child; each child retains its pre-entry snapshot.
     payload: EvmPayloadSummary<N>,
     input: SlotMeta<EvmPayloadSummary<N>>,
@@ -250,13 +255,15 @@ pub(in crate::analysis) struct EvmTable<
     Key: PolicyKey = (crate::analysis::MachineKey, Option<bool>),
 > {
     procedures: Vec<EvmProcedure<N, Key>>,
+    /// Frozen before the first process admission; discoveries stay opaque.
+    process_catalogue: Option<Arc<crate::world::process::OwnerCatalogue>>,
     procedures_by_key: KeyIndex<(usize, Key)>,
     nodes: Vec<EvmNode<N>>,
     subscribers: Vec<EvmSubscriber<N>>,
     // Each continuation/callee pair scopes the injected finite vocabulary.
     // Subscriber cardinality is bounded by bodies x procedures x policy keys;
     // every allocation consumes the same transaction work ledger.
-    subscribers_by_key: KeyIndex<(usize, usize, Key)>,
+    subscribers_by_key: KeyIndex<SubscriberKey<Key>>,
     frontiers: Vec<EvmExecutionFrontier<N>>,
     // Moving deferred frontier payloads to the outer result does not erase the
     // relation's incompleteness or make its native completion observation true.
@@ -283,6 +290,7 @@ impl<N: WordElement, Key: PolicyKey> Default for EvmTable<N, Key> {
     fn default() -> Self {
         Self {
             procedures: Vec::new(),
+            process_catalogue: None,
             procedures_by_key: KeyIndex::new(),
             nodes: Vec::new(),
             subscribers: Vec::new(),
@@ -397,7 +405,12 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         let start_transfers = counters.transfers;
         let start_propagations = self.propagations;
         let start_reused = self.reused;
-        let kind = if payload.active().code == FrameCode::Unknown {
+        let kind = if policies.state.runtime_execution()
+            == crate::analysis::RuntimeExecution::Process
+            && payload.active().code == FrameCode::Runtime
+        {
+            ProcedureSummaryKind::KnownProcess
+        } else if payload.active().code == FrameCode::Unknown {
             ProcedureSummaryKind::UnknownEnvironment
         } else if is_recursive_entry(&payload) {
             ProcedureSummaryKind::KnownRecursion
@@ -638,7 +651,29 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                     .map(|(id, procedure)| {
                         let input = solver.table.entry_source(id).expect("retained procedure");
                         Ok(EvmProcedureSummary {
-                            frame: procedure.frame.clone(),
+                            process_input: if input.payload.active().key.process.is_some() {
+                                Some(crate::analysis::EvmProcessInvocation {
+                                    address: crate::domain::summary::clone_value(
+                                        &input.payload.active().address_operand,
+                                        solver.budget,
+                                    )?,
+                                    caller: crate::domain::summary::clone_value(
+                                        &input.payload.active().caller_operand,
+                                        solver.budget,
+                                    )?,
+                                    value: crate::domain::summary::clone_value(
+                                        &input.payload.active().call_value,
+                                        solver.budget,
+                                    )?,
+                                })
+                            } else {
+                                None
+                            },
+                            semantics: input.payload.active().semantics,
+                            frame: crate::analysis::engine::policy::clone_key(
+                                &procedure.frame,
+                                solver.budget,
+                            )?,
                             input: input
                                 .payload
                                 .store

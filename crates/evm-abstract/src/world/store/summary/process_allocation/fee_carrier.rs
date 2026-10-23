@@ -1,7 +1,31 @@
-//! A real private exclusion predicate, absent from its exported observation.
+//! Frozen native test carrier with value-specific returned-Top hook controls.
+#![allow(dead_code)]
+use std::cell::{Cell, RefCell};
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Targets {
+    pub factories: usize,
+    pub copy_quotes: usize,
+    pub copies: usize,
+    pub query_quotes: usize,
+    pub queries: usize,
+}
+thread_local! {
+    pub(super) static TOP_FEES: Cell<(usize, usize)> = const { Cell::new((64,32)) };
+    pub(super) static TARGETS: RefCell<Targets> = const { RefCell::new(Targets {factories:0,copy_quotes:0,copies:0,query_quotes:0,queries:0}) };
+}
+pub(super) fn configure(copy: usize, query: usize) {
+    TOP_FEES.set((copy, query));
+    TARGETS.set(Targets::default());
+}
+pub(super) fn targets() -> Targets {
+    TARGETS.with_borrow(|v| *v)
+}
 
-use super::*;
-use crate::domain::{DomainSpec, NumericReduction, SummaryConstruction, WordObservation};
+use crate::domain::{
+    DomainSpec, EvmNumericAlgebra, NumericReduction, SummaryConstruction, WordElement,
+    WordObservation,
+};
+use alloy_primitives::U256;
 use serde::Serialize;
 use std::fmt;
 
@@ -69,6 +93,9 @@ impl Native {
 impl Clone for Native {
     fn clone(&self) -> Self {
         CALLS.update(|calls| calls.clones += 1);
+        if self.exact.is_none() && !self.excludes_seven {
+            TARGETS.with_borrow_mut(|v| v.copies += 1);
+        }
         Self {
             exact: self.exact,
             excludes_seven: self.excludes_seven,
@@ -95,7 +122,12 @@ impl fmt::Display for Native {
 impl WordElement for Native {
     fn top() -> Self {
         CALLS.update(|calls| calls.constructions += 1);
-        Self::new(None, false)
+        let mut out = Self::new(None, false);
+        let (copy, query) = TOP_FEES.get();
+        out.copy_fee = copy;
+        out.singleton_fee = query;
+        TARGETS.with_borrow_mut(|v| v.factories += 1);
+        out
     }
     fn constant(value: U256) -> Self {
         CALLS.update(|calls| calls.constructions += 1);
@@ -127,9 +159,15 @@ impl WordElement for Native {
     }
     fn singleton(&self) -> Option<U256> {
         CALLS.update(|calls| calls.singletons += 1);
+        if self.exact.is_none() && !self.excludes_seven {
+            TARGETS.with_borrow_mut(|v| v.queries += 1);
+        }
         self.exact
     }
     fn singleton_work(&self) -> usize {
+        if self.exact.is_none() && !self.excludes_seven {
+            TARGETS.with_borrow_mut(|v| v.query_quotes += 1);
+        }
         self.singleton_fee
     }
     fn contains(&self, value: U256) -> bool {
@@ -146,6 +184,9 @@ impl WordElement for Native {
         64
     }
     fn clone_work(&self) -> usize {
+        if self.exact.is_none() && !self.excludes_seven {
+            TARGETS.with_borrow_mut(|v| v.copy_quotes += 1);
+        }
         self.copy_fee
     }
     fn requires_retained_binding(&self) -> bool {

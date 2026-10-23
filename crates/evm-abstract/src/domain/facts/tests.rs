@@ -10,6 +10,8 @@ use crate::{
 use alloy_primitives::U256;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod insertion;
+
 pub(super) static SCALAR_MEETS: Counter<usize> = Counter::new(0);
 pub(super) static SCALAR_VALIDATIONS: Counter<usize> = Counter::new(0);
 

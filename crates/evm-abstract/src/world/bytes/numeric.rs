@@ -557,7 +557,9 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
             } => {
                 let i = scalar_in_paid(index, &context, domain, payer)?;
                 let len = scalar_in_paid(length, &context, domain, payer)?;
-                if payer.bounds(&i)?.0 >= payer.bounds(&len)?.1 {
+                let (index_lower, index_upper) = payer.bounds(&i)?;
+                let (length_lower, length_upper) = payer.bounds(&len)?;
+                if index_lower >= length_upper {
                     return Ok(Some(payer.literal(U256::ZERO, domain)?));
                 }
                 let cell = if let Some(indices) = payer.candidates(&i)? {
@@ -582,7 +584,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 } else {
                     payer.unknown_byte(domain)?
                 };
-                if payer.bounds(&i)?.1 < payer.bounds(&len)?.0 {
+                if index_upper < length_lower {
                     cell
                 } else {
                     let zero = payer.literal(U256::ZERO, domain)?;
@@ -773,6 +775,7 @@ impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
         self.evaluate(ReadTask::Word(state, offset.clone()))
     }
 
+    #[cfg(test)]
     pub(in crate::world) fn word_with_payment(
         &mut self,
         state: &ByteStateId,

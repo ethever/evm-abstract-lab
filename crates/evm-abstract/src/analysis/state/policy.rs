@@ -33,6 +33,11 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         &self.location
     }
 
+    /// Interpretation of the active relative input, independently of code kind.
+    pub fn semantics(&self) -> crate::analysis::TransferSemantics {
+        self.active().semantics
+    }
+
     /// Shape of the active relative frame, without exposing summary internals.
     pub fn active_frame(&self) -> &FrameKey {
         &self.active().key
@@ -60,6 +65,14 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         &self,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<EvmMachinePayload<N>, MachineError> {
+        if self.frames.iter().any(|frame| {
+            frame.key.process.is_some()
+                || frame.semantics == crate::analysis::TransferSemantics::KnownProcess
+        }) {
+            return Err(MachineError::Process(
+                crate::analysis::ProcessBoundary::NativeInstantiation,
+            ));
+        }
         let input = payload::caller::instantiate_with_payment(self, cx.domain, cx.budget)?;
         cx.reserve(0)?;
         Ok(input)
@@ -73,10 +86,13 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
-        // Initial admission still calls the selected policy. Identical borrowed
-        // inputs prove x union x = x without rebuilding every byte/store
-        // template. Explicit widening remains an independent operation.
-        if acceleration == Acceleration::Join && std::ptr::eq(self, incoming) {
+        // Independent replays can have the same complete numerical bound.
+        // Prove idempotence before rebuilding every byte/store template;
+        // explicit widening remains an independent operation.
+        if acceleration == Acceleration::Join
+            && (std::ptr::eq(self, incoming)
+                || self.eq_with_payment(incoming, cx.domain, cx.budget)?)
+        {
             let joined = self.clone_with_payment(cx.budget)?;
             cx.reserve(0)?;
             return Ok(joined);
