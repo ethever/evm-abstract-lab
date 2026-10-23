@@ -2,7 +2,7 @@
 
 use super::{EvmStoreSummary, InitialIndependence, OrderedMap, SummaryPlane};
 use crate::{
-    domain::{EvmNumericAlgebra, EvmValue, ValueAlgebra, WordElement},
+    domain::{EvmValue, ValueAlgebra},
     resource::{CloneError, WorkBudget},
     world::process::{
         CallRoles, OwnerCatalogue, OwnerCatalogueLimits, ProcessAction, ProcessCallOperands,

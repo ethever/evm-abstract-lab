@@ -238,7 +238,12 @@ fn funded_static_callcode_value_nine_and_subsequent_delegate_are_covered() {
                 assert!(result.result.is_success());
                 let output = result.result.output().unwrap();
                 assert_eq!(output.len(), 128);
-                let words: Vec<_> = output.chunks_exact(32).map(U256::from_be_slice).collect();
+                let words: Vec<_> = output
+                    .as_chunks::<32>()
+                    .0
+                    .iter()
+                    .map(|word| U256::from_be_slice(word))
+                    .collect();
                 let funded = balance >= 9;
                 assert_eq!(
                     words,
