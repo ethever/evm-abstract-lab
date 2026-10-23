@@ -219,6 +219,126 @@ fn input() -> EvmStoreSummary<Word> {
 }
 
 #[test]
+fn aliases_cover_both_storage_planes_nonce_and_created_lifecycle_before_rollback() {
+    use crate::{
+        analysis::ProcessOwner,
+        bytecode::Program,
+        world::{Code, EvmSnapshot},
+    };
+    use alloy_primitives::Address;
+    let _scope = COUNTS.scope();
+    let domain = ValueAlgebra::new(Policy(ProductAlgebra::default()));
+    let a = Address::repeat_byte(0xa1);
+    let u = Address::repeat_byte(0xb1);
+    let destination = Address::repeat_byte(0xc1);
+    let names = BTreeSet::from([a, u, destination]);
+    let mut initial = input();
+    for owner in [a, u] {
+        initial.codes.insert(
+            owner,
+            Code::Runtime(Program::decode(&[revm_bytecode::opcode::STOP]).unwrap()),
+        );
+        initial.nonces.insert(owner, EvmValue::constant(U256::ZERO));
+        initial
+            .persistent
+            .slots
+            .insert((owner, U256::ZERO), EvmValue::constant(U256::from(5)));
+        initial
+            .transient
+            .slots
+            .insert((owner, U256::ZERO), EvmValue::constant(U256::ZERO));
+    }
+    let mut budget = WorkBudget::new(10_000_000);
+    let outer = initial
+        .instantiate_with_payment(domain.borrowed(), &mut budget)
+        .unwrap();
+    // An actually initialized fresh constructor is a legal created owner;
+    // marking the pre-existing root created would be an inconsistent witness.
+    let checkpoint = initial
+        .process_begin_constructor(
+            ProcessOwner::Named(a),
+            ProcessOwner::Named(destination),
+            domain.borrowed(),
+            &mut budget,
+        )
+        .unwrap();
+    let child_checkpoint = checkpoint
+        .instantiate_with_payment(domain.borrowed(), &mut budget)
+        .unwrap();
+    for writer in [a, u, destination] {
+        let effect = checkpoint
+            .process_effects_with_payment(
+                &names,
+                Some(writer),
+                true,
+                false,
+                domain.borrowed(),
+                &mut budget,
+            )
+            .unwrap();
+        let mut current = effect
+            .instantiate_with_payment(domain.borrowed(), &mut budget)
+            .unwrap();
+        for owner in [a, u] {
+            assert!(
+                current
+                    .read(owner, &EvmValue::constant(U256::ZERO), domain.borrowed())
+                    .contains(U256::from(11))
+            );
+            assert!(
+                current
+                    .read_transient(owner, &EvmValue::constant(U256::ZERO), domain.borrowed())
+                    .contains(U256::from(11))
+            );
+            assert!(current.nonce(owner).contains(U256::from(7)));
+            assert_eq!(current.created_in_transaction(owner), Some(false));
+        }
+        assert_eq!(current.created_in_transaction(destination), Some(true));
+        assert_eq!(
+            current.pending_destruction(destination),
+            None,
+            "possible alias must not keep false destruction"
+        );
+        assert!(current.nonce(destination).contains(U256::ONE));
+        assert!(effect.logs_unknown);
+        current.restore(EvmSnapshot::from_state(child_checkpoint.clone()));
+        assert_eq!(current.nonce(destination).singleton(), Some(U256::ONE));
+        assert_eq!(current.created_in_transaction(destination), Some(true));
+        assert_eq!(current.pending_destruction(destination), Some(false));
+        current.restore(EvmSnapshot::from_state(outer.clone()));
+        for owner in [a, u] {
+            assert_eq!(
+                current
+                    .read(owner, &EvmValue::constant(U256::ZERO), domain.borrowed())
+                    .singleton(),
+                Some(U256::from(5))
+            );
+            assert_eq!(
+                current
+                    .read_transient(owner, &EvmValue::constant(U256::ZERO), domain.borrowed())
+                    .singleton(),
+                Some(U256::ZERO)
+            );
+            assert_eq!(current.nonce(owner).singleton(), Some(U256::ZERO));
+        }
+        assert_eq!(current.created_in_transaction(destination), Some(false));
+        assert_eq!(current.pending_destruction(destination), Some(false));
+    }
+    let unchanged = checkpoint
+        .process_effects_with_payment(&names, Some(a), true, true, domain.borrowed(), &mut budget)
+        .unwrap();
+    assert_eq!(unchanged.persistent, checkpoint.persistent);
+    assert_eq!(unchanged.transient, checkpoint.transient);
+    assert_eq!(unchanged.nonces, checkpoint.nonces);
+    assert_eq!(unchanged.codes, checkpoint.codes);
+    assert_eq!(unchanged.created, checkpoint.created);
+    assert_eq!(
+        unchanged.pending_destruction,
+        checkpoint.pending_destruction
+    );
+}
+
+#[test]
 fn cheap_constructor_cannot_prepay_its_actual_high_private_result_copy() {
     let _scope = COUNTS.scope();
     let domain = ValueAlgebra::new(Policy(ProductAlgebra::default()));

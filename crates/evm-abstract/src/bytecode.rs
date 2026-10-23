@@ -361,6 +361,32 @@ impl Program {
         Arc::ptr_eq(&self.data, &other.data)
     }
 
+    /// Positive allocation shortcut, followed by funded full value equality.
+    /// One byte bounds one decoded instruction, block and jumpdest entry; 64
+    /// units per byte covers their fixed fields and literal bytes. No digest
+    /// equality or canonical-allocation assumption replaces the fallback.
+    pub(crate) fn eq_with_payment(
+        &self,
+        other: &Self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, crate::resource::CloneError> {
+        use crate::resource::clone_payment::{checkpoint, pay};
+        pay(budget, 16)?;
+        if self.shares_capture(other) {
+            return Ok(true);
+        }
+        pay(
+            budget,
+            self.byte_len()
+                .saturating_add(other.byte_len())
+                .saturating_mul(64)
+                .saturating_add(64),
+        )?;
+        let equal = self == other;
+        checkpoint(budget)?;
+        Ok(equal)
+    }
+
     /// Keccak of the literal captured bytes, shared by all handles of this
     /// immutable program. Callers retain their cold-byte work allowance even
     /// after initialization; cache warmth must never change analysis quotes.

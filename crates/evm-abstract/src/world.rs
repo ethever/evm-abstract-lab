@@ -468,17 +468,53 @@ fn account_code_hash<N: WordElement>(account: &EvmAccount<N>) -> Option<B256> {
     }
 }
 
+/// Original root binding, independent of execution or process admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum RootInputBinding {
+    /// The request supplied an actual physical destination.
+    Physical {
+        /// Concrete logical To, validated against the root state coordinate.
+        address: Address,
+    },
+    /// The request supplied only a program/state template at this coordinate.
+    Namespace {
+        /// Private template coordinate; no physical account is asserted.
+        coordinate: Address,
+    },
+}
+
 /// One root frame and its immutable transaction and block inputs.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename = "Entry")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvmEntry<N: WordElement> {
-    /// Concrete owner used to address the supplied world's account state.
+    /// Supplied root state coordinate. With concrete To this is the physical
+    /// destination; with symbolic To it is a private program/state namespace,
+    /// which may alias named or outside physical accounts after binding.
     pub address: Address,
     /// Root call inputs and transaction/block observations shared by all frames.
     pub environment: EvmEnvironmentValues<N>,
 }
 
+impl<N: WordElement> Serialize for EvmEntry<N> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut entry = serializer.serialize_struct("Entry", 3)?;
+        entry.serialize_field("binding", &self.binding())?;
+        entry.serialize_field("address", &self.address)?;
+        entry.serialize_field("environment", &self.environment)?;
+        entry.end()
+    }
+}
+
 impl<N: WordElement> EvmEntry<N> {
+    /// Constant metadata available even if no frame or process was admitted.
+    pub fn binding(&self) -> RootInputBinding {
+        self.environment.to.as_concrete().map_or(
+            RootInputBinding::Namespace {
+                coordinate: self.address,
+            },
+            |address| RootInputBinding::Physical { address },
+        )
+    }
     /// Analyze all unspecified call inputs at a known destination address.
     pub fn new(address: Address) -> Self {
         Self {

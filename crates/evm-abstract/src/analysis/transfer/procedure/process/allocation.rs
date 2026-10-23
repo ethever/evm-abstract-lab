@@ -75,6 +75,11 @@ where
                 collision: if owner == creator && owner != ProcessOwner::Residual {
                     // Collision is checked after the creator increment.
                     creation::Collision::NonZeroNonce
+                } else if owner == ProcessOwner::RootNamespace {
+                    state.process_collision_at_coordinate(
+                        catalogue.namespace().ok_or(MachineError::Shape)?.coordinate,
+                        self.budget,
+                    )?
                 } else {
                     state.process_collision(owner, self.budget)?
                 },
@@ -102,19 +107,15 @@ where
         let needs_nonce =
             !plan.constructors.is_empty() || plan.rejections.iter().any(|r| r.increments_nonce);
         let post_nonce = if needs_nonce {
-            Some(
-                if creator == ProcessOwner::Named(self.entry.address)
-                    && self.entry.environment.to.as_concrete().is_none()
-                {
-                    // This is a root namespace, not an established EVM address.
-                    // Its alias-safe effect envelope already gives all potential
-                    // physical nonce cells Top. Keep that weak post-increment
-                    // bound instead of strongly updating namespace bytes.
-                    state.clone_with_payment(self.budget)?
-                } else {
-                    state.process_increment_nonce(creator, self.domain, self.budget)?
-                },
-            )
+            Some(if creator == ProcessOwner::RootNamespace {
+                // This is a root namespace, not an established EVM address.
+                // Its alias-safe effect envelope already gives all potential
+                // physical nonce cells Top. Keep that weak post-increment
+                // bound instead of strongly updating namespace bytes.
+                state.clone_with_payment(self.budget)?
+            } else {
+                state.process_increment_nonce(creator, self.domain, self.budget)?
+            })
         } else {
             None
         };
@@ -179,7 +180,7 @@ where
             // Unknown creation addresses are independent operands within the
             // selected cell; Named root namespaces need not be EVM constants.
             let address_operand = match entry.destination {
-                ProcessOwner::Named(address) if address != self.entry.address => summary::constant(
+                ProcessOwner::Named(address) => summary::constant(
                     U256::from_be_slice(address.as_slice()),
                     self.domain,
                     self.budget,

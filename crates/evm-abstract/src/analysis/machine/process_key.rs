@@ -19,12 +19,14 @@ impl FrameKey {
     pub(in crate::analysis) fn install_process(&mut self, process: ProcessFrameKey) {
         self.address = match process.owner {
             ProcessOwner::Named(owner) => owner,
-            ProcessOwner::Residual => Address::ZERO,
+            ProcessOwner::RootNamespace | ProcessOwner::Residual => Address::ZERO,
         };
         (self.code_address, self.code_hash) = match process.source {
             ProcessSource::Runtime { source, hash, .. }
             | ProcessSource::InvalidDelegation { source, hash, .. } => (source, hash),
-            ProcessSource::InitCode { hash, .. } => (Address::ZERO, hash),
+            ProcessSource::InputProgram { hash, .. } | ProcessSource::InitCode { hash, .. } => {
+                (Address::ZERO, hash)
+            }
             ProcessSource::Precompile { address, .. } => (address, B256::ZERO),
             _ => (Address::ZERO, B256::ZERO),
         };
