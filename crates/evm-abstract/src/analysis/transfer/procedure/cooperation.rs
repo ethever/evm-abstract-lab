@@ -346,6 +346,7 @@ impl<
         to: usize,
         kind: MachineEdgeKind,
     ) -> Result<(), MachineError> {
+        self.regional_edge(from, to, kind)?;
         let edge = crate::analysis::cooperation::Edge {
             from: Self::body_point(from),
             to: Self::body_point(to),
@@ -427,6 +428,7 @@ impl<
     }
 
     pub(super) fn observe_continuation(&mut self, id: usize) -> Result<(), MachineError> {
+        self.regional_call(id)?;
         if !X::ENABLED {
             return Ok(());
         }
