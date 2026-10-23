@@ -22,7 +22,7 @@ WITNESSES = {
     "crates/evm-abstract-cli/src/numeric.rs": "// Application-owned numeric model and limits.\n",
     "crates/evm-abstract/src/analysis.rs": "pub const SCHEMA_VERSION: u16 = 13;\n",
     "crates/evm-abstract-protocol/src/lib.rs": "pub const SCHEMA_VERSION: u16 = 18;\n",
-    "crates/evm-abstract/src/domain/spec.rs": "schema_version: 3, cost_version: 7,\n",
+    "crates/evm-abstract/src/domain/spec.rs": "schema_version: 3, cost_version: 8,\n",
 }
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
@@ -73,7 +73,7 @@ class GeneratorTests(unittest.TestCase):
             "capacity": analysis.pop("max_constants"),
             "reduction_rounds": analysis.pop("reduction_rounds"),
             "fact_limit": analysis.pop("max_facts"),
-            "cost_version": 7, "widening_after_updates": 2,
+            "cost_version": 8, "widening_after_updates": 2,
             "provenance_policy": "scoped-expressions-and-value-identities-v3",
             "relations": analysis.pop("relations"),
         }
@@ -103,7 +103,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(actual_argv[actual_argv.index("--max-work") + 1], "1000000000000")
         interface = profile["interface"]
         self.assertEqual(interface["source_commit"], COMMIT)
-        self.assertEqual(interface["versions"], {"native": 13, "wire": 18, "domain": 3, "cost": 7})
+        self.assertEqual(interface["versions"], {"native": 13, "wire": 18, "domain": 3, "cost": 8})
         self.assertEqual(interface["source_witnesses"], {
             name: hashlib.sha256((self.source / name).read_bytes()).hexdigest()
             for name in WITNESSES})
@@ -124,12 +124,13 @@ class GeneratorTests(unittest.TestCase):
             ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 2,", "cost"),
             ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 3,", "cost"),
             ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 4,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 5,", "cost version 7"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 6,", "cost version 7"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 5,", "cost version 8"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 6,", "cost version 8"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 7,", "cost version 8"),
             ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3, cost_version: 50,", "cost"),
             ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 3,", "cost"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 2, cost_version: 7,", "numeric policy schema 3"),
-            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 4, cost_version: 7,", "numeric policy schema 3"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 2, cost_version: 8,", "numeric policy schema 3"),
+            ("crates/evm-abstract/src/domain/spec.rs", "schema_version: 4, cost_version: 8,", "numeric policy schema 3"),
         ] + [("crates/evm-abstract-cli/src/symbolic.rs", field, "solver policy")
              for field in ["smt_provider", "smt_rlimit", "embedded_smt"]]
         for name, text, error in bad_sources:

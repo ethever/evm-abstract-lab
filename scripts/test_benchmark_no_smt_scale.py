@@ -105,15 +105,15 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(sample["nativefinal"]["config"], {"synthetic": True})
 
     def test_native_policy_checks_model_and_algebra_limits_beyond_execution_config(self):
-        # Keep old profiles supported while the active generator uses native 13.
-        for version in (12, 13):
-            with self.subTest(version=version):
-                self.check_native_policy(version)
+        # Keep native12/cost7 profiles supported alongside current native13/cost8.
+        for version, cost_version in ((12, 7), (13, 8)):
+            with self.subTest(version=version, cost_version=cost_version):
+                self.check_native_policy(version, cost_version)
 
-    def check_native_policy(self, version):
+    def check_native_policy(self, version, cost_version):
         # Synthetic envelopes check the harness boundary, never EVM coverage.
         native = {**report(), "schema_version": version, "numeric_model": "product",
-                  "domain_spec": {"capacity": 512, "cost_version": 7},
+                  "domain_spec": {"capacity": 512, "cost_version": cost_version},
                   "postprocessing_max_work": 2_000_000_000, "postprocessing_work": 7}
         self.commands.update(interface={"versions": {"native": version}},
                              expected_native_numeric_model="product",
@@ -122,8 +122,8 @@ class DeliveryTests(unittest.TestCase):
         self.write_stdout(native)
         self.assertTrue(self.collect()["policy_matches"])
         for field, value in [("numeric_model", "finite-set"),
-                             ("domain_spec", {"capacity": 1, "cost_version": 7}),
-                             ("domain_spec", {"capacity": 512, "cost_version": 6}),
+                             ("domain_spec", {"capacity": 1, "cost_version": cost_version}),
+                             ("domain_spec", {"capacity": 512, "cost_version": cost_version - 1}),
                              ("postprocessing_max_work", 1_000_000_000)]:
             with self.subTest(field=field, value=value):
                 self.write_stdout({**native, field: value})

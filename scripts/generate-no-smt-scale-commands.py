@@ -5,7 +5,7 @@ Only writes a command profile and optional wire 18 requests; never builds or
 runs analysis. Keep outputs separate from frozen baselines. Regenerate the
 profile for the final build's exact source commit.
 
-The current interface requires native 13 / wire 18 / domain 3 / cost 7. Historical
+The current interface requires native 13 / wire 18 / domain 3 / cost 8. Historical
 profiles stay bound to their frozen source and generator; they are not upgraded.
 """
 
@@ -36,8 +36,8 @@ def generate(repository, source):
             raise ValueError(f"expected {key} schema {expected}")
     if not re.search(r"schema_version:\s*3\s*,", texts["cost"]):
         raise ValueError("expected numeric policy schema 3")
-    if not re.search(r"cost_version:\s*7\s*,", texts["cost"]):
-        raise ValueError("expected logical cost version 7")
+    if not re.search(r"cost_version:\s*8\s*,", texts["cost"]):
+        raise ValueError("expected logical cost version 8")
     if re.search(r"smt_provider|smt_rlimit|embedded_smt", texts["relations"]):
         raise ValueError("selected CLI still exposes native solver policy")
     commit = subprocess.check_output(
@@ -45,13 +45,14 @@ def generate(repository, source):
     profile["interface"] = {
         "name": "no-smt-cli-world",
         "source_commit": commit,
-        "versions": {"native": 13, "wire": 18, "domain": 3, "cost": 7},
+        "versions": {"native": 13, "wire": 18, "domain": 3, "cost": 8},
         "source_witnesses": {
             path: hashlib.sha256((source / path).read_bytes()).hexdigest()
             for path in witnesses.values()
         },
         "scope": "Offline CLI interface only; measured ELF/build identity is supplied separately. "
-                 "Logical work is not comparable across cost versions.",
+                 "Logical work is not comparable across cost versions; an unchanged integer "
+                 "work limit does not imply equal effort.",
     }
     # The CLI prints an Incomplete Report before returning 2. The harness still
     # validates the JSON and keeps external stops and parse failures separate.
@@ -82,7 +83,7 @@ def generate(repository, source):
         "capacity": analysis.pop("max_constants"),
         "reduction_rounds": analysis.pop("reduction_rounds"),
         "fact_limit": analysis.pop("max_facts"),
-        "cost_version": 7, "widening_after_updates": 2,
+        "cost_version": 8, "widening_after_updates": 2,
         "provenance_policy": "scoped-expressions-and-value-identities-v3",
         "relations": analysis.pop("relations"),
     }

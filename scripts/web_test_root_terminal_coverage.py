@@ -173,7 +173,7 @@ def _binding(report, request, *, is_static):
     assert config["root_terminal_coverage"] is True
     assert binding["domain_spec"] == {
         "schema_version": 3, "word_bits": 256, "capacity": 512,
-        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 7,
+        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 8,
         "widening_after_updates": 2, "provenance_policy": "scoped-expressions-and-value-identities-v3",
         "relations": {key: limits[source] for key, source in relation_fields.items()}}
     original = next(state for state in report["states"] if state["state"] == 0)["entry"]
