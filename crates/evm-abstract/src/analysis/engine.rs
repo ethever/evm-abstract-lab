@@ -490,6 +490,7 @@ pub(super) fn run_reusing<
         edges: BTreeSet::new(),
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new()],
+        source_records: vec![None],
         cache,
         alternatives: vec![alternatives],
         selectors: BTreeSet::new(),
@@ -581,6 +582,9 @@ struct EvmEngine<
     /// 与 `result.states` 按编号对齐的子调用终结证据，供摘要认证使用。
     /// 保存 caller join 之前的原始终结和状态效果，不能从已汇合的返回节点逆推。
     completed_calls: Vec<Vec<EvmCompletedCall<D::Element>>>,
+    /// Latest region observation produced by a successful World evaluation.
+    /// All public flags stay false until one prepaid final certification pass.
+    source_records: Vec<Option<usize>>,
     /// 可选的完整 callee 图证书缓存；关闭摘要时普通工作表路径仍然成立。
     cache: Option<EvmCache<D::Element, P::Class>>,
     /// Known/unknown procedure inputs, outputs and retained return continuations.
@@ -794,6 +798,32 @@ impl<
             let id = *id;
             self.active = Some(token);
             self.active_node = Some(id);
+            // A dependency wake may leave the input slot's version unchanged.
+            // Even a failed read/preparation is a new evaluation, so neither an
+            // older region record nor an older execution receipt can certify it.
+            self.source_records[id] = None;
+            self.result.states[id].invalidate_execution();
+            #[cfg(test)]
+            {
+                tests::source_current::world_read_probe(id)?;
+                if tests::source_current::attach_dependency(id) {
+                    let scope = self.runtime.world;
+                    let slot = self
+                        .runtime
+                        .kernel()
+                        .slot(scope, &mut MachineMeter(self.budget))
+                        .map_err(kernel_failure)?;
+                    self.runtime.with_run(
+                        self.active.as_mut().ok_or(MachineError::Shape)?,
+                        self.budget,
+                        |run| {
+                            run.read_slot(&slot, &0usize, 1).map_err(kernel_failure)?;
+                            Ok(())
+                        },
+                    )?;
+                    tests::source_current::remember_dependency(slot);
+                }
+            }
             let state = &self.result.states[id];
             let answer = input::read(
                 &mut self.runtime,
@@ -912,6 +942,7 @@ impl<
                 }
             };
             let frontiers_before = self.result.frontiers.len();
+            let mut source_record = None;
             self.counters.report(self.budget.used());
             if let Some(reason) = transfer_stop(
                 self.result.transfers,
@@ -974,6 +1005,7 @@ impl<
                             .expect("composition is owned by this run"),
                     );
                     self.result.transfers = self.counters.transfers;
+                    source_record = Some(self.result.procedure_summaries.len());
                     self.result.procedure_summaries.push(evidence);
                     execution
                 } else {
@@ -1059,6 +1091,13 @@ impl<
                 self.stop_queued(reason);
                 break;
             }
+            if self.result.frontiers.len() == frontiers_before
+                && self.result.states[id]
+                    .execution_evidence()
+                    .is_some_and(EvmExecutionEvidence::is_current)
+            {
+                self.source_records[id] = source_record;
+            }
         }
         // 未闭合的候选只计为拒绝，不能在分析停止时补成“成功摘要”。
         if let Some(cache) = self.cache.take() {
@@ -1072,7 +1111,96 @@ impl<
         };
         self.result.edges = std::mem::take(&mut self.edges).into_iter().collect();
         self.result.diagnostics = std::mem::take(&mut self.diagnostics).into_iter().collect();
+        self.certify_procedure_sources();
         self.result.work = self.budget.used();
+    }
+
+    /// Positive report currency, separate from kernel/regional closure. Production
+    /// runs start with fresh false flags; replay never changes them. If funding,
+    /// unique ownership or foreign-source validity is unavailable, they stay false.
+    fn certify_procedure_sources(&mut self) {
+        #[cfg(test)]
+        if tests::source_current::hold_certification() {
+            return;
+        }
+        let records = self.result.procedure_summaries.len();
+        if X::ENABLED
+            || records == 0
+            || !self.result.procedure_summaries.is_unique()
+            || MachineError::check_cancelled().is_err()
+        {
+            return;
+        }
+        // Length quotes are O(1). pending_world scans native queue records and
+        // deduplicates with a bounded tree; prepay its walk before constructing
+        // either vector. This envelope includes publication and cancellation undo.
+        let work = records
+            .saturating_mul(4)
+            .saturating_add(self.result.states.len().saturating_mul(12))
+            .saturating_add(
+                self.runtime
+                    .work_size()
+                    .saturating_mul((usize::BITS as usize).saturating_add(1))
+                    .saturating_mul(4),
+            )
+            .saturating_add(8);
+        let Ok(permit) = self.budget.try_completion_escrow(work) else {
+            return;
+        };
+        let captured = self.budget.cancellation();
+        let mut pending = vec![false; self.result.states.len()];
+        for id in self.runtime.pending_world() {
+            if let Some(pending) = pending.get_mut(id) {
+                *pending = true;
+            }
+        }
+        if let Some(id) = self.active_node {
+            if let Some(pending) = pending.get_mut(id) {
+                *pending = true;
+            }
+        } else if self.active.is_some() {
+            // An unidentified in-flight owner cannot supply a World certificate.
+            return;
+        }
+        let eligible = (0..self.source_records.len())
+            .filter_map(|id| self.current_source_record(id, &pending))
+            .collect::<Vec<_>>();
+        if !permit.publish_allowed() || MachineError::check_cancelled().is_err() {
+            return;
+        }
+        let Some(records) = self.result.procedure_summaries.unique_records() else {
+            return;
+        };
+        for record in records.iter_mut() {
+            record.source_current = false;
+        }
+        for &index in &eligible {
+            records[index].source_current = true;
+        }
+        if captured.is_cancelled() || MachineError::check_cancelled().is_err() {
+            // Already included in the escrow; never charge or deep-copy after a
+            // late cancellation, and never publish a half-certified collection.
+            for &index in &eligible {
+                records[index].source_current = false;
+            }
+        }
+    }
+
+    /// Called only within the funded final metadata walk. Keeping the native
+    /// pending predicate explicit also covers a popped but unbegun admission.
+    fn current_source_record(&self, id: usize, pending: &[bool]) -> Option<usize> {
+        if *pending.get(id)? {
+            return None;
+        }
+        let record = (*self.source_records.get(id)?)?;
+        (self
+            .result
+            .states
+            .get(id)?
+            .execution_evidence()?
+            .is_current()
+            && self.result.procedure_summaries().get(record)?.source_state == id)
+            .then_some(record)
     }
 
     fn ordinary_execution(
@@ -1410,6 +1538,7 @@ impl<
                 });
                 self.counters.states += 1;
                 self.completed_calls.push(Vec::new());
+                self.source_records.push(None);
                 self.alternatives.push(alternatives);
                 self.inputs.push(slot);
                 Ok(id)
@@ -1540,6 +1669,7 @@ impl<
         let current_updates = &mut self.updates[id];
         let current_alternatives = &mut self.alternatives[id];
         let current_selectors = &mut self.selectors;
+        let source_record = &mut self.source_records[id];
         // The infallible installation includes coverage/frozen mode and old
         // receipt invalidation, after the kernel reserves every wake/version.
         self.runtime.with_run(
@@ -1557,6 +1687,7 @@ impl<
                         state.entry = joined;
                         state.key = public_key;
                         state.invalidate_execution();
+                        *source_record = None;
                     },
                 )
                 .map_err(kernel_failure)
@@ -1647,6 +1778,7 @@ impl<
     fn mark_feedback(&mut self, id: usize) -> Result<(), MachineError> {
         let feedback = &mut self.feedback[id];
         let state = &mut self.result.states[id];
+        let source_record = &mut self.source_records[id];
         self.runtime.with_run(
             self.active.as_mut().ok_or(MachineError::Shape)?,
             self.budget,
@@ -1654,6 +1786,7 @@ impl<
                 run.publish_prepared_with(&self.inputs[id], Change::Changed, 1, || {
                     *feedback = true;
                     state.invalidate_execution();
+                    *source_record = None;
                 })
                 .map(|_| ())
                 .map_err(kernel_failure)
@@ -1689,6 +1822,7 @@ impl<
             .saturating_add(self.result.frontiers.len())
             .saturating_add(1); // One ProcedureEvidence owner, independent of report size.
         cost = cost.saturating_add(self.selectors.len());
+        cost = cost.saturating_add(self.source_records.len().saturating_mul(2));
         for state in &self.result.states {
             MachineError::check_cancelled()?;
             cost = cost
@@ -1885,6 +2019,7 @@ impl<
             edges: self.edges.clone(),
             diagnostics: self.diagnostics.clone(),
             completed_calls: self.completed_calls.clone(),
+            source_records: self.source_records.clone(),
             cache: None,
             procedures: transfer::procedure::EvmTable::default(),
             reuse: None,
@@ -1921,6 +2056,7 @@ impl<
             edges,
             diagnostics,
             completed_calls,
+            source_records,
             ..
         } = staged;
         let commit = self.runtime.commit(runtime, self.budget, || {
@@ -1936,6 +2072,7 @@ impl<
             self.edges = edges;
             self.diagnostics = diagnostics;
             self.completed_calls = completed_calls;
+            self.source_records = source_records;
         });
         if let Err(error) = commit {
             return Err(self.replay_failure(root, error.frontier_reason(), pending));
@@ -2006,6 +2143,7 @@ impl<
                 // The replay copy reservation covers inspecting this retained
                 // metadata. Reuse the quote at installation rather than walking
                 // the old payload histories again before its preparation fee.
+                self.source_records[existing] = None;
                 let old_alternatives_work = self
                     .policies
                     .state
@@ -2092,6 +2230,7 @@ impl<
                     });
                     self.counters.states += 1;
                     self.completed_calls.push(node.completed_calls);
+                    self.source_records.push(None);
                     self.inputs.push(input);
                     Ok(id)
                 });

@@ -201,17 +201,31 @@ impl<
         }
     }
 
+    #[cfg(test)]
     pub(super) fn procedure(
         &mut self,
         payload: EvmMachinePayload<D::Element>,
     ) -> Result<usize, MachineError> {
-        self.procedure_from(payload, None)
+        let creation = payload
+            .call_stack
+            .active_child()
+            .is_some_and(|child| child.continuation.creation.is_some());
+        self.procedure_entry(payload, creation)
+    }
+
+    pub(super) fn procedure_entry(
+        &mut self,
+        payload: EvmMachinePayload<D::Element>,
+        creation: bool,
+    ) -> Result<usize, MachineError> {
+        self.procedure_from(payload, None, creation)
     }
 
     fn procedure_from(
         &mut self,
         payload: EvmMachinePayload<D::Element>,
         from: Option<usize>,
+        creation: bool,
     ) -> Result<usize, MachineError> {
         self.reserve(payload.work_size().saturating_mul(4))?;
         let payload = self.form(&payload)?;
@@ -256,6 +270,14 @@ impl<
         if self.counters.states >= self.config.analysis.max_states {
             return Err(MachineError::States);
         }
+        let frame = payload.active();
+        let store_effect = super::effects::classify(
+            frame.code,
+            frame.key.mode,
+            frame.program.as_ref(),
+            creation,
+            &mut PolicyContext::new(self.domain, self.entry, self.budget),
+        )?;
         let stored_payload = payload.clone();
         PolicyContext::new(self.domain, self.entry, self.budget).reserve(0)?;
         let mut index = std::mem::take(&mut self.table.procedures_by_key);
@@ -275,6 +297,7 @@ impl<
                 namespace: self.namespace,
                 frame: payload.active().key.clone(),
                 entry_payload: stored_payload,
+                store_effect,
                 entry_updates: prepared.metadata,
                 entry_feedback: false,
                 entry_revision: 0,
@@ -1121,7 +1144,11 @@ impl<
             store: payload.store.clone(),
             relations: payload.relations.clone(),
         };
-        let callee = self.procedure_from(callee_payload, Some(from))?;
+        let creation = payload
+            .call_stack
+            .active_child()
+            .is_some_and(|child| child.continuation.creation.is_some());
+        let callee = self.procedure_from(callee_payload, Some(from), creation)?;
         let payload = self.form(&payload)?;
         let PartitionedRelative { key, payload } =
             self.partition_relative(payload, PolicySite::Subscriber, None)?;
@@ -1409,6 +1436,11 @@ impl<
         output: &EvmOutput<D::Element>,
     ) -> Result<bool, MachineError> {
         let subscription = &self.table.subscribers[subscriber];
+        let callee = subscription.callee;
+        let creation = template
+            .continuations
+            .last()
+            .is_some_and(|continuation| continuation.creation.is_some());
         let stamp = (template_version, output.generation);
         // Native stamps alone cannot certify cooperative contributions: a
         // foreign premise can retire a namespace2 scope without changing them.
@@ -1416,6 +1448,15 @@ impl<
             return Ok(true);
         }
         let from = subscription.from;
+        self.reserve(super::effects::StoreEffect::MATCH_WORK)?;
+        let frame = template.active();
+        let keep_store = self.table.procedures[callee].store_effect.keeps_store(
+            frame.code,
+            frame.key.mode,
+            frame.program.as_ref(),
+            kind,
+            creation,
+        );
         self.regional_delivery(subscriber, kind, template_version, output.generation)?;
         if template.frames.len() == 2
             && template.frames[0].code == FrameCode::Unknown
@@ -1441,11 +1482,13 @@ impl<
             let child = resumed.frames.pop().expect("a subscribed child");
             resumed.continuations.pop();
             resumed.location.frames.pop();
-            resumed.store = if kind == OutcomeKind::Return {
-                output.summary.store.clone()
-            } else {
-                child.frame.saved_store
-            };
+            if !keep_store {
+                resumed.store = if kind == OutcomeKind::Return {
+                    output.summary.store.clone()
+                } else {
+                    child.frame.saved_store
+                };
+            }
             // Changing the active frame and EvmStore<D::Element> invalidates current-read templates.
             resumed.storage_observations = Default::default();
             resumed.work = resumed.measure_work();
@@ -1468,7 +1511,9 @@ impl<
         let mut payload = instantiate(template, self.domain)?;
         // Installed constraints still refer only to the old immutable snapshot.
         // Never reinstall those read bounds after replacing the EvmStore<D::Element>.
-        payload.store = output.summary.store.instantiate(self.domain)?;
+        if !keep_store {
+            payload.store = output.summary.store.instantiate(self.domain)?;
+        }
         let data = output.summary.data.instantiate(self.domain)?;
         let execution = resume_summary_inner(
             payload,
