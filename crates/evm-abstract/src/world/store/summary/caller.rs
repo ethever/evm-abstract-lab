@@ -3,7 +3,7 @@
 //! Fresh replay roots retain their actual native operands beside observational
 //! bindings. Neither observation export nor symbolic identity replaces N.
 
-use super::metered::{code_comparison_work, pay_structure};
+use super::metered::{codes_equal, pay_structure};
 use super::{
     Address, AlgebraRef, BTreeMap, BTreeSet, Code, EvmLog, EvmNumericAlgebra, EvmStore,
     EvmStoreSummary, EvmValue, Existence, ExprId, OrderedMap, Plane, SlotStateId, SlotStateKind,

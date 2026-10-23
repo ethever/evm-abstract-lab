@@ -9,7 +9,10 @@ use crate::{
     domain::EvmNumericAlgebra,
     world::{
         Code,
-        process::{CapturedProcessCode, OwnerCatalogue, OwnerCatalogueLimits, ProcessOwnerError},
+        process::{
+            CapturedProcessCode, OwnerCatalogue, OwnerCatalogueLimits, ProcessNamespace,
+            ProcessOwnerError,
+        },
     },
 };
 use alloy_primitives::{Address, U256, keccak256};
@@ -56,6 +59,48 @@ where
             names.insert(frame.key.address);
             names.insert(frame.key.code_address);
         }
+        let root = input.call_stack.iter().next().ok_or(MachineError::Shape)?;
+        let symbolic_root = self.entry.environment.to.as_concrete().is_none();
+        let mut root_source = process_source(
+            root.code,
+            root.key.code_address,
+            root.key.code_hash,
+            root.program
+                .as_ref()
+                .map_or(self.world.fork(), |p| p.fork()),
+            root.program.is_some(),
+            symbolic_root,
+            self.entry.address,
+        );
+        if symbolic_root
+            && root.code == FrameCode::Unknown
+            && let Some(Code::Delegation(target)) = input.store.code(self.entry.address)
+        {
+            // Known marker, unobserved executable. Quote its fixed raw bytes;
+            // no Program or observed implementation is invented.
+            self.reserve(128)?;
+            root_source = ProcessSource::InputDelegation {
+                target: *target,
+                hash: keccak256(
+                    input
+                        .store
+                        .raw_account_code(self.entry.address)
+                        .ok_or(MachineError::Shape)?,
+                ),
+                fork: self.world.fork(),
+            };
+        }
+        let namespace = symbolic_root.then_some(ProcessNamespace {
+            coordinate: self.entry.address,
+            source: root_source,
+        });
+        if namespace.is_some() {
+            // The Store entry here is a supplied template. Its numeric address
+            // establishes neither a physical target nor code at that target.
+            names.remove(&self.entry.address);
+            self.reserve(32)?;
+            self.table.process_root_code = Some((root.code, root.program.clone(), root_source));
+        }
         let mut codes = BTreeSet::new();
         for source in &names {
             if let Some(Code::Runtime(program)) = input.store.code(*source) {
@@ -72,9 +117,10 @@ where
         // future dynamically discoverable runtime body.
         let names: Vec<_> = names.into_iter().collect();
         let codes: Vec<_> = codes.into_iter().collect();
-        let catalogue = OwnerCatalogue::freeze(
+        let catalogue = OwnerCatalogue::freeze_with_namespace(
             &names,
             &codes,
+            namespace,
             OwnerCatalogueLimits {
                 names: names.len(),
                 codes: codes.len(),
@@ -119,43 +165,35 @@ where
                 }
                 (**existing).clone()
             } else {
-                let fork = self.world.fork();
-                let source = match frame.code {
-                    FrameCode::Runtime => {
-                        let program = frame.program.as_ref().ok_or(MachineError::Shape)?;
-                        let captured = CapturedProcessCode {
-                            source: frame.key.code_address,
-                            hash: frame.key.code_hash,
-                            fork: program.fork(),
-                        };
-                        catalogue
-                            .admit_code(captured, self.budget)
-                            .map_err(owner_error)?;
-                        ProcessSource::Runtime {
-                            source: captured.source,
-                            hash: captured.hash,
-                            fork: captured.fork,
-                        }
-                    }
-                    FrameCode::InitCode => match &frame.program {
-                        Some(program) => ProcessSource::InitCode {
-                            hash: frame.key.code_hash,
-                            fork: program.fork(),
-                        },
-                        None => ProcessSource::AnyInitCode { fork },
-                    },
-                    FrameCode::Unknown => ProcessSource::AnyRuntime { fork },
-                    FrameCode::Empty => ProcessSource::Empty { fork },
-                    FrameCode::Precompile(address) => ProcessSource::Precompile { address, fork },
-                    FrameCode::InvalidDelegation => ProcessSource::InvalidDelegation {
-                        source: frame.key.code_address,
-                        hash: frame.key.code_hash,
-                        fork,
-                    },
-                };
+                let mut source = process_source(
+                    frame.code,
+                    frame.key.code_address,
+                    frame.key.code_hash,
+                    frame
+                        .program
+                        .as_ref()
+                        .map_or(self.world.fork(), |p| p.fork()),
+                    frame.program.is_some(),
+                    catalogue.namespace().is_some(),
+                    self.entry.address,
+                );
+                if frame.code == FrameCode::Unknown
+                    && frame.key.address == self.entry.address
+                    && let Some(ProcessSource::InputDelegation { target, hash, fork }) =
+                        catalogue.namespace().map(|n| n.source)
+                    && target == frame.key.code_address
+                {
+                    source = ProcessSource::InputDelegation { target, hash, fork };
+                }
                 ProcessFrameKey {
                     epoch: catalogue.epoch(),
-                    owner: catalogue.classify(frame.key.address),
+                    owner: if catalogue.namespace().is_some()
+                        && frame.key.address == self.entry.address
+                    {
+                        crate::analysis::ProcessOwner::RootNamespace
+                    } else {
+                        catalogue.classify(frame.key.address)
+                    },
                     source,
                     is_static: frame.key.is_static,
                 }
@@ -172,6 +210,13 @@ where
                 catalogue
                     .admit_code(CapturedProcessCode { source, hash, fork }, self.budget)
                     .map_err(owner_error)?;
+            }
+            if matches!(
+                process.source,
+                ProcessSource::InputProgram { .. } | ProcessSource::InputDelegation { .. }
+            ) && catalogue.namespace().map(|n| n.source) != Some(process.source)
+            {
+                return Err(MachineError::Process(ProcessBoundary::Catalogue));
             }
             frame.key.install_process(process);
         }
@@ -190,4 +235,51 @@ where
         self.reserve(0)?;
         Ok(input)
     }
+}
+
+// Called only for captured native inputs. Process callbacks carry their typed
+// source directly and never resolve a private namespace as a physical account.
+fn process_source(
+    code: FrameCode,
+    source: Address,
+    hash: alloy_primitives::B256,
+    fork: crate::Fork,
+    has_program: bool,
+    symbolic_root: bool,
+    root_coordinate: Address,
+) -> ProcessSource {
+    match code {
+        FrameCode::Runtime if symbolic_root && source == root_coordinate => {
+            ProcessSource::InputProgram { hash, fork }
+        }
+        FrameCode::Runtime => ProcessSource::Runtime { source, hash, fork },
+        FrameCode::InitCode => {
+            if has_program {
+                ProcessSource::InitCode { hash, fork }
+            } else {
+                ProcessSource::AnyInitCode { fork }
+            }
+        }
+        FrameCode::Unknown => ProcessSource::AnyRuntime { fork },
+        FrameCode::Empty => ProcessSource::Empty { fork },
+        FrameCode::Precompile(address) => ProcessSource::Precompile { address, fork },
+        FrameCode::InvalidDelegation => ProcessSource::InvalidDelegation { source, hash, fork },
+    }
+}
+
+/// Export a physical Store upper bound without the private namespace cell.
+pub(in crate::analysis::transfer::procedure) fn export_store<D: EvmNumericAlgebra>(
+    store: &crate::world::EvmStoreSummary<D::Element>,
+    catalogue: Option<&OwnerCatalogue>,
+    domain: crate::domain::AlgebraRef<'_, D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<crate::world::EvmStore<D::Element>, MachineError> {
+    if let Some(catalogue) = catalogue
+        && catalogue.namespace().is_some()
+    {
+        return Ok(store
+            .process_export(catalogue, domain, budget)?
+            .instantiate_with_payment(domain, budget)?);
+    }
+    Ok(store.instantiate_with_payment(domain, budget)?)
 }

@@ -20,9 +20,26 @@ pub struct EvmProcessInvocation<N: WordElement> {
 /// Executable provenance; an abstraction never changes captured code identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum ProcessSource {
+    /// Supplied root bytes under symbolic To; no physical account is asserted.
+    InputProgram {
+        /// Digest of the supplied executable bytes.
+        hash: B256,
+        /// Decoder and execution rules for the supplied bytes.
+        fork: Fork,
+    },
+    /// Supplied delegation marker selecting an unobserved physical executable.
+    /// Its known raw marker is not reclassified as unknown runtime bytecode.
+    InputDelegation {
+        /// Physical pointer in the supplied marker, not a namespace coordinate.
+        target: Address,
+        /// Digest of the original 23-byte marker.
+        hash: B256,
+        /// Account-code resolution and execution rules.
+        fork: Fork,
+    },
     /// The original captured runtime and decoder fork.
     Runtime {
-        /// Original captured account or input code namespace.
+        /// Original observed physical code account.
         source: Address,
         /// Digest of its original executable bytes.
         hash: B256,
@@ -75,7 +92,7 @@ pub enum ProcessSource {
 pub struct ProcessFrameKey {
     /// Digest of all frozen named owners and captured code versions.
     pub epoch: B256,
-    /// Physical state class, independent of logical ADDRESS operands.
+    /// State namespace or physical class, independent of logical ADDRESS.
     pub owner: ProcessOwner,
     /// Original executable identity and origin.
     pub source: ProcessSource,

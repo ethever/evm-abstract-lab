@@ -5,6 +5,8 @@
 mod captured;
 #[path = "global_process/control.rs"]
 mod control;
+#[path = "global_process/namespace.rs"]
+mod namespace;
 #[path = "support/native.rs"]
 mod native;
 #[path = "unknown_world/oracle.rs"]
@@ -369,7 +371,7 @@ fn unknown_logical_owner_is_preserved_with_a_covering_named_class() {
     let root = &record.procedures[record.root_procedure.unwrap()];
     assert_eq!(
         root.frame.process.as_ref().unwrap().owner,
-        evm_abstract::analysis::ProcessOwner::Named(address(A))
+        evm_abstract::analysis::ProcessOwner::RootNamespace
     );
     let invocation = root.process_input.as_ref().unwrap();
     assert!(invocation.address.contains(U256::from(0xaaa)));

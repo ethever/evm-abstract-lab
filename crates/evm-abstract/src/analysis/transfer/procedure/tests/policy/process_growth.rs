@@ -25,6 +25,77 @@ fn child(mut payload: MachinePayload, offset: u64) -> MachinePayload {
 }
 
 #[test]
+fn independent_equal_programs_share_process_body_and_paid_relative_replay() {
+    let state = SemanticPolicies::new(
+        StructuralPartition,
+        BoundedJoin,
+        FeedbackAcceleration,
+        KnownProcessSummaries,
+    );
+    let config = crate::analysis::ExecutionConfig {
+        root_terminal_coverage: false,
+        max_work: 20_000_000,
+        ..Default::default()
+    };
+    let mut h = Harness::with_config("00", state, config);
+    let first = h.input(0);
+    let mut second = h.input(0);
+    let original = first.active().program.as_ref().unwrap();
+    let independent =
+        crate::bytecode::Program::decode_with_fork(original.bytes(), original.fork()).unwrap();
+    assert!(!original.shares_capture(&independent));
+    second.active_mut().program = Some(independent.clone());
+    second.store.deploy_code(address(0x101), independent);
+    second.active_mut().saved_store = second.store.snapshot();
+    second.normalize();
+    let mut solver = h.solver();
+    let caller = solver.procedure(first.clone()).unwrap();
+    let left = solver
+        .table
+        .entry_source(caller)
+        .unwrap()
+        .payload
+        .clone_with_payment(solver.budget)
+        .unwrap();
+    let mut right = left.clone_with_payment(solver.budget).unwrap();
+    right.frames[0].frame.program = second.active().program.clone();
+    assert!(
+        left.eq_with_payment(&right, solver.domain, solver.budget)
+            .unwrap()
+    );
+    let joined = left
+        .join_bound_with_payment(&right, solver.domain, solver.budget, false)
+        .unwrap();
+    assert!(
+        joined
+            .eq_with_payment(&left, solver.domain, solver.budget)
+            .unwrap()
+    );
+    // Public native rehydration remains forbidden; the installed adapter uses
+    // its private replay only to execute a typed Process transfer.
+    let replay =
+        payload::caller::instantiate_with_payment(&right, solver.domain, solver.budget).unwrap();
+    assert!(replay.active().key.process.is_some());
+    assert_eq!(solver.procedure(second.clone()).unwrap(), caller);
+    let from = solver.table.procedures[caller].first_body();
+    solver.subscribe(from, child(first, 0)).unwrap();
+    solver.subscribe(from, child(second, 0)).unwrap();
+    assert_eq!(solver.table.subscribers.len(), 1);
+    solver.run();
+    assert!(
+        solver.table.frontiers.is_empty(),
+        "{:?}",
+        solver.table.frontiers
+    );
+    assert!(solver.runtime.relative_closed(solver.budget).unwrap());
+    assert!(
+        solver.table.subscribers[0]
+            .delivered
+            .contains_key(&OutcomeKind::Return)
+    );
+}
+
+#[test]
 fn process_body_growth_and_template_growth_redeliver_to_two_saved_callers() {
     let state = SemanticPolicies::new(
         StructuralPartition,

@@ -56,9 +56,10 @@ fn root_source<'a, N: WordElement>(
         .unwrap_or(0) as usize
         + 2;
     pay(budget, levels.saturating_mul(128))?;
-    let (_, mode, program) = super::transfer::resolve_code(
+    let (_, mode, program) = super::transfer::resolve_entry_code(
         execution.world().fork(),
         execution.entry().address,
+        execution.entry().environment.to,
         |address| {
             execution
                 .world()
@@ -70,6 +71,91 @@ fn root_source<'a, N: WordElement>(
     Ok((mode, program))
 }
 impl<N: WordElement> EvmWorldAnalysis<N> {
+    /// Original root binding, available before any successful frame admission.
+    pub fn root_binding(&self) -> crate::world::RootInputBinding {
+        self.entry().binding()
+    }
+
+    /// Paid provenance of the declared input, not evidence of execution.
+    /// Namespace bytes never establish an observed physical code account.
+    pub fn declared_root_source(
+        &self,
+        budget: &mut WorkBudget,
+    ) -> Result<super::ProcessSource, ProjectionError> {
+        use super::{FrameCode, ProcessSource};
+        use crate::world::Code;
+        use alloy_primitives::keccak256;
+        let levels = self.world().accounts().len().checked_ilog2().unwrap_or(0) as usize + 2;
+        pay(budget, levels.saturating_mul(128))?;
+        let coordinate = self.entry().address;
+        let namespace = self.entry().environment.to.as_concrete().is_none();
+        let fork = self.world().fork();
+        let (source, mode, program) = super::transfer::resolve_entry_code(
+            fork,
+            coordinate,
+            self.entry().environment.to,
+            |address| self.world().account(address).map(|a| &a.code),
+        );
+        let provenance = match mode {
+            FrameCode::Runtime => {
+                let program = program.ok_or(ProjectionError::MissingProgram)?;
+                pay(
+                    budget,
+                    program.byte_len().saturating_mul(4).saturating_add(64),
+                )?;
+                let hash = program.bytes_digest();
+                if namespace && source == coordinate {
+                    ProcessSource::InputProgram {
+                        hash,
+                        fork: program.fork(),
+                    }
+                } else {
+                    ProcessSource::Runtime {
+                        source,
+                        hash,
+                        fork: program.fork(),
+                    }
+                }
+            }
+            FrameCode::Unknown => {
+                if namespace
+                    && let Some(Code::Delegation(target)) =
+                        self.world().account(coordinate).map(|a| &a.code)
+                {
+                    pay(budget, 128)?;
+                    ProcessSource::InputDelegation {
+                        target: *target,
+                        hash: keccak256(
+                            self.world()
+                                .raw_account_code(coordinate)
+                                .ok_or(ProjectionError::MissingProgram)?,
+                        ),
+                        fork,
+                    }
+                } else {
+                    ProcessSource::AnyRuntime { fork }
+                }
+            }
+            FrameCode::Empty => ProcessSource::Empty { fork },
+            FrameCode::Precompile(address) => ProcessSource::Precompile { address, fork },
+            FrameCode::InvalidDelegation => {
+                pay(budget, 128)?;
+                ProcessSource::InvalidDelegation {
+                    source,
+                    hash: keccak256(
+                        self.world()
+                            .raw_account_code(source)
+                            .ok_or(ProjectionError::MissingProgram)?,
+                    ),
+                    fork,
+                }
+            }
+            FrameCode::InitCode => return Err(ProjectionError::MissingProgram),
+        };
+        pay(budget, 0)?;
+        Ok(provenance)
+    }
+
     /// Paid source classification. Declared code in an empty incomplete result
     /// names only an unexpanded input, never an executed frame or completion.
     pub fn root_code(&self, budget: &mut WorkBudget) -> Result<super::FrameCode, ProjectionError> {

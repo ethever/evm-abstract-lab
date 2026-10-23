@@ -36,7 +36,7 @@ fn identity_scope() -> Option<u64> {
 mod arithmetic_proof_tests;
 mod budget;
 mod calls;
-pub(super) use calls::resolve_code;
+pub(super) use calls::resolve_entry_code;
 mod candidates;
 #[cfg(test)]
 mod clone_payment_tests;

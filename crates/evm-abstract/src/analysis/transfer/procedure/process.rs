@@ -21,6 +21,7 @@ mod allocation;
 mod calls;
 mod capabilities;
 pub mod creation;
+pub(super) use admission::export_store;
 pub(super) use capabilities::Capabilities;
 
 impl<
@@ -81,13 +82,16 @@ impl<
             .owner;
         let writable = match owner {
             crate::analysis::ProcessOwner::Named(owner) => Some(owner),
+            crate::analysis::ProcessOwner::RootNamespace => {
+                catalogue.namespace().map(|n| n.coordinate)
+            }
             crate::analysis::ProcessOwner::Residual => None,
         };
         if capabilities.effects {
             payload.store = payload
                 .store
                 .process_effects_with_payment(
-                    catalogue.named(),
+                    catalogue.coordinates(),
                     writable,
                     self.entry.environment.to.as_concrete().is_none(),
                     payload.active().key.is_static || capabilities.readonly,
