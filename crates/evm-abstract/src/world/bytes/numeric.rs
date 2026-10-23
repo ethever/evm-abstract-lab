@@ -775,6 +775,7 @@ impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
         self.evaluate(ReadTask::Word(state, offset.clone()))
     }
 
+    #[cfg(test)]
     pub(in crate::world) fn word_with_payment(
         &mut self,
         state: &ByteStateId,
