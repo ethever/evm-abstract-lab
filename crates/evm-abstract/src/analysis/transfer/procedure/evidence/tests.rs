@@ -12,6 +12,278 @@ use crate::analysis::{
 use crate::world::AddressInput;
 use std::collections::BTreeSet;
 
+// These one-shot, thread-scoped probes cover otherwise global identity exhaustion
+// and a precise cancellation interleaving. They never alter semantic payloads or
+// publication versions and are absent from non-test builds.
+static BODY_REFUSAL: crate::test_instrumentation::Counter<(bool, usize)> =
+    crate::test_instrumentation::Counter::new((false, 0));
+static EXPORT_CANCELLATION: crate::test_instrumentation::Counter<(Option<bool>, usize)> =
+    crate::test_instrumentation::Counter::new((None, 0));
+
+pub(in crate::analysis::transfer::procedure) fn refuse_body_instantiation() -> Option<MachineError>
+{
+    let mut refuse = false;
+    BODY_REFUSAL.update(|(armed, hits)| {
+        refuse = std::mem::take(armed);
+        *hits += usize::from(refuse);
+    });
+    refuse.then_some(MachineError::Bytes(crate::world::RangeError::State(
+        crate::domain::symbolic::StateError::IdentityExhausted,
+    )))
+}
+
+pub(in crate::analysis::transfer::procedure) fn cancel_after_export_census(budget: &WorkBudget) {
+    let mut target = None;
+    EXPORT_CANCELLATION.update(|(armed, hits)| {
+        target = armed.take();
+        *hits += usize::from(target.is_some());
+    });
+    match target {
+        Some(true) => budget.cancellation().cancel(),
+        Some(false) => analysis_control::current_cancellation().cancel(),
+        None => {}
+    }
+}
+
+#[test]
+fn same_version_body_preparation_refusal_does_not_recertify_the_previous_transfer() {
+    use crate::analysis::{FrontierReason, JoinBoundary, worklist::MachineMeter};
+    use std::sync::Arc;
+
+    let _scope = BODY_REFUSAL.scope();
+    let (world, mut entry) = fixture(&[(0x101, "00")]);
+    entry.environment.caller = AddressInput::unknown_caller();
+    entry.environment.value = TestValue::top();
+    entry.environment.calldata = ByteArray::unknown();
+    let config = config();
+    let spec = NumericLimits::machine().spec();
+    let algebra = product(spec);
+    let input = initial(&world, &entry, algebra.borrowed()).unwrap();
+    let mut table = Table::with_algebra(product(spec));
+    let mut budget = WorkBudget::new(config.max_work);
+    let mut counters = Counters::default();
+    let mut solver = table.solver(
+        &world,
+        &entry,
+        &config,
+        &mut budget,
+        &mut counters,
+        StorageReadPolicy::Abstract,
+    );
+    let procedure = solver.procedure(input).unwrap();
+    let body = solver.table.procedures[procedure].first_body();
+    let (task, mut token) = solver.runtime.next(true, solver.budget).unwrap().unwrap();
+    assert_eq!(task.0, TaskKind::Body(body));
+    let job = solver
+        .runtime
+        .with_run(&mut token, solver.budget, |run| Ok(run.job()))
+        .unwrap();
+    assert!(solver.run_admitted(Arc::clone(&task), token));
+    let before = solver.regional_cfg().unwrap();
+    let old = before.nodes[body].transfer.as_ref().unwrap();
+    assert!(old.current && old.complete && old.visited_block);
+    let input_version = solver.track_input(body).unwrap();
+    let admitted = solver.table.nodes[body].payload.clone();
+    let transfers = solver.counters.transfers;
+    let frontiers = solver.table.frontiers.len();
+
+    // Retry the SAME real native job. No payload mutation/publication or version
+    // growth is used to manufacture the preparation-refusal counterexample.
+    solver
+        .runtime
+        .kernel()
+        .retry(job, &mut MachineMeter(solver.budget))
+        .unwrap();
+    let (retry, token) = solver.runtime.next(true, solver.budget).unwrap().unwrap();
+    assert_eq!(retry.0, task.0);
+    BODY_REFUSAL.set((true, 0));
+    assert!(solver.run_admitted(retry, token));
+    assert_eq!(BODY_REFUSAL.get(), (false, 1));
+    assert_eq!(solver.counters.transfers, transfers);
+    assert_eq!(solver.track_input(body).unwrap(), input_version);
+    assert_eq!(solver.table.nodes[body].payload, admitted);
+    assert!(!solver.budget.exhausted());
+    assert_eq!(solver.table.frontiers.len(), frontiers + 1);
+    assert_eq!(
+        solver.table.frontiers.last().unwrap().reason,
+        FrontierReason::StateJoin(JoinBoundary::IdentityExhausted)
+    );
+    let after = solver.regional_cfg().unwrap();
+    let receipt = after.nodes[body].transfer.as_ref().unwrap();
+    assert_eq!(receipt.input_revision, old.input_revision);
+    assert_eq!(receipt.outcomes, old.outcomes);
+    assert!(
+        receipt.complete,
+        "historical completeness remains historical"
+    );
+    assert!(
+        !receipt.current,
+        "a refused evaluation installed no new transfer"
+    );
+    // The same admitted input can subsequently execute for real. Its fresh
+    // receipt is current again, while the earlier global frontier is retained.
+    solver
+        .runtime
+        .kernel()
+        .retry(job, &mut MachineMeter(solver.budget))
+        .unwrap();
+    let (retry, token) = solver.runtime.next(true, solver.budget).unwrap().unwrap();
+    assert!(solver.run_admitted(retry, token));
+    assert_eq!(solver.counters.transfers, transfers + 1);
+    assert_eq!(solver.track_input(body).unwrap(), input_version);
+    assert_eq!(solver.table.frontiers.len(), frontiers + 1);
+    let recovered = solver.regional_cfg().unwrap();
+    let recovered = recovered.nodes[body].transfer.as_ref().unwrap();
+    assert!(recovered.current && recovered.complete && recovered.visited_block);
+    eprintln!(
+        "E1 controlled: revision={}, refused transfers {} -> {}, real rerun -> {}; retained frontiers={}",
+        input_version.get(),
+        transfers,
+        transfers,
+        solver.counters.transfers,
+        solver.table.frontiers.len(),
+    );
+}
+
+#[test]
+fn cancellation_after_export_census_uses_the_correct_owner_stop_reason() {
+    use crate::domain::relational::QueryReason;
+    use analysis_control::{Cancellation, with_cancellation};
+
+    let _scope = EXPORT_CANCELLATION.scope();
+    for captured_target in [true, false] {
+        let captured = Cancellation::new();
+        let ambient = Cancellation::new();
+        let (world, entry) = fixture(&[(0x101, "00")]);
+        let config = config();
+        let spec = NumericLimits::machine().spec();
+        let algebra = product(spec);
+        let input = initial(&world, &entry, algebra.borrowed()).unwrap();
+        let mut table = Table::with_algebra(product(spec));
+        let mut budget = with_cancellation(&captured, || WorkBudget::new(config.max_work));
+        let mut counters = Counters::default();
+        let mut solver = table.solver(
+            &world,
+            &entry,
+            &config,
+            &mut budget,
+            &mut counters,
+            StorageReadPolicy::Abstract,
+        );
+        solver.procedure(input).unwrap();
+        solver.run();
+        assert!(!captured.is_cancelled() && !ambient.is_cancelled());
+        let before = solver.budget.used();
+        EXPORT_CANCELLATION.set((Some(captured_target), 0));
+        let result = with_cancellation(&ambient, || solver.regional_cfg());
+        assert_eq!(
+            EXPORT_CANCELLATION.get(),
+            (None, 1),
+            "passed initial checkpoint and census"
+        );
+        assert_eq!(captured.is_cancelled(), captured_target);
+        assert_eq!(ambient.is_cancelled(), !captured_target);
+        assert_eq!(
+            solver.budget.used(),
+            before,
+            "cancelled quote cannot publish/pay copies"
+        );
+        assert_eq!(
+            result,
+            Err(MachineError::Relations(QueryReason::Cancelled)),
+            "captured_target={captured_target}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_resume_keeps_real_return_revert_and_failure_delivery_receipts() {
+    use crate::analysis::worklist::MachineMeter;
+
+    for (child, outcome) in [
+        ("00", OutcomeKind::Return),
+        ("5f5ffd", OutcomeKind::Revert),
+        ("fe", OutcomeKind::Failure),
+    ] {
+        let (world, mut entry) = fixture(&[(0x101, "5f5f5f5f5f6101025af15000"), (0x102, child)]);
+        entry.environment.caller = AddressInput::unknown_caller();
+        entry.environment.value = TestValue::top();
+        entry.environment.calldata = ByteArray::unknown();
+        let config = config();
+        let spec = NumericLimits::machine().spec();
+        let algebra = product(spec);
+        let input = initial(&world, &entry, algebra.borrowed()).unwrap();
+        let mut table = Table::with_algebra(product(spec));
+        let mut budget = WorkBudget::new(config.max_work);
+        let mut counters = Counters::default();
+        let mut solver = table.solver(
+            &world,
+            &entry,
+            &config,
+            &mut budget,
+            &mut counters,
+            StorageReadPolicy::Abstract,
+        );
+        solver.procedure(input).unwrap();
+        let mut resume = None;
+        while let Some((task, mut token)) = solver.runtime.next(true, solver.budget).unwrap() {
+            if let TaskKind::Resume(id) = &task.0 {
+                let job = solver
+                    .runtime
+                    .with_run(&mut token, solver.budget, |run| Ok(run.job()))
+                    .unwrap();
+                resume = Some((*id, job));
+            }
+            assert!(solver.run_admitted(task, token));
+        }
+        assert!(solver.table.frontiers.is_empty());
+        assert!(solver.runtime.relative_closed(solver.budget).unwrap());
+        let (subscription, job) = resume.expect("the real CALL must have a Resume job");
+        let before = solver.regional_cfg().unwrap();
+        let returned = before.calls[subscription]
+            .deliveries
+            .iter()
+            .find(|receipt| receipt.kind == outcome)
+            .unwrap();
+        assert!(returned.current && !returned.successors.is_empty());
+        let expected_edge = match outcome {
+            OutcomeKind::Return => MachineEdgeKind::Return,
+            OutcomeKind::Revert => MachineEdgeKind::Revert,
+            OutcomeKind::Failure => MachineEdgeKind::Failure,
+        };
+        assert!(
+            returned
+                .successors
+                .iter()
+                .all(|edge| edge.kind == expected_edge)
+        );
+        let stamps = solver.table.subscribers[subscription].delivered.clone();
+        let propagations = solver.table.propagations;
+        let transfers = solver.counters.transfers;
+
+        solver
+            .runtime
+            .kernel()
+            .retry(job, &mut MachineMeter(solver.budget))
+            .unwrap();
+        let (retry, token) = solver.runtime.next(true, solver.budget).unwrap().unwrap();
+        assert_eq!(retry.0, TaskKind::Resume(subscription));
+        assert!(solver.run_admitted(retry, token));
+        let after = solver.regional_cfg().unwrap();
+        assert_eq!(solver.counters.transfers, transfers);
+        assert_eq!(
+            solver.table.propagations, propagations,
+            "unchanged native stamps skipped actual redelivery"
+        );
+        assert_eq!(solver.table.subscribers[subscription].delivered, stamps);
+        assert_eq!(
+            after.calls[subscription], before.calls[subscription],
+            "{outcome:?}"
+        );
+        assert!(solver.table.frontiers.is_empty());
+    }
+}
+
 /// Exercise the production relative table directly, without an outer terminal
 /// envelope. Caller, value and calldata remain unspecified in these fixtures.
 fn report(accounts: &[(u64, &str)]) -> ProcedureSummaryRecord {

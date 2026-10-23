@@ -15,6 +15,9 @@ use super::{
 use crate::analysis::{cooperation::InputTasks, worklist::runtime::TaskKind};
 use crate::domain::EvmNumericAlgebra;
 
+#[cfg(test)]
+pub(super) use tests::{cancel_after_export_census, refuse_body_instantiation};
+
 /// Coarse regional control flow, independent of the detailed machine CFG and SSA.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct EvmRegionalCfg {
@@ -428,6 +431,8 @@ impl<
                     |work, receipt| work.saturating_add(receipt.work_size()),
                 )
             });
+        #[cfg(test)]
+        cancel_after_export_census(self.budget);
         self.reserve(work.saturating_mul(4))?;
         let table = &self.table;
         let cfg = self.runtime.with_run(
