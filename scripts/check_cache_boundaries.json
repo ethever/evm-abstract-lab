@@ -582,6 +582,30 @@
         "*evm-abstract-layout",
         "lean-proofs"
       ]
+    },
+    {
+      "name": "workspace-clippy-policy-source",
+      "description": "Workspace Clippy policy reaches selected package sources and library lint artifacts while dependency resolution and unrelated tools keep their cache identities.",
+      "mutations": [
+        {
+          "path": "clippy.toml",
+          "append": "\n# Clippy policy cache boundary probe.\n"
+        }
+      ],
+      "changed": [
+        "clippy-evm-abstract",
+        "imbl-clippy-evm-abstract",
+        "all-features-clippy-evm-abstract",
+        "clippy-evm-abstract-server",
+        "web-clippy"
+      ],
+      "unchanged": [
+        "cargo-context-*",
+        "cargo-feature-resolution",
+        "cargo-concurrency",
+        "dylint-driver-concurrency",
+        "lean-proofs"
+      ]
     }
   ]
 }

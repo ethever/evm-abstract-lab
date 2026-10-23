@@ -5,7 +5,7 @@ use crate::{
     domain::{
         DomainSpec, EvmNumericAlgebra, EvmValue, NumericReduction, NumericValue, ProductAlgebra,
         SummaryConstruction, ValueAlgebra, WordElement, WordObservation,
-        symbolic::{ByteStateId, ByteView, ExprId, SlotStateId, StateLimits},
+        symbolic::{ByteStateId, ByteView, ExprId, ExprLimits, SlotStateId, StateLimits},
     },
     resource::{CloneError, SummaryError, WorkBudget},
     world::bytes::EvmByteArray,
@@ -348,6 +348,64 @@ fn reader_private_predicate_survives_and_high_result_copy_refuses_before_clone()
     assert_eq!(COUNTS.get().bad_clones, 0);
     assert_eq!(COUNTS.get().tops, 1);
     assert_eq!(reader.cache_stats(), (0, 0));
+}
+
+#[test]
+fn retained_scalar_ite_preserves_private_membership_and_skips_unselected_native_values() {
+    let _scope = COUNTS.scope();
+    let domain = ValueAlgebra::new(Policy::default());
+    for (condition_value, selected_word, expected) in [
+        (Some(true), 2u8, None),
+        (Some(true), 3, Some(3u8)),
+        (Some(false), 2, None),
+        (Some(false), 3, Some(3)),
+        (None, 0, None),
+    ] {
+        let condition = ExprId::fresh().unwrap();
+        let then_value = ExprId::fresh().unwrap();
+        let else_value = ExprId::fresh().unwrap();
+        let expression = ExprId::ite(
+            condition.clone(),
+            then_value.clone(),
+            else_value.clone(),
+            ExprLimits::default(),
+        )
+        .unwrap();
+        let branch_value = |nonzero| {
+            if condition_value == Some(nonzero) {
+                Word::plain(Some(U256::from(selected_word)))
+            } else {
+                Word {
+                    copy_fee: usize::MAX,
+                    query_fee: usize::MAX,
+                    ..Word::plain(None)
+                }
+            }
+        };
+        let facts = Facts::from([
+            (
+                condition,
+                EvmValue::from_numeric(Word::plain(
+                    condition_value.map(|nonzero| U256::from(u8::from(nonzero))),
+                )),
+            ),
+            (then_value, EvmValue::from_numeric(branch_value(true))),
+            (else_value, EvmValue::from_numeric(branch_value(false))),
+            (expression.clone(), EvmValue::from_numeric(Word::private())),
+        ]);
+        let mut budget = WorkBudget::new(200_000);
+        let context = Context::with_payment(&facts, None, domain.borrowed(), &mut budget).unwrap();
+        COUNTS.set(Counts::default());
+        let value =
+            super::scalar_in_with_payment(&expression, &context, domain.borrowed(), &mut budget)
+                .unwrap();
+        assert_eq!(value.numeric().exact, expected.map(U256::from));
+        assert_eq!(value.numeric().odd, expected.is_none());
+        assert!(!value.contains(U256::from(2)));
+        assert!(value.contains(U256::from(3)));
+        assert_eq!((COUNTS.get().bad_clones, COUNTS.get().bad_queries), (0, 0));
+        assert!(!budget.exhausted());
+    }
 }
 
 #[test]

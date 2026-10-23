@@ -1,7 +1,12 @@
 //! Project current slot roots through the shared paid native reader.
 
 use super::super::metered::representable_default_with_payment;
-use super::*;
+use super::{
+    AlgebraRef, BTreeMap, BTreeSet, CloneError, Code, EvmNumericAlgebra, EvmStore, EvmStoreSummary,
+    EvmValue, Existence, ExprId, OrderedMap, Plane, SlotStateId, SlotStateKind, StoreError,
+    SummaryError, SummaryLog, SummaryPlane, U256, WordElement, WorkBudget, checkpoint, numeric,
+    pay, pay_structure, scalar, source, sparse,
+};
 use crate::world::bytes::conditional::Context;
 
 fn byte_source(error: SummaryError<crate::world::RangeError>) -> SummaryError<StoreError> {
@@ -280,9 +285,8 @@ impl<N: WordElement> EvmStore<N> {
             codes: self
                 .codes
                 .iter()
-                .filter_map(|(key, code)| {
-                    (!matches!(code, Code::Unknown)).then(|| (*key, code.clone()))
-                })
+                .filter(|(_, code)| !matches!(code, Code::Unknown))
+                .map(|(key, code)| (*key, code.clone()))
                 .collect(),
             nonces,
             existence: sparse::map((&self.existence, &Existence::Unknown), |value| *value),

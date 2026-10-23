@@ -28,6 +28,8 @@ mod caller;
 mod layout;
 mod metered;
 mod payment;
+#[cfg(test)]
+mod test_support;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SummaryPlane<N: WordElement> {
