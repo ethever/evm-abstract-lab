@@ -9,6 +9,8 @@ use super::{
     stack_alias::StackAliases,
 };
 
+pub(super) mod payment;
+
 fn scalar<N: WordElement>(value: &EvmValue<N>) -> EvmValue<N> {
     EvmValue::from_numeric(value.numeric().clone())
 }

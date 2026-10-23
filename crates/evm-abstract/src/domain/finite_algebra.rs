@@ -6,8 +6,8 @@
 //! the frozen capacity. Shared relation/fact limits still come from DomainSpec.
 
 use super::{
-    DomainSpec, EvmNumericAlgebra, FiniteConstantSet, NumericReduction, WordElement,
-    WordObservation, concrete,
+    DomainSpec, EvmNumericAlgebra, FiniteConstantSet, NumericReduction, SummaryConstruction,
+    WordElement, WordObservation, concrete,
     facts::{FactError, Symbol},
 };
 use alloy_primitives::U256;
@@ -43,6 +43,24 @@ impl Default for FiniteSetAlgebra {
 fn tree_entry_work(size: usize) -> usize {
     let levels = usize::BITS as usize - size.max(1).leading_zeros() as usize;
     levels.saturating_add(1).saturating_mul(64)
+}
+
+/// The native finite join merges two ordered iterators into a fresh bounded
+/// B-tree. Cached lengths bound all merge comparisons, insertion/split work and
+/// release, including the temporary capacity+1 tree discarded on overflow.
+pub(super) fn summary_union_work(
+    left: &FiniteConstantSet,
+    right: &FiniteConstantSet,
+    capacity: usize,
+) -> usize {
+    let (Some(left), Some(right)) = (left.cardinality(), right.cardinality()) else {
+        return 8; // Top absorption constructs no candidate tree.
+    };
+    let visits = left.saturating_add(right);
+    let output = visits.min(capacity.saturating_add(1));
+    64usize
+        .saturating_add(visits.saturating_mul(64))
+        .saturating_add(output.saturating_mul(tree_entry_work(output).saturating_add(16)))
 }
 
 fn cartesian_visits(mut cardinalities: impl Iterator<Item = Option<usize>>) -> Option<usize> {
@@ -266,10 +284,67 @@ impl EvmNumericAlgebra for FiniteSetAlgebra {
         LITERAL_WORK
     }
 
+    fn summary_join_work(
+        &self,
+        left: &Self::Element,
+        right: &Self::Element,
+        widen_procedure: bool,
+    ) -> usize {
+        let union = summary_union_work(left, right, self.spec.capacity());
+        if !widen_procedure {
+            return union;
+        }
+        // Procedure widening performs a fresh union, then compares old with
+        // that actual tree before the cached-cardinality test. Equality can
+        // walk every old/result key even when both shared handles differ.
+        let output = match (left.cardinality(), right.cardinality()) {
+            (Some(left), Some(right)) => left.saturating_add(right).min(self.spec.capacity()),
+            _ => 0,
+        };
+        union.saturating_add(32).saturating_add(
+            left.cardinality()
+                .unwrap_or(0)
+                .saturating_add(output)
+                .saturating_mul(16),
+        )
+    }
+
+    fn summary_canonical_work(&self, value: &Self::Element) -> usize {
+        // FiniteConstantSet inherits the identity canonicalizer: one shared
+        // handle clone. Include final release of the entire retained tree.
+        COPY_WORK.saturating_add(WordElement::work_size(value))
+    }
+
+    fn summary_construction_work(&self, construction: SummaryConstruction) -> usize {
+        match construction {
+            SummaryConstruction::Top => 8,
+            // The default WordElement constructors create a fixed-width
+            // WordObservation, then this carrier's from_observation. It tests
+            // singleton and at most constructs one literal B-tree; it does not
+            // enumerate the byte/range image, regardless of configured capacity.
+            SummaryConstruction::UnknownByte | SummaryConstruction::UnsignedRange { .. } => {
+                512 + LITERAL_WORK
+            }
+        }
+    }
+
     fn byte_quotes_uniform(&self) -> bool {
         // Numeric quotes depend on cached operand cardinalities, never on the
         // literal index. Facade metadata likewise sees an exact one-word index.
         true
+    }
+
+    fn summary_equal_work(&self, left: &Self::Element, right: &Self::Element) -> usize {
+        // Arc equality can compare every B-tree key when pointers differ.
+        8usize.saturating_add(
+            left.work_size()
+                .saturating_add(right.work_size())
+                .saturating_mul(16),
+        )
+    }
+
+    fn summary_is_top_work(&self, _value: &Self::Element) -> usize {
+        2 // The carrier's Top/Finite tag, without a candidate query.
     }
 
     fn projection_work(&self, _value: &Self::Element) -> usize {
