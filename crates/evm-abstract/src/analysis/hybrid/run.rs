@@ -168,12 +168,20 @@ where
             if self.policies.state.runtime_execution() == RuntimeExecution::Process {
                 coverage.detail = DetailState::ProcessPolicy;
             } else {
-                let allowance = hybrid
-                    .max_detail_work
-                    .min(config.max_work.saturating_sub(budget.used()));
+                let allowance = hybrid.max_detail_work.min(budget.remaining());
                 coverage.work.detail_allowance = allowance;
                 let start = budget.used();
                 let result = budget.with_allowance(allowance, |budget| {
+                    // The same cap must survive later RPC acquisition/restart;
+                    // the temporary call boundary never reopens this allowance.
+                    match budget.limit_remaining(allowance) {
+                        Ok(()) => {}
+                        Err(CloneError::Work) => {
+                            coverage.detail = DetailState::Work;
+                            return Ok(None);
+                        }
+                        Err(CloneError::Cancelled) => return Err(CooperationError::Cancelled),
+                    }
                     // This bounded metadata walk may publish after a later
                     // detail refusal. Its original-ledger invoice is paid
                     // now, not rescued or charged to a fresh ledger later.
