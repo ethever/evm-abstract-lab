@@ -3,18 +3,6 @@
 use super::super::InitialIndependence;
 use super::*;
 
-fn representable_default_with_payment<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
-    value: &EvmValue<N>,
-    domain: AlgebraRef<'_, D>,
-    budget: &mut WorkBudget,
-) -> Result<EvmValue<N>, CloneError> {
-    if scalar::singleton(value, budget)? == Some(U256::ZERO) {
-        scalar::scalar(value, domain, budget)
-    } else {
-        scalar::top(domain, budget)
-    }
-}
-
 fn project_numeric<K: Ord + Clone, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     (values, default): (&NumericMap<K, N>, &EvmValue<N>),
     layout: &NumericMap<K, N>,

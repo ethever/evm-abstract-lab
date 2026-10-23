@@ -189,7 +189,9 @@ where
         // even for replacement rules or an arbitrarily large finite capacity.
         match construction {
             SummaryConstruction::Top => 32,
-            SummaryConstruction::UnknownByte | SummaryConstruction::UnsignedRange { .. } => 512,
+            SummaryConstruction::UnknownByte
+            | SummaryConstruction::UnknownAddress
+            | SummaryConstruction::UnsignedRange { .. } => 512,
         }
     }
     fn summary_equal_work(&self, left: &NumericValue, right: &NumericValue) -> usize {
@@ -206,6 +208,30 @@ where
         // Finite Top is a tag test; masks, both interval orders, congruence and
         // nonzero are inline. No finite candidate scan or modulo query occurs.
         128
+    }
+    fn summary_compact_work(&self, value: &NumericValue) -> usize {
+        // Dense-range proof reads two B-tree endpoints and inline interval
+        // bounds, then copies inline components/shared handles. No closure.
+        let len = value.finite_constants().work_size();
+        let height = usize::BITS as usize - len.max(1).leading_zeros() as usize;
+        256usize
+            .saturating_add(height.saturating_mul(128))
+            .saturating_add(value.clone_work())
+            .saturating_add(value.work_size())
+    }
+    fn summary_restore_work(&self, value: &NumericValue, previous: &NumericValue) -> usize {
+        // The previous finite allocation alone can be restored; the current
+        // interval proves redundancy. Price endpoints, both possible retained
+        // payloads and shared-handle copies without running that proof.
+        self.summary_compact_work(previous)
+            .saturating_add(value.clone_work())
+            .saturating_add(value.work_size())
+            .saturating_add(32)
+    }
+    fn summary_observation_work(&self, observation: &crate::domain::WordObservation) -> usize {
+        // WordObservation::numeric copies inline fields and one shared finite
+        // handle; it neither filters candidates nor reduces components.
+        64usize.saturating_add(observation.work_size())
     }
     fn projection_work(&self, _value: &NumericValue) -> usize {
         0

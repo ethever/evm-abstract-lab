@@ -22,9 +22,24 @@ mod tests;
 
 type NumericMap<K, N> = OrderedMap<K, EvmValue<N>>;
 
+pub(super) fn representable_default_with_payment<
+    N: WordElement,
+    D: EvmNumericAlgebra<Element = N>,
+>(
+    value: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<EvmValue<N>, CloneError> {
+    if scalar::singleton(value, budget)? == Some(U256::ZERO) {
+        scalar::scalar(value, domain, budget)
+    } else {
+        scalar::top(domain, budget)
+    }
+}
+
 /// Fund key census, ordered-map lookup/insertion and fixed wrapper work. This
 /// bound uses cached lengths only and supplies no native query/algebra credit.
-fn pay_structure(entries: usize, budget: &mut WorkBudget) -> Result<(), CloneError> {
+pub(super) fn pay_structure(entries: usize, budget: &mut WorkBudget) -> Result<(), CloneError> {
     let levels = (usize::BITS - entries.max(1).leading_zeros()) as usize;
     pay(
         budget,
@@ -172,7 +187,7 @@ fn join_log<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 
 // Code equality compares the fork and captured byte buffers. Their sizes are
 // cached; these comparisons contain no native scalars or decoded-state queries.
-fn code_comparison_work(left: &Code, right: &Code) -> usize {
+pub(super) fn code_comparison_work(left: &Code, right: &Code) -> usize {
     [left, right].into_iter().fold(16usize, |work, code| {
         work.saturating_add(match code {
             Code::Runtime(program) => program.byte_len(),

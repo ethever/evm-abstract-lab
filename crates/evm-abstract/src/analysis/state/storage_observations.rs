@@ -18,6 +18,7 @@ use crate::{
     world::{RangeError, StoreError},
 };
 
+mod payment;
 #[cfg(test)]
 mod tests;
 
@@ -324,19 +325,29 @@ impl<N: WordElement> EvmStorageObservations<N> {
         })
     }
 
-    /// Prepay all retained numeric work, but reconstruct each equal alias fact once.
+    /// Structural retention and shared-expression bound. Native equality,
+    /// cloning, observation export and installation are paid independently.
     pub(in crate::analysis) fn work_size(
         &self,
         stack: &[EvmValue<N>],
         aliases: &StackAliases,
     ) -> usize {
+        // One retained read expression per owner/alias class. Different native
+        // observations on that same expression still retain and price every
+        // numeric record below; only its shared graph is counted once. Native
+        // equality and repeated installation work belong to the paid installer.
         let installations: Vec<_> = (0..self.0.len())
-            .filter(|&index| self.needs_install(index, aliases))
+            .filter(|&index| {
+                let current = &self.0[index];
+                !self.0[..index].iter().any(|earlier| {
+                    earlier.owner == current.owner
+                        && aliases.same_class(earlier.stack_position, current.stack_position)
+                })
+            })
             .collect();
-        // At most 15 numeric Eq checks per record, plus copying/join/equality.
-        // Eq rejects unequal finite lengths before scanning candidates. The
-        // form fee's 256 covers this for a literal (numeric work 13); bounded
-        // member imports reserve a larger product. Joins prepay retained work.
+        // Keep the existing per-position retained-template bound, even when
+        // aliases share a read expression. This structural size is not a quote
+        // for an opaque native equality, copy or discovery hook.
         let retained = self.0.iter().fold(0usize, |work, observation| {
             work.saturating_add(
                 observation

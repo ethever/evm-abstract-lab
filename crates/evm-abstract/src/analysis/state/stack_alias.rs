@@ -89,6 +89,56 @@ impl StackAliases {
         Ok(Self(labels))
     }
 
+    pub(in crate::analysis) fn form_with_payment<
+        N: WordElement,
+        D: crate::domain::EvmNumericAlgebra<Element = N>,
+    >(
+        stack: &[EvmValue<N>],
+        enabled: bool,
+        domain: crate::domain::AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<Self, MachineError> {
+        use crate::resource::clone_payment::{checkpoint, pay};
+        pay(budget, Self::work_for_len(stack.len()))?;
+        if stack.len() > Self::MAX_STACK {
+            return Err(MachineError::Shape);
+        }
+        let mut nodes = BTreeMap::<usize, (usize, bool)>::new();
+        if enabled {
+            for (position, value) in stack.iter().enumerate() {
+                if let Some(expression) = value.expression() {
+                    let (leader, uniform) = nodes
+                        .entry(expression.immutable_node_key())
+                        .or_insert((position, true));
+                    pay(
+                        budget,
+                        domain
+                            .numeric_algebra()
+                            .summary_equal_work(value.numeric(), stack[*leader].numeric()),
+                    )?;
+                    *uniform &= value.numeric() == stack[*leader].numeric();
+                    checkpoint(budget)?;
+                }
+            }
+        }
+        let labels = stack
+            .iter()
+            .enumerate()
+            .map(|(position, value)| {
+                value
+                    .expression()
+                    .and_then(|expression| {
+                        nodes
+                            .get(&expression.immutable_node_key())
+                            .and_then(|&(leader, uniform)| uniform.then_some(leader))
+                    })
+                    .unwrap_or(position)
+            })
+            .collect();
+        checkpoint(budget)?;
+        Ok(Self(labels))
+    }
+
     /// A fresh leader per invocation, sharing only its expression. Every stack
     /// position keeps its own numerical bound, including mixed-bound singletons.
     pub(in crate::analysis) fn instantiate<N: WordElement>(
@@ -116,6 +166,38 @@ impl StackAliases {
             };
             output.push(value);
         }
+        Ok(output)
+    }
+
+    /// Preserve each position's own native value while sharing only a paid
+    /// source expression between positions in the retained equality class.
+    pub(in crate::analysis) fn instantiate_with_payment<N: WordElement>(
+        &self,
+        stack: &[EvmValue<N>],
+        enabled: bool,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<Vec<EvmValue<N>>, MachineError> {
+        super::bounded::reserve(budget, Self::work_for_len(stack.len()))?;
+        if self.0.len() != stack.len() {
+            return Err(MachineError::Shape);
+        }
+        let mut output: Vec<EvmValue<N>> = Vec::with_capacity(stack.len());
+        for (position, (value, &leader)) in stack.iter().zip(&self.0).enumerate() {
+            if leader > position {
+                return Err(MachineError::Shape);
+            }
+            let value = crate::domain::summary::clone_value(value, budget)?;
+            let value = if enabled && leader < position {
+                match output[leader].expression() {
+                    Some(expression) => value.with_expression(expression.clone()),
+                    None => identify(value, enabled),
+                }
+            } else {
+                identify(value, enabled)
+            };
+            output.push(value);
+        }
+        super::bounded::reserve(budget, 0)?;
         Ok(output)
     }
 }

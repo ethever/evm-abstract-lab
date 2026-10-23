@@ -3,9 +3,11 @@
 
 pub(crate) mod clone_payment;
 mod completion;
+mod summary;
 
 pub(crate) use clone_payment::CloneError;
 pub(crate) use completion::{AdmissionStop, CompletionPermit};
+pub(crate) use summary::SummaryError;
 
 /// 单次分析的累计逻辑工作预算，不等同于 EVM gas。
 #[derive(Debug)]

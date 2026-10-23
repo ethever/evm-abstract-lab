@@ -7,7 +7,9 @@ use crate::analysis::worklist::runtime::TaskKind;
 
 #[test]
 fn tracking_a_native_body_uses_no_carrier_copy_or_query_and_honors_cancellation() {
-    use crate::resource::clone_payment::tests::{RECEIPT, Word, assert_unobserved, fixture, reset};
+    use crate::resource::clone_payment::tests::{
+        RECEIPT, Word, assert_unobserved, reset, summary_fixture as fixture,
+    };
 
     let _scope = RECEIPT.scope();
     let (world, entry, config, algebra) = fixture("00");

@@ -23,6 +23,9 @@ mod payment;
 #[cfg(test)]
 use crate::world::test_support::TestBytesSummary;
 mod presentation;
+mod projection;
+mod replay;
+pub(in crate::world) use replay::instantiate_scalar_with_payment;
 #[cfg(test)]
 mod retention_tests;
 mod words;

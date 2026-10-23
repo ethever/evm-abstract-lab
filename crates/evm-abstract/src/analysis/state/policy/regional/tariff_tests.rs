@@ -239,9 +239,16 @@ fn fixture<const Q: usize, const C: usize>(
     payload.active_mut().key.stack_height = 2;
     let mut setup_budget = WorkBudget::new(10_000_000);
     let mut setup = PolicyContext::new(domain, &entry, &mut setup_budget);
-    let relative = EvmPayloadSummary::project(&payload, &mut setup).unwrap();
-    let output =
-        ProcedureOutput::project(&EvmByteArray::empty(), &payload.store, &mut setup).unwrap();
+    // Cold source construction is explicitly caller-funded: these controls
+    // price the subsequent admission, including carriers refusing projection.
+    let relative =
+        crate::analysis::state::payload::form_normalized(&payload, &entry, domain).unwrap();
+    let output = ProcedureOutput::from_summaries(
+        EvmByteArray::empty().summary_projection(domain).unwrap(),
+        payload.store.summary_projection(domain).unwrap(),
+        &mut setup,
+    )
+    .unwrap();
     (entry, relative, output)
 }
 

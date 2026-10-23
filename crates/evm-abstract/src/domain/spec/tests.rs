@@ -3,6 +3,16 @@ use crate::domain::relational::RelationLimits;
 use std::num::NonZeroUsize;
 
 #[test]
+fn native_summary_caller_cost_model_is_version_eight() {
+    let one = NonZeroUsize::new(1).unwrap();
+    for spec in [DomainSpec::default(), DomainSpec::new(one, one, one)] {
+        assert_eq!(spec.cost_version(), 8);
+        let serialized = serde_json::to_value(spec).unwrap();
+        assert_eq!(serialized["cost_version"], 8);
+    }
+}
+
+#[test]
 fn zero_relation_bounds_are_rejected_even_when_disabled() {
     for (max_constraints, max_nodes, max_depth) in [(0, 1, 1), (1, 0, 1), (1, 1, 0)] {
         for enabled in [true, false] {

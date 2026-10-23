@@ -66,9 +66,11 @@ mod solver;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+use crate::analysis::state::payload::instantiate;
 use crate::analysis::state::{
     EvmPayloadSummary,
-    payload::{self, instantiate, semantic_eq},
+    payload::{self, semantic_eq},
     projection, storage_observations,
 };
 #[cfg(test)]
@@ -170,6 +172,61 @@ struct EvmOutput<N: WordElement> {
     generation: usize,
     /// Semantic content updates, independent of delivery/schedule invalidation.
     updates: usize,
+}
+
+/// Complete kernel read-slot Clone invoice. Obtaining it pays only its census;
+/// the kernel charges the returned amount before its derived map/value Clone.
+fn output_clone_work<N: WordElement>(
+    outputs: &BTreeMap<OutcomeKind, EvmOutput<N>>,
+    budget: &mut WorkBudget,
+) -> Result<usize, MachineError> {
+    crate::resource::clone_payment::pay(budget, outputs.len().saturating_add(1))?;
+    let mut work = outputs.len().saturating_mul(16).saturating_add(1);
+    for output in outputs.values() {
+        work = work.saturating_add(output.summary.clone_work_with(budget)?);
+    }
+    Ok(crate::resource::clone_payment::finish_quote(work, budget)?)
+}
+
+fn refused_entry<N: WordElement>(
+    source_state: usize,
+    kind: ProcedureSummaryKind,
+    payload: EvmMachinePayload<N>,
+    error: MachineError,
+) -> (EvmExecution<N>, EvmProcedureSummaryRecord<N>) {
+    let mut result = super::empty_execution(payload);
+    super::boundary(&mut result, 0, error.frontier_reason());
+    (
+        result,
+        EvmProcedureSummaryRecord {
+            source_state,
+            source_current: false,
+            kind,
+            root_procedure: None,
+            closed: false,
+            procedures: Vec::new(),
+            regional_cfg: EvmRegionalCfg::default(),
+            state_count: 0,
+            transfers: 0,
+            propagations: 0,
+            reused: 0,
+        },
+    )
+}
+
+fn export_frontiers<N: WordElement>(
+    frontiers: &mut [EvmExecutionFrontier<N>],
+) -> impl Iterator<Item = EvmExecutionFrontier<N>> + '_ {
+    frontiers.iter_mut().map(|frontier| EvmExecutionFrontier {
+        pc: frontier.pc,
+        reason: frontier.reason.clone(),
+        target: frontier.target.clone(),
+        // A range witness owns native operands. Move it to the outer result,
+        // including after Work; the table keeps the pending frontier identity
+        // and the node/subscriber bound. Arc snapshot copies need no N hooks.
+        range: frontier.range.take(),
+        payload: frontier.payload.as_ref().map(Arc::clone),
+    })
 }
 
 struct EvmSubscriber<N: WordElement> {
@@ -347,7 +404,13 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         } else {
             ProcedureSummaryKind::KnownCall
         };
+        if let Err(error) = payload.pay_clone_with(budget) {
+            return refused_entry(source_state, kind, payload, error.into());
+        }
         let mut result = super::empty_execution(payload.clone());
+        if let Err(error) = crate::resource::clone_payment::checkpoint(budget) {
+            return refused_entry(source_state, kind, payload, error.into());
+        }
         let mut solver = EvmSolver {
             table: self,
             world,
@@ -367,6 +430,10 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
             deferred: false,
             consumed: None,
         };
+        // One full-payload invoice covers the detached subset of owned copies.
+        if let Err(error) = payload.pay_clone_with(solver.budget) {
+            return refused_entry(source_state, kind, payload, error.into());
+        }
         let detached = EvmMachinePayload {
             call_stack: EvmCallStack::new(EvmRootFrame {
                 state: payload.active().clone(),
@@ -374,14 +441,17 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
             store: payload.store.clone(),
             relations: payload.relations.clone(),
         };
+        if let Err(error) = crate::resource::clone_payment::checkpoint(solver.budget) {
+            return refused_entry(source_state, kind, payload, error.into());
+        }
         let creation = payload
             .call_stack
             .active_child()
             .is_some_and(|child| child.continuation.creation.is_some());
-        let root = match solver.procedure_entry(detached.clone(), creation) {
+        let root = match solver.procedure_entry(detached, creation) {
             Ok(root) => Some(root),
             Err(error) => {
-                solver.frontier(detached, error.frontier_reason(), 0);
+                super::boundary(&mut result, 0, error.frontier_reason());
                 None
             }
         };
@@ -415,96 +485,98 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 .entry_source(root)
                 .expect("retained root procedure");
             debug_assert_eq!(entry_source.namespace, namespace);
-            let output_work = procedure
-                .outputs
-                .values()
-                .fold(1usize, |work, output| work.saturating_add(output.work));
+            let output_work = output_clone_work(&procedure.outputs, solver.budget);
             // Reading even an empty output relation retains the outer consumer.
             // A later callee publication then wakes this exact World job.
-            let outputs = solver.runtime.with_run(
-                solver.caller.as_deref_mut().expect("outer caller"),
-                solver.budget,
-                |run| {
-                    run.read_slot(entry_source.slot, entry_source.revision, 1)
-                        .map_err(kernel_failure)?;
-                    run.read_slot(&procedure.output, &procedure.outputs, output_work)
-                        .map_err(kernel_failure)
-                },
-            );
+            let outputs = output_work.and_then(|output_work| {
+                solver.runtime.with_run(
+                    solver.caller.as_deref_mut().expect("outer caller"),
+                    solver.budget,
+                    |run| {
+                        run.read_slot(entry_source.slot, entry_source.revision, 1)
+                            .map_err(kernel_failure)?;
+                        run.read_slot(&procedure.output, &procedure.outputs, output_work)
+                            .map_err(kernel_failure)
+                    },
+                )
+            });
+            let outputs = outputs.and_then(|answer| {
+                crate::resource::clone_payment::checkpoint(solver.budget)?;
+                Ok(answer)
+            });
             let outputs = match outputs {
                 Ok(answer) => match answer.state {
                     Availability::Value(outputs) => outputs,
                     _ => unreachable!("initialized output relation"),
                 },
                 Err(error) => {
-                    solver.frontier(payload.clone(), error.frontier_reason(), 0);
+                    super::boundary(&mut result, 0, error.frontier_reason());
                     BTreeMap::new()
                 }
             };
             let mut data_sources: Vec<(EvmByteArraySummary<N>, EvmByteArray<N>)> = Vec::new();
             for (kind, output) in outputs {
-                if let Err(error) = solver.reserve(
-                    payload
-                        .work_size()
-                        .saturating_add(output.work)
-                        .saturating_mul(4)
-                        .saturating_add(effects::StoreEffect::MATCH_WORK),
-                ) {
-                    solver.frontier(payload.clone(), error.frontier_reason(), 0);
-                    break;
-                }
-                let mut returned = payload.clone();
-                // Static execution preserves data and historical read roots,
-                // while nested zero-value calls can add EIP-161 touches.
-                let frame = payload.active();
-                let output_store = if solver.table.procedures[root].store_effect.keeps_store(
-                    frame.code,
-                    frame.key.mode,
-                    frame.program.as_ref(),
-                    kind,
-                    creation,
-                ) {
-                    // `returned` already owns the actual post-entry store,
-                    // including CALL transfers/touches and its old read roots.
-                    Ok(None)
-                } else if payload.active().key.is_static {
-                    Ok(Some(
-                        output.summary.store.apply_static_touches(&payload.store),
-                    ))
-                } else {
-                    output.summary.store.instantiate(domain).map(Some)
-                };
-                // Equal numerical byte bounds on mutually exclusive exits of
-                // this invocation describe the same unconstrained observable
-                // buffer. Give them one fresh source so a return-status join
-                // does not manufacture separate length identities. This cache
-                // is local to one invocation; later calls remain independent.
-                let output_data = if let Some((_, data)) = data_sources
-                    .iter()
-                    .find(|(bound, _)| *bound == output.summary.data)
-                {
-                    Ok(data.clone())
-                } else {
-                    output.summary.data.instantiate(domain).inspect(|data| {
-                        data_sources.push((output.summary.data.clone(), data.clone()));
-                    })
-                };
-                let (store, data) = match (output_store, output_data) {
-                    (Ok(store), Ok(data)) => (store, data),
-                    (Err(error), _) => {
-                        solver.frontier(
-                            payload.clone(),
-                            MachineError::Store(error).frontier_reason(),
-                            0,
-                        );
-                        continue;
+                let delivery = (|| -> Result<_, MachineError> {
+                    solver.reserve(effects::StoreEffect::MATCH_WORK)?;
+                    payload.pay_clone_with(solver.budget)?;
+                    let returned = payload.clone();
+                    crate::resource::clone_payment::checkpoint(solver.budget)?;
+                    let frame = payload.active();
+                    let store = if solver.table.procedures[root].store_effect.keeps_store(
+                        frame.code,
+                        frame.key.mode,
+                        frame.program.as_ref(),
+                        kind,
+                        creation,
+                    ) {
+                        None
+                    } else if frame.key.is_static {
+                        Some(
+                            output
+                                .summary
+                                .store
+                                .apply_static_touches_with_payment(&payload.store, solver.budget)?,
+                        )
+                    } else {
+                        Some(
+                            output
+                                .summary
+                                .store
+                                .instantiate_with_payment(domain, solver.budget)?,
+                        )
+                    };
+                    // Cached numerical equality and EACH cache copy own their
+                    // actual native tariffs, independently of the slot read.
+                    let mut cached = None;
+                    for (bound, data) in &data_sources {
+                        if bound.eq_with_payment(&output.summary.data, domain, solver.budget)? {
+                            data.pay_clone_with(solver.budget)?;
+                            let copied = data.clone();
+                            crate::resource::clone_payment::checkpoint(solver.budget)?;
+                            cached = Some(copied);
+                            break;
+                        }
                     }
-                    (_, Err(error)) => {
-                        solver.frontier(
-                            payload.clone(),
-                            MachineError::Bytes(error).frontier_reason(),
-                            0,
-                        );
+                    let data = if let Some(data) = cached {
+                        data
+                    } else {
+                        let data = output
+                            .summary
+                            .data
+                            .instantiate_with_payment(domain, solver.budget)?;
+                        let bound = output.summary.data.clone_with_payment(solver.budget)?;
+                        data.pay_clone_with(solver.budget)?;
+                        let copied = data.clone();
+                        crate::resource::clone_payment::checkpoint(solver.budget)?;
+                        data_sources.push((bound, copied));
+                        data
+                    };
+                    Ok((returned, store, data))
+                })();
+                let (mut returned, store, data) = match delivery {
+                    Ok(delivery) => delivery,
+                    Err(error) => {
+                        super::boundary(&mut result, 0, error.frontier_reason());
                         continue;
                     }
                 };
@@ -533,19 +605,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         // successful discovered outputs remain useful on an interrupted solve.
         result
             .frontiers
-            .extend(
-                solver
-                    .table
-                    .frontiers
-                    .iter()
-                    .map(|frontier| EvmExecutionFrontier {
-                        pc: frontier.pc,
-                        reason: frontier.reason.clone(),
-                        target: frontier.target.clone(),
-                        range: frontier.range.clone(),
-                        payload: frontier.payload.clone(),
-                    }),
-            );
+            .extend(export_frontiers(&mut solver.table.frontiers));
         result.diagnostics.extend(
             solver
                 .table
@@ -579,15 +639,24 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                         let input = solver.table.entry_source(id).expect("retained procedure");
                         Ok(EvmProcedureSummary {
                             frame: procedure.frame.clone(),
-                            input: input.payload.store.instantiate(domain)?,
+                            input: input
+                                .payload
+                                .store
+                                .instantiate_with_payment(domain, solver.budget)?,
                             outputs: procedure
                                 .outputs
                                 .iter()
                                 .map(|(kind, output)| {
                                     Ok(EvmProcedureSummaryOutput {
                                         kind: *kind,
-                                        data: output.summary.data.instantiate(domain)?,
-                                        store: output.summary.store.instantiate(domain)?,
+                                        data: output
+                                            .summary
+                                            .data
+                                            .instantiate_with_payment(domain, solver.budget)?,
+                                        store: output
+                                            .summary
+                                            .store
+                                            .instantiate_with_payment(domain, solver.budget)?,
                                     })
                                 })
                                 .collect::<Result<Vec<_>, MachineError>>()?,
