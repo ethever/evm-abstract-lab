@@ -96,11 +96,16 @@ impl<N: WordElement> EvmValue<N> {
         numeric: N,
         singleton: Option<U256>,
     ) -> Self {
+        self.replace_numeric_after_singleton(numeric, singleton);
+        self
+    }
+    /// Move an owned refinement into the same semantic value without copying
+    /// and discarding its old native numeric payload.
+    pub(crate) fn replace_numeric_after_singleton(&mut self, numeric: N, singleton: Option<U256>) {
         self.numeric = numeric;
         if singleton.is_some() {
             self.symbolic_limit = false;
         }
-        self
     }
     /// Copy metadata around an already owned replacement without cloning and
     /// discarding the old numeric payload.
