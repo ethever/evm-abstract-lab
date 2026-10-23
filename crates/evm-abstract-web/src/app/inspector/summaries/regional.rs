@@ -102,7 +102,7 @@ fn node_details(ui: &mut Ui, node: &RegionalNode, source: SummarySourceStatus) {
     let frame = &node.frame;
     ui.monospace(format!("Code: {}", frame.code_address));
     if let Some(hash) = &frame.code_hash {
-        ui.monospace(format!("Captured code hash: {hash}"));
+        ui.monospace(format!("Frame identity hash: {hash}"));
     }
     ui.monospace(format!("Storage namespace: {}", frame.storage_address));
     ui.label(format!(

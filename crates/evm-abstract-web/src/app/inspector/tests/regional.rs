@@ -259,7 +259,7 @@ fn source_current_certified_observation_retains_actual_edges_deliveries_and_iden
     assert!(text.contains("Known bytecode call"));
     assert!(!text.contains("Recursive bytecode"));
     assert!(text.contains(&format!(
-        "Captured code hash: {}",
+        "Frame identity hash: {}",
         node.frame.code_hash.as_ref().unwrap()
     )));
     assert!(text.contains(&format!(
@@ -409,7 +409,7 @@ fn regional_static_unknown_remains_an_effect_environment_abstraction_with_no_inv
     ));
     assert!(
         !text.contains("Program block:")
-            && !text.contains("Captured code hash:")
+            && !text.contains("Frame identity hash:")
             && !text.contains("pc 0x")
     );
 }

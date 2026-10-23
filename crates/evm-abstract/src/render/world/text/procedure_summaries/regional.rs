@@ -37,7 +37,7 @@ pub(super) fn write(
         if frame.mode == FrameCode::Unknown {
             output.push_str("        effect/environment abstraction; callbacks can be represented by effects even with an empty retained call list\n");
         } else {
-            writeln!(output, "        captured code hash={}", frame.code_hash).unwrap();
+            writeln!(output, "        frame identity hash={}", frame.code_hash).unwrap();
             if matches!(frame.mode, FrameCode::Runtime | FrameCode::InitCode) {
                 writeln!(
                     output,
