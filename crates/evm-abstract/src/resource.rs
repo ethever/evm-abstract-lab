@@ -1,6 +1,7 @@
 //! 根执行、数值域、状态操作和摘要共同使用的累计工作账本。
 //! 调用者先预留可信上界，再执行整项操作；失败时不能安装半个结果。
 
+mod allowance;
 pub(crate) mod clone_payment;
 mod completion;
 mod summary;
@@ -13,6 +14,7 @@ pub(crate) use summary::SummaryError;
 #[derive(Debug)]
 pub struct WorkBudget {
     maximum: usize,
+    ceiling: usize,
     consumed: usize,
     exhausted: bool,
     cancellation: analysis_control::Cancellation,
@@ -22,6 +24,7 @@ impl WorkBudget {
     pub fn new(maximum: usize) -> Self {
         Self {
             maximum,
+            ceiling: maximum,
             consumed: 0,
             exhausted: false,
             cancellation: analysis_control::current_cancellation(),
@@ -37,7 +40,7 @@ impl WorkBudget {
             self.exhausted = true;
             return false;
         }
-        if amount > self.maximum.saturating_sub(self.consumed) {
+        if amount > self.maximum.min(self.ceiling).saturating_sub(self.consumed) {
             self.exhausted = true;
             return false;
         }
@@ -47,7 +50,7 @@ impl WorkBudget {
     /// 只读检查可选精确操作能否完整执行；拒绝时允许保留已有的可靠近似。
     /// 不预留额度，也不清除之前的耗尽或取消状态。
     pub fn can_afford(&self, amount: usize) -> bool {
-        !self.exhausted() && amount <= self.maximum.saturating_sub(self.consumed)
+        !self.exhausted() && amount <= self.maximum.min(self.ceiling).saturating_sub(self.consumed)
     }
     /// 是否有操作因额度不足被拒绝。
     pub fn exhausted(&self) -> bool {

@@ -10,6 +10,7 @@ mod config;
 pub mod control;
 pub mod cooperation;
 mod engine;
+mod hybrid;
 mod input;
 pub mod layers;
 mod machine;
@@ -47,6 +48,10 @@ pub use engine::{
     ProcedureOutput, ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey, RecentDistinctJumps,
     RegionalSummaries, RelativePartitionResult, RelativeState, SemanticPolicies, StatePolicy,
     StructuralPartition, WholeStateMetadata, WholeStatePolicy,
+};
+pub use hybrid::{
+    DetailState, HybridAnalysis, HybridConfig, HybridCoverage, HybridInterpretation,
+    HybridLocalDetail, HybridLocalScope, HybridNativeBinding, HybridRegion, HybridWork,
 };
 pub use input::AnalysisInput;
 pub use machine::{
