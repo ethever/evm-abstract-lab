@@ -34,21 +34,12 @@ impl<
         &mut self,
         payload: &EvmMachinePayload<D::Element>,
     ) -> Result<EvmPayloadSummary<D::Element>, MachineError> {
-        let mut refined = payload.copy_for_policy(&mut PolicyContext::new(
-            self.domain,
+        let mut refined = super::payload::caller::copy_with_scalar_guarantees(
+            payload,
             self.entry,
-            self.budget,
-        ))?;
-        let relation_policy = self.domain.spec().relations();
-        let mut projection = super::projection::Projection::new(
-            &payload.relations,
             self.domain,
-            &relation_policy,
             self.budget,
-            super::projection::Policy::Summary,
-        );
-        projection.payload(&mut refined)?;
-        projection.finish()?;
+        )?;
         let history_work = refined.call_stack.iter().fold(0usize, |work, frame| {
             work.saturating_add(if frame.code == FrameCode::Unknown {
                 0

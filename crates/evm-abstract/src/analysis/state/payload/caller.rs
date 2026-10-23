@@ -192,6 +192,34 @@ impl<N: WordElement> EvmPayloadSummary<N> {
     }
 }
 
+/// Import guarantees about the exact retained sources before a numerical
+/// template discards their relational history. The input, including rollback
+/// snapshots, stays unchanged if either copying or optional import is refused.
+pub(in crate::analysis) fn copy_with_scalar_guarantees<
+    N: WordElement,
+    D: EvmNumericAlgebra<Element = N>,
+>(
+    payload: &EvmMachinePayload<N>,
+    entry: &EvmEntry<N>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<EvmMachinePayload<N>, MachineError> {
+    let mut refined = payload.copy_for_policy(
+        &mut crate::analysis::engine::policy::PolicyContext::new(domain, entry, budget),
+    )?;
+    let limits = domain.spec().relations();
+    let mut projection = super::super::projection::Projection::new(
+        &payload.relations,
+        domain,
+        &limits,
+        budget,
+        super::super::projection::Policy::Summary,
+    );
+    projection.payload(&mut refined)?;
+    projection.finish()?;
+    Ok(refined)
+}
+
 pub(in crate::analysis) fn form_normalized_with_payment<
     N: WordElement,
     D: EvmNumericAlgebra<Element = N>,

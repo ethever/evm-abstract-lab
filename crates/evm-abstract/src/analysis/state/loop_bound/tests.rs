@@ -10,6 +10,8 @@ use crate::{
 };
 use alloy_primitives::U256;
 
+mod guarantees;
+
 #[test]
 fn hybrid_loop_replay_joins_implicit_operands_and_keeps_shape_checks() {
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
