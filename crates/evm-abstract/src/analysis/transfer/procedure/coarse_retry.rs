@@ -20,12 +20,12 @@ pub(super) fn check_closed<D: EvmNumericAlgebra>(
     domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
 ) -> Result<(), MachineError> {
-    let normalized = representation.join(bound, bound, domain, budget, false)?;
+    let normalized = representation.join_with_payment(bound, bound, domain, budget, false)?;
     reserve(
         budget,
         bound.work_size().saturating_add(normalized.work_size()),
     )?;
-    if !super::semantic_eq(bound, &normalized) {
+    if !bound.eq_with_payment(&normalized, domain, budget)? {
         return Err(MachineError::Shape);
     }
     MachineError::check_cancelled()
@@ -116,10 +116,9 @@ pub(in crate::analysis) fn prepare_with<D: EvmNumericAlgebra>(
     if !supports(original) {
         return Err(MachineError::Shape);
     }
-    // Pay for cloning, guarantee erasure, layout projection and the full
-    // coarse pass before construction. Layout coordinates come only from
-    // the original summary; two additional passes own its persistent copy
-    // and eventual release. No partial bound escapes refusal.
+    // Retain the structural preparation/layout lifetime fees. Native copying,
+    // projection and coarse factories are separately paid on their actual
+    // inputs/results below; the multiplier authorizes no native hook.
     let preparation_work = original.work_size().saturating_mul(8);
     let layout_lifetime_work = original.work_size().saturating_mul(2);
     // One Box allocation and its eventual release are fixed actions;
@@ -131,11 +130,11 @@ pub(in crate::analysis) fn prepare_with<D: EvmNumericAlgebra>(
             .saturating_add(layout_lifetime_work)
             .saturating_add(box_lifetime_work),
     )?;
-    let representation = EvmBoundedState::freeze(original, true, domain)?;
+    let representation = EvmBoundedState::freeze_with_payment(original, true, domain, budget)?;
     // Produce a covering closed candidate without instantiating it first. The
     // injected admission may still change this representation or refuse it;
     // only its accepted result owns a fresh executable input.
-    let bound = representation.join(original, original, domain, budget, false)?;
+    let bound = representation.join_with_payment(original, original, domain, budget, false)?;
     Ok(Prepared {
         representation: Box::new(representation),
         bound,
@@ -160,7 +159,8 @@ pub(in crate::analysis) fn prepare<D: EvmNumericAlgebra>(
 ) -> Result<ReifiedRetry<D::Element>, MachineError> {
     let prepared = prepare_with(original, domain, budget)?;
     reserve(budget, prepared.bound.work_size().saturating_mul(4))?;
-    let payload = super::instantiate(&prepared.bound, domain)?;
+    let payload =
+        super::payload::caller::instantiate_with_payment(&prepared.bound, domain, budget)?;
     MachineError::check_cancelled()?;
     Ok((prepared.representation, prepared.bound, payload))
 }

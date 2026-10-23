@@ -446,16 +446,16 @@ impl<
             .outputs
             .iter()
             .map(|(kind, output)| {
-                (
+                Ok((
                     *kind,
                     crate::analysis::cooperation::SummaryOutput {
-                        data: output.summary.data.clone(),
-                        store: output.summary.store.clone(),
+                        data: output.summary.data.clone_with_payment(self.budget)?,
+                        store: output.summary.store.clone_with_payment(self.budget)?,
                         generation: output.generation,
                     },
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<_, MachineError>>()?;
         let summary =
             crate::analysis::cooperation::Summary::new(procedure.output_updates, outputs, work);
         Ok(summary)
@@ -489,7 +489,7 @@ impl<
                 namespace: 1,
                 index: subscription.callee,
             },
-            subscription.payload.clone(),
+            subscription.payload.clone_with_payment(self.budget)?,
             work,
         );
         self.cooperation
@@ -535,10 +535,7 @@ impl<
                     self.active.as_mut().ok_or(MachineError::Shape)?,
                     self.budget,
                     |budget| {
-                        if !budget.charge(payload.work_size().saturating_mul(4)) {
-                            return Err(MachineError::work_failure());
-                        }
-                        super::instantiate(payload, domain)
+                        super::payload::caller::instantiate_with_payment(payload, domain, budget)
                     },
                 )
                 .map_err(|error| self.cooperation.stop(error, self.budget))?;

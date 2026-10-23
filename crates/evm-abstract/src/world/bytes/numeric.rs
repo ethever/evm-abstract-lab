@@ -3,7 +3,9 @@
 //! This is an upper-bound evaluator, not a second content DAG or alias solver.
 //! Unknown aliasing joins both alternatives; reads retain their original terms.
 
-use super::{conditional::Context, constant, zero};
+use super::conditional::Context;
+#[cfg(test)]
+use super::{constant, zero};
 use crate::domain::AlgebraRef;
 use crate::domain::{EvmNumericAlgebra, WordElement};
 use crate::domain::{
@@ -16,6 +18,14 @@ use std::collections::BTreeMap;
 
 mod full_image;
 mod packing;
+mod slot;
+pub(in crate::world) use slot::{slot, slot_with_payment};
+mod word;
+pub(in crate::world) use word::{read_word_with_payment, word_expression_with_payment};
+pub(in crate::world) mod payment;
+use super::RangeError;
+use crate::resource::WorkBudget;
+use payment::{ReadPayment, ReadResult};
 
 type Facts<N = crate::domain::NumericValue> = BTreeMap<ExprId, EvmValue<N>>;
 
@@ -36,24 +46,44 @@ pub(in crate::world) fn scalar_in<N: WordElement, D: EvmNumericAlgebra<Element =
     context: &Context<'_, N, D>,
     domain: AlgebraRef<'_, D>,
 ) -> EvmValue<N> {
-    if context.stopped() {
-        // The checked demand retries a private cache refusal or propagates
-        // cancellation before installing a result. This is only a sentinel.
-        return EvmValue::<N>::top();
-    }
-    if let Some(v) = context.value(expression, domain) {
-        if context.stopped() {
-            return EvmValue::<N>::top();
-        }
-        if let Some(constant) = expression.as_constant() {
-            // A constant-key source union is not a unique input occurrence.
-            // Drop its must-alias identity while retaining every possible source.
-            let joined = context.join(domain, &v, &EvmValue::<N>::constant(constant));
-            return if context.stopped() {
-                EvmValue::<N>::top()
-            } else {
-                joined.with_numeric(N::constant(constant))
-            };
+    scalar_in_paid(expression, context, domain, &mut ReadPayment::unpaid())
+        .unwrap_or_else(|_| EvmValue::top())
+}
+
+pub(in crate::world) fn scalar_with_payment<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    expression: &ExprId,
+    facts: &Facts<N>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> ReadResult<EvmValue<N>> {
+    let context = Context::new_with_payment(facts, None, domain, budget)?;
+    scalar_in_with_payment(expression, &context, domain, budget)
+}
+pub(in crate::world) fn scalar_in_with_payment<
+    N: WordElement,
+    D: EvmNumericAlgebra<Element = N>,
+>(
+    expression: &ExprId,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> ReadResult<EvmValue<N>> {
+    scalar_in_paid(expression, context, domain, &mut ReadPayment::new(budget))
+}
+pub(in crate::world) fn scalar_in_paid<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    expression: &ExprId,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
+    payer: &mut ReadPayment<'_>,
+) -> ReadResult<EvmValue<N>> {
+    payer.context(context)?;
+    payer.reserve(expression.work_size().saturating_add(1))?;
+    if let Some(v) = context.value_paid(expression, domain, payer)? {
+        if let Some(word) = expression.as_constant() {
+            let literal = payer.literal(word, domain)?;
+            let joined = payer.join(&v, &literal, context, domain)?;
+            let numeric = payer.literal_numeric(word, domain)?;
+            return Ok(joined.with_numeric(numeric));
         }
         if let ExprKind::Ite {
             condition,
@@ -61,64 +91,59 @@ pub(in crate::world) fn scalar_in<N: WordElement, D: EvmNumericAlgebra<Element =
             else_value,
         } = expression.kind()
         {
-            // A retained minimum/copy-length bound can precede a later proof
-            // selecting this ITE. Keep its sources, but do not let the older
-            // bound hide a now-exact selected value of the same expression.
-            let c = scalar_in(condition, context, domain);
-            let selected = if !c.may_be_nonzero() {
+            let c = scalar_in_paid(condition, context, domain, payer)?;
+            let selected = if !payer.may_nonzero(&c)? {
                 Some((else_value, false))
-            } else if !c.may_be_zero() {
+            } else if !payer.may_zero(&c)? {
                 Some((then_value, true))
             } else {
                 None
             };
-            if let Some(exact) = selected.and_then(|(value, nonzero)| {
-                scalar_in(value, &context.branch(condition, nonzero), domain).singleton()
-            }) && v.contains(exact)
-            {
-                return v.clone().with_numeric(N::constant(exact));
+            if let Some((value, nonzero)) = selected {
+                let branch = context.branch_paid(condition, nonzero, payer)?;
+                let selected = scalar_in_paid(value, &branch, domain, payer)?;
+                if let Some(exact) = payer.singleton(&selected)?
+                    && payer.contains(&v, exact)?
+                {
+                    let out = payer.copy(&v)?;
+                    return Ok(out.with_numeric(payer.literal_numeric(exact, domain)?));
+                }
             }
         }
-        return if context.stopped() {
-            EvmValue::<N>::top()
-        } else {
-            v.clone()
-        };
+        return payer.copy(&v);
     }
-    if context.stopped() {
-        return EvmValue::<N>::top();
-    }
-    if let Some(v) = expression.as_constant() {
-        return EvmValue::<N>::constant(v);
+    if let Some(word) = expression.as_constant() {
+        return payer.literal(word, domain);
     }
     match expression.kind() {
-        ExprKind::Operation { opcode, args } => context.apply(
-            domain,
-            *opcode,
-            &args
-                .iter()
-                .map(|a| scalar_in(a, context, domain))
-                .collect::<Vec<_>>(),
-        ),
+        ExprKind::Operation { opcode, args } => {
+            let mut values = Vec::new();
+            for arg in args {
+                values.push(scalar_in_paid(arg, context, domain, payer)?);
+            }
+            payer.apply(*opcode, &values, context, domain, false)
+        }
         ExprKind::Ite {
             condition,
             then_value,
             else_value,
         } => {
-            let c = scalar_in(condition, context, domain);
-            if !c.may_be_nonzero() {
-                scalar_in(else_value, &context.branch(condition, false), domain)
-            } else if !c.may_be_zero() {
-                scalar_in(then_value, &context.branch(condition, true), domain)
+            let c = scalar_in_paid(condition, context, domain, payer)?;
+            if !payer.may_nonzero(&c)? {
+                let branch = context.branch_paid(condition, false, payer)?;
+                scalar_in_paid(else_value, &branch, domain, payer)
+            } else if !payer.may_zero(&c)? {
+                let branch = context.branch_paid(condition, true, payer)?;
+                scalar_in_paid(then_value, &branch, domain, payer)
             } else {
-                context.join(
-                    domain,
-                    &scalar_in(then_value, &context.branch(condition, true), domain),
-                    &scalar_in(else_value, &context.branch(condition, false), domain),
-                )
+                let branch = context.branch_paid(condition, true, payer)?;
+                let left = scalar_in_paid(then_value, &branch, domain, payer)?;
+                let branch = context.branch_paid(condition, false, payer)?;
+                let right = scalar_in_paid(else_value, &branch, domain, payer)?;
+                payer.join(&left, &right, context, domain)
             }
         }
-        _ => EvmValue::<N>::top(),
+        _ => payer.top(domain),
     }
 }
 
@@ -281,119 +306,168 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
         (self.word_bytes.len(), self.retained_work)
     }
 
+    pub(in crate::world) fn with_payment(
+        facts: &'a Facts<N>,
+        conditional: Option<&'a super::conditional::ConditionalFacts<N>>,
+        domain: AlgebraRef<'a, D>,
+        budget: &mut WorkBudget,
+    ) -> ReadResult<Self> {
+        Ok(Self::with_context(
+            Context::new_with_payment(facts, conditional, domain, budget)?,
+            domain,
+        ))
+    }
+    #[cfg(test)]
     fn word_byte_union(&mut self, expression: &ExprId) -> EvmValue<N> {
-        if self.context.stopped() {
-            return EvmValue::<N>::top();
-        }
+        self.word_byte_union_paid(expression, &mut ReadPayment::unpaid())
+            .unwrap_or_else(|_| EvmValue::top())
+    }
+    fn word_byte_union_paid(
+        &mut self,
+        expression: &ExprId,
+        payer: &mut ReadPayment<'_>,
+    ) -> ReadResult<EvmValue<N>> {
+        payer.context(&self.context)?;
+        payer.reserve(
+            expression
+                .work_size()
+                .saturating_add(self.word_bytes.len())
+                .saturating_add(1),
+        )?;
+        payer.expression_lookup(self.word_bytes.keys(), expression)?;
         if let Some(value) = self.word_bytes.get(expression) {
-            return value.clone();
+            return payer.copy(value);
         }
-        // The old evaluator repeated this scalar lookup for all 32 positions.
-        // Evaluate it once; BYTE and the ordered joins retain their semantics.
-        let scalar = scalar_in(expression, &self.context, self.domain);
-        if self.context.stopped() {
-            return EvmValue::<N>::top();
-        }
+        let scalar = scalar_in_paid(expression, &self.context, self.domain, payer)?;
         let top_image = self.domain.byte_image_candidate(scalar.numeric())
-            && scalar.numeric().is_top()
+            && payer.is_top(&scalar, self.domain)?
             && !self.domain.spec().relations().enabled;
         let complete = if top_image {
             true
         } else if full_image::candidate(scalar.numeric(), self.domain) {
-            // Enum/policy checks leave finite and congruence-constrained words
-            // on their original path. Fund the fixed mask proof before running
-            // it; a refused mandatory payment must not enter the old loop.
-            if !self.context.pay_byte_image(self.domain) {
-                return EvmValue::<N>::top();
+            if payer.is_paid() {
+                payer.reserve(32 * 256)?;
+            } else if !self.context.pay_byte_image(self.domain) {
+                payer.context(&self.context)?;
+                return Err(crate::resource::CloneError::Work.into());
             }
-            full_image::complete(scalar.numeric(), self.domain)
+            let complete = full_image::complete(scalar.numeric(), self.domain);
+            payer.context(&self.context)?;
+            complete
         } else {
             false
         };
         let value = if complete {
-            // Preserve the original Top carrier. Only the paid certificate
-            // replaces a temporary numeric layer; either path moves metadata.
             let scalar = if top_image {
                 scalar
             } else {
-                scalar.with_numeric(N::top())
+                scalar.with_numeric(payer.top_numeric(self.domain)?)
             };
-            let value = self
-                .context
-                .apply(self.domain, opcode::BYTE, &[constant(0), scalar]);
+            let literal = payer.literal(U256::ZERO, self.domain)?;
+            let value = payer.apply(
+                opcode::BYTE,
+                &[literal, scalar],
+                &self.context,
+                self.domain,
+                false,
+            )?;
             #[cfg(test)]
-            if !self.context.stopped() {
-                tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.0 += 1);
-            }
+            tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.0 += 1);
             value
         } else {
-            (0..32)
-                .fold(None, |out, j| {
-                    let byte = self.context.apply(
-                        self.domain,
-                        opcode::BYTE,
-                        &[constant(j), scalar.clone()],
-                    );
-                    #[cfg(test)]
-                    if !self.context.stopped() {
-                        tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.0 += 1);
-                    }
-                    #[cfg(test)]
-                    let joins = out.is_some();
-                    let value = join(out, byte, self.domain, &self.context);
-                    #[cfg(test)]
-                    if joins && !self.context.stopped() {
-                        tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.1 += 1);
-                    }
-                    Some(value)
-                })
-                .expect("32 bytes")
+            let mut out = None;
+            for j in 0..32 {
+                let literal = payer.literal(U256::from(j), self.domain)?;
+                let operand = payer.copy(&scalar)?;
+                let byte = payer.apply(
+                    opcode::BYTE,
+                    &[literal, operand],
+                    &self.context,
+                    self.domain,
+                    false,
+                )?;
+                #[cfg(test)]
+                tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.0 += 1);
+                #[cfg(test)]
+                let joins = out.is_some();
+                out = Some(join_paid(out, byte, self.domain, &self.context, payer)?);
+                #[cfg(test)]
+                if joins {
+                    tests::WORD_BYTE_UNION_CALLS.update(|calls| calls.1 += 1);
+                }
+            }
+            out.expect("32 bytes")
         };
-        if self.context.stopped() {
-            return EvmValue::<N>::top();
-        }
+        payer.context(&self.context)?;
         let work = expression.work_size().saturating_add(value.work_size());
         if self.word_bytes.len() < WORD_CACHE_ENTRIES
             && work <= WORD_CACHE_WORK.saturating_sub(self.retained_work)
         {
-            self.word_bytes.insert(expression.clone(), value.clone());
+            payer.reserve(work.saturating_add(self.word_bytes.len()).saturating_add(1))?;
+            let cached = payer.copy(&value)?;
+            self.word_bytes.insert(expression.clone(), cached);
             self.retained_work += work;
         }
-        value
+        Ok(value)
     }
-
     pub(super) fn read(&mut self, state: &ByteStateId, index: &ExprId) -> EvmValue<N> {
         self.evaluate(ReadTask::Byte(state, index.clone()))
     }
-
+    pub(in crate::world) fn read_with_payment(
+        &mut self,
+        state: &ByteStateId,
+        index: &ExprId,
+        budget: &mut WorkBudget,
+    ) -> ReadResult<EvmValue<N>> {
+        let mut payer = ReadPayment::new(budget);
+        payer.reserve(index.work_size().saturating_add(1))?;
+        self.evaluate_paid(ReadTask::Byte(state, index.clone()), &mut payer)
+    }
     fn evaluate(&mut self, task: ReadTask<'_, N>) -> EvmValue<N> {
+        self.evaluate_paid(task, &mut ReadPayment::unpaid())
+            .unwrap_or_else(|_| EvmValue::top())
+    }
+    fn evaluate_paid(
+        &mut self,
+        task: ReadTask<'_, N>,
+        payer: &mut ReadPayment<'_>,
+    ) -> ReadResult<EvmValue<N>> {
         let mut tasks = vec![task];
         let mut values = Vec::new();
         let mut branches: Vec<Self> = Vec::new();
         while let Some(task) = tasks.pop() {
             let reader = branches.last_mut().unwrap_or(&mut *self);
-            if reader.context.stopped() {
-                return EvmValue::<N>::top();
-            }
+            payer.context(&reader.context)?;
+            payer.reserve(16)?;
             let result = match task {
-                ReadTask::Byte(state, index) => reader.read_step(state, &index, false, &mut tasks),
-                ReadTask::Word(state, offset) => reader.read_step(state, &offset, true, &mut tasks),
-                ReadTask::View(view, relative) => reader.view_step(view, &relative, &mut tasks),
-                ReadTask::WordByte(value, index) => Some(reader.context.observe_byte(
-                    reader.domain,
-                    opcode::BYTE,
-                    &[
-                        EvmValue::<N>::constant(index),
-                        scalar_in(value, &reader.context, reader.domain),
-                    ],
-                )),
+                ReadTask::Byte(state, index) => {
+                    reader.read_step(state, &index, false, &mut tasks, payer)?
+                }
+                ReadTask::Word(state, index) => {
+                    reader.read_step(state, &index, true, &mut tasks, payer)?
+                }
+                ReadTask::View(view, index) => reader.view_step(view, &index, &mut tasks, payer)?,
+                ReadTask::WordByte(value, index) => {
+                    let literal = payer.literal(index, reader.domain)?;
+                    let value = scalar_in_paid(value, &reader.context, reader.domain, payer)?;
+                    Some(payer.apply(
+                        opcode::BYTE,
+                        &[literal, value],
+                        &reader.context,
+                        reader.domain,
+                        true,
+                    )?)
+                }
                 ReadTask::WordBytes(state, offset) => {
                     tasks.push(ReadTask::Pack);
                     for j in (0..32).rev() {
-                        tasks.push(offset.checked_add(U256::from(j)).map_or_else(
-                            || ReadTask::Zero,
-                            |i| ReadTask::Byte(state, ExprId::constant(i)),
-                        ));
+                        tasks.push(
+                            offset
+                                .checked_add(U256::from(j))
+                                .map_or(ReadTask::Zero, |i| {
+                                    ReadTask::Byte(state, ExprId::constant(i))
+                                }),
+                        );
                     }
                     None
                 }
@@ -404,15 +478,16 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 }
                 ReadTask::Pad(length, relative) => {
                     let value = values.pop().expect("view byte");
-                    Some(if relative < crate::world::unsigned_bounds(&length).0 {
+                    Some(if relative < payer.bounds(&length)?.0 {
                         value
                     } else {
-                        reader.context.join(reader.domain, &value, &zero())
+                        let zero = payer.literal(U256::ZERO, reader.domain)?;
+                        payer.join(&value, &zero, &reader.context, reader.domain)?
                     })
                 }
                 ReadTask::Value(value) => Some(*value),
-                ReadTask::Zero => Some(zero()),
-                ReadTask::UnknownByte => Some(EvmValue::<N>::unknown_byte()),
+                ReadTask::Zero => Some(payer.literal(U256::ZERO, reader.domain)?),
+                ReadTask::UnknownByte => Some(payer.unknown_byte(reader.domain)?),
                 ReadTask::Choices(mut choices, seen) => {
                     if let Some(next) = choices.next() {
                         tasks.push(ReadTask::Choices(choices, true));
@@ -423,28 +498,26 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                         });
                         tasks.push(next);
                         None
+                    } else if seen {
+                        None
+                    } else if matches!(choices.kind, ChoiceKind::WholeWord(_)) {
+                        Some(payer.top(reader.domain)?)
                     } else {
-                        (!seen).then(|| {
-                            if matches!(choices.kind, ChoiceKind::WholeWord(_)) {
-                                EvmValue::<N>::top()
-                            } else {
-                                EvmValue::<N>::unknown_byte()
-                            }
-                        })
+                        Some(payer.unknown_byte(reader.domain)?)
                     }
                 }
                 ReadTask::First => {
-                    let value: EvmValue<N> = values.pop().expect("first alternative");
-                    Some(value.clone())
+                    let value = values.pop().expect("first alternative");
+                    Some(payer.copy(&value)?)
                 }
                 ReadTask::Join => {
                     let right = values.pop().expect("right alternative");
                     let left = values.pop().expect("left alternative");
-                    Some(reader.context.join(reader.domain, &left, &right))
+                    Some(payer.join(&left, &right, &reader.context, reader.domain)?)
                 }
                 ReadTask::Pack => {
                     let bytes = values.split_off(values.len() - 32);
-                    Some(reader.pack_bytes(bytes))
+                    Some(reader.pack_bytes_paid(bytes, payer)?)
                 }
                 ReadTask::Branch {
                     condition,
@@ -453,10 +526,8 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                     index,
                     word,
                 } => {
-                    // Each selected snapshot owns the same fresh word cache as
-                    // the recursive evaluator. Exit before the sibling starts.
                     let branch = Self::with_context(
-                        reader.context.branch(condition, nonzero),
+                        reader.context.branch_paid(condition, nonzero, payer)?,
                         reader.domain,
                     );
                     branches.push(branch);
@@ -477,11 +548,8 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 values.push(value);
             }
         }
-        if self.context.stopped() {
-            EvmValue::<N>::top()
-        } else {
-            values.pop().expect("completed read")
-        }
+        payer.context(&self.context)?;
+        Ok(values.pop().expect("completed read"))
     }
 
     fn read_step<'s>(
@@ -490,17 +558,25 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
         index: &ExprId,
         word: bool,
         tasks: &mut Vec<ReadTask<'s, N>>,
-    ) -> Option<EvmValue<N>> {
+        payer: &mut ReadPayment<'_>,
+    ) -> ReadResult<Option<EvmValue<N>>> {
         let domain = self.domain;
         let context = self.context.clone();
-        let state = demanded_state(state, index, if word { 32 } else { 1 }, &context, domain);
+        let state = demanded_state_paid(
+            state,
+            index,
+            if word { 32 } else { 1 },
+            &context,
+            domain,
+            payer,
+        )?;
         let value = match state.kind() {
             ByteStateKind::Ite {
                 condition,
                 then_state,
                 else_state,
             } => {
-                let c = scalar_in(condition, &context, domain);
+                let c = scalar_in_paid(condition, &context, domain, payer)?;
                 let branch = |nonzero, state| ReadTask::Branch {
                     condition,
                     nonzero,
@@ -508,91 +584,84 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                     index: index.clone(),
                     word,
                 };
-                if !c.may_be_zero() {
+                if !payer.may_zero(&c)? {
                     tasks.push(branch(true, then_state));
-                } else if !c.may_be_nonzero() {
+                } else if !payer.may_nonzero(&c)? {
                     tasks.push(branch(false, else_state));
                 } else {
-                    // Complete each selected snapshot before joining. A word
-                    // uses one selector for all of its bytes.
                     tasks.push(ReadTask::Join);
                     tasks.push(branch(false, else_state));
                     tasks.push(branch(true, then_state));
                 }
-                return None;
+                return Ok(None);
             }
-            _ if word => return self.word_step(state, index, &context, tasks),
-            ByteStateKind::Zero => scalar_in(&ExprId::constant(U256::ZERO), &context, domain),
+            _ if word => return self.word_step(state, index, &context, tasks, payer),
+            ByteStateKind::Zero => {
+                scalar_in_paid(&ExprId::constant(U256::ZERO), &context, domain, payer)?
+            }
             ByteStateKind::Exact(bytes) => {
-                let index = scalar_in(index, &context, domain);
-                if let Some(indices) = crate::world::candidates(&index) {
-                    indices
-                        .iter()
-                        .fold(None, |out, i| {
-                            Some(join(
-                                out,
-                                scalar_in(
-                                    &ExprId::constant(U256::from(
-                                        usize::try_from(*i)
-                                            .ok()
-                                            .and_then(|i| bytes.get(i))
-                                            .copied()
-                                            .unwrap_or(0),
-                                    )),
-                                    &context,
-                                    domain,
-                                ),
-                                domain,
-                                &context,
-                            ))
-                        })
-                        .unwrap_or_else(zero)
-                } else if crate::world::unsigned_bounds(&index).0 >= U256::from(bytes.len()) {
-                    zero()
+                let index = scalar_in_paid(index, &context, domain, payer)?;
+                if let Some(indices) = payer.candidates(&index)? {
+                    let mut out = None;
+                    for i in indices.iter() {
+                        let byte = usize::try_from(*i)
+                            .ok()
+                            .and_then(|i| bytes.get(i))
+                            .copied()
+                            .unwrap_or(0);
+                        let value = scalar_in_paid(
+                            &ExprId::constant(U256::from(byte)),
+                            &context,
+                            domain,
+                            payer,
+                        )?;
+                        out = Some(join_paid(out, value, domain, &context, payer)?);
+                    }
+                    match out {
+                        Some(value) => value,
+                        None => payer.literal(U256::ZERO, domain)?,
+                    }
+                } else if payer.bounds(&index)?.0 >= U256::from(bytes.len()) {
+                    payer.literal(U256::ZERO, domain)?
                 } else {
-                    EvmValue::<N>::unknown_byte()
+                    payer.unknown_byte(domain)?
                 }
             }
             ByteStateKind::Input {
                 length, bindings, ..
             } => {
-                let i = scalar_in(index, &context, domain);
-                let len = scalar_in(length, &context, domain);
-                if context.stopped() {
-                    return Some(EvmValue::<N>::top());
+                let i = scalar_in_paid(index, &context, domain, payer)?;
+                let len = scalar_in_paid(length, &context, domain, payer)?;
+                if payer.bounds(&i)?.0 >= payer.bounds(&len)?.1 {
+                    return Ok(Some(payer.literal(U256::ZERO, domain)?));
                 }
-                let (_, hi) = crate::world::unsigned_bounds(&len);
-                if crate::world::unsigned_bounds(&i).0 >= hi {
-                    return Some(zero());
-                }
-                let cell = if let Some(indices) = crate::world::candidates(&i) {
-                    indices
-                        .iter()
-                        .fold(None, |out, i| {
-                            let cell = bindings.iter().find(|b| b.index == *i).map_or_else(
-                                EvmValue::<N>::unknown_byte,
-                                |b| {
-                                    let retained = context.has_binding_value(&b.value);
-                                    let value = scalar_in(&b.value, &context, domain);
-                                    if context.stopped()
-                                        || (retained
-                                            && !context.pay_binding(value.numeric(), &b.numeric))
-                                    {
-                                        return EvmValue::<N>::top();
-                                    }
-                                    bound(value, retained, &b.numeric)
-                                },
-                            );
-                            Some(join(out, cell, domain, &context))
-                        })
-                        .unwrap_or_else(EvmValue::<N>::unknown_byte)
+                let cell = if let Some(indices) = payer.candidates(&i)? {
+                    let mut out = None;
+                    for index in indices.iter() {
+                        payer.reserve(bindings.len().saturating_mul(8).saturating_add(1))?;
+                        let cell = if let Some(binding) =
+                            bindings.iter().find(|b| b.index == *index)
+                        {
+                            let retained = context.has_binding_value_paid(&binding.value, payer)?;
+                            let value = scalar_in_paid(&binding.value, &context, domain, payer)?;
+                            payer.bind(value, retained, &binding.numeric, &context, domain)?
+                        } else {
+                            payer.unknown_byte(domain)?
+                        };
+                        out = Some(join_paid(out, cell, domain, &context, payer)?);
+                    }
+                    match out {
+                        Some(value) => value,
+                        None => payer.unknown_byte(domain)?,
+                    }
                 } else {
-                    EvmValue::<N>::unknown_byte()
+                    payer.unknown_byte(domain)?
                 };
-                if crate::world::unsigned_bounds(&i).1 < crate::world::unsigned_bounds(&len).0 {
+                if payer.bounds(&i)?.1 < payer.bounds(&len)?.0 {
                     cell
                 } else {
-                    context.join(domain, &cell, &zero())
+                    let zero = payer.literal(U256::ZERO, domain)?;
+                    payer.join(&cell, &zero, &context, domain)?
                 }
             }
             ByteStateKind::WriteByte {
@@ -600,64 +669,62 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 offset,
                 value,
             } => {
-                let val = context.observe_byte(
-                    domain,
-                    opcode::AND,
-                    &[scalar_in(value, &context, domain), constant(255)],
-                );
-                if index == offset {
-                    return Some(val);
+                let value = scalar_in_paid(value, &context, domain, payer)?;
+                let mask = payer.literal(U256::from(255), domain)?;
+                let val = payer.apply(opcode::AND, &[value, mask], &context, domain, true)?;
+                if payer.expression_equal(index, offset)? {
+                    return Ok(Some(val));
                 }
-                let i = scalar_in(index, &context, domain);
-                let at = scalar_in(offset, &context, domain);
-                if let (Some(i), Some(at)) = (i.singleton(), at.singleton()) {
-                    return if i == at {
-                        Some(val)
-                    } else {
-                        tasks.push(ReadTask::Byte(previous, index.clone()));
-                        None
-                    };
+                let i = scalar_in_paid(index, &context, domain, payer)?;
+                let at = scalar_in_paid(offset, &context, domain, payer)?;
+                if let (Some(i), Some(at)) = (payer.singleton(&i)?, payer.singleton(&at)?) {
+                    if i == at {
+                        return Ok(Some(val));
+                    }
+                    tasks.push(ReadTask::Byte(previous, index.clone()));
+                    return Ok(None);
                 }
-                if disjoint(&i, &at) {
+                if disjoint_paid(&i, &at, payer)? {
                     tasks.push(ReadTask::Byte(previous, index.clone()));
                 } else {
                     tasks.push(ReadTask::Join);
                     tasks.push(ReadTask::Value(Box::new(val)));
                     tasks.push(ReadTask::Byte(previous, index.clone()));
                 }
-                return None;
+                return Ok(None);
             }
             ByteStateKind::WriteWord {
                 previous,
                 offset,
                 value,
             } => {
-                let i = scalar_in(index, &context, domain);
-                let at = scalar_in(offset, &context, domain);
+                let i = scalar_in_paid(index, &context, domain, payer)?;
+                let at = scalar_in_paid(offset, &context, domain, payer)?;
                 if let (Some(indices), Some(offsets)) =
-                    (crate::world::candidates(&i), crate::world::candidates(&at))
+                    (payer.candidates(&i)?, payer.candidates(&at)?)
                 {
+                    payer.reserve(i.work_size().saturating_add(at.work_size()))?;
                     tasks.push(ReadChoices::task(
                         ChoiceKind::Word(previous, value),
                         &[indices, offsets],
                     ));
-                    return None;
+                    return Ok(None);
                 }
-                let (ilo, ihi) = crate::world::unsigned_bounds(&i);
-                let (alo, ahi) = crate::world::unsigned_bounds(&at);
+                let (ilo, ihi) = payer.bounds(&i)?;
+                let (alo, ahi) = payer.bounds(&at)?;
                 if ihi < alo
                     || ahi
                         .checked_add(U256::from(32))
                         .is_some_and(|end| ilo >= end)
                 {
                     tasks.push(ReadTask::Byte(previous, index.clone()));
-                    return None;
+                    return Ok(None);
                 }
-                let val = self.word_byte_union(value);
+                let val = self.word_byte_union_paid(value, payer)?;
                 tasks.push(ReadTask::Join);
                 tasks.push(ReadTask::Value(Box::new(val)));
                 tasks.push(ReadTask::Byte(previous, index.clone()));
-                return None;
+                return Ok(None);
             }
             ByteStateKind::Copy {
                 previous,
@@ -665,40 +732,43 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 source,
                 length,
             } => {
-                let i = scalar_in(index, &context, domain);
-                let dst = scalar_in(destination, &context, domain);
-                let len = scalar_in(length, &context, domain);
+                let i = scalar_in_paid(index, &context, domain, payer)?;
+                let dst = scalar_in_paid(destination, &context, domain, payer)?;
+                let len = scalar_in_paid(length, &context, domain, payer)?;
                 if let (Some(indices), Some(destinations), Some(lengths)) = (
-                    crate::world::candidates(&i),
-                    crate::world::candidates(&dst),
-                    crate::world::candidates(&len),
+                    payer.candidates(&i)?,
+                    payer.candidates(&dst)?,
+                    payer.candidates(&len)?,
                 ) {
+                    payer.reserve(
+                        i.work_size()
+                            .saturating_add(dst.work_size())
+                            .saturating_add(len.work_size()),
+                    )?;
                     tasks.push(ReadChoices::task(
                         ChoiceKind::Copy(previous, source),
                         &[indices, destinations, lengths],
                     ));
-                    return None;
+                    return Ok(None);
                 }
-                if index == destination && !len.may_be_zero() {
+                if payer.expression_equal(index, destination)? && !payer.may_zero(&len)? {
                     tasks.push(ReadTask::View(source, ExprId::constant(U256::ZERO)));
-                    return None;
+                    return Ok(None);
                 }
-                let (ilo, ihi) = crate::world::unsigned_bounds(&i);
-                let (dlo, dhi) = crate::world::unsigned_bounds(&dst);
-                let (llo, lhi) = crate::world::unsigned_bounds(&len);
+                let (ilo, ihi) = payer.bounds(&i)?;
+                let (dlo, dhi) = payer.bounds(&dst)?;
+                let (llo, lhi) = payer.bounds(&len)?;
                 if ihi < dlo || dhi.checked_add(lhi).is_some_and(|end| ilo >= end) {
                     tasks.push(ReadTask::Byte(previous, index.clone()));
-                    return None;
+                    return Ok(None);
                 }
-                if let (Some(i), Some(dst)) = (i.singleton(), dst.singleton())
+                if let (Some(i), Some(dst)) = (payer.singleton(&i)?, payer.singleton(&dst)?)
                     && i >= dst
                 {
                     let delta = i - dst;
                     if delta < llo {
                         tasks.push(ReadTask::View(source, ExprId::constant(delta)));
                     } else if delta >= lhi {
-                        // Keep the original source observation and its payment
-                        // before discarding an out-of-range copied candidate.
                         tasks.push(ReadTask::DiscardThen(previous, index.clone()));
                         tasks.push(ReadTask::View(source, ExprId::constant(delta)));
                     } else {
@@ -706,63 +776,61 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                         tasks.push(ReadTask::Byte(previous, index.clone()));
                         tasks.push(ReadTask::View(source, ExprId::constant(delta)));
                     }
-                    return None;
+                    return Ok(None);
                 }
                 tasks.push(ReadTask::Join);
                 tasks.push(ReadTask::UnknownByte);
                 tasks.push(ReadTask::Byte(previous, index.clone()));
-                return None;
+                return Ok(None);
             }
             ByteStateKind::Slice { source } => {
                 tasks.push(ReadTask::View(source, index.clone()));
-                return None;
+                return Ok(None);
             }
         };
-        if context.stopped() {
-            Some(EvmValue::<N>::top())
-        } else {
-            Some(value)
-        }
+        payer.context(&context)?;
+        Ok(Some(value))
     }
-
     fn view_step<'s>(
         &mut self,
         view: &'s ByteView,
         relative: &ExprId,
         tasks: &mut Vec<ReadTask<'s, N>>,
-    ) -> Option<EvmValue<N>> {
+        payer: &mut ReadPayment<'_>,
+    ) -> ReadResult<Option<EvmValue<N>>> {
         let context = self.context.clone();
         let domain = self.domain;
-        let rel = scalar_in(relative, &context, domain);
-        let off = scalar_in(&view.offset, &context, domain);
-        let len = scalar_in(&view.length, &context, domain);
-        if context.stopped() {
-            return Some(EvmValue::<N>::top());
-        }
+        let rel = scalar_in_paid(relative, &context, domain, payer)?;
+        let off = scalar_in_paid(&view.offset, &context, domain, payer)?;
+        let len = scalar_in_paid(&view.length, &context, domain, payer)?;
         if let (Some(relatives), Some(offsets), Some(lengths)) = (
-            crate::world::candidates(&rel),
-            crate::world::candidates(&off),
-            crate::world::candidates(&len),
+            payer.candidates(&rel)?,
+            payer.candidates(&off)?,
+            payer.candidates(&len)?,
         ) {
+            payer.reserve(
+                rel.work_size()
+                    .saturating_add(off.work_size())
+                    .saturating_add(len.work_size()),
+            )?;
             tasks.push(ReadChoices::task(
                 ChoiceKind::View(view),
                 &[relatives, offsets, lengths],
             ));
-            return None;
+            return Ok(None);
         }
-        if crate::world::unsigned_bounds(&rel).0 >= crate::world::unsigned_bounds(&len).1 {
-            return Some(zero());
+        if payer.bounds(&rel)?.0 >= payer.bounds(&len)?.1 {
+            return Ok(Some(payer.literal(U256::ZERO, domain)?));
         }
-        // Checked source addition: no BV256 wraparound can expose source byte zero.
-        if let (Some(rel), Some(off)) = (rel.singleton(), off.singleton()) {
+        if let (Some(rel), Some(off)) = (payer.singleton(&rel)?, payer.singleton(&off)?) {
             let Some(i) = off.checked_add(rel) else {
-                return Some(zero());
+                return Ok(Some(payer.literal(U256::ZERO, domain)?));
             };
             tasks.push(ReadTask::Pad(Box::new(len), rel));
             tasks.push(ReadTask::Byte(&view.state, ExprId::constant(i)));
-            return None;
+            return Ok(None);
         }
-        Some(EvmValue::<N>::unknown_byte())
+        Ok(Some(payer.unknown_byte(domain)?))
     }
 }
 
@@ -780,30 +848,38 @@ impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
         self.evaluate(ReadTask::Word(state, offset.clone()))
     }
 
+    pub(in crate::world) fn word_with_payment(
+        &mut self,
+        state: &ByteStateId,
+        offset: &ExprId,
+        budget: &mut WorkBudget,
+    ) -> ReadResult<EvmValue<N>> {
+        let mut payer = ReadPayment::new(budget);
+        payer.reserve(offset.work_size().saturating_add(1))?;
+        self.evaluate_paid(ReadTask::Word(state, offset.clone()), &mut payer)
+    }
     fn word_step<'s>(
         &self,
         state: &'s ByteStateId,
         offset: &ExprId,
         context: &Context<'_, N, D>,
         tasks: &mut Vec<ReadTask<'s, N>>,
-    ) -> Option<EvmValue<N>> {
+        payer: &mut ReadPayment<'_>,
+    ) -> ReadResult<Option<EvmValue<N>>> {
         let domain = self.domain;
         if let ByteStateKind::WriteWord {
             offset: written,
             value,
             ..
         } = state.kind()
-            && super::reads::same_offset(written, offset, context, domain)
-            && super::reads::nonwrapping_word(offset, context, domain)
+            && super::reads::same_offset_paid(written, offset, context, domain, payer)?
+            && super::reads::nonwrapping_word_paid(offset, context, domain, payer)?
         {
-            return Some(scalar_in(value, context, domain));
+            return Ok(Some(scalar_in_paid(value, context, domain, payer)?));
         }
-        // A view/copy forwards a value only when every demanded byte belongs
-        // to the same nonwrapping source window. Partial windows keep the
-        // ordinary byte evaluator, including its padding and previous bytes.
         let forwarded = match state.kind() {
             ByteStateKind::Slice { source } => {
-                super::reads::view_word_offset(source, offset, context, domain)
+                super::reads::view_word_offset_paid(source, offset, context, domain, payer)?
                     .map(|at| (&source.state, at))
             }
             ByteStateKind::Copy {
@@ -811,134 +887,181 @@ impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'_, N, D> {
                 source,
                 length,
                 ..
-            } => {
-                super::reads::copy_word_offset(destination, source, length, offset, context, domain)
-                    .map(|at| (&source.state, at))
-            }
+            } => super::reads::copy_word_offset_paid(
+                destination,
+                source,
+                length,
+                offset,
+                context,
+                domain,
+                payer,
+            )?
+            .map(|at| (&source.state, at)),
             _ => None,
         };
         if let Some((source, at)) = forwarded {
             tasks.push(ReadTask::Word(source, at));
-            return None;
+            return Ok(None);
         }
-        let offsets = scalar_in(offset, context, domain);
-        let Some(offsets) = crate::world::candidates(&offsets) else {
-            return Some(if matches!(state.kind(), ByteStateKind::Zero) {
-                scalar_in(&ExprId::constant(U256::ZERO), context, domain)
+        let offsets = scalar_in_paid(offset, context, domain, payer)?;
+        let Some(candidates) = payer.candidates(&offsets)? else {
+            return Ok(Some(if matches!(state.kind(), ByteStateKind::Zero) {
+                scalar_in_paid(&ExprId::constant(U256::ZERO), context, domain, payer)?
             } else {
-                EvmValue::<N>::top()
-            });
+                payer.top(domain)?
+            }));
         };
-        tasks.push(ReadChoices::task(ChoiceKind::WholeWord(state), &[offsets]));
-        None
+        payer.reserve(offsets.work_size())?;
+        tasks.push(ReadChoices::task(
+            ChoiceKind::WholeWord(state),
+            &[candidates],
+        ));
+        Ok(None)
     }
-
-    fn pack_bytes(&self, bytes: Vec<EvmValue<N>>) -> EvmValue<N> {
+    fn pack_bytes_paid(
+        &self,
+        bytes: Vec<EvmValue<N>>,
+        payer: &mut ReadPayment<'_>,
+    ) -> ReadResult<EvmValue<N>> {
         let context = &self.context;
         let domain = self.domain;
-        if let Some(value) = packing::pack(&bytes, domain, context) {
-            return value;
+        if let Some(value) = packing::pack_paid(&bytes, domain, context, payer)? {
+            return Ok(value);
         }
-        if context.stopped() {
-            return EvmValue::<N>::top();
+        payer.context(context)?;
+        let mut parts = Vec::new();
+        for (j, b) in bytes.into_iter().enumerate() {
+            let literal = payer.literal(U256::from((31 - j) * 8), domain)?;
+            parts.push(payer.apply(opcode::SHL, &[literal, b], context, domain, false)?);
         }
-        let mut parts = bytes
-            .into_iter()
-            .enumerate()
-            .map(|(j, b)| context.apply(domain, opcode::SHL, &[constant((31 - j) * 8), b]))
-            .collect::<Vec<_>>();
         while parts.len() > 1 {
-            if context.stopped() {
-                return EvmValue::<N>::top();
+            let mut next = Vec::new();
+            for pair in parts.chunks(2) {
+                next.push(if pair.len() == 2 {
+                    payer.apply(opcode::OR, pair, context, domain, false)?
+                } else {
+                    payer.copy(&pair[0])?
+                });
             }
-            parts = parts
-                .chunks(2)
-                .map(|p| {
-                    if p.len() == 2 {
-                        context.apply(domain, opcode::OR, p)
-                    } else {
-                        p[0].clone()
-                    }
-                })
-                .collect();
+            parts = next;
         }
-        parts.pop().expect("word")
+        Ok(parts.pop().expect("word"))
     }
 }
 
 // The symbolic constructor has already checked retention/cancellation. Numeric
 // evaluation follows the same concrete proof iteratively, so a long disjoint
 // prefix does not consume the host stack or reconstruct the word byte by byte.
-fn demanded_state<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+pub(super) fn demanded_state_paid<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     state: &'a ByteStateId,
     index: &ExprId,
     width: usize,
     context: &Context<'_, N, D>,
     domain: AlgebraRef<'_, D>,
-) -> &'a ByteStateId {
+    payer: &mut ReadPayment<'_>,
+) -> ReadResult<&'a ByteStateId> {
     let Some(start) = index.as_constant() else {
-        return state;
+        return Ok(state);
     };
     let end = start.saturating_add(U256::from(width - 1));
     let mut cursor = state;
-    if context.stopped() {
-        return cursor;
-    }
-    while let Some(previous) =
-        cursor.prior_to_disjoint_write_with_bound(start, end, &|destination| {
-            context.write_lower_bound(destination, domain)
-        })
-    {
-        if context.stopped() {
-            break;
+    payer.context(context)?;
+    loop {
+        payer.reserve(1)?;
+        let (previous, failure) = {
+            let payment = std::cell::RefCell::new(&mut *payer);
+            let failure = std::cell::RefCell::new(None);
+            let previous = cursor.prior_to_disjoint_write_with_bound(start, end, &|destination| {
+                if failure.borrow().is_some() {
+                    return None;
+                }
+                let mut payment = payment.borrow_mut();
+                match context.write_lower_bound_paid(destination, domain, &mut payment) {
+                    Ok(bound) => bound,
+                    Err(error) => {
+                        *failure.borrow_mut() = Some(error);
+                        None
+                    }
+                }
+            });
+            (previous, failure.into_inner())
+        };
+        if let Some(error) = failure {
+            return Err(error);
         }
+        payer.context(context)?;
+        let Some(previous) = previous else { break };
         cursor = previous;
     }
-    cursor
+    Ok(cursor)
 }
-
-fn join<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+fn join_paid<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     out: Option<EvmValue<N>>,
     value: EvmValue<N>,
     domain: AlgebraRef<'_, D>,
     context: &Context<'_, N, D>,
-) -> EvmValue<N> {
-    if context.stopped() {
-        return EvmValue::<N>::top();
+    payer: &mut ReadPayment<'_>,
+) -> ReadResult<EvmValue<N>> {
+    payer.context(context)?;
+    match out {
+        Some(old) => payer.join(&old, &value, context, domain),
+        None => payer.copy(&value),
     }
-    out.map_or_else(|| value.clone(), |old| context.join(domain, &old, &value))
 }
-fn disjoint<N: WordElement>(a: &EvmValue<N>, b: &EvmValue<N>) -> bool {
-    let (alo, ahi) = crate::world::unsigned_bounds(a);
-    let (blo, bhi) = crate::world::unsigned_bounds(b);
-    ahi < blo
-        || bhi < alo
-        || match (a.constants(), b.constants()) {
-            (Some(a), Some(b)) => a.is_disjoint(b),
-            _ => false,
+pub(in crate::world) fn disjoint_paid<N: WordElement>(
+    a: &EvmValue<N>,
+    b: &EvmValue<N>,
+    payer: &mut ReadPayment<'_>,
+) -> ReadResult<bool> {
+    let (alo, ahi) = payer.bounds(a)?;
+    let (blo, bhi) = payer.bounds(b)?;
+    if ahi < blo || bhi < alo {
+        return Ok(true);
+    }
+    if payer.is_paid() {
+        payer.reserve(
+            a.numeric()
+                .work_size()
+                .saturating_add(b.numeric().work_size()),
+        )?;
+    }
+    let out = match (a.constants(), b.constants()) {
+        (Some(a), Some(b)) => {
+            payer.reserve(a.len().saturating_add(b.len()).saturating_mul(64))?;
+            a.is_disjoint(b)
         }
+        _ => false,
+    };
+    payer.check()?;
+    Ok(out)
+}
+pub(in crate::world) fn candidates_with_payment<'a, N: WordElement>(
+    value: &'a EvmValue<N>,
+    budget: &mut WorkBudget,
+) -> ReadResult<Option<crate::world::Candidates<'a>>> {
+    ReadPayment::new(budget).candidates(value)
+}
+pub(in crate::world) fn contains_with_payment<N: WordElement>(
+    value: &EvmValue<N>,
+    word: U256,
+    budget: &mut WorkBudget,
+) -> ReadResult<bool> {
+    ReadPayment::new(budget).contains(value, word)
+}
+pub(in crate::world) fn nonzero_with_payment<N: WordElement>(
+    value: &EvmValue<N>,
+    budget: &mut WorkBudget,
+) -> ReadResult<bool> {
+    ReadPayment::new(budget).may_nonzero(value)
 }
 
 #[cfg(test)]
 mod payer_tests;
+#[cfg(test)]
+mod payment_tests;
 #[cfg(test)]
 mod stack_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod windows;
-
-/// Import a binding onto its actual retained carrier for the same expression.
-/// Budgeted callers pay import_binding_work before calling this helper.
-pub(in crate::world) fn bound<N: WordElement>(
-    value: EvmValue<N>,
-    retained: bool,
-    observation: &crate::domain::WordObservation,
-) -> EvmValue<N> {
-    if retained {
-        let numeric = value.numeric().import_binding(observation);
-        value.with_numeric(numeric)
-    } else {
-        value.with_numeric(N::from_observation(observation))
-    }
-}

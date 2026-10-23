@@ -322,9 +322,9 @@ impl EvmNumericAlgebra for FiniteSetAlgebra {
             // WordObservation, then this carrier's from_observation. It tests
             // singleton and at most constructs one literal B-tree; it does not
             // enumerate the byte/range image, regardless of configured capacity.
-            SummaryConstruction::UnknownByte | SummaryConstruction::UnsignedRange { .. } => {
-                512 + LITERAL_WORK
-            }
+            SummaryConstruction::UnknownByte
+            | SummaryConstruction::UnknownAddress
+            | SummaryConstruction::UnsignedRange { .. } => 512 + LITERAL_WORK,
         }
     }
 
@@ -345,6 +345,32 @@ impl EvmNumericAlgebra for FiniteSetAlgebra {
 
     fn summary_is_top_work(&self, _value: &Self::Element) -> usize {
         2 // The carrier's Top/Finite tag, without a candidate query.
+    }
+    fn summary_compact_work(&self, value: &Self::Element) -> usize {
+        COPY_WORK.saturating_add(WordElement::work_size(value))
+    }
+    fn summary_restore_work(&self, value: &Self::Element, _previous: &Self::Element) -> usize {
+        // This carrier inherits the unchanged-value restoration hook.
+        self.summary_compact_work(value)
+    }
+    fn summary_observation_work(&self, observation: &WordObservation) -> usize {
+        let finite = observation.finite_constants();
+        if let Some(len) = finite.cardinality() {
+            // from_observation filters the complete cover by all predicates.
+            // Each visit can search that tree and perform one Word256 modulo;
+            // rebuilding/release is bounded by the original cover cardinality.
+            128usize.saturating_add(
+                len.saturating_mul(
+                    4096usize
+                        .saturating_add(tree_entry_work(len).saturating_mul(2))
+                        .saturating_add(32),
+                ),
+            )
+        } else {
+            // Fixed-width observation singleton validation, then at most one
+            // literal tree. No enumeration of an unsigned range occurs.
+            4096 + 512 + LITERAL_WORK
+        }
     }
 
     fn projection_work(&self, _value: &Self::Element) -> usize {

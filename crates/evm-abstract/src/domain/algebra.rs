@@ -23,6 +23,8 @@ pub enum SummaryConstruction {
     Top,
     /// One unobserved byte.
     UnknownByte,
+    /// One unobserved EVM address, including its native width guarantees.
+    UnknownAddress,
     /// An inclusive, ordered unsigned interval.
     UnsignedRange {
         /// Inclusive lower endpoint.
@@ -167,6 +169,21 @@ pub trait EvmNumericAlgebra: Debug {
     }
     /// Complete native `is_top` predicate fee, without executing it to quote.
     fn summary_is_top_work(&self, _value: &Self::Element) -> usize {
+        usize::MAX
+    }
+    /// Complete native compaction, including all predicates, copies and result
+    /// construction/release. Quote cached representation metadata only.
+    fn summary_compact_work(&self, _value: &Self::Element) -> usize {
+        usize::MAX
+    }
+    /// Complete restoration of redundant presentation from this exact previous
+    /// carrier. Quotation must not run the proof, singleton or native equality.
+    fn summary_restore_work(&self, _value: &Self::Element, _previous: &Self::Element) -> usize {
+        usize::MAX
+    }
+    /// Complete native `Element::from_observation` factory and result release.
+    /// The observation is borrowed; no discovery/import is performed to quote.
+    fn summary_observation_work(&self, _observation: &super::WordObservation) -> usize {
         usize::MAX
     }
     /// Complete BYTE quotes (numeric and facade operand work) are identical
@@ -348,6 +365,15 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     }
     fn summary_is_top_work(&self, value: &Self::Element) -> usize {
         D::summary_is_top_work(self, value)
+    }
+    fn summary_compact_work(&self, value: &Self::Element) -> usize {
+        D::summary_compact_work(self, value)
+    }
+    fn summary_restore_work(&self, value: &Self::Element, previous: &Self::Element) -> usize {
+        D::summary_restore_work(self, value, previous)
+    }
+    fn summary_observation_work(&self, observation: &super::WordObservation) -> usize {
+        D::summary_observation_work(self, observation)
     }
     fn byte_quotes_uniform(&self) -> bool {
         D::byte_quotes_uniform(self)

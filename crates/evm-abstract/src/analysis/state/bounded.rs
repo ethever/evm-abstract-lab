@@ -21,12 +21,7 @@ pub(in crate::analysis) fn reserve(
     budget: &mut WorkBudget,
     cost: usize,
 ) -> Result<(), MachineError> {
-    MachineError::check_cancelled()?;
-    if cost == usize::MAX || !budget.charge(cost) {
-        Err(MachineError::work_failure())
-    } else {
-        Ok(())
-    }
+    crate::resource::clone_payment::pay(budget, cost).map_err(MachineError::from)
 }
 
 pub(super) fn erase_guarantees<N: WordElement>(

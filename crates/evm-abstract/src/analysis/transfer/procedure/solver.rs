@@ -7,6 +7,7 @@ use crate::analysis::engine::{
     Acceleration, AccelerationInput, Arrival, ContextPolicy, PartitionPolicy, PartitionedRelative,
     PolicyContext, PolicySite, ProcedureOutput, StatePolicy,
 };
+use crate::analysis::state::payload;
 use crate::analysis::worklist::{MachineMeter, kernel_failure, runtime::TaskKind};
 use crate::domain::EvmNumericAlgebra;
 use analysis_kernel::{Availability, Change, RunningJob, Version, algebra::Prepared};
@@ -16,8 +17,8 @@ use super::{
     Arc, BTreeMap, BTreeSet, DiagnosticKind, EvmByteArray, EvmCallStack, EvmExecution,
     EvmExecutionFrontier, EvmMachinePayload, EvmNode, EvmOutput, EvmPayloadSummary, EvmProcedure,
     EvmRootFrame, EvmSolver, EvmStore, EvmSubscriber, FrameCode, FrontierReason, Limit,
-    MachineEdgeKind, MachineError, OutcomeKind, execute_inner_with, instantiate,
-    resume_summary_inner, transfer_stop,
+    MachineEdgeKind, MachineError, OutcomeKind, execute_inner_with, resume_summary_inner,
+    transfer_stop,
 };
 
 impl<
@@ -33,7 +34,11 @@ impl<
         &mut self,
         payload: &EvmMachinePayload<D::Element>,
     ) -> Result<EvmPayloadSummary<D::Element>, MachineError> {
-        let mut refined = payload.clone();
+        let mut refined = payload.copy_for_policy(&mut PolicyContext::new(
+            self.domain,
+            self.entry,
+            self.budget,
+        ))?;
         let relation_policy = self.domain.spec().relations();
         let mut projection = super::projection::Projection::new(
             &payload.relations,
@@ -66,7 +71,12 @@ impl<
                 self.policies.context.normalize(&mut frame.key.jump_history);
             }
         }
-        super::payload::form_normalized(&refined, self.entry, self.domain)
+        super::payload::caller::form_normalized_with_payment(
+            &refined,
+            self.entry,
+            self.domain,
+            self.budget,
+        )
     }
 
     pub(super) fn reserve(&mut self, cost: usize) -> Result<(), MachineError> {
@@ -206,6 +216,7 @@ impl<
         &mut self,
         payload: EvmMachinePayload<D::Element>,
     ) -> Result<usize, MachineError> {
+        crate::resource::clone_payment::checkpoint(self.budget)?;
         let creation = payload
             .call_stack
             .active_child()
@@ -250,7 +261,8 @@ impl<
                 &mut PolicyContext::new(self.domain, self.entry, self.budget),
             )?;
             self.reserve(prepared.value.work_size())?;
-            self.enqueue_admitted(id, prepared.value.clone(), None, None, Some(prepared))?;
+            let admitted = prepared.value.clone_with_payment(self.budget)?;
+            self.enqueue_admitted(id, admitted, None, None, Some(prepared))?;
             self.observe_procedure(id)?;
             return Ok(id);
         }
@@ -265,7 +277,7 @@ impl<
             &mut PolicyContext::new(self.domain, self.entry, self.budget),
         )?;
         self.reserve(prepared.value.work_size().saturating_mul(2))?;
-        let payload = prepared.value.clone();
+        let payload = prepared.value.clone_with_payment(self.budget)?;
         let id = self.table.procedures.len();
         if self.counters.states >= self.config.analysis.max_states {
             return Err(MachineError::States);
@@ -278,7 +290,7 @@ impl<
             creation,
             &mut PolicyContext::new(self.domain, self.entry, self.budget),
         )?;
-        let stored_payload = payload.clone();
+        let stored_payload = payload.clone_with_payment(self.budget)?;
         PolicyContext::new(self.domain, self.entry, self.budget).reserve(0)?;
         let mut index = std::mem::take(&mut self.table.procedures_by_key);
         let created = index.insert_with((self.namespace, key), self.budget, |budget| {
@@ -756,17 +768,28 @@ impl<
             self.park_admitted(&TaskKind::Body(id), reason);
             return false;
         }
-        let work = self.table.nodes[id].payload.work_size().saturating_mul(4);
+        // The following full copy and replay separately own their complete
+        // invoices. Launch bookkeeping is fixed, not another native envelope.
+        let work = 1;
         if let Err(error) = self.reserve(work) {
             self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
             return false;
         }
-        let input = self.table.nodes[id].payload.clone();
+        let input = match self.table.nodes[id].payload.clone_with_payment(self.budget) {
+            Ok(input) => input,
+            Err(error) => {
+                self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
+                return false;
+            }
+        };
         #[cfg(test)]
-        let instantiated = super::evidence::refuse_body_instantiation()
-            .map_or_else(|| instantiate(&input, self.domain), Err);
+        let instantiated = super::evidence::refuse_body_instantiation().map_or_else(
+            || payload::caller::instantiate_with_payment(&input, self.domain, self.budget),
+            Err,
+        );
         #[cfg(not(test))]
-        let instantiated = instantiate(&input, self.domain);
+        let instantiated =
+            payload::caller::instantiate_with_payment(&input, self.domain, self.budget);
         let execution = match instantiated {
             Ok(payload) => {
                 let payload = match self.cooperative_input(id, payload, 0) {
@@ -785,6 +808,8 @@ impl<
                         return false;
                     }
                 };
+                #[cfg(test)]
+                super::tests::native_engine::body_input(&payload);
                 self.counters.transfers += 1;
                 self.counters.report(self.budget.used());
                 let execution = if payload.active().code == FrameCode::Unknown {
@@ -977,7 +1002,8 @@ impl<
         self.reserve(prepared.value.work_size().saturating_mul(4))
             .map_err(MachineError::frontier_reason)?;
         let payload =
-            instantiate(&prepared.value, self.domain).map_err(MachineError::frontier_reason)?;
+            payload::caller::instantiate_with_payment(&prepared.value, self.domain, self.budget)
+                .map_err(MachineError::frontier_reason)?;
         self.retry_admission()?;
         Ok(coarse_retry::Admitted {
             representation: coarse,
@@ -1015,7 +1041,8 @@ impl<
                 self.reserve(bound.work_size().saturating_mul(4))
                     .map_err(MachineError::frontier_reason)?;
                 return Ok(super::super::empty_execution(
-                    instantiate(&bound, self.domain).map_err(MachineError::frontier_reason)?,
+                    payload::caller::instantiate_with_payment(&bound, self.domain, self.budget)
+                        .map_err(MachineError::frontier_reason)?,
                 ));
             }
         };
@@ -1102,7 +1129,17 @@ impl<
                     self.frontier(successor.payload, error.frontier_reason(), 0);
                     continue;
                 }
-                let original = successor.payload.clone();
+                let original = match successor.payload.copy_for_policy(&mut PolicyContext::new(
+                    self.domain,
+                    self.entry,
+                    self.budget,
+                )) {
+                    Ok(original) => original,
+                    Err(error) => {
+                        self.frontier(successor.payload, error.frontier_reason(), 0);
+                        continue;
+                    }
+                };
                 match self.incoming(successor.payload, successor.kind, ordinal) {
                     Ok(Some(payload)) => successor.payload = payload,
                     Ok(None) => continue,
@@ -1112,7 +1149,17 @@ impl<
                     }
                 }
             }
-            let original = successor.payload.clone();
+            let original = match successor.payload.copy_for_policy(&mut PolicyContext::new(
+                self.domain,
+                self.entry,
+                self.budget,
+            )) {
+                Ok(original) => original,
+                Err(error) => {
+                    self.frontier(successor.payload, error.frontier_reason(), 0);
+                    continue;
+                }
+            };
             let operation = if successor.kind == MachineEdgeKind::Call {
                 self.subscribe(from, successor.payload)
             } else {
@@ -1137,6 +1184,9 @@ impl<
         payload: EvmMachinePayload<D::Element>,
     ) -> Result<(), MachineError> {
         self.reserve(payload.work_size().saturating_mul(4))?;
+        // This complete invoice owns exactly the detached frame/store/relation
+        // copies below (a subset of the full payload), never later queries.
+        payload.pay_clone_with(self.budget)?;
         let callee_payload = EvmMachinePayload {
             call_stack: EvmCallStack::new(EvmRootFrame {
                 state: payload.active().clone(),
@@ -1144,6 +1194,7 @@ impl<
             store: payload.store.clone(),
             relations: payload.relations.clone(),
         };
+        crate::resource::clone_payment::checkpoint(self.budget)?;
         let creation = payload
             .call_stack
             .active_child()
@@ -1296,7 +1347,9 @@ impl<
             .fold(output.work.saturating_add(1), |work, old| {
                 work.saturating_add(old.work)
             });
-        self.reserve(output_work)?;
+        let copy_work =
+            super::output_clone_work(&self.table.procedures[procedure].outputs, self.budget)?;
+        self.reserve(copy_work)?;
         let mut outputs = self.table.procedures[procedure].outputs.clone();
         outputs.insert(kind, output);
         let old = &self.table.procedures[procedure];
@@ -1360,33 +1413,22 @@ impl<
             &mut PolicyContext::new(self.domain, self.entry, self.budget),
         )?;
         self.reserve(prepared.value.work_size())?;
-        self.enqueue_admitted(
-            procedure,
-            prepared.value.clone(),
-            None,
-            None,
-            Some(prepared),
-        )?;
+        let admitted = prepared.value.clone_with_payment(self.budget)?;
+        self.enqueue_admitted(procedure, admitted, None, None, Some(prepared))?;
         Ok(())
     }
 
     fn resume(&mut self, subscriber: usize) -> Result<bool, MachineError> {
         let subscription = &self.table.subscribers[subscriber];
         let procedure = &self.table.procedures[subscription.callee];
-        let work = procedure
-            .outputs
-            .values()
-            .fold(1usize, |work, output| work.saturating_add(output.work));
+        let work = super::output_clone_work(&procedure.outputs, self.budget)?;
+        let template_work = subscription.payload.clone_work_with(self.budget)?;
         let (template, outputs) = self.runtime.with_run(
             self.active.as_mut().expect("admitted Resume"),
             self.budget,
             |run| {
                 let template = run
-                    .read_slot(
-                        &subscription.input,
-                        &subscription.payload,
-                        subscription.payload.work_size(),
-                    )
+                    .read_slot(&subscription.input, &subscription.payload, template_work)
                     .map_err(kernel_failure)?;
                 let outputs = run
                     .read_slot(&procedure.output, &procedure.outputs, work)
@@ -1394,6 +1436,7 @@ impl<
                 Ok((template, outputs))
             },
         )?;
+        self.reserve(0)?;
         let Availability::Value(template_payload) = template.state else {
             return Err(MachineError::Shape);
         };
@@ -1435,6 +1478,7 @@ impl<
         template: &EvmPayloadSummary<D::Element>,
         output: &EvmOutput<D::Element>,
     ) -> Result<bool, MachineError> {
+        self.reserve(0)?;
         let subscription = &self.table.subscribers[subscriber];
         let callee = subscription.callee;
         let creation = template
@@ -1478,13 +1522,13 @@ impl<
                     template.active().saved_store.work_size()
                 });
             self.reserve(work.saturating_mul(4))?;
-            let mut resumed = template.clone();
+            let mut resumed = template.clone_with_payment(self.budget)?;
             let child = resumed.frames.pop().expect("a subscribed child");
             resumed.continuations.pop();
             resumed.location.frames.pop();
             if !keep_store {
                 resumed.store = if kind == OutcomeKind::Return {
-                    output.summary.store.clone()
+                    output.summary.store.clone_with_payment(self.budget)?
                 } else {
                     child.frame.saved_store
                 };
@@ -1508,13 +1552,22 @@ impl<
                 .saturating_add(output.work)
                 .saturating_mul(4),
         )?;
-        let mut payload = instantiate(template, self.domain)?;
+        let mut payload =
+            payload::caller::instantiate_with_payment(template, self.domain, self.budget)?;
         // Installed constraints still refer only to the old immutable snapshot.
         // Never reinstall those read bounds after replacing the EvmStore<D::Element>.
         if !keep_store {
-            payload.store = output.summary.store.instantiate(self.domain)?;
+            payload.store = output
+                .summary
+                .store
+                .instantiate_with_payment(self.domain, self.budget)?;
         }
-        let data = output.summary.data.instantiate(self.domain)?;
+        let data = output
+            .summary
+            .data
+            .instantiate_with_payment(self.domain, self.budget)?;
+        #[cfg(test)]
+        let native_input = super::tests::native_engine::delivery_input(&payload);
         let execution = resume_summary_inner(
             payload,
             kind,
@@ -1534,6 +1587,8 @@ impl<
             .insert(kind, stamp);
         self.regional_delivered(subscriber, kind);
         self.table.propagations += 1;
+        #[cfg(test)]
+        super::tests::native_engine::delivery_complete(native_input);
         Ok(true)
     }
 }
@@ -1596,10 +1651,18 @@ fn parked_bound<D: EvmNumericAlgebra>(
     domain: crate::domain::AlgebraRef<'_, D>,
     budget: &mut crate::resource::WorkBudget,
 ) -> EvmExecutionFrontier<D::Element> {
-    let current =
-        crate::analysis::state::bounded::reserve(budget, summary.work_size().saturating_mul(4))
-            .and_then(|()| instantiate(summary, domain))
-            .ok();
+    // A refusal keeps the native node/subscriber bound in the table. Do not
+    // invoke another native hook merely to decorate its frontier after denial.
+    let current = if matches!(
+        reason,
+        FrontierReason::Work
+            | FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+    ) || budget.exhausted()
+    {
+        None
+    } else {
+        payload::caller::instantiate_with_payment(summary, domain, budget).ok()
+    };
     let target = current
         .as_ref()
         .map_or_else(|| summary.location.clone(), EvmMachinePayload::key);

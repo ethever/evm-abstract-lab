@@ -1,6 +1,6 @@
 //! Stage a complete injected relative admission before touching live slots.
 
-use super::{EvmOutput, EvmPayloadSummary, MachineError, semantic_eq};
+use super::{EvmOutput, EvmPayloadSummary, MachineError};
 use crate::analysis::engine::{
     Acceleration, PolicyContext, PolicySite, ProcedureOutput, ProcedureSummaryPolicy,
 };
@@ -19,8 +19,9 @@ pub(super) fn prepare<D: EvmNumericAlgebra, S: ProcedureSummaryPolicy<D>>(
     let value = policy.admit_relative(current, incoming, site, acceleration, cx)?;
     // Policy implementations meter their preparation. The adapter owns equality
     // and the detached value/evidence installed by the kernel publication.
-    cx.reserve(current.work_size().saturating_add(value.work_size()))?;
-    let change = if semantic_eq(current, &value) {
+    // The complete paid comparator owns its structural traversal and native
+    // predicates; do not retain the obsolete enclosing traversal charge.
+    let change = if current.eq_with_payment(&value, cx.domain, cx.budget)? {
         Change::Unchanged
     } else {
         Change::Changed
@@ -62,7 +63,12 @@ pub(super) fn prepare_output<D: EvmNumericAlgebra, S: ProcedureSummaryPolicy<D>>
         work.saturating_add(current.map_or(0, |old| old.work))
             .saturating_add(usize::from(invalidate)),
     )?;
-    let changed = current.is_none_or(|old| old.summary != summary);
+    let changed = match current {
+        Some(old) => !old
+            .summary
+            .eq_with_payment(&summary, cx.domain, cx.budget)?,
+        None => true,
+    };
     if !changed && !invalidate {
         return Ok(None);
     }
