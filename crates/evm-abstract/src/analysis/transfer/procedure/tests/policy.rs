@@ -17,6 +17,8 @@ use crate::analysis::worklist::runtime::Runtime;
 use crate::domain::ValueAlgebra;
 use std::convert::Infallible;
 
+mod process_growth;
+
 struct Harness<S: StatePolicy<ProductAlgebra, Option<bool>>> {
     world: World,
     entry: Entry,
@@ -33,8 +35,11 @@ struct Harness<S: StatePolicy<ProductAlgebra, Option<bool>>> {
 
 impl<S: StatePolicy<ProductAlgebra, Option<bool>>> Harness<S> {
     fn new(code: &str, state: S) -> Self {
+        Self::with_config(code, state, crate::analysis::machine::fixtures::config())
+    }
+
+    fn with_config(code: &str, state: S, config: crate::analysis::ExecutionConfig) -> Self {
         let (world, entry) = fixture(&[(0x101, code)]);
-        let config = crate::analysis::machine::fixtures::config();
         let config_numeric = crate::analysis::testing::NumericLimits::machine();
         let mut budget = WorkBudget::new(config.max_work);
         let mut runtime = Runtime::new(&mut budget).unwrap();
