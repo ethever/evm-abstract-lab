@@ -53,8 +53,11 @@ pub fn complete<N: WordElement>(result: &EvmWorldAnalysis<N>) {
     assert_eq!(
         result.status(),
         Status::Converged,
-        "{:?}",
-        result.frontiers()
+        "work={}, states={}, frontiers={}, first={:?}",
+        result.work(),
+        result.states().len(),
+        result.frontiers().len(),
+        result.frontiers().first().map(|frontier| &frontier.reason)
     );
     assert!(result.frontiers().is_empty());
 }

@@ -6,12 +6,8 @@ use evm_abstract::{
     analysis::cooperation::{
         InputRoute, Inputs, RefinementRoute, Refinements, StackFacts, Subject,
     },
-    domain::{
-        WordElement, WordObservation,
-        symbolic::{ExprId, ExprKind},
-    },
+    domain::{WordElement, WordObservation},
 };
-use revm_bytecode::opcode;
 use std::fmt;
 
 #[derive(Debug)]
@@ -36,19 +32,6 @@ pub struct Rule {
     pub feedback: Vec<(Subject, Change)>,
     pub exhaust_after_feedback: bool,
     pub has_strengthened: bool,
-}
-impl Rule {
-    fn compares_excluded_word(expression: &ExprId, value: &ExprId) -> bool {
-        let ExprKind::Operation { opcode: op, args } = expression.kind() else {
-            return false;
-        };
-        *op == opcode::EQ
-            && args.len() == 2
-            && (0..2).any(|constant| {
-                matches!(args[constant].kind(), ExprKind::Constant(word) if *word == U256::from(42))
-                    && args[1 - constant] == *value
-            })
-    }
 }
 impl<Cx> Reduction<Cx> for Rule
 where
@@ -102,9 +85,9 @@ where
                 if !pair[0].numeric().contains(U256::from(42))
                     && let (Some(value), Some(guard)) =
                         (pair[0].symbolic_expression(), pair[1].expression())
-                    && Self::compares_excluded_word(guard, &value)
+                    && super::fixture::compares_excluded_word(guard, &value)
                 {
-                    // EQ(v,42)==0 follows from THIS immutable input's actual v,
+                    // The false guard follows from THIS immutable input's v,
                     // not from a label, PC heuristic, previous generation or tag.
                     facts = StackFacts::at(index + 1, WordObservation::constant(U256::ZERO));
                     break;
