@@ -22,24 +22,49 @@ pub struct EvmProcessInvocation<N: WordElement> {
 pub enum ProcessSource {
     /// The original captured runtime and decoder fork.
     Runtime {
+        /// Account supplying the captured executable bytes.
         source: Address,
+        /// Complete hash of those executable bytes.
         hash: B256,
+        /// Decoder and execution rules captured with this source.
         fork: Fork,
     },
     /// Captured constructor bytes, distinct from account runtime code.
-    InitCode { hash: B256, fork: Fork },
+    InitCode {
+        /// Complete hash of the constructor bytes.
+        hash: B256,
+        /// Decoder and execution rules captured with this constructor.
+        fork: Fork,
+    },
     /// Unobserved runtime, including future deployed code in the complement.
-    AnyRuntime { fork: Fork },
+    AnyRuntime {
+        /// Frozen execution rules for this opaque runtime class.
+        fork: Fork,
+    },
     /// Arbitrary constructor bytes; no Program or source hash is invented.
-    AnyInitCode { fork: Fork },
+    AnyInitCode {
+        /// Frozen execution rules for this opaque constructor class.
+        fork: Fork,
+    },
     /// Actual empty account execution.
-    Empty { fork: Fork },
+    Empty {
+        /// Frozen execution rules for empty account code.
+        fork: Fork,
+    },
     /// Native precompile interpretation under the frozen fork.
-    Precompile { address: Address, fork: Fork },
+    Precompile {
+        /// Actual native precompile selected by account resolution.
+        address: Address,
+        /// Frozen precompile set and execution rules.
+        fork: Fork,
+    },
     /// A second delegation marker executes an invalid EF instruction.
     InvalidDelegation {
+        /// Account supplying the second delegation marker.
         source: Address,
+        /// Complete hash of that captured invalid marker.
         hash: B256,
+        /// Frozen rules under which the marker faults.
         fork: Fork,
     },
 }
@@ -74,7 +99,10 @@ pub struct ProcessCreation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum CreationContinuation {
     /// Ordinary native initcode deployment.
-    Native { destination: Address },
+    Native {
+        /// Concrete account allocated by the native CREATE/CREATE2 rule.
+        destination: Address,
+    },
     /// Native Body/Resume process constructor dependency.
     Process(ProcessCreation),
 }
