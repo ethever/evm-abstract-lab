@@ -253,3 +253,6 @@ mod readonly;
 
 #[path = "tests/shared.rs"]
 mod shared;
+
+#[path = "tests/payment.rs"]
+mod payment;

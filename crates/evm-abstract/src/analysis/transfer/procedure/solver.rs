@@ -489,7 +489,13 @@ impl<
         let acceleration = self.acceleration(site, feedback, node.updates);
         let candidate;
         let incoming = if let EvmRuntimeRetry::Coarse(coarse) = &node.runtime_retry {
-            candidate = coarse.join(&node.payload, incoming, self.domain, self.budget, false)?;
+            candidate = coarse.join_with_payment(
+                &node.payload,
+                incoming,
+                self.domain,
+                self.budget,
+                false,
+            )?;
             &candidate
         } else {
             incoming
