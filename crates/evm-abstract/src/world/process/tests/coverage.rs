@@ -455,7 +455,7 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                                 "outside_owner": address(outside),
                                 "action": action,
                                 "is_static": is_static,
-                                "exit": ["return", "revert", "failure"][terminal],
+                                "exit": (["return", "revert", "failure"][terminal]),
                                 "code_source": address(0x200),
                                 "code_hash": keccak256(&leaf),
                                 "catalogue_epoch": catalogue.epoch(),
