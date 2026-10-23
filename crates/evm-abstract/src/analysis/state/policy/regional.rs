@@ -11,6 +11,8 @@ use super::{
 };
 
 #[cfg(test)]
+mod tariff_tests;
+#[cfg(test)]
 mod tests;
 
 impl<N: WordElement> EvmPayloadSummary<N> {
@@ -24,9 +26,9 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
-        cx.reserve(self.work_size().saturating_mul(4))?;
-        let representation = EvmBoundedState::freeze(self, false, cx.domain)?;
-        let mut joined = representation.join(
+        let representation =
+            EvmBoundedState::freeze_with_payment(self, false, cx.domain, cx.budget)?;
+        let mut joined = representation.join_with_payment(
             self,
             incoming,
             cx.domain,
@@ -36,7 +38,15 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         // Bounded normalization erases aliases. Restore the actual inputs'
         // intersection only after the join proves their shapes compatible;
         // matching scalar bounds alone never justify an alias.
-        cx.reserve(self.work_size().saturating_add(incoming.work_size()))?;
+        let aliases =
+            self.frames
+                .iter()
+                .zip(&incoming.frames)
+                .fold(0usize, |work, (previous, next)| {
+                    work.saturating_add(previous.stack_aliases.work_size())
+                        .saturating_add(next.stack_aliases.work_size())
+                });
+        cx.reserve(aliases)?;
         for ((frame, previous), next) in joined
             .frames
             .iter_mut()
@@ -62,24 +72,25 @@ impl<N: WordElement> ProcedureOutput<N> {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
-        cx.reserve(
-            self.work_size()
-                .saturating_add(incoming.work_size())
-                .saturating_mul(8),
-        )?;
+        cx.reserve(self.work_size().saturating_add(incoming.work_size()))?;
         let widen = acceleration == Acceleration::Widen;
         // Self-projection bounds an initially Exact buffer too; otherwise the
         // retained layout itself would keep the entire original buffer alive.
-        let data = self.data.project_to_layout(&self.data, cx.domain).join(
-            &incoming.data.project_to_layout(&self.data, cx.domain),
-            cx.domain,
-            widen,
-        );
-        let store = self.store.project_to_layout(&self.store, cx.domain).join(
-            &incoming.store.project_to_layout(&self.store, cx.domain),
-            cx.domain,
-            widen,
-        );
+        let data = self
+            .data
+            .project_to_layout_with_payment(&self.data, cx.domain, cx.budget)?;
+        let incoming_data = incoming
+            .data
+            .project_to_layout_with_payment(&self.data, cx.domain, cx.budget)?;
+        let data = data.join_with_payment(&incoming_data, cx.domain, widen, cx.budget)?;
+        let store = self
+            .store
+            .project_to_layout_with_payment(&self.store, cx.domain, cx.budget)?;
+        let incoming_store =
+            incoming
+                .store
+                .project_to_layout_with_payment(&self.store, cx.domain, cx.budget)?;
+        let store = store.join_with_payment(&incoming_store, cx.domain, widen, cx.budget)?;
         Self::from_summaries(data, store, cx)
     }
 }
