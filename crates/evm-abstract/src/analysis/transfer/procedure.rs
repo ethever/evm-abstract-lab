@@ -55,6 +55,11 @@ mod cooperation;
 use cooperation::Producer;
 mod cycles;
 mod environment;
+mod evidence;
+pub use evidence::{
+    EvmRegionalCall, EvmRegionalCfg, EvmRegionalEdge, EvmRegionalNode, EvmRegionalReturn,
+    EvmRegionalTransfer,
+};
 mod recursion;
 mod solver;
 #[cfg(test)]
@@ -112,6 +117,8 @@ struct EvmNode<N: WordElement> {
     /// Promotion belongs to the node, across incoming joins and fresh roots.
     runtime_retry: coarse_retry::EvmRuntimeRetry<N>,
     excluded: bool,
+    /// Latest actual transfer, separate from accumulated admitted topology.
+    transfer: Option<EvmRegionalTransfer>,
 }
 
 struct EvmProcedure<N: WordElement, Key: PolicyKey> {
@@ -171,6 +178,8 @@ struct EvmSubscriber<N: WordElement> {
     updates: usize,
     feedback: bool,
     delivered: BTreeMap<OutcomeKind, (Version, usize)>,
+    /// Compact continuation targets; pending attempts are not exported as returns.
+    returns: BTreeMap<OutcomeKind, evidence::ReturnReceipt>,
 }
 
 /// One shared relation table can grow across multiple relative entries of a
@@ -578,18 +587,37 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 Vec::new()
             }
         };
+        // Procedure IDs in the compact graph must index an exported summary.
+        // An earlier evidence refusal already retained an explicit frontier.
+        let regional_cfg = if procedures.len() != solver.table.procedures.len() {
+            EvmRegionalCfg::default()
+        } else {
+            match solver.regional_cfg() {
+                Ok(cfg) => cfg,
+                Err(error) => {
+                    super::boundary(&mut result, 0, error.frontier_reason());
+                    EvmRegionalCfg::default()
+                }
+            }
+        };
         let closed = relative_closed && result.frontiers.is_empty() && !solver.table.incomplete;
-        let record = EvmProcedureSummaryRecord {
+        let mut record = EvmProcedureSummaryRecord {
             source_state,
             kind,
             root_procedure: root.filter(|root| *root < procedures.len()),
             closed,
             procedures,
+            regional_cfg,
             state_count: solver.table.nodes.len(),
             transfers: solver.counters.transfers.saturating_sub(start_transfers),
             propagations: solver.table.propagations.saturating_sub(start_propagations),
             reused: solver.table.reused.saturating_sub(start_reused),
         };
+        if let Err(error) = solver.regional_checkpoint() {
+            super::boundary(&mut result, 0, error.frontier_reason());
+            record.closed = false;
+            record.regional_cfg = EvmRegionalCfg::default();
+        }
         (result, record)
     }
 }
