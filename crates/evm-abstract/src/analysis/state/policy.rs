@@ -14,6 +14,8 @@ use crate::{
 
 use super::{EvmPayloadSummary, bounded::EvmBoundedState, payload};
 
+mod regional;
+
 #[cfg(test)]
 mod tests;
 

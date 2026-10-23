@@ -403,11 +403,15 @@ pub struct EvmProcedureSummary<N: WordElement> {
 }
 
 /// Why ordinary stack execution entered the relative procedure worklist.
+/// The trigger is captured before callee detachment; recursive dependencies
+/// discovered during saturation do not change it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ProcedureSummaryKind {
     /// An unobserved implementation or symbolic target remainder.
     UnknownEnvironment,
-    /// A known runtime entry repeats an executable/storage context in its ancestors.
+    /// A known runtime CALL entry admitted before any repeated active call edge.
+    KnownCall,
+    /// A known runtime entry selected by a repeated structural call edge on its stack.
     KnownRecursion,
 }
 
