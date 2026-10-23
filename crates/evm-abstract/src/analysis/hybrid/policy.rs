@@ -173,10 +173,6 @@ where
             .prepare_relative_owned(prepared, site, class, cx)
             .map_err(|refusal| refusal.error)
     }
-    #[expect(
-        clippy::result_large_err,
-        reason = "retain the original owned input on every preparation refusal"
-    )]
     fn prepare_owned(
         &self,
         input: EvmMachinePayload<D::Element>,
@@ -197,10 +193,6 @@ where
         self.prepare(&input, site, class, cx)
             .map_err(|error| PartitionRefusal { input, error })
     }
-    #[expect(
-        clippy::result_large_err,
-        reason = "retain the original owned summary on every preparation refusal"
-    )]
     fn prepare_relative_owned(
         &self,
         input: RelativeState<D::Element>,
