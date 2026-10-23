@@ -31,6 +31,8 @@ mod payment;
 mod process;
 mod process_allocation;
 mod process_effects;
+#[cfg(test)]
+mod test_support;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SummaryPlane<N: WordElement> {
