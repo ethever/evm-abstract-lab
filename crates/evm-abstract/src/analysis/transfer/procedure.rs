@@ -54,6 +54,7 @@ mod coarse_retry;
 mod cooperation;
 use cooperation::Producer;
 mod cycles;
+mod effects;
 mod environment;
 mod evidence;
 pub use evidence::{
@@ -127,6 +128,8 @@ struct EvmProcedure<N: WordElement, Key: PolicyKey> {
     /// Procedure preparation and body preparation may choose different keys.
     /// Retain the actual entry bound rather than borrowing the first body.
     entry_payload: EvmPayloadSummary<N>,
+    /// Complete captured-program proof, independent of numerical input growth.
+    store_effect: effects::StoreEffect,
     entry_updates: usize,
     entry_feedback: bool,
     entry_revision: usize,
@@ -371,7 +374,11 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
             store: payload.store.clone(),
             relations: payload.relations.clone(),
         };
-        let root = match solver.procedure(detached.clone()) {
+        let creation = payload
+            .call_stack
+            .active_child()
+            .is_some_and(|child| child.continuation.creation.is_some());
+        let root = match solver.procedure_entry(detached.clone(), creation) {
             Ok(root) => Some(root),
             Err(error) => {
                 solver.frontier(detached, error.frontier_reason(), 0);
@@ -440,7 +447,8 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                     payload
                         .work_size()
                         .saturating_add(output.work)
-                        .saturating_mul(4),
+                        .saturating_mul(4)
+                        .saturating_add(effects::StoreEffect::MATCH_WORK),
                 ) {
                     solver.frontier(payload.clone(), error.frontier_reason(), 0);
                     break;
@@ -448,10 +456,23 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 let mut returned = payload.clone();
                 // Static execution preserves data and historical read roots,
                 // while nested zero-value calls can add EIP-161 touches.
-                let output_store = if payload.active().key.is_static {
-                    Ok(output.summary.store.apply_static_touches(&payload.store))
+                let frame = payload.active();
+                let output_store = if solver.table.procedures[root].store_effect.keeps_store(
+                    frame.code,
+                    frame.key.mode,
+                    frame.program.as_ref(),
+                    kind,
+                    creation,
+                ) {
+                    // `returned` already owns the actual post-entry store,
+                    // including CALL transfers/touches and its old read roots.
+                    Ok(None)
+                } else if payload.active().key.is_static {
+                    Ok(Some(
+                        output.summary.store.apply_static_touches(&payload.store),
+                    ))
                 } else {
-                    output.summary.store.instantiate(domain)
+                    output.summary.store.instantiate(domain).map(Some)
                 };
                 // Equal numerical byte bounds on mutually exclusive exits of
                 // this invocation describe the same unconstrained observable
@@ -487,7 +508,9 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                         continue;
                     }
                 };
-                returned.store = store;
+                if let Some(store) = store {
+                    returned.store = store;
+                }
                 let mut execution = resume_summary_inner(
                     returned,
                     kind,
@@ -599,6 +622,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         let closed = relative_closed && result.frontiers.is_empty() && !solver.table.incomplete;
         let mut record = EvmProcedureSummaryRecord {
             source_state,
+            source_current: false,
             kind,
             root_procedure: root.filter(|root| *root < procedures.len()),
             closed,

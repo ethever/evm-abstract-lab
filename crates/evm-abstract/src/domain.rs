@@ -31,8 +31,10 @@ mod transfer;
 mod value;
 mod widening;
 
-pub(crate) use algebra::SingletonProof;
-pub use algebra::{AlgebraRef, EvmNumericAlgebra, NumericReduction, ValueAlgebra};
+pub use algebra::{
+    AlgebraRef, EvmNumericAlgebra, NumericReduction, SummaryConstruction, ValueAlgebra,
+};
+pub(crate) use algebra::{SingletonProof, summary};
 use concrete::evaluate;
 pub use cooperation::{BuiltinWork, ProductAlgebra};
 pub use element::WordElement;

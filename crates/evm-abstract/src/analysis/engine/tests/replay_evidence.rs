@@ -11,7 +11,7 @@ use crate::{
 };
 use std::sync::Arc;
 
-fn fixture() -> (WorldAnalysis, usize, usize) {
+pub(super) fn fixture() -> (WorldAnalysis, usize, usize) {
     // A static unknown call contributes full native procedure evidence before
     // the ordinary known callee whose graph will be imported below.
     let caller = "5f5f5f5f6103006207a120fa5060205f5f5f6102006207a120fa5000";
@@ -54,7 +54,7 @@ fn fixture() -> (WorldAnalysis, usize, usize) {
     (result, child, unknown)
 }
 
-fn certificate(result: &WorldAnalysis, child: usize) -> Certificate {
+pub(super) fn certificate(result: &WorldAnalysis, child: usize) -> Certificate {
     let state = &result.states()[child];
     let relative = |payload: &crate::analysis::MachinePayload| {
         let mut payload = payload.clone();

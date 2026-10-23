@@ -18,6 +18,7 @@ mod installation;
 mod interruption;
 mod loop_bound;
 mod replay_evidence;
+pub(super) mod source_current;
 
 #[test]
 fn call_success_preserves_non_singleton_output_with_and_without_exact_reuse() {
@@ -108,7 +109,7 @@ fn interrupted_fixture() -> (WorldAnalysis, usize) {
 }
 
 fn engine<'a>(
-    result: WorldAnalysis,
+    mut result: WorldAnalysis,
     child: usize,
     budget: &'a mut WorkBudget,
     counters: &'a mut Counters,
@@ -116,6 +117,13 @@ fn engine<'a>(
     policies: &'a super::EnginePolicies,
 ) -> Engine<'a> {
     let mut setup = WorkBudget::new(usize::MAX);
+    // Private tests reanimate a completed immutable analysis as a fresh engine.
+    // Production run_reusing creates an empty report collection instead. Reset
+    // only flags under this funded, unique-owner setup boundary, never via COW.
+    assert!(setup.charge(result.procedure_summaries.len().saturating_mul(2)));
+    for record in result.procedure_summaries.unique_records().unwrap() {
+        record.source_current = false;
+    }
     let mut ids = super::KeyIndex::new();
     for state in &result.states {
         ids.insert_with((state.key.clone(), state.resume_status), &mut setup, |_| {
@@ -165,6 +173,7 @@ fn engine<'a>(
         edges: BTreeSet::new(),
         diagnostics: BTreeSet::new(),
         completed_calls: vec![Vec::new(); count],
+        source_records: vec![None; count],
         cache: None,
         procedures: super::transfer::procedure::EvmTable::default(),
         reuse: None,

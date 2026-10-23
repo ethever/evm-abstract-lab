@@ -3,7 +3,7 @@ use super::{
     BoundsToMask, BuiltinWork, ComposedWork, DomainSpec, MaskToBounds, NumericReduction,
     NumericValue, ProductContext, ProductWork, Reduction, RuleError, Scope,
 };
-use crate::domain::{EvmNumericAlgebra, EvmValue, ValueAlgebra};
+use crate::domain::{EvmNumericAlgebra, EvmValue, SummaryConstruction, ValueAlgebra, WordElement};
 
 /// Native Word256 product with replaceable mask/range reductions.
 ///
@@ -123,6 +123,89 @@ where
     fn literal_quote_work(&self, _literal: crate::U256) -> usize {
         // Shared scalar literal factories and common literal metadata fit here.
         64
+    }
+    fn summary_join_work(
+        &self,
+        left: &NumericValue,
+        right: &NumericValue,
+        widen_procedure: bool,
+    ) -> usize {
+        if widen_procedure {
+            // Native procedure widening first compares all product components:
+            // its finite equality can visit the complete two input trees. The
+            // remaining path clones next, normalizes at most two interval
+            // segments, builds two fixed-width prefix masks and may discard the
+            // finite component. No cooperation/reduction rule is invoked.
+            return 1024usize
+                .saturating_add(
+                    left.finite_constants()
+                        .work_size()
+                        .saturating_add(right.finite_constants().work_size())
+                        .saturating_mul(16),
+                )
+                .saturating_add(right.clone_work())
+                .saturating_add(right.work_size());
+        }
+        let finite = crate::domain::finite_algebra::summary_union_work(
+            left.finite_constants(),
+            right.finite_constants(),
+            self.spec.capacity(),
+        );
+        // Congruence storage is fixed inline Word256 data, so these tag/field
+        // comparisons never invoke a native singleton, export or carrier hook.
+        let congruence = if left.congruence() == right.congruence()
+            || left.congruence().is_top()
+            || right.congruence().is_top()
+        {
+            64
+        } else if left.congruence().modulus_residue().is_none()
+            && right.congruence().modulus_residue().is_none()
+        {
+            // Two exact classes use gcd(0,0), then gcd(0,difference): no
+            // Euclidean loop. Only difference/new's four-limb remainder remain.
+            512
+        } else {
+            // At most two 256-bit gcds and one remainder. Each gcd has <=512
+            // Euclidean reductions; 256 units per reduction cover the pinned
+            // four-limb Lehmer matrix/shift/division/update routines, including
+            // failed matrix attempts. Shortcut paths only reduce this work.
+            2 * 512 * 256 + 512
+        };
+        // Inline mask/hull/nonzero assembly and final native result release.
+        finite.saturating_add(congruence).saturating_add(256)
+    }
+    fn summary_canonical_work(&self, value: &NumericValue) -> usize {
+        // NumericValue's canonicalizer discovers once, then clones the actual
+        // value or creates a literal. Price both paths and final result release.
+        value
+            .singleton_work()
+            .saturating_add(value.clone_work())
+            .saturating_add(self.literal_quote_work(crate::U256::ZERO))
+            .saturating_add(value.work_size().max(13))
+    }
+    fn summary_construction_work(&self, construction: SummaryConstruction) -> usize {
+        // These exact NumericValue factories only initialize inline components;
+        // ranges normalize at most two segments. No product closure executes,
+        // even for replacement rules or an arbitrarily large finite capacity.
+        match construction {
+            SummaryConstruction::Top => 32,
+            SummaryConstruction::UnknownByte | SummaryConstruction::UnsignedRange { .. } => 512,
+        }
+    }
+    fn summary_equal_work(&self, left: &NumericValue, right: &NumericValue) -> usize {
+        // Only finite equality has an input-sized scan. All other product
+        // fields are inline fixed-width words/tags, including congruence.
+        128usize.saturating_add(
+            left.finite_constants()
+                .work_size()
+                .saturating_add(right.finite_constants().work_size())
+                .saturating_mul(16),
+        )
+    }
+    fn summary_is_top_work(&self, _value: &NumericValue) -> usize {
+        // Finite Top is a tag test; masks, both interval orders, congruence and
+        // nonzero are inline. No finite candidate scan or modulo query occurs.
+        128
     }
     fn projection_work(&self, _value: &NumericValue) -> usize {
         0
