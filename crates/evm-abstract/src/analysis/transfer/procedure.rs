@@ -71,7 +71,7 @@ use crate::analysis::state::{context, stack_alias};
 pub(in crate::analysis) use coarse_retry::prepare as prepare_runtime_retry;
 #[cfg(test)]
 use payload::join;
-pub(in crate::analysis) use recursion::is_recursive_entry;
+pub(in crate::analysis) use recursion::{is_known_call_entry, is_recursive_entry};
 
 /// This is an internal owner namespace, never an observed account address.
 /// All unknown-owner effects are abstracted together, including possible aliases.
@@ -314,8 +314,10 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         let start_reused = self.reused;
         let kind = if payload.active().code == FrameCode::Unknown {
             ProcedureSummaryKind::UnknownEnvironment
-        } else {
+        } else if is_recursive_entry(&payload) {
             ProcedureSummaryKind::KnownRecursion
+        } else {
+            ProcedureSummaryKind::KnownCall
         };
         let mut result = super::empty_execution(payload.clone());
         let mut solver = EvmSolver {
@@ -371,7 +373,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 false
             }
         };
-        if kind == ProcedureSummaryKind::KnownRecursion
+        if kind != ProcedureSummaryKind::UnknownEnvironment
             && let Some(root) = root
             && solver.table.procedures[root].outputs.is_empty()
             && solver.table.procedures[root]
@@ -382,6 +384,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
             && solver.table.frontiers.is_empty()
             && !solver.table.incomplete
         {
+            // An early known entry can discover recursion only after detachment.
             // Folding physical depth cannot certify empty finite behavior.
             // CALL rejection normally supplies real continuation-derived exits;
             // when none reaches a terminal, retain the unmodeled termination.

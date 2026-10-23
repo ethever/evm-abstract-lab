@@ -43,7 +43,7 @@ pub use engine::{
     FeedbackAcceleration, FirstResumeStatus, ForgetJumpHistory, MachinePartition,
     MergeResumeStatus, NoAcceleration, PartitionPolicy, PartitionRefusal, PartitionResult,
     Partitioned, PartitionedRelative, PolicyContext, PolicyKey, PolicySite, ProcedureOutput,
-    ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey, RecentDistinctJumps,
+    ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey, RecentDistinctJumps, RegionalSummaries,
     RelativePartitionResult, RelativeState, SemanticPolicies, StatePolicy, StructuralPartition,
     WholeStateMetadata, WholeStatePolicy,
 };
