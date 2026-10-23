@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 mod bounded_promotion;
 mod decided_cache;
 mod feedback;
+mod graph;
 mod installation;
 mod interruption;
 mod loop_bound;
