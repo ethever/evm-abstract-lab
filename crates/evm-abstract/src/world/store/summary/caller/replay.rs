@@ -1,6 +1,11 @@
 //! Materialization retains native slot operands beside independent root facts.
 
-use super::*;
+use super::{
+    Address, AlgebraRef, BTreeMap, BTreeSet, CloneError, EvmLog, EvmNumericAlgebra, EvmStore,
+    EvmStoreSummary, EvmValue, ExprId, OrderedMap, Plane, SlotStateId, SourceId, StateBinding,
+    StoreError, SummaryError, SummaryPlane, U256, WordElement, WorkBudget, checkpoint, clone_map,
+    observation, pay, pay_structure, scalar, source,
+};
 use crate::{domain::symbolic::ExprLimits, world::bytes::summary::instantiate_scalar_with_payment};
 
 fn graph(work: usize, budget: &mut WorkBudget) -> Result<(), CloneError> {

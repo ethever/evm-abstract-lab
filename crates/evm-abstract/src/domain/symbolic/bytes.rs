@@ -30,6 +30,9 @@ pub struct ByteStateId(Arc<StateNode<ByteStateData>>);
 
 // Byte-only metadata shares the existing allocation. Interning must hash and
 // compare exactly the original kind, excluding these derived metrics.
+// clippy.toml exempts this private memo type: handle Eq/Hash/Ord use immutable
+// ids, and graph serialization exports only kind. Cache warmth changes neither
+// identity nor export; exact_work_tests and copy_metric_tests cover both.
 struct ByteStateData {
     kind: ByteStateKind,
     copy_leaves: usize,

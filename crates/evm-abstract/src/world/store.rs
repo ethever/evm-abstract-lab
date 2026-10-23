@@ -510,8 +510,9 @@ impl<N: WordElement> EvmStore<N> {
             .saturating_add(self.pending_destruction.len())
     }
 
-    /// Raw runtime bytes hashed by code_identity, independently of cheap Code
-    /// cloning. Consumers must prepay the flat code-entry scan first.
+    /// Conservative raw-byte allowance for code_identity, independent of
+    /// Program digest cache warmth or cheap Code cloning. Consumers must prepay
+    /// the flat code-entry scan first.
     pub(crate) fn code_identity_bytes(&self) -> usize {
         self.codes.values().fold(0usize, |bytes, code| {
             bytes.saturating_add(match code {
@@ -831,7 +832,7 @@ impl<N: WordElement> EvmStore<N> {
             match self.code(address) {
                 Some(Code::Runtime(program)) => {
                     bytes.push(1);
-                    bytes.extend(keccak256(program.bytes()).as_slice());
+                    bytes.extend(program.bytes_digest().as_slice());
                 }
                 Some(Code::Delegation(target)) => {
                     bytes.push(2);
