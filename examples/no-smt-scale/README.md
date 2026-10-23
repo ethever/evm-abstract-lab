@@ -52,7 +52,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
   --commands "$COMMAND_PROFILE"
 ```
 
-生成器检查 native12/wire17/domain3/cost7 和 CLI 关系参数，记录 interface source commit 及 CLI、数值选择、关系配置和版本文件的 SHA256。它将历史数值选择迁移为 `--numeric-model product` / `numeric_model`，从预期执行 config 中移出数值限制，并分别记录 `expected_native_numeric_model` 与完整 `expected_native_domain_spec`。应用独立的 20 亿后处理工作上限另存为 `expected_native_postprocessing_max_work`，不改动原 1T 执行额度。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中记录 `root_terminal_coverage: false`，向新生成的 argv 显式追加 `--no-root-terminal-coverage`，保留原 1T/OFF 对照策略；这不是当前 CLI/Web 的默认值。每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
+生成器检查 native14/wire19/domain3/cost8 和 CLI 关系参数，记录 interface source commit 及 CLI、数值选择、关系配置和版本文件的 SHA256。它将历史数值选择迁移为 `--numeric-model product` / `numeric_model`，从预期执行 config 中移出数值限制，并分别记录 `expected_native_numeric_model` 与完整 `expected_native_domain_spec`。应用独立的 20 亿后处理工作上限另存为 `expected_native_postprocessing_max_work`，不改动原 1T 执行额度。它删除基线 policy、policy mapping、预期 config 和 argv 中的两项 SMT 设置，并在预期 config 中记录 `root_terminal_coverage: false`，向新生成的 argv 显式追加 `--no-root-terminal-coverage`，保留原 1T/OFF 对照策略；这不是当前 CLI/Web 的默认值。每个 case 的输入 hash、world、header、未知输入及其余限制保持不变。当前生成的 profile 接受最终 Report 的退出码为 `[0, 2]`：CLI 在输出 Incomplete Report 后返回 2；历史基线 profile 保持 `[0]`。
 
 每份 profile 提供完整 `argv`；仅有首参数 `BINARY` 和一个 `WORLD` 两个占位符，同时绑定 input identity、interface commit、完整 policy、policy 到参数的映射、执行预算 `expected_native_config`、实际代数限制 `expected_native_domain_spec`、模型 `expected_native_numeric_model`、后处理上限 `expected_native_postprocessing_max_work` 和允许的 Report 退出码。`input_mapping` 仍须对照入口与事实语义审核；harness 不证明任意 argv 实现了声明边界。生成器也不证明 ELF 来源或源码干净，最终构建提交确定后须重新生成匹配 profile。
 
@@ -94,7 +94,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/benchmark-no-smt-scale.py \
 
 [`wire14/weth-original-request.json`](wire14/weth-original-request.json)和 [`wire14/usdc-original-request.json`](wire14/usdc-original-request.json)是原捕获请求的显式 schema 派生。仅移除 `/limits/smt_provider`、`/limits/smt_rlimit`，保留 RPC 的 `input.Rpc.provider_id`、固定 block、accounts、caller/value 及任意长度/内容的 Unknown calldata。manifest 记录原始/派生 raw SHA256 和删除 pointer；默认输入检查验证除这两项外请求完全相同。它们仍是 RPC acquisition 请求，不是 offline CLI 输入。
 
-当前 server/Web 使用 wire17。上述 wire14 文件保留原派生字节与 hash；为保留历史 1T/OFF 策略而发送当前请求时，需将历史 `limits.domain_profile` 显式迁移为 `limits.numeric_model: "Product"`，并添加 `limits.root_terminal_coverage: false`；使用新默认则另存相应完整请求，不能改写这些捕获。新生成的请求文件名为 `weth-wire17-request.json` / `usdc-wire17-request.json`。活跃请求中的旧选择器或 SMT 字段都会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
+当前 server/Web 使用 wire19。上述 wire14 文件保留原派生字节与 hash；为保留历史 1T/OFF 策略而发送当前请求时，需将历史 `limits.domain_profile` 显式迁移为 `limits.numeric_model: "Product"`，并添加 `limits.root_terminal_coverage: false`；使用新默认则另存相应完整请求，不能改写这些捕获。新生成的请求文件名为 `weth-wire19-request.json` / `usdc-wire19-request.json`。活跃请求中的旧选择器或 SMT 字段都会被明确拒绝。HTTP 任务、报告投影、传输和浏览器解析有各自状态；任务 `Completed` 不等于报告 `Converged`，须读取实际 status/frontiers、效果和 export 证据。HTTP 测量需要匹配 server 构建、完整请求/策略及 wire adapter；本 harness 的 `native-world-v1` 只消费 CLI stdout，不能用 server ELF 代替 CLI 或混比 RPC 与离线耗时。协议、任务接口和时间边界见 [Web 工作台](../../docs/web-workbench.md)。
 
 ## 报告交付、计时与验收
 

@@ -1,12 +1,14 @@
 //! Explain summarized interactions beside the actual caller and return edges.
 mod regional;
 
+use super::process;
 use crate::palette;
 use egui::{RichText, Ui};
 use evm_abstract_protocol::{AnalysisReport, ProcedureSummaryKind, SummarySourceStatus};
 
 pub(super) fn label(kind: ProcedureSummaryKind) -> &'static str {
     match kind {
+        ProcedureSummaryKind::KnownProcess => "Conservative runtime process",
         ProcedureSummaryKind::UnknownEnvironment => "Abstract interactions",
         ProcedureSummaryKind::KnownRecursion => "Recursive bytecode",
         ProcedureSummaryKind::KnownCall => "Known bytecode call",
@@ -74,11 +76,18 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selected: Option<usize>
                     format!("Procedure {index} · {:?}{root}", procedure.kind),
                     |ui| {
                         ui.monospace(format!("Code: {}", procedure.code_address));
+                        if let Some(hash) = &procedure.code_hash {
+                            ui.monospace(format!("Captured code hash: {hash}"));
+                        }
+                        ui.label(process::interpretation(procedure.semantics));
                         ui.monospace(format!("Storage namespace: {}", procedure.storage_address));
-                        ui.label(format!(
-                            "Static: {} · historically visited blocks: {:?}",
-                            procedure.is_static, procedure.covered_blocks
-                        ));
+                        ui.label(format!("Static: {}", procedure.is_static));
+                        if procedure.semantics == evm_abstract_protocol::TransferSemantics::Native {
+                            ui.label(format!(
+                                "Historically visited blocks: {:?}",
+                                procedure.covered_blocks
+                            ));
+                        }
                         ui.label(format!(
                             "Callees: {:?} · results: {:?}",
                             procedure.dependencies, procedure.outcomes

@@ -25,6 +25,7 @@ pub(super) struct ReportIndex {
     frontiers: BTreeMap<usize, usize>,
     recursive_summaries: BTreeMap<usize, SummarySourceStatus>,
     known_call_summaries: BTreeMap<usize, SummarySourceStatus>,
+    process_summaries: BTreeMap<usize, SummarySourceStatus>,
     environment_summaries: BTreeMap<usize, SummarySourceStatus>,
     terminations: Terminations,
 }
@@ -85,6 +86,7 @@ impl ReportIndex {
         for (position, summary) in report.abstract_summaries.iter().enumerate() {
             let source = summary.source_status(latest[&summary.source_state] != position);
             let map = match summary.kind {
+                ProcedureSummaryKind::KnownProcess => &mut index.process_summaries,
                 ProcedureSummaryKind::KnownRecursion => &mut index.recursive_summaries,
                 ProcedureSummaryKind::KnownCall => &mut index.known_call_summaries,
                 ProcedureSummaryKind::UnknownEnvironment => &mut index.environment_summaries,
@@ -113,6 +115,7 @@ impl ReportIndex {
         kind: ProcedureSummaryKind,
     ) -> Option<SummarySourceStatus> {
         match kind {
+            ProcedureSummaryKind::KnownProcess => self.process_summaries.get(&state),
             ProcedureSummaryKind::KnownRecursion => self.recursive_summaries.get(&state),
             ProcedureSummaryKind::KnownCall => self.known_call_summaries.get(&state),
             ProcedureSummaryKind::UnknownEnvironment => self.environment_summaries.get(&state),

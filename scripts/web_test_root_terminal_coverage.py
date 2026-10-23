@@ -580,7 +580,7 @@ def _schema_control(page, canvas, output, expected_request):
         response = route.fetch()
         native_text = response.text()
         envelope = json.loads(native_text)
-        assert envelope["result"]["Ok"]["schema_version"] == 18
+        assert envelope["result"]["Ok"]["schema_version"] == 19
         envelope["result"]["Ok"]["schema_version"] = 16
         replacement = json.dumps(envelope)
         headers = dict(response.headers)
@@ -652,7 +652,7 @@ def root_terminal_coverage_interactions(context):
     assert defaults["limits"] == LAYOUT_DEFAULT_LIMITS
     assert defaults["limits"]["root_terminal_coverage"] is True
     ordinary = first.json()["result"]["Ok"]
-    assert ordinary["schema_version"] == 18 and ordinary["root_terminal_coverage"] is None
+    assert ordinary["schema_version"] == 19 and ordinary["root_terminal_coverage"] is None
     assert ordinary["status"] == "Converged" and ordinary["ssa"]["complete"] is True
     assert ordinary["frontiers"] == []
     _stores(ordinary)
@@ -777,7 +777,7 @@ def root_terminal_coverage_interactions(context):
                                "root_terminal_coverage": enabled}}
         assert request == expected, (name, request, expected)
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 18 and report["metadata"]["limits"] == expected["limits"]
+        assert report["schema_version"] == 19 and report["metadata"]["limits"] == expected["limits"]
         assert report["fork"] == request["fork"] == "Osaka"
         (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         return report, request

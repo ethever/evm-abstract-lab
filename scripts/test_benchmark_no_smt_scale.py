@@ -105,8 +105,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(sample["nativefinal"]["config"], {"synthetic": True})
 
     def test_native_policy_checks_model_and_algebra_limits_beyond_execution_config(self):
-        # Keep native12/cost7 profiles supported alongside current native13/cost8.
-        for version, cost_version in ((12, 7), (13, 8)):
+        # Keep native12/cost7 profiles supported alongside native13/cost8 and current native14/cost8.
+        for version, cost_version in ((12, 7), (13, 8), (14, 8)):
             with self.subTest(version=version, cost_version=cost_version):
                 self.check_native_policy(version, cost_version)
 

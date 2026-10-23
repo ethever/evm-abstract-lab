@@ -84,6 +84,8 @@ fn regional_records_are_strict_including_nullable_and_empty_evidence() {
         kind: EdgeKind::BranchFalse,
     };
     let transfer = RegionalTransfer {
+        semantics: TransferSemantics::Native,
+        process: None,
         input_revision: DecimalU64(u64::MAX),
         current: false,
         complete: true,
@@ -112,6 +114,8 @@ fn regional_records_are_strict_including_nullable_and_empty_evidence() {
         }],
     };
     let call = RegionalCall {
+        action: None,
+        target: None,
         id: 0,
         from: 0,
         callee: 1,
@@ -154,6 +158,8 @@ fn regional_revisions_are_canonical_decimal_strings_and_edge_kinds_are_lossless(
         strict(RegionalEdge { to: 19, kind });
     }
     let call = RegionalCall {
+        action: None,
+        target: None,
         id: 0,
         from: 0,
         callee: 0,
@@ -172,4 +178,70 @@ fn regional_revisions_are_canonical_decimal_strings_and_edge_kinds_are_lossless(
         malformed["input_revision"] = invalid;
         assert!(serde_json::from_value::<RegionalCall>(malformed).is_err());
     }
+}
+
+#[test]
+fn process_rules_and_targets_keep_strict_typed_boundaries() {
+    let actions = vec![
+        ProcessAction::Call,
+        ProcessAction::StaticCall,
+        ProcessAction::DelegateCall,
+        ProcessAction::CallCode,
+        ProcessAction::Create,
+        ProcessAction::Create2,
+    ];
+    let mut unresolved = vec![
+        ProcessBoundary::CooperativeInputs,
+        ProcessBoundary::SymbolicOwner,
+        ProcessBoundary::NativeInstantiation,
+    ];
+    for action in &actions {
+        unresolved.push(ProcessBoundary::ResidualOwner(*action));
+        unresolved.push(ProcessBoundary::Creation(*action));
+    }
+    let process = ProcessTransfer {
+        repeat: true,
+        actions,
+        unresolved,
+    };
+    strict(process.clone());
+    strict(RegionalTransfer {
+        semantics: TransferSemantics::KnownProcess,
+        process: Some(process),
+        input_revision: DecimalU64(u64::MAX),
+        current: true,
+        complete: false,
+        visited_block: false,
+        successors: vec![],
+        calls: vec![],
+        outcomes: vec![OutcomeKind::Failure],
+    });
+    for target in [
+        ProcessOwner::Named(frame().code_address),
+        ProcessOwner::Residual,
+    ] {
+        strict(RegionalCall {
+            action: Some(ProcessAction::StaticCall),
+            target: Some(target),
+            id: 0,
+            from: 0,
+            callee: 1,
+            entries: vec![],
+            input_revision: DecimalU64(1),
+            deliveries: vec![],
+        });
+    }
+    for boundary in ["CooperativeInputs", "SymbolicOwner", "NativeInstantiation"] {
+        let encoded = serde_json::json!({"Process": boundary});
+        let decoded: FrontierDetails = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+    }
+    assert_eq!(
+        serde_json::to_value(ProcessOwner::Residual).unwrap(),
+        "Residual"
+    );
+    assert!(
+        serde_json::from_value::<ProcessBoundary>(serde_json::json!({"Unsupported": "Call"}))
+            .is_err()
+    );
 }

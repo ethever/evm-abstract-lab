@@ -21,6 +21,23 @@ fn fixture(
     analysis::EvmWorldAnalysis<NumericValue>,
     api::AnalysisReport,
 ) {
+    let result = fixture_with_policy(accounts, RegionalSummaries::with_early_known_admission());
+    assert_eq!(
+        result.1.status,
+        api::AnalysisStatus::Converged,
+        "{:?}",
+        result.1.frontiers
+    );
+    result
+}
+
+fn fixture_with_policy<S: analysis::ProcedureSummaryPolicy<ProductAlgebra>>(
+    accounts: &[(u64, &str, bool)],
+    summary_policy: S,
+) -> (
+    analysis::EvmWorldAnalysis<NumericValue>,
+    api::AnalysisReport,
+) {
     let mut world = EvmWorld::new(Fork::Osaka, "offline regional consumer fixture");
     for &(id, code, storage_unknown) in accounts {
         let mut account = EvmAccount::from_hex(code, Fork::Osaka).unwrap();
@@ -30,6 +47,9 @@ fn fixture(
     }
     let config = analysis::ExecutionConfig {
         root_terminal_coverage: false,
+        // The CALL-family fixture checks application projection and deliveries.
+        // Use the request allowance rather than the smaller bare-engine default.
+        max_work: usize::try_from(api::AnalysisLimits::default().max_work).unwrap(),
         ..Default::default()
     };
     let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::default()));
@@ -37,7 +57,7 @@ fn fixture(
         StructuralPartition,
         CorrelatedJoin,
         FeedbackAcceleration,
-        RegionalSummaries::with_early_known_admission(),
+        summary_policy,
     ));
     let mut extension = NoExtension;
     let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
@@ -49,6 +69,13 @@ fn fixture(
             &Control::default(),
         )
         .unwrap();
+    eprintln!(
+        "regional fixture: status={:?}, work={}, transfers={}, frontiers={}",
+        native.status(),
+        native.work(),
+        native.transfers(),
+        native.frontiers().len()
+    );
     let mut request = api::AnalyzeRequest::default();
     request.limits.root_terminal_coverage = false;
     let report = report::report(
@@ -60,19 +87,139 @@ fn fixture(
         &Control::default(),
     )
     .unwrap();
-    assert_eq!(report.schema_version, 18);
-    assert_eq!(
-        report.status,
-        api::AnalysisStatus::Converged,
-        "{:?}",
-        report.frontiers
-    );
+    assert_eq!(report.schema_version, 19);
     assert!(report.root_terminal_coverage.is_none());
     report.validate().unwrap();
     (native, report)
 }
 
 const ROOT: &str = "5f5f5f5f5f6101025af15000";
+
+#[test]
+fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_wire() {
+    for code in ["5b5f56", "5f5f5f5f6101025afa5000"] {
+        let (native, report) = fixture_with_policy(
+            &[(0x101, code, false), (0x102, "00", false)],
+            analysis::KnownProcessSummaries,
+        );
+        let raw = serde_json::to_value(render::world::evidence(&native).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 14);
+        assert_eq!(raw["domain_spec"]["schema_version"], 3);
+        assert_eq!(raw["domain_spec"]["cost_version"], 8);
+        assert!(report.root_terminal_coverage.is_none());
+        assert!(!report.abstract_summaries.is_empty());
+        for (record, mapped) in native
+            .procedure_summaries()
+            .iter()
+            .zip(&report.abstract_summaries)
+        {
+            assert_eq!(mapped.kind, api::ProcedureSummaryKind::KnownProcess);
+            assert_eq!(mapped.source_current, record.source_current);
+            assert_eq!(mapped.closed, record.closed);
+            for (procedure, actual) in record.procedures.iter().zip(&mapped.procedures) {
+                assert_eq!(actual.semantics, process::semantics(procedure.semantics));
+                assert_eq!(actual.kind, pools::mode(procedure.frame.mode));
+                assert_eq!(
+                    actual.code_hash,
+                    Some(procedure.frame.code_hash.to_string())
+                );
+                if actual.semantics == api::TransferSemantics::KnownProcess {
+                    assert!(actual.covered_blocks.is_empty());
+                }
+            }
+            for (node, actual) in record
+                .regional_cfg
+                .nodes
+                .iter()
+                .zip(&mapped.regional_cfg.nodes)
+            {
+                if mapped.procedures[actual.procedure].semantics
+                    == api::TransferSemantics::KnownProcess
+                {
+                    assert_eq!(actual.frame.kind, api::CodeKind::Runtime);
+                    assert_eq!(actual.frame.basic_block, None);
+                }
+                if let Some(receipt) = &node.transfer {
+                    let actual = actual.transfer.as_ref().unwrap();
+                    assert_eq!(actual.semantics, process::semantics(receipt.semantics));
+                    assert_eq!(
+                        serde_json::to_value(&actual.process).unwrap(),
+                        serde_json::to_value(&receipt.process).unwrap()
+                    );
+                    assert_eq!(actual.visited_block, receipt.visited_block);
+                    assert!(!actual.visited_block);
+                    assert_eq!(
+                        serde_json::to_value(&actual.outcomes).unwrap(),
+                        serde_json::to_value(&receipt.outcomes).unwrap()
+                    );
+                }
+            }
+            for (call, actual) in record
+                .regional_cfg
+                .calls
+                .iter()
+                .zip(&mapped.regional_cfg.calls)
+            {
+                assert_eq!(actual.action, call.action.map(process::action));
+                assert_eq!(actual.target, call.target.map(process::owner));
+            }
+        }
+        if code.contains("fa") {
+            assert!(report.abstract_summaries.iter().any(|summary| {
+                summary.regional_cfg.calls.iter().any(|call| {
+                    call.action == Some(api::ProcessAction::StaticCall)
+                        && call.target == Some(api::ProcessOwner::Named(address(0x102).to_string()))
+                        && call
+                            .entries
+                            .iter()
+                            .any(|id| summary.regional_cfg.nodes[*id].frame.is_static)
+                })
+            }));
+            assert!(report.frontiers.iter().any(|frontier| matches!(
+                frontier.reason,
+                api::FrontierDetails::Process(api::ProcessBoundary::ResidualOwner(
+                    api::ProcessAction::StaticCall
+                ))
+            )));
+        }
+        let decoded: api::AnalyzeReply = serde_json::from_slice(
+            &serde_json::to_vec(&api::AnalyzeReply {
+                result: Ok(report.clone()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded.result.unwrap(), report);
+        let mut malformed = report;
+        let summary = malformed
+            .abstract_summaries
+            .iter_mut()
+            .find(|summary| {
+                summary
+                    .regional_cfg
+                    .nodes
+                    .iter()
+                    .any(|node| node.transfer.is_some())
+            })
+            .unwrap();
+        summary
+            .regional_cfg
+            .nodes
+            .iter_mut()
+            .find_map(|node| node.transfer.as_mut())
+            .unwrap()
+            .visited_block = true;
+        assert!(matches!(
+            malformed.validate(),
+            Err(api::ReportValidationFailure::Regional(
+                api::RegionalValidationFailure {
+                    kind: api::RegionalValidationKind::BlockVisit,
+                    ..
+                }
+            ))
+        ));
+    }
+}
 
 fn calls_fixture() -> (
     analysis::EvmWorldAnalysis<NumericValue>,
@@ -256,7 +403,7 @@ fn regional_known_calls_preserve_native_owner_mode_deliveries_and_pooled_roundtr
     decoded.validate().unwrap();
     assert_eq!(decoded, report);
     let raw = serde_json::to_value(render::world::evidence(&native).unwrap()).unwrap();
-    assert_eq!(raw["schema_version"], 13);
+    assert_eq!(raw["schema_version"], 14);
     assert_eq!(raw["procedure_summaries"][0]["kind"], "KnownCall");
     assert_eq!(
         raw["procedure_summaries"][0]["regional_cfg"],

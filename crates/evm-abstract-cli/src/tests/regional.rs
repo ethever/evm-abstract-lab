@@ -20,6 +20,20 @@ fn analyze_region(
     callee_code: &str,
     max_transfers: Option<usize>,
 ) -> (EvmWorldAnalysis<NumericValue>, ValueAlgebra<ProductAlgebra>) {
+    analyze_region_with_policy(
+        root_code,
+        callee_code,
+        max_transfers,
+        RegionalSummaries::with_early_known_admission(),
+    )
+}
+
+fn analyze_region_with_policy<S: evm_abstract::analysis::ProcedureSummaryPolicy<ProductAlgebra>>(
+    root_code: &str,
+    callee_code: &str,
+    max_transfers: Option<usize>,
+    summary_policy: S,
+) -> (EvmWorldAnalysis<NumericValue>, ValueAlgebra<ProductAlgebra>) {
     let root = Address::repeat_byte(0x11);
     let callee = Address::repeat_byte(0x22);
     let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "offline CLI regional evidence");
@@ -37,7 +51,7 @@ fn analyze_region(
         StructuralPartition,
         CorrelatedJoin,
         FeedbackAcceleration,
-        RegionalSummaries::with_early_known_admission(),
+        summary_policy,
     ));
     let mut extension = NoExtension;
     let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
@@ -56,6 +70,55 @@ fn analyze_region(
         )
         .unwrap();
     (native, algebra)
+}
+
+#[test]
+fn native_process_receipts_survive_plain_and_ssa_cli_envelopes() {
+    let (native, _) = analyze_region_with_policy(
+        "5b5f56",
+        "00",
+        None,
+        evm_abstract::analysis::KnownProcessSummaries,
+    );
+    assert_eq!(native.status(), evm_abstract::analysis::Status::Converged);
+    let original = serde_json::to_value(render::world::evidence(&native).unwrap()).unwrap();
+    let mut budget = WorkBudget::new(crate::defaults::DEFAULT_POSTPROCESS_WORK);
+    let ir = ssa::build_normalized_partial_world(&native, &mut budget).unwrap();
+    for normalized in [None, Some(&ir)] {
+        let encoded: Value = serde_json::from_str(
+            &crate::json::world(
+                &native,
+                normalized,
+                crate::numeric::NumericModel::Product,
+                &budget,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let analysis = if normalized.is_some() {
+            &encoded["analysis"]
+        } else {
+            &encoded
+        };
+        assert_eq!(analysis["schema_version"], 14);
+        assert_eq!(analysis["domain_spec"]["schema_version"], 3);
+        assert_eq!(analysis["domain_spec"]["cost_version"], 8);
+        assert_eq!(
+            analysis["procedure_summaries"],
+            original["procedure_summaries"]
+        );
+        let record = analysis["procedure_summaries"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap();
+        assert_eq!(record["kind"], "KnownProcess");
+        let receipt = &record["regional_cfg"]["nodes"][0]["transfer"];
+        assert_eq!(receipt["semantics"], "KnownProcess");
+        assert_eq!(receipt["visited_block"], false);
+        assert_eq!(receipt["outcomes"], serde_json::json!(["Failure"]));
+        assert_eq!(receipt["process"]["actions"], serde_json::json!([]));
+    }
 }
 
 #[test]
@@ -87,7 +150,7 @@ fn known_call_terminal_frontier_text_keeps_the_legacy_tag_and_region_explanation
 }
 
 #[test]
-fn regional_evidence_survives_plain_and_ssa_cli_envelopes_with_native_13() {
+fn regional_evidence_survives_plain_and_ssa_cli_envelopes_with_native_14() {
     for max_transfers in [None, Some(2)] {
         let (native, _) = analyze_region(
             &format!("5f5f5f5f5f73{}5af15000", "22".repeat(20)),
@@ -105,7 +168,7 @@ fn regional_evidence_survives_plain_and_ssa_cli_envelopes_with_native_13() {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(plain["schema_version"], 13);
+        assert_eq!(plain["schema_version"], 14);
         assert_eq!(plain["domain_spec"]["cost_version"], 8);
         for (record, encoded) in native
             .procedure_summaries()
@@ -141,7 +204,7 @@ fn regional_evidence_survives_plain_and_ssa_cli_envelopes_with_native_13() {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(wrapped["analysis"]["schema_version"], 13);
+        assert_eq!(wrapped["analysis"]["schema_version"], 14);
         assert_eq!(
             wrapped["analysis"]["procedure_summaries"],
             plain["procedure_summaries"]
