@@ -109,6 +109,7 @@ enum ReadFact<'a> {
     Members(&'a std::collections::BTreeSet<alloy_primitives::U256>),
 }
 
+#[cfg(test)]
 impl ReadFact<'_> {
     fn numeric<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         &self,
@@ -224,6 +225,7 @@ pub(in crate::analysis) fn form_work<N: WordElement, D: EvmNumericAlgebra<Elemen
 }
 
 impl<N: WordElement> EvmStorageObservations<N> {
+    #[cfg(test)]
     pub(in crate::analysis) fn form<D: EvmNumericAlgebra<Element = N>>(
         payload: &EvmMachinePayload<N>,
         domain: AlgebraRef<'_, D>,

@@ -11,11 +11,8 @@ use crate::{
 };
 use alloy_primitives::{Address, U256};
 
-// Reuse the repository's native carrier with private predicates and independent
-// copy/query/constructor tariffs. No production policy is changed for testing.
-#[path = "../metered/tests/native.rs"]
-mod native;
-use native::{CALLS, Calls, Native, Policy};
+// Share the native counter carrier used by metered and payment controls.
+use crate::world::store::summary::test_support::{CALLS, Calls, Native, Policy};
 
 fn state() -> EvmStoreSummary<Native> {
     let plane = || SummaryPlane {

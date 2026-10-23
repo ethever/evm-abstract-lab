@@ -15,7 +15,7 @@ use crate::{
         EvmRootFrame, FrameCode, FrameKey, FrontierReason, MachineEdgeKind, OutcomeKind,
     },
     bytecode::Program,
-    domain::{AlgebraRef, EvmValue},
+    domain::{AlgebraRef, EvmValue, summary},
     world::{AddressInput, Code, EvmByteArray, EvmEntry, EvmSnapshot, EvmStore, EvmWorld},
 };
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -242,6 +242,7 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
         boundary_on(result, pc, reason, payload.key());
         return;
     }
+    let mut result_literal = None;
     if let Some(child) = payload.call_stack.active_child() {
         let continuation = &child.continuation;
         let parent = payload.call_stack.parent().expect("a child has a parent");
@@ -261,6 +262,23 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
         if let Err(error) = snapshots {
             boundary_on(result, pc, clone_reason(error), payload.key());
             return;
+        }
+        if let Some(address) = continuation
+            .creation
+            .and_then(crate::analysis::CreationContinuation::native_address)
+        {
+            let word = if kind == OutcomeKind::Return {
+                U256::from_be_slice(address.as_slice())
+            } else {
+                U256::ZERO
+            };
+            result_literal = match summary::prepare_literal(word, domain, context.budget) {
+                Ok(permit) => Some(permit),
+                Err(error) => {
+                    boundary_on(result, pc, clone_reason(error), payload.key());
+                    return;
+                }
+            };
         }
         let paid = parent.memory.pay_return_copy_with(
             &data,
@@ -309,22 +327,27 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
         return;
     }
     let output_kind = kind;
+    // Preserve native factory order: actual output/COPY admission precedes
+    // construction, even though the real address/zero literal is already paid.
+    let result_value = match result_literal {
+        Some(permit) => match permit.construct(context.budget) {
+            Ok(value) => value,
+            Err(error) => {
+                boundary_on(result, pc, clone_reason(error), payload.key());
+                return;
+            }
+        },
+        // This lane changes creation's address/zero factories only. Keep the
+        // legacy ordinary-CALL status path and its independent payer contract.
+        None => EvmValue::<D::Element>::constant(if kind == OutcomeKind::Return {
+            U256::ONE
+        } else {
+            U256::ZERO
+        }),
+    };
     let parent = payload.active_mut();
     parent.returndata = data;
-    // Failure has an empty buffer. Revert exposes revert data, but both report 0.
-    let result_value = if kind == OutcomeKind::Return {
-        continuation
-            .creation
-            .and_then(crate::analysis::CreationContinuation::native_address)
-            .map_or(U256::from(1), |address| {
-                U256::from_be_slice(address.as_slice())
-            })
-    } else {
-        U256::ZERO
-    };
-    parent
-        .stack
-        .push(EvmValue::<D::Element>::constant(result_value));
+    parent.stack.push(result_value);
     let copied = parent.memory.copy_return_data_budgeted(
         &continuation.output_offset,
         &parent.returndata,
@@ -376,15 +399,44 @@ pub(super) fn failure<D: EvmNumericAlgebra>(
     context: &mut TransferContext<'_, D>,
     pc: usize,
 ) {
+    failure_inner(result, context, pc, false);
+}
+
+/// CREATE's current-frame exception owns the actual empty-data factories.
+pub(super) fn creation_failure<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+) {
+    failure_inner(result, context, pc, true);
+}
+
+fn failure_inner<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    context: &mut TransferContext<'_, D>,
+    pc: usize,
+    creation: bool,
+) {
     if let Err(error) = result.payload.pay_clone_with(context.budget) {
         boundary_on(result, pc, clone_reason(error), result.payload.key());
         return;
     }
+    let data = if creation {
+        match EvmByteArray::empty_with_payment(context.domain, context.budget) {
+            Ok(data) => data,
+            Err(error) => {
+                boundary_on(result, pc, clone_reason(error), result.payload.key());
+                return;
+            }
+        }
+    } else {
+        EvmByteArray::empty()
+    };
     finish(
         result,
         result.payload.clone(),
         OutcomeKind::Failure,
-        EvmByteArray::<D::Element>::empty(),
+        data,
         context,
         pc,
     );

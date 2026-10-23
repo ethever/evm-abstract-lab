@@ -1,7 +1,11 @@
 //! Layout coordinates are borrowed; defaults always come from their own input.
 
 use super::super::InitialIndependence;
-use super::*;
+use super::{
+    AlgebraRef, BTreeSet, CloneError, EvmNumericAlgebra, EvmStoreSummary, EvmValue, NumericMap,
+    OrderedMap, SummaryLog, SummaryPlane, U256, WordElement, WorkBudget, checkpoint, lifecycle,
+    pay_structure, representable_default_with_payment, scalar, sparse,
+};
 
 fn project_numeric<K: Ord + Clone, N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     (values, default): (&NumericMap<K, N>, &EvmValue<N>),

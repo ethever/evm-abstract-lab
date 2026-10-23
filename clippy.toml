@@ -1,0 +1,8 @@
+# ByteStateData memoizes derived work only. Its kind-only interning Eq/Hash,
+# ID-only handle Eq/Hash/Ord and graph serialization ignore this cache. The
+# bytes::exact_work_tests and copy_metric_tests protect these invariants.
+# Preserve Clippy's default Bytes exemption; do not exempt OnceLock generally.
+ignore-interior-mutability = [
+    "bytes::Bytes",
+    "evm_abstract::domain::symbolic::bytes::ByteStateData",
+]
