@@ -53,11 +53,22 @@ fn current_subscribers_match_latest_body_template_and_same_callee_output() {
     evidence("current-deliveries", &analysis);
     assert_current(&analysis);
     let mut checked = 0;
+    let mut input_grew = false;
+    let mut output_grew = false;
+    let mut template_grew = false;
+    let mut output_generation_grew = false;
+    let mut multiple_subscribers = false;
     for record in analysis.procedure_summaries() {
+        input_grew |= record.procedures.iter().any(|p| p.input_updates > 1);
+        output_grew |= record.procedures.iter().any(|p| p.output_updates > 1);
         let mut generations = std::collections::BTreeMap::new();
+        let mut subscribers = std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
         for call in &record.regional_cfg.calls {
+            subscribers.entry(call.callee).or_default().insert(call.id);
+            template_grew |= call.input_revision > 0;
             assert!(!call.deliveries.is_empty());
             for delivery in &call.deliveries {
+                output_generation_grew |= delivery.output_generation > 1;
                 if let Some(previous) =
                     generations.insert((call.callee, delivery.kind), delivery.output_generation)
                 {
@@ -69,8 +80,11 @@ fn current_subscribers_match_latest_body_template_and_same_callee_output() {
                 checked += 1;
             }
         }
+        multiple_subscribers |= subscribers.values().any(|ids| ids.len() > 1);
     }
     assert!(checked >= 2);
+    assert!(input_grew && output_grew && template_grew && output_generation_grew);
+    assert!(multiple_subscribers);
 }
 
 #[test]
