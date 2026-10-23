@@ -76,7 +76,9 @@ pub use process::{
     ProcessSource, RuntimeExecution, TransferSemantics,
 };
 pub use rpc::{
-    RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
+    RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcBaselineRelation,
+    RpcFactRestriction, RpcHybridAnalysis, RpcHybridCoverage, RpcPrecisionOutcome, RpcStorageSlot,
+    analyze_rpc, analyze_rpc_hybrid,
 };
 pub use single::ProjectionError;
 pub use summary::{EvmSummaryInput, EvmSummaryOutput, EvmSummaryRecord, SummaryStats};
