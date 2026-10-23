@@ -20,7 +20,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use revm_bytecode::opcode;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod diagnostics;
 
@@ -202,6 +202,7 @@ impl<CTX> Inspector<CTX, EthInterpreter> for Trace {
 fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback_are_covered() {
     let domain = domain();
     let mut witnesses = 0;
+    let mut epochs = BTreeMap::new();
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         for outside in [0xaaa, 0xbbb] {
             for action in [
@@ -230,18 +231,29 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                         let mut driver =
                             emit_call(action, address(0x200), if is_static { 0 } else { 9 }, 0, 0);
                         driver.extend([opcode::POP, opcode::STOP]);
-                        let mut root = emit_call(
+                        // Both actual outside owners use the same captured
+                        // root bytes. Only calldata selects A or B; the owner
+                        // comparison must not silently change code/epoch.
+                        let mut root = vec![opcode::PUSH0; 4];
+                        if !is_static {
+                            root.extend([opcode::PUSH1, 7]);
+                        }
+                        root.extend([
+                            opcode::PUSH0,
+                            opcode::CALLDATALOAD,
+                            opcode::PUSH3,
+                            0x0f,
+                            0x42,
+                            0x40,
                             if is_static {
-                                ProcessAction::StaticCall
+                                opcode::STATICCALL
                             } else {
-                                ProcessAction::Call
+                                opcode::CALL
                             },
-                            address(outside),
-                            if is_static { 0 } else { 7 },
-                            0,
-                            0,
-                        );
-                        root.extend([opcode::POP, opcode::STOP]);
+                            opcode::POP,
+                            opcode::STOP,
+                        ]);
+                        let root_hash = keccak256(&root);
                         let mut world = EvmWorld::<NumericValue>::new(fork, "process-owner-revm");
                         for (owner, bytes, slot) in
                             [(0x101, root.clone(), 11), (0x200, leaf.clone(), 22)]
@@ -264,7 +276,7 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                             &[
                                 CapturedProcessCode {
                                     source: address(0x101),
-                                    hash: keccak256(&root),
+                                    hash: root_hash,
                                     fork,
                                 },
                                 CapturedProcessCode {
@@ -277,6 +289,15 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                             &mut budget(),
                         )
                         .unwrap();
+                        if let Some(epoch) =
+                            epochs.insert((fork, is_static, terminal), catalogue.epoch())
+                        {
+                            assert_eq!(
+                                epoch,
+                                catalogue.epoch(),
+                                "A/B owners and opaque driver implementations must share captured code vocabulary"
+                            );
+                        }
                         let roles = CallRoles::for_action(action, is_static).unwrap();
                         catalogue
                             .admit_code(
@@ -356,6 +377,7 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                                 TxEnv::builder()
                                     .caller(address(0x900))
                                     .kind(TxKind::Call(address(0x101)))
+                                    .data(U256::from(outside).to_be_bytes::<32>().to_vec().into())
                                     .gas_limit(10_000_000)
                                     .build()
                                     .unwrap(),
@@ -458,6 +480,8 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                                 "exit": (["return", "revert", "failure"][terminal]),
                                 "code_source": address(0x200),
                                 "code_hash": keccak256(&leaf),
+                                "root_code_hash": root_hash,
+                                "target_source": "root_calldata_word_0",
                                 "catalogue_epoch": catalogue.epoch(),
                                 "prepared_owner": owner,
                                 "actual_owner": actual_owner,
@@ -476,6 +500,11 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
         }
     }
     assert_eq!(witnesses, 108);
+    assert_eq!(
+        epochs.len(),
+        18,
+        "one frozen vocabulary covers both owners and all three opaque driver actions"
+    );
     eprintln!(
         "108 concrete revm storage/role/code witnesses covered; process solver hooks remain external"
     );
