@@ -2,10 +2,10 @@
 //! Installed Body/Resume coverage additionally lives in global_process.
 
 pub use evm_abstract::analysis::process_creation as creation;
-pub mod analysis {
+mod analysis {
     pub use evm_abstract::analysis::{OutcomeKind, ProcessAction, ProcessOwner};
 }
-pub mod resource {
+mod resource {
     pub use evm_abstract::resource::WorkBudget;
 }
 
