@@ -4,6 +4,12 @@
 //! rebuilds the graph, Store, rollback checkpoints and summary namespace from the
 //! transaction entry, while retaining the same execution and acquisition limits.
 
+mod hybrid;
+pub use hybrid::{
+    RpcBaselineRelation, RpcFactRestriction, RpcHybridAnalysis, RpcHybridCoverage,
+    RpcPrecisionOutcome, analyze_rpc_hybrid,
+};
+
 use super::{
     AnalysisEngine, ConfigError, ContextPolicy, EvmMachineFrontier, EvmWorldAnalysis,
     ExecutionConfig, FrontierReason, PartitionPolicy, StatePolicy, Status,
