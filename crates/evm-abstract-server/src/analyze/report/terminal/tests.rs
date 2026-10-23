@@ -343,7 +343,7 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     assert_eq!(binding.domain_spec.schema_version, 3);
     assert_eq!(binding.domain_spec.word_bits, domain.word_bits());
     assert_eq!(binding.domain_spec.cost_version, domain.cost_version());
-    assert_eq!(binding.domain_spec.cost_version, 7);
+    assert_eq!(binding.domain_spec.cost_version, 8);
     assert_eq!(
         binding.domain_spec.provenance_policy,
         domain.provenance_policy()

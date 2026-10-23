@@ -106,6 +106,7 @@ fn regional_evidence_survives_plain_and_ssa_cli_envelopes_with_native_13() {
         )
         .unwrap();
         assert_eq!(plain["schema_version"], 13);
+        assert_eq!(plain["domain_spec"]["cost_version"], 8);
         for (record, encoded) in native
             .procedure_summaries()
             .iter()
