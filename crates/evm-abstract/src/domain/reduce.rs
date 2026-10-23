@@ -1,4 +1,4 @@
-//! 临时规约只传播当前 product 蕴含的事实。每轮事务式导出/导入，
+//! 临时规约只传播当前 product 蕴含的事实。每条事实事务式插入，导出失败保留成功前缀；
 //! FactLattice 对同一语义槽取 meet；重复回馈不会生成新的日志条目。
 use super::{
     DomainSpec, EvmValue, NumericValue, WordElement, WordObservation,
@@ -218,3 +218,6 @@ pub(super) fn error_status(error: &FactError) -> ReductionStatus {
         | FactError::InvalidOperation { .. } => ReductionStatus::RoundLimit,
     }
 }
+
+#[cfg(test)]
+mod tests;
