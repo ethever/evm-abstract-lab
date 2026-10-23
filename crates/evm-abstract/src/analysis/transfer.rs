@@ -102,6 +102,12 @@ pub(super) struct EvmOutcome<N: WordElement> {
     pub store: EvmStore<N>,
 }
 pub(super) struct EvmExecution<N: WordElement> {
+    pub process: Option<crate::analysis::EvmProcessTransfer>,
+    pub process_calls: Vec<(
+        usize,
+        crate::analysis::ProcessAction,
+        crate::analysis::ProcessOwner,
+    )>,
     pub payload: EvmMachinePayload<N>,
     pub executed_pcs: Vec<usize>,
     pub instruction_progress: Vec<InstructionProgress>,
@@ -124,6 +130,8 @@ pub(super) enum RetentionCause {
 
 fn empty_execution<N: WordElement>(payload: EvmMachinePayload<N>) -> EvmExecution<N> {
     EvmExecution {
+        process: None,
+        process_calls: Vec::new(),
         payload,
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
@@ -212,6 +220,8 @@ fn resume_summary_inner<D: EvmNumericAlgebra>(
         return result;
     }
     let mut result = EvmExecution {
+        process: None,
+        process_calls: Vec::new(),
         payload: payload.clone(),
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
@@ -466,6 +476,8 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
     };
     let context = &mut transfer_context;
     let mut result = EvmExecution {
+        process: None,
+        process_calls: Vec::new(),
         payload,
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),
@@ -477,6 +489,14 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
         completed_calls: Vec::new(),
         retention_failures: Vec::new(),
     };
+    if result.payload.active().key.process.is_some() {
+        boundary(
+            &mut result,
+            0,
+            FrontierReason::Process(crate::analysis::ProcessBoundary::NativeInstantiation),
+        );
+        return result;
+    }
     if !late_failure::at_block_entry(&mut result, context) {
         return result;
     }

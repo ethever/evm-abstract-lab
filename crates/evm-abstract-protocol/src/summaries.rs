@@ -3,6 +3,8 @@
 choice! {
     /// Why the main execution requested a procedure fixed point.
     pub enum ProcedureSummaryKind {
+        /// Captured runtime selected for conservative process interpretation.
+        KnownProcess,
         /// Unobserved execution interacting with captured bytecode.
         UnknownEnvironment,
         /// A recursive call between captured bytecode procedures.
@@ -15,13 +17,15 @@ choice! {
 record! {
     /// A known-code or abstract-environment relation in one joint fixed point.
     pub struct AbstractProcedure {
+        /// Interpretation independently of captured code kind and identity.
+        pub semantics: crate::TransferSemantics,
         /// Code identity; an abstract namespace is not an observed account.
         pub code_address: String,
         /// Captured code hash, without an invented unknown instruction stream.
         pub code_hash: Option<String>,
         /// Storage namespace used by the relation.
         pub storage_address: String,
-        /// Whether this relation interprets bytecode or an abstract environment.
+        /// Original executable kind, retained under conservative interpretation.
         pub kind: crate::CodeKind,
         /// Propagated static execution restriction.
         pub is_static: bool,
@@ -95,8 +99,8 @@ record! {
         pub kind: crate::CodeKind,
         /// Propagated static restriction.
         pub is_static: bool,
-        /// Runtime/initcode block index, including synthetic end-of-code;
-        /// absent for all non-program modes, including invalid delegation.
+        /// Native runtime/initcode block index, including synthetic end-of-code;
+        /// absent for process interpretations and all non-program modes.
         /// This is not a PC.
         pub basic_block: Option<usize>,
         /// Input stack shape, without invented values.
@@ -127,6 +131,10 @@ record! {
 record! {
     /// One actual interpreter/environment transfer at a recorded revision.
     pub struct RegionalTransfer {
+        /// Actual interpretation independently of original code identity.
+        pub semantics: crate::TransferSemantics,
+        /// Conservative rules; absent when none were recorded by this transfer.
+        pub process: Option<crate::ProcessTransfer>,
         /// Input version actually interpreted.
         pub input_revision: crate::DecimalU64,
         /// Current within this record's observation. Final-source currentness
@@ -134,7 +142,7 @@ record! {
         pub current: bool,
         /// No obligation of this transfer was refused or deferred.
         pub complete: bool,
-        /// At least one captured instruction was visited; false for environments.
+        /// At least one captured instruction was visited; false for processes.
         pub visited_block: bool,
         /// Successfully admitted successors of this transfer, in native order.
         pub successors: Vec<RegionalEdge>,
@@ -156,6 +164,10 @@ record! {
 record! {
     /// A retained caller continuation, distinct from its callee relation.
     pub struct RegionalCall {
+        /// Conservative action; absent for an ordinary native subscription.
+        pub action: Option<crate::ProcessAction>,
+        /// Original action target, independently of executable code and state owner.
+        pub target: Option<crate::ProcessOwner>,
         /// Index in the containing RegionalCfg.calls.
         pub id: usize,
         /// Caller regional node ID.
@@ -227,6 +239,8 @@ choice! {
         Excluded,
         /// Environment/native execution cannot claim a captured block visit.
         BlockVisit,
+        /// Code identity, procedure interpretation and receipt interpretation disagree.
+        Semantics,
     }
 }
 record! {

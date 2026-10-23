@@ -50,6 +50,10 @@ pub struct EvmRegionalNode {
 /// Receipt of one actual transfer, without per-instruction evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EvmRegionalTransfer {
+    /// Actual interpretation; code kind, Program and source hash stay unchanged.
+    pub semantics: crate::analysis::TransferSemantics,
+    /// Conservative process rules, never instruction/SSA execution evidence.
+    pub process: Option<crate::analysis::EvmProcessTransfer>,
     /// Native input version actually interpreted, after any admitted retry.
     pub input_revision: u64,
     /// The native owner finished and this still describes its current input.
@@ -85,6 +89,14 @@ pub struct EvmRegionalEdge {
 /// A separate caller template subscribed to a callee's growing outputs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EvmRegionalCall {
+    /// Whether the relation is a primitive action or a collapsed chain.
+    pub scope: Option<crate::analysis::ProcessControlScope>,
+    /// Primitive process action, independent of callee code kind. Native calls
+    /// retain their captured-instruction evidence instead.
+    pub action: Option<crate::analysis::ProcessAction>,
+    /// Account named by the action before code/delegation resolution; this is
+    /// separate from both the callee's code account and its state owner.
+    pub target: Option<crate::analysis::ProcessOwner>,
     /// Native subscriber ID, scoped to this table snapshot.
     pub id: usize,
     /// Caller regional body ID.
@@ -102,6 +114,8 @@ pub struct EvmRegionalCall {
 /// A callee output actually delivered to this subscriber's continuation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EvmRegionalReturn {
+    /// CREATE-specific delivered cases; empty for ordinary CALL completion.
+    pub creation: Vec<crate::analysis::process_creation::CompletionCase>,
     /// Delivered relative termination alternative.
     pub kind: OutcomeKind,
     /// Subscriber-template version actually instantiated.
@@ -118,7 +132,19 @@ pub struct EvmRegionalReturn {
 
 impl EvmRegionalTransfer {
     fn work_size(&self) -> usize {
-        8usize
+        10usize
+            .saturating_add(self.process.as_ref().map_or(0, |process| {
+                process
+                    .actions
+                    .len()
+                    .saturating_add(process.unresolved.len())
+                    .saturating_add(process.creations.iter().fold(0usize, |work, creation| {
+                        work.saturating_add(creation.exceptions.len())
+                            .saturating_add(creation.rejections.len().saturating_mul(4))
+                            .saturating_add(16)
+                    }))
+                    .saturating_add(4)
+            }))
             .saturating_add(self.successors.len().saturating_mul(2))
             .saturating_add(self.calls.len())
             .saturating_add(self.outcomes.len())
@@ -140,7 +166,9 @@ pub(super) struct ReturnReceipt {
 
 impl ReturnReceipt {
     fn work_size(&self) -> usize {
-        6usize.saturating_add(self.report.successors.len().saturating_mul(2))
+        6usize
+            .saturating_add(self.report.successors.len().saturating_mul(2))
+            .saturating_add(self.report.creation.len().saturating_mul(32))
     }
 
     fn snapshot(
@@ -254,7 +282,18 @@ impl<
         .zip(present)
         .filter_map(|(kind, present)| present.then_some(kind))
         .collect();
+        if let Some(process) = &execution.process {
+            self.reserve(
+                process
+                    .actions
+                    .len()
+                    .saturating_add(process.unresolved.len())
+                    .saturating_add(4),
+            )?;
+        }
         self.table.nodes[id].transfer = Some(EvmRegionalTransfer {
+            semantics: self.table.nodes[id].payload.active().semantics,
+            process: execution.process.clone(),
             input_revision: input.get(),
             current: false,
             complete: execution.frontiers.is_empty(),
@@ -374,6 +413,7 @@ impl<
             kind,
             ReturnReceipt {
                 report: EvmRegionalReturn {
+                    creation: Vec::new(),
                     kind,
                     input_revision: input.get(),
                     output_generation: generation,
@@ -391,6 +431,19 @@ impl<
         if let Some(receipt) = self.table.subscribers[subscription].returns.get_mut(&kind) {
             receipt.delivered = true;
         }
+    }
+
+    pub(super) fn regional_creation_cases(
+        &mut self,
+        subscription: usize,
+        kind: OutcomeKind,
+        cases: [Option<crate::analysis::process_creation::CompletionCase>; 2],
+    ) -> Result<(), MachineError> {
+        self.reserve(128)?;
+        if let Some(receipt) = self.table.subscribers[subscription].returns.get_mut(&kind) {
+            receipt.report.creation = cases.into_iter().flatten().collect();
+        }
+        Ok(())
     }
 
     /// Export must observe both cancellation identities. A sticky spent ledger
@@ -490,6 +543,11 @@ impl<
                             })
                             .collect();
                         Ok(EvmRegionalCall {
+                            scope: subscriber
+                                .action
+                                .map(|_| crate::analysis::ProcessControlScope::Primitive),
+                            action: subscriber.action.map(|(action, _)| action),
+                            target: subscriber.action.map(|(_, target)| target),
                             id,
                             from: subscriber.from,
                             callee: subscriber.callee,

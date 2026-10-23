@@ -46,6 +46,7 @@ pub(super) use transform::StatePart;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct EvmFrameSummary<N: WordElement> {
+    pub(super) semantics: super::TransferSemantics,
     pub(super) frame: EvmFrame<N, EvmByteArraySummary<N>, EvmStoreSummary<N>, EvmValue<N>>,
     pub(super) stack_aliases: stack_alias::StackAliases,
 }

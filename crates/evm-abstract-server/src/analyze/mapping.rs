@@ -114,6 +114,7 @@ pub(super) fn frontier(source: &analysis::FrontierReason) -> FrontierKind {
         }
         analysis::FrontierReason::CallDepth => FrontierKind::CallDepth,
         analysis::FrontierReason::RecursiveNoTerminal => FrontierKind::Model,
+        analysis::FrontierReason::Process(_) => FrontierKind::Model,
         analysis::FrontierReason::Memory => FrontierKind::Memory,
         analysis::FrontierReason::ByteRange(_) => FrontierKind::ByteRange,
         analysis::FrontierReason::StateJoin(_) => FrontierKind::StateJoin,
@@ -153,6 +154,7 @@ pub(super) fn reason(source: &analysis::FrontierReason) -> evm_abstract_protocol
     use evm_abstract::analysis::{CreationBoundary as NC, FrontierReason as N};
     use evm_abstract_protocol::{CreationReason as C, FrontierDetails as P};
     match source {
+        N::Process(reason) => P::Process(super::process::boundary(*reason)),
         N::Budget(bound) => P::Budget(limit(*bound)),
         N::Work => P::Work,
         N::SummaryWork => P::SummaryWork,

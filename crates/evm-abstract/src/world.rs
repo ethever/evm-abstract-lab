@@ -13,6 +13,7 @@ pub mod environment;
 mod initial;
 #[cfg(test)]
 mod native_algebras_tests;
+pub mod process;
 pub mod rpc;
 #[cfg(test)]
 mod runtime_code_tests;

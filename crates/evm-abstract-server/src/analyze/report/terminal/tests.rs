@@ -280,7 +280,7 @@ fn explicit_opt_out_and_default_converged_none_preserve_honest_detail() {
 fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input() {
     let (native, request) = fixture(true, false, false);
     let report = project(&native, &request);
-    assert_eq!(report.schema_version, 18);
+    assert_eq!(report.schema_version, 19);
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(!report.ssa.complete);
     assert_eq!(report.cfg.len(), native.states().len());

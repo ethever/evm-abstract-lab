@@ -914,6 +914,8 @@ fn creation_child_still_deploys_code_before_ordinary_completion() {
         .unwrap()
         .continuation
         .creation
+        .unwrap()
+        .native_address()
         .unwrap();
     let mut result = empty_execution(child.clone());
     let mut budget = WorkBudget::new(config.max_work);

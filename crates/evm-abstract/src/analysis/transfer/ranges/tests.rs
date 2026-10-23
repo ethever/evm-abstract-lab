@@ -66,6 +66,8 @@ fn execution() -> crate::analysis::transfer::Execution {
     let mut world = World::new(Fork::Osaka, "range partition unit test");
     world.insert(address, Account::empty()).unwrap();
     crate::analysis::transfer::Execution {
+        process: None,
+        process_calls: Vec::new(),
         payload: super::super::initial(
             &world,
             &Entry::new(address),

@@ -12,6 +12,7 @@ mod boundaries;
 mod errors;
 mod input_errors;
 mod jobs;
+mod process;
 mod query_errors;
 mod request;
 mod rpc;
@@ -30,6 +31,7 @@ pub use boundaries::*;
 pub use errors::*;
 pub use input_errors::*;
 pub use jobs::*;
+pub use process::*;
 pub use query_errors::*;
 pub use request::*;
 pub use rpc::*;
@@ -46,8 +48,8 @@ pub use terminal::*;
 /// Same-origin analysis endpoint.
 pub const API_PATH: &str = "/api/tasks";
 /// Wire schema version, independent of native report JSON.
-/// Version 18 adds known-call provenance, final-source qualification and regional CFG/call evidence.
-pub const SCHEMA_VERSION: u16 = 18;
+/// Version 19 adds process interpretation, action targets and uncovered process rules.
+pub const SCHEMA_VERSION: u16 = 19;
 /// Maximum UTF-8 JSON request body accepted by the server.
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 

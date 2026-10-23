@@ -4,7 +4,7 @@ use super::{ConstructorEntry, CreationError, ProcessOwner, WorkBudget, reserve};
 use crate::analysis::OutcomeKind;
 
 /// CREATE's address result must never be replaced with CALL's success boolean.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum CreationResult {
     /// The actual hash-derived deployment address in this covering owner cell.
     Address(ProcessOwner),
@@ -13,7 +13,7 @@ pub enum CreationResult {
 }
 
 /// Caller-visible bytes are not the runtime returned by successful initcode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum ReturnedData {
     /// Successful deployment and exceptional failure both expose no bytes.
     Empty,
@@ -23,7 +23,7 @@ pub enum ReturnedData {
 
 /// A child checkpoint is after nonce increment; the outer checkpoint is before
 /// it. The adapter must call Store.restore for sticky-touch behavior on rollback.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum StoreDisposition {
     /// Commit constructor/callback effects; preserve created/destruction/touch
     /// flags and deploy the covered runtime. Finalize only at transaction end.
@@ -34,7 +34,7 @@ pub enum StoreDisposition {
 }
 
 /// Deployment code is an entire valid-code class, not an invented Program.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Deployment {
     /// The guarded collision-free allocation owner.
     pub owner: ProcessOwner,
@@ -45,7 +45,7 @@ pub struct Deployment {
 }
 
 /// Why a guarded constructor completion is represented.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum CompletionReason {
     /// RETURN/STOP/SELFDESTRUCT successfully finishes the constructor.
     Deployed,
@@ -56,7 +56,7 @@ pub enum CompletionReason {
 }
 
 /// One alternative for delivery to a process parent in the native table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CompletionCase {
     /// Address-valued success or zero-valued rejection.
     pub result: CreationResult,

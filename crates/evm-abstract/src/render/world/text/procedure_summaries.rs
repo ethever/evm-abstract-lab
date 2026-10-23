@@ -39,12 +39,25 @@ pub(in crate::render::world) fn write<N: WordElement>(
             record.state_count, record.transfers, record.propagations, record.reused,
         ).unwrap();
         for (index, procedure) in record.procedures.iter().enumerate() {
-            writeln!(
+            if let Some(process) = &procedure.frame.process {
+                writeln!(output, "    procedure {index} | {:?} | owner={:?} | source={:?} | epoch={} | static={} | no instruction cursor",
+                    procedure.semantics, process.owner, process.source, process.epoch, process.is_static).unwrap();
+                if let Some(input) = &procedure.process_input {
+                    writeln!(
+                        output,
+                        "      ADDRESS={} | CALLER={} | CALLVALUE={}",
+                        input.address, input.caller, input.value
+                    )
+                    .unwrap();
+                }
+            } else {
+                writeln!(
                 output,
                 "    procedure {index} | {:?} | code={} | storage namespace={} | static={} | historically visited blocks={:?}",
                 procedure.frame.mode, procedure.frame.code_address, procedure.frame.address,
                 procedure.frame.is_static, procedure.covered_blocks,
             ).unwrap();
+            }
             writeln!(
                 output,
                 "      dependencies={:?} | input updates={} | output updates={} | outcomes={:?}",

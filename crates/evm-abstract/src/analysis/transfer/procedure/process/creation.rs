@@ -23,7 +23,7 @@ pub use completion::{
 pub use prepare::{CreationPlan, ParentException, Rejection, RejectionReason, prepare};
 
 /// Both alternatives are retained when the EVM guard is unknown.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Admission {
     /// The successful guard is known to hold.
     Allowed,
@@ -44,7 +44,7 @@ impl Admission {
 }
 
 /// Creator nonce admission, independent of CREATE2's address derivation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum CreatorNonce {
     /// The exact protocol nonce, including the rejecting u64::MAX case.
     Exact(u64),
@@ -53,7 +53,7 @@ pub enum CreatorNonce {
 }
 
 /// Constructor source identity is independent of account runtime resolution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum ConstructorCode {
     /// Known initcode retains its actual hash and InitCode origin.
     CapturedInitCode(B256),
@@ -63,7 +63,7 @@ pub enum ConstructorCode {
 
 /// The owner adapter must use the active storage/logical owner as creator.
 /// In particular, DELEGATECALL's code address is not the creator's address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CreationRequest {
     /// Only Create and Create2 are accepted.
     pub action: ProcessAction,
@@ -84,7 +84,7 @@ pub struct CreationRequest {
 }
 
 /// Collision observations must hold over the entire destination class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Collision {
     /// Current nonempty runtime/delegation code forbids this creation.
     NonEmptyCode,
@@ -107,7 +107,7 @@ impl Collision {
 }
 
 /// One cell of the owner lane's current named-plus-residual partition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Destination {
     /// Never interpreted as a concrete address when it is Residual.
     pub owner: ProcessOwner,
@@ -116,7 +116,7 @@ pub struct Destination {
 }
 
 /// A guarded constructor child for the existing relative procedure table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ConstructorEntry {
     /// Original CREATE/CREATE2 action for subscriptions and control receipts.
     pub action: ProcessAction,

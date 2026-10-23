@@ -133,7 +133,11 @@ fn eligibility_depends_on_entry_shape_not_call_inputs_or_return_destination() {
         let mut rejected = input.clone();
         let child = rejected.call_stack.children_mut().last_mut().unwrap();
         match variant {
-            0 => child.continuation.creation = Some(address(0x103)),
+            0 => {
+                child.continuation.creation = Some(crate::analysis::CreationContinuation::Native {
+                    destination: address(0x103),
+                })
+            }
             1 => child.state.code = FrameCode::InitCode,
             2 => child.state.key.mode = FrameCode::InitCode,
             3 => child.state.program = None,

@@ -6,7 +6,7 @@ use super::{
 };
 
 /// Exceptional halt of the creating frame, before any constructor continuation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum ParentException {
     /// CREATE/CREATE2 in a static execution context.
     Static,
@@ -17,7 +17,7 @@ pub enum ParentException {
 }
 
 /// Immediate zero-result rejection; no initcode child is entered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum RejectionReason {
     /// EVM invocation depth exceeded.
     Depth,
@@ -32,7 +32,7 @@ pub enum RejectionReason {
 }
 
 /// Always returns zero with empty returndata to the process parent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Rejection {
     /// EVM reason, distinct from an analysis refusal.
     pub reason: RejectionReason,
@@ -43,7 +43,7 @@ pub struct Rejection {
 }
 
 /// Paid, bounded rule alternatives for one process-parent creation action.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CreationPlan {
     /// Fault the current frame through existing exceptional completion.
     pub exceptions: Vec<ParentException>,

@@ -41,6 +41,10 @@ fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
     let known = inspector.accessible_summary(&report, selection);
     assert!(known.contains("Known bytecode call · closed"));
     assert!(!known.contains("Recursive bytecode"));
+    report.abstract_summaries[0].kind = api::ProcedureSummaryKind::KnownProcess;
+    let process = inspector.accessible_summary(&report, selection);
+    assert!(process.contains("Conservative runtime process · closed"));
+    assert!(!process.contains("Known bytecode call"));
     report.abstract_summaries[0].kind = api::ProcedureSummaryKind::UnknownEnvironment;
     report.abstract_summaries[0].closed = false;
     assert!(

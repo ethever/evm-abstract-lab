@@ -34,6 +34,16 @@ impl<
         &mut self,
         payload: &EvmMachinePayload<D::Element>,
     ) -> Result<EvmPayloadSummary<D::Element>, MachineError> {
+        let runtime_process =
+            self.policies.state.runtime_execution() == crate::analysis::RuntimeExecution::Process;
+        if runtime_process && X::ENABLED {
+            return Err(MachineError::Process(
+                crate::analysis::ProcessBoundary::CooperativeInputs,
+            ));
+        }
+        if runtime_process {
+            self.freeze_process_catalogue(payload)?;
+        }
         let mut refined = super::payload::caller::copy_with_scalar_guarantees(
             payload,
             self.entry,
@@ -62,12 +72,18 @@ impl<
                 self.policies.context.normalize(&mut frame.key.jump_history);
             }
         }
-        super::payload::caller::form_normalized_with_payment(
+        let summary = super::payload::caller::form_with_runtime(
             &refined,
             self.entry,
             self.domain,
             self.budget,
-        )
+            runtime_process,
+        )?;
+        if runtime_process {
+            self.prepare_process_summary(summary)
+        } else {
+            Ok(summary)
+        }
     }
 
     pub(super) fn reserve(&mut self, cost: usize) -> Result<(), MachineError> {
@@ -281,6 +297,34 @@ impl<
             creation,
             &mut PolicyContext::new(self.domain, self.entry, self.budget),
         )?;
+        let process = match payload.active().semantics {
+            crate::analysis::TransferSemantics::KnownProcess => {
+                Some(super::process::Capabilities::scan(
+                    payload
+                        .active()
+                        .program
+                        .as_ref()
+                        .ok_or(MachineError::Shape)?,
+                    self.budget,
+                )?)
+            }
+            crate::analysis::TransferSemantics::Environment
+                if self.policies.state.runtime_execution()
+                    == crate::analysis::RuntimeExecution::Process =>
+            {
+                Some(super::process::Capabilities::unknown())
+            }
+            crate::analysis::TransferSemantics::ConstructorProcess => {
+                Some(match payload.active().program.as_ref() {
+                    Some(program) => super::process::Capabilities::scan(program, self.budget)?,
+                    None => super::process::Capabilities::unknown(),
+                })
+            }
+            crate::analysis::TransferSemantics::BoundaryProcess => Some(
+                super::process::Capabilities::boundary(payload.active().code),
+            ),
+            _ => None,
+        };
         let stored_payload = payload.clone_with_payment(self.budget)?;
         PolicyContext::new(self.domain, self.entry, self.budget).reserve(0)?;
         let mut index = std::mem::take(&mut self.table.procedures_by_key);
@@ -301,6 +345,7 @@ impl<
                 frame: payload.active().key.clone(),
                 entry_payload: stored_payload,
                 store_effect,
+                process,
                 entry_updates: prepared.metadata,
                 entry_feedback: false,
                 entry_revision: 0,
@@ -809,7 +854,12 @@ impl<
                 super::tests::native_engine::body_input(&payload);
                 self.counters.transfers += 1;
                 self.counters.report(self.budget.used());
-                let execution = if payload.active().code == FrameCode::Unknown {
+                let execution = if self.policies.state.runtime_execution()
+                    == crate::analysis::RuntimeExecution::Process
+                    && input.active().semantics != crate::analysis::TransferSemantics::Native
+                {
+                    self.process(id, payload)
+                } else if payload.active().code == FrameCode::Unknown {
                     self.environment(payload)
                 } else {
                     execute_inner_with(
@@ -1109,6 +1159,7 @@ impl<
         let source_depth = source.frames.len();
         let local_call = executed_call(source, &execution);
         let completed_calls = execution.completed_calls;
+        let mut process_calls = execution.process_calls.into_iter().peekable();
         self.table
             .precision_losses
             .extend(execution.diagnostics.into_iter().filter_map(|(_, kind)| {
@@ -1158,7 +1209,17 @@ impl<
                 }
             };
             let operation = if successor.kind == MachineEdgeKind::Call {
-                self.subscribe(from, successor.payload)
+                let action = if process_calls
+                    .peek()
+                    .is_some_and(|(index, _, _)| *index == ordinal)
+                {
+                    process_calls
+                        .next()
+                        .map(|(_, action, target)| (action, target))
+                } else {
+                    None
+                };
+                self.subscribe_with_action(from, successor.payload, action)
             } else {
                 let resume_status =
                     call_resume_status(local_call, source_depth, &completed_calls, &successor);
@@ -1175,10 +1236,20 @@ impl<
         }
     }
 
+    #[cfg(test)]
     pub(super) fn subscribe(
         &mut self,
         from: usize,
         payload: EvmMachinePayload<D::Element>,
+    ) -> Result<(), MachineError> {
+        self.subscribe_with_action(from, payload, None)
+    }
+
+    fn subscribe_with_action(
+        &mut self,
+        from: usize,
+        payload: EvmMachinePayload<D::Element>,
+        action: Option<super::ProcessCall>,
     ) -> Result<(), MachineError> {
         self.reserve(payload.work_size().saturating_mul(4))?;
         // This complete invoice owns exactly the detached frame/store/relation
@@ -1200,7 +1271,7 @@ impl<
         let payload = self.form(&payload)?;
         let PartitionedRelative { key, payload } =
             self.partition_relative(payload, PolicySite::Subscriber, None)?;
-        let key = (from, callee, key);
+        let key = (from, callee, (action, key));
         let subscription =
             if let Some(subscription) = self.table.subscribers_by_key.get(&key, self.budget)? {
                 self.admit_subscriber(subscription, &payload)?;
@@ -1233,6 +1304,7 @@ impl<
                     self.table.subscribers.push(EvmSubscriber {
                         from,
                         callee,
+                        action,
                         payload: prepared.value,
                         input,
                         updates: prepared.metadata,
@@ -1499,8 +1571,21 @@ impl<
             creation,
         );
         self.regional_delivery(subscriber, kind, template_version, output.generation)?;
+        if let Some(crate::analysis::CreationContinuation::Process(creation)) = template
+            .continuations
+            .last()
+            .and_then(|continuation| continuation.creation)
+        {
+            self.deliver_process_creation(subscriber, from, kind, template, output, creation)?;
+            self.table.subscribers[subscriber]
+                .delivered
+                .insert(kind, stamp);
+            self.regional_delivered(subscriber, kind);
+            self.table.propagations += 1;
+            return Ok(true);
+        }
         if template.frames.len() == 2
-            && template.frames[0].code == FrameCode::Unknown
+            && template.frames[0].semantics != crate::analysis::TransferSemantics::Native
             && template.continuations[0].creation.is_none()
             && crate::analysis::state::query::singleton(
                 &template.continuations[0].output_size,
@@ -1526,6 +1611,20 @@ impl<
             if !keep_store {
                 resumed.store = if kind == OutcomeKind::Return {
                     output.summary.store.clone_with_payment(self.budget)?
+                } else if template.frames[0].key.process.is_some() {
+                    // Rebind failure to this subscriber's checkpoint, retaining
+                    // the native sticky-touch exception from the failed child.
+                    // Other subscribers' unwritten data must not be replayed.
+                    let mut failed = output
+                        .summary
+                        .store
+                        .instantiate_with_payment(self.domain, self.budget)?;
+                    let saved = child
+                        .frame
+                        .saved_store
+                        .instantiate_with_payment(self.domain, self.budget)?;
+                    failed.restore(crate::world::EvmSnapshot::from_state(saved));
+                    failed.summary_projection_with_payment(self.domain, self.budget)?
                 } else {
                     child.frame.saved_store
                 };

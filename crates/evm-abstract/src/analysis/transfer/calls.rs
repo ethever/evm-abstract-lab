@@ -74,7 +74,7 @@ pub(in crate::analysis) fn resolve_code<'a>(
     }
 }
 
-fn captured_hash<N: WordElement>(
+pub(in crate::analysis::transfer) fn captured_hash<N: WordElement>(
     program: &Option<Program>,
     store: &EvmStore<N>,
     address: Address,
@@ -128,6 +128,7 @@ pub(super) fn initial<D: EvmNumericAlgebra>(
         call_stack: EvmCallStack::<D::Element>::new(EvmRootFrame {
             state: EvmFrameState {
                 key: FrameKey {
+                    process: None,
                     code_address,
                     code_hash,
                     mode: code,
@@ -200,6 +201,20 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
     pc: usize,
 ) {
     let domain = context.domain;
+    if payload.call_stack.active_child().is_some_and(|child| {
+        matches!(
+            child.continuation.creation,
+            Some(crate::analysis::CreationContinuation::Process(_))
+        )
+    }) {
+        boundary_on(
+            result,
+            pc,
+            FrontierReason::Process(crate::analysis::ProcessBoundary::NativeInstantiation),
+            payload.key(),
+        );
+        return;
+    }
     if let Err(reason) = query::checkpoint(context.budget) {
         boundary_on(result, pc, reason, payload.key());
         return;
@@ -248,7 +263,10 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
             boundary_on(result, pc, clone_reason(error), payload.key());
             return;
         }
-        if let Some(address) = continuation.creation {
+        if let Some(address) = continuation
+            .creation
+            .and_then(crate::analysis::CreationContinuation::native_address)
+        {
             let word = if kind == OutcomeKind::Return {
                 U256::from_be_slice(address.as_slice())
             } else {
@@ -867,6 +885,7 @@ fn call_prepared<D: EvmNumericAlgebra>(
         payload.call_stack.push_child(EvmChildFrame {
             state: EvmFrameState {
                 key: FrameKey {
+                    process: None,
                     code_address,
                     code_hash,
                     mode: code,

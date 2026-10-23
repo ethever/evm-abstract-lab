@@ -276,6 +276,11 @@ pub(super) fn diagnostic_summary(report: &AnalysisReport) -> String {
 fn frontier_reason(ui: &mut Ui, reason: &api::FrontierDetails) {
     use api::FrontierDetails as R;
     match reason {
+        R::Process(reason) => value::text(
+            ui,
+            "Unexpanded process rule",
+            super::process::boundary(reason),
+        ),
         R::Budget(resource) => value::text(ui, "Reached budget", format!("{resource:?}")),
         R::Work => value::text(ui, "Boundary", "Execution work budget"),
         R::SummaryWork => value::text(ui, "Boundary", "Summary work budget"),

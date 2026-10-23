@@ -130,6 +130,7 @@ fn wrapper_identity_ignores_work_and_keeps_the_stored_quote() {
 #[test]
 fn native_quotes_include_each_frame_history_heap_and_optional_class() {
     let frame = FrameKey {
+        process: None,
         code_address: Address::ZERO,
         code_hash: B256::ZERO,
         mode: FrameCode::Runtime,

@@ -35,6 +35,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
             let returndata = frame.returndata.clone_with_payment(budget)?;
             let saved_store = frame.saved_store.clone_with_payment(budget)?;
             frames.push(EvmFrameSummary {
+                semantics: frame.semantics,
                 frame: EvmFrame {
                     key: frame.key.clone(),
                     code: frame.code,
@@ -98,6 +99,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
                 .zip(&incoming.frames)
                 .any(|(left, right)| {
                     !left.same_shape(right)
+                        || left.semantics != right.semantics
                         || left.environment_calldata != right.environment_calldata
                 })
             || self
@@ -152,6 +154,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
                     .join_with_payment(&right.saved_store, domain, widen, budget)?;
             let stack_aliases = StackAliases::form(&stack, false)?;
             frames.push(EvmFrameSummary {
+                semantics: left.semantics,
                 frame: EvmFrame {
                     key: left.key.clone(),
                     code: left.code,

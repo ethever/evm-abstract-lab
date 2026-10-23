@@ -619,6 +619,7 @@ fn create_prepared<D: EvmNumericAlgebra>(
                                 branch.call_stack.push_child(EvmChildFrame {
                                     state: EvmFrameState {
                                         key: FrameKey {
+                                            process: None,
                                             mode: FrameCode::InitCode,
                                             code_address: destination,
                                             code_hash: keccak256(&initcode),
@@ -667,7 +668,11 @@ fn create_prepared<D: EvmNumericAlgebra>(
                                             domain,
                                             context.budget,
                                         )?,
-                                        creation: Some(destination),
+                                        creation: Some(
+                                            crate::analysis::CreationContinuation::Native {
+                                                destination,
+                                            },
+                                        ),
                                     },
                                 });
                                 query::checkpoint(context.budget)?;
@@ -701,6 +706,7 @@ pub(super) fn finish_creation<D: EvmNumericAlgebra>(
         .call_stack
         .active_child()
         .and_then(|child| child.continuation.creation)
+        .and_then(crate::analysis::CreationContinuation::native_address)
     else {
         return Ok(());
     };

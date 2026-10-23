@@ -98,6 +98,84 @@ fn context() -> egui::Context {
 }
 
 #[test]
+fn conservative_process_shows_possible_static_control_exits_and_residual_obligations() {
+    let mut report = observation_report(RECURSIVE);
+    // Reuse regional identities to exercise presentation. Native action and
+    // target provenance is checked by the server's process integration test.
+    let summary = &mut report.abstract_summaries[0];
+    summary.kind = api::ProcedureSummaryKind::KnownProcess;
+    summary.closed = false;
+    for procedure in &mut summary.procedures {
+        if procedure.kind == api::CodeKind::Runtime {
+            procedure.semantics = api::TransferSemantics::KnownProcess;
+            procedure.covered_blocks.clear();
+        }
+    }
+    for node in &mut summary.regional_cfg.nodes {
+        if summary.procedures[node.procedure].semantics != api::TransferSemantics::KnownProcess {
+            continue;
+        }
+        node.frame.basic_block = None;
+        if let Some(transfer) = &mut node.transfer {
+            transfer.semantics = api::TransferSemantics::KnownProcess;
+            transfer.visited_block = false;
+            transfer.complete = false;
+            transfer.process = Some(api::ProcessTransfer {
+                repeat: true,
+                actions: vec![api::ProcessAction::StaticCall],
+                unresolved: vec![api::ProcessBoundary::ResidualOwner(
+                    api::ProcessAction::StaticCall,
+                )],
+            });
+        }
+    }
+    let node = summary
+        .regional_cfg
+        .nodes
+        .iter()
+        .find(|node| {
+            node.transfer.as_ref().is_some_and(|transfer| {
+                transfer.current && transfer.input_revision == node.input_revision && !node.excluded
+            })
+        })
+        .unwrap();
+    let heading = format!(
+        "r{} · procedure {} · Current partial conservative process",
+        node.id, node.procedure
+    );
+    let identity_hash = node.frame.code_hash.clone().unwrap();
+    for call in &mut summary.regional_cfg.calls {
+        call.action = Some(api::ProcessAction::StaticCall);
+        call.target = Some(api::ProcessOwner::Residual);
+    }
+    report.validate().unwrap();
+    let context = context();
+    let mut time = 0.0;
+    click(&context, &mut time, &report, "Regional control flow");
+    click(&context, &mut time, &report, &heading);
+    click(&context, &mut time, &report, "Calls and returns");
+    let text = draw(&context, &mut time, &report, vec![])
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for expected in [
+        "Conservative runtime process",
+        "Conservative process · possible control",
+        "Represented actions: STATICCALL",
+        "Possible action: STATICCALL",
+        "Action target: Residual owner class · unresolved aliases",
+        "Unexpanded: STATICCALL: remaining owners and aliases are unexpanded",
+        "captured block visited: false",
+        "recorded exits:",
+        &format!("Frame identity hash: {identity_hash}"),
+    ] {
+        assert!(text.contains(expected), "{expected}: {text}");
+    }
+    assert!(!text.contains("Program block:"));
+}
+
+#[test]
 fn source_current_withholds_final_labels_for_a_closed_current_local_observation() {
     let mut report = observation_report(RECURSIVE);
     let summary = &mut report.abstract_summaries[0];

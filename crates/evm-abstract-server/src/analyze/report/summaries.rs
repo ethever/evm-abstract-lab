@@ -3,7 +3,7 @@ mod regional;
 #[cfg(test)]
 mod tests;
 
-use crate::analyze::{checkpoint, pools, symbolic::Pool};
+use crate::analyze::{checkpoint, pools, process, symbolic::Pool};
 use evm_abstract::{
     analysis::{self, control::Control},
     domain::WordElement,
@@ -28,9 +28,10 @@ pub(super) fn project<N: WordElement>(
                     .len()
                     .saturating_add(procedure.outputs.len())
                     .saturating_add(procedure.dependencies.len())
-                    .saturating_add(1),
+                    .saturating_add(2),
             )?;
             procedures.push(api::AbstractProcedure {
+                semantics: process::semantics(procedure.semantics),
                 code_address: procedure.frame.code_address.to_string(),
                 code_hash: (procedure.frame.mode != analysis::FrameCode::Unknown)
                     .then(|| procedure.frame.code_hash.to_string()),
@@ -48,12 +49,15 @@ pub(super) fn project<N: WordElement>(
                 output_updates: procedure.output_updates,
             });
         }
-        let regional_cfg = regional::project(&record.regional_cfg, symbolic)?;
+        let regional_cfg = regional::project(&record.regional_cfg, &procedures, symbolic)?;
         symbolic.charge(0)?;
         records.push(api::AbstractSummary {
             source_state: record.source_state,
             source_current: record.source_current,
             kind: match record.kind {
+                analysis::ProcedureSummaryKind::KnownProcess => {
+                    api::ProcedureSummaryKind::KnownProcess
+                }
                 analysis::ProcedureSummaryKind::UnknownEnvironment => {
                     api::ProcedureSummaryKind::UnknownEnvironment
                 }

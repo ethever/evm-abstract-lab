@@ -67,6 +67,8 @@ variant! {
 variant! {
     /// Complete typed native reason.
     pub enum FrontierDetails {
+        /// A conservative process rule remains uncovered.
+        Process(crate::ProcessBoundary),
         /// Budget boundary.
         Budget(crate::FrontierKind),
         /// Work boundary.

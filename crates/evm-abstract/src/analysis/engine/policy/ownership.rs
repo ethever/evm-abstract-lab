@@ -29,6 +29,7 @@ fn frame_work(frame: &FrameKey) -> usize {
         .div_ceil(std::mem::size_of::<usize>())
         .saturating_add(frame.jump_history.len())
         .saturating_mul(2)
+        .saturating_add(frame.process_work())
 }
 
 /// The default key copies structural coordinates and hashes code/lifecycle

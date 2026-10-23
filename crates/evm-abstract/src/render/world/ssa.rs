@@ -335,6 +335,7 @@ fn write_transition<N: WordElement>(
     }
     let effect = match transition.kind {
         MachineEdgeKind::Intraprocedural(_) => "carry effects within the active frame",
+        MachineEdgeKind::Process(_) => "repeat a conservative process after a local primitive",
         MachineEdgeKind::Call => "suspend caller; enter child with a rollback checkpoint",
         MachineEdgeKind::Return => "resume caller; commit child effects",
         MachineEdgeKind::Revert => "resume caller; restore saved checkpoint; retain revert data",

@@ -28,6 +28,9 @@ mod caller;
 mod layout;
 mod metered;
 mod payment;
+mod process;
+mod process_allocation;
+mod process_effects;
 #[cfg(test)]
 mod test_support;
 

@@ -6,6 +6,7 @@ mod context;
 mod errors;
 mod evidence;
 mod panel;
+mod process;
 pub(crate) mod shortcut;
 mod ssa;
 mod stores;

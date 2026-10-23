@@ -78,6 +78,15 @@ pub(super) fn preview(
             );
         lines.insert(0, (label, palette::PURPLE));
     } else {
+        if let Some(source) = index.summary_source(block.id, ProcedureSummaryKind::KnownProcess) {
+            lines.insert(
+                0,
+                (
+                    summary_label("Conservative process · possible control", source),
+                    palette::PURPLE,
+                ),
+            );
+        }
         if let Some(source) = index.summary_source(block.id, ProcedureSummaryKind::KnownRecursion) {
             lines.insert(
                 0,
