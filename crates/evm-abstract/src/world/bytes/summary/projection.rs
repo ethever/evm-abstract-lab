@@ -41,11 +41,6 @@ impl<N: WordElement> EvmByteArray<N> {
                     pay(budget, graph_work(exact.len()))?;
                     Content::exact(Arc::from(exact))
                 } else {
-                    pay(
-                        budget,
-                        graph_work(self.bytes.len().saturating_add(COPY_FACT_LIMIT)),
-                    )?;
-                    let mut keys = self.bytes.keys().copied().collect::<Vec<_>>();
                     let upper = match length {
                         Some(length) => length,
                         None => {
@@ -53,9 +48,17 @@ impl<N: WordElement> EvmByteArray<N> {
                             self.length.interval().unsigned_bounds().1
                         }
                     };
-                    if let Ok(upper) = usize::try_from(upper)
-                        && upper <= COPY_FACT_LIMIT
-                    {
+                    let upper = usize::try_from(upper)
+                        .ok()
+                        .filter(|upper| *upper <= COPY_FACT_LIMIT);
+                    // An unbounded source contributes only retained positions;
+                    // it never constructs the full bounded candidate window.
+                    pay(
+                        budget,
+                        graph_work(self.bytes.len().saturating_add(upper.unwrap_or(0))),
+                    )?;
+                    let mut keys = self.bytes.keys().copied().collect::<Vec<_>>();
+                    if let Some(upper) = upper {
                         keys.extend(0..upper);
                     }
                     keys.sort_unstable();

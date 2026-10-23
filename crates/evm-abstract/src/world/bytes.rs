@@ -197,6 +197,37 @@ pub(in crate::world) fn check_value<N: WordElement>(
 }
 
 impl<N: WordElement> EvmByteArray<N> {
+    /// Fund the two literal-zero factories used by the pure empty constructor.
+    /// Empty content still owns a numeric length and a numeric default.
+    pub(crate) fn empty_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        domain: AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<Self, crate::resource::CloneError> {
+        use crate::resource::clone_payment::{checkpoint, pay};
+        checkpoint(budget)?;
+        let length = domain.literal_quote_work(U256::ZERO);
+        checkpoint(budget)?;
+        let default = domain.literal_quote_work(U256::ZERO);
+        // Flat array/map headers, one exact-state handle and the length term.
+        pay(budget, length.saturating_add(default).saturating_add(32))?;
+        let out = Self::empty();
+        checkpoint(budget)?;
+        Ok(out)
+    }
+
+    /// The same paid empty fields with a zero-memory root and allocation mode.
+    pub(crate) fn memory_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        domain: AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<Self, crate::resource::CloneError> {
+        crate::resource::clone_payment::pay(budget, 2)?;
+        let mut out = Self::empty_with_payment(domain, budget)?;
+        out.memory = true;
+        out.root = ByteStateId::zero();
+        crate::resource::clone_payment::checkpoint(budget)?;
+        Ok(out)
+    }
+
     /// Empty finite input.
     pub fn empty() -> Self {
         let mut empty = Self::exact(&[]);

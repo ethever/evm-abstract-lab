@@ -14,6 +14,8 @@ fn runtime_json_round_trips_all_raw_bytes_under_each_supported_fork() {
     for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
         for bytes in [&[][..], &all_bytes, &trailing] {
             let program = Program::decode_with_fork(bytes, fork).unwrap();
+            let expected_digest = keccak256(bytes);
+            assert_eq!(program.bytes_digest(), expected_digest);
             let code = Code::Runtime(program.clone());
             let json = serde_json::to_value(&code).unwrap();
             assert_eq!(json.as_object().unwrap().len(), 1);
@@ -32,6 +34,7 @@ fn runtime_json_round_trips_all_raw_bytes_under_each_supported_fork() {
             )
             .unwrap();
             assert_eq!(decoded, program);
+            assert_eq!(decoded.bytes_digest(), expected_digest);
             assert_eq!(Code::Runtime(decoded), code);
         }
     }

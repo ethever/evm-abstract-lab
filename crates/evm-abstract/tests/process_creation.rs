@@ -1,5 +1,5 @@
-//! Isolated compilation of the creation rules against a frozen foundation API.
-//! Integration into Body/Resume is deliberately owned by the foundation lane.
+//! Production CREATE/CREATE2 rule contracts and concrete EVM witnesses.
+//! Installed Body/Resume coverage additionally lives in global_process.
 
 pub use evm_abstract::analysis::process_creation as creation;
 pub mod analysis {

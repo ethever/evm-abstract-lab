@@ -107,6 +107,7 @@ pub(in crate::analysis) fn form<N: WordElement, D: EvmNumericAlgebra<Element = N
 /// Form a bound after the caller applies its immutable context policy. Keeping
 /// these histories unchanged prevents a default canonicalizer from overriding
 /// a custom context. Unknown-environment roots still erase private context.
+#[cfg(test)]
 pub(in crate::analysis) fn form_normalized<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     payload: &EvmMachinePayload<N>,
     entry: &EvmEntry<N>,
@@ -115,6 +116,7 @@ pub(in crate::analysis) fn form_normalized<N: WordElement, D: EvmNumericAlgebra<
     form_with_history(payload, entry, domain, false)
 }
 
+#[cfg(test)]
 fn form_with_history<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     payload: &EvmMachinePayload<N>,
     entry: &EvmEntry<N>,

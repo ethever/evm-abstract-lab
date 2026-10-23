@@ -18,6 +18,7 @@ mod tests;
 // handles. Native construction and query work is never inferred from this fee.
 const WRAPPER_WORK: usize = 16;
 
+#[cfg(test)]
 pub(crate) fn compact<D: EvmNumericAlgebra>(
     value: &EvmValue<D::Element>,
     domain: AlgebraRef<'_, D>,
@@ -129,6 +130,52 @@ pub(crate) fn constant<D: EvmNumericAlgebra>(
     let out = EvmValue::from_numeric(D::Element::constant(literal));
     checkpoint(budget)?;
     Ok(out)
+}
+
+/// One paid executable literal factory, consumed only after later admission.
+/// The carrier parameter binds the permit to the algebra that quoted it.
+pub(crate) struct LiteralPermit<N: WordElement> {
+    word: U256,
+    carrier: std::marker::PhantomData<N>,
+}
+
+impl<N: WordElement> LiteralPermit<N> {
+    pub(crate) fn construct(self, budget: &WorkBudget) -> Result<EvmValue<N>, CloneError> {
+        checkpoint(budget)?;
+        let value = EvmValue::constant(self.word);
+        checkpoint(budget)?;
+        Ok(value)
+    }
+}
+
+/// Fund the actual native literal and its Constant provenance before any hook.
+/// Deferral keeps return-COPY admission ahead of the actual result factory.
+pub(crate) fn prepare_literal<D: EvmNumericAlgebra>(
+    literal: U256,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<LiteralPermit<D::Element>, CloneError> {
+    checkpoint(budget)?;
+    let native = domain.literal_quote_work(literal);
+    // Wrapper fields plus one singleton origin-set entry and installation.
+    pay(
+        budget,
+        native.saturating_add(WRAPPER_WORK).saturating_add(2),
+    )?;
+    Ok(LiteralPermit {
+        word: literal,
+        carrier: std::marker::PhantomData,
+    })
+}
+
+/// Paid counterpart of EvmValue::constant, retaining the same native predicate
+/// and facade metadata. Summary constants intentionally have a different origin.
+pub(crate) fn literal<D: EvmNumericAlgebra>(
+    literal: U256,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<EvmValue<D::Element>, CloneError> {
+    prepare_literal(literal, domain, budget)?.construct(budget)
 }
 
 pub(crate) fn top<D: EvmNumericAlgebra>(

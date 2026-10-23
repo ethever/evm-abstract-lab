@@ -6,7 +6,10 @@ use crate::{
         symbolic::{ByteStateKind, ExprKind},
     },
     resource::SummaryError,
-    world::bytes::summary::{instantiate_scalar, instantiate_scalar_with_payment, scalar},
+    world::bytes::{
+        COPY_FACT_LIMIT,
+        summary::{instantiate_scalar, instantiate_scalar_with_payment, scalar},
+    },
 };
 use std::num::NonZeroUsize;
 
@@ -350,6 +353,56 @@ fn projection_uses_the_current_root_even_with_a_conflicting_cached_cell() {
         .unwrap();
     assert_eq!(actual, expected);
     assert!(matches!(&actual.content, Content::Exact(bytes) if bytes.as_ref() == [9]));
+}
+
+#[test]
+fn sparse_projection_prices_only_reachable_positions_and_keeps_the_length_boundary() {
+    let domain = ValueAlgebra::new(ProductAlgebra::default());
+    let unknown = crate::world::EvmByteArray::unknown_checked().unwrap();
+    let mut small = WorkBudget::new(20_000);
+    assert_eq!(
+        unknown
+            .summary_projection_with_payment(domain.borrowed(), &mut small)
+            .unwrap(),
+        unknown.summary_projection(domain.borrowed()).unwrap()
+    );
+    for upper in [3, COPY_FACT_LIMIT, COPY_FACT_LIMIT + 1] {
+        let summary = EvmByteArraySummary {
+            length: EvmValue::unsigned_range(U256::ZERO, U256::from(upper)).unwrap(),
+            memory: false,
+            content: Content::Cells(BTreeMap::from([
+                (0, EvmValue::constant(U256::from(9))),
+                (2, EvmValue::constant(U256::from(7))),
+            ])),
+            words: BTreeMap::new(),
+        };
+        let mut setup = WorkBudget::new(20_000_000);
+        let runtime = summary
+            .instantiate_with_payment(domain.borrowed(), &mut setup)
+            .unwrap();
+        let original = runtime.clone();
+        let expected = runtime.summary_projection(domain.borrowed()).unwrap();
+        let mut measured = WorkBudget::new(20_000_000);
+        let actual = runtime
+            .summary_projection_with_payment(domain.borrowed(), &mut measured)
+            .unwrap();
+        assert_eq!(actual, expected);
+        let fee = measured.used();
+        let mut exact = WorkBudget::new(fee);
+        assert_eq!(
+            runtime
+                .summary_projection_with_payment(domain.borrowed(), &mut exact)
+                .unwrap(),
+            expected
+        );
+        assert_eq!(exact.used(), fee);
+        let mut short = WorkBudget::new(fee - 1);
+        assert!(matches!(
+            runtime.summary_projection_with_payment(domain.borrowed(), &mut short),
+            Err(SummaryError::Budget(CloneError::Work))
+        ));
+        assert_eq!(runtime, original);
+    }
 }
 
 #[test]

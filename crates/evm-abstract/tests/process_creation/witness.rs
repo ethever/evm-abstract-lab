@@ -335,12 +335,15 @@ fn constructor_callback_then_outer_revert_uses_both_rollback_scopes() {
         let entry = *plan.constructors.last().unwrap();
         assert!(entry.actions.contains(&ProcessAction::Call));
         assert!(entry.actions.contains(&action));
+        let descriptor =
+            complete(entry, trace.constructor_outcomes[0].0, &mut budget).unwrap()[0].unwrap();
+        assert_eq!(descriptor.store, StoreDisposition::CommitConstructor);
         assert_eq!(
-            complete(entry, OutcomeKind::Revert, &mut budget).unwrap()[0]
-                .unwrap()
-                .store,
-            StoreDisposition::RestorePostNonceCheckpoint
+            descriptor.result,
+            CreationResult::Address(entry.destination)
         );
+        assert_eq!(descriptor.returndata, ReturnedData::Empty);
+        assert_eq!(descriptor.deployment.unwrap().owner, entry.destination);
         println!(
             "creation-rollback action={action:?} callback_writes={} root_nonce={} root_balance={}",
             trace.callback_writes, owner.info.nonce, owner.info.balance
