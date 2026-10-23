@@ -130,9 +130,9 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
-        cx.reserve(self.work_size().saturating_mul(4))?;
-        let representation = EvmBoundedState::freeze(self, true, cx.domain)?;
-        let joined = representation.join(
+        let representation =
+            EvmBoundedState::freeze_with_payment(self, true, cx.domain, cx.budget)?;
+        let joined = representation.join_with_payment(
             self,
             incoming,
             cx.domain,

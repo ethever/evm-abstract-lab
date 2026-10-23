@@ -19,6 +19,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
 mod layout;
+mod payment;
 #[cfg(test)]
 use crate::world::test_support::TestBytesSummary;
 mod presentation;
@@ -100,11 +101,9 @@ pub(in crate::world) fn instantiate_scalar<N: WordElement, D: EvmNumericAlgebra<
 
 /// Node bound for the independent word built by instantiate_scalar.
 pub(in crate::world) fn scalar_expression_work<N: WordElement>(value: &EvmValue<N>) -> usize {
-    if value.singleton().is_some() || value.numeric().is_top() {
-        1
-    } else {
-        value.numeric().work_size().saturating_add(8)
-    }
+    // Sizing must not discover whether the carrier is singleton. Reserve the
+    // observed-word case even when instantiation later proves a cheap literal.
+    value.numeric().work_size().saturating_add(8)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -257,8 +256,10 @@ impl<N: WordElement> EvmByteArraySummary<N> {
         &self.length
     }
 
-    /// Retained numerical payload plus a conservative executable replay bound.
+    /// Retained numerical payload plus a query-free structural replay estimate.
     /// Forgotten history and symbolic logical byte lengths add no retained work.
+    /// Literal and observed-cell cases share a conservative structural bound;
+    /// Native construction, algebra, queries and copies need separate quotes.
     pub fn work_size(&self) -> usize {
         let length_nodes = scalar_expression_work(&self.length);
         let length_work = self
@@ -276,44 +277,22 @@ impl<N: WordElement> EvmByteArraySummary<N> {
                 bytes.len().saturating_mul(15).saturating_add(1)
             }
             Content::<N>::Cells(cells) => {
-                let mut constant_cells = 0usize;
-                let mut chunks = 0usize;
-                let mut previous_constant = None;
-                let mut root =
-                    cells
-                        .iter()
-                        .fold(length_nodes.saturating_add(2), |nodes, (index, value)| {
-                            if value
-                                .singleton()
-                                .is_some_and(|byte| byte <= U256::from(255))
-                            {
-                                constant_cells = constant_cells.saturating_add(1);
-                                if previous_constant.and_then(|old: usize| old.checked_add(1))
-                                    != Some(*index)
-                                {
-                                    chunks = chunks.saturating_add(1);
-                                }
-                                previous_constant = Some(*index);
-                                nodes
-                            } else {
-                                previous_constant = None;
-                                nodes
-                                    .saturating_add(1)
-                                    .saturating_add(value.numeric().work_size())
-                            }
-                        });
-                if chunks != 0 {
-                    root = root
-                        .saturating_add(chunks.saturating_mul(6))
-                        .saturating_add(length_nodes.saturating_add(2));
-                }
-                cells
-                    .values()
-                    .fold(root.saturating_add(constant_cells), |work, value| {
-                        let numeric = value.numeric().work_size();
-                        canonical = canonical.saturating_add(numeric.saturating_add(1));
-                        work.saturating_add(numeric.saturating_add(1))
-                    })
+                // Each cell may need an observed binding or its own exact
+                // chunk. Reserve both shapes without singleton discovery; the
+                // slice around constant chunks repeats the length expression.
+                let root = cells.values().fold(
+                    length_nodes.saturating_add(2).saturating_mul(2),
+                    |nodes, value| {
+                        nodes
+                            .saturating_add(value.numeric().work_size())
+                            .saturating_add(8)
+                    },
+                );
+                cells.values().fold(root, |work, value| {
+                    let numeric = value.numeric().work_size();
+                    canonical = canonical.saturating_add(numeric.saturating_add(1));
+                    work.saturating_add(numeric.saturating_add(1))
+                })
             }
         };
         canonical
