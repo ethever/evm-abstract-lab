@@ -43,7 +43,7 @@ pub use engine::{
     FeedbackAcceleration, FirstResumeStatus, ForgetJumpHistory, MachinePartition,
     MergeResumeStatus, NoAcceleration, PartitionPolicy, PartitionRefusal, PartitionResult,
     Partitioned, PartitionedRelative, PolicyContext, PolicyKey, PolicySite, ProcedureOutput,
-    ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey, RecentDistinctJumps,
+    ProcedureSummaryPolicy, ProjectedSummaries, QuotedKey, RecentDistinctJumps, RegionalSummaries,
     RelativePartitionResult, RelativeState, SemanticPolicies, StatePolicy, StructuralPartition,
     WholeStateMetadata, WholeStatePolicy,
 };
@@ -74,12 +74,18 @@ pub use terminal::{
     RootTerminalRetention, RootTerminalScope, RootTerminalTrigger,
 };
 pub use transfer::create::CreationBoundary;
+pub use transfer::procedure::{
+    EvmRegionalCall, EvmRegionalCfg, EvmRegionalEdge, EvmRegionalNode, EvmRegionalReturn,
+    EvmRegionalTransfer,
+};
 
-/// Serialized EVM analysis format. Version 11 distinguishes reduction work
+/// Serialized EVM analysis format. Version 13 adds compact regional CFG receipts
+/// with native revisions, separate call continuations and explicit source validity.
+/// Version 11 distinguishes reduction work
 /// exhaustion, cancellation and kernel failure from the local round limit.
 /// Version 10 introduced optional root terminal coverage with owned original
 /// input binding and finalized tuples. The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 12;
+pub const SCHEMA_VERSION: u16 = 13;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

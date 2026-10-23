@@ -409,6 +409,7 @@ impl<
                     feedback,
                     runtime_retry: EvmRuntimeRetry::Fresh,
                     excluded: false,
+                    transfer: None,
                 });
                 if is_entry {
                     self.table.procedures[procedure].entries.insert(id);
@@ -592,6 +593,9 @@ impl<
         if let Some(id) = procedure {
             self.namespace = self.table.procedures[id].namespace;
         }
+        // Retrying an obligation invalidates its old receipt even if preparing
+        // the new input subsequently refuses without a native slot change.
+        self.regional_begin(&task.0);
         self.active = Some(token);
         self.deferred = false;
         self.consumed = None;
@@ -694,6 +698,12 @@ impl<
             self.park_pending(error.frontier_reason());
             return false;
         }
+        self.regional_current(
+            &task.0,
+            !self.deferred
+                && same_source
+                && (!X::ENABLED || self.table.frontiers.len() == frontiers_before),
+        );
         true
     }
 
@@ -772,6 +782,10 @@ impl<
                 return false;
             }
         };
+        if let Err(error) = self.regional_transfer(id, version, &execution) {
+            self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
+            return false;
+        }
         self.producer = Some(super::Producer {
             kind: 0,
             id,
@@ -786,7 +800,12 @@ impl<
                 .covered_blocks
                 .insert(self.table.nodes[id].payload.active().key.basic_block_index);
         }
+        let frontiers_before = self.table.frontiers.len();
         self.accept(id, execution);
+        self.regional_transfer_complete(
+            id,
+            !self.deferred && self.table.frontiers.len() == frontiers_before,
+        );
         true
     }
 
@@ -1128,6 +1147,7 @@ impl<
                         updates: prepared.metadata,
                         feedback,
                         delivered: BTreeMap::new(),
+                        returns: BTreeMap::new(),
                     });
                     Ok(subscription)
                 });
@@ -1380,6 +1400,7 @@ impl<
             return Ok(true);
         }
         let from = subscription.from;
+        self.regional_delivery(subscriber, kind, template_version, output.generation)?;
         if template.frames.len() == 2
             && template.frames[0].code == FrameCode::Unknown
             && template.continuations[0].creation.is_none()
@@ -1418,6 +1439,7 @@ impl<
             self.table.subscribers[subscriber]
                 .delivered
                 .insert(kind, stamp);
+            self.regional_delivered(subscriber, kind);
             self.table.propagations += 1;
             return Ok(true);
         }
@@ -1449,6 +1471,7 @@ impl<
         self.table.subscribers[subscriber]
             .delivered
             .insert(kind, stamp);
+        self.regional_delivered(subscriber, kind);
         self.table.propagations += 1;
         Ok(true)
     }

@@ -1,8 +1,28 @@
-//! Fold a known child only after a structural call edge repeats on the active stack.
+//! Recognize known CALL entries and repeated structural edges on the active stack.
 
 use crate::domain::WordElement;
 
 use crate::analysis::{EvmChildFrame, EvmFrameState, EvmMachinePayload, FrameCode};
+
+/// Admit an ordinary known CALL-family child before its first block executes.
+/// The relative input detaches only the callee; its complete caller continuation
+/// and rollback checkpoint remain available for output resumption. Creation uses
+/// a different completion contract and cannot enter through this ordinary seam.
+/// The caller's return destination is not a callee eligibility condition.
+pub(in crate::analysis) fn is_known_call_entry<N: WordElement>(
+    payload: &EvmMachinePayload<N>,
+) -> bool {
+    let Some(child) = payload.call_stack.active_child() else {
+        return false;
+    };
+    let frame = &child.state;
+    child.continuation.creation.is_none()
+        && frame.code == FrameCode::Runtime
+        && frame.key.mode == FrameCode::Runtime
+        && frame.program.is_some()
+        && frame.key.basic_block_index == 0
+        && frame.stack.is_empty()
+}
 
 /// A repeated callee alone can be a leaf self-call with unrelated calldata.
 /// Waiting for a repeated active edge keeps that first child on the ordinary

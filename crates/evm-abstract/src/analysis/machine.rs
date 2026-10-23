@@ -398,16 +398,22 @@ pub struct EvmProcedureSummary<N: WordElement> {
     pub input_updates: usize,
     /// Number of strict output expansions.
     pub output_updates: usize,
-    /// Captured-program block indexes actually analyzed, never invented unknown PCs.
+    /// Cumulative historical observations of visited captured-program blocks.
+    /// These do not certify execution of the current joined input; use current
+    /// regional transfer receipts for that distinction. Unknown PCs are never invented.
     pub covered_blocks: Vec<usize>,
 }
 
 /// Why ordinary stack execution entered the relative procedure worklist.
+/// The trigger is captured before callee detachment; recursive dependencies
+/// discovered during saturation do not change it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ProcedureSummaryKind {
     /// An unobserved implementation or symbolic target remainder.
     UnknownEnvironment,
-    /// A known runtime entry repeats an executable/storage context in its ancestors.
+    /// A known runtime CALL entry admitted before any repeated active call edge.
+    KnownCall,
+    /// A known runtime entry selected by a repeated structural call edge on its stack.
     KnownRecursion,
 }
 
@@ -424,6 +430,8 @@ pub struct EvmProcedureSummaryRecord<N: WordElement> {
     pub closed: bool,
     /// Known bytecode and unknown procedures solved together.
     pub procedures: Vec<EvmProcedureSummary<N>>,
+    /// Coarse native regional CFG, separate from machine instruction/SSA evidence.
+    pub regional_cfg: super::transfer::procedure::EvmRegionalCfg,
     /// Relative block states retained by the shared worklist.
     pub state_count: usize,
     /// Metered block/environment transfers performed for this request.

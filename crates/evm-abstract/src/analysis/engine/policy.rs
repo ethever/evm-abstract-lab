@@ -31,8 +31,8 @@ pub use semantic::{
     Acceleration, AccelerationInput, AccelerationPolicy, BoundedJoin, CoarseSummaries,
     CorrelatedJoin, EagerAcceleration, FeedbackAcceleration, ForgetJumpHistory, MachinePartition,
     NoAcceleration, Partitioned, PartitionedRelative, PolicyContext, PolicySite, ProcedureOutput,
-    ProcedureSummaryPolicy, ProjectedSummaries, RelativeState, SemanticPolicies, StatePolicy,
-    StructuralPartition, WholeStateMetadata, WholeStatePolicy,
+    ProcedureSummaryPolicy, ProjectedSummaries, RegionalSummaries, RelativeState, SemanticPolicies,
+    StatePolicy, StructuralPartition, WholeStateMetadata, WholeStatePolicy,
 };
 
 /// Intraprocedural context selection, shared by ordinary and relative execution.

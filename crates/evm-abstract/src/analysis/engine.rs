@@ -65,8 +65,8 @@ pub use policy::{
     CorrelatedJoin, EagerAcceleration, FeedbackAcceleration, ForgetJumpHistory, MachinePartition,
     NoAcceleration, PartitionRefusal, PartitionResult, Partitioned, PartitionedRelative,
     PolicyContext, PolicyKey, PolicySite, ProcedureOutput, ProcedureSummaryPolicy,
-    ProjectedSummaries, QuotedKey, RelativePartitionResult, RelativeState, SemanticPolicies,
-    StatePolicy, StructuralPartition, WholeStateMetadata, WholeStatePolicy,
+    ProjectedSummaries, QuotedKey, RegionalSummaries, RelativePartitionResult, RelativeState,
+    SemanticPolicies, StatePolicy, StructuralPartition, WholeStateMetadata, WholeStatePolicy,
 };
 pub use policy::{
     Arrival, ContextInsensitive, ContextPolicy, EnginePolicies, FirstResumeStatus,
@@ -929,7 +929,9 @@ impl<
                 reuse.record_dependencies(id, entry);
             }
             let relative_procedure = entry.active().code == super::FrameCode::Unknown
-                || transfer::procedure::is_recursive_entry(entry);
+                || transfer::procedure::is_recursive_entry(entry)
+                || (self.policies.state.supports_early_known_admission()
+                    && transfer::procedure::is_known_call_entry(entry));
             if (relative_procedure
                 || cache
                     .as_ref()
