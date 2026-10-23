@@ -198,7 +198,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
                     .copied()
                     .unwrap_or(self.created_default),
             );
-            let pending = if Some(owner) == writable
+            let pending = if (named_aliases || Some(owner) == writable)
                 && created.get(&owner).copied().flatten() != Some(false)
             {
                 None

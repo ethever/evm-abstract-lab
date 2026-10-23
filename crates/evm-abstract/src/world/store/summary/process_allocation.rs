@@ -113,6 +113,18 @@ impl<N: WordElement> EvmStoreSummary<N> {
         let ProcessOwner::Named(owner) = owner else {
             return Ok(Collision::Unknown);
         };
+        self.process_collision_at_coordinate(owner, budget)
+    }
+
+    /// A supplied namespace may prove collision from its own account bounds.
+    /// The coordinate is a Store location, never a physical Named descriptor.
+    pub(crate) fn process_collision_at_coordinate(
+        &self,
+        owner: Address,
+        budget: &mut WorkBudget,
+    ) -> Result<crate::analysis::process_creation::Collision, CloneError> {
+        checkpoint(budget)?;
+        use crate::analysis::process_creation::Collision;
         if matches!(self.codes.get(&owner), Some(Code::Runtime(program)) if program.byte_len()!=0)
             || matches!(self.codes.get(&owner), Some(Code::Delegation(_)))
         {
@@ -127,7 +139,16 @@ impl<N: WordElement> EvmStoreSummary<N> {
         {
             return Ok(Collision::NonZeroNonce);
         }
-        match self.process_nonce(ProcessOwner::Named(owner), budget)? {
+        let nonce = self
+            .nonces
+            .get(&owner)
+            .map(|value| {
+                scalar::singleton(value, budget)
+                    .map(|value| value.and_then(|n| u64::try_from(n).ok()))
+            })
+            .transpose()?
+            .flatten();
+        match nonce {
             Some(0) if matches!(self.codes.get(&owner), Some(Code::Empty)) => {
                 Ok(Collision::Available)
             }

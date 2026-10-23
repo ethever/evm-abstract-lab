@@ -185,22 +185,21 @@ fn join_log<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     Ok(SummaryLog { topics, data })
 }
 
-// Code equality compares the fork and captured byte buffers. Their sizes are
-// cached; these comparisons contain no native scalars or decoded-state queries.
-pub(super) fn code_comparison_work(left: &Code, right: &Code) -> usize {
-    if matches!((left,right),(Code::Runtime(left),Code::Runtime(right)) if left.shares_capture(right))
-    {
-        // Program's derived Arc equality on Eq data uses pointer identity.
-        // This prices that exact successful shortcut, never a digest match or
-        // an assumed equality between separately decoded allocations.
-        return 32;
+// Code variants have fixed metadata; Program owns the one shared positive
+// identity shortcut and the independently funded complete-value fallback.
+pub(super) fn codes_equal(
+    left: &Code,
+    right: &Code,
+    budget: &mut WorkBudget,
+) -> Result<bool, CloneError> {
+    pay(budget, 16)?;
+    if let (Code::Runtime(left), Code::Runtime(right)) = (left, right) {
+        return left.eq_with_payment(right, budget);
     }
-    [left, right].into_iter().fold(16usize, |work, code| {
-        work.saturating_add(match code {
-            Code::Runtime(program) => program.byte_len(),
-            _ => 1,
-        })
-    })
+    pay(budget, 16)?;
+    let equal = left == right;
+    checkpoint(budget)?;
+    Ok(equal)
 }
 
 impl<N: WordElement> EvmStoreSummary<N> {
@@ -220,11 +219,10 @@ impl<N: WordElement> EvmStoreSummary<N> {
         )?;
         let mut codes = OrderedMap::new();
         for (owner, code) in &self.codes {
-            if let Some(incoming) = other.codes.get(owner) {
-                pay(budget, code_comparison_work(code, incoming))?;
-                if code == incoming {
-                    codes.insert(*owner, code.clone());
-                }
+            if let Some(incoming) = other.codes.get(owner)
+                && codes_equal(code, incoming, budget)?
+            {
+                codes.insert(*owner, code.clone());
             }
         }
         let existence = self

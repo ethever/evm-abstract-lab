@@ -44,7 +44,7 @@ impl<N: WordElement> PreparedProcessStore<N> {
         self.key
     }
 
-    /// Join only compatible physical classes, using the existing native join.
+    /// Join only compatible owner/binding classes using the native join.
     pub fn join<D: EvmNumericAlgebra<Element = N>>(
         &self,
         incoming: &Self,
@@ -86,7 +86,16 @@ impl<N: WordElement> PreparedProcessStore<N> {
         budget: &mut WorkBudget,
     ) -> Result<Self, ProcessOwnerError> {
         pay(budget, 32)?;
-        let state = if !is_static && let ProcessOwner::Named(owner) = self.key.owner {
+        let state = if !is_static && self.catalogue.namespace().is_some() {
+            // Either direction of the symbolic binding may alias this writer.
+            // This helper covers only storage; the process adapter separately
+            // applies its complete mutable-plane envelope before checkpoints.
+            let mut state = self.state.clone_with_payment(budget)?;
+            for owner in self.catalogue.coordinates() {
+                state = state.process_havoc_storage(*owner, domain, budget)?;
+            }
+            state
+        } else if !is_static && let ProcessOwner::Named(owner) = self.key.owner {
             self.state.process_havoc_storage(owner, domain, budget)?
         } else {
             // Residual's independent Top complement already covers every

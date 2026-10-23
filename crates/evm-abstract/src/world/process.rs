@@ -15,7 +15,9 @@ mod roles;
 #[cfg(test)]
 mod tests;
 
-pub use catalogue::{CapturedProcessCode, OwnerCatalogue, OwnerCatalogueLimits, ProcessOwnerKey};
+pub use catalogue::{
+    CapturedProcessCode, OwnerCatalogue, OwnerCatalogueLimits, ProcessNamespace, ProcessOwnerKey,
+};
 pub use prepared::PreparedProcessStore;
 pub use roles::{AddressRole, CallRoles, CallValueRole, ProcessCallOperands, ProcessTargetAddress};
 

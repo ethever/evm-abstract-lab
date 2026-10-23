@@ -409,11 +409,40 @@ pub(super) fn run_reusing<
     let terminal_boundary = TerminalBoundary::new(ready_terminal.is_some());
     // 本模型不精确跟踪剩余 gas，先保留入口即失败、EvmStore<D::Element> 不变的保守可能。
     // 这条 outcome 不是 transfer 已执行指令后报告的异常，也不是未完成前沿。
+    let failure_store = if policies.state.runtime_execution() == super::RuntimeExecution::Process
+        && result.entry.environment.to.as_concrete().is_none()
+    {
+        match initial
+            .call_stack
+            .root()
+            .state
+            .saved_store
+            .state()
+            .process_erase_namespace_with_payment(result.entry.address, domain, budget)
+        {
+            Ok(store) => store,
+            Err(error) => {
+                result.frontiers.push(EvmMachineFrontier {
+                    from: None,
+                    target: Some(initial.key()),
+                    pc: Some(0),
+                    reason: super::MachineError::from(error).frontier_reason(),
+                    range: None,
+                    payload: Some(Arc::new(initial)),
+                });
+                result.status = Status::Incomplete;
+                result.work = budget.used();
+                return Ok(result);
+            }
+        }
+    } else {
+        initial.call_stack.root().state.saved_store.state().clone()
+    };
     result.outcomes.push(EvmMachineOutcome {
         state: 0,
         kind: OutcomeKind::Failure,
         data: crate::world::EvmByteArray::empty(),
-        store: initial.call_stack.root().state.saved_store.state().clone(),
+        store: failure_store,
     });
     // S0 是状态表中的第一个节点。后续编号按发现顺序分配，不按基本块或 PC 排序。
     let key = initial.key();
@@ -961,11 +990,7 @@ impl<
                 reuse.record_dependencies(id, entry);
             }
             let relative_procedure = (self.policies.state.runtime_execution()
-                == super::RuntimeExecution::Process
-                && matches!(
-                    entry.active().code,
-                    super::FrameCode::Runtime | super::FrameCode::InitCode
-                ))
+                == super::RuntimeExecution::Process)
                 || entry.active().code == super::FrameCode::Unknown
                 || transfer::procedure::is_recursive_entry(entry)
                 || (self.policies.state.supports_early_known_admission()
