@@ -11,6 +11,8 @@ use revm_bytecode::opcode;
 pub(in crate::analysis) struct Capabilities {
     mask: u8,
     pub effects: bool,
+    /// Every state-writing primitive is absent; STATICCALL may still touch.
+    pub readonly: bool,
     pub returns: bool,
     pub reverts: bool,
 }
@@ -29,6 +31,7 @@ impl Capabilities {
         Self {
             mask: 0,
             effects: false,
+            readonly: true,
             returns: matches!(
                 code,
                 crate::analysis::FrameCode::Empty | crate::analysis::FrameCode::Precompile(_)
@@ -40,6 +43,7 @@ impl Capabilities {
         Self {
             mask: 0x3f,
             effects: true,
+            readonly: false,
             returns: true,
             reverts: true,
         }
@@ -65,6 +69,7 @@ impl Capabilities {
         let mut out = Self {
             mask: 0,
             effects: false,
+            readonly: true,
             returns: false,
             reverts: false,
         };
@@ -80,6 +85,16 @@ impl Capabilities {
                 continue;
             }
             let op = instruction.opcode;
+            out.readonly &= !matches!(
+                op,
+                opcode::SSTORE | opcode::TSTORE | opcode::SELFDESTRUCT | opcode::LOG0
+                    ..=opcode::LOG4
+                        | opcode::CALL
+                        | opcode::CALLCODE
+                        | opcode::DELEGATECALL
+                        | opcode::CREATE
+                        | opcode::CREATE2
+            );
             for (index, expected) in [
                 opcode::CALL,
                 opcode::STATICCALL,

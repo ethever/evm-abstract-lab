@@ -14,6 +14,9 @@ use crate::{
 };
 use alloy_primitives::{Address, U256};
 
+#[cfg(test)]
+mod tests;
+
 impl<N: WordElement> SummaryPlane<N> {
     fn process_zero_owner<D: EvmNumericAlgebra<Element = N>>(
         &self,
@@ -49,7 +52,8 @@ impl<N: WordElement> SummaryPlane<N> {
                 out.initial_independence.defaults.insert(*address, *value);
             }
         }
-        out.initial_independence.defaults.insert(owner, false);
+        // Creation reset severs the previous World/RPC dependency.
+        out.initial_independence.replace_account(owner);
         for ((address, slot), value) in &self.initial_independence.slots {
             if *address != owner {
                 out.initial_independence
@@ -88,6 +92,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
         owner: ProcessOwner,
         budget: &mut WorkBudget,
     ) -> Result<Option<u64>, CloneError> {
+        checkpoint(budget)?;
         let ProcessOwner::Named(owner) = owner else {
             return Ok(None);
         };
@@ -103,6 +108,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
         owner: ProcessOwner,
         budget: &mut WorkBudget,
     ) -> Result<crate::analysis::process_creation::Collision, CloneError> {
+        checkpoint(budget)?;
         use crate::analysis::process_creation::Collision;
         let ProcessOwner::Named(owner) = owner else {
             return Ok(Collision::Unknown);
