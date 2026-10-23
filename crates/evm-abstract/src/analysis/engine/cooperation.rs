@@ -18,7 +18,7 @@ use crate::{
         },
     },
     domain::{AlgebraRef, EvmNumericAlgebra, WordElement},
-    resource::WorkBudget,
+    resource::{WorkBudget, clone_payment},
 };
 use analysis_kernel::{
     Analyzer, Availability, Context, GenerationEntry, JobId, KernelError, LocalClosure, RunningJob,
@@ -406,7 +406,14 @@ impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
                 && binding.stamp == stamp
             {
                 drop(payload);
-                binding.input.payload().clone()
+                let original = binding.input.payload();
+                original
+                    .pay_clone_with(budget)
+                    .map_err(|error| KernelError::Stopped(MachineError::from(error)))?;
+                let copied = original.clone();
+                clone_payment::checkpoint(budget)
+                    .map_err(|error| KernelError::Stopped(MachineError::from(error)))?;
+                copied
             } else {
                 payload
             };
@@ -603,7 +610,16 @@ impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
         };
         analysis_kernel::Meter::reserve(&mut MachineMeter(budget), binding.input.work_size())
             .map_err(KernelError::Stopped)?;
+        // The immutable Input handle is shared, but this executable view owns
+        // another machine copy, independent of the caller's paid replay.
+        binding
+            .input
+            .payload()
+            .pay_clone_with(budget)
+            .map_err(|error| KernelError::Stopped(MachineError::from(error)))?;
         let view = binding.input.payload().clone();
+        clone_payment::checkpoint(budget)
+            .map_err(|error| KernelError::Stopped(MachineError::from(error)))?;
         public::apply_refinements(view, &facts, domain, budget)
             .map_err(CooperationError::Refinement)
     }
