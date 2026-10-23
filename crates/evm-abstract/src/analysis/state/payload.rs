@@ -47,7 +47,12 @@ impl<N: WordElement> EvmPayloadSummary<N> {
     }
 
     pub(in crate::analysis) fn measure_work(&self) -> usize {
-        let store_work = self.store.work_size();
+        let process = self.frames.iter().all(|frame| frame.key.process.is_some());
+        let store_work = if process {
+            self.store.process_work_size()
+        } else {
+            self.store.work_size()
+        };
         let observation_work = self
             .storage_observations
             .work_size(&self.active().stack, &self.active().stack_aliases);
@@ -59,7 +64,11 @@ impl<N: WordElement> EvmPayloadSummary<N> {
                         .byte_arrays()
                         .into_iter()
                         .fold(work, |work, bytes| work.saturating_add(bytes.work_size()))
-                        .saturating_add(frame.saved_store.work_size())
+                        .saturating_add(if frame.key.process.is_some() {
+                            frame.saved_store.process_work_size()
+                        } else {
+                            frame.saved_store.work_size()
+                        })
                         .saturating_add(frame.stack_aliases.work_size())
                         .saturating_add(frame.metadata_work())
                         .saturating_add(4),

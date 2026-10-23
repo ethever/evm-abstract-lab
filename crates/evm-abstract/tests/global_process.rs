@@ -1,6 +1,8 @@
 //! Native process checkpoint with independent concrete execution and journaling.
 #![allow(dead_code)]
 
+#[path = "global_process/captured.rs"]
+mod captured;
 #[path = "global_process/control.rs"]
 mod control;
 #[path = "support/native.rs"]

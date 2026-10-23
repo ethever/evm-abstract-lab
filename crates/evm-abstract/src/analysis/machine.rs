@@ -192,10 +192,17 @@ impl<N: WordElement> EvmMachinePayload<N> {
     }
 
     pub(crate) fn work_size(&self) -> usize {
+        let store_work = if self
+            .call_stack
+            .iter()
+            .all(|frame| frame.key.process.is_some())
+        {
+            self.store.process_work_size()
+        } else {
+            self.store.work_size()
+        };
         let cost = self.call_stack.iter().fold(
-            self.store
-                .work_size()
-                .saturating_add(self.relations.work_size()),
+            store_work.saturating_add(self.relations.work_size()),
             |cost, frame| cost.saturating_add(frame.work_size()),
         );
         self.call_stack.children().iter().fold(cost, |cost, child| {

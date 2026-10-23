@@ -263,7 +263,10 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
             boundary_on(result, pc, clone_reason(error), payload.key());
             return;
         }
-        if let Some(address) = continuation.creation.and_then(crate::analysis::CreationContinuation::native_address) {
+        if let Some(address) = continuation
+            .creation
+            .and_then(crate::analysis::CreationContinuation::native_address)
+        {
             let word = if kind == OutcomeKind::Return {
                 U256::from_be_slice(address.as_slice())
             } else {

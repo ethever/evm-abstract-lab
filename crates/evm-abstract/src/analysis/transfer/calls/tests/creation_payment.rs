@@ -86,6 +86,8 @@ fn max_derived_address_literal_fee_reaches_actual_result_and_refuses_factory() {
         .unwrap()
         .continuation
         .creation
+        .unwrap()
+        .native_address()
         .unwrap();
     let target = U256::from_be_slice(address.as_slice());
     let (result, _) = complete(
@@ -118,6 +120,8 @@ fn finite_address_literal_fee_is_exact_and_budget_refusal_publishes_no_resume() 
             .unwrap()
             .continuation
             .creation
+            .unwrap()
+            .native_address()
             .unwrap()
             .as_slice(),
     );
@@ -201,6 +205,8 @@ fn result_literal_quote_cancellation_checks_current_and_captured_owners() {
                 .unwrap()
                 .continuation
                 .creation
+                .unwrap()
+                .native_address()
                 .unwrap()
                 .as_slice(),
         );

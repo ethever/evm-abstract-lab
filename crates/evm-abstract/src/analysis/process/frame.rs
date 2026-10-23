@@ -22,24 +22,50 @@ pub struct EvmProcessInvocation<N: WordElement> {
 pub enum ProcessSource {
     /// The original captured runtime and decoder fork.
     Runtime {
+        /// Original captured account or input code namespace.
         source: Address,
+        /// Digest of its original executable bytes.
         hash: B256,
+        /// Decoder and execution rules for these bytes.
         fork: Fork,
     },
     /// Captured constructor bytes, distinct from account runtime code.
-    InitCode { hash: B256, fork: Fork },
+    InitCode {
+        /// Digest of the constructor bytes, independent of account runtime.
+        hash: B256,
+        /// Constructor decoder and execution rules.
+        fork: Fork,
+    },
     /// Unobserved runtime, including future deployed code in the complement.
-    AnyRuntime { fork: Fork },
+    AnyRuntime {
+        /// Rules for the complete unresolved account-execution remainder,
+        /// including empty/native targets hidden by target abstraction.
+        fork: Fork,
+    },
     /// Arbitrary constructor bytes; no Program or source hash is invented.
-    AnyInitCode { fork: Fork },
+    AnyInitCode {
+        /// Rules for every represented constructor byte sequence.
+        fork: Fork,
+    },
     /// Actual empty account execution.
-    Empty { fork: Fork },
+    Empty {
+        /// Rules of the account-code resolution that established emptiness.
+        fork: Fork,
+    },
     /// Native precompile interpretation under the frozen fork.
-    Precompile { address: Address, fork: Fork },
+    Precompile {
+        /// Actual native precompile selected by account-code resolution.
+        address: Address,
+        /// Fork selecting this native implementation.
+        fork: Fork,
+    },
     /// A second delegation marker executes an invalid EF instruction.
     InvalidDelegation {
+        /// Account supplying the second delegation marker.
         source: Address,
+        /// Digest of that original marker's raw bytes.
         hash: B256,
+        /// Rules under which its EF byte exceptionally fails.
         fork: Fork,
     },
 }
@@ -74,7 +100,10 @@ pub struct ProcessCreation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum CreationContinuation {
     /// Ordinary native initcode deployment.
-    Native { destination: Address },
+    Native {
+        /// Actual deployment destination computed by the native CREATE path.
+        destination: Address,
+    },
     /// Native Body/Resume process constructor dependency.
     Process(ProcessCreation),
 }

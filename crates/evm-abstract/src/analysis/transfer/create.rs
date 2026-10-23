@@ -658,9 +658,21 @@ fn create_prepared<D: EvmNumericAlgebra>(
                                     },
                                     continuation: EvmContinuation {
                                         return_block: Some(next),
-                                        output_offset: summary::literal(U256::ZERO,domain,context.budget)?,
-                                        output_size: summary::literal(U256::ZERO,domain,context.budget)?,
-                                        creation: Some(crate::analysis::CreationContinuation::Native { destination }),
+                                        output_offset: summary::literal(
+                                            U256::ZERO,
+                                            domain,
+                                            context.budget,
+                                        )?,
+                                        output_size: summary::literal(
+                                            U256::ZERO,
+                                            domain,
+                                            context.budget,
+                                        )?,
+                                        creation: Some(
+                                            crate::analysis::CreationContinuation::Native {
+                                                destination,
+                                            },
+                                        ),
                                     },
                                 });
                                 query::checkpoint(context.budget)?;
