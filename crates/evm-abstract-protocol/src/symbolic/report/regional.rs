@@ -2,16 +2,28 @@
 use super::Validation;
 use crate::{
     AbstractSummary, CodeKind, PoolReferenceKind, RegionalNode, RegionalValidationFailure,
-    RegionalValidationKind as Kind, ReportValidationFailure,
+    RegionalValidationKind as Kind, ReportValidationFailure, TransferSemantics,
 };
 
 #[cfg(test)]
 mod tests;
 
-fn block_evidence(node: &RegionalNode) -> Result<(), Kind> {
+fn compatible_code(kind: CodeKind, semantics: TransferSemantics) -> bool {
+    match semantics {
+        TransferSemantics::Native => kind != CodeKind::AbstractEnvironment,
+        TransferSemantics::Environment => kind == CodeKind::AbstractEnvironment,
+        TransferSemantics::KnownProcess => kind == CodeKind::Runtime,
+    }
+}
+
+fn block_evidence(node: &RegionalNode, semantics: TransferSemantics) -> Result<(), Kind> {
     // Non-program modes can retain a native placeholder block key. It is not
     // captured source, including when invalid delegation retains a raw hash.
-    let bytecode = matches!(node.frame.kind, CodeKind::Runtime | CodeKind::Initcode);
+    if !compatible_code(node.frame.kind, semantics) {
+        return Err(Kind::Semantics);
+    }
+    let bytecode = semantics == TransferSemantics::Native
+        && matches!(node.frame.kind, CodeKind::Runtime | CodeKind::Initcode);
     if bytecode != node.frame.basic_block.is_some()
         || node
             .transfer
@@ -19,6 +31,17 @@ fn block_evidence(node: &RegionalNode) -> Result<(), Kind> {
             .is_some_and(|transfer| transfer.visited_block && !bytecode)
     {
         return Err(Kind::BlockVisit);
+    }
+    if let Some(transfer) = &node.transfer {
+        if transfer.semantics != semantics
+            || (semantics == TransferSemantics::Native && transfer.process.is_some())
+            || transfer
+                .process
+                .as_ref()
+                .is_some_and(|process| transfer.complete && !process.unresolved.is_empty())
+        {
+            return Err(Kind::Semantics);
+        }
     }
     Ok(())
 }
@@ -55,7 +78,8 @@ impl Validation<'_> {
             for target in &node.successors {
                 node_ref(*target)?;
             }
-            block_evidence(node).map_err(|kind| failure(node.id, false, kind))?;
+            block_evidence(node, summary.procedures[node.procedure].semantics)
+                .map_err(|kind| failure(node.id, false, kind))?;
             if let Some(transfer) = &node.transfer {
                 if transfer.current && transfer.input_revision != node.input_revision {
                     return Err(failure(node.id, false, Kind::Revision));
@@ -80,6 +104,9 @@ impl Validation<'_> {
             }
             node_ref(call.from)?;
             procedure_ref(call.callee)?;
+            if call.action.is_some() != call.target.is_some() {
+                return Err(failure(call.id, true, Kind::Semantics));
+            }
             for entry in &call.entries {
                 node_ref(*entry)?;
                 if cfg.nodes[*entry].procedure != call.callee {

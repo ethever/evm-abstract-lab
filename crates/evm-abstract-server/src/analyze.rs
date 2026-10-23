@@ -5,6 +5,7 @@ pub(crate) use errors::fingerprint as fingerprint_error;
 mod input;
 mod mapping;
 mod pools;
+mod process;
 mod report;
 mod rpc;
 mod ssa;

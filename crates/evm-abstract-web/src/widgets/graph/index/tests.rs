@@ -76,6 +76,21 @@ fn regional_known_call_index_never_implies_recursive_or_native_termination_evide
             .summary_source(source, ProcedureSummaryKind::KnownCall)
             .is_some()
     );
+    for summary in &mut report.abstract_summaries {
+        summary.kind = ProcedureSummaryKind::KnownProcess;
+    }
+    let index = ReportIndex::new(&report);
+    assert!(
+        index
+            .summary_source(source, ProcedureSummaryKind::KnownProcess)
+            .is_some()
+    );
+    assert!(
+        index
+            .summary_source(source, ProcedureSummaryKind::KnownRecursion)
+            .is_none()
+    );
+    assert_eq!(index.termination_summary(&[source]), original);
 }
 
 #[test]

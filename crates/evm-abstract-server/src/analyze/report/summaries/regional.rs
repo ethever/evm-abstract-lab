@@ -1,6 +1,6 @@
 //! Copy compact identities/receipts once; never expand numerical payloads or SSA.
 use super::outcome;
-use crate::analyze::{mapping, pools, symbolic::Pool, value};
+use crate::analyze::{mapping, pools, process, symbolic::Pool, value};
 use evm_abstract::analysis;
 use evm_abstract_protocol as api;
 
@@ -9,6 +9,7 @@ mod tests;
 
 pub(super) fn project(
     native: &analysis::EvmRegionalCfg,
+    procedures: &[api::AbstractProcedure],
     export: &mut Pool<'_>,
 ) -> Result<api::RegionalCfg, api::ApiError> {
     export.charge(native.nodes.len().saturating_add(native.calls.len()))?;
@@ -23,20 +24,27 @@ pub(super) fn project(
                 .saturating_add(node.successors.len()),
         )?;
         let frame = &node.frame;
-        let bytecode = matches!(
-            frame.mode,
-            analysis::FrameCode::Runtime | analysis::FrameCode::InitCode
-        );
+        let bytecode = procedures[node.procedure].semantics == api::TransferSemantics::Native
+            && matches!(
+                frame.mode,
+                analysis::FrameCode::Runtime | analysis::FrameCode::InitCode
+            );
         let transfer = node
             .transfer
             .as_ref()
             .map(|transfer| -> Result<_, api::ApiError> {
                 export.charge(
-                    6usize
+                    8usize
                         .saturating_add(transfer.calls.len())
                         .saturating_add(transfer.outcomes.len()),
                 )?;
                 Ok(api::RegionalTransfer {
+                    semantics: process::semantics(transfer.semantics),
+                    process: transfer
+                        .process
+                        .as_ref()
+                        .map(|receipt| process::transfer(receipt, export))
+                        .transpose()?,
                     input_revision: api::DecimalU64(transfer.input_revision),
                     current: transfer.current,
                     complete: transfer.complete,
@@ -71,7 +79,7 @@ pub(super) fn project(
     }
     let mut calls = Vec::with_capacity(native.calls.len());
     for call in &native.calls {
-        export.charge(6usize.saturating_add(call.entries.len()))?;
+        export.charge(8usize.saturating_add(call.entries.len()))?;
         let mut deliveries = Vec::with_capacity(call.deliveries.len());
         for delivery in &call.deliveries {
             export.charge(5)?;
@@ -84,6 +92,8 @@ pub(super) fn project(
             });
         }
         calls.push(api::RegionalCall {
+            action: call.action.map(process::action),
+            target: call.target.map(process::owner),
             id: call.id,
             from: call.from,
             callee: call.callee,

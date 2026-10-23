@@ -1,6 +1,9 @@
 //! Regional flow has its own identities and granularity, separate from native SSA.
+use super::process;
 use egui::Ui;
-use evm_abstract_protocol::{CodeKind, RegionalCfg, RegionalNode, SummarySourceStatus};
+use evm_abstract_protocol::{
+    CodeKind, RegionalCfg, RegionalNode, SummarySourceStatus, TransferSemantics,
+};
 
 pub(super) fn status(node: &RegionalNode, source: SummarySourceStatus) -> &'static str {
     match source {
@@ -16,7 +19,15 @@ pub(super) fn status(node: &RegionalNode, source: SummarySourceStatus) -> &'stat
         Some(transfer) if !transfer.current || transfer.input_revision != node.input_revision => {
             "Historical transfer"
         }
+        Some(transfer)
+            if !transfer.complete && transfer.semantics == TransferSemantics::KnownProcess =>
+        {
+            "Current partial conservative process"
+        }
         Some(transfer) if !transfer.complete => "Current partial transfer",
+        Some(transfer) if transfer.semantics == TransferSemantics::KnownProcess => {
+            "Current conservative process · possible control"
+        }
         Some(transfer) if transfer.visited_block => "Current block transfer",
         Some(_) if node.frame.kind == CodeKind::AbstractEnvironment => {
             "Current effect/environment abstraction"
@@ -71,6 +82,12 @@ pub(super) fn show(ui: &mut Ui, cfg: &RegionalCfg, source: SummarySourceStatus) 
                         "Observed caller input revision: {}",
                         call.input_revision.0
                     ));
+                    if let Some(action) = call.action {
+                        ui.label(format!("Possible action: {}", process::action(action)));
+                    }
+                    if let Some(target) = &call.target {
+                        ui.monospace(format!("Action target: {}", process::owner(target)));
+                    }
                     for delivery in &call.deliveries {
                         let local_current =
                             delivery.current && delivery.input_revision == call.input_revision;
@@ -119,7 +136,12 @@ fn node_details(ui: &mut Ui, node: &RegionalNode, source: SummarySourceStatus) {
             frame.stack_height, frame.context
         ));
     }
-    if frame.kind == CodeKind::AbstractEnvironment {
+    if frame.kind == CodeKind::AbstractEnvironment
+        && node
+            .transfer
+            .as_ref()
+            .is_none_or(|transfer| transfer.process.is_none())
+    {
         ui.label("Effect/environment abstraction: callbacks may be represented by effects even when the retained call list is empty.");
     }
     ui.label(format!(
@@ -129,6 +151,26 @@ fn node_details(ui: &mut Ui, node: &RegionalNode, source: SummarySourceStatus) {
     ui.label(format!("Excluded input: {}", node.excluded));
     ui.label(format!("Admitted successors: {:?}", node.successors));
     if let Some(transfer) = &node.transfer {
+        ui.label(process::interpretation(transfer.semantics));
+        if let Some(receipt) = &transfer.process {
+            ui.label("Conservative process rules describe possible control; instruction visits are recorded separately.");
+            ui.label(format!(
+                "Actions may repeat before an exit: {}",
+                receipt.repeat
+            ));
+            ui.label(format!(
+                "Represented actions: {}",
+                receipt
+                    .actions
+                    .iter()
+                    .map(|kind| process::action(*kind))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            for reason in &receipt.unresolved {
+                ui.label(format!("Unexpanded: {}", process::boundary(reason)));
+            }
+        }
         let local_current =
             transfer.current && transfer.input_revision == node.input_revision && !node.excluded;
         let label = match source {
@@ -149,7 +191,7 @@ fn node_details(ui: &mut Ui, node: &RegionalNode, source: SummarySourceStatus) {
             ));
         }
         ui.label(format!(
-            "Retained calls: {:?} · emitted results: {:?}",
+            "Retained calls: {:?} · recorded exits: {:?}",
             transfer.calls, transfer.outcomes
         ));
     } else {

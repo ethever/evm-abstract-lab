@@ -177,14 +177,14 @@ def load_commands(path, cases):
     if (not isinstance(profile["report_exit_codes"], list) or not profile["report_exit_codes"]
             or any(type(code) is not int or code < 0 for code in profile["report_exit_codes"])):
         raise ValueError("declare nonnegative final-report exit codes")
-    if profile["interface"].get("versions", {}).get("native") in {12, 13}:
+    if profile["interface"].get("versions", {}).get("native") in {12, 13, 14}:
         if (profile.get("expected_native_numeric_model") not in ("product", "finite-set")
                 or not isinstance(profile.get("expected_native_domain_spec"), dict)
                 or not profile["expected_native_domain_spec"]):
-            raise ValueError("native 12/13 requires the selected model and complete algebra limits")
+            raise ValueError("native 12/13/14 requires the selected model and complete algebra limits")
         allowance = profile.get("expected_native_postprocessing_max_work")
         if type(allowance) is not int or allowance <= 0:
-            raise ValueError("native 12/13 requires a positive application postprocessing allowance")
+            raise ValueError("native 12/13/14 requires a positive application postprocessing allowance")
     for name, case in cases.items():
         entry = profile["cases"][name]
         if entry["input_identity_sha256"] != case["input_identity_sha256"]:
@@ -267,9 +267,9 @@ def collect_report(directory, process, commands, report_parse_limit_bytes):
             raise ValueError("stdout exceeds harness parsing limit; retain raw output without inferring a Report")
         report = read_json(directory / "stdout.log")
         native_version = commands.get("interface", {}).get("versions", {}).get("native")
-        if native_version in {12, 13} and report.get("schema_version") != native_version:
+        if native_version in {12, 13, 14} and report.get("schema_version") != native_version:
             raise ValueError(f"expected native report schema {native_version}")
-        if native_version in {12, 13}:
+        if native_version in {12, 13, 14}:
             allowance, used = report.get("postprocessing_max_work"), report.get("postprocessing_work")
             if (type(allowance) is not int or allowance <= 0
                     or type(used) is not int or not 0 <= used <= allowance):
@@ -277,7 +277,7 @@ def collect_report(directory, process, commands, report_parse_limit_bytes):
         final = native_final(report, process, accepted_exits)
         record.update(nativefinal=final, report_delivered=True, phase="native_final_received")
         record["policy_matches"] = final["config"] == commands["expected_native_config"]
-        if native_version in {12, 13}:
+        if native_version in {12, 13, 14}:
             record["policy_matches"] = record["policy_matches"] and (
                 final.get("domain_spec") == commands["expected_native_domain_spec"]
                 and final.get("numeric_model") == commands["expected_native_numeric_model"]

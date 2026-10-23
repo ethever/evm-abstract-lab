@@ -19,7 +19,7 @@ fn report(output: &Output, exit: i32) -> Json {
 }
 
 fn assert_certificate(analysis: &Json) {
-    assert_eq!(analysis["schema_version"], 13);
+    assert_eq!(analysis["schema_version"], 14);
     assert_eq!(analysis["status"], "Incomplete");
     assert!(!analysis["frontiers"].as_array().unwrap().is_empty());
     let coverage = &analysis["root_terminal_coverage"];
@@ -225,7 +225,7 @@ fn default_and_explicit_switches_without_a_certificate_keep_the_existing_output_
                 arguments.push(flag);
             }
             let report = report(&run_concrete(&arguments), exit);
-            assert_eq!(report["schema_version"], 13);
+            assert_eq!(report["schema_version"], 14);
             assert!(report.get("root_terminal_coverage").is_none());
         }
         let mut arguments = vec!["explain", "--hex", "00"];

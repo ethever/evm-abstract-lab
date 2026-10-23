@@ -12,32 +12,41 @@ use crate::{
 fn source_current_qualifies_known_call_cards_in_ssa_and_disassembly_views() {
     let mut report = crate::tests::procedure_report("5f5f5f5f5f305af150602a5f5260205ff3");
     report.abstract_summaries.truncate(1);
-    for summary in &mut report.abstract_summaries {
-        summary.kind = evm_abstract_protocol::ProcedureSummaryKind::KnownCall;
-    }
     let source = report.abstract_summaries[0].source_state;
     let context = Context::default();
     crate::notation::initialize_fonts(&context);
     let mut output = context.run_ui(RawInput::default(), |ui| {
-        for (source_current, scope) in [
-            (false, "final source uncertified"),
-            (true, "final source certified"),
+        for (kind, label) in [
+            (
+                evm_abstract_protocol::ProcedureSummaryKind::KnownCall,
+                "Known bytecode call summary",
+            ),
+            (
+                evm_abstract_protocol::ProcedureSummaryKind::KnownProcess,
+                "Conservative process · possible control",
+            ),
         ] {
-            report.abstract_summaries[0].source_current = source_current;
-            for view in [NodeView::Ssa, NodeView::Disassembly] {
-                let block = report.cfg.iter().find(|block| block.id == source).unwrap();
-                let node = node_text(ui.painter(), &report, block, view);
-                assert!(
-                    node.lines
-                        .iter()
-                        .any(|(line, _)| line == &format!("Known bytecode call summary · {scope}"))
-                );
-                assert!(
-                    !node
-                        .lines
-                        .iter()
-                        .any(|(line, _)| line.contains("Recursive bytecode"))
-                );
+            report.abstract_summaries[0].kind = kind;
+            for (source_current, scope) in [
+                (false, "final source uncertified"),
+                (true, "final source certified"),
+            ] {
+                report.abstract_summaries[0].source_current = source_current;
+                for view in [NodeView::Ssa, NodeView::Disassembly] {
+                    let block = report.cfg.iter().find(|block| block.id == source).unwrap();
+                    let node = node_text(ui.painter(), &report, block, view);
+                    assert!(
+                        node.lines
+                            .iter()
+                            .any(|(line, _)| line == &format!("{label} · {scope}"))
+                    );
+                    assert!(
+                        !node
+                            .lines
+                            .iter()
+                            .any(|(line, _)| line.contains("Recursive bytecode"))
+                    );
+                }
             }
         }
     });
