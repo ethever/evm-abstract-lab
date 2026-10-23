@@ -1,5 +1,7 @@
 //! Versioned observations are applied only when constructing a new initial machine.
 
+mod hybrid;
+
 use super::{
     CatalogError, CodeCatalog, CodeId, CodeMode, CodeObservation, FactDependencies, FactError,
     FactKey, FactRevision, Observation, Observed, SnapshotId, StateFacts,
@@ -410,26 +412,13 @@ where
             .budget
             .as_mut()
             .expect("run_policy establishes the persistent ledger");
-        // Pay traversal and actual native clones before any copy/query. The base
-        // keeps all abstract assumptions; facts only restrict this same request.
-        super::payment::pay_input(&self.input, budget).map_err(|error| match error {
-            crate::resource::CloneError::Cancelled => SessionError::Cancelled(Cancelled),
-            crate::resource::CloneError::Work => SessionError::Work,
-        })?;
-        let world = project_world(
+        let input = project_input(
             &self.catalog,
-            &self.input.facts,
-            &self.input.world,
+            &self.input,
             entry_code,
-            self.input.entry.address,
             self.engine.algebra.borrowed(),
             budget,
         )?;
-        let input = AnalysisInput {
-            world,
-            entry: self.input.entry.clone(),
-            facts: self.input.facts.clone(),
-        };
         let analysis = self.engine.run_metered(
             input,
             self.config.clone(),
@@ -491,6 +480,11 @@ where
     /// Cumulative state allocations, including invalidated graphs.
     pub fn states_created(&self) -> usize {
         self.counters.states
+    }
+
+    /// Cumulative transfers, including discarded refinement graphs.
+    pub fn transfers_used(&self) -> usize {
+        self.counters.transfers
     }
 
     /// Install a monotone initial-fact batch, with explicit graph invalidation.
@@ -594,6 +588,32 @@ where
         }
         Ok(effect)
     }
+}
+
+/// Native and hybrid Session runs lift the same facts through identical paid
+/// carrier operations. Neither path can copy an executed Store or weaken the base.
+fn project_input<D: EvmNumericAlgebra, E>(
+    catalog: &CodeCatalog,
+    input: &AnalysisInput<D::Element>,
+    entry_code: Option<CodeId>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<AnalysisInput<D::Element>, SessionError<E>> {
+    super::payment::pay_input(input, budget).map_err(session_clone_error)?;
+    let world = project_world(
+        catalog,
+        &input.facts,
+        &input.world,
+        entry_code,
+        input.entry.address,
+        domain,
+        budget,
+    )?;
+    Ok(AnalysisInput {
+        world,
+        entry: input.entry.clone(),
+        facts: input.facts.clone(),
+    })
 }
 
 fn runtime<E>(catalog: &CodeCatalog, id: CodeId) -> Result<Code, SessionError<E>> {
