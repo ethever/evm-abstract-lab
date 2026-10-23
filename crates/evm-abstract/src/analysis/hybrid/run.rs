@@ -205,7 +205,7 @@ where
                     };
                     let source = input::copy(baseline.world(), baseline.entry(), budget);
                     coverage.work.preparation = budget.used().saturating_sub(start);
-                    let (world, entry) = match source {
+                    let (world, mut entry) = match source {
                         Ok(source) => source,
                         Err(CloneError::Work) => {
                             coverage.detail = DetailState::Work;
@@ -213,6 +213,22 @@ where
                         }
                         Err(CloneError::Cancelled) => return Err(CooperationError::Cancelled),
                     };
+                    if let HybridNativeBinding::SymbolicOwnerNamespace { namespace } =
+                        coverage.detail_binding
+                    {
+                        // Materialize the explicit subset condition on the paid
+                        // detached native entry. The original symbolic entry is
+                        // still retained by the complete process baseline.
+                        match crate::resource::clone_payment::pay(budget, 1) {
+                            Ok(()) => entry.environment.to = namespace.into(),
+                            Err(CloneError::Work) => {
+                                coverage.work.preparation = budget.used().saturating_sub(start);
+                                coverage.detail = DetailState::Work;
+                                return Ok(None);
+                            }
+                            Err(CloneError::Cancelled) => return Err(CooperationError::Cancelled),
+                        }
+                    }
                     coverage.detail_regions = match policy::select(
                         &world,
                         entry.address,
