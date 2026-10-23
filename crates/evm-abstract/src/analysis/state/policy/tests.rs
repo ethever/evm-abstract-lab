@@ -30,6 +30,81 @@ fn range(upper: u64) -> TestValue {
 }
 
 #[test]
+fn equal_relative_replays_pay_comparison_and_copy_without_rebuilding_or_skipping_widening() {
+    let values = ValueAlgebra::new(ProductAlgebra::default());
+    let domain = values.borrowed();
+    let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
+    let mut input = transfer::initial(&world, &entry, domain).unwrap();
+    let key = TestValue::top().with_expression(ExprId::fresh().unwrap());
+    input.active_mut().stack = vec![key.clone(), key.clone()];
+    input
+        .store
+        .write_checked(input.active().key.address, &key, &fixtures::word(7), domain)
+        .unwrap();
+    let mut setup = WorkBudget::new(1_000_000);
+    let left =
+        EvmPayloadSummary::project(&input, &mut PolicyContext::new(domain, &entry, &mut setup))
+            .unwrap();
+    let right = left.clone();
+    assert!(!std::ptr::eq(&left, &right));
+    assert!(left.active().stack_aliases.same_class(0, 1));
+    assert_ne!(left.storage_observations, Default::default());
+
+    let mut rebuilt = WorkBudget::new(1_000_000);
+    let expected = left
+        .join_with_payment(&right, domain, false, &mut rebuilt)
+        .unwrap();
+    let mut measured = WorkBudget::new(1_000_000);
+    let actual = left
+        .covering_join(
+            &right,
+            Acceleration::Join,
+            &mut PolicyContext::new(domain, &entry, &mut measured),
+        )
+        .unwrap();
+    assert!(
+        actual
+            .eq_with_payment(&expected, domain, &mut setup)
+            .unwrap()
+    );
+    let fee = measured.used();
+    assert!(fee < rebuilt.used());
+    for (limit, succeeds) in [(fee, true), (fee - 1, false)] {
+        let mut budget = WorkBudget::new(limit);
+        let joined = left.covering_join(
+            &right,
+            Acceleration::Join,
+            &mut PolicyContext::new(domain, &entry, &mut budget),
+        );
+        assert_eq!(joined.is_ok(), succeeds);
+        assert!(budget.used() <= limit);
+        if !succeeds {
+            assert!(matches!(joined, Err(MachineError::Work)));
+        }
+    }
+
+    let mut rebuilt = WorkBudget::new(1_000_000);
+    let expected = left
+        .join_with_payment(&right, domain, true, &mut rebuilt)
+        .unwrap();
+    let mut widened = WorkBudget::new(1_000_000);
+    let actual = left
+        .covering_join(
+            &right,
+            Acceleration::Widen,
+            &mut PolicyContext::new(domain, &entry, &mut widened),
+        )
+        .unwrap();
+    assert!(
+        actual
+            .eq_with_payment(&expected, domain, &mut setup)
+            .unwrap()
+    );
+    assert_eq!(widened.used(), rebuilt.used());
+    assert!(left.eq_with_payment(&right, domain, &mut setup).unwrap());
+}
+
+#[test]
 fn scheduled_join_keeps_finite_bounds_before_and_after_promotion() {
     let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let (world, entry) = fixtures::fixture(&[(0x101, "00")]);

@@ -73,10 +73,13 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
-        // Initial admission still calls the selected policy. Identical borrowed
-        // inputs prove x union x = x without rebuilding every byte/store
-        // template. Explicit widening remains an independent operation.
-        if acceleration == Acceleration::Join && std::ptr::eq(self, incoming) {
+        // Independent replays can have the same complete numerical bound.
+        // Prove idempotence before rebuilding every byte/store template;
+        // explicit widening remains an independent operation.
+        if acceleration == Acceleration::Join
+            && (std::ptr::eq(self, incoming)
+                || self.eq_with_payment(incoming, cx.domain, cx.budget)?)
+        {
             let joined = self.clone_with_payment(cx.budget)?;
             cx.reserve(0)?;
             return Ok(joined);
