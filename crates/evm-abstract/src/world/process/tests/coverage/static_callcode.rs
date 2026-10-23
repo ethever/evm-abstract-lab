@@ -207,7 +207,12 @@ fn funded_static_callcode_value_nine_and_subsequent_delegate_are_covered() {
                     insert(&mut db, address(owner), code.clone(), 0);
                 }
                 insert(&mut db, address(outside), driver.clone(), 0);
-                db.accounts.get_mut(&address(outside)).unwrap().info.balance = U256::from(balance);
+                db.cache
+                    .accounts
+                    .get_mut(&address(outside))
+                    .unwrap()
+                    .info
+                    .balance = U256::from(balance);
                 db.insert_account_info(
                     address(0x900),
                     AccountInfo {
