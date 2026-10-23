@@ -4,6 +4,8 @@ use crate::domain::EvmNumericAlgebra;
 
 mod guards;
 mod length;
+#[cfg(test)]
+mod tests;
 
 use super::super::TransferContext;
 use crate::{
@@ -36,6 +38,12 @@ pub(super) fn refine<D: EvmNumericAlgebra>(
         context.budget,
         Policy::Branch { diagnostics, pc },
     );
+    // Import the current source's bounds before whole-state admission can
+    // forget the predicate. Rollback checkpoints retain their original roots.
+    projection.store(&mut payload.store);
+    if projection.stopped() {
+        return projection.finish().map_err(MachineError::frontier_reason);
+    }
     'metadata: for frame in payload.call_stack.iter_mut() {
         for value in [&mut frame.address_operand, &mut frame.caller_operand]
             .into_iter()
