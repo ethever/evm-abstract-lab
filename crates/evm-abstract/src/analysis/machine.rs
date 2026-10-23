@@ -290,7 +290,7 @@ pub enum FrontierReason {
     SummaryWork,
     /// Another frame would exceed the external-call depth budget.
     CallDepth,
-    /// Recursive bytecode stabilized without covering any finite terminal behavior.
+    /// A live known bytecode region stabilized without covering finite terminal behavior.
     RecursiveNoTerminal,
     /// A modeled byte range exceeds the declared memory or representation policy.
     Memory,
