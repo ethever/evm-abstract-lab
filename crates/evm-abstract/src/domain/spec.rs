@@ -38,8 +38,8 @@ impl DomainSpec {
             capacity,
             reduction_rounds,
             fact_limit,
-            // Version 7 uses native borrowed operations and explicit opcode quotes.
-            cost_version: 7,
+            // Version 8 pays native summary callers, readers and replay separately.
+            cost_version: 8,
             widening_after_updates: 2,
             provenance_policy: "scoped-expressions-and-value-identities-v3",
             relations: super::relational::RelationLimits::default(),

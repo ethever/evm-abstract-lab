@@ -5,6 +5,7 @@ use crate::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+mod caller_tests;
 mod carrier;
 use carrier::{FEE, Hook, Policy, RECEIPT, Receipt, Stage, Word};
 

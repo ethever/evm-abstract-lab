@@ -23,6 +23,8 @@ pub(super) enum Stage {
     Widened,
     Projected,
     Canonical,
+    Compacted,
+    Restored,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,17 +41,22 @@ pub(super) enum Hook {
     Widen,
     Project,
     Canonical,
+    Compact,
+    Restore,
+    Observation,
+    FromObservation,
+    Import,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Receipt {
-    pub hooks: [usize; 12],
-    pub quotes: [usize; 12],
+    pub hooks: [usize; 17],
+    pub quotes: [usize; 17],
 }
 
 pub(super) static RECEIPT: Counter<Receipt> = Counter::new(Receipt {
-    hooks: [0; 12],
-    quotes: [0; 12],
+    hooks: [0; 17],
+    quotes: [0; 17],
 });
 
 fn hook(kind: Hook) {
@@ -71,6 +78,7 @@ pub(super) struct Word {
     pub copy_fee: usize,
     pub query_fee: usize,
     pub copied_query_fee: usize,
+    pub compacted_copy_fee: usize,
 }
 
 impl Word {
@@ -84,6 +92,7 @@ impl Word {
             copy_fee: FEE,
             query_fee: FEE,
             copied_query_fee: FEE,
+            compacted_copy_fee: FEE,
         }
     }
 }
@@ -100,6 +109,7 @@ impl Clone for Word {
             copy_fee: self.copy_fee,
             query_fee: self.copied_query_fee,
             copied_query_fee: self.copied_query_fee,
+            compacted_copy_fee: self.compacted_copy_fee,
         }
     }
 }
@@ -149,10 +159,12 @@ impl WordElement for Word {
         })
     }
     fn from_observation(observation: &WordObservation) -> Self {
+        hook(Hook::FromObservation);
         let (lower, upper) = observation.interval().unsigned_bounds();
         Self::window(lower, upper, None)
     }
     fn observation(&self) -> WordObservation {
+        hook(Hook::Observation);
         WordObservation::unsigned_range(self.lower, self.upper).unwrap()
     }
     fn interval(&self) -> &Interval {
@@ -184,6 +196,31 @@ impl WordElement for Word {
             stage: Stage::Canonical,
             ..self.clone()
         }
+    }
+    fn requires_retained_binding(&self) -> bool {
+        self.excluded.is_some()
+    }
+    fn compact_for_retention(&self) -> Self {
+        hook(Hook::Compact);
+        Self {
+            stage: Stage::Compacted,
+            copy_fee: self.compacted_copy_fee,
+            ..self.clone()
+        }
+    }
+    fn restore_redundant_finite_from(&self, _previous: &Self) -> Self {
+        hook(Hook::Restore);
+        Self {
+            stage: Stage::Restored,
+            ..self.clone()
+        }
+    }
+    fn import_binding(&self, _observation: &WordObservation) -> Self {
+        hook(Hook::Import);
+        self.clone()
+    }
+    fn import_binding_work(&self, _observation: &WordObservation) -> usize {
+        quote(Hook::Import, self.copy_fee.saturating_add(16))
     }
 }
 
@@ -290,7 +327,9 @@ impl EvmNumericAlgebra for Policy {
             match construction {
                 SummaryConstruction::Top => Hook::Top,
                 SummaryConstruction::UnknownByte => Hook::UnknownByte,
-                SummaryConstruction::UnsignedRange { .. } => Hook::Range,
+                SummaryConstruction::UnsignedRange { .. } | SummaryConstruction::UnknownAddress => {
+                    Hook::Range
+                }
             },
             Stage::Constructed,
         )
@@ -300,5 +339,16 @@ impl EvmNumericAlgebra for Policy {
     }
     fn summary_is_top_work(&self, value: &Word) -> usize {
         self.work(Hook::IsTop, value.stage)
+    }
+    fn summary_compact_work(&self, value: &Word) -> usize {
+        self.work(Hook::Compact, value.stage)
+            .saturating_add(value.copy_fee)
+    }
+    fn summary_restore_work(&self, value: &Word, _previous: &Word) -> usize {
+        self.work(Hook::Restore, value.stage)
+            .saturating_add(value.copy_fee)
+    }
+    fn summary_observation_work(&self, _observation: &WordObservation) -> usize {
+        self.work(Hook::FromObservation, Stage::Constructed)
     }
 }

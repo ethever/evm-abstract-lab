@@ -9,6 +9,7 @@ use super::{
     stack_alias::StackAliases,
 };
 
+pub(in crate::analysis) mod caller;
 pub(super) mod payment;
 
 fn scalar<N: WordElement>(value: &EvmValue<N>) -> EvmValue<N> {
@@ -76,9 +77,9 @@ impl<N: WordElement> EvmPayloadSummary<N> {
     }
 }
 
-/// Tree lookup/allocation and numeric Eq are reserved before alias formation.
-/// Numeric Eq short-circuits unequal finite lengths; equal bounds have equal
-/// numeric traversal sizes. Source expression comparison is never required.
+/// Structural tree/metadata traversal size for alias formation. The paid
+/// builder separately reserves the actual algebra's native equality tariff;
+/// this size never substitutes for that quote. Pure builders are caller-funded.
 pub(in crate::analysis) fn alias_form_work<N: WordElement>(
     payload: &EvmMachinePayload<N>,
 ) -> usize {

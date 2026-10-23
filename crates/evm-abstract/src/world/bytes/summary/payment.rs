@@ -10,6 +10,7 @@ use crate::{
 };
 
 mod content;
+mod equality;
 mod join;
 
 #[cfg(test)]

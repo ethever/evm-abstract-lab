@@ -18,6 +18,59 @@ mod tests;
 // handles. Native construction and query work is never inferred from this fee.
 const WRAPPER_WORK: usize = 16;
 
+pub(crate) fn compact<D: EvmNumericAlgebra>(
+    value: &EvmValue<D::Element>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<EvmValue<D::Element>, CloneError> {
+    checkpoint(budget)?;
+    let native = domain
+        .numeric_algebra()
+        .summary_compact_work(value.numeric());
+    pay(budget, native.saturating_add(metadata_copy_work(value)))?;
+    let out = value.copy_metadata(value.numeric().compact_for_retention());
+    checkpoint(budget)?;
+    Ok(out)
+}
+
+pub(crate) fn restore<D: EvmNumericAlgebra>(
+    value: &EvmValue<D::Element>,
+    previous: &EvmValue<D::Element>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<EvmValue<D::Element>, CloneError> {
+    checkpoint(budget)?;
+    let native = domain
+        .numeric_algebra()
+        .summary_restore_work(value.numeric(), previous.numeric());
+    pay(budget, native.saturating_add(metadata_copy_work(value)))?;
+    let numeric = value
+        .numeric()
+        .restore_redundant_finite_from(previous.numeric());
+    let out = value.copy_metadata(numeric);
+    checkpoint(budget)?;
+    Ok(out)
+}
+
+pub(crate) fn from_observation<D: EvmNumericAlgebra>(
+    observation: &crate::domain::WordObservation,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<EvmValue<D::Element>, CloneError> {
+    checkpoint(budget)?;
+    let native = domain
+        .numeric_algebra()
+        .summary_observation_work(observation);
+    pay(budget, native.saturating_add(WRAPPER_WORK))?;
+    let out = EvmValue::from_numeric(D::Element::from_observation(observation));
+    checkpoint(budget)?;
+    Ok(out)
+}
+
+fn metadata_copy_work<N: WordElement>(value: &EvmValue<N>) -> usize {
+    8usize.saturating_add(value.provenance().origins().work_size().saturating_mul(4))
+}
+
 pub(crate) fn clone_value<N: WordElement>(
     value: &EvmValue<N>,
     budget: &mut WorkBudget,
@@ -119,6 +172,7 @@ fn construct<D: EvmNumericAlgebra>(
     let out = match construction {
         SummaryConstruction::Top => EvmValue::top(),
         SummaryConstruction::UnknownByte => EvmValue::unknown_byte(),
+        SummaryConstruction::UnknownAddress => EvmValue::unknown_address(),
         SummaryConstruction::UnsignedRange { lower, upper } => {
             EvmValue::unsigned_range(lower, upper).expect("summary range endpoints are ordered")
         }

@@ -14,8 +14,10 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
 
+mod payment;
 #[cfg(test)]
 mod tests;
+pub(super) use payment::refresh_with_payment;
 
 pub(super) fn refresh<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     out: &mut EvmByteArray<N>,

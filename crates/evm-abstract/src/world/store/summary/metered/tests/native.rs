@@ -16,6 +16,10 @@ pub(super) struct Calls {
     pub widens: usize,
     pub projects: usize,
     pub canonical: usize,
+    pub exports: usize,
+    pub imports: usize,
+    pub compactions: usize,
+    pub restorations: usize,
 }
 
 pub(super) static CALLS: crate::test_instrumentation::Counter<Calls> =
@@ -29,6 +33,10 @@ pub(super) static CALLS: crate::test_instrumentation::Counter<Calls> =
         widens: 0,
         projects: 0,
         canonical: 0,
+        exports: 0,
+        imports: 0,
+        compactions: 0,
+        restorations: 0,
     });
 
 #[derive(Debug, Serialize)]
@@ -95,7 +103,11 @@ impl WordElement for Native {
     }
     fn from_observation(value: &WordObservation) -> Self {
         CALLS.update(|calls| calls.constructions += 1);
-        Self::new(value.singleton(), false)
+        CALLS.update(|calls| calls.imports += 1);
+        let exact = value.constants().and_then(|values| {
+            (values.len() == 1).then(|| *values.first().expect("one finite value"))
+        });
+        Self::new(exact, false)
     }
     fn unknown_byte() -> Self {
         // This carrier declines unsupported width predicates conservatively.
@@ -109,6 +121,7 @@ impl WordElement for Native {
         Some(Self::new((lower == upper).then_some(lower), false))
     }
     fn observation(&self) -> WordObservation {
+        CALLS.update(|calls| calls.exports += 1);
         self.exact
             .map_or_else(WordObservation::top, WordObservation::constant)
     }
@@ -128,7 +141,9 @@ impl WordElement for Native {
         self.exact.is_none() && !self.excludes_seven
     }
     fn work_size(&self) -> usize {
-        16
+        // Inline payload plus one observation export (including the singleton
+        // finite-allocation handle), as required by WordElement's quote law.
+        64
     }
     fn clone_work(&self) -> usize {
         self.copy_fee
@@ -138,6 +153,14 @@ impl WordElement for Native {
     }
     fn canonical_for_summary(&self) -> Self {
         CALLS.update(|calls| calls.canonical += 1);
+        self.clone()
+    }
+    fn compact_for_retention(&self) -> Self {
+        CALLS.update(|calls| calls.compactions += 1);
+        self.clone()
+    }
+    fn restore_redundant_finite_from(&self, _previous: &Self) -> Self {
+        CALLS.update(|calls| calls.restorations += 1);
         self.clone()
     }
 }
@@ -249,5 +272,17 @@ impl EvmNumericAlgebra for Policy {
     }
     fn summary_is_top_work(&self, _value: &Native) -> usize {
         self.is_top_fee
+    }
+    fn summary_compact_work(&self, value: &Native) -> usize {
+        value.copy_fee.saturating_add(16)
+    }
+    fn summary_restore_work(&self, value: &Native, _previous: &Native) -> usize {
+        value.copy_fee.saturating_add(16)
+    }
+    fn summary_observation_work(&self, observation: &WordObservation) -> usize {
+        observation
+            .work_size()
+            .saturating_mul(4)
+            .saturating_add(128)
     }
 }

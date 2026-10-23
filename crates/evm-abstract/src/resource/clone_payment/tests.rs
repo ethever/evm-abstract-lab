@@ -244,6 +244,95 @@ impl EvmNumericAlgebra for Policy {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct SummaryPolicy(pub Policy);
+impl EvmNumericAlgebra for SummaryPolicy {
+    type Element = Word;
+    fn spec(&self) -> DomainSpec {
+        self.0.spec()
+    }
+    fn project_numeric(&self, v: &Word) -> Word {
+        self.0.project_numeric(v)
+    }
+    fn join_numeric(&self, l: &Word, r: &Word) -> Word {
+        self.0.join_numeric(l, r)
+    }
+    fn widen_numeric(&self, l: &Word, r: &Word) -> Word {
+        self.0.widen_numeric(l, r)
+    }
+    fn widen_procedure_numeric(&self, l: &Word, r: &Word) -> Word {
+        self.0.widen_procedure_numeric(l, r)
+    }
+    fn reduce_numeric(&self, v: &Word) -> NumericReduction<Word> {
+        self.0.reduce_numeric(v)
+    }
+    fn apply_numeric<'a>(
+        &self,
+        op: u8,
+        args: impl ExactSizeIterator<Item = &'a Word>,
+    ) -> NumericReduction<Word> {
+        self.0.apply_numeric(op, args)
+    }
+    fn operation_work<'a>(&self, op: u8, args: impl Iterator<Item = &'a Word>) -> usize {
+        self.0.operation_work(op, args)
+    }
+    fn literal_quote_work(&self, v: U256) -> usize {
+        self.0.literal_quote_work(v)
+    }
+    fn projection_work(&self, v: &Word) -> usize {
+        self.0.projection_work(v)
+    }
+    fn refinement_work(&self, v: &Word, f: usize) -> usize {
+        self.0.refinement_work(v, f)
+    }
+    fn summary_join_work(&self, l: &Word, r: &Word, w: bool) -> usize {
+        self.0
+            .0
+            .summary_join_work(&l.native, &r.native, w)
+            .saturating_add(
+                self.0
+                    .0
+                    .summary_construction_work(crate::domain::SummaryConstruction::Top),
+            )
+            .saturating_add(Word::WRAPPER_WORK)
+    }
+    fn summary_canonical_work(&self, v: &Word) -> usize {
+        v.clone_work()
+    }
+    fn summary_construction_work(&self, c: crate::domain::SummaryConstruction) -> usize {
+        self.0
+            .0
+            .summary_construction_work(c)
+            .saturating_add(Word::WRAPPER_WORK)
+    }
+    fn summary_equal_work(&self, l: &Word, r: &Word) -> usize {
+        self.0
+            .0
+            .summary_equal_work(&l.native, &r.native)
+            .saturating_add(l.private.len())
+            .saturating_add(r.private.len())
+            .saturating_add(Word::WRAPPER_WORK)
+    }
+    fn summary_is_top_work(&self, v: &Word) -> usize {
+        self.0
+            .0
+            .summary_is_top_work(&v.native)
+            .saturating_add(Word::WRAPPER_WORK)
+    }
+    fn summary_compact_work(&self, v: &Word) -> usize {
+        v.clone_work()
+    }
+    fn summary_restore_work(&self, v: &Word, _: &Word) -> usize {
+        v.clone_work()
+    }
+    fn summary_observation_work(&self, v: &crate::domain::WordObservation) -> usize {
+        self.0
+            .0
+            .summary_observation_work(v)
+            .saturating_add(Word::WRAPPER_WORK)
+    }
+}
+
 pub(crate) fn fixture(
     code: &str,
 ) -> (
@@ -264,6 +353,21 @@ pub(crate) fn fixture(
     };
     let policy = ValueAlgebra::new(Policy(ProductAlgebra::from_spec(DomainSpec::default())));
     (world, EvmEntry::new(address), config, policy)
+}
+
+pub(crate) fn summary_fixture(
+    code: &str,
+) -> (
+    EvmWorld<Word>,
+    EvmEntry<Word>,
+    ExecutionConfig,
+    ValueAlgebra<SummaryPolicy>,
+) {
+    let (world, entry, config, opaque) = fixture(code);
+    let policy = ValueAlgebra::new(SummaryPolicy(Policy(ProductAlgebra::from_spec(
+        opaque.spec(),
+    ))));
+    (world, entry, config, policy)
 }
 
 pub(crate) fn reset() {

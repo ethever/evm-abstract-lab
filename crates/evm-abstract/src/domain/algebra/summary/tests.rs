@@ -1,6 +1,7 @@
 use super::{
-    WRAPPER_WORK, canonical, clone_value, constant, equal, is_top, join, join_metadata_work,
-    join_plain, scalar, singleton, top, unknown_byte, unsigned_bounds, unsigned_range,
+    WRAPPER_WORK, canonical, clone_value, compact, constant, equal, from_observation, is_top, join,
+    join_metadata_work, join_plain, restore, scalar, singleton, top, unknown_byte, unsigned_bounds,
+    unsigned_range,
 };
 use crate::{
     domain::{
@@ -270,6 +271,64 @@ impl EvmNumericAlgebra for Policy {
     fn summary_is_top_work(&self, value: &Word) -> usize {
         value.tariff
     }
+    fn summary_compact_work(&self, value: &Word) -> usize {
+        value.tariff.saturating_add(32)
+    }
+    fn summary_restore_work(&self, value: &Word, _previous: &Word) -> usize {
+        value.tariff.saturating_add(32)
+    }
+    fn summary_observation_work(&self, observation: &WordObservation) -> usize {
+        self.construction_fee
+            .saturating_add(observation.work_size().saturating_mul(4096))
+    }
+}
+
+#[test]
+fn native_compact_restore_and_observation_factories_are_individually_paid() {
+    let _scope = RECEIPT.scope();
+    let domain = ValueAlgebra::new(Policy::default());
+    let value = EvmValue::from_numeric(Word::private(64)).with_symbol(Symbol::Caller, Some(37));
+    let mut budget = WorkBudget::new(100_000);
+    let compacted = compact(&value, domain.borrowed(), &mut budget).unwrap();
+    let restored = restore(&compacted, &value, domain.borrowed(), &mut budget).unwrap();
+    assert!(!restored.contains(U256::from(7)));
+    assert_eq!(restored.expression(), value.expression());
+    assert_eq!(restored.identity(), value.identity());
+    let observed = from_observation(
+        &WordObservation::constant(U256::from(9)),
+        domain.borrowed(),
+        &mut budget,
+    )
+    .unwrap();
+    assert_eq!(observed.singleton(), Some(U256::from(9)));
+    let expensive = EvmValue::from_numeric(Word::private(usize::MAX));
+    RECEIPT.set(Receipt::default());
+    assert_eq!(
+        compact(&expensive, domain.borrowed(), &mut WorkBudget::new(100_000)),
+        Err(CloneError::Work)
+    );
+    assert_eq!(
+        restore(
+            &expensive,
+            &value,
+            domain.borrowed(),
+            &mut WorkBudget::new(100_000)
+        ),
+        Err(CloneError::Work)
+    );
+    let refusing = ValueAlgebra::new(Policy {
+        construction_fee: usize::MAX,
+        ..Policy::default()
+    });
+    assert_eq!(
+        from_observation(
+            &WordObservation::top(),
+            refusing.borrowed(),
+            &mut WorkBudget::new(100_000)
+        ),
+        Err(CloneError::Work)
+    );
+    assert_eq!((RECEIPT.get().clones, RECEIPT.get().exports), (0, 0));
 }
 
 #[test]
@@ -601,6 +660,18 @@ fn opaque_existing_algebras_decline_new_summary_hooks_by_default() {
     let policy = Opaque(ProductAlgebra::default());
     let value = OpaqueWord::expensive(64);
     let borrowed = &policy;
+    assert_eq!(
+        EvmNumericAlgebra::summary_compact_work(&borrowed, &value),
+        usize::MAX
+    );
+    assert_eq!(
+        EvmNumericAlgebra::summary_restore_work(&borrowed, &value, &value),
+        usize::MAX
+    );
+    assert_eq!(
+        EvmNumericAlgebra::summary_observation_work(&borrowed, &WordObservation::top()),
+        usize::MAX
+    );
     assert_eq!(
         borrowed.summary_join_work(&value, &value, false),
         usize::MAX
