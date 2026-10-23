@@ -53,6 +53,7 @@ use super::cooperation::{Composition, CooperationError, InputTasks, LocalInput, 
 use cooperation::Cooperation;
 #[cfg(test)]
 use cooperation::Empty;
+mod graph;
 mod input;
 mod installation;
 mod reuse;
@@ -1309,16 +1310,19 @@ impl<
             }
         };
         let to = if let Some(existing) = existing {
-            let cyclic = match self.joins_cycle(existing, from) {
-                Ok(cyclic) => cyclic,
-                Err(error) => {
-                    return self.refuse_successor(from, successor.payload, error, work_reason);
+            // Feedback is monotone for the retained graph. Inputs without it
+            // still need to discover cycles formed by newly inserted edges.
+            let cyclic = if self.feedback[existing] {
+                false
+            } else {
+                match self.joins_cycle(existing, from) {
+                    Ok(cyclic) => cyclic,
+                    Err(error) => {
+                        return self.refuse_successor(from, successor.payload, error, work_reason);
+                    }
                 }
             };
-            if cyclic
-                && !self.feedback[existing]
-                && let Err(error) = self.mark_feedback(existing)
-            {
+            if cyclic && let Err(error) = self.mark_feedback(existing) {
                 // Feedback publishes its own scheduling premise, independently
                 // of whether this arrival changes the numerical input.
                 self.frontier_payload(Some(from), error.frontier_reason(), successor.payload);
@@ -1631,12 +1635,7 @@ impl<
             if !self.budget.charge(self.edges.len().saturating_add(1)) {
                 return Err(MachineError::work_failure());
             }
-            pending.extend(
-                self.edges
-                    .iter()
-                    .filter(|edge| edge.from == id)
-                    .map(|edge| edge.to),
-            );
+            pending.extend(graph::outgoing(&self.edges, id).map(|edge| edge.to));
         }
         Ok(false)
     }

@@ -17,6 +17,8 @@ use std::{
 
 #[cfg(test)]
 mod copy_tests;
+#[cfg(test)]
+mod exact_work_tests;
 mod join;
 mod reads;
 
@@ -27,10 +29,11 @@ pub use super::structure::ByteStateKind;
 pub struct ByteStateId(Arc<StateNode<ByteStateData>>);
 
 // Byte-only metadata shares the existing allocation. Interning must hash and
-// compare exactly the original kind, excluding this derived immutable count.
+// compare exactly the original kind, excluding these derived metrics.
 struct ByteStateData {
     kind: ByteStateKind,
     copy_leaves: usize,
+    exact_payload_bytes: OnceLock<usize>,
 }
 impl PartialEq for ByteStateData {
     fn eq(&self, other: &Self) -> bool {
@@ -62,7 +65,15 @@ impl ByteStateId {
                 .get_or_init(|| Mutex::new(Interner::default()))
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .intern(ByteStateData { kind, copy_leaves }, nodes, depth),
+                .intern(
+                    ByteStateData {
+                        kind,
+                        copy_leaves,
+                        exact_payload_bytes: OnceLock::new(),
+                    },
+                    nodes,
+                    depth,
+                ),
         )
     }
     fn build(
@@ -448,6 +459,38 @@ impl ByteStateId {
     pub fn kind(&self) -> &ByteStateKind {
         &self.0.kind.kind
     }
+    /// Retained Exact payload bytes, counted once per reachable byte-state id.
+    /// Scalar-expression dependencies and logical view lengths are excluded.
+    pub(crate) fn exact_payload_bytes(&self) -> usize {
+        *self.0.kind.exact_payload_bytes.get_or_init(|| {
+            // COPY and Ite children can share descendants. Only this root is
+            // cached: child totals cannot replace this single identity census.
+            let mut work = 0usize;
+            let mut seen = BTreeSet::new();
+            let mut pending = vec![self];
+            while let Some(state) = pending.pop() {
+                if !seen.insert(state.id()) {
+                    continue;
+                }
+                match state.kind() {
+                    ByteStateKind::Exact(bytes) => work = work.saturating_add(bytes.len()),
+                    ByteStateKind::WriteByte { previous, .. }
+                    | ByteStateKind::WriteWord { previous, .. } => pending.push(previous),
+                    ByteStateKind::Copy {
+                        previous, source, ..
+                    } => pending.extend([previous, &source.state]),
+                    ByteStateKind::Slice { source } => pending.push(&source.state),
+                    ByteStateKind::Ite {
+                        then_state,
+                        else_state,
+                        ..
+                    } => pending.extend([then_state, else_state]),
+                    ByteStateKind::Zero | ByteStateKind::Input { .. } => {}
+                }
+            }
+            work
+        })
+    }
     /// Saturating non-Ite occurrences reached by COPY's top-level distribution.
     /// Shared children count once per incoming path; update history is separate.
     pub(crate) fn copy_leaves(&self) -> usize {
@@ -480,16 +523,19 @@ mod copy_metric_tests {
         let data = ByteStateData {
             kind: kind.clone(),
             copy_leaves: 2,
+            exact_payload_bytes: OnceLock::new(),
         };
         let other = ByteStateData {
             kind: kind.clone(),
             copy_leaves: usize::MAX,
+            exact_payload_bytes: OnceLock::from(usize::MAX),
         };
         assert!(data == other);
         assert!(
             data != ByteStateData {
                 kind: ByteStateKind::Zero,
-                copy_leaves: 2
+                copy_leaves: 2,
+                exact_payload_bytes: OnceLock::new(),
             }
         );
         let mut original = HashBytes::default();
@@ -500,6 +546,11 @@ mod copy_metric_tests {
         other.hash(&mut different_metric);
         assert_eq!(original.0, cached.0);
         assert_eq!(original.0, different_metric.0);
+        data.exact_payload_bytes.set(1).unwrap();
+        let mut initialized = HashBytes::default();
+        data.hash(&mut initialized);
+        assert!(data == other);
+        assert_eq!(original.0, initialized.0);
     }
 
     #[test]
