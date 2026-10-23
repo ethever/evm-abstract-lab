@@ -139,7 +139,7 @@ impl Summary {
             first.map_or("Frame roles unavailable".into(), |first| {
                 format!(
                     "Storage {} · depth {}",
-                    short_address(&first.storage_address),
+                    short_address(first.storage_label()),
                     first.frame_depth
                 )
             })
@@ -165,7 +165,10 @@ fn title(node: &DisplayNode) -> String {
         node.program
             .map_or("No program".into(), |program| Symbol::Program(program)
                 .to_string()),
-        Symbol::Block(node.basic_block),
+        node.basic_block.map_or_else(
+            || "Process control".into(),
+            |id| Symbol::Block(id).to_string()
+        ),
         node.members.len()
     )
 }
@@ -307,7 +310,7 @@ pub(super) fn tooltip(
             lines.push(format!(
                 "{notation_0} · {coverage:?} · depth {} · storage {} · {} history items",
                 block.frame_depth,
-                block.storage_address,
+                block.storage_label(),
                 block.context.len(),
                 notation_0 = Symbol::State(state)
             ));

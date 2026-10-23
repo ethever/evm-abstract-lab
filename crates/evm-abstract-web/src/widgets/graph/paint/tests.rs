@@ -708,7 +708,7 @@ fn coverage_and_frontier_warnings_have_independent_dashes_and_selection_outline(
 #[test]
 fn mixed_aggregate_counts_and_may_terminate_cards_keep_a_neutral_fill() {
     let mut report = terminal_report();
-    report.cfg[1].basic_block = 0;
+    report.cfg[1].basic_block = Some(0);
     report.cfg[1].start_pc = report.cfg[0].start_pc;
     report.cfg[1].instructions = report.cfg[0].instructions.clone();
     let (ctx, mut graph, mut selection) = native_graph(&report);

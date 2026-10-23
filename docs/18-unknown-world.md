@@ -176,9 +176,15 @@ CALL 返回后的第一个基本块按成功位 0 / 1 分开传播，随后恢�
 
 每条摘要的 `regional_cfg` 使用自己的 node/call ID，边的目标在同一摘要内解析，不能当作主 CFG 的机器状态 ID 或 SSA 名称。节点保留自身的捕获代码 hash、代码地址、状态 owner、逻辑 ADDRESS、CALLER 和 static 模式。原生指令执行另有栈高度、跳转上下文和程序块索引，块也可能是程序末尾的合成续点；环境与保守过程不提供指令访问证据。`successors` 是累计准入拓扑；`transfer` 则是实际转换的记录，分别保存输入 revision、`current`、`complete`、`visited_block` 和真实边类型。这里的 `current` 仅相对于该条摘要的观察。对最终 World 的当前性还要求摘要 `source_current=true`，并且没有同一 `source_state` 的后续记录；局部 revision 仍须匹配。被后续记录替代的观察是历史；最新记录的 `source_current=false` 表示最终来源未获认证，不能仅凭 false 断言它已经过时。历史与未认证记录仍可查看。`covered_blocks` 只表示历史观察，不证明当前 joined input 的覆盖。
 
-native 14 / wire 19 将过程的解释方式记为 `semantics`，与原始代码身份分别保存：`Native` 执行原生指令、空代码或预编译；`Environment` 表示未观测实现的环境抽象；`KnownProcess` 表示已捕获 Runtime 的保守过程。显式选择 `KnownProcessSummaries` 策略才启用后者，其入口标为 `kind=KnownProcess`。原始 Program、hash、fork 与 Runtime 种类仍然保留；wire 中这类区域节点的 `basic_block=null`、receipt 的 `visited_block=false`，不能据此填充指令 PC 或 SSA。
+native 14 / wire 19 将过程的解释方式记为 `semantics`，与原始代码身份分别保存：`Native` 执行原生指令、空代码或预编译；`Environment` 表示未观测实现的环境抽象；`KnownProcess` 表示已捕获 Runtime 的保守过程。库接口显式选择 `KnownProcessSummaries` 策略才启用后者，其入口标为 `kind=KnownProcess`。原始 Program、hash、fork 与 Runtime 种类仍然保留；wire 中这类区域节点的 `basic_block=null`、receipt 的 `visited_block=false`，不能据此填充指令 PC 或 SSA。
 
 `transfer.process` 记录实际采用的 `repeat`、`actions` 和 `unresolved`。`Call`、`StaticCall`、`DelegateCall`、`CallCode`、`Create`、`Create2` 是动作种类，与被调用帧的代码种类各自独立。Web 显示“Conservative process · possible control”、实际保留的调用和出口，以及尚未展开的规则。只读回调仍是控制行为；没有父帧可见写入不表示它可以从控制证据中删除。调用的 `target` 保留代码解析前的目标，`Named` 是明确地址，`Residual` 是剩余 owner 与别名类，不能显示成占位地址。未覆盖规则也以 `FrontierDetails.Process` 保留，不能解释为已完成的空效果。
+
+过程身份位于 `frame.process` / `procedure.process`，包含完整 256 位 `epoch`、`owner` 类、`source` 与 `is_static`。`epoch` 使用完整十六进制字符串，不是局部 revision 或截断的 generation。`Named` / `Residual` 描述物理状态类，不能从它们推导逻辑 ADDRESS 或不同实例相等；`procedure.process_input` 的 ADDRESS、CALLER、value 是原生表实际保留的汇合输入。它们可以包含多个 subscriber 的贡献，不能据此证明某次调用与共享 callee 输入逐项相等。机器快照另以 `process_operands` 保留实际绑定的操作数。
+
+process 的旧 `code_address`、`storage_address`、`address_value`、`caller`、块索引和栈高度等 native-only 字段为空；私有栈、跳转上下文和指令数组也不作为过程事实导出。已知代码身份改由 `source.Runtime` 保存 source/hash/fork；捕获的构造代码由 `source.InitCode` 保存 hash/fork，不声明它已经是部署后的 runtime。`AnyRuntime` / `AnyInitCode` 没有虚构 source account、hash 或 Program。`Empty`、`Precompile`、`InvalidDelegation` 分别保留自己的执行种类；预编译身份不是捕获字节或指令访问证据。捕获 initcode 的程序目录项可以没有 account source address。
+
+实际调用的 `scope=Primitive` 表示一条原始动作，后续未知链由单独的 residual 依赖表示。未提供 scope 时，界面保留“not recorded”，不会把它猜成 primitive 或某种已闭合链。`ConstructorProcess` 与 runtime 过程分开；原生 `CreationContinuation` / wire continuation 记录 creator、destination 类和 epoch。`process.creations` 保存已经应用的 allocation guard、当前帧异常与本地零结果拒绝；真正进入的 constructor 仍通过区域调用表示。`delivery.creation` 只投影实际投递的 `Address(class)` / `Zero`、parent returndata、部署和 post-nonce rollback 分类，不能把 CREATE 成功表示为 CALL 的布尔 `1`，也不能由一个 Return 自行补出部署成功。构造完成前，账户 runtime 仍按原生 Store 的 Empty 事实展示。
 
 阅读覆盖时分别检查：区域记录自己的 node/call 命名空间、最终来源的 `source_current`、本条 receipt 的 revision/current、观察输入的 `closed`，以及整份报告的 status/frontiers。过程动作或某个出口已被记录，只说明这些替代行为进入了当前模型；它们不能替代剩余规则与全局闭合检查。域格式仍为 3，逻辑费用版本仍为 8。
 

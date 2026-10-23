@@ -66,7 +66,12 @@ impl Directory {
                 Kind::Programs => {
                     for program in &report.programs {
                         if !filter.is_empty()
-                            && !program.code_address.to_ascii_lowercase().contains(&filter)
+                            && !program
+                                .code_address
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_ascii_lowercase()
+                                .contains(&filter)
                             && !program.code_hash.to_ascii_lowercase().contains(&filter)
                         {
                             continue;
@@ -74,7 +79,12 @@ impl Directory {
                         let title = format!(
                             "{} · {}",
                             Symbol::Program(program.id),
-                            short(&program.code_address)
+                            short(
+                                program
+                                    .code_address
+                                    .as_deref()
+                                    .unwrap_or("Constructor source")
+                            )
                         );
                         if ui
                             .add(
@@ -86,7 +96,12 @@ impl Directory {
                             )
                             .on_hover_text(format!(
                                 "{:?}\n{}\n{}",
-                                program.kind, program.code_address, program.code_hash
+                                program.kind,
+                                program
+                                    .code_address
+                                    .as_deref()
+                                    .unwrap_or("Constructor source"),
+                                program.code_hash
                             ))
                             .clicked()
                         {

@@ -17,6 +17,9 @@ pub(super) fn instruction(source: &bytecode::Instruction) -> DisasmInstruction {
 
 pub(super) fn edge(source: analysis::MachineEdgeKind) -> EdgeKind {
     match source {
+        analysis::MachineEdgeKind::Process(action) => {
+            EdgeKind::Process(super::process::action(action))
+        }
         analysis::MachineEdgeKind::Intraprocedural(kind) => match kind {
             analysis::EdgeKind::Fallthrough => EdgeKind::Fallthrough,
             analysis::EdgeKind::Jump => EdgeKind::Jump,

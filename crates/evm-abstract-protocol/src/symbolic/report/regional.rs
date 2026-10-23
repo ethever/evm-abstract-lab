@@ -13,6 +13,11 @@ fn compatible_code(kind: CodeKind, semantics: TransferSemantics) -> bool {
         TransferSemantics::Native => kind != CodeKind::AbstractEnvironment,
         TransferSemantics::Environment => kind == CodeKind::AbstractEnvironment,
         TransferSemantics::KnownProcess => kind == CodeKind::Runtime,
+        TransferSemantics::ConstructorProcess => kind == CodeKind::Initcode,
+        TransferSemantics::BoundaryProcess => matches!(
+            kind,
+            CodeKind::Empty | CodeKind::Precompile | CodeKind::InvalidDelegation
+        ),
     }
 }
 
@@ -20,6 +25,31 @@ fn block_evidence(node: &RegionalNode, semantics: TransferSemantics) -> Result<(
     // Non-program modes can retain a native placeholder block key. It is not
     // captured source, including when invalid delegation retains a raw hash.
     if !compatible_code(node.frame.kind, semantics) {
+        return Err(Kind::Semantics);
+    }
+    if let Some(key) = &node.frame.process {
+        if key.source.semantics() != semantics
+            || key.source.kind() != node.frame.kind
+            || key.is_static != node.frame.is_static
+        {
+            return Err(Kind::Semantics);
+        }
+        if node.frame.code_address.is_some()
+            || node.frame.code_hash.is_some()
+            || node.frame.storage_address.is_some()
+            || node.frame.address_value.is_some()
+            || node.frame.caller.is_some()
+            || node.frame.stack_height.is_some()
+            || !node.frame.context.is_empty()
+        {
+            return Err(Kind::Semantics);
+        }
+    } else if matches!(
+        semantics,
+        TransferSemantics::KnownProcess
+            | TransferSemantics::ConstructorProcess
+            | TransferSemantics::BoundaryProcess
+    ) {
         return Err(Kind::Semantics);
     }
     let bytecode = semantics == TransferSemantics::Native
@@ -32,16 +62,15 @@ fn block_evidence(node: &RegionalNode, semantics: TransferSemantics) -> Result<(
     {
         return Err(Kind::BlockVisit);
     }
-    if let Some(transfer) = &node.transfer {
-        if transfer.semantics != semantics
+    if let Some(transfer) = &node.transfer
+        && (transfer.semantics != semantics
             || (semantics == TransferSemantics::Native && transfer.process.is_some())
             || transfer
                 .process
                 .as_ref()
-                .is_some_and(|process| transfer.complete && !process.unresolved.is_empty())
-        {
-            return Err(Kind::Semantics);
-        }
+                .is_some_and(|process| transfer.complete && !process.unresolved.is_empty()))
+    {
+        return Err(Kind::Semantics);
     }
     Ok(())
 }
@@ -75,12 +104,26 @@ impl Validation<'_> {
                 return Err(failure(node.id, false, Kind::Identity));
             }
             procedure_ref(node.procedure)?;
+            let procedure = &summary.procedures[node.procedure];
+            if procedure.process != node.frame.process {
+                return Err(failure(node.id, false, Kind::Semantics));
+            }
             for target in &node.successors {
                 node_ref(*target)?;
             }
             block_evidence(node, summary.procedures[node.procedure].semantics)
                 .map_err(|kind| failure(node.id, false, kind))?;
             if let Some(transfer) = &node.transfer {
+                if let Some(process) = &transfer.process {
+                    for creation in &process.creations {
+                        if !matches!(
+                            creation.action,
+                            crate::ProcessAction::Create | crate::ProcessAction::Create2
+                        ) {
+                            return Err(failure(node.id, false, Kind::Semantics));
+                        }
+                    }
+                }
                 if transfer.current && transfer.input_revision != node.input_revision {
                     return Err(failure(node.id, false, Kind::Revision));
                 }
@@ -107,6 +150,9 @@ impl Validation<'_> {
             if call.action.is_some() != call.target.is_some() {
                 return Err(failure(call.id, true, Kind::Semantics));
             }
+            if call.scope.is_some() != call.action.is_some() {
+                return Err(failure(call.id, true, Kind::Semantics));
+            }
             for entry in &call.entries {
                 node_ref(*entry)?;
                 if cfg.nodes[*entry].procedure != call.callee {
@@ -114,6 +160,18 @@ impl Validation<'_> {
                 }
             }
             for delivery in &call.deliveries {
+                if !delivery.creation.is_empty()
+                    && !matches!(
+                        call.action,
+                        Some(crate::ProcessAction::Create | crate::ProcessAction::Create2)
+                    )
+                {
+                    return Err(failure(call.id, true, Kind::Semantics));
+                }
+                for creation in &delivery.creation {
+                    super::process::completion(creation)
+                        .map_err(ReportValidationFailure::Process)?;
+                }
                 if delivery.current && delivery.input_revision != call.input_revision {
                     return Err(failure(call.id, true, Kind::Revision));
                 }

@@ -16,9 +16,9 @@ use alloy_primitives::{U256, keccak256};
 use evm_abstract::{
     analysis::{
         AnalysisEngine, AnalysisInput, BoundedJoin, EnginePolicies, ExecutionConfig,
-        FeedbackAcceleration, FirstResumeStatus, FrameCode, FrontierReason, KnownProcessSummaries,
-        OutcomeKind, ProcessAction, RecentDistinctJumps, SemanticPolicies, Status,
-        StructuralPartition, TransferSemantics, control::Control, cooperation::NoExtension,
+        FeedbackAcceleration, FirstResumeStatus, FrameCode, KnownProcessSummaries, OutcomeKind,
+        ProcessAction, RecentDistinctJumps, SemanticPolicies, Status, StructuralPartition,
+        TransferSemantics, control::Control, cooperation::NoExtension,
     },
     domain::NumericValue,
     world::{EvmAccount, EvmByteArray, EvmWorld, Existence},

@@ -96,8 +96,80 @@ fn fixture_with_policy<S: analysis::ProcedureSummaryPolicy<ProductAlgebra>>(
 const ROOT: &str = "5f5f5f5f5f6101025af15000";
 
 #[test]
+fn process_machine_projection_uses_bound_operands_and_never_native_anchors() {
+    let (native, _) = fixture(&[(0x101, "00", false)]);
+    let original = native.states()[0].entry.clone();
+    let frame = &original.call_stack.root().state;
+    for source in [
+        analysis::ProcessSource::Runtime {
+            source: frame.key.code_address,
+            hash: frame.key.code_hash,
+            fork: Fork::Osaka,
+        },
+        analysis::ProcessSource::AnyInitCode { fork: Fork::Osaka },
+        analysis::ProcessSource::Precompile {
+            address: address(4),
+            fork: Fork::Osaka,
+        },
+    ] {
+        let mut payload = original.clone();
+        let mut root = payload.call_stack.root().clone();
+        root.state.key.process = Some(Box::new(analysis::ProcessFrameKey {
+            epoch: alloy_primitives::B256::repeat_byte(0xa1),
+            owner: analysis::ProcessOwner::Residual,
+            source,
+            is_static: false,
+        }));
+        root.state.key.basic_block_index = 999;
+        root.state.key.stack_height = 999;
+        root.state.address_operand =
+            Some(evm_abstract::domain::EvmValue::constant(U256::from(0xabc)));
+        root.state.caller_operand =
+            Some(evm_abstract::domain::EvmValue::constant(U256::from(0xdef)));
+        payload.call_stack = analysis::EvmCallStack::new(root);
+        let control = Control::default();
+        let mut pools = pools::Pools::new(&control);
+        let mapped = pools.machine(&payload).unwrap();
+        let mapped = &mapped.frames[0];
+        assert!(
+            mapped.code_address.is_none()
+                && mapped.code_hash.is_none()
+                && mapped.storage_address.is_none()
+        );
+        assert!(
+            mapped.address_value.is_none()
+                && mapped.caller.is_none()
+                && mapped.basic_block.is_none()
+        );
+        assert!(
+            mapped.stack.is_empty()
+                && mapped.context.is_empty()
+                && mapped.memory.is_none()
+                && mapped.calldata.is_none()
+                && mapped.returndata.is_none()
+        );
+        let key = mapped.process.as_ref().unwrap();
+        assert_eq!(key.owner, api::ProcessOwner::Residual);
+        assert_eq!(key.epoch, api::ProcessDigest([0xa1; 32]));
+        let operands = mapped.process_operands.as_ref().unwrap();
+        assert_eq!(
+            operands.address.constants,
+            Some(vec![value::word(U256::from(0xabc))])
+        );
+        assert_eq!(
+            operands.caller.constants,
+            Some(vec![value::word(U256::from(0xdef))])
+        );
+        assert_eq!(mapped.kind, key.source.kind());
+        if !matches!(source, analysis::ProcessSource::Runtime { .. }) {
+            assert!(mapped.program.is_none());
+        }
+    }
+}
+
+#[test]
 fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_wire() {
-    for code in ["5b5f56", "5f5f5f5f6101025afa5000"] {
+    for code in ["5b5f56", "5f5f5f5f6101025afa5000", "5f5f5ff000"] {
         let (native, report) = fixture_with_policy(
             &[(0x101, code, false), (0x102, "00", false)],
             analysis::KnownProcessSummaries,
@@ -119,10 +191,29 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
             for (procedure, actual) in record.procedures.iter().zip(&mapped.procedures) {
                 assert_eq!(actual.semantics, process::semantics(procedure.semantics));
                 assert_eq!(actual.kind, pools::mode(procedure.frame.mode));
+                let key = procedure.frame.process.as_deref().unwrap();
+                let mut expected = serde_json::to_value(key).unwrap();
+                let payload = expected["source"]
+                    .as_object_mut()
+                    .unwrap()
+                    .values_mut()
+                    .next()
+                    .unwrap();
+                payload["fork"] = serde_json::json!("Osaka");
                 assert_eq!(
-                    actual.code_hash,
-                    Some(procedure.frame.code_hash.to_string())
+                    serde_json::to_value(actual.process.as_ref().unwrap()).unwrap(),
+                    expected
                 );
+                assert!(
+                    actual.code_address.is_none()
+                        && actual.code_hash.is_none()
+                        && actual.storage_address.is_none()
+                );
+                let input = actual.process_input.as_ref().unwrap();
+                let native_input = procedure.process_input.as_ref().unwrap();
+                assert_eq!(input.address.summary, native_input.address.to_string());
+                assert_eq!(input.caller.summary, native_input.caller.to_string());
+                assert_eq!(input.value.summary, native_input.value.to_string());
                 if actual.semantics == api::TransferSemantics::KnownProcess {
                     assert!(actual.covered_blocks.is_empty());
                 }
@@ -162,6 +253,16 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
             {
                 assert_eq!(actual.action, call.action.map(process::action));
                 assert_eq!(actual.target, call.target.map(process::owner));
+                assert_eq!(
+                    serde_json::to_value(actual.scope).unwrap(),
+                    serde_json::to_value(call.scope).unwrap()
+                );
+                for (actual, native) in actual.deliveries.iter().zip(&call.deliveries) {
+                    assert_eq!(
+                        serde_json::to_value(&actual.creation).unwrap(),
+                        serde_json::to_value(&native.creation).unwrap()
+                    );
+                }
             }
         }
         if code.contains("fa") {
@@ -175,13 +276,52 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
                             .any(|id| summary.regional_cfg.nodes[*id].frame.is_static)
                 })
             }));
-            assert!(report.frontiers.iter().any(|frontier| matches!(
-                frontier.reason,
-                api::FrontierDetails::Process(api::ProcessBoundary::ResidualOwner(
-                    api::ProcessAction::StaticCall
-                ))
-            )));
+            assert!(
+                report
+                    .abstract_summaries
+                    .iter()
+                    .flat_map(|summary| &summary.regional_cfg.calls)
+                    .any(
+                        |call| call.scope == Some(api::ProcessControlScope::Primitive)
+                            && call.target == Some(api::ProcessOwner::Residual)
+                    )
+            );
         }
+        if code == "5f5f5ff000" {
+            assert!(
+                report
+                    .abstract_summaries
+                    .iter()
+                    .flat_map(|summary| &summary.procedures)
+                    .any(|procedure| procedure.semantics
+                        == api::TransferSemantics::ConstructorProcess)
+            );
+            assert!(
+                report
+                    .abstract_summaries
+                    .iter()
+                    .flat_map(|summary| &summary.regional_cfg.calls)
+                    .flat_map(|call| &call.deliveries)
+                    .any(|delivery| !delivery.creation.is_empty())
+            );
+        }
+        let mut leaked = report.clone();
+        let node = leaked
+            .abstract_summaries
+            .iter_mut()
+            .flat_map(|summary| &mut summary.regional_cfg.nodes)
+            .find(|node| node.frame.process.is_some())
+            .unwrap();
+        node.frame.storage_address = Some(address(0).to_string());
+        assert!(matches!(
+            leaked.validate(),
+            Err(api::ReportValidationFailure::Regional(
+                api::RegionalValidationFailure {
+                    kind: api::RegionalValidationKind::Semantics,
+                    ..
+                }
+            ))
+        ));
         let decoded: api::AnalyzeReply = serde_json::from_slice(
             &serde_json::to_vec(&api::AnalyzeReply {
                 result: Ok(report.clone()),
@@ -271,7 +411,7 @@ fn assert_mapping(native: &analysis::EvmWorldAnalysis<NumericValue>, report: &ap
                 (node.id, node.procedure, node.input_revision, node.excluded)
             );
             assert_eq!(
-                mapped.frame.code_address,
+                mapped.frame.code_address.clone().unwrap(),
                 node.frame.code_address.to_string()
             );
             assert_eq!(
@@ -279,16 +419,22 @@ fn assert_mapping(native: &analysis::EvmWorldAnalysis<NumericValue>, report: &ap
                 (node.frame.mode != analysis::FrameCode::Unknown)
                     .then(|| node.frame.code_hash.to_string())
             );
-            assert_eq!(mapped.frame.storage_address, node.frame.address.to_string());
             assert_eq!(
-                mapped.frame.address_value,
+                mapped.frame.storage_address.clone().unwrap(),
+                node.frame.address.to_string()
+            );
+            assert_eq!(
+                mapped.frame.address_value.clone().unwrap(),
                 value::address(node.frame.address_value)
             );
-            assert_eq!(mapped.frame.caller, value::address(node.frame.caller));
+            assert_eq!(
+                mapped.frame.caller.clone().unwrap(),
+                value::address(node.frame.caller)
+            );
             assert_eq!(mapped.frame.is_static, node.frame.is_static);
             assert_eq!(mapped.frame.kind, pools::mode(node.frame.mode));
             assert_eq!(mapped.frame.context, node.frame.jump_history);
-            assert_eq!(mapped.frame.stack_height, node.frame.stack_height);
+            assert_eq!(mapped.frame.stack_height.unwrap(), node.frame.stack_height);
             assert_eq!(mapped.successors, node.successors);
             if let Some(transfer) = &node.transfer {
                 let actual = mapped.transfer.as_ref().unwrap();
@@ -381,9 +527,12 @@ fn regional_known_calls_preserve_native_owner_mode_deliveries_and_pooled_roundtr
         assert!(
             nodes
                 .iter()
-                .any(|node| node.frame.code_address == address(0x103).to_string()
-                    && node.frame.storage_address == address(owner).to_string()
-                    && node.frame.is_static == is_static)
+                .any(
+                    |node| node.frame.code_address.clone().unwrap() == address(0x103).to_string()
+                        && node.frame.storage_address.clone().unwrap()
+                            == address(owner).to_string()
+                        && node.frame.is_static == is_static
+                )
         );
     }
     assert!(
@@ -520,15 +669,21 @@ fn regional_invalid_delegation_retains_identity_without_a_program_block() {
                 continue;
             }
             invalid_nodes += 1;
-            assert_eq!(node.frame.code_address, address(0x104).to_string());
-            assert_eq!(node.frame.code_hash.as_deref(), Some(raw_hash.as_str()));
-            assert_eq!(node.frame.storage_address, address(0x103).to_string());
             assert_eq!(
-                node.frame.address_value,
+                node.frame.code_address.clone().unwrap(),
+                address(0x104).to_string()
+            );
+            assert_eq!(node.frame.code_hash.as_deref(), Some(raw_hash.as_str()));
+            assert_eq!(
+                node.frame.storage_address.clone().unwrap(),
+                address(0x103).to_string()
+            );
+            assert_eq!(
+                node.frame.address_value.clone().unwrap(),
                 api::AddressValue::Concrete(address(0x103).to_string())
             );
             assert_eq!(
-                node.frame.caller,
+                node.frame.caller.clone().unwrap(),
                 api::AddressValue::Concrete(address(0x102).to_string())
             );
             assert!(!node.frame.is_static);

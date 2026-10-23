@@ -2,7 +2,7 @@
 
 use super::{EvmStoreSummary, InitialIndependence, OrderedMap, SummaryPlane};
 use crate::{
-    domain::{EvmNumericAlgebra, EvmValue, ValueAlgebra, WordElement},
+    domain::{EvmValue, ValueAlgebra},
     resource::{CloneError, WorkBudget},
     world::process::{
         CallRoles, OwnerCatalogue, OwnerCatalogueLimits, ProcessAction, ProcessCallOperands,
@@ -11,9 +11,8 @@ use crate::{
 };
 use alloy_primitives::{Address, U256};
 
-// Reuse the repository's native carrier with private predicates and independent
-// copy/query/constructor tariffs. No production policy is changed for testing.
-use super::super::test_support::{CALLS, Calls, Native, Policy};
+// Share the native counter carrier used by metered and payment controls.
+use crate::world::store::summary::test_support::{CALLS, Calls, Native, Policy};
 
 fn state() -> EvmStoreSummary<Native> {
     let plane = || SummaryPlane {

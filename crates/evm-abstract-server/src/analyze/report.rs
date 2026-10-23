@@ -61,8 +61,11 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         checkpoint(control)?;
         let entry = pools.machine(&state.entry)?;
         let program = entry.frames.last().and_then(|frame| frame.program);
-        let block = state
-            .program()
+        let process_key = state.active().process.as_deref().map(super::process::key);
+        let is_native = process_key.is_none();
+        let block = is_native
+            .then(|| state.program())
+            .flatten()
             .and_then(|program| program.blocks().get(state.active().basic_block_index));
         pools.symbolic.charge(
             state
@@ -75,28 +78,45 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                 .saturating_add(1),
         )?;
         cfg.push(api::CfgBlock {
+            process: process_key,
             id: state.id,
-            basic_block: state.active().basic_block_index,
+            basic_block: is_native.then_some(state.active().basic_block_index),
             start_pc: block.map(|block| block.start_pc),
-            context: state.active().jump_history.clone(),
+            context: if is_native {
+                state.active().jump_history.clone()
+            } else {
+                vec![]
+            },
             frame_depth: state.key.frames.len(),
-            code_address: state.active().code_address.to_string(),
-            storage_address: state.active().address.to_string(),
+            code_address: is_native.then(|| state.active().code_address.to_string()),
+            storage_address: is_native.then(|| state.active().address.to_string()),
             program,
             instructions: block
                 .into_iter()
                 .flat_map(|block| &block.instructions)
                 .map(mapping::instruction)
                 .collect(),
-            entry_stack: state
-                .entry
-                .active()
-                .stack
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
-            exit_stack: state.exit_stack.iter().map(ToString::to_string).collect(),
-            executed_pcs: state.executed_pcs.clone(),
+            entry_stack: if is_native {
+                state
+                    .entry
+                    .active()
+                    .stack
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            } else {
+                vec![]
+            },
+            exit_stack: if is_native {
+                state.exit_stack.iter().map(ToString::to_string).collect()
+            } else {
+                vec![]
+            },
+            executed_pcs: if is_native {
+                state.executed_pcs.clone()
+            } else {
+                vec![]
+            },
         });
         states.push(api::StateDetails {
             state: state.id,
