@@ -105,7 +105,13 @@ fn assert_accounting(result: &HybridAnalysis<NumericValue>, maximum: usize) {
             detail.world().fingerprint().unwrap(),
             result.baseline().world().fingerprint().unwrap()
         );
-        assert_eq!(detail.entry(), result.baseline().entry());
+        let mut expected = result.baseline().entry().clone();
+        if let evm_abstract::analysis::HybridNativeBinding::SymbolicOwnerNamespace { namespace } =
+            result.coverage().detail_binding
+        {
+            expected.environment.to = namespace.into();
+        }
+        assert_eq!(detail.entry(), &expected);
     }
 }
 
@@ -615,6 +621,25 @@ fn symbolic_root_native_currency_cannot_replace_alias_covering_process_relation(
         evm_abstract::analysis::HybridNativeBinding::SymbolicOwnerNamespace {
             namespace: address(A)
         }
+    );
+    assert!(
+        report
+            .baseline()
+            .entry()
+            .environment
+            .to
+            .as_concrete()
+            .is_none()
+    );
+    assert_eq!(
+        report
+            .detail()
+            .unwrap()
+            .entry()
+            .environment
+            .to
+            .as_concrete(),
+        Some(address(A))
     );
     assert_eq!(
         report.coverage().chosen,
