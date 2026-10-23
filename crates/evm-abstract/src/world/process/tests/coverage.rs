@@ -23,6 +23,7 @@ use revm_bytecode::opcode;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod diagnostics;
+mod static_callcode;
 
 #[test]
 fn outside_storage_is_independent_and_local_effects_preserve_named_state_and_rollback() {
@@ -228,8 +229,17 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                             1 => &[opcode::PUSH0, opcode::PUSH0, opcode::REVERT],
                             _ => &[opcode::INVALID],
                         });
-                        let mut driver =
-                            emit_call(action, address(0x200), if is_static { 0 } else { 9 }, 0, 0);
+                        let mut driver = emit_call(
+                            action,
+                            address(0x200),
+                            if is_static && action != ProcessAction::CallCode {
+                                0
+                            } else {
+                                9
+                            },
+                            0,
+                            0,
+                        );
                         driver.extend([opcode::POP, opcode::STOP]);
                         // Both actual outside owners use the same captured
                         // root bytes. Only calldata selects A or B; the owner

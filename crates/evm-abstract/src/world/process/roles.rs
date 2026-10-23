@@ -33,9 +33,9 @@ pub enum AddressRole {
 pub enum CallValueRole {
     /// DELEGATECALL inherits its parent's actual value operand.
     Parent,
-    /// Static execution admits only zero transfer value.
+    /// STATICCALL and an admissible static CALL supply zero value.
     Zero,
-    /// Arbitrary nonstatic invocation value, conservatively Top.
+    /// Arbitrary invocation value, including nonzero static CALLCODE arguments.
     Any,
 }
 
@@ -93,7 +93,10 @@ impl CallRoles {
             ProcessAction::CallCode => (
                 AddressRole::ParentAddress,
                 AddressRole::ParentAddress,
-                value,
+                // EIP-214 explicitly exempts CALLCODE from the static
+                // nonzero-value CALL prohibition. Funding is a separate entry
+                // guard; the argument still becomes the static child's value.
+                CallValueRole::Any,
                 true,
             ),
             ProcessAction::Create | ProcessAction::Create2 => {

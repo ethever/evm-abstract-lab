@@ -66,10 +66,11 @@ fn call_family_roles_retain_owner_caller_value_and_staticness() {
             );
             if action == ProcessAction::DelegateCall {
                 assert_eq!(operands.value.singleton(), Some(U256::from(17)));
-            } else if roles.is_static {
+            } else if roles.is_static && action != ProcessAction::CallCode {
                 assert_eq!(operands.value.singleton(), Some(U256::ZERO));
             } else {
                 assert!(operands.value.numeric().is_top());
+                assert!(operands.value.contains(U256::from(9)));
             }
         }
     }
