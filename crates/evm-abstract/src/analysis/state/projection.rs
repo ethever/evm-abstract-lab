@@ -35,6 +35,22 @@ pub(in crate::analysis) enum Policy<'a> {
 
 type ProjectionCache<N> = BTreeMap<ExprId, Vec<(N, Option<N>)>>;
 
+fn numeric_equal<D: EvmNumericAlgebra>(
+    left: &D::Element,
+    right: &D::Element,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<bool, MachineError> {
+    checkpoint(budget)?;
+    pay(
+        budget,
+        domain.numeric_algebra().summary_equal_work(left, right),
+    )?;
+    let equal = left == right;
+    checkpoint(budget)?;
+    Ok(equal)
+}
+
 pub(in crate::analysis) struct Projection<'a, D: EvmNumericAlgebra> {
     relations: &'a RelationState,
     relations_work_size: Option<usize>,
@@ -97,20 +113,38 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
             return;
         }
         let summary = matches!(&self.policy, Policy::Summary);
-        if summary
-            && let Some(cached) = self.cache.get(expression)
-            && let Some((_, refined)) = cached.iter().find(|(old, refined)| {
-                old == value.numeric() || refined.as_ref() == Some(value.numeric())
-            })
-        {
-            if let Some(refined) = refined {
-                if let Err(error) = pay(self.budget, refined.clone_work()) {
-                    self.outcome = Err(error.into());
-                    return;
+        if summary && let Some(cached) = self.cache.get(expression) {
+            for (old, refined) in cached {
+                // Geometry/copy reservations do not fund an opaque native Eq.
+                // Preserve short-circuiting, but pay each predicate actually run.
+                let matches = (|| {
+                    if numeric_equal(old, value.numeric(), self.domain, self.budget)? {
+                        return Ok(true);
+                    }
+                    match refined {
+                        Some(refined) => {
+                            numeric_equal(refined, value.numeric(), self.domain, self.budget)
+                        }
+                        None => Ok(false),
+                    }
+                })();
+                match matches {
+                    Err(error) => {
+                        self.outcome = Err(error);
+                        return;
+                    }
+                    Ok(false) => continue,
+                    Ok(true) => {}
                 }
-                value.replace_numeric_after_singleton(refined.clone(), None);
+                if let Some(refined) = refined {
+                    if let Err(error) = pay(self.budget, refined.clone_work()) {
+                        self.outcome = Err(error.into());
+                        return;
+                    }
+                    value.replace_numeric_after_singleton(refined.clone(), None);
+                }
+                return;
             }
-            return;
         }
         let relation_work = *self.relations_work_size.get_or_insert_with(|| {
             #[cfg(test)]

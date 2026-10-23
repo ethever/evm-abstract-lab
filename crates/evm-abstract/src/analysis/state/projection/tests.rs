@@ -1,7 +1,7 @@
 use super::{MachineError, Policy, Projection};
 #[cfg(test)]
 use crate::analysis::testing::TestValue;
-use crate::domain::ValueAlgebra;
+use crate::domain::{EvmNumericAlgebra, ValueAlgebra};
 use crate::{
     analysis::{
         ExecutionConfig,
@@ -136,14 +136,21 @@ fn refinement_fees(
     )
 }
 
-fn cache_copy_fees(value: &TestValue) -> (usize, usize) {
+fn cache_copy_fees(
+    value: &TestValue,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+) -> (usize, usize) {
     let imported = value
         .numeric()
         .constrain(&WordObservation::unsigned_range(U256::from(5), U256::from(15)).unwrap())
         .unwrap();
     (
         value.numeric().clone_work() + imported.clone_work(),
-        imported.clone_work(),
+        imported.clone_work().saturating_add(
+            domain
+                .numeric_algebra()
+                .summary_equal_work(value.numeric(), value.numeric()),
+        ),
     )
 }
 
@@ -158,7 +165,7 @@ fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
     let raw = TestValue::top().with_expression(expression.clone());
     let (import, closure) = refinement_fees(&relations, &expression, &raw, domain);
     let fee = expression.work_size() + relations.work_size() + import + closure;
-    let (cache_insert, cache_hit) = cache_copy_fees(&raw);
+    let (cache_insert, cache_hit) = cache_copy_fees(&raw, domain);
     for summary in [false, true] {
         let expected = if summary {
             fee + cache_insert + cache_hit
@@ -312,14 +319,21 @@ fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
     let expressions = [ExprId::fresh().unwrap(), ExprId::fresh().unwrap()];
     let relations = bounded_relations(&expressions, &limits);
     let relation_work = relations.work_size();
+    let first = TestValue::top();
+    let first_bound = TestValue::unsigned_range(U256::from(5), U256::from(15)).unwrap();
+    let growing = TestValue::unsigned_range(U256::from(8), U256::from(100)).unwrap();
+    // The second input passes both unequal bounds in the first cached pair,
+    // once on its miss and again before reaching its own subsequently cached key.
+    let prefix_eq = domain
+        .numeric_algebra()
+        .summary_equal_work(first.numeric(), growing.numeric())
+        + domain
+            .numeric_algebra()
+            .summary_equal_work(first_bound.numeric(), growing.numeric());
     let cases = [
-        (0, TestValue::top(), 5),
-        (
-            0,
-            TestValue::unsigned_range(U256::from(8), U256::from(100)).unwrap(),
-            8,
-        ),
-        (1, TestValue::top(), 5),
+        (0, first, 5, 0),
+        (0, growing, 8, prefix_eq),
+        (1, TestValue::top(), 5, 0),
     ];
     let mut budget = WorkBudget::new(usize::MAX);
     let mut projection = Projection::new(
@@ -330,14 +344,18 @@ fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
         Policy::Summary,
     );
     let mut expected_work = 0;
-    for (index, value, lower) in cases {
+    for (index, value, lower, prefix_eq) in cases {
         let original = value.with_expression(expressions[index].clone());
         // Every uncached request pays its own namespace and actual two-phase
         // refinement, even when only the numeric input changes.
         let (import, closure) = refinement_fees(&relations, &expressions[index], &original, domain);
-        let (cache_insert, cache_hit) = cache_copy_fees(&original);
-        expected_work +=
-            expressions[index].work_size() + relation_work + import + closure + cache_insert;
+        let (cache_insert, cache_hit) = cache_copy_fees(&original, domain);
+        expected_work += expressions[index].work_size()
+            + relation_work
+            + import
+            + closure
+            + cache_insert
+            + prefix_eq;
         let mut value = original.clone();
         projection.value(&mut value);
         assert_eq!(
@@ -349,7 +367,7 @@ fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
         let mut repeated = original;
         projection.value(&mut repeated);
         assert_eq!(repeated, value);
-        expected_work += cache_hit;
+        expected_work += prefix_eq + cache_hit;
         assert_eq!(projection.budget.used(), expected_work);
     }
     assert_eq!(projection.relations_work_size_scans, 1);
@@ -370,7 +388,7 @@ fn lazy_size_keeps_the_exact_and_one_short_work_boundaries() {
     let (import, closure) = refinement_fees(&relations, &expression, &original, domain);
     // A closure refusal retains both completed first-phase payments.
     let admission = expression.work_size() + relations.work_size() + import;
-    let (cache_insert, _) = cache_copy_fees(&original);
+    let (cache_insert, _) = cache_copy_fees(&original, domain);
     let query_fee = admission + closure;
     let fee = query_fee + cache_insert;
     for maximum in [fee, fee - 1] {
