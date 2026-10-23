@@ -9,6 +9,67 @@ use alloy_primitives::B256;
 use std::collections::BTreeSet;
 
 #[test]
+fn namespace_coordinates_do_not_exclude_equal_numeric_physical_targets() {
+    use crate::world::process::ProcessNamespace;
+    let namespace = ProcessNamespace {
+        coordinate: address(0x111),
+        source: crate::analysis::ProcessSource::InputProgram {
+            hash: B256::ZERO,
+            fork: Fork::Osaka,
+        },
+    };
+    let limits = OwnerCatalogueLimits { names: 1, codes: 0 };
+    let catalogue = OwnerCatalogue::freeze_with_namespace(
+        &[address(0x200)],
+        &[],
+        Some(namespace),
+        limits,
+        &mut budget(),
+    )
+    .unwrap();
+    assert_eq!(
+        catalogue.classify(namespace.coordinate),
+        ProcessOwner::Residual
+    );
+    assert!(!catalogue.named().contains(&namespace.coordinate));
+    assert!(catalogue.coordinates().contains(&namespace.coordinate));
+    assert_eq!(
+        catalogue.unknown_targets().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            ProcessOwner::RootNamespace,
+            ProcessOwner::Named(address(0x200)),
+            ProcessOwner::Residual,
+        ])
+    );
+    assert!(catalogue.key(ProcessOwner::RootNamespace).is_ok());
+    let different_source = OwnerCatalogue::freeze_with_namespace(
+        &[address(0x200)],
+        &[],
+        Some(ProcessNamespace {
+            source: crate::analysis::ProcessSource::InputProgram {
+                hash: B256::repeat_byte(1),
+                fork: Fork::Osaka,
+            },
+            ..namespace
+        }),
+        limits,
+        &mut budget(),
+    )
+    .unwrap();
+    assert_ne!(catalogue.epoch(), different_source.epoch());
+    assert!(matches!(
+        OwnerCatalogue::freeze_with_namespace(
+            &[namespace.coordinate],
+            &[],
+            Some(namespace),
+            limits,
+            &mut budget()
+        ),
+        Err(ProcessOwnerError::Shape)
+    ));
+}
+
+#[test]
 fn unknown_targets_cover_every_named_alias_and_every_outside_owner() {
     let catalogue = catalogue();
     assert_eq!(catalogue.codes().len(), 1);

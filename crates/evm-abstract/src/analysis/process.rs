@@ -58,9 +58,12 @@ pub enum ProcessAction {
 /// Target class of a conservative action; residual is not an observed address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum ProcessOwner {
-    /// An exact owner retained in this invocation's current named vocabulary.
+    /// Supplied root state under symbolic To, with no observed physical name.
+    /// This class may alias any Named or Residual physical owner.
+    RootNamespace,
+    /// An exact physical owner in this invocation's named vocabulary.
     Named(Address),
-    /// Every remaining owner, including unresolved aliases and future owners.
+    /// Every remaining physical owner, including namespace-coordinate bits.
     Residual,
 }
 

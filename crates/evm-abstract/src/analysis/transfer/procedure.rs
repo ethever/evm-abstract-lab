@@ -259,6 +259,12 @@ pub(in crate::analysis) struct EvmTable<
     process_catalogue: Option<Arc<crate::world::process::OwnerCatalogue>>,
     /// One immutable logical root binding, distinct from residual instances.
     process_root_address: Option<Arc<EvmValue<N>>>,
+    /// Supplied root executable, separate from physical account resolution.
+    process_root_code: Option<(
+        FrameCode,
+        Option<crate::bytecode::Program>,
+        crate::analysis::ProcessSource,
+    )>,
     procedures_by_key: KeyIndex<(usize, Key)>,
     nodes: Vec<EvmNode<N>>,
     subscribers: Vec<EvmSubscriber<N>>,
@@ -294,6 +300,7 @@ impl<N: WordElement, Key: PolicyKey> Default for EvmTable<N, Key> {
             procedures: Vec::new(),
             process_catalogue: None,
             process_root_address: None,
+            process_root_code: None,
             procedures_by_key: KeyIndex::new(),
             nodes: Vec::new(),
             subscribers: Vec::new(),
@@ -613,7 +620,35 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 }
                 result.successors.extend(execution.successors);
                 result.completed_calls.extend(execution.completed_calls);
-                result.outcomes.extend(execution.outcomes);
+                for mut outcome in execution.outcomes {
+                    if solver
+                        .table
+                        .process_catalogue
+                        .as_ref()
+                        .is_some_and(|c| c.namespace().is_some())
+                    {
+                        let physical = outcome
+                            .store
+                            .summary_projection_with_payment(domain, solver.budget)
+                            .map_err(MachineError::from)
+                            .and_then(|store| {
+                                process::export_store(
+                                    &store,
+                                    solver.table.process_catalogue.as_deref(),
+                                    domain,
+                                    solver.budget,
+                                )
+                            });
+                        match physical {
+                            Ok(store) => outcome.store = store,
+                            Err(error) => {
+                                super::boundary(&mut result, 0, error.frontier_reason());
+                                continue;
+                            }
+                        }
+                    }
+                    result.outcomes.push(outcome);
+                }
                 result.frontiers.extend(execution.frontiers);
             }
         }
@@ -677,10 +712,12 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                                 &procedure.frame,
                                 solver.budget,
                             )?,
-                            input: input
-                                .payload
-                                .store
-                                .instantiate_with_payment(domain, solver.budget)?,
+                            input: process::export_store(
+                                &input.payload.store,
+                                solver.table.process_catalogue.as_deref(),
+                                domain,
+                                solver.budget,
+                            )?,
                             outputs: procedure
                                 .outputs
                                 .iter()
@@ -691,10 +728,12 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                                             .summary
                                             .data
                                             .instantiate_with_payment(domain, solver.budget)?,
-                                        store: output
-                                            .summary
-                                            .store
-                                            .instantiate_with_payment(domain, solver.budget)?,
+                                        store: process::export_store(
+                                            &output.summary.store,
+                                            solver.table.process_catalogue.as_deref(),
+                                            domain,
+                                            solver.budget,
+                                        )?,
                                     })
                                 })
                                 .collect::<Result<Vec<_>, MachineError>>()?,
