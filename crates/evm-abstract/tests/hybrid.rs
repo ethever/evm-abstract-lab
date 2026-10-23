@@ -577,6 +577,62 @@ fn delegated_root_selects_actual_code_source_before_unrelated_runtime() {
 }
 
 #[test]
+fn symbolic_root_native_currency_cannot_replace_alias_covering_process_relation() {
+    let mut code = Assembly::default();
+    code.store(0, 9).op(opcode::STOP);
+    let code = code.finish();
+    let mut world = new_world();
+    insert(&mut world, A, &code, &[(0, 5)]);
+    insert(&mut world, U, &code, &[(0, 5)]);
+    let mut entry = unknown();
+    entry.environment.to = AddressInput::unknown_to();
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let report = AnalysisEngine::new(&native::product(), &policies, &mut extension)
+        .run_hybrid(
+            AnalysisInput::new(world, entry).unwrap(),
+            ExecutionConfig {
+                max_work: 100_000_000,
+                ..ExecutionConfig::default()
+            },
+            HybridConfig::default(),
+            &Control::default(),
+        )
+        .unwrap();
+    assert!(report.coverage().baseline_current);
+    assert!(report.coverage().detail_current);
+    assert_eq!(
+        report.coverage().detail_binding,
+        evm_abstract::analysis::HybridNativeBinding::SymbolicOwnerNamespace
+    );
+    assert_eq!(
+        report.coverage().chosen,
+        HybridInterpretation::ProcessWithDetail
+    );
+    assert!(std::ptr::eq(report.chosen(), report.baseline()));
+    assert!(
+        report.local_detail().all(|site| site.scope
+            == evm_abstract::analysis::HybridLocalScope::NativeOwnerNamespacePrefix)
+    );
+    let joint = |analysis: &evm_abstract::analysis::EvmWorldAnalysis<NumericValue>| {
+        analysis.outcomes().iter().any(|outcome| {
+            outcome.kind == evm_abstract::analysis::OutcomeKind::Return
+                && support::read(&outcome.store, A, 0).contains(evm_abstract::U256::from(5))
+                && support::read(&outcome.store, U, 0).contains(evm_abstract::U256::from(9))
+        })
+    };
+    eprintln!(
+        "HYBRID_ALIAS_JSON {}",
+        serde_json::json!({
+            "native_current": report.coverage().detail_current, "chosen":report.coverage().chosen,
+            "binding":report.coverage().detail_binding, "native_joint_a5_u9":joint(report.detail().unwrap()),
+            "baseline_joint_a5_u9":joint(report.baseline()), "chosen_joint_a5_u9":joint(report.chosen()),
+        })
+    );
+    assert_accounting(&report, 100_000_000);
+}
+
+#[test]
 fn native_run_remains_available_without_process_policy_or_baseline_cost() {
     let policies = EnginePolicies::default();
     assert_eq!(<evm_abstract::analysis::SemanticPolicies as evm_abstract::analysis::ProcedureSummaryPolicy<evm_abstract::domain::ProductAlgebra>>::runtime_execution(&policies.state), RuntimeExecution::Native);

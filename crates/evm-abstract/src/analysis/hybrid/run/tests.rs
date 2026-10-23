@@ -67,3 +67,44 @@ fn metered_hybrid_retains_prior_actual_work_and_rejects_sticky_rescue() {
         (old_states, old_transfers)
     );
 }
+
+#[test]
+fn abstract_baseline_closes_before_native_discovery_requests_unlisted_code() {
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
+    let (world, entry) = fixtures::fixture(&[(0x101, "5f5f5f5f5f6102015af100")]);
+    let input = AnalysisInput::new(world, entry).unwrap();
+    let mut budget = WorkBudget::new(2_000_000_000);
+    let mut counters = engine::Counters::default();
+    let report = engine
+        .run_hybrid_metered(
+            input,
+            ExecutionConfig {
+                max_work: 2_000_000_000,
+                ..ExecutionConfig::default()
+            },
+            HybridConfig::default(),
+            &mut budget,
+            &mut counters,
+            StorageReadPolicy::Discover,
+        )
+        .unwrap();
+    assert!(report.coverage().baseline_current);
+    assert!(report.baseline().frontiers().is_empty());
+    let native = report.detail().unwrap();
+    assert_eq!(native.status(), crate::analysis::Status::Incomplete);
+    assert!(
+        native
+            .frontiers()
+            .iter()
+            .any(|f| matches!(f.reason, crate::analysis::FrontierReason::MissingCode(_)))
+    );
+    assert_eq!(report.status(), crate::analysis::Status::Converged);
+    assert_eq!(report.work(), budget.used());
+    assert!(
+        report.coverage().work.preparation + report.coverage().work.detail
+            <= report.coverage().work.detail_allowance
+    );
+}

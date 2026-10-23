@@ -19,8 +19,8 @@ use crate::{
 };
 
 use super::{
-    DetailState, HybridAnalysis, HybridConfig, HybridCoverage, HybridInterpretation, HybridWork,
-    input, local, policy,
+    DetailState, HybridAnalysis, HybridConfig, HybridCoverage, HybridInterpretation,
+    HybridNativeBinding, HybridWork, input, local, policy,
 };
 
 type HybridResult<N, E> = Result<HybridAnalysis<N>, CooperationError<E>>;
@@ -92,7 +92,9 @@ where
     }
 
     /// Session/RPC adapters must retain their original declared ledger and
-    /// counters across source restarts. Never call public run_hybrid as a rescue
+    /// counters across source restarts. Baseline reads remain Abstract; the
+    /// supplied read policy applies only to native precision discovery.
+    /// Never call public run_hybrid as a rescue
     /// after an earlier run or sticky refusal. No kernel graph is rehydrated.
     pub(in crate::analysis) fn run_hybrid_metered(
         &mut self,
@@ -101,7 +103,7 @@ where
         hybrid: HybridConfig,
         budget: &mut WorkBudget,
         counters: &mut engine::Counters,
-        storage_reads: StorageReadPolicy,
+        detail_reads: StorageReadPolicy,
     ) -> HybridResult<D::Element, <X as Composition<D::Element>>::Error> {
         crate::resource::clone_payment::checkpoint(budget).map_err(|error| match error {
             CloneError::Cancelled => CooperationError::Cancelled,
@@ -132,7 +134,7 @@ where
             &coarse,
             budget,
             counters,
-            storage_reads,
+            StorageReadPolicy::Abstract,
             None,
             (facts.snapshot(), facts.revision()),
             Cooperation::new(Borrowed(&mut *self.extension)),
@@ -142,6 +144,11 @@ where
         let mut coverage = HybridCoverage {
             baseline_current,
             detail_current: false,
+            detail_binding: if baseline.entry().environment.to.as_concrete().is_some() {
+                HybridNativeBinding::OriginalOwner
+            } else {
+                HybridNativeBinding::SymbolicOwnerNamespace
+            },
             local_detail_sites: 0,
             detail_regions: Vec::new(),
             chosen: HybridInterpretation::Process,
@@ -229,7 +236,7 @@ where
                                 config,
                                 budget,
                                 counters,
-                                storage_reads,
+                                detail_reads,
                                 None,
                             )?;
                     coverage.detail_current = current(&native, budget);
@@ -239,13 +246,17 @@ where
                     } else {
                         DetailState::Incomplete
                     };
-                    if coverage.detail_current {
+                    if coverage.detail_current
+                        && coverage.detail_binding == HybridNativeBinding::OriginalOwner
+                    {
                         coverage.chosen = HybridInterpretation::Native;
                     }
                     if metadata.publish_allowed() {
                         coverage.local_detail_sites =
                             native.states().iter().filter(|state| local(state)).count();
-                        if !coverage.detail_current && coverage.local_detail_sites > 0 {
+                        if coverage.chosen != HybridInterpretation::Native
+                            && coverage.local_detail_sites > 0
+                        {
                             coverage.chosen = HybridInterpretation::ProcessWithDetail;
                         }
                     }
