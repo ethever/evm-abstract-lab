@@ -186,7 +186,7 @@ pub(super) fn build<N: WordElement>(
         let destination = &analysis.states()[edge.to];
         let mut stacks = source.exit_frames.clone();
         let result = match edge.kind {
-            MachineEdgeKind::Intraprocedural(_) => None,
+            MachineEdgeKind::Intraprocedural(_) | MachineEdgeKind::Process(_) => None,
             MachineEdgeKind::Call => {
                 stacks.push(Vec::new());
                 None
@@ -207,7 +207,10 @@ pub(super) fn build<N: WordElement>(
                 Some(result)
             }
         };
-        let operands = if matches!(edge.kind, MachineEdgeKind::Intraprocedural(_)) {
+        let operands = if matches!(
+            edge.kind,
+            MachineEdgeKind::Intraprocedural(_) | MachineEdgeKind::Process(_)
+        ) {
             Vec::new()
         } else {
             source

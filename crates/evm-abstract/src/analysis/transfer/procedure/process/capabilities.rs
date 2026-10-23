@@ -25,6 +25,17 @@ pub(super) const ACTIONS: [ProcessAction; 6] = [
 ];
 
 impl Capabilities {
+    pub(in crate::analysis) fn boundary(code: crate::analysis::FrameCode) -> Self {
+        Self {
+            mask: 0,
+            effects: false,
+            returns: matches!(
+                code,
+                crate::analysis::FrameCode::Empty | crate::analysis::FrameCode::Precompile(_)
+            ),
+            reverts: false,
+        }
+    }
     pub(in crate::analysis) const fn unknown() -> Self {
         Self {
             mask: 0x3f,

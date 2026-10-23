@@ -164,6 +164,7 @@ impl<
                 callback.call_stack.push_child(EvmChildFrame {
                     state: EvmFrameState {
                         key: FrameKey {
+                            process: None,
                             code_address,
                             code_hash: program.as_ref().map_or_else(
                                 || keccak256([]),

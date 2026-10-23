@@ -541,6 +541,7 @@ fn delivery_targets_require_commit_and_both_current_native_stamps() {
     let input = Version::default();
     let mut receipt = ReturnReceipt {
         report: EvmRegionalReturn {
+            creation: Vec::new(),
             kind: OutcomeKind::Revert,
             input_revision: input.get(),
             output_generation: 7,

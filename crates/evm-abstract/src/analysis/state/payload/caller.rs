@@ -253,11 +253,15 @@ pub(in crate::analysis) fn form_with_runtime<N: WordElement, D: EvmNumericAlgebr
     for frame in payload.call_stack.iter() {
         let unknown = frame.code == FrameCode::Unknown;
         let known_process = runtime_process && frame.code == FrameCode::Runtime;
-        let process = unknown || known_process;
+        let process = unknown || runtime_process;
         let semantics = if unknown {
             crate::analysis::TransferSemantics::Environment
         } else if known_process {
             crate::analysis::TransferSemantics::KnownProcess
+        } else if runtime_process && frame.code == FrameCode::InitCode {
+            crate::analysis::TransferSemantics::ConstructorProcess
+        } else if runtime_process {
+            crate::analysis::TransferSemantics::BoundaryProcess
         } else {
             crate::analysis::TransferSemantics::Native
         };
@@ -317,6 +321,9 @@ pub(in crate::analysis) fn form_with_runtime<N: WordElement, D: EvmNumericAlgebr
         if process {
             summary.key.jump_history.clear();
             summary.key.basic_block_index = 0;
+            // Its private calldata has been quotiented out. Retaining a root
+            // origin flag would give equal process keys incompatible shapes.
+            summary.environment_calldata = false;
         }
         summary.key.stack_height = summary.stack.len();
         frames.push(EvmFrameSummary {

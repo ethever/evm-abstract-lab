@@ -65,11 +65,10 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         &self,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<EvmMachinePayload<N>, MachineError> {
-        if self
-            .frames
-            .iter()
-            .any(|frame| frame.semantics == crate::analysis::TransferSemantics::KnownProcess)
-        {
+        if self.frames.iter().any(|frame| {
+            frame.key.process.is_some()
+                || frame.semantics == crate::analysis::TransferSemantics::KnownProcess
+        }) {
             return Err(MachineError::Process(
                 crate::analysis::ProcessBoundary::NativeInstantiation,
             ));

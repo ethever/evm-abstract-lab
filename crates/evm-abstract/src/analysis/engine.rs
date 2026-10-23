@@ -962,7 +962,10 @@ impl<
             }
             let relative_procedure = (self.policies.state.runtime_execution()
                 == super::RuntimeExecution::Process
-                && entry.active().code == super::FrameCode::Runtime)
+                && matches!(
+                    entry.active().code,
+                    super::FrameCode::Runtime | super::FrameCode::InitCode
+                ))
                 || entry.active().code == super::FrameCode::Unknown
                 || transfer::procedure::is_recursive_entry(entry)
                 || (self.policies.state.supports_early_known_admission()

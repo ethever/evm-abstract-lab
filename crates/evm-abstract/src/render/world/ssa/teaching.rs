@@ -229,6 +229,9 @@ fn write_transition<N: WordElement>(
                     "rollback to saved checkpoint; empty returndata",
             }
         ),
+        MachineEdgeKind::Process(action) => {
+            writeln!(output, "    repeat conservative process after {action:?}")
+        }
         MachineEdgeKind::Intraprocedural(_) => unreachable!(),
     }
     .unwrap();

@@ -13,7 +13,7 @@ use evm_abstract::{
     analysis::{
         AnalysisEngine, AnalysisInput, BoundedJoin, EnginePolicies, ExecutionConfig,
         FeedbackAcceleration, FirstResumeStatus, FrameCode, FrontierReason, KnownProcessSummaries,
-        OutcomeKind, ProcessAction, ProcessBoundary, RecentDistinctJumps, SemanticPolicies, Status,
+        OutcomeKind, ProcessAction, RecentDistinctJumps, SemanticPolicies, Status,
         StructuralPartition, TransferSemantics, control::Control, cooperation::NoExtension,
     },
     domain::NumericValue,
@@ -165,7 +165,7 @@ fn subject(op: u8) -> support::Fixture {
 }
 
 #[test]
-fn known_unknown_static_process_actions_keep_identity_rollback_and_open_rules() {
+fn known_unknown_static_process_actions_close_owner_and_constructor_control() {
     for op in [opcode::CALL, opcode::STATICCALL] {
         let code = subject(op);
         let mut u = Assembly::default();
@@ -217,24 +217,8 @@ fn known_unknown_static_process_actions_keep_identity_rollback_and_open_rules() 
                 .map(|f| &f.reason)
                 .collect::<Vec<_>>()
         );
-        // Unknown code can allocate and target residual owners. Those rules
-        // are intentionally not discharged by this first source checkpoint.
-        assert_eq!(analysis.status(), Status::Incomplete);
-        assert!(analysis.frontiers().iter().any(|f| matches!(
-            f.reason,
-            FrontierReason::Process(ProcessBoundary::ResidualOwner(_))
-        )));
-        assert_eq!(
-            analysis.frontiers().iter().any(|f| matches!(
-                f.reason,
-                FrontierReason::Process(ProcessBoundary::Creation(_))
-            )),
-            op == opcode::CALL
-        );
-        assert!(!analysis.frontiers().iter().any(|f| matches!(
-            f.reason,
-            FrontierReason::Work | FrontierReason::Budget(_) | FrontierReason::RecursiveNoTerminal
-        )));
+        assert_eq!(analysis.status(), Status::Converged);
+        assert!(analysis.frontiers().is_empty());
         witness.covers(&analysis);
         for outcome in analysis
             .outcomes()
@@ -247,7 +231,7 @@ fn known_unknown_static_process_actions_keep_identity_rollback_and_open_rules() 
         let mut static_callback = false;
         let mut delivery = false;
         for record in analysis.procedure_summaries() {
-            assert!(!record.closed);
+            assert!(record.closed && record.source_current);
             for p in &record.procedures {
                 if p.frame.code_address == address(A) {
                     assert_eq!(p.frame.mode, FrameCode::Runtime);
@@ -255,16 +239,26 @@ fn known_unknown_static_process_actions_keep_identity_rollback_and_open_rules() 
                     assert_eq!(p.semantics, TransferSemantics::KnownProcess);
                     assert!(p.covered_blocks.is_empty());
                 }
-                assert!([address(A), address(U)].contains(&p.frame.address));
+                let process = p
+                    .frame
+                    .process
+                    .as_ref()
+                    .expect("installed process owner/source");
+                assert_eq!(p.frame.is_static, process.is_static);
+                assert!(p.process_input.is_some());
+                let encoded = serde_json::to_value(&p.frame).unwrap();
+                assert_eq!(encoded.as_object().unwrap().len(), 1);
+                assert!(encoded.get("process").is_some());
+                assert!(encoded.get("address").is_none());
+                assert!(encoded.get("basic_block_index").is_none());
             }
             for call in &record.regional_cfg.calls {
                 let action = call.action.expect("process call has explicit action");
-                let evm_abstract::analysis::ProcessOwner::Named(target) =
-                    call.target.expect("actual named target")
-                else {
-                    panic!("residual target must remain a frontier");
-                };
-
+                let target = call.target.expect("actual named or residual target");
+                assert_eq!(
+                    call.scope,
+                    Some(evm_abstract::analysis::ProcessControlScope::Primitive)
+                );
                 let from = &record.regional_cfg.nodes[call.from];
                 let callee = &record.procedures[call.callee];
                 assert!(!from.transfer.as_ref().unwrap().visited_block);
@@ -274,21 +268,31 @@ fn known_unknown_static_process_actions_keep_identity_rollback_and_open_rules() 
                     callback = true;
                     static_callback |= callee.frame.is_static;
                 }
-                if matches!(action, ProcessAction::Call | ProcessAction::StaticCall) {
-                    assert_eq!(callee.frame.address, target);
+                let child_owner = callee.frame.process.as_ref().unwrap().owner;
+                if matches!(
+                    action,
+                    ProcessAction::Call
+                        | ProcessAction::StaticCall
+                        | ProcessAction::Create
+                        | ProcessAction::Create2
+                ) {
+                    assert_eq!(child_owner, target);
                 }
                 if matches!(
                     action,
                     ProcessAction::DelegateCall | ProcessAction::CallCode
                 ) {
-                    assert_eq!(callee.frame.address, from.frame.address);
-                    if action == ProcessAction::DelegateCall {
-                        assert_eq!(callee.frame.caller, from.frame.caller);
-                    } else {
-                        assert_eq!(callee.frame.caller, from.frame.address_value);
-                    }
+                    assert_eq!(child_owner, from.frame.process.as_ref().unwrap().owner);
                 }
-                if from.frame.is_static || action == ProcessAction::StaticCall {
+                if matches!(action, ProcessAction::Create | ProcessAction::Create2) {
+                    assert_eq!(callee.semantics, TransferSemantics::ConstructorProcess);
+                    assert_eq!(callee.frame.mode, FrameCode::InitCode);
+                    assert!(matches!(
+                        callee.frame.process.as_ref().unwrap().source,
+                        evm_abstract::analysis::ProcessSource::AnyInitCode { .. }
+                    ));
+                    assert!(!from.frame.is_static && !callee.frame.is_static);
+                } else if from.frame.is_static || action == ProcessAction::StaticCall {
                     assert!(callee.frame.is_static);
                 }
                 for returned in &call.deliveries {
@@ -326,7 +330,7 @@ fn process_admission_refusal_keeps_work_incomplete() {
 }
 
 #[test]
-fn unknown_logical_owner_is_preserved_and_requires_a_covering_class() {
+fn unknown_logical_owner_is_preserved_with_a_covering_named_class() {
     let mut world = new_world();
     insert(
         &mut world,
@@ -354,10 +358,18 @@ fn unknown_logical_owner_is_preserved_and_requires_a_covering_class() {
             .len()
             .contains(U256::from(32))
     );
-    assert_eq!(analysis.status(), Status::Incomplete);
-    assert!(analysis.frontiers().iter().any(|f| matches!(
-        f.reason,
-        FrontierReason::Process(ProcessBoundary::SymbolicOwner)
-    )));
-    assert!(analysis.procedure_summaries().iter().all(|r| !r.closed));
+    assert_eq!(analysis.status(), Status::Converged);
+    assert!(analysis.frontiers().is_empty());
+    let record = analysis.procedure_summaries().last().unwrap();
+    assert!(record.closed && record.source_current);
+    let root = &record.procedures[record.root_procedure.unwrap()];
+    assert_eq!(
+        root.frame.process.as_ref().unwrap().owner,
+        evm_abstract::analysis::ProcessOwner::Named(address(A))
+    );
+    let invocation = root.process_input.as_ref().unwrap();
+    assert!(invocation.address.contains(U256::from(0xaaa)));
+    assert!(invocation.address.contains(U256::from(0xbbb)));
+    assert!(invocation.caller.contains(U256::from(0xccc)));
+    assert!(invocation.value.contains(U256::MAX));
 }

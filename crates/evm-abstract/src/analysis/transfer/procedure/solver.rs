@@ -41,6 +41,9 @@ impl<
                 crate::analysis::ProcessBoundary::CooperativeInputs,
             ));
         }
+        if runtime_process {
+            self.freeze_process_catalogue(payload)?;
+        }
         let mut refined = super::payload::caller::copy_with_scalar_guarantees(
             payload,
             self.entry,
@@ -69,13 +72,18 @@ impl<
                 self.policies.context.normalize(&mut frame.key.jump_history);
             }
         }
-        super::payload::caller::form_with_runtime(
+        let summary = super::payload::caller::form_with_runtime(
             &refined,
             self.entry,
             self.domain,
             self.budget,
             runtime_process,
-        )
+        )?;
+        if runtime_process {
+            self.prepare_process_summary(summary)
+        } else {
+            Ok(summary)
+        }
     }
 
     pub(super) fn reserve(&mut self, cost: usize) -> Result<(), MachineError> {
@@ -306,6 +314,15 @@ impl<
             {
                 Some(super::process::Capabilities::unknown())
             }
+            crate::analysis::TransferSemantics::ConstructorProcess => {
+                Some(match payload.active().program.as_ref() {
+                    Some(program) => super::process::Capabilities::scan(program, self.budget)?,
+                    None => super::process::Capabilities::unknown(),
+                })
+            }
+            crate::analysis::TransferSemantics::BoundaryProcess => Some(
+                super::process::Capabilities::boundary(payload.active().code),
+            ),
             _ => None,
         };
         let stored_payload = payload.clone_with_payment(self.budget)?;
@@ -839,11 +856,8 @@ impl<
                 self.counters.report(self.budget.used());
                 let execution = if self.policies.state.runtime_execution()
                     == crate::analysis::RuntimeExecution::Process
-                    && matches!(
-                        input.active().semantics,
-                        crate::analysis::TransferSemantics::KnownProcess
-                            | crate::analysis::TransferSemantics::Environment
-                    ) {
+                    && input.active().semantics != crate::analysis::TransferSemantics::Native
+                {
                     self.process(id, payload)
                 } else if payload.active().code == FrameCode::Unknown {
                     self.environment(payload)
@@ -1557,6 +1571,19 @@ impl<
             creation,
         );
         self.regional_delivery(subscriber, kind, template_version, output.generation)?;
+        if let Some(crate::analysis::CreationContinuation::Process(creation)) = template
+            .continuations
+            .last()
+            .and_then(|continuation| continuation.creation)
+        {
+            self.deliver_process_creation(subscriber, from, kind, template, output, creation)?;
+            self.table.subscribers[subscriber]
+                .delivered
+                .insert(kind, stamp);
+            self.regional_delivered(subscriber, kind);
+            self.table.propagations += 1;
+            return Ok(true);
+        }
         if template.frames.len() == 2
             && template.frames[0].semantics != crate::analysis::TransferSemantics::Native
             && template.continuations[0].creation.is_none()
@@ -1584,9 +1611,7 @@ impl<
             if !keep_store {
                 resumed.store = if kind == OutcomeKind::Return {
                     output.summary.store.clone_with_payment(self.budget)?
-                } else if template.frames[0].semantics
-                    == crate::analysis::TransferSemantics::KnownProcess
-                {
+                } else if template.frames[0].key.process.is_some() {
                     // Rebind failure to this subscriber's checkpoint, retaining
                     // the native sticky-touch exception from the failed child.
                     // Other subscribers' unwritten data must not be replayed.

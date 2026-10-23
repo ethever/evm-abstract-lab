@@ -19,6 +19,7 @@ pub(in crate::analysis) mod fixtures;
 mod frame;
 mod join;
 mod payload;
+mod process_key;
 mod range;
 mod stack;
 mod symbolic;
@@ -80,8 +81,11 @@ impl ExecutionConfig {
 }
 
 /// Code identity and storage identity differ for DELEGATECALL, CALLCODE and 7702.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FrameKey {
+    /// A process has its own finite coordinates. Other fields are then private
+    /// canonical adapter anchors and are omitted by native serialization.
+    pub process: Option<Box<super::ProcessFrameKey>>,
     /// Account supplying executed runtime bytecode after delegation resolution.
     pub code_address: Address,
     /// Hash of captured executable code, including creation initcode.
@@ -125,8 +129,8 @@ pub struct EvmContinuation<N: WordElement> {
     pub output_offset: EvmValue<N>,
     /// Requested output length; bytes beyond actual returndata stay unchanged.
     pub output_size: EvmValue<N>,
-    /// CREATE/CREATE2 deploy at this address and resume with an address result.
-    pub creation: Option<Address>,
+    /// CREATE/CREATE2 retain a concrete native or class-valued process result.
+    pub creation: Option<super::CreationContinuation>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -265,6 +269,8 @@ pub enum MachineEdgeKind {
     Revert,
     /// A procedure relation resumes the parent with this termination category.
     Summary(OutcomeKind),
+    /// A coarse region repeats after a local primitive without entering a child.
+    Process(super::ProcessAction),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -388,6 +394,8 @@ pub struct EvmProcedureSummaryOutput<N: WordElement> {
 /// A procedure participating in the joint known/unknown fixed point.
 #[derive(Clone, Debug, Serialize)]
 pub struct EvmProcedureSummary<N: WordElement> {
+    /// Joined logical invocation bounds for a process; None for native code.
+    pub process_input: Option<super::EvmProcessInvocation<N>>,
     /// Interpretation is independent of the captured Program/code identity.
     pub semantics: super::TransferSemantics,
     /// Executable and context shape, independent of suspended caller stacks.

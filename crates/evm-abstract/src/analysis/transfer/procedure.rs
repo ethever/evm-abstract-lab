@@ -259,6 +259,8 @@ pub(in crate::analysis) struct EvmTable<
     Key: PolicyKey = (crate::analysis::MachineKey, Option<bool>),
 > {
     procedures: Vec<EvmProcedure<N, Key>>,
+    /// Frozen before the first process admission; discoveries stay opaque.
+    process_catalogue: Option<Arc<crate::world::process::OwnerCatalogue>>,
     procedures_by_key: KeyIndex<(usize, Key)>,
     nodes: Vec<EvmNode<N>>,
     subscribers: Vec<EvmSubscriber<N>>,
@@ -292,6 +294,7 @@ impl<N: WordElement, Key: PolicyKey> Default for EvmTable<N, Key> {
     fn default() -> Self {
         Self {
             procedures: Vec::new(),
+            process_catalogue: None,
             procedures_by_key: KeyIndex::new(),
             nodes: Vec::new(),
             subscribers: Vec::new(),
@@ -652,8 +655,29 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                     .map(|(id, procedure)| {
                         let input = solver.table.entry_source(id).expect("retained procedure");
                         Ok(EvmProcedureSummary {
+                            process_input: if input.payload.active().key.process.is_some() {
+                                Some(crate::analysis::EvmProcessInvocation {
+                                    address: crate::domain::summary::clone_value(
+                                        &input.payload.active().address_operand,
+                                        solver.budget,
+                                    )?,
+                                    caller: crate::domain::summary::clone_value(
+                                        &input.payload.active().caller_operand,
+                                        solver.budget,
+                                    )?,
+                                    value: crate::domain::summary::clone_value(
+                                        &input.payload.active().call_value,
+                                        solver.budget,
+                                    )?,
+                                })
+                            } else {
+                                None
+                            },
                             semantics: input.payload.active().semantics,
-                            frame: procedure.frame.clone(),
+                            frame: crate::analysis::engine::policy::clone_key(
+                                &procedure.frame,
+                                solver.budget,
+                            )?,
                             input: input
                                 .payload
                                 .store

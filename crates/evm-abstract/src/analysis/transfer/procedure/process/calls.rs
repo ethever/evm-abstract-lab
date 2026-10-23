@@ -1,9 +1,8 @@
-//! Named-target EVM action preparation for process bodies.
+//! Primitive process CALL-family dependencies, including a residual chain.
 //!
-//! Effects have already passed through the covering envelope. The ordinary
-//! native subscriber stores each pre-child checkpoint. Unlisted target classes
-//! remain explicit residual obligations rather than concrete representative
-//! accounts. No bytecode instruction or stack execution is synthesized here.
+//! The class controls storage effects, the source controls code capabilities,
+//! and CallRoles binds actual logical operands. An internal frame anchor is
+//! never resolved, touched or executed as a residual representative account.
 
 use super::super::Composition;
 use super::super::{
@@ -13,21 +12,22 @@ use super::super::{
 };
 use crate::{
     analysis::{
-        ProcessAction,
+        ProcessAction, ProcessFrameKey, ProcessOwner, ProcessSource,
         engine::{ContextPolicy, PartitionPolicy, StatePolicy},
     },
     domain::{EvmNumericAlgebra, summary},
+    world::process::{CallRoles, ProcessCallOperands, ProcessTargetAddress},
 };
-use alloy_primitives::U256;
+use alloy_primitives::{Address, B256, U256};
+use std::sync::Arc;
 
-impl<
+impl<D, C, P, S, X, E> EvmSolver<'_, D, C, P, S, X, E>
+where
     D: EvmNumericAlgebra,
     C: ContextPolicy,
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
     X: Composition<D::Element, Error = E>,
-    E,
-> EvmSolver<'_, D, C, P, S, X, E>
 {
     pub(super) fn process_calls(
         &mut self,
@@ -35,141 +35,159 @@ impl<
         action: ProcessAction,
         result: &mut EvmExecution<D::Element>,
     ) -> Result<(), FrontierReason> {
+        let catalogue = Arc::clone(
+            self.table
+                .process_catalogue
+                .as_ref()
+                .ok_or_else(|| MachineError::Shape.frontier_reason())?,
+        );
         self.reserve(
-            payload
-                .store
-                .clone_prefix_work()
-                .saturating_add(self.world.accounts().len())
-                .saturating_mul((usize::BITS as usize + 1).saturating_mul(64)),
+            catalogue
+                .named()
+                .len()
+                .saturating_add(1)
+                .saturating_mul(256),
         )
         .map_err(MachineError::frontier_reason)?;
-        let mut targets = payload.store.addresses();
-        targets.extend(self.world.accounts().keys().copied());
-        self.reserve(targets.len().saturating_mul(32).saturating_add(8))
+        let targets: Vec<_> = catalogue.unknown_targets().collect();
+        let parent = payload.active();
+        let parent_owner = parent
+            .key
+            .process
+            .as_ref()
+            .ok_or_else(|| MachineError::Shape.frontier_reason())?
+            .owner;
+        let roles = CallRoles::for_action(action, parent.key.is_static)
+            .map_err(super::admission::owner_error)
             .map_err(MachineError::frontier_reason)?;
+        let parent_operands = ProcessCallOperands {
+            address: summary::clone_value(
+                parent
+                    .address_operand
+                    .as_ref()
+                    .ok_or_else(|| MachineError::Shape.frontier_reason())?,
+                self.budget,
+            )?,
+            caller: summary::clone_value(
+                parent
+                    .caller_operand
+                    .as_ref()
+                    .ok_or_else(|| MachineError::Shape.frontier_reason())?,
+                self.budget,
+            )?,
+            value: summary::clone_value(&parent.call_value, self.budget)?,
+        };
         for target in targets {
-            let (code_address, code, program) =
-                native_calls::resolve(self.world, &payload.store, target)?;
-            if code == FrameCode::Unknown && self.storage_reads == StorageReadPolicy::Discover {
-                super::super::boundary_on(
-                    result,
-                    0,
-                    FrontierReason::MissingCode(code_address),
-                    payload.key(),
-                );
-                continue;
-            }
+            let (code_address, code, program, hash) = match target {
+                ProcessOwner::Named(address) => {
+                    let (source, code, program) =
+                        native_calls::resolve(self.world, &payload.store, address)?;
+                    if code == FrameCode::Unknown
+                        && self.storage_reads == StorageReadPolicy::Discover
+                    {
+                        super::super::boundary_on(
+                            result,
+                            0,
+                            FrontierReason::MissingCode(source),
+                            payload.key(),
+                        );
+                        continue;
+                    }
+                    self.reserve(
+                        program
+                            .as_ref()
+                            .map_or(0, |p| p.byte_len())
+                            .saturating_mul(4)
+                            .saturating_add(64),
+                    )
+                    .map_err(MachineError::frontier_reason)?;
+                    let hash = native_calls::captured_hash(&program, &payload.store, source, code);
+                    (source, code, program, hash)
+                }
+                ProcessOwner::Residual => (Address::ZERO, FrameCode::Unknown, None, B256::ZERO),
+            };
+            let target_address = match target {
+                ProcessOwner::Named(address) if address == self.entry.address => {
+                    match self.entry.environment.to {
+                        AddressInput::Concrete(actual) => ProcessTargetAddress::Exact(actual),
+                        AddressInput::Symbolic(_) => {
+                            // This named namespace denotes the original root
+                            // operand, which may differ from the current frame.
+                            ProcessTargetAddress::Independent
+                        }
+                    }
+                }
+                ProcessOwner::Named(address) => ProcessTargetAddress::Exact(address),
+                ProcessOwner::Residual => ProcessTargetAddress::Independent,
+            };
+            let operands = roles
+                .bind(target_address, &parent_operands, self.domain, self.budget)
+                .map_err(super::admission::owner_error)
+                .map_err(MachineError::frontier_reason)?;
+            let owner = roles.child_owner(parent_owner, target);
+            let fork = self.world.fork();
+            let source = match code {
+                FrameCode::Runtime => ProcessSource::Runtime {
+                    source: code_address,
+                    hash,
+                    fork: program
+                        .as_ref()
+                        .expect("runtime retains its Program")
+                        .fork(),
+                },
+                FrameCode::Unknown => ProcessSource::AnyRuntime { fork },
+                FrameCode::Empty => ProcessSource::Empty { fork },
+                FrameCode::Precompile(address) => ProcessSource::Precompile { address, fork },
+                FrameCode::InvalidDelegation => ProcessSource::InvalidDelegation {
+                    source: code_address,
+                    hash,
+                    fork,
+                },
+                FrameCode::InitCode => {
+                    unreachable!("account CALL resolution never selects initcode")
+                }
+            };
+            self.reserve(256).map_err(MachineError::frontier_reason)?;
+            let mut key = FrameKey {
+                process: None,
+                code_address,
+                code_hash: hash,
+                mode: code,
+                address: Address::ZERO,
+                address_value: AddressInput::unknown_to(),
+                caller: AddressInput::unknown_caller(),
+                is_static: roles.is_static,
+                basic_block_index: 0,
+                stack_height: 0,
+                jump_history: Vec::new(),
+            };
+            key.install_process(ProcessFrameKey {
+                epoch: catalogue.epoch(),
+                owner,
+                source,
+                is_static: roles.is_static,
+            });
             payload.pay_clone_with(self.budget)?;
-            payload.store.pay_clone_with(self.budget)?;
             self.pay_process_arrays()
                 .map_err(MachineError::frontier_reason)?;
-            self.reserve(
-                program
-                    .as_ref()
-                    .map_or(0, |p| p.byte_len())
-                    .saturating_mul(4)
-                    .saturating_add(160),
-            )
-            .map_err(MachineError::frontier_reason)?;
-            let parent = payload.active();
-            let is_static = parent.key.is_static || action == ProcessAction::StaticCall;
-            let target_logical = if target == self.entry.address {
-                self.entry.environment.to
-            } else {
-                AddressInput::Concrete(target)
-            };
-            let (owner, logical, caller, address_operand, caller_operand, value) = match action {
-                ProcessAction::Call | ProcessAction::StaticCall => {
-                    // An unknown process includes arbitrary internal unknown
-                    // chains, so a protected-owner callback's caller need not
-                    // be this process's direct concrete address.
-                    let (caller, operand) = if parent.code == FrameCode::Unknown {
-                        (
-                            AddressInput::unknown_caller(),
-                            Some(summary::unsigned_range(
-                                U256::ZERO,
-                                U256::MAX >> 96usize,
-                                self.domain,
-                                self.budget,
-                            )?),
-                        )
-                    } else {
-                        (
-                            parent.key.address_value,
-                            Some(summary::clone_value(
-                                parent.address_operand.as_ref().expect("projected ADDRESS"),
-                                self.budget,
-                            )?),
-                        )
-                    };
-                    let value = if is_static {
-                        summary::constant(U256::ZERO, self.domain, self.budget)?
-                    } else {
-                        summary::top(self.domain, self.budget)?
-                    };
-                    (target, target_logical, caller, None, operand, value)
-                }
-                ProcessAction::DelegateCall => (
-                    parent.key.address,
-                    parent.key.address_value,
-                    parent.key.caller,
-                    Some(summary::clone_value(
-                        parent.address_operand.as_ref().expect("projected ADDRESS"),
-                        self.budget,
-                    )?),
-                    Some(summary::clone_value(
-                        parent.caller_operand.as_ref().expect("projected CALLER"),
-                        self.budget,
-                    )?),
-                    summary::clone_value(&parent.call_value, self.budget)?,
-                ),
-                ProcessAction::CallCode => (
-                    parent.key.address,
-                    parent.key.address_value,
-                    parent.key.address_value,
-                    Some(summary::clone_value(
-                        parent.address_operand.as_ref().expect("projected ADDRESS"),
-                        self.budget,
-                    )?),
-                    Some(summary::clone_value(
-                        parent.address_operand.as_ref().expect("projected ADDRESS"),
-                        self.budget,
-                    )?),
-                    // EIP-214 restricts nonzero CALL, but CALLCODE performs no
-                    // balance transfer and may pass a nonzero value in static
-                    // mode. The child still inherits the static restriction.
-                    summary::top(self.domain, self.budget)?,
-                ),
-                ProcessAction::Create | ProcessAction::Create2 => {
-                    unreachable!("allocation stays a typed rule obligation")
-                }
-            };
             let mut callback = payload.clone();
             let saved_store = payload.store.snapshot();
-            if matches!(action, ProcessAction::Call | ProcessAction::StaticCall)
-                && target != parent.key.address
-            {
-                callback.store.touch_account(target);
+            if matches!(action, ProcessAction::Call | ProcessAction::StaticCall) {
+                if let ProcessOwner::Named(address) = target {
+                    if address == self.entry.address
+                        && self.entry.environment.to.as_concrete().is_none()
+                    {
+                        callback.store.may_touch_all();
+                    } else {
+                        callback.store.touch_account(address);
+                    }
+                } else {
+                    callback.store.may_touch_all();
+                }
             }
             callback.call_stack.push_child(EvmChildFrame {
                 state: EvmFrameState {
-                    key: FrameKey {
-                        code_address,
-                        code_hash: native_calls::captured_hash(
-                            &program,
-                            &payload.store,
-                            code_address,
-                            code,
-                        ),
-                        mode: code,
-                        address: owner,
-                        address_value: logical,
-                        caller,
-                        is_static,
-                        basic_block_index: 0,
-                        stack_height: 0,
-                        jump_history: Vec::new(),
-                    },
+                    key,
                     code,
                     program,
                     stack: Vec::new(),
@@ -178,9 +196,9 @@ impl<
                         .map_err(|e| MachineError::Bytes(e).frontier_reason())?,
                     environment_calldata: false,
                     returndata: EvmByteArray::empty(),
-                    call_value: value,
-                    address_operand,
-                    caller_operand,
+                    call_value: operands.value,
+                    address_operand: Some(operands.address),
+                    caller_operand: Some(operands.caller),
                     saved_store,
                 },
                 continuation: EvmContinuation {
@@ -191,16 +209,12 @@ impl<
                 },
             });
             callback.normalize();
-            self.reserve(8).map_err(MachineError::frontier_reason)?;
-            result.process_calls.push((
-                result.successors.len(),
-                action,
-                crate::analysis::ProcessOwner::Named(target),
-            ));
+            let successor = result.successors.len();
             result.successors.push(EvmSuccessor {
                 payload: callback,
                 kind: MachineEdgeKind::Call,
             });
+            result.process_calls.push((successor, action, target));
         }
         Ok(())
     }

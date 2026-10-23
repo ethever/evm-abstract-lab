@@ -27,24 +27,29 @@ pub(super) fn write(
     .unwrap();
     for node in &cfg.nodes {
         let frame = &node.frame;
-        writeln!(output, "      r{} | procedure={} | {:?} | code={} | storage namespace={} | static={} | input revision={} | excluded={}", node.id, node.procedure, frame.mode, frame.code_address, frame.address, frame.is_static, node.input_revision, node.excluded).unwrap();
-        writeln!(
-            output,
-            "        ADDRESS={:?} | CALLER={:?}",
-            frame.address_value, frame.caller
-        )
-        .unwrap();
-        if frame.mode == FrameCode::Unknown {
-            output.push_str("        effect/environment abstraction; callbacks can be represented by effects even with an empty retained call list\n");
+        if let Some(process) = &frame.process {
+            writeln!(output, "      r{} | procedure={} | process owner={:?} | source={:?} | epoch={} | static={} | input revision={} | excluded={}",
+                node.id, node.procedure, process.owner, process.source, process.epoch, process.is_static, node.input_revision, node.excluded).unwrap();
         } else {
-            writeln!(output, "        frame identity hash={}", frame.code_hash).unwrap();
-            if matches!(frame.mode, FrameCode::Runtime | FrameCode::InitCode) {
-                writeln!(
-                    output,
-                    "        program block={} | stack height={} | jump context={:?}",
-                    frame.basic_block_index, frame.stack_height, frame.jump_history
-                )
-                .unwrap();
+            writeln!(output, "      r{} | procedure={} | {:?} | code={} | storage namespace={} | static={} | input revision={} | excluded={}", node.id, node.procedure, frame.mode, frame.code_address, frame.address, frame.is_static, node.input_revision, node.excluded).unwrap();
+            writeln!(
+                output,
+                "        ADDRESS={:?} | CALLER={:?}",
+                frame.address_value, frame.caller
+            )
+            .unwrap();
+            if frame.mode == FrameCode::Unknown {
+                output.push_str("        effect/environment abstraction; callbacks can be represented by effects even with an empty retained call list\n");
+            } else {
+                writeln!(output, "        frame identity hash={}", frame.code_hash).unwrap();
+                if matches!(frame.mode, FrameCode::Runtime | FrameCode::InitCode) {
+                    writeln!(
+                        output,
+                        "        program block={} | stack height={} | jump context={:?}",
+                        frame.basic_block_index, frame.stack_height, frame.jump_history
+                    )
+                    .unwrap();
+                }
             }
         }
         writeln!(output, "        admitted successors={:?}", node.successors).unwrap();
@@ -65,6 +70,10 @@ pub(super) fn write(
             if let Some(process) = &transfer.process {
                 writeln!(output, "        coarse {:?} process | repeat={} | actions={:?} | unresolved={:?} | no instruction evidence",
                     transfer.semantics, process.repeat, process.actions, process.unresolved).unwrap();
+                for creation in &process.creations {
+                    writeln!(output, "        allocation {:?} | creator={:?} | epoch={} | exceptions={:?} | rejections={:?}",
+                        creation.action, creation.creator, creation.epoch, creation.exceptions, creation.rejections).unwrap();
+                }
             }
             for edge in &transfer.successors {
                 writeln!(
@@ -83,8 +92,8 @@ pub(super) fn write(
         if let Some(action) = call.action {
             writeln!(
                 output,
-                "        coarse action={action:?} | target={:?}",
-                call.target
+                "        coarse action={action:?} | target={:?} | scope={:?}",
+                call.target, call.scope
             )
             .unwrap();
         }
@@ -105,6 +114,14 @@ pub(super) fn write(
                 delivery.kind, delivery.input_revision, delivery.output_generation
             )
             .unwrap();
+            if !delivery.creation.is_empty() {
+                writeln!(
+                    output,
+                    "        constructor completion={:?}",
+                    delivery.creation
+                )
+                .unwrap();
+            }
             for edge in &delivery.successors {
                 writeln!(
                     output,

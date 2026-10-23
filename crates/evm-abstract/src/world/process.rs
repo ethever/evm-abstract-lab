@@ -8,7 +8,6 @@
 use super::StoreError;
 use crate::resource::{CloneError, SummaryError};
 use alloy_primitives::Address;
-use serde::Serialize;
 
 mod catalogue;
 mod prepared;
@@ -20,32 +19,7 @@ pub use catalogue::{CapturedProcessCode, OwnerCatalogue, OwnerCatalogueLimits, P
 pub use prepared::PreparedProcessStore;
 pub use roles::{AddressRole, CallRoles, CallValueRole, ProcessCallOperands, ProcessTargetAddress};
 
-/// Provisional copy of the foundation's owner type for the isolated a3 helper.
-/// Integration replaces this definition with its foundation import.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub enum ProcessOwner {
-    /// One exact physical storage owner retained in the frozen vocabulary.
-    Named(Address),
-    /// Every other owner; separate instances may be equal or different.
-    Residual,
-}
-
-/// Provisional copy of the foundation's action type; not a code-source mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub enum ProcessAction {
-    /// Change owner; the child's caller is the parent owner.
-    Call,
-    /// Change owner, inherit read-only execution and pass zero value.
-    StaticCall,
-    /// Inherit owner, caller and value.
-    DelegateCall,
-    /// Inherit owner; the child's caller is the parent owner.
-    CallCode,
-    /// Allocation needs the constructor/deployment rules.
-    Create,
-    /// Salted allocation needs the constructor/deployment rules.
-    Create2,
-}
+pub use crate::analysis::{ProcessAction, ProcessOwner};
 
 /// A preparation refusal never grants a closed process rule.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

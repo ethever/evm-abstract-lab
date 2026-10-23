@@ -66,8 +66,9 @@ pub use machine::{
     EvmRangeWitness, EvmRootFrame, EvmWorldAnalysis,
 };
 pub use process::{
-    EvmProcessTransfer, ProcessAction, ProcessBoundary, ProcessOwner, RuntimeExecution,
-    TransferSemantics,
+    CreationContinuation, EvmProcessInvocation, EvmProcessTransfer, ProcessAction, ProcessBoundary,
+    ProcessControlScope, ProcessCreation, ProcessCreationTransfer, ProcessFrameKey, ProcessOwner,
+    ProcessSource, RuntimeExecution, TransferSemantics,
 };
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,

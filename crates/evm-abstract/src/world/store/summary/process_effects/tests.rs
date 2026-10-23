@@ -336,3 +336,35 @@ fn funded_actual_result_hooks_run_and_original_cancellation_stays_typed() {
         Err(CloneError::Cancelled)
     ));
 }
+
+#[test]
+fn constructor_transfer_requotes_its_actual_new_balance_top() {
+    let _scope = COUNTS.scope();
+    let domain = ValueAlgebra::new(Policy(ProductAlgebra::default()));
+    COUNTS.set(Counts {
+        copy_fee: 1_000_000,
+        query_fee: 32,
+        constructors: 0,
+        copies: 0,
+        queries: 0,
+    });
+    let mut budget = WorkBudget::new(20_000);
+    let creator = alloy_primitives::Address::from_word(U256::from(0x101).into());
+    let destination = alloy_primitives::Address::from_word(U256::from(0x201).into());
+    let result = input().process_begin_constructor(
+        crate::analysis::ProcessOwner::Named(creator),
+        crate::analysis::ProcessOwner::Named(destination),
+        domain.borrowed(),
+        &mut budget,
+    );
+    assert!(matches!(result, Err(CloneError::Work)));
+    assert!(
+        COUNTS.get().constructors >= 2,
+        "both actual balance Tops were constructed"
+    );
+    assert_eq!(
+        COUNTS.get().copies,
+        0,
+        "the old input invoice cannot pay the new balance clone"
+    );
+}

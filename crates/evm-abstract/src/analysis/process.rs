@@ -4,8 +4,13 @@
 //! It never witnesses execution of an instruction PC. Native Body/Resume slots
 //! retain input, output and continuation currency; these types add no scheduler.
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use serde::Serialize;
+
+mod frame;
+pub use frame::{
+    CreationContinuation, EvmProcessInvocation, ProcessCreation, ProcessFrameKey, ProcessSource,
+};
 
 /// Frozen selection for captured runtime bodies; ordinary execution is default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -27,6 +32,10 @@ pub enum TransferSemantics {
     Environment,
     /// A conservative process for the original captured runtime Program.
     KnownProcess,
+    /// Constructor execution, whose returned bytes become account runtime.
+    ConstructorProcess,
+    /// Coarse empty/precompile/invalid boundary with its actual source kind.
+    BoundaryProcess,
 }
 
 /// EVM action kind; `FrameKey::mode` instead identifies the kind of code.
@@ -58,6 +67,8 @@ pub enum ProcessOwner {
 /// A semantic rule not yet represented by this native process checkpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ProcessBoundary {
+    /// A new precise code source requires a new catalogue and root admission.
+    Catalogue,
     /// No covering residual-owner Store/alias representation was admitted.
     ResidualOwner(ProcessAction),
     /// Constructor/deployment semantics require the allocation implementation.
@@ -77,6 +88,30 @@ pub struct EvmProcessTransfer {
     pub repeat: bool,
     /// Primitive action rules selected by the paid decoded capability scan.
     pub actions: Vec<ProcessAction>,
+    /// Allocation guards actually applied before entering constructor slots.
+    pub creations: Vec<ProcessCreationTransfer>,
     /// Every uncovered rule also remains an explicit incomplete frontier.
     pub unresolved: Vec<ProcessBoundary>,
+}
+
+/// Guarded local allocation alternatives; constructor entries are real calls.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProcessCreationTransfer {
+    /// Original primitive CREATE/CREATE2 action.
+    pub action: ProcessAction,
+    /// Current immutable owner/code vocabulary.
+    pub epoch: B256,
+    /// Execution/storage owner, independent of supplying code account.
+    pub creator: ProcessOwner,
+    /// Exceptional creating-frame halts, covered by its entered Failure.
+    pub exceptions: Vec<super::process_creation::ParentException>,
+    /// Local zero-result alternatives with explicit nonce/guard distinction.
+    pub rejections: Vec<super::process_creation::Rejection>,
+}
+
+/// Scope of the control relation, separately from its EVM action kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum ProcessControlScope {
+    /// One EVM primitive; arbitrary chains have their own residual slots.
+    Primitive,
 }

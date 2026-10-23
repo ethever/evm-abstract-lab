@@ -194,6 +194,7 @@ impl PolicyKey for FrameKey {
             .len()
             .saturating_mul(2)
             .saturating_add(inline_work::<Self>())
+            .saturating_add(self.process_work())
             .saturating_add(2)
     }
 }

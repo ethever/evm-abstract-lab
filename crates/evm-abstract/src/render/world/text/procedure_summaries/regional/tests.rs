@@ -13,6 +13,7 @@ fn source_current_gates_text_transfers_and_deliveries_without_erasing_local_evid
             id: 0,
             procedure: 0,
             frame: FrameKey {
+                process: None,
                 code_address: address,
                 code_hash: keccak256([0]),
                 mode: FrameCode::Runtime,
@@ -43,6 +44,7 @@ fn source_current_gates_text_transfers_and_deliveries_without_erasing_local_evid
             }),
         }],
         calls: vec![EvmRegionalCall {
+            scope: None,
             action: None,
             target: None,
             id: 0,
@@ -51,6 +53,7 @@ fn source_current_gates_text_transfers_and_deliveries_without_erasing_local_evid
             entries: vec![0],
             input_revision: 1,
             deliveries: vec![EvmRegionalReturn {
+                creation: Vec::new(),
                 kind: OutcomeKind::Return,
                 input_revision: 1,
                 output_generation: 1,

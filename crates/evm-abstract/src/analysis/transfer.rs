@@ -489,6 +489,14 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
         completed_calls: Vec::new(),
         retention_failures: Vec::new(),
     };
+    if result.payload.active().key.process.is_some() {
+        boundary(
+            &mut result,
+            0,
+            FrontierReason::Process(crate::analysis::ProcessBoundary::NativeInstantiation),
+        );
+        return result;
+    }
     if !late_failure::at_block_entry(&mut result, context) {
         return result;
     }

@@ -128,6 +128,7 @@ pub(super) fn initial<D: EvmNumericAlgebra>(
         call_stack: EvmCallStack::<D::Element>::new(EvmRootFrame {
             state: EvmFrameState {
                 key: FrameKey {
+                    process: None,
                     code_address,
                     code_hash,
                     mode: code,
@@ -200,6 +201,20 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
     pc: usize,
 ) {
     let domain = context.domain;
+    if payload.call_stack.active_child().is_some_and(|child| {
+        matches!(
+            child.continuation.creation,
+            Some(crate::analysis::CreationContinuation::Process(_))
+        )
+    }) {
+        boundary_on(
+            result,
+            pc,
+            FrontierReason::Process(crate::analysis::ProcessBoundary::NativeInstantiation),
+            payload.key(),
+        );
+        return;
+    }
     if let Err(reason) = query::checkpoint(context.budget) {
         boundary_on(result, pc, reason, payload.key());
         return;
@@ -298,9 +313,12 @@ pub(super) fn finish<D: EvmNumericAlgebra>(
     parent.returndata = data;
     // Failure has an empty buffer. Revert exposes revert data, but both report 0.
     let result_value = if kind == OutcomeKind::Return {
-        continuation.creation.map_or(U256::from(1), |address| {
-            U256::from_be_slice(address.as_slice())
-        })
+        continuation
+            .creation
+            .and_then(crate::analysis::CreationContinuation::native_address)
+            .map_or(U256::from(1), |address| {
+                U256::from_be_slice(address.as_slice())
+            })
     } else {
         U256::ZERO
     };
@@ -815,6 +833,7 @@ fn call_prepared<D: EvmNumericAlgebra>(
         payload.call_stack.push_child(EvmChildFrame {
             state: EvmFrameState {
                 key: FrameKey {
+                    process: None,
                     code_address,
                     code_hash,
                     mode: code,

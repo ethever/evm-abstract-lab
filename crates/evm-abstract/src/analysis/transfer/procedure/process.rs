@@ -7,15 +7,17 @@
 
 use super::Composition;
 use super::{
-    BTreeSet, Code, EvmByteArray, EvmExecution, EvmMachinePayload, EvmSolver, FrontierReason,
-    MachineError, OutcomeKind, TransferContext, boundary_on, calls as completion,
+    EvmByteArray, EvmExecution, EvmMachinePayload, EvmSolver, FrontierReason, MachineError,
+    OutcomeKind, TransferContext, calls as completion,
 };
 use crate::{
     analysis::engine::{ContextPolicy, PartitionPolicy, StatePolicy},
-    analysis::{EvmProcessTransfer, ProcessAction, ProcessBoundary},
+    analysis::{EvmProcessTransfer, ProcessAction},
     domain::{EvmNumericAlgebra, SummaryConstruction},
 };
 
+mod admission;
+mod allocation;
 mod calls;
 mod capabilities;
 pub mod creation;
@@ -52,9 +54,6 @@ impl<
         id: usize,
         payload: &mut EvmMachinePayload<D::Element>,
     ) -> Result<EvmExecution<D::Element>, FrontierReason> {
-        if payload.active().key.address_value.as_concrete().is_none() {
-            return Err(FrontierReason::Process(ProcessBoundary::SymbolicOwner));
-        }
         let capabilities = self.table.procedures[self.table.nodes[id].procedure]
             .process
             .expect("process admission retains capabilities");
@@ -64,35 +63,32 @@ impl<
         let mut receipt = EvmProcessTransfer {
             repeat: true,
             actions: capabilities.actions().collect(),
+            creations: Vec::new(),
             unresolved: Vec::new(),
         };
-        self.reserve(
-            payload
-                .store
-                .clone_prefix_work()
-                .saturating_add(self.world.accounts().len())
-                .saturating_mul((usize::BITS as usize + 1).saturating_mul(64)),
-        )
-        .map_err(MachineError::frontier_reason)?;
-        let protected = self
-            .world
-            .accounts()
-            .keys()
-            .copied()
-            .chain(payload.store.addresses())
-            .filter(|owner| {
-                matches!(
-                    payload.store.code(*owner),
-                    Some(Code::Runtime(_) | Code::Delegation(_))
-                )
-            })
-            .collect::<BTreeSet<_>>();
+        let catalogue = std::sync::Arc::clone(
+            self.table
+                .process_catalogue
+                .as_ref()
+                .ok_or_else(|| MachineError::Shape.frontier_reason())?,
+        );
+        let owner = payload
+            .active()
+            .key
+            .process
+            .as_ref()
+            .ok_or_else(|| MachineError::Shape.frontier_reason())?
+            .owner;
+        let writable = match owner {
+            crate::analysis::ProcessOwner::Named(owner) => Some(owner),
+            crate::analysis::ProcessOwner::Residual => None,
+        };
         if capabilities.effects {
             payload.store = payload
                 .store
                 .process_effects_with_payment(
-                    &protected,
-                    Some(payload.active().key.address),
+                    catalogue.named(),
+                    writable,
                     payload.active().key.is_static,
                     self.domain,
                     self.budget,
@@ -142,28 +138,13 @@ impl<
         }
         for action in capabilities.actions() {
             if matches!(action, ProcessAction::Create | ProcessAction::Create2) {
-                if payload.active().key.is_static {
-                    continue;
-                }
-                let reason = ProcessBoundary::Creation(action);
-                receipt.unresolved.push(reason);
-                boundary_on(
-                    &mut result,
-                    0,
-                    FrontierReason::Process(reason),
-                    payload.key(),
+                receipt.creations.push(
+                    self.process_allocations(payload, action, &mut result)
+                        .map_err(MachineError::frontier_reason)?,
                 );
                 continue;
             }
             self.process_calls(payload, action, &mut result)?;
-            let reason = ProcessBoundary::ResidualOwner(action);
-            receipt.unresolved.push(reason);
-            boundary_on(
-                &mut result,
-                0,
-                FrontierReason::Process(reason),
-                payload.key(),
-            );
         }
         self.reserve(
             receipt

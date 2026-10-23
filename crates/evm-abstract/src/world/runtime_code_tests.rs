@@ -99,6 +99,7 @@ fn other_code_variants_and_direct_program_fields_keep_their_native_contract() {
         .unwrap();
     let frame = TestFrame {
         key: FrameKey {
+            process: None,
             code_address: address,
             code_hash: keccak256(program.bytes()),
             mode: FrameCode::Runtime,
