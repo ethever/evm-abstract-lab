@@ -188,6 +188,13 @@ fn join_log<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 // Code equality compares the fork and captured byte buffers. Their sizes are
 // cached; these comparisons contain no native scalars or decoded-state queries.
 pub(super) fn code_comparison_work(left: &Code, right: &Code) -> usize {
+    if matches!((left,right),(Code::Runtime(left),Code::Runtime(right)) if left.shares_capture(right))
+    {
+        // Program's derived Arc equality on Eq data uses pointer identity.
+        // This prices that exact successful shortcut, never a digest match or
+        // an assumed equality between separately decoded allocations.
+        return 32;
+    }
     [left, right].into_iter().fold(16usize, |work, code| {
         work.saturating_add(match code {
             Code::Runtime(program) => program.byte_len(),
