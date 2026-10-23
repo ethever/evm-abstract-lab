@@ -159,7 +159,7 @@ impl Validation<'_> {
             || frame.address_value != input.environment.to
             || frame.caller != input.environment.caller
             || frame.is_static != input.environment.is_static
-            || program.code_address != frame.code_address
+            || program.code_address.as_ref() != Some(&frame.code_address)
             || program.code_hash != frame.code_hash
             || frame.mode != RootTerminalFrameCode::Runtime
             || program.kind != crate::CodeKind::Runtime

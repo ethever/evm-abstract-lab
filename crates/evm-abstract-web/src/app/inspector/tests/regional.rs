@@ -100,6 +100,7 @@ fn context() -> egui::Context {
 #[test]
 fn conservative_process_shows_possible_static_control_exits_and_residual_obligations() {
     let mut report = observation_report(RECURSIVE);
+    let top = crate::tests::empty_report().metadata.environment.call_value;
     // Reuse regional identities to exercise presentation. Native action and
     // target provenance is checked by the server's process integration test.
     let summary = &mut report.abstract_summaries[0];
@@ -107,6 +108,26 @@ fn conservative_process_shows_possible_static_control_exits_and_residual_obligat
     summary.closed = false;
     for procedure in &mut summary.procedures {
         if procedure.kind == api::CodeKind::Runtime {
+            let source = api::ProcessSource::Runtime(api::ProcessCapturedSource {
+                source: procedure.code_address.take().unwrap(),
+                hash: serde_json::from_value(serde_json::json!(
+                    procedure.code_hash.take().unwrap()
+                ))
+                .unwrap(),
+                fork: api::Fork::Osaka,
+            });
+            procedure.process = Some(api::ProcessFrameKey {
+                epoch: api::ProcessDigest([0xa1; 32]),
+                owner: api::ProcessOwner::Residual,
+                source,
+                is_static: procedure.is_static,
+            });
+            procedure.process_input = Some(api::ProcessOperands {
+                address: top.clone(),
+                caller: top.clone(),
+                value: top.clone(),
+            });
+            procedure.storage_address = None;
             procedure.semantics = api::TransferSemantics::KnownProcess;
             procedure.covered_blocks.clear();
         }
@@ -116,11 +137,20 @@ fn conservative_process_shows_possible_static_control_exits_and_residual_obligat
             continue;
         }
         node.frame.basic_block = None;
+        node.frame.process = summary.procedures[node.procedure].process.clone();
+        node.frame.code_address = None;
+        node.frame.code_hash = None;
+        node.frame.storage_address = None;
+        node.frame.address_value = None;
+        node.frame.caller = None;
+        node.frame.stack_height = None;
+        node.frame.context.clear();
         if let Some(transfer) = &mut node.transfer {
             transfer.semantics = api::TransferSemantics::KnownProcess;
             transfer.visited_block = false;
             transfer.complete = false;
             transfer.process = Some(api::ProcessTransfer {
+                creations: vec![],
                 repeat: true,
                 actions: vec![api::ProcessAction::StaticCall],
                 unresolved: vec![api::ProcessBoundary::ResidualOwner(
@@ -143,8 +173,19 @@ fn conservative_process_shows_possible_static_control_exits_and_residual_obligat
         "r{} · procedure {} · Current partial conservative process",
         node.id, node.procedure
     );
-    let identity_hash = node.frame.code_hash.clone().unwrap();
+    let identity_hash = match &node.frame.process.as_ref().unwrap().source {
+        api::ProcessSource::Runtime(source) => source.hash.to_string(),
+        _ => unreachable!(),
+    };
     for call in &mut summary.regional_cfg.calls {
+        if summary.regional_cfg.nodes[call.from]
+            .frame
+            .process
+            .is_none()
+        {
+            continue;
+        }
+        call.scope = Some(api::ProcessControlScope::Primitive);
         call.action = Some(api::ProcessAction::StaticCall);
         call.target = Some(api::ProcessOwner::Residual);
     }
@@ -168,7 +209,7 @@ fn conservative_process_shows_possible_static_control_exits_and_residual_obligat
         "Unexpanded: STATICCALL: remaining owners and aliases are unexpanded",
         "captured block visited: false",
         "recorded exits:",
-        &format!("Frame identity hash: {identity_hash}"),
+        &format!("Captured code hash: {identity_hash}"),
     ] {
         assert!(text.contains(expected), "{expected}: {text}");
     }
@@ -342,7 +383,7 @@ fn source_current_certified_observation_retains_actual_edges_deliveries_and_iden
     )));
     assert!(text.contains(&format!(
         "Storage namespace: {}",
-        node.frame.storage_address
+        node.frame.storage_address.as_deref().unwrap()
     )));
     for edge in &node.transfer.as_ref().unwrap().successors {
         assert!(

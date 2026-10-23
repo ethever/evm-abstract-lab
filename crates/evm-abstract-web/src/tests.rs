@@ -180,7 +180,7 @@ pub(crate) fn empty_report() -> AnalysisReport {
 
 pub(crate) fn source_program(
     id: usize,
-    code_address: String,
+    code_address: Option<String>,
     blocks: Vec<DisasmBlock>,
 ) -> api::ProgramInfo {
     let byte_len = blocks
@@ -203,13 +203,14 @@ pub(crate) fn report() -> AnalysisReport {
     let cfg: Vec<_> = [(0, 0, "CALLDATALOAD"), (1, 5, "PUSH1"), (2, 10, "ADD")]
         .into_iter()
         .map(|(id, pc, name)| CfgBlock {
+            process: None,
             id,
-            basic_block: id,
+            basic_block: Some(id),
             start_pc: Some(pc),
             context: vec![],
             frame_depth: 1,
-            code_address: "0x0000000000000000000000000000000000000000".into(),
-            storage_address: "0x0000000000000000000000000000000000000000".into(),
+            code_address: Some("0x0000000000000000000000000000000000000000".into()),
+            storage_address: Some("0x0000000000000000000000000000000000000000".into()),
             program: Some(0),
             instructions: vec![instruction(pc, name)],
             entry_stack: vec![],
@@ -276,7 +277,7 @@ pub(crate) fn report() -> AnalysisReport {
         disassembly: cfg
             .iter()
             .map(|block| DisasmBlock {
-                id: block.basic_block,
+                id: block.basic_block.unwrap(),
                 start_pc: block.start_pc.unwrap(),
                 instructions: block.instructions.clone(),
             })

@@ -265,14 +265,14 @@ fn rows(report: &AnalysisReport, program: Option<usize>, selection: Selection) -
     for block in &source.blocks {
         let selected_state = report.cfg.iter().find(|state| {
             state.program == program
-                && state.basic_block == block.id
+                && state.basic_block == Some(block.id)
                 && Some(state.id) == selection.state
         });
         let state = selected_state.or_else(|| {
             report
                 .cfg
                 .iter()
-                .find(|state| state.program == program && state.basic_block == block.id)
+                .find(|state| state.program == program && state.basic_block == Some(block.id))
         });
         rows.push(Row::Block {
             id: block.id,

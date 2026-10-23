@@ -38,24 +38,27 @@ fn details(
     is_static: bool,
 ) -> api::StateDetails {
     let frame = api::FrameSnapshot {
+        process: None,
+        process_operands: None,
+        process_creation: None,
         index: 0,
         program: Some(0),
         code_address: report.cfg[0].code_address.clone(),
-        code_hash: "0x00".into(),
-        storage_address: storage.into(),
-        address_value: api::AddressValue::Concrete(storage.into()),
-        caller: api::AddressValue::Concrete(caller.into()),
+        code_hash: Some("0x00".into()),
+        storage_address: Some(storage.into()),
+        address_value: Some(api::AddressValue::Concrete(storage.into())),
+        caller: Some(api::AddressValue::Concrete(caller.into())),
         address_operand: None,
         caller_operand: None,
         call_value: report.metadata.environment.call_value.clone(),
         is_static,
         kind: api::CodeKind::Runtime,
-        basic_block: 2,
+        basic_block: Some(2),
         context: vec![],
         stack: vec![],
-        memory: 0,
-        calldata: 0,
-        returndata: 0,
+        memory: Some(0),
+        calldata: Some(0),
+        returndata: Some(0),
         rollback_store: 0,
         continuation: None,
     };
@@ -115,12 +118,30 @@ fn mixed_receipts_and_call_storage_roles_remain_visible_without_a_fake_current_g
     let (mut report, node) = grouped();
     report.ssa.blocks[1].coverage = api::BlockCoverage::Stale;
     report.ssa.blocks[2].coverage = api::BlockCoverage::Unexecuted;
-    report.cfg[1].storage_address = "0x2222222222222222222222222222222222222222".into();
+    report.cfg[1].storage_address = Some("0x2222222222222222222222222222222222222222".into());
     report.cfg[1].frame_depth = 2;
     report.states = vec![
-        details(&report, 205, &report.cfg[0].storage_address, "0x11", false),
-        details(&report, 999, &report.cfg[1].storage_address, "0x22", true),
-        details(&report, 1001, &report.cfg[2].storage_address, "0x11", false),
+        details(
+            &report,
+            205,
+            report.cfg[0].storage_address.as_deref().unwrap(),
+            "0x11",
+            false,
+        ),
+        details(
+            &report,
+            999,
+            report.cfg[1].storage_address.as_deref().unwrap(),
+            "0x22",
+            true,
+        ),
+        details(
+            &report,
+            1001,
+            report.cfg[2].storage_address.as_deref().unwrap(),
+            "0x11",
+            false,
+        ),
     ];
     report.frontiers = vec![
         api::Frontier {

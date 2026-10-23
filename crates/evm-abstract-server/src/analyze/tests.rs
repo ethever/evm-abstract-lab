@@ -128,7 +128,7 @@ fn invalid_opcodes_at_the_same_pc_use_each_childs_captured_program() {
         };
         assert_eq!(diagnostic.pc, 0);
         let frame = report.states[diagnostic.state].entry.frames.last().unwrap();
-        assert_ne!(frame.code_address, root.to_string());
+        assert_ne!(frame.code_address, Some(root.to_string()));
         let source = &report.programs[frame.program.unwrap()];
         assert_eq!(source.code_address, frame.code_address);
         let bytes = alloy_primitives::hex::decode(&source.bytecode).unwrap();
@@ -138,7 +138,10 @@ fn invalid_opcodes_at_the_same_pc_use_each_childs_captured_program() {
     captured.sort();
     assert_eq!(
         captured,
-        vec![(first.to_string(), 0xfe), (second.to_string(), 0xef)]
+        vec![
+            (Some(first.to_string()), 0xfe),
+            (Some(second.to_string()), 0xef)
+        ]
     );
 }
 
@@ -278,14 +281,14 @@ fn delegated_root_source_uses_code_program_and_retains_authority_storage() {
     )
     .unwrap();
     let source = &report.programs[report.metadata.root_program.unwrap()];
-    assert_eq!(source.code_address, target.to_string());
+    assert_eq!(source.code_address, Some(target.to_string()));
     assert_eq!(source.bytecode, "0x602a00");
     assert_eq!(report.disassembly, source.blocks);
     let frame = &report.states[0].entry.frames[0];
-    assert_eq!(frame.code_address, target.to_string());
-    assert_eq!(frame.storage_address, authority.to_string());
+    assert_eq!(frame.code_address, Some(target.to_string()));
+    assert_eq!(frame.storage_address, Some(authority.to_string()));
     assert!(
-        matches!(&frame.address_value,api::AddressValue::Concrete(value) if value==&authority.to_string())
+        matches!(&frame.address_value,Some(api::AddressValue::Concrete(value)) if value==&authority.to_string())
     );
     let authority = report
         .accounts
@@ -342,8 +345,8 @@ fn child_frames_reference_complete_programs_private_memory_and_parent_continuati
         .find(|state| state.entry.frames.len() == 2)
         .expect("child machine frame");
     let frame = &state.entry.frames[1];
-    assert_eq!(frame.storage_address, root.to_string());
-    assert_eq!(frame.code_address, child.to_string());
+    assert_eq!(frame.storage_address, Some(root.to_string()));
+    assert_eq!(frame.code_address, Some(child.to_string()));
     assert!(frame.continuation.is_some());
     let source = &report.programs[frame.program.unwrap()];
     assert_eq!(source.bytecode, "0x602a5f5260205ff3");
@@ -370,7 +373,7 @@ fn child_frames_reference_complete_programs_private_memory_and_parent_continuati
         .filter_map(|state| state.exit.as_ref())
         .flat_map(|machine| &machine.frames)
         .any(|frame| {
-            report.byte_arrays[frame.returndata]
+            report.byte_arrays[frame.returndata.unwrap()]
                 .length
                 .constants
                 .as_ref()

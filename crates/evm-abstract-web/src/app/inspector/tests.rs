@@ -242,24 +242,27 @@ fn store() -> api::StoreSnapshot {
 fn frame(index: usize, rollback_store: usize) -> api::FrameSnapshot {
     let owner = account().address;
     api::FrameSnapshot {
+        process: None,
+        process_operands: None,
+        process_creation: None,
         index,
         program: None,
-        code_address: owner.clone(),
-        code_hash: "0x00".into(),
-        storage_address: owner.clone(),
-        address_value: api::AddressValue::Concrete(owner.clone()),
-        caller: api::AddressValue::Concrete(owner),
+        code_address: Some(owner.clone()),
+        code_hash: Some("0x00".into()),
+        storage_address: Some(owner.clone()),
+        address_value: Some(api::AddressValue::Concrete(owner.clone())),
+        caller: Some(api::AddressValue::Concrete(owner)),
         address_operand: None,
         caller_operand: None,
         call_value: word("0x0"),
         is_static: false,
         kind: api::CodeKind::Runtime,
-        basic_block: 0,
+        basic_block: Some(0),
         context: vec![],
         stack: vec![],
-        memory: 0,
-        calldata: 0,
-        returndata: 0,
+        memory: Some(0),
+        calldata: Some(0),
+        returndata: Some(0),
         rollback_store,
         continuation: None,
     }
@@ -724,7 +727,7 @@ fn native_state_and_frame_symbols_match_accessibility_without_renumbering() {
             frame.program = Some(128);
             frame.code_address = report.cfg[0].code_address.clone();
             frame.storage_address = report.cfg[0].storage_address.clone();
-            frame.code_hash = report.programs[0].code_hash.clone();
+            frame.code_hash = Some(report.programs[0].code_hash.clone());
             frame
         })
         .collect();

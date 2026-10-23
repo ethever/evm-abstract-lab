@@ -149,13 +149,14 @@ fn a_new_report_gets_a_new_initial_layout_and_fit() {
 fn report() -> AnalysisReport {
     let cfg: Vec<_> = (0..9)
         .map(|index| CfgBlock {
+            process: None,
             id: index * 7,
-            basic_block: index,
+            basic_block: Some(index),
             start_pc: Some(index * 2),
             context: vec![],
             frame_depth: 1,
-            code_address: "0x11".into(),
-            storage_address: "0x11".into(),
+            code_address: Some("0x11".into()),
+            storage_address: Some("0x11".into()),
             program: Some(0),
             instructions: vec![DisasmInstruction {
                 pc: index * 2,
@@ -175,7 +176,7 @@ fn report() -> AnalysisReport {
     let disassembly = cfg
         .iter()
         .map(|block| evm_abstract_protocol::DisasmBlock {
-            id: block.basic_block,
+            id: block.basic_block.unwrap(),
             start_pc: block.start_pc.unwrap(),
             instructions: block.instructions.clone(),
         })
@@ -379,7 +380,7 @@ fn zoom_below_eight_percent_preserves_gesture_direction_anchor_and_geometry() {
         .map(|index| {
             let mut block = template.clone();
             block.id = index * 7;
-            block.basic_block = index;
+            block.basic_block = Some(index);
             block.start_pc = Some(index);
             block.instructions[0].pc = index;
             block.instructions[0].opcode = 0x5b;

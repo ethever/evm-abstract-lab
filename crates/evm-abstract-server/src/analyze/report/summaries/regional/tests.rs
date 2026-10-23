@@ -13,6 +13,7 @@ fn regional_projection_is_paid_and_checks_cancellation_even_for_empty_evidence()
     assert_eq!(edges(&[edge, edge], &mut export).unwrap().len(), 2);
     assert_eq!(export.usage.work - before, 4);
     let receipt = analysis::EvmProcessTransfer {
+        creations: vec![],
         repeat: true,
         actions: vec![analysis::ProcessAction::StaticCall],
         unresolved: vec![analysis::ProcessBoundary::ResidualOwner(
@@ -21,7 +22,7 @@ fn regional_projection_is_paid_and_checks_cancellation_even_for_empty_evidence()
     };
     let before = export.usage.work;
     process::transfer(&receipt, &mut export).unwrap();
-    assert_eq!(export.usage.work - before, 5);
+    assert_eq!(export.usage.work - before, 6);
     let cfg = analysis::EvmRegionalCfg::default();
     assert_eq!(
         project(&cfg, &[], &mut export).unwrap(),

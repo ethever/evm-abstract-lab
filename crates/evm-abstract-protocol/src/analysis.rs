@@ -51,10 +51,12 @@ record! {
 record! {
     /// A native machine state; contexts and suspended frames distinguish nodes.
     pub struct CfgBlock {
+        /// Explicit process identity; native-only anchor fields are absent when present.
+        pub process: Option<crate::ProcessFrameKey>,
         /// Native state ID shared with SSA, edges, diagnostics and frontiers.
         pub id: usize,
         /// Program-local syntactic block index for this active frame.
-        pub basic_block: usize,
+        pub basic_block: Option<usize>,
         /// First instruction offset, absent for a no-code frame.
         pub start_pc: Option<usize>,
         /// Recent internal jump source offsets.
@@ -62,9 +64,9 @@ record! {
         /// Number of active and suspended frames.
         pub frame_depth: usize,
         /// Executable account identity, distinct from the storage account.
-        pub code_address: String,
+        pub code_address: Option<String>,
         /// Active persistent/transient storage owner.
-        pub storage_address: String,
+        pub storage_address: Option<String>,
         /// Active source program in the report directory.
         pub program: Option<usize>,
         /// Source instructions for this frame, including generated initcode.
@@ -77,9 +79,38 @@ record! {
         pub executed_pcs: Vec<usize>,
     }
 }
-choice! {
+impl CfgBlock {
+    /// Actual owner class or recorded native storage address, without a representative.
+    pub fn storage_label(&self) -> &str {
+        match self.process.as_ref().map(|key| &key.owner) {
+            Some(crate::ProcessOwner::Named(address)) => address,
+            Some(crate::ProcessOwner::Residual) => "Residual owner class",
+            None => self.storage_address.as_deref().unwrap_or("Not recorded"),
+        }
+    }
+    /// Actual executable source, without exposing private process anchors.
+    pub fn code_label(&self) -> &str {
+        match self.process.as_ref().map(|key| &key.source) {
+            Some(
+                crate::ProcessSource::Runtime(source)
+                | crate::ProcessSource::InvalidDelegation(source),
+            ) => &source.source,
+            Some(crate::ProcessSource::InitCode(_) | crate::ProcessSource::AnyInitCode(_)) => {
+                "Constructor code"
+            }
+            Some(crate::ProcessSource::AnyRuntime(_)) => "Unobserved runtime",
+            Some(crate::ProcessSource::Empty(_)) => "Empty execution",
+            Some(crate::ProcessSource::Precompile(source)) => &source.address,
+            None => self.code_address.as_deref().unwrap_or("Not recorded"),
+        }
+    }
+}
+variant! {
     /// Typed control-transfer category, including native call dispatch.
+    #[derive(Copy)]
     pub enum EdgeKind {
+        /// Local primitive process recurrence, without an executed instruction claim.
+        Process(crate::ProcessAction),
         /// Adjacent block entry.
         Fallthrough,
         /// Unconditional internal jump.

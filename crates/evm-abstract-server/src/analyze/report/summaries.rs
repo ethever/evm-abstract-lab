@@ -22,6 +22,21 @@ pub(super) fn project<N: WordElement>(
         let mut procedures = Vec::new();
         for procedure in &record.procedures {
             checkpoint(control)?;
+            if let Some(key) = procedure.frame.process.as_deref() {
+                if process::key(key).source.semantics() != process::semantics(procedure.semantics) {
+                    return Err(process::invalid(api::ProcessValidationKind::Identity));
+                }
+                if procedure.process_input.is_none() {
+                    return Err(process::invalid(api::ProcessValidationKind::Operands));
+                }
+            } else if matches!(
+                procedure.semantics,
+                analysis::TransferSemantics::KnownProcess
+                    | analysis::TransferSemantics::ConstructorProcess
+                    | analysis::TransferSemantics::BoundaryProcess
+            ) {
+                return Err(process::invalid(api::ProcessValidationKind::Identity));
+            }
             symbolic.charge(
                 procedure
                     .covered_blocks
@@ -31,13 +46,35 @@ pub(super) fn project<N: WordElement>(
                     .saturating_add(2),
             )?;
             procedures.push(api::AbstractProcedure {
+                process: procedure.frame.process.as_deref().map(process::key),
+                process_input: procedure
+                    .process_input
+                    .as_ref()
+                    .map(|input| process::invocation(input, symbolic))
+                    .transpose()?,
                 semantics: process::semantics(procedure.semantics),
-                code_address: procedure.frame.code_address.to_string(),
-                code_hash: (procedure.frame.mode != analysis::FrameCode::Unknown)
+                code_address: procedure
+                    .frame
+                    .process
+                    .is_none()
+                    .then(|| procedure.frame.code_address.to_string()),
+                code_hash: (procedure.frame.process.is_none()
+                    && procedure.frame.mode != analysis::FrameCode::Unknown)
                     .then(|| procedure.frame.code_hash.to_string()),
-                storage_address: procedure.frame.address.to_string(),
-                kind: pools::mode(procedure.frame.mode),
-                is_static: procedure.frame.is_static,
+                storage_address: procedure
+                    .frame
+                    .process
+                    .is_none()
+                    .then(|| procedure.frame.address.to_string()),
+                kind: procedure.frame.process.as_deref().map_or_else(
+                    || pools::mode(procedure.frame.mode),
+                    |key| process::key(key).source.kind(),
+                ),
+                is_static: procedure
+                    .frame
+                    .process
+                    .as_deref()
+                    .map_or(procedure.frame.is_static, |key| key.is_static),
                 covered_blocks: procedure.covered_blocks.clone(),
                 outcomes: procedure
                     .outputs

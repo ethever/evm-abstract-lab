@@ -164,7 +164,7 @@ fn storage_report(count: usize) -> api::AnalysisReport {
     initial.program = Some(7);
     report.programs.push(crate::tests::source_program(
         7,
-        initial.address.clone(),
+        Some(initial.address.clone()),
         vec![],
     ));
     initial.storage = entries(count);
