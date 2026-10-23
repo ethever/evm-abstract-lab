@@ -1,18 +1,43 @@
 //! Explain summarized interactions beside the actual caller and return edges.
+mod regional;
 
 use crate::palette;
 use egui::{RichText, Ui};
-use evm_abstract_protocol::{AnalysisReport, ProcedureSummaryKind};
+use evm_abstract_protocol::{AnalysisReport, ProcedureSummaryKind, SummarySourceStatus};
 
 pub(super) fn label(kind: ProcedureSummaryKind) -> &'static str {
     match kind {
         ProcedureSummaryKind::UnknownEnvironment => "Abstract interactions",
         ProcedureSummaryKind::KnownRecursion => "Recursive bytecode",
+        ProcedureSummaryKind::KnownCall => "Known bytecode call",
+    }
+}
+
+pub(super) fn coverage_label(closed: bool, source: SummarySourceStatus) -> &'static str {
+    match (source, closed) {
+        (SummarySourceStatus::Current, true) => "closed for final source",
+        (SummarySourceStatus::Current, false) => "open for final source",
+        (SummarySourceStatus::Historical, true) => {
+            "historical observation · closed for observed input"
+        }
+        (SummarySourceStatus::Historical, false) => {
+            "historical observation · open for observed input"
+        }
+        (SummarySourceStatus::Uncertified, true) => {
+            "closed for observed input · final source uncertified"
+        }
+        (SummarySourceStatus::Uncertified, false) => {
+            "open for observed input · final source uncertified"
+        }
     }
 }
 
 pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selected: Option<usize>) {
     let Some(state) = selected else { return };
+    let latest = report
+        .abstract_summaries
+        .iter()
+        .rposition(|summary| summary.source_state == state);
     for (id, summary) in report
         .abstract_summaries
         .iter()
@@ -21,11 +46,11 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selected: Option<usize>
     {
         ui.separator();
         ui.label(RichText::new(label(summary.kind)).strong());
-        ui.label(if summary.closed {
-            "Covered by a closed conservative relation"
-        } else {
-            "Coverage remains open; inspect the reported frontiers"
-        });
+        let source = summary.source_status(Some(id) != latest);
+        ui.label(coverage_label(summary.closed, source));
+        if !summary.closed {
+            ui.label("Inspect the reported frontiers for remaining obligations.");
+        }
         ui.label(
             RichText::new(format!(
                 "{} procedures · {} states · {} transfers · {} propagations · {} reused",
@@ -51,7 +76,7 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selected: Option<usize>
                         ui.monospace(format!("Code: {}", procedure.code_address));
                         ui.monospace(format!("Storage namespace: {}", procedure.storage_address));
                         ui.label(format!(
-                            "Static: {} · analyzed blocks: {:?}",
+                            "Static: {} · historically visited blocks: {:?}",
                             procedure.is_static, procedure.covered_blocks
                         ));
                         ui.label(format!(
@@ -65,6 +90,7 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selected: Option<usize>
                     },
                 );
             }
+            regional::show(ui, &summary.regional_cfg, source);
         });
     }
 }

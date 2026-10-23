@@ -1,4 +1,5 @@
 //! Every graph and pool reference is checked before a consumer follows it.
+mod regional;
 mod terminal;
 use crate::{
     AccountState, AnalysisReport, MachineSnapshot, PoolReferenceFailure, PoolReferenceKind,
@@ -209,7 +210,7 @@ impl Validation<'_> {
             self.buffer(outcome.data)?;
             self.store(outcome.store)?;
         }
-        for summary in &self.report.abstract_summaries {
+        for (index, summary) in self.report.abstract_summaries.iter().enumerate() {
             if let Some(root) = summary.root_procedure {
                 self.pool(
                     PoolReferenceKind::AbstractProcedure,
@@ -238,6 +239,7 @@ impl Validation<'_> {
                     )?;
                 }
             }
+            self.regional(index, summary)?;
         }
         for value in &self.report.ssa.values {
             for fact in &value.facts {

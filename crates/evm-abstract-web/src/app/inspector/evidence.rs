@@ -282,7 +282,7 @@ fn frontier_reason(ui: &mut Ui, reason: &api::FrontierDetails) {
         R::RecursiveNoTerminal => value::text(
             ui,
             "Boundary",
-            "Recursive execution has no covered terminal behavior",
+            "Known bytecode region lacks terminal evidence",
         ),
         R::CallDepth => value::text(ui, "Boundary", "External call depth"),
         R::Memory => value::text(ui, "Boundary", "Logical memory policy; unexpanded inputs"),

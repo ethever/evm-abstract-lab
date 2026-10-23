@@ -188,7 +188,8 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     };
     let environment = environment::project(&native.entry().environment, &mut pools)?;
     checkpoint(control)?;
-    let abstract_summaries = summaries::project(native, control, &mut pools.symbolic)?;
+    let abstract_summaries =
+        summaries::project(native.procedure_summaries(), control, &mut pools.symbolic)?;
     let root_terminal_coverage = native
         .root_terminal_coverage()
         .map(|source| terminal::project(source, numeric_model, &mut pools))

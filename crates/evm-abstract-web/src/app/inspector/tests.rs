@@ -3,6 +3,7 @@ use super::*;
 use evm_abstract_protocol as api;
 
 mod diagnostics;
+mod regional;
 mod scroll_bounds;
 mod storage;
 
@@ -16,10 +17,12 @@ fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
     };
     report.abstract_summaries.push(api::AbstractSummary {
         source_state: 0,
+        source_current: true,
         kind: api::ProcedureSummaryKind::UnknownEnvironment,
         root_procedure: None,
         closed: true,
         procedures: vec![],
+        regional_cfg: api::RegionalCfg::default(),
         state_count: 1,
         transfers: 1,
         propagations: 0,
@@ -34,6 +37,10 @@ fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
     let known = inspector.accessible_summary(&report, selection);
     assert!(known.contains("Recursive bytecode · closed"));
     assert!(!known.contains("Abstract interactions"));
+    report.abstract_summaries[0].kind = api::ProcedureSummaryKind::KnownCall;
+    let known = inspector.accessible_summary(&report, selection);
+    assert!(known.contains("Known bytecode call · closed"));
+    assert!(!known.contains("Recursive bytecode"));
     report.abstract_summaries[0].kind = api::ProcedureSummaryKind::UnknownEnvironment;
     report.abstract_summaries[0].closed = false;
     assert!(

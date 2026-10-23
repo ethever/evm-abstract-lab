@@ -1,4 +1,7 @@
 //! Bounded projection of procedure provenance without expanding callback graphs.
+mod regional;
+#[cfg(test)]
+mod tests;
 
 use crate::analyze::{checkpoint, pools, symbolic::Pool};
 use evm_abstract::{
@@ -8,14 +11,14 @@ use evm_abstract::{
 use evm_abstract_protocol as api;
 
 pub(super) fn project<N: WordElement>(
-    native: &analysis::EvmWorldAnalysis<N>,
+    observations: &[analysis::EvmProcedureSummaryRecord<N>],
     control: &Control,
     symbolic: &mut Pool<'_>,
 ) -> Result<Vec<api::AbstractSummary>, api::ApiError> {
     let mut records = Vec::new();
-    for record in native.procedure_summaries() {
+    for record in observations {
         checkpoint(control)?;
-        symbolic.charge(record.procedures.len().saturating_add(1))?;
+        symbolic.charge(record.procedures.len().saturating_add(2))?;
         let mut procedures = Vec::new();
         for procedure in &record.procedures {
             checkpoint(control)?;
@@ -38,19 +41,18 @@ pub(super) fn project<N: WordElement>(
                 outcomes: procedure
                     .outputs
                     .iter()
-                    .map(|output| match output.kind {
-                        analysis::OutcomeKind::Return => api::OutcomeKind::Return,
-                        analysis::OutcomeKind::Revert => api::OutcomeKind::Revert,
-                        analysis::OutcomeKind::Failure => api::OutcomeKind::Failure,
-                    })
+                    .map(|output| outcome(output.kind))
                     .collect(),
                 dependencies: procedure.dependencies.clone(),
                 input_updates: procedure.input_updates,
                 output_updates: procedure.output_updates,
             });
         }
+        let regional_cfg = regional::project(&record.regional_cfg, symbolic)?;
+        symbolic.charge(0)?;
         records.push(api::AbstractSummary {
             source_state: record.source_state,
+            source_current: record.source_current,
             kind: match record.kind {
                 analysis::ProcedureSummaryKind::UnknownEnvironment => {
                     api::ProcedureSummaryKind::UnknownEnvironment
@@ -58,15 +60,26 @@ pub(super) fn project<N: WordElement>(
                 analysis::ProcedureSummaryKind::KnownRecursion => {
                     api::ProcedureSummaryKind::KnownRecursion
                 }
+                analysis::ProcedureSummaryKind::KnownCall => api::ProcedureSummaryKind::KnownCall,
             },
             root_procedure: record.root_procedure,
             closed: record.closed,
             procedures,
+            regional_cfg,
             state_count: record.state_count,
             transfers: record.transfers,
             propagations: record.propagations,
             reused: record.reused,
         });
     }
+    symbolic.charge(0)?;
     Ok(records)
+}
+
+fn outcome(kind: analysis::OutcomeKind) -> api::OutcomeKind {
+    match kind {
+        analysis::OutcomeKind::Return => api::OutcomeKind::Return,
+        analysis::OutcomeKind::Revert => api::OutcomeKind::Revert,
+        analysis::OutcomeKind::Failure => api::OutcomeKind::Failure,
+    }
 }

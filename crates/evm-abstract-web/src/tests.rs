@@ -12,6 +12,22 @@ use crate::{
     widgets,
 };
 
+/// Real offline server evidence for consumer tests; no service or RPC is started.
+pub(crate) fn procedure_report(bytecode: &str) -> AnalysisReport {
+    let mut request = api::AnalyzeRequest {
+        input: api::AnalysisInput::Bytecode(api::BytecodeInput {
+            bytecode: bytecode.into(),
+            address: None,
+        }),
+        ..api::AnalyzeRequest::default()
+    };
+    request.limits.root_terminal_coverage = false;
+    let report = evm_abstract_server::analyze::analyze(request).unwrap();
+    report.validate().unwrap();
+    assert!(!report.abstract_summaries.is_empty());
+    report
+}
+
 fn instruction(pc: usize, name: &str) -> DisasmInstruction {
     DisasmInstruction {
         pc,

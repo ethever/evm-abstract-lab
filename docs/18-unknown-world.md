@@ -172,11 +172,15 @@ CALL 返回后的第一个基本块按成功位 0 / 1 分开传播，随后恢�
 | 摘要内部实际执行的已知块 | procedure `covered_blocks`、代码身份 | 过程级覆盖来源，不冒充主图展开轨迹 |
 | 尚未完成 | `frontiers` 与 `closed: false` | 真实预算／状态／效果缺口 |
 
-协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、块覆盖和迭代计数。Web 可在对应节点的 inspector 中查看。native JSON 则保留过程输入和结果 Store；当前两种报告的 schema 版本分别为 native 12、Web protocol 17。
+协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、历史块观察和迭代计数。`KnownCall` 表示已知代码调用从入口进入过程关系，`KnownRecursion` 表示递归触发，`UnknownEnvironment` 表示未知执行；入口类型与关系内部是否存在递归依赖分别记录。Web 在对应节点显示已知调用或递归标签，inspector 的 `Regional control flow` 展开实际区域节点、控制流边及 `Calls and returns`。native JSON 保留过程输入和结果 Store；当前两种报告的 schema 版本分别为 native 13、Web protocol 18。
+
+每条摘要的 `regional_cfg` 使用自己的 node/call ID，边的目标在同一摘要内解析，不能当作主 CFG 的机器状态 ID 或 SSA 名称。节点保留自身的捕获代码 hash、代码地址、状态 owner、逻辑 ADDRESS、CALLER、static 模式、栈高度和跳转上下文；块索引属于该捕获程序，也可能是程序末尾的合成续点。未知环境没有捕获程序块或虚构 PC。`successors` 是累计准入拓扑；`transfer` 则是实际执行的记录，分别保存输入 revision、`current`、`complete`、`visited_block` 和真实边类型。这里的 `current` 仅相对于该条摘要的观察。对最终 World 的当前性还要求摘要 `source_current=true`，并且没有同一 `source_state` 的后续记录；局部 revision 仍须匹配。被后续记录替代的观察是历史；最新记录的 `source_current=false` 表示最终来源未获认证，不能仅凭 false 断言它已经过时。历史与未认证记录仍可查看。`covered_blocks` 只表示历史观察，不证明当前 joined input 的覆盖。
+
+调用记录把 caller 节点、callee 过程及其入口，与实际投递到 caller 续点的 Return/Revert/Failure 分开。每次 delivery 保留输入 revision、输出 generation、当前性及真实续点边类型。`closed` 保存该观察输入快照的关系闭包，不能单独证明它覆盖最终输入。`current` 或 `complete` 单独都不表示整个模型已经闭合；详细状态、SSA 和 frontier 仍由原生结果决定。静态未知执行可以通过效果和环境关系保守覆盖回调，因此即使记录为 current/complete、`visited_block=false` 且 calls 为空，也不能据此断言没有回调。界面将其标为 `effect/environment abstraction`。
 
 历史上，native 8 将旧 `unknown_summaries` 统一为 `procedure_summaries`，Web protocol 13 新增摘要的 `kind` 和 `root_procedure`；native 9／Web protocol 14 随后移除了原生 SMT 策略与结果字段。消费者应按版本同步迁移。Web 的已知递归节点显示 Recursive bytecode summary，Frame inspector 显示 Recursive bytecode；未知过程继续显示 Abstract environment／Abstract interactions。
 
-当前原生 schema 12 的账户代码采用 `{"Runtime":{"fork":"osaka","byte_len":1,"bytecode":"0x00"}}` 这样的格式；`Runtime` 内仅含 `fork`、`byte_len` 和 `bytecode`。小写、带 `0x` 前缀的 `bytecode` 保留该观测捕获的全部原始字节，包括无效指令、截断 PUSH 数据和不可达尾部；`byte_len` 是原始字节数。消费者使用导出的 fork 调用 `Program::from_hex_with_fork(bytecode, fork)` 重建程序。World、当前 Store、saved_store 与 outcome Store 分别输出各自持有的代码版本，不向当前 World 重新查询历史代码。此前读取账户 `Runtime.blocks` 的消费者须迁移；独立 Program、`EvmFrameState<N>.program` 和单程序 `analysis.program` 仍提供 decoded `blocks`，wire schema 17 的 `programs[].blocks` 也保持原格式。
+当前原生 schema 13 的账户代码采用 `{"Runtime":{"fork":"osaka","byte_len":1,"bytecode":"0x00"}}` 这样的格式；`Runtime` 内仅含 `fork`、`byte_len` 和 `bytecode`。小写、带 `0x` 前缀的 `bytecode` 保留该观测捕获的全部原始字节，包括无效指令、截断 PUSH 数据和不可达尾部；`byte_len` 是原始字节数。消费者使用导出的 fork 调用 `Program::from_hex_with_fork(bytecode, fork)` 重建程序。World、当前 Store、saved_store 与 outcome Store 分别输出各自持有的代码版本，不向当前 World 重新查询历史代码。此前读取账户 `Runtime.blocks` 的消费者须迁移；独立 Program、`EvmFrameState<N>.program` 和单程序 `analysis.program` 仍提供 decoded `blocks`，wire schema 18 的 `programs[].blocks` 也保持原格式。
 
 下面是引入已知递归时留存的 `self-return-42.json` 历史 Chromium 截图，字段与界面按当时版本解读。选中的是有代码哈希、storage owner 和 caller continuation 的 Runtime frame；下方记录当时的闭合过程摘要。这份历史证据不代表当前版本的浏览器验收或 USDC 性能结果。
 

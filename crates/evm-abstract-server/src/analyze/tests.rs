@@ -524,5 +524,6 @@ fn relational_frontier_projection_preserves_all_local_causes() {
 
 mod known_recursion;
 mod numeric;
+mod regional;
 mod symbolic;
 mod unknown;

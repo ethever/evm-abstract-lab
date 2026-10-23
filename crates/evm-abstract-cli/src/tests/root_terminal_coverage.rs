@@ -264,8 +264,8 @@ fn default_coverage_and_the_entire_certificate_survive_existing_ssa_envelopes() 
         &crate::json::program(&analysis, &ir, NumericModel::Product, &reporting).unwrap(),
     )
     .unwrap();
-    assert_eq!(native["schema_version"], 12);
-    assert_eq!(machine["schema_version"], 12);
+    assert_eq!(native["schema_version"], 13);
+    assert_eq!(machine["schema_version"], 13);
     assert_metadata(&forwarded, &reporting);
     assert_eq!(forwarded["analysis"], native);
     assert_eq!(forwarded["machine_analysis"], machine);
@@ -311,7 +311,7 @@ fn default_coverage_and_the_entire_certificate_survive_existing_ssa_envelopes() 
         &crate::json::world(&analysis, Some(&ir), NumericModel::Product, &reporting).unwrap(),
     )
     .unwrap();
-    assert_eq!(native["schema_version"], 12);
+    assert_eq!(native["schema_version"], 13);
     for field in [
         "numeric_model",
         "postprocessing_max_work",

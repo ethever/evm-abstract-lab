@@ -155,7 +155,7 @@ fn numeric_rejects_flattened_constants() {
 
 #[test]
 fn application_metadata_preserves_native_evidence() {
-    let native = serde_json::json!({"schema_version":12,"work":3,"status":"Incomplete"});
+    let native = serde_json::json!({"schema_version":13,"work":3,"status":"Incomplete"});
     let mut application = native.clone();
     application["numeric_model"] = serde_json::json!("finite-set");
     application["postprocessing_max_work"] = serde_json::json!(2_000_000_000_u64);
@@ -167,7 +167,7 @@ fn application_metadata_preserves_native_evidence() {
 #[should_panic(expected = "assertion failed: work <= maximum")]
 fn application_metadata_rejects_excessive_consumption() {
     let excessive = serde_json::json!({
-        "schema_version":12,"work":3,"status":"Incomplete",
+        "schema_version":13,"work":3,"status":"Incomplete",
         "numeric_model":"finite-set",
         "postprocessing_max_work":2_000_000_000_u64,
         "postprocessing_work":2_000_000_001_u64,
@@ -179,7 +179,7 @@ fn application_metadata_rejects_excessive_consumption() {
 #[should_panic(expected = "postprocessing allowance is recorded")]
 fn application_metadata_requires_postprocessing_allowance() {
     let missing = serde_json::json!({
-        "schema_version":12,"work":3,"status":"Incomplete",
+        "schema_version":13,"work":3,"status":"Incomplete",
         "numeric_model":"finite-set","postprocessing_work":17,
     });
     without_application_metadata(&missing);

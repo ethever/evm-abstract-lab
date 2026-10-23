@@ -3,10 +3,11 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use evm_abstract_protocol::{
-    AnalysisReport, CfgBlock, CfgEdge, DeferredEdge, SsaBlock, SsaTransition, StateDetails,
+    AnalysisReport, CfgBlock, CfgEdge, DeferredEdge, ProcedureSummaryKind, SsaBlock, SsaTransition,
+    StateDetails, SummarySourceStatus,
 };
 
 use super::termination::{TerminationSummary, Terminations};
@@ -22,12 +23,20 @@ pub(super) struct ReportIndex {
     outgoing: BTreeMap<usize, Vec<usize>>,
     incoming: BTreeMap<usize, Vec<usize>>,
     frontiers: BTreeMap<usize, usize>,
-    recursive_summaries: BTreeSet<usize>,
+    recursive_summaries: BTreeMap<usize, SummarySourceStatus>,
+    known_call_summaries: BTreeMap<usize, SummarySourceStatus>,
+    environment_summaries: BTreeMap<usize, SummarySourceStatus>,
     terminations: Terminations,
 }
 
 impl ReportIndex {
     pub(super) fn new(report: &AnalysisReport) -> Self {
+        let latest: BTreeMap<_, _> = report
+            .abstract_summaries
+            .iter()
+            .enumerate()
+            .map(|(index, summary)| (summary.source_state, index))
+            .collect();
         let mut index = Self {
             cfg: report
                 .cfg
@@ -69,16 +78,19 @@ impl ReportIndex {
                 .map(|(pos, item)| (item.edge, pos))
                 .collect(),
             terminations: Terminations::new(report),
-            recursive_summaries: report
-                .abstract_summaries
-                .iter()
-                .filter(|summary| {
-                    summary.kind == evm_abstract_protocol::ProcedureSummaryKind::KnownRecursion
-                })
-                .map(|summary| summary.source_state)
-                .collect(),
             ..Self::default()
         };
+        // One ordering index avoids rescanning the report for every observation.
+        // Only the native certificate can qualify the latest source as current.
+        for (position, summary) in report.abstract_summaries.iter().enumerate() {
+            let source = summary.source_status(latest[&summary.source_state] != position);
+            let map = match summary.kind {
+                ProcedureSummaryKind::KnownRecursion => &mut index.recursive_summaries,
+                ProcedureSummaryKind::KnownCall => &mut index.known_call_summaries,
+                ProcedureSummaryKind::UnknownEnvironment => &mut index.environment_summaries,
+            };
+            map.insert(summary.source_state, source);
+        }
         for (position, edge) in report.edges.iter().enumerate() {
             index.outgoing.entry(edge.from).or_default().push(position);
             index.incoming.entry(edge.to).or_default().push(position);
@@ -95,8 +107,17 @@ impl ReportIndex {
         report.cfg.get(*self.cfg.get(&state)?)
     }
 
-    pub(super) fn has_recursive_summary(&self, state: usize) -> bool {
-        self.recursive_summaries.contains(&state)
+    pub(super) fn summary_source(
+        &self,
+        state: usize,
+        kind: ProcedureSummaryKind,
+    ) -> Option<SummarySourceStatus> {
+        match kind {
+            ProcedureSummaryKind::KnownRecursion => self.recursive_summaries.get(&state),
+            ProcedureSummaryKind::KnownCall => self.known_call_summaries.get(&state),
+            ProcedureSummaryKind::UnknownEnvironment => self.environment_summaries.get(&state),
+        }
+        .copied()
     }
 
     pub(super) fn ssa<'a>(&self, report: &'a AnalysisReport, state: usize) -> Option<&'a SsaBlock> {

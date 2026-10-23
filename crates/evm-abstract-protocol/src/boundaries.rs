@@ -73,7 +73,7 @@ variant! {
         Work,
         /// SummaryWork boundary.
         SummaryWork,
-        /// Recursive execution has no covered terminal behavior in this model.
+        /// A known bytecode region lacks terminal evidence in this model.
         RecursiveNoTerminal,
         /// CallDepth boundary.
         CallDepth,
