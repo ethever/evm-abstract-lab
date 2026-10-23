@@ -24,6 +24,8 @@ pub(super) fn project(
                 .saturating_add(node.successors.len()),
         )?;
         let frame = &node.frame;
+        let process_key = frame.process.as_deref().map(process::key);
+        let is_native = process_key.is_none();
         let bytecode = procedures[node.procedure].semantics == api::TransferSemantics::Native
             && matches!(
                 frame.mode,
@@ -59,17 +61,26 @@ pub(super) fn project(
             id: node.id,
             procedure: node.procedure,
             frame: api::RegionalFrame {
-                code_address: frame.code_address.to_string(),
-                code_hash: (frame.mode != analysis::FrameCode::Unknown)
+                process: process_key.clone(),
+                code_address: is_native.then(|| frame.code_address.to_string()),
+                code_hash: (is_native && frame.mode != analysis::FrameCode::Unknown)
                     .then(|| frame.code_hash.to_string()),
-                storage_address: frame.address.to_string(),
-                address_value: value::address(frame.address_value),
-                caller: value::address(frame.caller),
-                kind: pools::mode(frame.mode),
-                is_static: frame.is_static,
+                storage_address: is_native.then(|| frame.address.to_string()),
+                address_value: is_native.then(|| value::address(frame.address_value)),
+                caller: is_native.then(|| value::address(frame.caller)),
+                kind: process_key
+                    .as_ref()
+                    .map_or_else(|| pools::mode(frame.mode), |key| key.source.kind()),
+                is_static: process_key
+                    .as_ref()
+                    .map_or(frame.is_static, |key| key.is_static),
                 basic_block: bytecode.then_some(frame.basic_block_index),
-                stack_height: frame.stack_height,
-                context: frame.jump_history.clone(),
+                stack_height: is_native.then_some(frame.stack_height),
+                context: if is_native {
+                    frame.jump_history.clone()
+                } else {
+                    vec![]
+                },
             },
             input_revision: api::DecimalU64(node.input_revision),
             excluded: node.excluded,
@@ -84,6 +95,11 @@ pub(super) fn project(
         for delivery in &call.deliveries {
             export.charge(5)?;
             deliveries.push(api::RegionalReturn {
+                creation: delivery
+                    .creation
+                    .iter()
+                    .map(|case| process::completion(case, export))
+                    .collect::<Result<_, _>>()?,
                 kind: outcome(delivery.kind),
                 input_revision: api::DecimalU64(delivery.input_revision),
                 output_generation: delivery.output_generation,
@@ -92,6 +108,7 @@ pub(super) fn project(
             });
         }
         calls.push(api::RegionalCall {
+            scope: call.scope.map(process::scope),
             action: call.action.map(process::action),
             target: call.target.map(process::owner),
             id: call.id,

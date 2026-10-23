@@ -225,7 +225,7 @@ fn selected_child_program_keeps_its_complete_source_and_native_state_identity() 
     child.id = 83;
     child.program = Some(1);
     child.frame_depth = 2;
-    child.code_address = "0x2222222222222222222222222222222222222222".into();
+    child.code_address = Some("0x2222222222222222222222222222222222222222".into());
     // DELEGATECALL-style storage identity is independent of executable source.
     child.instructions[0].name = "CALLDATASIZE".into();
     child.instructions[0].opcode = 0x36;

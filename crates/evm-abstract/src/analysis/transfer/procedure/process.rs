@@ -89,6 +89,7 @@ impl<
                 .process_effects_with_payment(
                     catalogue.named(),
                     writable,
+                    self.entry.environment.to.as_concrete().is_none(),
                     payload.active().key.is_static || capabilities.readonly,
                     self.domain,
                     self.budget,

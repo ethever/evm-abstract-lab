@@ -102,7 +102,19 @@ where
         let needs_nonce =
             !plan.constructors.is_empty() || plan.rejections.iter().any(|r| r.increments_nonce);
         let post_nonce = if needs_nonce {
-            Some(state.process_increment_nonce(creator, self.domain, self.budget)?)
+            Some(
+                if creator == ProcessOwner::Named(self.entry.address)
+                    && self.entry.environment.to.as_concrete().is_none()
+                {
+                    // This is a root namespace, not an established EVM address.
+                    // Its alias-safe effect envelope already gives all potential
+                    // physical nonce cells Top. Keep that weak post-increment
+                    // bound instead of strongly updating namespace bytes.
+                    state.clone_with_payment(self.budget)?
+                } else {
+                    state.process_increment_nonce(creator, self.domain, self.budget)?
+                },
+            )
         } else {
             None
         };
@@ -251,11 +263,18 @@ where
             .process_catalogue
             .as_ref()
             .ok_or(MachineError::Shape)?;
-        if catalogue.epoch() != creation.epoch
-            || template.frames.len() != 2
-            || template.frames[0].key.process.is_none()
-        {
+        if catalogue.epoch() != creation.epoch {
+            return Err(MachineError::Process(
+                crate::analysis::ProcessBoundary::Catalogue,
+            ));
+        }
+        if template.frames.len() != 2 {
             return Err(MachineError::Shape);
+        }
+        if template.frames[0].key.process.is_none() {
+            return Err(MachineError::Process(
+                crate::analysis::ProcessBoundary::NativeInstantiation,
+            ));
         }
         let cases = creation::complete(
             creation::ConstructorEntry {

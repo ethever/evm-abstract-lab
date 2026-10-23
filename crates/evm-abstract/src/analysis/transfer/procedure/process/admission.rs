@@ -82,6 +82,21 @@ where
             self.budget,
         )
         .map_err(owner_error)?;
+        let root_address = match self.entry.environment.to {
+            crate::world::AddressInput::Concrete(address) => crate::domain::summary::constant(
+                U256::from_be_slice(address.as_slice()),
+                self.domain,
+                self.budget,
+            )?,
+            crate::world::AddressInput::Symbolic(_) => crate::domain::summary::unsigned_range(
+                U256::ZERO,
+                U256::MAX >> 96usize,
+                self.domain,
+                self.budget,
+            )?,
+        };
+        self.reserve(16)?;
+        self.table.process_root_address = Some(Arc::new(root_address));
         self.table.process_catalogue = Some(catalogue);
         Ok(())
     }
@@ -145,6 +160,14 @@ where
                     is_static: frame.key.is_static,
                 }
             };
+            if matches!(process.source, ProcessSource::InitCode { .. }) {
+                // This prepared vocabulary freezes runtime sources. Coarse
+                // CREATE uses AnyInitCode and remains covering; promoting an
+                // independently captured constructor must first extend the
+                // source-kind catalogue under a new epoch. Never grow hash
+                // keys silently through this private admission seam.
+                return Err(MachineError::Process(ProcessBoundary::Catalogue));
+            }
             if let ProcessSource::Runtime { source, hash, fork } = process.source {
                 catalogue
                     .admit_code(CapturedProcessCode { source, hash, fork }, self.budget)

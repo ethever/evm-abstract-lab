@@ -168,7 +168,8 @@ impl Terminations {
                 | EdgeKind::Jump
                 | EdgeKind::BranchTrue
                 | EdgeKind::BranchFalse
-                | EdgeKind::Call => None,
+                | EdgeKind::Call
+                | EdgeKind::Process(_) => None,
             };
             if let Some(kind) =
                 kind.filter(|_| source_depth > 1 && target_depth == source_depth - 1)

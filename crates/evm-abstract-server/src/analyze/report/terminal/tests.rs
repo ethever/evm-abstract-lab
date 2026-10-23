@@ -303,7 +303,7 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     let binding = &coverage.input;
     let frame = &report.states[0].entry.frames[0];
     assert_eq!(binding.program, frame.program.unwrap());
-    assert_eq!(binding.calldata, frame.calldata);
+    assert_eq!(Some(binding.calldata), frame.calldata);
     assert_eq!(binding.call_value, frame.call_value);
     assert_eq!(binding.saved_store, frame.rollback_store);
     assert_eq!(binding.initial_store, report.states[0].entry.store);

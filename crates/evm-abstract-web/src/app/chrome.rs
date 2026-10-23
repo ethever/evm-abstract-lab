@@ -185,7 +185,12 @@ pub(super) fn result_context(
                 "{} · {:?} · {}",
                 Symbol::Program(program.id),
                 program.kind,
-                directory::short(&program.code_address)
+                directory::short(
+                    program
+                        .code_address
+                        .as_deref()
+                        .unwrap_or("Constructor source")
+                )
             )
         },
     );
@@ -232,7 +237,7 @@ pub(super) fn result_context(
                     )
                     .on_hover_ui(|ui| {
                         if let Some(program) = source {
-                            ui.monospace(&program.code_address);
+                            ui.monospace(program.code_address.as_deref().unwrap_or("Constructor source"));
                             ui.monospace(&program.code_hash);
                         }
                         if let Some(snapshot) = &report.metadata.snapshot {

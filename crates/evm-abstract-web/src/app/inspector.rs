@@ -194,19 +194,18 @@ impl Inspector {
             ""
         };
         let mut interactions = String::new();
-        if self.tab == Tab::Frame {
-            if let Some(summary) = report
+        if self.tab == Tab::Frame
+            && let Some(summary) = report
                 .abstract_summaries
                 .iter()
                 .rev()
                 .find(|summary| Some(summary.source_state) == selection.state)
-            {
-                interactions = format!(
-                    " · {} · {}",
-                    summaries::label(summary.kind),
-                    summaries::coverage_label(summary.closed, summary.source_status(false))
-                );
-            }
+        {
+            interactions = format!(
+                " · {} · {}",
+                summaries::label(summary.kind),
+                summaries::coverage_label(summary.closed, summary.source_status(false))
+            );
         }
         format!(
             "Inspector: {} · {boundary} · {frame}{store}{interactions}{mode}",
@@ -408,7 +407,11 @@ impl Inspector {
             }
             Tab::Stack => {
                 if let Some(frame) = frame {
-                    buffers::stack(ui, &frame.stack);
+                    if frame.process.is_some() {
+                        ui.label("Process summaries do not record an instruction stack.");
+                    } else {
+                        buffers::stack(ui, &frame.stack);
+                    }
                 } else {
                     ui.label("No frame stack available.");
                 }
@@ -420,7 +423,11 @@ impl Inspector {
                         Tab::Calldata => frame.calldata,
                         _ => frame.returndata,
                     };
-                    buffers::show(ui, report, id, self.tab.label());
+                    if let Some(id) = id {
+                        buffers::show(ui, report, id, self.tab.label());
+                    } else {
+                        ui.label("This process has no instruction byte-array snapshot.");
+                    }
                 } else {
                     ui.label("No frame byte-array snapshot available.");
                 }
@@ -458,11 +465,19 @@ impl Inspector {
                         "The report references an unavailable store snapshot",
                     );
                 } else if let Some(address) =
-                    account.or_else(|| frame.map(|frame| frame.storage_address.as_str()))
+                    account.or_else(|| frame.and_then(|frame| frame.storage_address.as_deref()))
                 {
                     stores::storage(ui, report, store, address, self.tab == Tab::Transient);
                 } else {
-                    ui.label("Select a state or account to inspect its storage.");
+                    if let Some(key) = frame.and_then(|frame| frame.process.as_ref()) {
+                        ui.label(format!(
+                            "Physical state class: {}",
+                            process::owner(&key.owner)
+                        ));
+                        ui.label("Inspect the transaction store; this class does not supply a concrete storage address.");
+                    } else {
+                        ui.label("Select a state or account to inspect its storage.");
+                    }
                 }
             }
             Tab::Environment => scroll(ui, "environment_details", |ui| {

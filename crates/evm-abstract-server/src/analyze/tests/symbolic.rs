@@ -137,14 +137,14 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
     let state = &report.states[0];
     let exit = state.exit.as_ref().unwrap();
     let frame = exit.frames.last().unwrap();
-    let input = &report.byte_arrays[frame.calldata];
+    let input = &report.byte_arrays[frame.calldata.unwrap()];
     let length = input.length.expression.unwrap();
     assert!(
         matches!(&report.symbolic.nodes[length.node], api::Expression::Input(identity)
         if identity.symbol.kind == api::InputSymbolKind::CalldataLength)
     );
     let api::Expression::View(memory) =
-        &report.symbolic.nodes[report.byte_arrays[frame.memory].symbolic.node]
+        &report.symbolic.nodes[report.byte_arrays[frame.memory.unwrap()].symbolic.node]
     else {
         panic!("memory retains its typed view")
     };
@@ -272,7 +272,7 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
         range.request.limit.constants,
         Some(vec![format!("0x{}e0", "ff".repeat(31))])
     );
-    let length = partial.byte_arrays[partial.states[0].entry.frames[0].calldata]
+    let length = partial.byte_arrays[partial.states[0].entry.frames[0].calldata.unwrap()]
         .length
         .expression
         .unwrap();
@@ -285,7 +285,7 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
     assert_eq!(range.nonzero, None);
     let pending = &partial.pending_machines[range.payload];
     let frame = pending.frames.last().unwrap();
-    let memory = &partial.byte_arrays[frame.memory];
+    let memory = &partial.byte_arrays[frame.memory.unwrap()];
     assert_eq!(memory.length.constants, Some(vec!["0x0".into()]));
     let api::Expression::View(view) = &partial.symbolic.nodes[memory.symbolic.node] else {
         panic!("the pending state retains the unchanged memory view")

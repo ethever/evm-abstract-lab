@@ -1,4 +1,8 @@
 //! Conservative process evidence preserves captured code identity and control obligations.
+mod creation;
+mod frame;
+pub use creation::*;
+pub use frame::*;
 
 choice! {
     /// Interpretation independently of the original code kind and hash.
@@ -9,6 +13,10 @@ choice! {
         Environment,
         /// Conservative process for captured runtime code.
         KnownProcess,
+        /// Constructor execution before returned code is deployed.
+        ConstructorProcess,
+        /// Empty, native precompile or invalid-delegation process boundary.
+        BoundaryProcess,
     }
 }
 
@@ -43,6 +51,8 @@ variant! {
 variant! {
     /// An uncovered process rule, retained as an incomplete frontier.
     pub enum ProcessBoundary {
+        /// A precise source requires a new catalogue epoch and admission.
+        Catalogue,
         /// Residual owner and alias representation is not covered.
         ResidualOwner(ProcessAction),
         /// Constructor or deployment semantics is not covered.
@@ -63,6 +73,8 @@ record! {
         pub repeat: bool,
         /// Primitive rules selected by the native capability scan.
         pub actions: Vec<ProcessAction>,
+        /// Local allocation guards actually recorded before constructor admission.
+        pub creations: Vec<ProcessCreationTransfer>,
         /// Rules still requiring coverage; these do not certify closure.
         pub unresolved: Vec<ProcessBoundary>,
     }

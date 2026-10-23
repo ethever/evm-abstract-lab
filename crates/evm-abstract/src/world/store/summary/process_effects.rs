@@ -27,6 +27,7 @@ impl<N: WordElement> SummaryPlane<N> {
         &self,
         stable: &BTreeSet<Address>,
         writable: Option<Address>,
+        named_aliases: bool,
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
     ) -> Result<Self, CloneError> {
@@ -40,7 +41,7 @@ impl<N: WordElement> SummaryPlane<N> {
         for owner in stable
             .iter()
             .copied()
-            .filter(|owner| Some(*owner) != writable)
+            .filter(|owner| !named_aliases && Some(*owner) != writable)
         {
             out.defaults
                 .insert(owner, scalar::clone_value(self.default_at(owner), budget)?);
@@ -50,13 +51,13 @@ impl<N: WordElement> SummaryPlane<N> {
             }
         }
         for ((owner, slot), value) in &self.slots {
-            if stable.contains(owner) && Some(*owner) != writable {
+            if !named_aliases && stable.contains(owner) && Some(*owner) != writable {
                 out.slots
                     .insert((*owner, *slot), scalar::clone_value(value, budget)?);
             }
         }
         for ((owner, slot), independent) in &self.initial_independence.slots {
-            if stable.contains(owner) && Some(*owner) != writable {
+            if !named_aliases && stable.contains(owner) && Some(*owner) != writable {
                 out.initial_independence
                     .set_slot(*owner, *slot, *independent);
             }
@@ -67,13 +68,35 @@ impl<N: WordElement> SummaryPlane<N> {
 }
 
 impl<N: WordElement> EvmStoreSummary<N> {
-    /// Cover arbitrary process effects. `writable=None` grants no named storage
-    /// writes; the independent outside complement already covers weak writes.
+    /// Structural traversal of a process bound shares its captured Programs.
+    /// Scalar hooks, Store replay and actual code comparisons keep their own
+    /// invoices; this is never a native clone/query tariff for N.
+    pub(crate) fn process_work_size(&self) -> usize {
+        let work = self.work_size();
+        if work == usize::MAX {
+            return work;
+        }
+        let bytes = self.codes.values().fold(0usize, |work, code| {
+            work.saturating_add(if let Code::Runtime(program) = code {
+                program.byte_len().saturating_mul(2)
+            } else {
+                0
+            })
+        });
+        work.saturating_sub(bytes)
+            .saturating_add(self.codes.len().saturating_mul(16))
+    }
+
+    /// Cover arbitrary process effects. `named_aliases` weakens all possible
+    /// named aliases of a symbolic root binding. Otherwise `writable=None`
+    /// grants no named storage writes; the independent outside complement
+    /// already covers weak outside writes.
     /// `protected` is the frozen named vocabulary, never evolving Store keys.
     pub(crate) fn process_effects_with_payment<D: EvmNumericAlgebra<Element = N>>(
         &self,
         protected: &BTreeSet<Address>,
         writable: Option<Address>,
+        named_aliases: bool,
         is_static: bool,
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
@@ -115,12 +138,20 @@ impl<N: WordElement> EvmStoreSummary<N> {
                 stable.insert(*owner);
             }
         }
-        let persistent = self
-            .persistent
-            .process_effect_plane(&stable, writable, domain, budget)?;
-        let transient = self
-            .transient
-            .process_effect_plane(&stable, writable, domain, budget)?;
+        let persistent = self.persistent.process_effect_plane(
+            &stable,
+            writable,
+            named_aliases,
+            domain,
+            budget,
+        )?;
+        let transient = self.transient.process_effect_plane(
+            &stable,
+            writable,
+            named_aliases,
+            domain,
+            budget,
+        )?;
         let balance_default = scalar::top(domain, budget)?;
         let mut codes = OrderedMap::new();
         let mut nonces = OrderedMap::new();
@@ -132,7 +163,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
                 pay(budget, 16)?;
                 codes.insert(owner, code.clone());
             }
-            let nonce = if Some(owner) == writable {
+            let nonce = if named_aliases || Some(owner) == writable {
                 // CREATE may increment the current owner's nonce. A definitely
                 // created account starts at one and never returns to zero.
                 if self
@@ -208,19 +239,44 @@ impl<N: WordElement> EvmStoreSummary<N> {
 }
 
 impl<N: WordElement> EvmStore<N> {
+    /// Process preparation shares code allocations even in its transient
+    /// native carrier. Native scalar clone/query invoices remain independent.
+    pub(crate) fn process_work_size(&self) -> usize {
+        let work = self.work_size();
+        if work == usize::MAX {
+            return work;
+        }
+        let bytes = self.codes.values().fold(0usize, |work, code| {
+            work.saturating_add(if let Code::Runtime(program) = code {
+                program.byte_len()
+            } else {
+                0
+            })
+        });
+        work.saturating_sub(bytes)
+            .saturating_add(self.codes.len().saturating_mul(16))
+    }
+
     /// Stage a process envelope and replay it through actual paid native hooks.
     /// A refusal returns no new Store and does not modify the original input.
     pub(crate) fn process_effects_with_payment<D: EvmNumericAlgebra<Element = N>>(
         &self,
         protected: &BTreeSet<Address>,
         writable: Option<Address>,
+        named_aliases: bool,
         is_static: bool,
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
     ) -> Result<Self, SummaryError<StoreError>> {
         let summary = self.summary_projection_with_payment(domain, budget)?;
-        let staged =
-            summary.process_effects_with_payment(protected, writable, is_static, domain, budget)?;
+        let staged = summary.process_effects_with_payment(
+            protected,
+            writable,
+            named_aliases,
+            is_static,
+            domain,
+            budget,
+        )?;
         staged.instantiate_with_payment(domain, budget)
     }
 }

@@ -16,7 +16,7 @@ fn fixture(
         .map(|(id, _)| {
             let mut node = template.clone();
             node.id = *id;
-            node.basic_block = *id;
+            node.basic_block = Some(*id);
             node
         })
         .collect();

@@ -1,13 +1,21 @@
 //! Typed process projection; preserve action, target and uncovered-rule distinctions.
+mod creation;
+mod frame;
 use super::symbolic::Pool;
+pub(super) use creation::{completion, continuation};
 use evm_abstract::analysis;
 use evm_abstract_protocol as api;
+pub(super) use frame::{invocation, key, operands};
 
 pub(super) fn semantics(native: analysis::TransferSemantics) -> api::TransferSemantics {
     match native {
         analysis::TransferSemantics::Native => api::TransferSemantics::Native,
         analysis::TransferSemantics::Environment => api::TransferSemantics::Environment,
         analysis::TransferSemantics::KnownProcess => api::TransferSemantics::KnownProcess,
+        analysis::TransferSemantics::ConstructorProcess => {
+            api::TransferSemantics::ConstructorProcess
+        }
+        analysis::TransferSemantics::BoundaryProcess => api::TransferSemantics::BoundaryProcess,
     }
 }
 
@@ -31,6 +39,7 @@ pub(super) fn owner(native: analysis::ProcessOwner) -> api::ProcessOwner {
 
 pub(super) fn boundary(native: analysis::ProcessBoundary) -> api::ProcessBoundary {
     match native {
+        analysis::ProcessBoundary::Catalogue => api::ProcessBoundary::Catalogue,
         analysis::ProcessBoundary::ResidualOwner(kind) => {
             api::ProcessBoundary::ResidualOwner(action(kind))
         }
@@ -48,7 +57,8 @@ pub(super) fn transfer(
     // Pay for both variable collections before allocation; traversal checkpoints
     // keep cancellation observable even when a receipt is large or incomplete.
     export.charge(
-        3usize
+        4usize
+            .saturating_add(native.creations.len())
             .saturating_add(native.actions.len())
             .saturating_add(native.unresolved.len()),
     )?;
@@ -66,6 +76,25 @@ pub(super) fn transfer(
     Ok(api::ProcessTransfer {
         repeat: native.repeat,
         actions,
+        creations: native
+            .creations
+            .iter()
+            .map(|receipt| creation::transfer(receipt, export))
+            .collect::<Result<_, _>>()?,
         unresolved,
     })
+}
+
+pub(super) fn scope(native: analysis::ProcessControlScope) -> api::ProcessControlScope {
+    match native {
+        analysis::ProcessControlScope::Primitive => api::ProcessControlScope::Primitive,
+    }
+}
+
+pub(super) fn invalid(kind: api::ProcessValidationKind) -> api::ApiError {
+    api::ApiError {
+        code: api::ApiErrorCode::Internal,
+        message: format!("native process representation is inconsistent: {kind:?}"),
+        details: api::ErrorDetails::Report(api::ReportValidationFailure::Process(kind)),
+    }
 }

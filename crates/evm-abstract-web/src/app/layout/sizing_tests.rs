@@ -158,7 +158,7 @@ fn selected_child_source_and_reanalysis_remeasure_automatic_panes() {
     let mut source = report.programs[0].clone();
     source.id = 1;
     source.blocks = vec![evm_abstract_protocol::DisasmBlock {
-        id: child.basic_block,
+        id: child.basic_block.unwrap(),
         start_pc: 1000,
         instructions: child.instructions.clone(),
     }];

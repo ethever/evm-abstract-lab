@@ -7,6 +7,26 @@ use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{AnalysisReport, EnvironmentSnapshot, FrameSnapshot};
 
 pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
+    if let Some(key) = &frame.process {
+        super::process::frame(ui, key);
+        if let Some(operands) = &frame.process_operands {
+            egui::Grid::new("process_operands")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    value::named(ui, "Logical ADDRESS", &operands.address);
+                    value::named(ui, "CALLER", &operands.caller);
+                    value::named(ui, "CALLVALUE", &operands.value);
+                });
+        }
+        if let Some(descriptor) = &frame.process_creation {
+            super::process::creation(ui, descriptor);
+        }
+        ui.label(format!(
+            "Rollback snapshot: {}",
+            Symbol::Store(frame.rollback_store)
+        ));
+        return;
+    }
     egui::Grid::new("frame_context")
         .num_columns(2)
         .show(ui, |ui| {
@@ -19,7 +39,7 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
                 } else {
                     "Code account"
                 },
-                &frame.code_address,
+                frame.code_address.as_deref().unwrap_or("Not recorded"),
             );
             value::text(
                 ui,
@@ -28,17 +48,33 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
                 } else {
                     "Storage owner"
                 },
-                &frame.storage_address,
+                frame.storage_address.as_deref().unwrap_or("Not recorded"),
             );
             if let Some(address) = &frame.address_operand {
                 value::named(ui, "Logical ADDRESS", address);
             } else {
-                value::text(ui, "Logical ADDRESS", value::address(&frame.address_value));
+                value::text(
+                    ui,
+                    "Logical ADDRESS",
+                    frame
+                        .address_value
+                        .as_ref()
+                        .map(value::address)
+                        .unwrap_or_else(|| "Not recorded".into()),
+                );
             }
             if let Some(caller) = &frame.caller_operand {
                 value::named(ui, "CALLER", caller);
             } else {
-                value::text(ui, "CALLER", value::address(&frame.caller));
+                value::text(
+                    ui,
+                    "CALLER",
+                    frame
+                        .caller
+                        .as_ref()
+                        .map(value::address)
+                        .unwrap_or_else(|| "Not recorded".into()),
+                );
             }
             value::named(ui, "CALLVALUE", &frame.call_value);
             value::text(
@@ -56,7 +92,7 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
                 if abstract_environment {
                     "Not observed"
                 } else {
-                    &frame.code_hash
+                    frame.code_hash.as_deref().unwrap_or("Not recorded")
                 },
             );
             value::text(
@@ -65,7 +101,14 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
                 if abstract_environment {
                     "Abstract environment".into()
                 } else {
-                    format!("{} · {:?}", Symbol::Block(frame.basic_block), frame.context)
+                    format!(
+                        "{} · {:?}",
+                        frame.basic_block.map_or_else(
+                            || "No instruction block".into(),
+                            |id| Symbol::Block(id).to_string()
+                        ),
+                        frame.context
+                    )
                 },
             );
             value::text(
@@ -90,7 +133,7 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
                 value::named(ui, "Output offset", &continuation.output_offset);
                 value::named(ui, "Output span", &continuation.output_size);
                 if let Some(address) = &continuation.creation {
-                    value::text(ui, "Creation target", address);
+                    super::process::creation(ui, address);
                 }
             });
     }
