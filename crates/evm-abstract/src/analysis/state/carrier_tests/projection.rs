@@ -45,6 +45,37 @@ fn direct_relation_projection_keeps_constraints_outside_the_observation_language
 }
 
 #[test]
+fn ordinary_bound_import_preserves_the_actual_private_carrier() {
+    let algebra = ValueAlgebra::new(Algebra::new());
+    let domain = algebra.borrowed();
+    let (entry, mut input) = fixture(domain);
+    let expression = input.active().call_value.expression().unwrap().clone();
+    input
+        .relations
+        .observe(
+            &expression,
+            &ExcludingWord::unsigned_range(U256::from(10), U256::from(20)).unwrap(),
+            &domain.spec().relations(),
+        )
+        .unwrap();
+    let original = input.clone();
+    let mut budget = WorkBudget::new(20_000_000);
+    let (_, admitted) =
+        loop_bound::EvmLoopBound::new_scheduled(&input, &input, &entry, domain, &mut budget, false)
+            .unwrap();
+    for scalar in admitted.active().values() {
+        excludes(scalar, 13);
+        assert_eq!(
+            scalar.interval().unsigned_bounds(),
+            (U256::from(10), U256::from(20))
+        );
+    }
+    assert!(admitted.relations.is_empty());
+    assert_eq!(input, original);
+    assert!(budget.used() > 0);
+}
+
+#[test]
 fn equal_custom_bounds_alone_never_create_an_alias_or_a_replay_identity() {
     let algebra = ValueAlgebra::new(Algebra::new());
     let domain = algebra.borrowed();

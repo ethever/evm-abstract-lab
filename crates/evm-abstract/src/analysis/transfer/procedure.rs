@@ -71,7 +71,7 @@ use crate::analysis::state::payload::instantiate;
 use crate::analysis::state::{
     EvmPayloadSummary,
     payload::{self, semantic_eq},
-    projection, storage_observations,
+    storage_observations,
 };
 #[cfg(test)]
 use crate::analysis::state::{context, stack_alias};
