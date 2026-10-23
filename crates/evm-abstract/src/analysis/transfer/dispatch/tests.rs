@@ -1707,7 +1707,22 @@ fn runtime_prefix_refusal_and_both_cancellation_owners_leave_deployment_unchange
             1,
         )
         .unwrap();
-        let prefix = complete.used() - 313;
+        // Completion also pays for the rejection's empty buffer. Measure the
+        // prefix at the refused byte query so that suffix cannot fund this seam.
+        RECEIPT.update(|receipt| receipt.fee = usize::MAX);
+        let mut refused = WorkBudget::new(fixture.config.max_work);
+        assert_eq!(
+            transfer::create::finish_creation(
+                &mut child.clone(),
+                &mut OutcomeKind::Return,
+                &mut original.clone(),
+                &mut context(&fixture, &mut refused),
+                1,
+            ),
+            Err(FrontierReason::Work)
+        );
+        let prefix = refused.used();
+        assert!(complete.used() > prefix + 313);
         RECEIPT.update(|receipt| {
             receipt.quotes = 0;
             receipt.queries = 0;
