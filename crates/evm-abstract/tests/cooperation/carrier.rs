@@ -151,6 +151,11 @@ impl WordElement for ExcludingWord {
     fn singleton(&self) -> Option<U256> {
         (self.lower == self.upper && !self.excluded.contains(&self.lower)).then_some(self.lower)
     }
+    fn singleton_work(&self) -> usize {
+        // The native query compares inline bounds and performs at most one
+        // exclusion-tree lookup; it never exports or searches Word256 values.
+        self.work_size()
+    }
     fn is_top(&self) -> bool {
         self.lower == U256::ZERO && self.upper == U256::MAX && self.excluded.is_empty()
     }
