@@ -3,9 +3,9 @@ use alloy_primitives::Address;
 use evm_abstract::{
     Fork,
     analysis::{
-        AnalysisEngine, AnalysisInput, CorrelatedJoin, EnginePolicies, ExecutionConfig,
-        FeedbackAcceleration, RegionalSummaries, SemanticPolicies, StructuralPartition,
-        control::Control, cooperation::NoExtension,
+        AnalysisEngine, AnalysisInput, CorrelatedJoin, EnginePolicies, EvmWorldAnalysis,
+        ExecutionConfig, FeedbackAcceleration, RegionalSummaries, SemanticPolicies,
+        StructuralPartition, control::Control, cooperation::NoExtension,
     },
     domain::{DomainSpec, NumericValue, ProductAlgebra, ValueAlgebra},
     render,
@@ -15,23 +15,22 @@ use evm_abstract::{
 };
 use serde_json::Value;
 
-#[test]
-fn known_call_terminal_frontier_text_keeps_the_legacy_tag_and_region_explanation() {
+fn analyze_region(
+    root_code: &str,
+    callee_code: &str,
+    max_transfers: Option<usize>,
+) -> (EvmWorldAnalysis<NumericValue>, ValueAlgebra<ProductAlgebra>) {
     let root = Address::repeat_byte(0x11);
     let callee = Address::repeat_byte(0x22);
-    let mut world = EvmWorld::<NumericValue>::new(
-        Fork::Osaka,
-        "offline known region without terminal evidence",
-    );
+    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "offline CLI regional evidence");
     world
-        .insert(
-            root,
-            EvmAccount::from_hex(&format!("5f5f5f5f5f73{}5af1", "22".repeat(20)), Fork::Osaka)
-                .unwrap(),
-        )
+        .insert(root, EvmAccount::from_hex(root_code, Fork::Osaka).unwrap())
         .unwrap();
     world
-        .insert(callee, EvmAccount::from_hex("5b5f56", Fork::Osaka).unwrap())
+        .insert(
+            callee,
+            EvmAccount::from_hex(callee_code, Fork::Osaka).unwrap(),
+        )
         .unwrap();
     let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::default()));
     let policies = EnginePolicies::default().with_state(SemanticPolicies::new(
@@ -42,16 +41,30 @@ fn known_call_terminal_frontier_text_keeps_the_legacy_tag_and_region_explanation
     ));
     let mut extension = NoExtension;
     let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
+    let mut config = ExecutionConfig {
+        root_terminal_coverage: false,
+        ..Default::default()
+    };
+    if let Some(limit) = max_transfers {
+        config.analysis.max_transfers = limit;
+    }
     let native = engine
         .run(
             AnalysisInput::new(world, EvmEntry::new(root)).unwrap(),
-            ExecutionConfig {
-                root_terminal_coverage: false,
-                ..Default::default()
-            },
+            config,
             &Control::default(),
         )
         .unwrap();
+    (native, algebra)
+}
+
+#[test]
+fn known_call_terminal_frontier_text_keeps_the_legacy_tag_and_region_explanation() {
+    let (native, algebra) = analyze_region(
+        &format!("5f5f5f5f5f73{}5af1", "22".repeat(20)),
+        "5b5f56",
+        None,
+    );
     assert_eq!(native.status(), evm_abstract::analysis::Status::Incomplete);
     assert!(
         native.frontiers().iter().any(|frontier| frontier.reason
@@ -75,46 +88,12 @@ fn known_call_terminal_frontier_text_keeps_the_legacy_tag_and_region_explanation
 
 #[test]
 fn regional_evidence_survives_plain_and_ssa_cli_envelopes_with_native_13() {
-    let root = Address::repeat_byte(0x11);
-    let callee = Address::repeat_byte(0x22);
-    let mut world = EvmWorld::<NumericValue>::new(Fork::Osaka, "offline CLI regional envelope");
-    world
-        .insert(
-            root,
-            EvmAccount::from_hex(
-                &format!("5f5f5f5f5f73{}5af15000", "22".repeat(20)),
-                Fork::Osaka,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    world
-        .insert(callee, EvmAccount::from_hex("5f5ffd", Fork::Osaka).unwrap())
-        .unwrap();
-    let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::default()));
-    let policies = EnginePolicies::default().with_state(SemanticPolicies::new(
-        StructuralPartition,
-        CorrelatedJoin,
-        FeedbackAcceleration,
-        RegionalSummaries::with_early_known_admission(),
-    ));
     for max_transfers in [None, Some(2)] {
-        let mut config = ExecutionConfig {
-            root_terminal_coverage: false,
-            ..Default::default()
-        };
-        if let Some(limit) = max_transfers {
-            config.analysis.max_transfers = limit;
-        }
-        let mut extension = NoExtension;
-        let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
-        let native = engine
-            .run(
-                AnalysisInput::new(world.clone(), EvmEntry::new(root)).unwrap(),
-                config,
-                &Control::default(),
-            )
-            .unwrap();
+        let (native, _) = analyze_region(
+            &format!("5f5f5f5f5f73{}5af15000", "22".repeat(20)),
+            "5f5ffd",
+            max_transfers,
+        );
         let mut budget = WorkBudget::new(crate::defaults::DEFAULT_POSTPROCESS_WORK);
         let plain: Value = serde_json::from_str(
             &crate::json::world(

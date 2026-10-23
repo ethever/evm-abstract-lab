@@ -259,7 +259,7 @@ fn source_current_certified_observation_retains_actual_edges_deliveries_and_iden
     assert!(text.contains("Known bytecode call"));
     assert!(!text.contains("Recursive bytecode"));
     assert!(text.contains(&format!(
-        "Captured code hash: {}",
+        "Frame identity hash: {}",
         node.frame.code_hash.as_ref().unwrap()
     )));
     assert!(text.contains(&format!(
@@ -409,7 +409,52 @@ fn regional_static_unknown_remains_an_effect_environment_abstraction_with_no_inv
     ));
     assert!(
         !text.contains("Program block:")
-            && !text.contains("Captured code hash:")
+            && !text.contains("Frame identity hash:")
             && !text.contains("pc 0x")
     );
+}
+
+#[test]
+fn regional_precompile_hash_describes_frame_identity_without_claiming_captured_bytes() {
+    let report = observation_report("5f5f5f5f5f60045af1505f5f5f5f5f305af15000");
+    let cfg = &report.abstract_summaries[0].regional_cfg;
+    let node = cfg
+        .nodes
+        .iter()
+        .find(|node| {
+            node.frame.kind == api::CodeKind::Precompile
+                && node.transfer.as_ref().is_some_and(|transfer| {
+                    transfer.current && transfer.complete && !transfer.visited_block
+                })
+        })
+        .unwrap_or_else(|| panic!("expected actual precompile receipt: {cfg:?}"));
+    let hash = node.frame.code_hash.as_ref().unwrap();
+    assert_eq!(
+        hash,
+        "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    );
+    assert!(node.frame.basic_block.is_none());
+    let context = context();
+    let mut time = 0.0;
+    click(&context, &mut time, &report, "Regional control flow");
+    click(
+        &context,
+        &mut time,
+        &report,
+        &format!(
+            "r{} · procedure {} · Current transfer; no captured block visit",
+            node.id, node.procedure
+        ),
+    );
+    let text = draw(&context, &mut time, &report, vec![])
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains(&format!("Frame identity hash: {hash}")),
+        "{text}"
+    );
+    assert!(text.contains("Mode: Precompile"), "{text}");
+    assert!(!text.contains("Captured code hash:") && !text.contains("Program block:"));
 }
