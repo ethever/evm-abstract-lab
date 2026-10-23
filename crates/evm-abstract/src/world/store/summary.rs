@@ -28,6 +28,7 @@ mod caller;
 mod layout;
 mod metered;
 mod payment;
+mod process;
 mod process_effects;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
