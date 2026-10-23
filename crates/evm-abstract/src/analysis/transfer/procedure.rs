@@ -55,6 +55,11 @@ mod cooperation;
 use cooperation::Producer;
 mod cycles;
 mod environment;
+mod evidence;
+pub use evidence::{
+    EvmRegionalCall, EvmRegionalCfg, EvmRegionalEdge, EvmRegionalNode, EvmRegionalReturn,
+    EvmRegionalTransfer,
+};
 mod recursion;
 mod solver;
 #[cfg(test)]
@@ -112,6 +117,8 @@ struct EvmNode<N: WordElement> {
     /// Promotion belongs to the node, across incoming joins and fresh roots.
     runtime_retry: coarse_retry::EvmRuntimeRetry<N>,
     excluded: bool,
+    /// Latest actual transfer, separate from accumulated admitted topology.
+    transfer: Option<EvmRegionalTransfer>,
 }
 
 struct EvmProcedure<N: WordElement, Key: PolicyKey> {
@@ -171,6 +178,8 @@ struct EvmSubscriber<N: WordElement> {
     updates: usize,
     feedback: bool,
     delivered: BTreeMap<OutcomeKind, (Version, usize)>,
+    /// Compact continuation targets; pending attempts are not exported as returns.
+    returns: BTreeMap<OutcomeKind, evidence::ReturnReceipt>,
 }
 
 /// One shared relation table can grow across multiple relative entries of a
@@ -257,6 +266,22 @@ struct EvmSolver<
 }
 
 impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
+    /// Empty output is a complete bound only when no known entry remains live.
+    /// Unknown procedures have their own conservative environment semantics;
+    /// their known callbacks still participate in this whole-table obligation.
+    fn pending_terminals(&self) -> impl Iterator<Item = usize> + '_ {
+        self.procedures.iter().filter_map(|procedure| {
+            if procedure.frame.mode == FrameCode::Unknown || !procedure.outputs.is_empty() {
+                return None;
+            }
+            procedure
+                .entries
+                .iter()
+                .copied()
+                .find(|id| !self.nodes[*id].excluded)
+        })
+    }
+
     /// Give cooperation an explicit native source; callers need not infer an
     /// entry Body index or reinterpret a Body input under another payload.
     pub(in crate::analysis) fn entry_source(
@@ -373,28 +398,8 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 false
             }
         };
-        if kind != ProcedureSummaryKind::UnknownEnvironment
-            && let Some(root) = root
-            && solver.table.procedures[root].outputs.is_empty()
-            && solver.table.procedures[root]
-                .entries
-                .iter()
-                .any(|id| !solver.table.nodes[*id].excluded)
-            && relative_closed
-            && solver.table.frontiers.is_empty()
-            && !solver.table.incomplete
-        {
-            // An early known entry can discover recursion only after detachment.
-            // Folding physical depth cannot certify empty finite behavior.
-            // CALL rejection normally supplies real continuation-derived exits;
-            // when none reaches a terminal, retain the unmodeled termination.
-            let current = solver.table.procedures[root]
-                .entries
-                .iter()
-                .copied()
-                .find(|id| !solver.table.nodes[*id].excluded)
-                .expect("a reachable entry checked above");
-            solver.frontier_node(current, FrontierReason::RecursiveNoTerminal, 0);
+        if let Err(error) = solver.retain_terminal_frontiers(relative_closed) {
+            super::boundary(&mut result, 0, error.frontier_reason());
         }
         if let Some(root) = root {
             let procedure = &solver.table.procedures[root];
@@ -578,18 +583,37 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 Vec::new()
             }
         };
+        // Procedure IDs in the compact graph must index an exported summary.
+        // An earlier evidence refusal already retained an explicit frontier.
+        let regional_cfg = if procedures.len() != solver.table.procedures.len() {
+            EvmRegionalCfg::default()
+        } else {
+            match solver.regional_cfg() {
+                Ok(cfg) => cfg,
+                Err(error) => {
+                    super::boundary(&mut result, 0, error.frontier_reason());
+                    EvmRegionalCfg::default()
+                }
+            }
+        };
         let closed = relative_closed && result.frontiers.is_empty() && !solver.table.incomplete;
-        let record = EvmProcedureSummaryRecord {
+        let mut record = EvmProcedureSummaryRecord {
             source_state,
             kind,
             root_procedure: root.filter(|root| *root < procedures.len()),
             closed,
             procedures,
+            regional_cfg,
             state_count: solver.table.nodes.len(),
             transfers: solver.counters.transfers.saturating_sub(start_transfers),
             propagations: solver.table.propagations.saturating_sub(start_propagations),
             reused: solver.table.reused.saturating_sub(start_reused),
         };
+        if let Err(error) = solver.regional_checkpoint() {
+            super::boundary(&mut result, 0, error.frontier_reason());
+            record.closed = false;
+            record.regional_cfg = EvmRegionalCfg::default();
+        }
         (result, record)
     }
 }

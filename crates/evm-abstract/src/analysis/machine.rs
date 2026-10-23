@@ -290,7 +290,7 @@ pub enum FrontierReason {
     SummaryWork,
     /// Another frame would exceed the external-call depth budget.
     CallDepth,
-    /// Recursive bytecode stabilized without covering any finite terminal behavior.
+    /// A live known bytecode region stabilized without covering finite terminal behavior.
     RecursiveNoTerminal,
     /// A modeled byte range exceeds the declared memory or representation policy.
     Memory,
@@ -398,7 +398,9 @@ pub struct EvmProcedureSummary<N: WordElement> {
     pub input_updates: usize,
     /// Number of strict output expansions.
     pub output_updates: usize,
-    /// Captured-program block indexes actually analyzed, never invented unknown PCs.
+    /// Cumulative historical observations of visited captured-program blocks.
+    /// These do not certify execution of the current joined input; use current
+    /// regional transfer receipts for that distinction. Unknown PCs are never invented.
     pub covered_blocks: Vec<usize>,
 }
 
@@ -428,6 +430,8 @@ pub struct EvmProcedureSummaryRecord<N: WordElement> {
     pub closed: bool,
     /// Known bytecode and unknown procedures solved together.
     pub procedures: Vec<EvmProcedureSummary<N>>,
+    /// Coarse native regional CFG, separate from machine instruction/SSA evidence.
+    pub regional_cfg: super::transfer::procedure::EvmRegionalCfg,
     /// Relative block states retained by the shared worklist.
     pub state_count: usize,
     /// Metered block/environment transfers performed for this request.

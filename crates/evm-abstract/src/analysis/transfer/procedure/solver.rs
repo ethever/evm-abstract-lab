@@ -70,12 +70,10 @@ impl<
     }
 
     pub(super) fn reserve(&mut self, cost: usize) -> Result<(), MachineError> {
-        MachineError::check_cancelled()?;
-        if cost == usize::MAX || !self.budget.charge(cost) {
-            Err(MachineError::work_failure())
-        } else {
-            MachineError::check_cancelled()
-        }
+        // Use the same retained payer and both cancellation identities before,
+        // on refusal and after charging; a live ambient token cannot mask the
+        // cancellation captured by this transaction's ledger.
+        PolicyContext::new(self.domain, self.entry, self.budget).reserve(cost)
     }
 
     fn partition_relative(
@@ -409,6 +407,7 @@ impl<
                     feedback,
                     runtime_retry: EvmRuntimeRetry::Fresh,
                     excluded: false,
+                    transfer: None,
                 });
                 if is_entry {
                     self.table.procedures[procedure].entries.insert(id);
@@ -592,6 +591,13 @@ impl<
         if let Some(id) = procedure {
             self.namespace = self.table.procedures[id].namespace;
         }
+        // Retrying an obligation invalidates its old receipt even if preparing
+        // the new input subsequently refuses without a native slot change.
+        self.regional_begin(&task.0);
+        // A Body producer is installed only after this evaluation has executed
+        // and retained its new transfer. Older same-version receipts are not a
+        // reuse certificate for a preparation that never reached execution.
+        self.producer = None;
         self.active = Some(token);
         self.deferred = false;
         self.consumed = None;
@@ -694,6 +700,21 @@ impl<
             self.park_pending(error.frontier_reason());
             return false;
         }
+        let transferred = match &task.0 {
+            TaskKind::Body(id) => self
+                .producer
+                .is_some_and(|producer| producer.kind == 0 && producer.id == *id),
+            // A matching native delivery may be skipped without rerunning the
+            // callee. Resume still revalidates its committed delivery stamps.
+            _ => true,
+        };
+        self.regional_current(
+            &task.0,
+            transferred
+                && !self.deferred
+                && same_source
+                && (!X::ENABLED || self.table.frontiers.len() == frontiers_before),
+        );
         true
     }
 
@@ -718,7 +739,12 @@ impl<
             return false;
         }
         let input = self.table.nodes[id].payload.clone();
-        let execution = match instantiate(&input, self.domain) {
+        #[cfg(test)]
+        let instantiated = super::evidence::refuse_body_instantiation()
+            .map_or_else(|| instantiate(&input, self.domain), Err);
+        #[cfg(not(test))]
+        let instantiated = instantiate(&input, self.domain);
+        let execution = match instantiated {
             Ok(payload) => {
                 let payload = match self.cooperative_input(id, payload, 0) {
                     Ok(Some(payload)) => payload,
@@ -772,6 +798,10 @@ impl<
                 return false;
             }
         };
+        if let Err(error) = self.regional_transfer(id, version, &execution) {
+            self.park_admitted(&TaskKind::Body(id), error.frontier_reason());
+            return false;
+        }
         self.producer = Some(super::Producer {
             kind: 0,
             id,
@@ -786,7 +816,12 @@ impl<
                 .covered_blocks
                 .insert(self.table.nodes[id].payload.active().key.basic_block_index);
         }
+        let frontiers_before = self.table.frontiers.len();
         self.accept(id, execution);
+        self.regional_transfer_complete(
+            id,
+            !self.deferred && self.table.frontiers.len() == frontiers_before,
+        );
         true
     }
 
@@ -1128,6 +1163,7 @@ impl<
                         updates: prepared.metadata,
                         feedback,
                         delivered: BTreeMap::new(),
+                        returns: BTreeMap::new(),
                     });
                     Ok(subscription)
                 });
@@ -1380,6 +1416,7 @@ impl<
             return Ok(true);
         }
         let from = subscription.from;
+        self.regional_delivery(subscriber, kind, template_version, output.generation)?;
         if template.frames.len() == 2
             && template.frames[0].code == FrameCode::Unknown
             && template.continuations[0].creation.is_none()
@@ -1418,6 +1455,7 @@ impl<
             self.table.subscribers[subscriber]
                 .delivered
                 .insert(kind, stamp);
+            self.regional_delivered(subscriber, kind);
             self.table.propagations += 1;
             return Ok(true);
         }
@@ -1449,6 +1487,7 @@ impl<
         self.table.subscribers[subscriber]
             .delivered
             .insert(kind, stamp);
+        self.regional_delivered(subscriber, kind);
         self.table.propagations += 1;
         Ok(true)
     }
