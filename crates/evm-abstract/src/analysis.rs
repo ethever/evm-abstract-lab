@@ -51,7 +51,7 @@ pub use engine::{
 };
 pub use hybrid::{
     DetailState, HybridAnalysis, HybridConfig, HybridCoverage, HybridInterpretation,
-    HybridLocalDetail, HybridLocalScope, HybridRegion, HybridWork,
+    HybridLocalDetail, HybridLocalScope, HybridNativeBinding, HybridRegion, HybridWork,
 };
 pub use input::AnalysisInput;
 pub use machine::{
