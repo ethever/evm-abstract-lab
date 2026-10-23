@@ -345,8 +345,10 @@ fn partial_native_sites_layer_on_closed_baseline_while_another_region_is_pending
         multi_region_world(),
         ExecutionConfig {
             max_work: 2_000_000_000,
+            root_terminal_coverage: false,
             analysis: evm_abstract::analysis::Config {
                 context_depth: 2,
+                max_transfers: coarse.baseline().transfers() + 32,
                 ..Default::default()
             },
             ..Default::default()
@@ -415,6 +417,7 @@ fn frozen_region_choice_changes_actual_native_keys_and_retains_owner_static_cont
             multi_region_world(),
             ExecutionConfig {
                 max_work: 2_000_000_000,
+                root_terminal_coverage: false,
                 analysis: evm_abstract::analysis::Config {
                     context_depth: 2,
                     ..Default::default()
@@ -465,13 +468,19 @@ fn frozen_region_choice_changes_actual_native_keys_and_retains_owner_static_cont
 
 #[test]
 fn selected_contexts_refine_joined_jump_targets_while_the_other_region_remains_pending() {
+    let baseline = run(multi_region_world(), 2_000_000_000, 0);
+    // Keep the long independent path pending even if a core quote becomes
+    // cheaper. Context selection, not a particular tariff, is the discriminator.
+    let transfer_cap = baseline.baseline().transfers() + 32;
     let execute = |regions| {
         run_config(
             multi_region_world(),
             ExecutionConfig {
                 max_work: 2_000_000_000,
+                root_terminal_coverage: false,
                 analysis: evm_abstract::analysis::Config {
                     context_depth: 2,
+                    max_transfers: transfer_cap,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -603,7 +612,9 @@ fn symbolic_root_native_currency_cannot_replace_alias_covering_process_relation(
     assert!(report.coverage().detail_current);
     assert_eq!(
         report.coverage().detail_binding,
-        evm_abstract::analysis::HybridNativeBinding::SymbolicOwnerNamespace
+        evm_abstract::analysis::HybridNativeBinding::SymbolicOwnerNamespace {
+            namespace: address(A)
+        }
     );
     assert_eq!(
         report.coverage().chosen,
@@ -629,6 +640,77 @@ fn symbolic_root_native_currency_cannot_replace_alias_covering_process_relation(
             "baseline_joint_a5_u9":joint(report.baseline()), "chosen_joint_a5_u9":joint(report.chosen()),
         })
     );
+    assert_accounting(&report, 100_000_000);
+}
+
+#[test]
+fn auxiliary_native_envelope_never_certifies_native_or_process_completion() {
+    let baseline = run(branch_world(), 100_000_000, 0);
+    assert!(baseline.coverage().baseline_current);
+    assert!(baseline.coverage().requested_native_terminal_coverage);
+    assert!(baseline.baseline().root_terminal_coverage().is_none());
+    assert!(baseline.detail().is_none());
+    let transfers = baseline.baseline().transfers();
+    for requested in [true, false] {
+        let report = run_config(
+            branch_world(),
+            ExecutionConfig {
+                max_work: 100_000_000,
+                root_terminal_coverage: requested,
+                analysis: evm_abstract::analysis::Config {
+                    max_transfers: transfers,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            HybridConfig::default(),
+        );
+        assert!(report.coverage().baseline_current);
+        assert_eq!(report.status(), Status::Converged);
+        assert_eq!(
+            report.coverage().requested_native_terminal_coverage,
+            requested
+        );
+        assert!(report.baseline().root_terminal_coverage().is_none());
+        assert!(!report.baseline().config().root_terminal_coverage);
+        let detail = report.detail().unwrap();
+        assert_eq!(detail.config().root_terminal_coverage, requested);
+        assert_eq!(detail.status(), Status::Incomplete);
+        assert_eq!(detail.root_terminal_coverage().is_some(), requested);
+        assert!(!report.coverage().detail_current);
+        assert_eq!(report.coverage().chosen, HybridInterpretation::Process);
+        assert!(report.local_detail().next().is_none());
+        assert_accounting(&report, 100_000_000);
+    }
+}
+
+#[test]
+fn summary_cache_opt_out_keeps_actual_process_and_native_interpretations() {
+    let report = run_config(
+        branch_world(),
+        ExecutionConfig {
+            max_work: 100_000_000,
+            use_summaries: false,
+            root_terminal_coverage: false,
+            ..Default::default()
+        },
+        HybridConfig::default(),
+    );
+    assert!(report.coverage().baseline_current && report.coverage().detail_current);
+    assert!(!report.baseline().config().use_summaries);
+    assert!(!report.detail().unwrap().config().use_summaries);
+    assert!(
+        report
+            .baseline()
+            .procedure_summaries()
+            .iter()
+            .any(|record| record
+                .procedures
+                .iter()
+                .any(|p| p.semantics == TransferSemantics::KnownProcess))
+    );
+    assert!(report.local_detail().next().is_some());
+    assert_eq!(report.coverage().chosen, HybridInterpretation::Native);
     assert_accounting(&report, 100_000_000);
 }
 

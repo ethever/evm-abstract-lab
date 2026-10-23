@@ -62,7 +62,8 @@ where
 {
     /// Close conservative global process control before spending any optional
     /// precision. Existing `run` keeps the caller's ordinary precise behavior.
-    /// No whole-root terminal envelope participates in either phase.
+    /// Requested terminal coverage belongs only to optional native detail;
+    /// it never certifies process closure or whole-native completion.
     pub fn run_hybrid(
         &mut self,
         input: AnalysisInput<D::Element>,
@@ -99,7 +100,7 @@ where
     pub(in crate::analysis) fn run_hybrid_metered(
         &mut self,
         input: AnalysisInput<D::Element>,
-        mut config: ExecutionConfig,
+        config: ExecutionConfig,
         hybrid: HybridConfig,
         budget: &mut WorkBudget,
         counters: &mut engine::Counters,
@@ -111,7 +112,6 @@ where
                 crate::analysis::MachineError::work_failure(),
             )),
         })?;
-        config.root_terminal_coverage = false;
         let prior = budget.used();
         let AnalysisInput {
             world,
@@ -126,10 +126,12 @@ where
                 KnownProcessSummaries,
             ),
         );
+        let mut baseline_config = config.clone();
+        baseline_config.root_terminal_coverage = false;
         let mut baseline = engine::run_reusing(
             world,
             entry,
-            config.clone(),
+            baseline_config,
             self.algebra.borrowed(),
             &coarse,
             budget,
@@ -147,13 +149,16 @@ where
             detail_binding: if baseline.entry().environment.to.as_concrete().is_some() {
                 HybridNativeBinding::OriginalOwner
             } else {
-                HybridNativeBinding::SymbolicOwnerNamespace
+                HybridNativeBinding::SymbolicOwnerNamespace {
+                    namespace: baseline.entry().address,
+                }
             },
             local_detail_sites: 0,
             detail_regions: Vec::new(),
             chosen: HybridInterpretation::Process,
             detail: DetailState::BaselinePending,
             requested_detail_work: hybrid.max_detail_work,
+            requested_native_terminal_coverage: config.root_terminal_coverage,
             work: HybridWork {
                 prior,
                 baseline: budget.used().saturating_sub(prior),

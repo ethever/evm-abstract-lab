@@ -59,8 +59,13 @@ pub enum HybridLocalScope {
 pub enum HybridNativeBinding {
     /// Original concrete owner agrees with the native entry namespace.
     OriginalOwner,
-    /// Retained native preparation has no proof for all symbolic-root aliases.
-    SymbolicOwnerNamespace,
+    /// Additional condition: the logical root owner equals this retained native
+    /// namespace. This is an imposed subset binding, not an observed physical
+    /// destination, and does not establish all original symbolic-root aliases.
+    SymbolicOwnerNamespace {
+        /// Native root coordinate used as the explicit additional owner binding.
+        namespace: crate::Address,
+    },
 }
 
 /// Which complete interpretation supplies the selected control/effect relation.
@@ -129,6 +134,9 @@ pub struct HybridCoverage {
     pub detail: DetailState,
     /// Original requested cap, before remaining-work admission.
     pub requested_detail_work: usize,
+    /// Original explicit auxiliary option; produced coverage, if any, belongs
+    /// only to detail and never establishes either phase's completion.
+    pub requested_native_terminal_coverage: bool,
     /// Actual shared-ledger accounting.
     pub work: HybridWork,
 }
@@ -150,6 +158,8 @@ pub struct HybridAnalysis<N: WordElement> {
 pub struct HybridLocalDetail<'a, N: WordElement> {
     /// Explicit qualification, including when the full detail graph is partial.
     pub scope: HybridLocalScope,
+    /// Explicit original-owner or additional namespace binding of this prefix.
+    pub binding: HybridNativeBinding,
     /// Actual native state and its retained input; no fabricated process PC.
     #[serde(skip)]
     pub state: &'a EvmMachineState<N>,
@@ -241,10 +251,11 @@ impl<N: WordElement> HybridAnalysis<N> {
                             HybridNativeBinding::OriginalOwner => {
                                 HybridLocalScope::RetainedInputPrefix
                             }
-                            HybridNativeBinding::SymbolicOwnerNamespace => {
+                            HybridNativeBinding::SymbolicOwnerNamespace { .. } => {
                                 HybridLocalScope::NativeOwnerNamespacePrefix
                             }
                         },
+                        binding: self.coverage.detail_binding,
                         state,
                         state_id: state.id,
                         frame: state.active(),
