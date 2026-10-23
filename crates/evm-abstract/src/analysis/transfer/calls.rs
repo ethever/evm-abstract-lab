@@ -57,20 +57,52 @@ pub(in crate::analysis) fn resolve_code<'a>(
     match code(target) {
         Some(Code::Runtime(program)) => (target, FrameCode::Runtime, Some(program)),
         Some(Code::Empty) => (target, FrameCode::Empty, None),
-        Some(Code::Delegation(implementation)) => {
-            if super::precompile::contains(fork, *implementation) {
-                return (*implementation, FrameCode::Empty, None);
-            }
-            match code(*implementation) {
-                Some(Code::Runtime(program)) => {
-                    (*implementation, FrameCode::Runtime, Some(program))
-                }
-                Some(Code::Empty) => (*implementation, FrameCode::Empty, None),
-                Some(Code::Delegation(_)) => (*implementation, FrameCode::InvalidDelegation, None),
-                _ => (*implementation, FrameCode::Unknown, None),
-            }
-        }
+        Some(Code::Delegation(implementation)) => resolve_delegation(fork, *implementation, code),
         _ => (target, FrameCode::Unknown, None),
+    }
+}
+
+fn resolve_delegation<'a>(
+    fork: crate::Fork,
+    implementation: Address,
+    code: impl Fn(Address) -> Option<&'a Code>,
+) -> (Address, FrameCode, Option<&'a Program>) {
+    if super::precompile::contains(fork, implementation) {
+        return (implementation, FrameCode::Empty, None);
+    }
+    match code(implementation) {
+        Some(Code::Runtime(program)) => (implementation, FrameCode::Runtime, Some(program)),
+        Some(Code::Empty) => (implementation, FrameCode::Empty, None),
+        Some(Code::Delegation(_)) => (implementation, FrameCode::InvalidDelegation, None),
+        _ => (implementation, FrameCode::Unknown, None),
+    }
+}
+
+// A symbolic-To entry supplies account/program bounds at a private coordinate.
+// Coordinate bits do not select a physical precompile or a delegation target.
+// Delegation pointers, unlike the namespace, are actual physical addresses.
+pub(in crate::analysis) fn resolve_entry_code<'a>(
+    fork: crate::Fork,
+    coordinate: Address,
+    to: AddressInput,
+    code: impl Fn(Address) -> Option<&'a Code>,
+) -> (Address, FrameCode, Option<&'a Program>) {
+    if to.as_concrete().is_some() {
+        return resolve_code(fork, coordinate, code);
+    }
+    match code(coordinate) {
+        Some(Code::Runtime(program)) => (coordinate, FrameCode::Runtime, Some(program)),
+        Some(Code::Empty) => (coordinate, FrameCode::Empty, None),
+        Some(Code::Delegation(implementation)) => {
+            resolve_delegation(fork, *implementation, |physical| {
+                if physical == coordinate {
+                    None
+                } else {
+                    code(physical)
+                }
+            })
+        }
+        _ => (coordinate, FrameCode::Unknown, None),
     }
 }
 
@@ -103,7 +135,13 @@ pub(super) fn initial<D: EvmNumericAlgebra>(
     store
         .check_existing(domain.spec().relations().expressions())
         .map_err(super::errors::store)?;
-    let (code_address, code, program) = resolve(world, &store, entry.address)?;
+    let (code_address, code, program) = resolve_entry_code(
+        world.fork(),
+        entry.address,
+        entry.environment.to,
+        |coordinate| store.code(coordinate),
+    );
+    let program = program.cloned();
     let code_hash = captured_hash(&program, &store, code_address, code);
     let mut calldata = entry.environment.calldata.project(domain);
     if let Some(scope) = entry.environment.input_scope.id() {

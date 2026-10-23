@@ -76,7 +76,9 @@ pub use process::{
     ProcessSource, RuntimeExecution, TransferSemantics,
 };
 pub use rpc::{
-    RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcStorageSlot, analyze_rpc,
+    RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcBaselineRelation,
+    RpcFactRestriction, RpcHybridAnalysis, RpcHybridCoverage, RpcPrecisionOutcome, RpcStorageSlot,
+    analyze_rpc, analyze_rpc_hybrid,
 };
 pub use single::ProjectionError;
 pub use summary::{EvmSummaryInput, EvmSummaryOutput, EvmSummaryRecord, SummaryStats};
@@ -91,7 +93,9 @@ pub use transfer::procedure::{
     EvmRegionalTransfer,
 };
 
-/// Serialized EVM analysis format. Version 14 adds explicit process semantics,
+/// Serialized EVM analysis format. Version 15 distinguishes a supplied root
+/// namespace/input Program from observed physical owners/code accounts.
+/// Version 14 adds explicit process semantics,
 /// coarse action receipts and typed unresolved process obligations.
 /// Version 13 adds compact regional CFG receipts
 /// with native revisions, separate call continuations and explicit source validity.
@@ -99,7 +103,7 @@ pub use transfer::procedure::{
 /// exhaustion, cancellation and kernel failure from the local round limit.
 /// Version 10 introduced optional root terminal coverage with owned original
 /// input binding and finalized tuples. The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 14;
+pub const SCHEMA_VERSION: u16 = 15;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

@@ -6,6 +6,55 @@ use serde_json::json;
 use std::sync::Arc;
 
 #[test]
+fn paid_program_equality_has_a_positive_shortcut_and_full_value_fallback() {
+    use crate::resource::{CloneError, WorkBudget};
+    let bytes = [opcode::JUMPDEST, opcode::PUSH0, opcode::STOP];
+    let left = Program::decode(&bytes).unwrap();
+    let independent = Program::decode(&bytes).unwrap();
+    let mut shared = WorkBudget::new(16);
+    assert!(left.eq_with_payment(&left.clone(), &mut shared).unwrap());
+    assert_eq!(shared.used(), 16);
+    assert_eq!(
+        left.eq_with_payment(&left, &mut WorkBudget::new(15)),
+        Err(CloneError::Work)
+    );
+    assert!(!left.shares_capture(&independent));
+    let complete_fee = 16 + 64 + 64 * (left.byte_len() + independent.byte_len());
+    let mut complete = WorkBudget::new(complete_fee);
+    assert!(left.eq_with_payment(&independent, &mut complete).unwrap());
+    assert_eq!(complete.used(), complete_fee);
+    assert_eq!(
+        left.eq_with_payment(&independent, &mut WorkBudget::new(complete_fee - 1)),
+        Err(CloneError::Work)
+    );
+    for other in [
+        Program::decode_with_fork(&bytes, Fork::Prague).unwrap(),
+        Program::decode(&[opcode::JUMPDEST, opcode::PUSH0, opcode::INVALID]).unwrap(),
+    ] {
+        assert!(
+            !left
+                .eq_with_payment(&other, &mut WorkBudget::new(1_000_000))
+                .unwrap()
+        );
+    }
+    let payer = analysis_control::Cancellation::new();
+    let mut cancelled = analysis_control::with_cancellation(&payer, || WorkBudget::new(1_000_000));
+    payer.cancel();
+    assert_eq!(
+        left.eq_with_payment(&independent, &mut cancelled),
+        Err(CloneError::Cancelled)
+    );
+    let ambient = analysis_control::Cancellation::new();
+    let mut live = WorkBudget::new(1_000_000);
+    ambient.cancel();
+    assert_eq!(
+        analysis_control::with_cancellation(&ambient, || left
+            .eq_with_payment(&independent, &mut live)),
+        Err(CloneError::Cancelled)
+    );
+}
+
+#[test]
 fn cloned_programs_share_all_decoded_data_and_keep_the_captured_source() {
     let captured = [opcode::PUSH1, 1, opcode::JUMPDEST, opcode::STOP];
     let mut source = captured;

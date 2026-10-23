@@ -84,10 +84,38 @@ where
             value: summary::clone_value(&parent.call_value, self.budget)?,
         };
         for target in targets {
-            let (code_address, code, program, hash) = match target {
+            let (code_address, code, program, hash, source) = match target {
+                ProcessOwner::RootNamespace => {
+                    let (code, program, source) = self
+                        .table
+                        .process_root_code
+                        .as_ref()
+                        .ok_or_else(|| MachineError::Shape.frontier_reason())?;
+                    let (address, hash) = match *source {
+                        ProcessSource::Runtime { source, hash, .. }
+                        | ProcessSource::InvalidDelegation { source, hash, .. } => (source, hash),
+                        ProcessSource::InputProgram { hash, .. } => (Address::ZERO, hash),
+                        ProcessSource::InputDelegation { target, .. } => (target, B256::ZERO),
+                        _ => (Address::ZERO, B256::ZERO),
+                    };
+                    (address, *code, program.clone(), hash, *source)
+                }
                 ProcessOwner::Named(address) => {
+                    // A delegation pointer is also a physical address. Never
+                    // follow it into the private root template just because
+                    // its numeric bits happen to equal that coordinate.
                     let (source, code, program) =
-                        native_calls::resolve(self.world, &payload.store, address)?;
+                        native_calls::resolve_code(self.world.fork(), address, |physical| {
+                            if catalogue
+                                .namespace()
+                                .is_some_and(|n| n.coordinate == physical)
+                            {
+                                None
+                            } else {
+                                payload.store.code(physical)
+                            }
+                        });
+                    let program = program.cloned();
                     if code == FrameCode::Unknown
                         && self.storage_reads == StorageReadPolicy::Discover
                     {
@@ -108,14 +136,45 @@ where
                     )
                     .map_err(MachineError::frontier_reason)?;
                     let hash = native_calls::captured_hash(&program, &payload.store, source, code);
-                    (source, code, program, hash)
+                    let provenance = match code {
+                        FrameCode::Runtime => ProcessSource::Runtime {
+                            source,
+                            hash,
+                            fork: program.as_ref().expect("runtime Program").fork(),
+                        },
+                        FrameCode::Unknown => ProcessSource::AnyRuntime {
+                            fork: self.world.fork(),
+                        },
+                        FrameCode::Empty => ProcessSource::Empty {
+                            fork: self.world.fork(),
+                        },
+                        FrameCode::Precompile(address) => ProcessSource::Precompile {
+                            address,
+                            fork: self.world.fork(),
+                        },
+                        FrameCode::InvalidDelegation => ProcessSource::InvalidDelegation {
+                            source,
+                            hash,
+                            fork: self.world.fork(),
+                        },
+                        FrameCode::InitCode => {
+                            unreachable!("account resolution cannot select initcode")
+                        }
+                    };
+                    (source, code, program, hash, provenance)
                 }
-                ProcessOwner::Residual => (Address::ZERO, FrameCode::Unknown, None, B256::ZERO),
+                ProcessOwner::Residual => (
+                    Address::ZERO,
+                    FrameCode::Unknown,
+                    None,
+                    B256::ZERO,
+                    ProcessSource::AnyRuntime {
+                        fork: self.world.fork(),
+                    },
+                ),
             };
             let target_address = match target {
-                ProcessOwner::Named(address) if address == self.entry.address => {
-                    ProcessTargetAddress::Operand(root_address.as_ref())
-                }
+                ProcessOwner::RootNamespace => ProcessTargetAddress::Operand(root_address.as_ref()),
                 ProcessOwner::Named(address) => ProcessTargetAddress::Exact(address),
                 ProcessOwner::Residual => ProcessTargetAddress::Independent,
             };
@@ -124,28 +183,6 @@ where
                 .map_err(super::admission::owner_error)
                 .map_err(MachineError::frontier_reason)?;
             let owner = roles.child_owner(parent_owner, target);
-            let fork = self.world.fork();
-            let source = match code {
-                FrameCode::Runtime => ProcessSource::Runtime {
-                    source: code_address,
-                    hash,
-                    fork: program
-                        .as_ref()
-                        .expect("runtime retains its Program")
-                        .fork(),
-                },
-                FrameCode::Unknown => ProcessSource::AnyRuntime { fork },
-                FrameCode::Empty => ProcessSource::Empty { fork },
-                FrameCode::Precompile(address) => ProcessSource::Precompile { address, fork },
-                FrameCode::InvalidDelegation => ProcessSource::InvalidDelegation {
-                    source: code_address,
-                    hash,
-                    fork,
-                },
-                FrameCode::InitCode => {
-                    unreachable!("account CALL resolution never selects initcode")
-                }
-            };
             self.reserve(256).map_err(MachineError::frontier_reason)?;
             let mut key = FrameKey {
                 process: None,
@@ -173,13 +210,7 @@ where
             let saved_store = payload.store.snapshot();
             if matches!(action, ProcessAction::Call | ProcessAction::StaticCall) {
                 if let ProcessOwner::Named(address) = target {
-                    if address == self.entry.address
-                        && self.entry.environment.to.as_concrete().is_none()
-                    {
-                        callback.store.may_touch_all();
-                    } else {
-                        callback.store.touch_account(address);
-                    }
+                    callback.store.touch_account(address);
                 } else {
                     callback.store.may_touch_all();
                 }
