@@ -422,11 +422,16 @@ pub enum ProcedureSummaryKind {
 pub struct EvmProcedureSummaryRecord<N: WordElement> {
     /// Main machine node whose execution requested this relation.
     pub source_state: usize,
+    /// Certified for this source's final successful, still-valid World evaluation.
+    /// False means uncertified currentness, not proof that historical facts are
+    /// stale or false. Regional closure and global closure remain separate.
+    pub source_current: bool,
     /// Actual source of the abstraction; known runtime remains known runtime.
     pub kind: ProcedureSummaryKind,
     /// Entry procedure index, absent when entry or evidence construction failed.
     pub root_procedure: Option<usize>,
-    /// Every whole-payload invariant and dependency has stabilized, without a frontier.
+    /// Regional-system closure observed at this snapshot's retained input and
+    /// dependency basis; neither current global closure nor source currency.
     pub closed: bool,
     /// Known bytecode and unknown procedures solved together.
     pub procedures: Vec<EvmProcedureSummary<N>>,
@@ -458,6 +463,20 @@ impl<N: WordElement> Clone for EvmProcedureEvidence<N> {
 impl<N: WordElement> EvmProcedureEvidence<N> {
     fn as_slice(&self) -> &[EvmProcedureSummaryRecord<N>] {
         self.0.as_slice()
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(super) fn is_unique(&self) -> bool {
+        Arc::strong_count(&self.0) == 1
+    }
+
+    /// Only a prepaid final certification may change flags. Replay shares this
+    /// Arc and cannot acquire a mutable view or copy the retained Store reports.
+    pub(super) fn unique_records(&mut self) -> Option<&mut [EvmProcedureSummaryRecord<N>]> {
+        Arc::get_mut(&mut self.0).map(Vec::as_mut_slice)
     }
 
     pub(super) fn push(&mut self, record: EvmProcedureSummaryRecord<N>) {
