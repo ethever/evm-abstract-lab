@@ -1,10 +1,10 @@
 //! CREATE/CREATE2 lifecycle. Initcode is a fresh frame of the shared machine;
 //! the destination's code remains empty until a successful RETURN installs it.
 
-use crate::domain::{EvmNumericAlgebra, SingletonProof, WordElement};
+use crate::domain::{EvmNumericAlgebra, SingletonProof, WordElement, summary};
 
 use super::budget::{byte_work, maximum};
-use super::{EvmExecution, EvmSuccessor, TransferContext, boundary, zero};
+use super::{EvmExecution, EvmSuccessor, TransferContext, boundary};
 use super::{candidates, query};
 
 use crate::{
@@ -50,17 +50,19 @@ fn incomplete<N: WordElement>(result: &mut EvmExecution<N>, pc: usize, reason: C
     boundary(result, pc, FrontierReason::Creation(reason));
 }
 
-fn write_balance_literal<N: WordElement>(
-    store: &mut crate::world::EvmStore<N>,
+fn write_balance_literal<D: EvmNumericAlgebra>(
+    store: &mut crate::world::EvmStore<D::Element>,
     address: Address,
     word: U256,
-) {
+    context: &mut TransferContext<'_, D>,
+) -> Result<(), FrontierReason> {
     store.write_balance_with_truth(
         address,
-        EvmValue::constant(word),
+        summary::literal(word, context.domain, context.budget)?,
         word.is_zero(),
         !word.is_zero(),
     );
+    Ok(())
 }
 
 /// Range admission already owns discovery. Allocation consumes the retained
@@ -123,20 +125,24 @@ pub(super) fn expand_prepared<D: EvmNumericAlgebra>(
     query::checkpoint(context.budget)
 }
 
-fn immediate_failure<N: WordElement>(
-    result: &mut EvmExecution<N>,
-    mut payload: EvmMachinePayload<N>,
+fn immediate_failure<D: EvmNumericAlgebra>(
+    result: &mut EvmExecution<D::Element>,
+    mut payload: EvmMachinePayload<D::Element>,
     next: usize,
-) {
+    context: &mut TransferContext<'_, D>,
+) -> Result<(), FrontierReason> {
+    let zero = summary::literal(U256::ZERO, context.domain, context.budget)?;
+    let data = EvmByteArray::empty_with_payment(context.domain, context.budget)?;
     let caller = payload.active_mut();
-    caller.stack.push(zero());
-    caller.returndata = EvmByteArray::<N>::empty();
+    caller.stack.push(zero);
+    caller.returndata = data;
     caller.key.basic_block_index = next;
     payload.normalize();
     result.successors.push(EvmSuccessor {
         payload,
         kind: MachineEdgeKind::Failure,
     });
+    query::checkpoint(context.budget)
 }
 
 fn reserved<N: WordElement>(world: &EvmWorld<N>, address: Address) -> bool {
@@ -200,7 +206,10 @@ fn materialize<D: EvmNumericAlgebra>(
     for index in 0..reads {
         query::checkpoint(context.budget)?;
         let value = data
-            .read_byte_checked(&EvmValue::constant(U256::from(index)), context.domain)
+            .read_byte_checked(
+                &summary::literal(U256::from(index), context.domain, context.budget)?,
+                context.domain,
+            )
             .map_err(super::errors::bytes)?;
         query::checkpoint(context.budget)?;
         let (_, mut proof) = candidates::prepare(&value, context.budget)?;
@@ -262,19 +271,22 @@ fn create_prepared<D: EvmNumericAlgebra>(
     };
     if sizes.iter().any(|size| *size > U256::from(49_152)) {
         // EIP-3860 oversize initcode faults the CREATE opcode's current frame.
-        super::calls::failure(result, context, pc);
+        super::calls::creation_failure(result, context, pc);
     }
     let sizes: Vec<_> = sizes
         .iter()
         .filter(|size| **size <= U256::from(49_152))
         .copied()
         .collect();
-    let Some(mut memory_size) = sizes
-        .iter()
-        .copied()
-        .map(EvmValue::<D::Element>::constant)
-        .reduce(|left, right| domain.join(&left, &right))
-    else {
+    let mut memory_size = None;
+    for size in &sizes {
+        let value = summary::literal(*size, domain, context.budget)?;
+        memory_size = Some(match memory_size {
+            None => value,
+            Some(previous) => summary::join(&previous, &value, domain, false, context.budget)?,
+        });
+    }
+    let Some(mut memory_size) = memory_size else {
         return Ok(());
     };
     let (offsets, offset_proof) = if sizes.iter().all(U256::is_zero) {
@@ -330,7 +342,8 @@ fn create_prepared<D: EvmNumericAlgebra>(
     // revm/Yellow-Paper depth starts at zero for the transaction entry. Child
     // depth equals the current frame count and must not exceed 1024.
     if result.payload.call_stack.depth() > 1024 {
-        immediate_failure(result, result.payload.clone(), next);
+        result.payload.pay_clone_with(context.budget)?;
+        immediate_failure(result, result.payload.clone(), next, context)?;
         return Ok(());
     }
     if result.payload.call_stack.depth() >= config.max_call_depth {
@@ -351,7 +364,10 @@ fn create_prepared<D: EvmNumericAlgebra>(
         incomplete(result, pc, CreationBoundary::UnknownCreator);
         return Ok(());
     };
-    let nonce = result.payload.store.nonce(caller_address);
+    let nonce = result
+        .payload
+        .store
+        .nonce_with_payment(caller_address, domain, context.budget)?;
     let (nonces, _) = candidates::prepare(&nonce, context.budget)?;
     let Some(nonces) = nonces else {
         incomplete(result, pc, CreationBoundary::UnknownNonce(caller_address));
@@ -372,7 +388,10 @@ fn create_prepared<D: EvmNumericAlgebra>(
     } else {
         vec![U256::ZERO]
     };
-    let balance = result.payload.store.read_balance(caller_address);
+    let balance = result
+        .payload
+        .store
+        .balance_with_payment(caller_address, context.budget)?;
     let balances = if values.iter().all(U256::is_zero) {
         // Zero endowment preserves the complete balance, including identities.
         vec![None]
@@ -387,22 +406,26 @@ fn create_prepared<D: EvmNumericAlgebra>(
     };
     for size in &sizes {
         for offset in &offsets {
+            let offset_value = summary::literal(*offset, domain, context.budget)?;
+            let size_value = summary::literal(*size, domain, context.budget)?;
             if !context.budget.charge(byte_work(
-                &[
-                    &EvmValue::<D::Element>::constant(*offset),
-                    &EvmValue::<D::Element>::constant(*size),
-                ],
+                &[&offset_value, &size_value],
                 usize::try_from(*size).unwrap_or(usize::MAX),
                 result.payload.active().memory.work_size(),
                 domain,
             )) {
                 return Err(FrontierReason::Work);
             }
-            let initcode = match result.payload.active().memory.slice(
-                &EvmValue::<D::Element>::constant(*offset),
-                &EvmValue::<D::Element>::constant(*size),
-                domain,
-            ) {
+            let extracted = if size.is_zero() {
+                Ok(EvmByteArray::empty_with_payment(domain, context.budget)?)
+            } else {
+                result
+                    .payload
+                    .active()
+                    .memory
+                    .slice(&offset_value, &size_value, domain)
+            };
+            let initcode = match extracted {
                 Ok(bytes) => {
                     match materialize(
                         &bytes,
@@ -428,60 +451,67 @@ fn create_prepared<D: EvmNumericAlgebra>(
                     continue;
                 }
                 if *nonce == U256::from(u64::MAX) {
+                    result.payload.pay_clone_with(context.budget)?;
                     let mut payload = result.payload.clone();
-                    payload
-                        .store
-                        .write_nonce(caller_address, EvmValue::<D::Element>::constant(*nonce));
-                    immediate_failure(result, payload, next);
+                    payload.store.write_nonce(
+                        caller_address,
+                        summary::literal(*nonce, domain, context.budget)?,
+                    );
+                    immediate_failure(result, payload, next, context)?;
                     continue;
                 }
                 for value in values.iter() {
                     for balance in &balances {
                         if balance.is_some_and(|balance| *value > balance) {
+                            result.payload.pay_clone_with(context.budget)?;
                             let mut payload = result.payload.clone();
                             payload.store.write_nonce(
                                 caller_address,
-                                EvmValue::<D::Element>::constant(*nonce),
+                                summary::literal(*nonce, domain, context.budget)?,
                             );
                             write_balance_literal(
                                 &mut payload.store,
                                 caller_address,
                                 balance.expect("insufficient funds require an observed balance"),
-                            );
-                            immediate_failure(result, payload, next);
+                                context,
+                            )?;
+                            immediate_failure(result, payload, next, context)?;
                             continue;
                         }
                         for salt in &salts {
-                            if !context.budget.charge(
-                                result
-                                    .payload
-                                    .work_size()
-                                    .saturating_add(initcode.len())
-                                    .saturating_add(1),
-                            ) {
-                                return Err(FrontierReason::Work);
-                            }
+                            crate::resource::clone_payment::pay(
+                                context.budget,
+                                initcode.len().saturating_add(1),
+                            )?;
                             let destination = if op == opcode::CREATE {
                                 caller_address.create(nonce.to::<u64>())
                             } else {
                                 caller_address
                                     .create2_from_code(salt.to_be_bytes::<32>(), &initcode)
                             };
+                            result.payload.pay_clone_with(context.budget)?;
                             let mut payload = result.payload.clone();
                             if let Some(balance) = balance {
-                                write_balance_literal(&mut payload.store, caller_address, *balance);
+                                write_balance_literal(
+                                    &mut payload.store,
+                                    caller_address,
+                                    *balance,
+                                    context,
+                                )?;
                             }
                             // The creator's nonce change survives a failed
                             // initcode child, but rolls back with its own frame.
                             payload.store.touch_account(caller_address);
                             payload.store.write_nonce(
                                 caller_address,
-                                EvmValue::<D::Element>::constant(*nonce + U256::from(1)),
+                                summary::literal(*nonce + U256::from(1), domain, context.budget)?,
                             );
                             // Gas remains abstract, but insufficient initcode gas
                             // fails after the caller nonce has been incremented.
-                            immediate_failure(result, payload.clone(), next);
+                            payload.pay_clone_with(context.budget)?;
+                            immediate_failure(result, payload.clone(), next, context)?;
                             // The savepoint deliberately includes the caller nonce bump.
+                            payload.store.pay_clone_with(context.budget)?;
                             let saved_store = payload.store.snapshot();
                             if reserved(world, destination) {
                                 incomplete(
@@ -491,12 +521,16 @@ fn create_prepared<D: EvmNumericAlgebra>(
                                 );
                                 continue;
                             }
-                            let destination_nonce = payload.store.nonce(destination);
+                            let destination_nonce = payload.store.nonce_with_payment(
+                                destination,
+                                domain,
+                                context.budget,
+                            )?;
                             let code = payload.store.raw_account_code(destination);
                             if code.as_ref().is_some_and(|code| !code.is_empty()) {
                                 // Either known fact alone proves a collision; the
                                 // other account observation need not be present.
-                                immediate_failure(result, payload, next);
+                                immediate_failure(result, payload, next, context)?;
                                 continue;
                             }
                             let (destination_nonces, _) =
@@ -510,7 +544,7 @@ fn create_prepared<D: EvmNumericAlgebra>(
                                 continue;
                             };
                             if destination_nonces.iter().all(|nonce| !nonce.is_zero()) {
-                                immediate_failure(result, payload, next);
+                                immediate_failure(result, payload, next, context)?;
                                 continue;
                             }
                             let Some(code) = code else {
@@ -524,7 +558,8 @@ fn create_prepared<D: EvmNumericAlgebra>(
                             if destination_nonces.iter().any(|nonce| !nonce.is_zero())
                                 || !code.is_empty()
                             {
-                                immediate_failure(result, payload.clone(), next);
+                                payload.pay_clone_with(context.budget)?;
+                                immediate_failure(result, payload.clone(), next, context)?;
                             }
                             if !code.is_empty() || !destination_nonces.contains(&U256::ZERO) {
                                 continue;
@@ -532,12 +567,14 @@ fn create_prepared<D: EvmNumericAlgebra>(
                             if initcode.first() == Some(&0xef) {
                                 // EF is invalid EVM initcode under every supported fork;
                                 // it must not be interpreted as an account delegation marker.
-                                immediate_failure(result, payload, next);
+                                immediate_failure(result, payload, next, context)?;
                                 continue;
                             }
                             let init_program = Program::decode_with_fork(&initcode, world.fork())
                                 .expect("EVM initcode with a non-EF first byte always decodes");
-                            let recipient = payload.store.read_balance(destination);
+                            let recipient = payload
+                                .store
+                                .balance_with_payment(destination, context.budget)?;
                             let recipients = if value.is_zero() {
                                 vec![None]
                             } else {
@@ -552,22 +589,33 @@ fn create_prepared<D: EvmNumericAlgebra>(
                                 }
                             };
                             for recipient in recipients {
+                                payload.pay_clone_with(context.budget)?;
                                 let mut branch = payload.clone();
                                 if let Some(recipient) = recipient {
                                     let Some(total) = recipient.checked_add(*value) else {
-                                        immediate_failure(result, branch, next);
+                                        immediate_failure(result, branch, next, context)?;
                                         continue;
                                     };
-                                    write_balance_literal(&mut branch.store, destination, total);
+                                    write_balance_literal(
+                                        &mut branch.store,
+                                        destination,
+                                        total,
+                                        context,
+                                    )?;
                                 }
                                 if let Some(balance) = balance {
                                     write_balance_literal(
                                         &mut branch.store,
                                         caller_address,
                                         *balance - *value,
-                                    );
+                                        context,
+                                    )?;
                                 }
-                                branch.store.begin_creation(destination);
+                                branch.store.begin_creation_with_payment(
+                                    destination,
+                                    domain,
+                                    context.budget,
+                                )?;
                                 branch.call_stack.push_child(EvmChildFrame {
                                     state: EvmFrameState {
                                         key: FrameKey {
@@ -585,19 +633,40 @@ fn create_prepared<D: EvmNumericAlgebra>(
                                         code: FrameCode::InitCode,
                                         program: Some(init_program.clone()),
                                         stack: Vec::new(),
-                                        memory: EvmByteArray::<D::Element>::memory(),
-                                        calldata: EvmByteArray::<D::Element>::empty(),
+                                        memory: EvmByteArray::memory_with_payment(
+                                            domain,
+                                            context.budget,
+                                        )?,
+                                        calldata: EvmByteArray::empty_with_payment(
+                                            domain,
+                                            context.budget,
+                                        )?,
                                         environment_calldata: false,
                                         address_operand: None,
                                         caller_operand: None,
-                                        returndata: EvmByteArray::<D::Element>::empty(),
-                                        call_value: EvmValue::<D::Element>::constant(*value),
+                                        returndata: EvmByteArray::empty_with_payment(
+                                            domain,
+                                            context.budget,
+                                        )?,
+                                        call_value: summary::literal(
+                                            *value,
+                                            domain,
+                                            context.budget,
+                                        )?,
                                         saved_store: saved_store.clone(),
                                     },
                                     continuation: EvmContinuation {
                                         return_block: Some(next),
-                                        output_offset: zero(),
-                                        output_size: zero(),
+                                        output_offset: summary::literal(
+                                            U256::ZERO,
+                                            domain,
+                                            context.budget,
+                                        )?,
+                                        output_size: summary::literal(
+                                            U256::ZERO,
+                                            domain,
+                                            context.budget,
+                                        )?,
                                         creation: Some(destination),
                                     },
                                 });
@@ -645,7 +714,7 @@ pub(super) fn finish_creation<D: EvmNumericAlgebra>(
     }
     if lengths.is_some_and(|lengths| lengths.iter().all(|length| *length > U256::from(24_576))) {
         *kind = OutcomeKind::Failure;
-        *data = EvmByteArray::<D::Element>::empty();
+        *data = EvmByteArray::empty_with_payment(context.domain, context.budget)?;
         return Ok(());
     }
     let length = query::resolve(data.len().numeric(), &mut proof, context.budget)?
@@ -657,7 +726,7 @@ pub(super) fn finish_creation<D: EvmNumericAlgebra>(
         Materialized::Bytes(bytes) => bytes,
         Materialized::ForbiddenPrefix => {
             *kind = OutcomeKind::Failure;
-            *data = EvmByteArray::<D::Element>::empty();
+            *data = EvmByteArray::empty_with_payment(context.domain, context.budget)?;
             return Ok(());
         }
         Materialized::Unknown => {
@@ -668,7 +737,7 @@ pub(super) fn finish_creation<D: EvmNumericAlgebra>(
     };
     if bytes.len() > 24_576 || bytes.first() == Some(&0xef) {
         *kind = OutcomeKind::Failure;
-        *data = EvmByteArray::<D::Element>::empty();
+        *data = EvmByteArray::empty_with_payment(context.domain, context.budget)?;
         return Ok(());
     }
     let runtime = Program::decode_with_fork(
@@ -683,12 +752,18 @@ pub(super) fn finish_creation<D: EvmNumericAlgebra>(
     .expect("validated EVM runtime bytecode with a non-EF first byte always decodes");
     payload.store.deploy_code(address, runtime);
     // Successful CREATE never exposes its runtime as RETURNDATA in the caller.
-    *data = EvmByteArray::<D::Element>::empty();
+    *data = EvmByteArray::empty_with_payment(context.domain, context.budget)?;
     Ok(())
 }
 
 #[cfg(test)]
+pub(super) mod test_support;
+
+#[cfg(test)]
 mod tests {
+
+    mod lifecycle;
+    mod payment;
 
     use super::reserved;
     use crate::{Fork, analysis::testing::World};
