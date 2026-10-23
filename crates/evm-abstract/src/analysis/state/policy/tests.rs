@@ -30,43 +30,6 @@ fn range(upper: u64) -> TestValue {
 }
 
 #[test]
-fn process_private_data_cannot_be_reinterpreted_as_native_input() {
-    let algebra = ValueAlgebra::new(ProductAlgebra::default());
-    let (world, entry) = fixtures::fixture(&[(0x101, "600160005500")]);
-    let initial = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
-    let mut budget = WorkBudget::new(20_000_000);
-    let process = super::payload::caller::form_with_runtime(
-        &initial,
-        &entry,
-        algebra.borrowed(),
-        &mut budget,
-        true,
-    )
-    .unwrap();
-    assert_eq!(
-        process.semantics(),
-        crate::analysis::TransferSemantics::KnownProcess
-    );
-    let mut cx = PolicyContext::new(algebra.borrowed(), &entry, &mut budget);
-    assert!(matches!(
-        process.instantiate(&mut cx),
-        Err(MachineError::Process(
-            crate::analysis::ProcessBoundary::NativeInstantiation
-        ))
-    ));
-    let native = EvmPayloadSummary::project(&initial, &mut cx).unwrap();
-    assert_eq!(
-        native.semantics(),
-        crate::analysis::TransferSemantics::Native
-    );
-    assert!(native.instantiate(&mut cx).is_ok());
-    assert!(matches!(
-        process.regional_join(&native, Acceleration::Join, &mut cx),
-        Err(MachineError::Shape)
-    ));
-}
-
-#[test]
 fn equal_relative_replays_pay_comparison_and_copy_without_rebuilding_or_skipping_widening() {
     let values = ValueAlgebra::new(ProductAlgebra::default());
     let domain = values.borrowed();
@@ -139,6 +102,43 @@ fn equal_relative_replays_pay_comparison_and_copy_without_rebuilding_or_skipping
     );
     assert_eq!(widened.used(), rebuilt.used());
     assert!(left.eq_with_payment(&right, domain, &mut setup).unwrap());
+}
+
+#[test]
+fn process_private_data_cannot_be_reinterpreted_as_native_input() {
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let (world, entry) = fixtures::fixture(&[(0x101, "600160005500")]);
+    let initial = transfer::initial(&world, &entry, algebra.borrowed()).unwrap();
+    let mut budget = WorkBudget::new(20_000_000);
+    let process = super::payload::caller::form_with_runtime(
+        &initial,
+        &entry,
+        algebra.borrowed(),
+        &mut budget,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        process.semantics(),
+        crate::analysis::TransferSemantics::KnownProcess
+    );
+    let mut cx = PolicyContext::new(algebra.borrowed(), &entry, &mut budget);
+    assert!(matches!(
+        process.instantiate(&mut cx),
+        Err(MachineError::Process(
+            crate::analysis::ProcessBoundary::NativeInstantiation
+        ))
+    ));
+    let native = EvmPayloadSummary::project(&initial, &mut cx).unwrap();
+    assert_eq!(
+        native.semantics(),
+        crate::analysis::TransferSemantics::Native
+    );
+    assert!(native.instantiate(&mut cx).is_ok());
+    assert!(matches!(
+        process.regional_join(&native, Acceleration::Join, &mut cx),
+        Err(MachineError::Shape)
+    ));
 }
 
 #[test]
