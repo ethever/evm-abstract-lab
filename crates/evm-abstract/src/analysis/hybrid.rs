@@ -49,6 +49,18 @@ pub enum HybridLocalScope {
     /// Pending predecessors may grow it; uninstalled successors remain covered
     /// by the baseline. Started/OperandsConsumed/Dispatched remain distinct.
     RetainedInputPrefix,
+    /// Symbolic-root observations additionally condition on the retained native
+    /// owner namespace; they do not cover every original logical-owner alias.
+    NativeOwnerNamespacePrefix,
+}
+
+/// Native kernel currency and original owner-binding coverage are distinct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum HybridNativeBinding {
+    /// Original concrete owner agrees with the native entry namespace.
+    OriginalOwner,
+    /// Retained native preparation has no proof for all symbolic-root aliases.
+    SymbolicOwnerNamespace,
 }
 
 /// Which complete interpretation supplies the selected control/effect relation.
@@ -102,8 +114,11 @@ pub struct HybridWork {
 pub struct HybridCoverage {
     /// Baseline kernel closure and all retained procedure source guards hold.
     pub baseline_current: bool,
-    /// Native detail kernel closure and source guards hold on the same binding.
+    /// Native kernel closure and source guards hold under `detail_binding`.
+    /// This alone does not authorize whole-native substitution.
     pub detail_current: bool,
+    /// Qualification of the original root owner in native preparation.
+    pub detail_binding: HybridNativeBinding,
     /// Current native sites layered on the baseline, even with partial detail.
     pub local_detail_sites: usize,
     /// Frozen region choices actually applied by native partition admission.
@@ -222,7 +237,14 @@ impl<N: WordElement> HybridAnalysis<N> {
                         .execution_evidence()
                         .expect("selected current native receipt");
                     HybridLocalDetail {
-                        scope: HybridLocalScope::RetainedInputPrefix,
+                        scope: match self.coverage.detail_binding {
+                            HybridNativeBinding::OriginalOwner => {
+                                HybridLocalScope::RetainedInputPrefix
+                            }
+                            HybridNativeBinding::SymbolicOwnerNamespace => {
+                                HybridLocalScope::NativeOwnerNamespacePrefix
+                            }
+                        },
                         state,
                         state_id: state.id,
                         frame: state.active(),
