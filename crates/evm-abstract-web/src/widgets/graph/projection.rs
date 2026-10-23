@@ -25,7 +25,7 @@ pub(super) struct DisplayNode {
     pub id: usize,
     pub members: Vec<usize>,
     pub program: Option<usize>,
-    pub basic_block: usize,
+    pub basic_block: Option<usize>,
     pub start_pc: Option<usize>,
 }
 
@@ -51,12 +51,10 @@ enum GroupKey {
 
 impl GroupKey {
     fn for_state(state: &CfgBlock, mode: GraphMode) -> Self {
-        match (mode, state.program, state.start_pc) {
-            (GraphMode::Blocks, Some(program), Some(pc)) => Self::Block {
-                program,
-                block: state.basic_block,
-                pc,
-            },
+        match (mode, state.program, state.start_pc, state.basic_block) {
+            (GraphMode::Blocks, Some(program), Some(pc), Some(block)) => {
+                Self::Block { program, block, pc }
+            }
             _ => Self::State(state.id),
         }
     }
@@ -188,5 +186,13 @@ fn edge_kind_key(kind: EdgeKind) -> u8 {
         EdgeKind::SummaryReturn => 8,
         EdgeKind::SummaryRevert => 9,
         EdgeKind::SummaryFailure => 10,
+        EdgeKind::Process(action) => match action {
+            evm_abstract_protocol::ProcessAction::Call => 11,
+            evm_abstract_protocol::ProcessAction::StaticCall => 12,
+            evm_abstract_protocol::ProcessAction::DelegateCall => 13,
+            evm_abstract_protocol::ProcessAction::CallCode => 14,
+            evm_abstract_protocol::ProcessAction::Create => 15,
+            evm_abstract_protocol::ProcessAction::Create2 => 16,
+        },
     }
 }

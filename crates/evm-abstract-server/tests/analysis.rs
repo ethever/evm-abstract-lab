@@ -492,11 +492,11 @@ fn world_payload_keeps_exact_memory_storage_transient_and_terminal_bytes() {
     let root = &report.states[0].entry.frames[0];
     assert!(buffer_matches(
         &report,
-        &report.byte_arrays[root.calldata],
+        &report.byte_arrays[root.calldata.unwrap()],
         &[0xaa, 0xbb]
     ));
     assert_eq!(
-        report.byte_arrays[root.calldata]
+        report.byte_arrays[root.calldata.unwrap()]
             .length
             .constants
             .as_deref(),
@@ -526,7 +526,7 @@ fn world_payload_keeps_exact_memory_storage_transient_and_terminal_bytes() {
     let account = report.stores[outcome.store]
         .accounts
         .iter()
-        .find(|account| account.address == root.storage_address)
+        .find(|account| root.storage_address.as_deref() == Some(account.address.as_str()))
         .unwrap();
     assert!(
         account
@@ -545,12 +545,12 @@ fn world_payload_keeps_exact_memory_storage_transient_and_terminal_bytes() {
     let exit = report.states[outcome.state].exit.as_ref().unwrap();
     assert!(buffer_matches(
         &report,
-        &report.byte_arrays[exit.frames[0].memory],
+        &report.byte_arrays[exit.frames[0].memory.unwrap()],
         &word
     ));
     assert!(
         report.stores[exit.store].accounts.iter().any(|account| {
-            account.address == root.storage_address
+            root.storage_address.as_deref() == Some(account.address.as_str())
                 && account.transient.iter().any(|slot| {
                     slot.slot == "0x0" && slot.value.constants == Some(vec!["0x7".into()])
                 })
@@ -792,7 +792,7 @@ fn user_budget_above_old_state_ceiling_builds_a_complete_graph_and_ssa() {
     assert_eq!(report.ssa.blocks.len(), report.cfg.len());
     for (id, block) in report.cfg.iter().enumerate() {
         assert_eq!(block.id, id);
-        assert_eq!(block.basic_block, id);
+        assert_eq!(block.basic_block, Some(id));
         assert_eq!(block.start_pc, Some(id));
         assert!(block.context.is_empty());
         assert_eq!(report.disassembly[id].id, id);
@@ -928,7 +928,7 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
     };
     assert_eq!(
         (state.state, cfg.id, block.state, cfg.basic_block),
-        (0, 0, 0, 0)
+        (0, 0, 0, Some(0))
     );
     assert_eq!(cfg.start_pc, Some(0));
     assert_eq!(cfg.frame_depth, 1);
@@ -940,7 +940,7 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
     let [entry] = state.entry.frames.as_slice() else {
         panic!("expected the original root frame")
     };
-    assert_eq!(entry.basic_block, 0);
+    assert_eq!(entry.basic_block, Some(0));
     assert!(entry.context.is_empty());
     assert!(entry.stack.is_empty());
     assert!(cfg.entry_stack.is_empty());
@@ -948,7 +948,7 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
     let program = &partial.programs[entry.program.unwrap()];
     assert_eq!(program.bytecode, format!("0x{code}"));
     assert_eq!(program.code_address, entry.code_address);
-    assert_eq!(program.code_hash, entry.code_hash);
+    assert_eq!(entry.code_hash.as_ref(), Some(&program.code_hash));
     let [source] = program.blocks.as_slice() else {
         panic!("expected one original source block")
     };
@@ -1076,7 +1076,7 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
     let mut unchanged = entry.clone();
     unchanged.memory = frame.memory;
     assert_eq!(frame, &unchanged);
-    let initial_memory = &partial.byte_arrays[entry.memory];
+    let initial_memory = &partial.byte_arrays[entry.memory.unwrap()];
     assert!(initial_memory.memory);
     assert!(buffer_matches(&partial, initial_memory, &[]));
     assert!(initial_memory.cells.is_empty());
@@ -1098,7 +1098,7 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
         partial.symbolic.nodes[initial_view.state.node],
         Expression::BytesZero
     ));
-    let memory = &partial.byte_arrays[frame.memory];
+    let memory = &partial.byte_arrays[frame.memory.unwrap()];
     assert!(memory.memory);
     assert_eq!(memory.default, initial_memory.default);
     let captured = native_view(&partial.symbolic, memory.symbolic.node, limits).unwrap();
@@ -1271,7 +1271,10 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
         let [entry] = state.entry.frames.as_slice() else {
             panic!("expected the original root frame")
         };
-        assert_eq!(entry.address_value, partial.metadata.environment.to);
+        assert_eq!(
+            entry.address_value.as_ref(),
+            Some(&partial.metadata.environment.to)
+        );
         let [frame] = exit.frames.as_slice() else {
             panic!("pending MSTORE must retain the root frame")
         };
@@ -1279,9 +1282,9 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
         let mut unchanged = entry.clone();
         unchanged.memory = frame.memory;
         assert_eq!(frame, &unchanged);
-        let initial_memory = &partial.byte_arrays[entry.memory];
+        let initial_memory = &partial.byte_arrays[entry.memory.unwrap()];
         assert!(buffer_matches(&partial, initial_memory, &[]));
-        let memory = &partial.byte_arrays[frame.memory];
+        let memory = &partial.byte_arrays[frame.memory.unwrap()];
         assert!(memory.memory);
         assert_eq!(memory.length.constants, Some(vec!["0x100020".into()]));
         assert!(memory.cells.is_empty());
@@ -1392,12 +1395,15 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
             panic!("expected the original symbolic root frame")
         };
         assert!(frame.stack.is_empty());
-        assert_eq!(frame.address_value, partial.metadata.environment.to);
+        assert_eq!(
+            frame.address_value.as_ref(),
+            Some(&partial.metadata.environment.to)
+        );
         assert_eq!(
             partial.stores[frame.rollback_store].touched_default,
             Some(false)
         );
-        let memory = &partial.byte_arrays[frame.memory];
+        let memory = &partial.byte_arrays[frame.memory.unwrap()];
         assert!(memory.memory);
         assert!(buffer_matches(&partial, memory, &[]));
         assert!(memory.cells.is_empty());
@@ -1415,7 +1421,7 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
         let program = &partial.programs[root];
         assert_eq!(program.bytecode, format!("0x{code}"));
         assert_eq!(program.code_address, frame.code_address);
-        assert_eq!(program.code_hash, frame.code_hash);
+        assert_eq!(frame.code_hash.as_ref(), Some(&program.code_hash));
         assert_eq!(partial.disassembly, program.blocks);
         let [source] = program.blocks.as_slice() else {
             panic!("expected the complete original source block")

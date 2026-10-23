@@ -17,14 +17,18 @@ choice! {
 record! {
     /// A known-code or abstract-environment relation in one joint fixed point.
     pub struct AbstractProcedure {
+        /// Explicit process identity; native-only anchor fields are absent when present.
+        pub process: Option<crate::ProcessFrameKey>,
+        /// Actual joined process invocation; sharing a class does not imply pairwise equality.
+        pub process_input: Option<crate::ProcessOperands>,
         /// Interpretation independently of captured code kind and identity.
         pub semantics: crate::TransferSemantics,
         /// Code identity; an abstract namespace is not an observed account.
-        pub code_address: String,
+        pub code_address: Option<String>,
         /// Captured code hash, without an invented unknown instruction stream.
         pub code_hash: Option<String>,
         /// Storage namespace used by the relation.
-        pub storage_address: String,
+        pub storage_address: Option<String>,
         /// Original executable kind, retained under conservative interpretation.
         pub kind: crate::CodeKind,
         /// Propagated static execution restriction.
@@ -85,16 +89,18 @@ record! {
 record! {
     /// Body identity without payloads, instruction traces or SSA definitions.
     pub struct RegionalFrame {
+        /// Explicit process identity; native-only anchor fields are absent when present.
+        pub process: Option<crate::ProcessFrameKey>,
         /// Captured executable account, distinct from the state owner.
-        pub code_address: String,
+        pub code_address: Option<String>,
         /// Captured hash; absent for an abstract environment.
         pub code_hash: Option<String>,
         /// Persistent/transient state owner.
-        pub storage_address: String,
+        pub storage_address: Option<String>,
         /// Logical ADDRESS, independently of the owner namespace.
-        pub address_value: crate::AddressValue,
+        pub address_value: Option<crate::AddressValue>,
         /// Concrete or symbolic CALLER.
-        pub caller: crate::AddressValue,
+        pub caller: Option<crate::AddressValue>,
         /// Actual executable mode.
         pub kind: crate::CodeKind,
         /// Propagated static restriction.
@@ -104,7 +110,7 @@ record! {
         /// This is not a PC.
         pub basic_block: Option<usize>,
         /// Input stack shape, without invented values.
-        pub stack_height: usize,
+        pub stack_height: Option<usize>,
         /// Selected finite internal jump context.
         pub context: Vec<usize>,
     }
@@ -164,6 +170,8 @@ record! {
 record! {
     /// A retained caller continuation, distinct from its callee relation.
     pub struct RegionalCall {
+        /// Actual native control scope; None does not establish primitive scope.
+        pub scope: Option<crate::ProcessControlScope>,
         /// Conservative action; absent for an ordinary native subscription.
         pub action: Option<crate::ProcessAction>,
         /// Original action target, independently of executable code and state owner.
@@ -185,6 +193,8 @@ record! {
 record! {
     /// A real callee-output delivery to this call's continuation.
     pub struct RegionalReturn {
+        /// Actual CREATE/CREATE2 completion cases; empty for ordinary calls.
+        pub creation: Vec<crate::ProcessCompletionCase>,
         /// Delivered termination alternative.
         pub kind: crate::OutcomeKind,
         /// Caller-template revision actually instantiated.

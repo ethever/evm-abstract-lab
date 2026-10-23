@@ -212,7 +212,7 @@ fn incomplete_memory_step_never_acquires_a_value_or_folded_result() {
     assert_eq!(completed_frame.stack.len(), 1);
     assert_eq!(completed_frame.stack[0].constants, Some(vec!["0x1".into()]));
     assert_eq!(
-        complete.byte_arrays[completed_frame.memory]
+        complete.byte_arrays[completed_frame.memory.unwrap()]
             .length
             .constants,
         Some(vec!["0x20".into()])
@@ -275,7 +275,7 @@ fn incomplete_memory_step_never_acquires_a_value_or_folded_result() {
     assert_eq!(frame.stack.len(), 1);
     assert_eq!(frame.stack[0].constants, Some(vec!["0x1".into()]));
     assert_eq!(frame.memory, state.entry.frames.last().unwrap().memory);
-    let memory = &report.byte_arrays[frame.memory];
+    let memory = &report.byte_arrays[frame.memory.unwrap()];
     assert_eq!(memory.length.constants, Some(vec!["0x0".into()]));
     let api::Expression::View(view) = &report.symbolic.nodes[memory.symbolic.node] else {
         panic!("the pending load keeps the initial zero content root")

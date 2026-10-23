@@ -210,13 +210,18 @@ fn attach_snapshots(report: &mut AnalysisReport) {
             let entry = api::MachineSnapshot {
                 path: evm_abstract_protocol::PathRef { node: 4 },
                 frames: vec![api::FrameSnapshot {
+                    process: None,
+                    process_operands: None,
+                    process_creation: None,
                     index: 0,
                     program: block.program,
                     code_address: block.code_address.clone(),
-                    code_hash: program.code_hash.clone(),
+                    code_hash: Some(program.code_hash.clone()),
                     storage_address: block.storage_address.clone(),
-                    address_value: api::AddressValue::Concrete(block.storage_address.clone()),
-                    caller: report.metadata.environment.caller.clone(),
+                    address_value: Some(api::AddressValue::Concrete(
+                        block.storage_address.clone().unwrap(),
+                    )),
+                    caller: Some(report.metadata.environment.caller.clone()),
                     address_operand: None,
                     caller_operand: None,
                     call_value: report.metadata.environment.call_value.clone(),
@@ -225,9 +230,9 @@ fn attach_snapshots(report: &mut AnalysisReport) {
                     basic_block: block.basic_block,
                     context: block.context.clone(),
                     stack: vec![scalar(block.id)],
-                    memory: 1,
-                    calldata: 0,
-                    returndata: 2,
+                    memory: Some(1),
+                    calldata: Some(0),
+                    returndata: Some(2),
                     rollback_store: 0,
                     continuation: None,
                 }],
@@ -449,12 +454,12 @@ fn states_and_program_filter_preserve_cross_program_local_neighbors() {
     let mut child = report.cfg[0].clone();
     child.id = 777;
     child.program = Some(1);
-    child.code_address = "0x2222222222222222222222222222222222222222".into();
+    child.code_address = Some("0x2222222222222222222222222222222222222222".into());
     report.programs.push(source_program(
         1,
         child.code_address.clone(),
         vec![DisasmBlock {
-            id: child.basic_block,
+            id: child.basic_block.unwrap(),
             start_pc: 0,
             instructions: child.instructions.clone(),
         }],

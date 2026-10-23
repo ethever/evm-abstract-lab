@@ -113,6 +113,11 @@ fn native_process_receipts_survive_plain_and_ssa_cli_envelopes() {
             .last()
             .unwrap();
         assert_eq!(record["kind"], "KnownProcess");
+        let key = &record["procedures"][0]["frame"];
+        assert_eq!(key.as_object().unwrap().len(), 1);
+        assert!(key["process"]["source"]["Runtime"]["hash"].is_string());
+        assert_eq!(key["process"]["epoch"].as_str().unwrap().len(), 66);
+        assert!(record["procedures"][0]["process_input"].is_object());
         let receipt = &record["regional_cfg"]["nodes"][0]["transfer"];
         assert_eq!(receipt["semantics"], "KnownProcess");
         assert_eq!(receipt["visited_block"], false);

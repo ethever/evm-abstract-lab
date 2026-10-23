@@ -95,6 +95,16 @@ impl<N: WordElement, Bytes, Checkpoint, Operand> EvmFrame<N, Bytes, Checkpoint, 
     }
 
     pub(in crate::analysis) fn metadata_work(&self) -> usize {
+        if self.key.process.is_some() {
+            // A process retains an immutable Program handle. Its capability
+            // scan is paid separately; cloning a process never traverses the
+            // captured instructions. Shape checks below require shared bytes.
+            return self
+                .key
+                .process_work()
+                .saturating_add(self.key.jump_history.len())
+                .saturating_add(16);
+        }
         self.program
             .as_ref()
             .map_or(0, |program| {
@@ -120,7 +130,15 @@ impl<N: WordElement, Bytes, Checkpoint, Operand> EvmFrame<N, Bytes, Checkpoint, 
     pub(in crate::analysis) fn same_shape(&self, other: &Self) -> bool {
         self.key == other.key
             && self.code == other.code
-            && self.program == other.program
+            && if self.key.process.is_some() {
+                match (&self.program, &other.program) {
+                    (Some(left), Some(right)) => left.shares_capture(right),
+                    (None, None) => true,
+                    _ => false,
+                }
+            } else {
+                self.program == other.program
+            }
             && self.stack.len() == other.stack.len()
     }
 
@@ -237,11 +255,13 @@ impl<N: WordElement> EvmFrameState<N> {
             .map(EvmValue::work_size)
             .chain(self.byte_arrays().map(EvmByteArray::work_size))
             .fold(
-                self.saved_store
-                    .state()
-                    .work_size()
-                    .saturating_add(self.metadata_work())
-                    .saturating_add(3),
+                (if self.key.process.is_some() {
+                    self.saved_store.state().process_work_size()
+                } else {
+                    self.saved_store.state().work_size()
+                })
+                .saturating_add(self.metadata_work())
+                .saturating_add(3),
                 usize::saturating_add,
             )
     }

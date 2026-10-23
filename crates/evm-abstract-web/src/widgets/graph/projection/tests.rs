@@ -40,7 +40,7 @@ fn blocks_fold_129_contexts_without_changing_native_analysis_or_member_ids() {
         .collect();
     // Storage and call-frame roles remain members of the same source block.
     report.cfg[128].frame_depth = 4;
-    report.cfg[128].storage_address = "different storage owner".into();
+    report.cfg[128].storage_address = Some("different storage owner".into());
     let before = report.clone();
     let index = ReportIndex::new(&report);
     let graph = DisplayGraph::build(&report, &index, GraphMode::default(), None, None, 2);
@@ -49,7 +49,7 @@ fn blocks_fold_129_contexts_without_changing_native_analysis_or_member_ids() {
     assert_eq!(graph.nodes[0].id, 10);
     assert_eq!(graph.nodes[0].members, ids);
     assert_eq!(graph.nodes[0].program, Some(0));
-    assert_eq!(graph.nodes[0].basic_block, 0);
+    assert_eq!(graph.nodes[0].basic_block, Some(0));
     assert_eq!(graph.nodes[0].start_pc, Some(0));
     assert_eq!(graph.state_to_node.len(), 129);
     assert!(ids.iter().all(|id| graph.state_to_node[id] == 10));
@@ -73,7 +73,7 @@ fn source_identity_includes_program_and_block_but_synthetic_states_stay_separate
     report.cfg[3].program = None;
     report.cfg[4].start_pc = None;
     report.cfg[5].start_pc = None;
-    report.cfg[6].basic_block = 1;
+    report.cfg[6].basic_block = Some(1);
     report.cfg[7].start_pc = Some(9);
     let index = ReportIndex::new(&report);
     let all = DisplayGraph::build(&report, &index, GraphMode::Blocks, None, None, 2);
@@ -88,8 +88,8 @@ fn source_identity_includes_program_and_block_but_synthetic_states_stay_separate
 #[test]
 fn folding_keeps_edge_kinds_and_all_native_endpoints_available() {
     let mut report = repeated_states(4);
-    report.cfg[2].basic_block = 1;
-    report.cfg[3].basic_block = 1;
+    report.cfg[2].basic_block = Some(1);
+    report.cfg[3].basic_block = Some(1);
     report.edges = vec![
         edge(100, 10, 24, EdgeKind::Jump),
         edge(200, 17, 31, EdgeKind::Jump),

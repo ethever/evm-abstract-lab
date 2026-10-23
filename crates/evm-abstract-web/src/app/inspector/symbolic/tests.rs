@@ -72,7 +72,7 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
             let state = &installed.states[0];
             let exit = state.exit.as_ref().unwrap();
             let frame = exit.frames.last().unwrap();
-            let input = &installed.byte_arrays[frame.calldata];
+            let input = &installed.byte_arrays[frame.calldata.unwrap()];
             let length = input.length.expression.unwrap();
             assert!(
                 matches!(&installed.symbolic.nodes[length.node], api::Expression::Input(identity)
@@ -91,8 +91,8 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
                 assert_eq!(installed.status, api::AnalysisStatus::Converged);
                 assert!(installed.frontiers.is_empty());
                 assert!(installed.ssa.complete);
-                let api::Expression::View(memory) =
-                    &installed.symbolic.nodes[installed.byte_arrays[frame.memory].symbolic.node]
+                let api::Expression::View(memory) = &installed.symbolic.nodes
+                    [installed.byte_arrays[frame.memory.unwrap()].symbolic.node]
                 else {
                     panic!("installed memory retains its view")
                 };
@@ -156,7 +156,7 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
                 assert_eq!(pending.store, exit.store);
                 assert_eq!(exit.store, state.entry.store);
                 assert!(frame.stack.is_empty());
-                let memory = &installed.byte_arrays[frame.memory];
+                let memory = &installed.byte_arrays[frame.memory.unwrap()];
                 assert_eq!(memory.length.constants, Some(vec!["0x0".into()]));
                 let api::Expression::View(view) = &installed.symbolic.nodes[memory.symbolic.node]
                 else {

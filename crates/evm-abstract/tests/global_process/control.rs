@@ -344,3 +344,35 @@ fn constructors_callbacks_and_enclosing_rollback_use_installed_native_continuati
         }
     }
 }
+
+#[test]
+fn symbolic_root_storage_effect_covers_its_known_address_alias() {
+    let mut code = Assembly::default();
+    code.store(0, 9).op(opcode::STOP);
+    let code = code.finish();
+    let mut world = new_world();
+    insert(&mut world, A, &code, &[(0, 5)]);
+    insert(&mut world, U, &code, &[(0, 5)]);
+    let concrete = evm_abstract::world::EvmEntry::concrete(
+        address(U),
+        address(super::support::USER),
+        word(0),
+        EvmByteArray::empty(),
+    );
+    let witness = oracle::execute_with_gas(&world, &concrete, 100_000);
+    assert_eq!(witness.kind, OutcomeKind::Return);
+    assert_eq!(witness.slot(U, 0), U256::from(9));
+    let mut input = entry(EvmByteArray::empty());
+    input.environment.to = evm_abstract::world::AddressInput::unknown_to();
+    let analysis = super::run_input(world, input, 100_000_000);
+    evidence("symbolic-root-known-alias-write", &analysis);
+    assert_eq!(analysis.status(), Status::Converged);
+    assert!(
+        analysis
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.kind == OutcomeKind::Return
+                && super::support::read(&outcome.store, U, 0).contains(U256::from(9))),
+        "a symbolic logical root may be the known address U; preserving U=5 after its local write is not a covering effect"
+    );
+}
