@@ -18,6 +18,7 @@ use crate::{
 
 mod calls;
 mod capabilities;
+pub mod creation;
 pub(super) use capabilities::Capabilities;
 
 impl<
@@ -87,34 +88,21 @@ impl<
             })
             .collect::<BTreeSet<_>>();
         if capabilities.effects {
-            // Reuse the native lifecycle/unknown-effect operation. This coarse
-            // invoice pays four complete Store copy upper bounds plus a native
-            // Top constructor per retained field, before the operation runs.
-            // A later dedicated invoice can reduce this conservative tariff.
-            for _ in 0..4 {
-                payload.store.pay_clone_with(self.budget)?;
-            }
-            let top = self
-                .domain
-                .numeric_algebra()
-                .summary_construction_work(SummaryConstruction::Top);
-            self.reserve(
-                payload
-                    .store
-                    .work_size()
-                    .saturating_mul(top.saturating_add(8))
-                    .saturating_add(64),
-            )
-            .map_err(MachineError::frontier_reason)?;
-            payload
+            payload.store = payload
                 .store
-                .unknown_effects(
+                .process_effects_with_payment(
                     &protected,
                     Some(payload.active().key.address),
                     payload.active().key.is_static,
                     self.domain,
+                    self.budget,
                 )
-                .map_err(|error| MachineError::Store(error).frontier_reason())?;
+                .map_err(|error| match error {
+                    crate::resource::SummaryError::Budget(error) => FrontierReason::from(error),
+                    crate::resource::SummaryError::Source(error) => {
+                        MachineError::Store(error).frontier_reason()
+                    }
+                })?;
         }
         // Entered-frame exceptional completion covers finite gas exhaustion,
         // including positive-cost pure loops. It uses actual rollback/sticky

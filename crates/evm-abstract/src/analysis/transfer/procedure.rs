@@ -57,7 +57,7 @@ mod cycles;
 mod effects;
 mod environment;
 mod evidence;
-mod process;
+pub(in crate::analysis) mod process;
 pub use evidence::{
     EvmRegionalCall, EvmRegionalCfg, EvmRegionalEdge, EvmRegionalNode, EvmRegionalReturn,
     EvmRegionalTransfer,

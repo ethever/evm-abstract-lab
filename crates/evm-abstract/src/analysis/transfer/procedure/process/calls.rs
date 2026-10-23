@@ -135,11 +135,10 @@ impl<
                         parent.address_operand.as_ref().expect("projected ADDRESS"),
                         self.budget,
                     )?),
-                    if is_static {
-                        summary::constant(U256::ZERO, self.domain, self.budget)?
-                    } else {
-                        summary::top(self.domain, self.budget)?
-                    },
+                    // EIP-214 restricts nonzero CALL, but CALLCODE performs no
+                    // balance transfer and may pass a nonzero value in static
+                    // mode. The child still inherits the static restriction.
+                    summary::top(self.domain, self.budget)?,
                 ),
                 ProcessAction::Create | ProcessAction::Create2 => {
                     unreachable!("allocation stays a typed rule obligation")

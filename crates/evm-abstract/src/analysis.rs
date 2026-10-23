@@ -79,6 +79,7 @@ pub use terminal::{
     RootTerminalRetention, RootTerminalScope, RootTerminalTrigger,
 };
 pub use transfer::create::CreationBoundary;
+pub use transfer::procedure::process::creation as process_creation;
 pub use transfer::procedure::{
     EvmRegionalCall, EvmRegionalCfg, EvmRegionalEdge, EvmRegionalNode, EvmRegionalReturn,
     EvmRegionalTransfer,
