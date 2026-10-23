@@ -209,8 +209,9 @@ fn slot_staging_matches_the_original_public_transaction_after_every_fact() {
     }
 }
 
-// The public transaction from a3c42493, retaining full-table staging. Only the
-// predicate algebra is shared; this never calls the optimized insert path.
+// The public transaction from a3c42493 retains full-table staging and bypasses
+// optimized insert. Predicate, validation and normalization helpers are shared;
+// the separate normalization assertions provide their independent coverage.
 fn insert_full_transaction(lattice: &mut FactLattice, fact: Fact) -> Result<FactChange, FactError> {
     if let Fact::Unary(UnaryFact {
         predicate: UnaryPredicate::MemberOf(set),
