@@ -28,6 +28,8 @@ fn source_current_gates_text_transfers_and_deliveries_without_erasing_local_evid
             excluded: false,
             successors: vec![0],
             transfer: Some(EvmRegionalTransfer {
+                semantics: crate::analysis::TransferSemantics::Native,
+                process: None,
                 input_revision: 1,
                 current: true,
                 complete: true,
@@ -41,6 +43,8 @@ fn source_current_gates_text_transfers_and_deliveries_without_erasing_local_evid
             }),
         }],
         calls: vec![EvmRegionalCall {
+            action: None,
+            target: None,
             id: 0,
             from: 0,
             callee: 0,

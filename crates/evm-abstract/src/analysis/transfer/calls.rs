@@ -74,7 +74,7 @@ pub(in crate::analysis) fn resolve_code<'a>(
     }
 }
 
-fn captured_hash<N: WordElement>(
+pub(in crate::analysis::transfer) fn captured_hash<N: WordElement>(
     program: &Option<Program>,
     store: &EvmStore<N>,
     address: Address,

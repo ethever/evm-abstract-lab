@@ -33,6 +33,11 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         &self.location
     }
 
+    /// Interpretation of the active relative input, independently of code kind.
+    pub fn semantics(&self) -> crate::analysis::TransferSemantics {
+        self.active().semantics
+    }
+
     /// Shape of the active relative frame, without exposing summary internals.
     pub fn active_frame(&self) -> &FrameKey {
         &self.active().key
@@ -60,6 +65,15 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         &self,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<EvmMachinePayload<N>, MachineError> {
+        if self
+            .frames
+            .iter()
+            .any(|frame| frame.semantics == crate::analysis::TransferSemantics::KnownProcess)
+        {
+            return Err(MachineError::Process(
+                crate::analysis::ProcessBoundary::NativeInstantiation,
+            ));
+        }
         let input = payload::caller::instantiate_with_payment(self, cx.domain, cx.budget)?;
         cx.reserve(0)?;
         Ok(input)

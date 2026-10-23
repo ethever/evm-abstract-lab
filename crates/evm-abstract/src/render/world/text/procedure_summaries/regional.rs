@@ -62,6 +62,10 @@ pub(super) fn write(
                 "historical transfer"
             };
             writeln!(output, "        {label} | record-local current={local_current} | input revision={} | complete={} | visited block={} | calls={:?} | outcomes={:?}", transfer.input_revision, transfer.complete, transfer.visited_block, transfer.calls, transfer.outcomes).unwrap();
+            if let Some(process) = &transfer.process {
+                writeln!(output, "        coarse {:?} process | repeat={} | actions={:?} | unresolved={:?} | no instruction evidence",
+                    transfer.semantics, process.repeat, process.actions, process.unresolved).unwrap();
+            }
             for edge in &transfer.successors {
                 writeln!(
                     output,
@@ -76,6 +80,14 @@ pub(super) fn write(
     }
     for call in &cfg.calls {
         writeln!(output, "      call c{} | source scope={source_scope} | from=r{} | callee procedure={} | entry nodes={:?} | input revision={}", call.id, call.from, call.callee, call.entries, call.input_revision).unwrap();
+        if let Some(action) = call.action {
+            writeln!(
+                output,
+                "        coarse action={action:?} | target={:?}",
+                call.target
+            )
+            .unwrap();
+        }
         for delivery in &call.deliveries {
             let local_current = delivery.current && delivery.input_revision == call.input_revision;
             let label = if superseded {

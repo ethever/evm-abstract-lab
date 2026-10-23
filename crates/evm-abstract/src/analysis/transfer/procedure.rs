@@ -57,6 +57,7 @@ mod cycles;
 mod effects;
 mod environment;
 mod evidence;
+mod process;
 pub use evidence::{
     EvmRegionalCall, EvmRegionalCfg, EvmRegionalEdge, EvmRegionalNode, EvmRegionalReturn,
     EvmRegionalTransfer,
@@ -132,6 +133,7 @@ struct EvmProcedure<N: WordElement, Key: PolicyKey> {
     entry_payload: EvmPayloadSummary<N>,
     /// Complete captured-program proof, independent of numerical input growth.
     store_effect: effects::StoreEffect,
+    process: Option<process::Capabilities>,
     entry_updates: usize,
     entry_feedback: bool,
     entry_revision: usize,
@@ -229,9 +231,16 @@ fn export_frontiers<N: WordElement>(
     })
 }
 
+type ProcessCall = (
+    crate::analysis::ProcessAction,
+    crate::analysis::ProcessOwner,
+);
+type SubscriberKey<K> = (usize, usize, (Option<ProcessCall>, K));
+
 struct EvmSubscriber<N: WordElement> {
     from: usize,
     callee: usize,
+    action: Option<ProcessCall>,
     /// A relative parent plus one child; each child retains its pre-entry snapshot.
     payload: EvmPayloadSummary<N>,
     input: SlotMeta<EvmPayloadSummary<N>>,
@@ -256,7 +265,7 @@ pub(in crate::analysis) struct EvmTable<
     // Each continuation/callee pair scopes the injected finite vocabulary.
     // Subscriber cardinality is bounded by bodies x procedures x policy keys;
     // every allocation consumes the same transaction work ledger.
-    subscribers_by_key: KeyIndex<(usize, usize, Key)>,
+    subscribers_by_key: KeyIndex<SubscriberKey<Key>>,
     frontiers: Vec<EvmExecutionFrontier<N>>,
     // Moving deferred frontier payloads to the outer result does not erase the
     // relation's incompleteness or make its native completion observation true.
@@ -397,7 +406,12 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         let start_transfers = counters.transfers;
         let start_propagations = self.propagations;
         let start_reused = self.reused;
-        let kind = if payload.active().code == FrameCode::Unknown {
+        let kind = if policies.state.runtime_execution()
+            == crate::analysis::RuntimeExecution::Process
+            && payload.active().code == FrameCode::Runtime
+        {
+            ProcedureSummaryKind::KnownProcess
+        } else if payload.active().code == FrameCode::Unknown {
             ProcedureSummaryKind::UnknownEnvironment
         } else if is_recursive_entry(&payload) {
             ProcedureSummaryKind::KnownRecursion
@@ -638,6 +652,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                     .map(|(id, procedure)| {
                         let input = solver.table.entry_source(id).expect("retained procedure");
                         Ok(EvmProcedureSummary {
+                            semantics: input.payload.active().semantics,
                             frame: procedure.frame.clone(),
                             input: input
                                 .payload

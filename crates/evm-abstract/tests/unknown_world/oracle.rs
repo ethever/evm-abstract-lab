@@ -141,6 +141,14 @@ pub(super) fn execute(
     world: &EvmWorld<NumericValue>,
     entry: &EvmEntry<NumericValue>,
 ) -> Observation {
+    execute_with_gas(world, entry, 10_000_000)
+}
+
+pub(super) fn execute_with_gas(
+    world: &EvmWorld<NumericValue>,
+    entry: &EvmEntry<NumericValue>,
+    gas_limit: u64,
+) -> Observation {
     let mut db = InMemoryDB::default();
     let mut initial_storage = BTreeMap::new();
     for (owner, account) in world.accounts() {
@@ -184,7 +192,7 @@ pub(super) fn execute(
             TxEnv::builder()
                 .caller(entry.environment.caller.as_concrete().unwrap())
                 .kind(TxKind::Call(entry.address))
-                .gas_limit(10_000_000)
+                .gas_limit(gas_limit)
                 .data(
                     entry
                         .environment

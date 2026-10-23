@@ -50,6 +50,10 @@ pub struct EvmRegionalNode {
 /// Receipt of one actual transfer, without per-instruction evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EvmRegionalTransfer {
+    /// Actual interpretation; code kind, Program and source hash stay unchanged.
+    pub semantics: crate::analysis::TransferSemantics,
+    /// Conservative process rules, never instruction/SSA execution evidence.
+    pub process: Option<crate::analysis::EvmProcessTransfer>,
     /// Native input version actually interpreted, after any admitted retry.
     pub input_revision: u64,
     /// The native owner finished and this still describes its current input.
@@ -85,6 +89,12 @@ pub struct EvmRegionalEdge {
 /// A separate caller template subscribed to a callee's growing outputs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EvmRegionalCall {
+    /// Primitive process action, independent of callee code kind. Native calls
+    /// retain their captured-instruction evidence instead.
+    pub action: Option<crate::analysis::ProcessAction>,
+    /// Account named by the action before code/delegation resolution; this is
+    /// separate from both the callee's code account and its state owner.
+    pub target: Option<crate::analysis::ProcessOwner>,
     /// Native subscriber ID, scoped to this table snapshot.
     pub id: usize,
     /// Caller regional body ID.
@@ -118,7 +128,14 @@ pub struct EvmRegionalReturn {
 
 impl EvmRegionalTransfer {
     fn work_size(&self) -> usize {
-        8usize
+        10usize
+            .saturating_add(self.process.as_ref().map_or(0, |process| {
+                process
+                    .actions
+                    .len()
+                    .saturating_add(process.unresolved.len())
+                    .saturating_add(4)
+            }))
             .saturating_add(self.successors.len().saturating_mul(2))
             .saturating_add(self.calls.len())
             .saturating_add(self.outcomes.len())
@@ -254,7 +271,18 @@ impl<
         .zip(present)
         .filter_map(|(kind, present)| present.then_some(kind))
         .collect();
+        if let Some(process) = &execution.process {
+            self.reserve(
+                process
+                    .actions
+                    .len()
+                    .saturating_add(process.unresolved.len())
+                    .saturating_add(4),
+            )?;
+        }
         self.table.nodes[id].transfer = Some(EvmRegionalTransfer {
+            semantics: self.table.nodes[id].payload.active().semantics,
+            process: execution.process.clone(),
             input_revision: input.get(),
             current: false,
             complete: execution.frontiers.is_empty(),
@@ -490,6 +518,8 @@ impl<
                             })
                             .collect();
                         Ok(EvmRegionalCall {
+                            action: subscriber.action.map(|(action, _)| action),
+                            target: subscriber.action.map(|(_, target)| target),
                             id,
                             from: subscriber.from,
                             callee: subscriber.callee,

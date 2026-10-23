@@ -152,6 +152,9 @@ impl<N: WordElement> EvmPayloadSummary<N> {
             return Ok(false);
         }
         for (left, right) in self.frames.iter().zip(&other.frames) {
+            if left.semantics != right.semantics {
+                return Ok(false);
+            }
             if !left.same_shape(right)
                 || left.environment_calldata != right.environment_calldata
                 || left.stack_aliases != right.stack_aliases
@@ -229,15 +232,39 @@ pub(in crate::analysis) fn form_normalized_with_payment<
     domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
 ) -> Result<EvmPayloadSummary<N>, MachineError> {
+    form_with_runtime(payload, entry, domain, budget, false)
+}
+
+/// Process frames retain executable source and invocation/checkpoint values;
+/// their private byte/stack data is interpreted only by the process adapter.
+pub(in crate::analysis) fn form_with_runtime<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    payload: &EvmMachinePayload<N>,
+    entry: &EvmEntry<N>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+    runtime_process: bool,
+) -> Result<EvmPayloadSummary<N>, MachineError> {
     pay(budget, payload.policy_work_size())?;
-    let storage_observations =
+    let mut storage_observations =
         super::super::storage_observations::EvmStorageObservations::form_with_payment(
             payload, domain, budget,
         )?;
     let mut frames = Vec::with_capacity(payload.call_stack.depth());
     for frame in payload.call_stack.iter() {
         let unknown = frame.code == FrameCode::Unknown;
-        let stack = if unknown {
+        let known_process = runtime_process && frame.code == FrameCode::Runtime;
+        let process = unknown || known_process;
+        let semantics = if unknown {
+            crate::analysis::TransferSemantics::Environment
+        } else if known_process {
+            crate::analysis::TransferSemantics::KnownProcess
+        } else {
+            crate::analysis::TransferSemantics::Native
+        };
+        if process {
+            storage_observations = Default::default();
+        }
+        let stack = if process {
             Vec::new()
         } else {
             frame
@@ -247,7 +274,7 @@ pub(in crate::analysis) fn form_normalized_with_payment<
                 .collect::<Result<Vec<_>, _>>()?
         };
         let stack_aliases = StackAliases::form_with_payment(
-            if unknown { &[] } else { &frame.stack },
+            if process { &[] } else { &frame.stack },
             domain.spec().relations().enabled,
             domain,
             budget,
@@ -262,7 +289,7 @@ pub(in crate::analysis) fn form_normalized_with_payment<
             |value, _| scalar(value, &mut ledger.borrow_mut()),
             |value, _, address| implicit(value, address, entry, domain, &mut ledger.borrow_mut()),
             |bytes, _, kind| {
-                if unknown {
+                if process {
                     let mut budget = ledger.borrow_mut();
                     // Empty/memory constructs exactly a length and default literal.
                     pay(
@@ -287,12 +314,13 @@ pub(in crate::analysis) fn form_normalized_with_payment<
                     .summary_projection_with_payment(domain, &mut ledger.borrow_mut())?)
             },
         )?;
-        if unknown {
+        if process {
             summary.key.jump_history.clear();
             summary.key.basic_block_index = 0;
         }
         summary.key.stack_height = summary.stack.len();
         frames.push(EvmFrameSummary {
+            semantics,
             frame: summary,
             stack_aliases,
         });
@@ -320,6 +348,15 @@ pub(in crate::analysis) fn form_normalized_with_payment<
         work: 0,
         location: payload.key(),
     };
+    // Identity and prepared representation must describe the same process
+    // cursor, while code/lifecycle identity still comes from the actual Store.
+    if runtime_process {
+        result.location.frames = result
+            .frames
+            .iter()
+            .map(|frame| frame.key.clone())
+            .collect();
+    }
     result.work = result.measure_work();
     checkpoint(budget)?;
     Ok(result)

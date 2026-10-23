@@ -282,6 +282,8 @@ pub struct MachineEdge {
 /// whose return value and effects were guessed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum FrontierReason {
+    /// An explicit coarse-process semantic rule has not been covered.
+    Process(super::ProcessBoundary),
     /// Global state or transfer budget was reached.
     Budget(Limit),
     /// The shared work budget cannot cover the next operation.
@@ -386,6 +388,8 @@ pub struct EvmProcedureSummaryOutput<N: WordElement> {
 /// A procedure participating in the joint known/unknown fixed point.
 #[derive(Clone, Debug, Serialize)]
 pub struct EvmProcedureSummary<N: WordElement> {
+    /// Interpretation is independent of the captured Program/code identity.
+    pub semantics: super::TransferSemantics,
     /// Executable and context shape, independent of suspended caller stacks.
     pub frame: FrameKey,
     /// Whole-store numerical input invariant, including transient and lifecycle state.
@@ -409,6 +413,8 @@ pub struct EvmProcedureSummary<N: WordElement> {
 /// discovered during saturation do not change it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ProcedureSummaryKind {
+    /// Captured runtime selected by the explicit coarse process policy.
+    KnownProcess,
     /// An unobserved implementation or symbolic target remainder.
     UnknownEnvironment,
     /// A known runtime CALL entry admitted before any repeated active call edge.
