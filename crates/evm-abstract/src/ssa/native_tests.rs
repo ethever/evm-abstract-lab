@@ -215,7 +215,7 @@ fn control_flow<D: EvmNumericAlgebra>(
     assert_eq!(raw.effect_count(), normalized.effect_count());
     let value = &execution.entry().environment.value;
     let json = crate::render::world::json(&execution).unwrap();
-    assert_eq!(json["schema_version"], 12);
+    assert_eq!(json["schema_version"], crate::analysis::SCHEMA_VERSION);
     assert_eq!(
         json["entry"]["environment"]["value"]["numeric"],
         serde_json::to_value(value.numeric()).unwrap()
