@@ -12,7 +12,7 @@ def run_startup(context):
     page, canvas, reply = example_page(context.browser, context.url)
     result = reply.json()
     analysis = result["result"]["Ok"]
-    assert analysis["schema_version"] == 17
+    assert analysis["schema_version"] == 18
     assert analysis["metadata"]["postprocessing_max_work"] == 2_000_000_000
     assert 0 <= analysis["metadata"]["postprocessing_work"] <= 2_000_000_000
     assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0

@@ -7,8 +7,8 @@ use crate::{
 use egui::Color32;
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{
-    AnalysisReport, BlockCoverage, CfgBlock, DisasmInstruction, InstructionProgress, Phi, SsaBlock,
-    SsaInstruction,
+    AnalysisReport, BlockCoverage, CfgBlock, DisasmInstruction, InstructionProgress, Phi,
+    ProcedureSummaryKind, SsaBlock, SsaInstruction, SummarySourceStatus,
 };
 
 const INLINE_ITEMS: usize = 8;
@@ -70,15 +70,44 @@ pub(super) fn preview(
         }
     };
     if abstract_environment {
-        lines.insert(
-            0,
-            ("Conservative interaction summaries".into(), palette::PURPLE),
-        );
-    } else if index.has_recursive_summary(block.id) {
-        lines.insert(0, ("Recursive bytecode summary".into(), palette::PURPLE));
+        let label = index
+            .summary_source(block.id, ProcedureSummaryKind::UnknownEnvironment)
+            .map_or_else(
+                || "Effect/environment abstraction".to_owned(),
+                |source| summary_label("Conservative interaction summaries", source),
+            );
+        lines.insert(0, (label, palette::PURPLE));
+    } else {
+        if let Some(source) = index.summary_source(block.id, ProcedureSummaryKind::KnownRecursion) {
+            lines.insert(
+                0,
+                (
+                    summary_label("Recursive bytecode summary", source),
+                    palette::PURPLE,
+                ),
+            );
+        }
+        if let Some(source) = index.summary_source(block.id, ProcedureSummaryKind::KnownCall) {
+            lines.insert(
+                0,
+                (
+                    summary_label("Known bytecode call summary", source),
+                    palette::PURPLE,
+                ),
+            );
+        }
     }
     NodeText::new(title, detail, lines, coverage, frontier)
         .with_identity(vec![Symbol::State(block.id).to_string(), location])
+}
+
+fn summary_label(label: &str, source: SummarySourceStatus) -> String {
+    let scope = match source {
+        SummarySourceStatus::Current => "final source certified",
+        SummarySourceStatus::Historical => "historical observation",
+        SummarySourceStatus::Uncertified => "final source uncertified",
+    };
+    format!("{label} · {scope}")
 }
 
 pub(super) fn source_instruction(instruction: &DisasmInstruction) -> String {

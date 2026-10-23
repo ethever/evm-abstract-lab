@@ -543,6 +543,9 @@ fn write_frontiers<N: WordElement>(
             frontier.reason
         )
         .unwrap();
+        if frontier.reason == crate::analysis::FrontierReason::RecursiveNoTerminal {
+            output.push_str("    Known bytecode region lacks terminal evidence.\n");
+        }
         if let Some(target) = &frontier.target {
             output.push_str("    target frames (oldest caller first):\n");
             for (frame, key) in target.frames.iter().enumerate() {

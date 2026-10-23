@@ -305,7 +305,7 @@ record! {
         /// Native all-input terminal relation, independent of detailed coverage.
         /// None means no certificate was attached, including when requested.
         pub root_terminal_coverage: Option<crate::RootTerminalCoverage>,
-        /// Recursive known/unknown execution evidence, separate from CFG traces.
+        /// Known-call, recursion and environment relations, separate from native CFG/SSA.
         pub abstract_summaries: Vec<crate::AbstractSummary>,
         /// Fixed-snapshot account/storage acquisition evidence.
         pub acquisition: Option<crate::AcquisitionReport>,

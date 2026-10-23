@@ -367,6 +367,9 @@ pub fn render<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
             frontier.reason
         )
         .unwrap();
+        if frontier.reason == crate::analysis::FrontierReason::RecursiveNoTerminal {
+            output.push_str("    Known bytecode region lacks terminal evidence.\n");
+        }
         if let Some(target) = &frontier.target {
             writeln!(
                 output,

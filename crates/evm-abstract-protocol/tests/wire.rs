@@ -403,7 +403,7 @@ fn rpc_catalogue_includes_url_values_and_selection_remains_id_based() {
             "{invalid}"
         );
     }
-    assert_eq!(SCHEMA_VERSION, 17);
+    assert_eq!(SCHEMA_VERSION, 18);
 }
 
 #[test]
@@ -802,13 +802,16 @@ fn procedure_summary_wire_requires_entry_kind_and_nullable_root() {
     for kind in [
         ProcedureSummaryKind::UnknownEnvironment,
         ProcedureSummaryKind::KnownRecursion,
+        ProcedureSummaryKind::KnownCall,
     ] {
         let summary = AbstractSummary {
             source_state: 7,
+            source_current: false,
             kind,
             root_procedure: None,
             closed: false,
             procedures: vec![],
+            regional_cfg: RegionalCfg::default(),
             state_count: 0,
             transfers: 0,
             propagations: 0,
@@ -817,7 +820,7 @@ fn procedure_summary_wire_requires_entry_kind_and_nullable_root() {
         let json = serde_json::to_value(&summary).unwrap();
         let roundtrip: AbstractSummary = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(roundtrip, summary);
-        for field in ["kind", "root_procedure"] {
+        for field in ["kind", "root_procedure", "regional_cfg", "source_current"] {
             let mut missing = json.clone();
             missing.as_object_mut().unwrap().remove(field);
             assert!(serde_json::from_value::<AbstractSummary>(missing).is_err());

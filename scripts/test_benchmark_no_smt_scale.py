@@ -105,11 +105,17 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(sample["nativefinal"]["config"], {"synthetic": True})
 
     def test_native_policy_checks_model_and_algebra_limits_beyond_execution_config(self):
+        # Keep old profiles supported while the active generator uses native 13.
+        for version in (12, 13):
+            with self.subTest(version=version):
+                self.check_native_policy(version)
+
+    def check_native_policy(self, version):
         # Synthetic envelopes check the harness boundary, never EVM coverage.
-        native = {**report(), "schema_version": 12, "numeric_model": "product",
+        native = {**report(), "schema_version": version, "numeric_model": "product",
                   "domain_spec": {"capacity": 512, "cost_version": 7},
                   "postprocessing_max_work": 2_000_000_000, "postprocessing_work": 7}
-        self.commands.update(interface={"versions": {"native": 12}},
+        self.commands.update(interface={"versions": {"native": version}},
                              expected_native_numeric_model="product",
                              expected_native_domain_spec=copy.deepcopy(native["domain_spec"]),
                              expected_native_postprocessing_max_work=2_000_000_000)

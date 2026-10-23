@@ -59,7 +59,7 @@ def budget_interactions(browser, url: str, output: Path):
     assert initial_reply.status == 200, initial_reply.json()
     initial_request = json.loads(initial_reply.request.post_data)
     initial_report = initial_reply.json()["result"]["Ok"]
-    assert initial_report["schema_version"] == 17
+    assert initial_report["schema_version"] == 18
     assert initial_report["metadata"]["postprocessing_max_work"] == 2_000_000_000
     assert 0 <= initial_report["metadata"]["postprocessing_work"] <= 2_000_000_000
     assert "max_work" not in initial_report["metadata"]["export_limits"]
@@ -140,7 +140,7 @@ def budget_interactions(browser, url: str, output: Path):
     request = json.loads(reply.request.post_data)
     report = reply.json()["result"]["Ok"]
     assert request["input"]["Bytecode"]["bytecode"] == "600160020100"
-    assert report["schema_version"] == 17
+    assert report["schema_version"] == 18
     # This independent finite allowance does not inherit the edited execution
     # budget or the deliberately huge informational export work counter.
     assert report["metadata"]["postprocessing_max_work"] == 2_000_000_000
