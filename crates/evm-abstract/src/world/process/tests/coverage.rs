@@ -22,6 +22,8 @@ use revm::{
 use revm_bytecode::opcode;
 use std::collections::BTreeSet;
 
+mod diagnostics;
+
 #[test]
 fn outside_storage_is_independent_and_local_effects_preserve_named_state_and_rollback() {
     let domain = domain();
@@ -87,7 +89,12 @@ fn outside_storage_is_independent_and_local_effects_preserve_named_state_and_rol
         replay
             .addresses()
             .iter()
-            .all(|owner| catalogue.named().contains(owner))
+            .all(|owner| catalogue.named().contains(owner) || *owner == address(3))
+    );
+    assert_eq!(
+        replay.touched_in_transaction(address(3)),
+        input.touched_in_transaction(address(3)),
+        "preparation must not invent a rollback-sticky RIPEMD touch"
     );
 
     let named = prepare(
@@ -441,6 +448,27 @@ fn revm_two_outside_owners_known_code_call_delegate_callcode_static_and_rollback
                         };
                         assert_eq!(program.bytes(), leaf);
                         assert_eq!(program.fork(), fork);
+                        eprintln!(
+                            "PROCESS_OWNER_MATRIX {}",
+                            serde_json::json!({
+                                "fork": fork,
+                                "outside_owner": address(outside),
+                                "action": action,
+                                "is_static": is_static,
+                                "exit": ["return", "revert", "failure"][terminal],
+                                "code_source": address(0x200),
+                                "code_hash": keccak256(&leaf),
+                                "catalogue_epoch": catalogue.epoch(),
+                                "prepared_owner": owner,
+                                "actual_owner": actual_owner,
+                                "actual_caller": actual_caller,
+                                "actual_value": actual_value,
+                                "slot_before": initial,
+                                "slot_after": actual_slot,
+                                "protected_root_slot": 11,
+                                "covered": true,
+                            })
+                        );
                         witnesses += 1;
                     }
                 }
@@ -511,8 +539,124 @@ fn revm_residual_call_reentry_and_distinct_targets_witness_both_equality_outcome
             assert!(result.result.is_success());
             let equal = U256::from_be_slice(result.result.output().unwrap());
             assert_eq!(equal, U256::from(u8::from(target == 0xaaa)));
+            eprintln!(
+                "PROCESS_OWNER_ALIAS {}",
+                serde_json::json!({
+                    "fork": fork,
+                    "parent_owner": address(0xaaa),
+                    "target": address(target),
+                    "address_equals_caller": equal,
+                })
+            );
             seen.insert(equal);
         }
     }
     assert_eq!(seen, BTreeSet::from([U256::ZERO, U256::ONE]));
+}
+
+#[test]
+fn revm_rollback_retains_only_an_actual_ripemd_touch_after_process_preparation() {
+    let domain = domain();
+    for fork in [Fork::Cancun, Fork::Prague, Fork::Osaka] {
+        for touch_ripemd in [false, true] {
+            for fail in [false, true] {
+                let mut code = Vec::new();
+                if touch_ripemd {
+                    code.extend(emit_call(ProcessAction::Call, address(3), 0, 0, 0));
+                    code.push(opcode::POP);
+                }
+                code.extend_from_slice(if fail {
+                    &[opcode::INVALID]
+                } else {
+                    &[opcode::PUSH0, opcode::PUSH0, opcode::REVERT]
+                });
+                let mut world = EvmWorld::<NumericValue>::new(fork, "process-ripemd-rollback");
+                world
+                    .insert(
+                        address(0x101),
+                        EvmAccount::from_hex(&alloy_primitives::hex::encode(&code), fork).unwrap(),
+                    )
+                    .unwrap();
+                let catalogue = OwnerCatalogue::freeze(
+                    &[address(0x101)],
+                    &[CapturedProcessCode {
+                        source: address(0x101),
+                        hash: keccak256(&code),
+                        fork,
+                    }],
+                    OwnerCatalogueLimits { names: 1, codes: 1 },
+                    &mut budget(),
+                )
+                .unwrap();
+                let original = EvmStore::new(&world, domain.borrowed());
+                let saved = original.snapshot();
+                let prepared = prepare(
+                    &original,
+                    &catalogue,
+                    ProcessOwner::Named(address(0x101)),
+                    &domain,
+                );
+                let mut replay = prepared
+                    .storage_effect(false, domain.borrowed(), &mut budget())
+                    .unwrap()
+                    .instantiate_for_process(domain.borrowed(), &mut budget())
+                    .unwrap();
+                if touch_ripemd {
+                    // This flag represents the actual primitive CALL below,
+                    // not an effect of local SSTORE/TSTORE or preparation.
+                    replay.touch_account(address(3));
+                }
+                replay.restore(saved);
+                let mut expected = original;
+                if touch_ripemd {
+                    expected.touch_account(address(3));
+                }
+                assert_eq!(
+                    replay, expected,
+                    "only the actual consensus exception may differ from the exact caller checkpoint"
+                );
+                let mut db = InMemoryDB::default();
+                insert(&mut db, address(0x101), code, 0);
+                db.insert_account_info(address(3), AccountInfo::default());
+                db.insert_account_info(
+                    address(0x900),
+                    AccountInfo {
+                        balance: U256::from(100_000_000),
+                        ..AccountInfo::default()
+                    },
+                );
+                let context = Context::mainnet()
+                    .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(fork.spec_id()))
+                    .with_db(db);
+                let mut evm = context.build_mainnet_with_inspector(Trace::default());
+                let result = evm
+                    .inspect_tx(
+                        TxEnv::builder()
+                            .caller(address(0x900))
+                            .kind(TxKind::Call(address(0x101)))
+                            .gas_limit(10_000_000)
+                            .build()
+                            .unwrap(),
+                    )
+                    .unwrap();
+                assert!(!result.result.is_success());
+                let actual_touch = result
+                    .state
+                    .get(&address(3))
+                    .is_some_and(|account| account.is_touched());
+                assert_eq!(
+                    actual_touch, touch_ripemd,
+                    "revm RIPEMD consensus control: {fork:?} fail={fail}"
+                );
+                assert_eq!(
+                    replay.touched_in_transaction(address(3)),
+                    Some(actual_touch)
+                );
+                eprintln!(
+                    "PROCESS_OWNER_ROLLBACK {}",
+                    serde_json::json!({"fork":fork,"touch_call":touch_ripemd,"failure":fail,"actual_ripemd_touch":actual_touch,"exact_checkpoint_except_actual_consensus_touch":true})
+                );
+            }
+        }
+    }
 }

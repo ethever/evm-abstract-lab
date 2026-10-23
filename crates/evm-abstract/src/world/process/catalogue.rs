@@ -7,6 +7,7 @@ use crate::{
     resource::clone_payment::{checkpoint, pay},
 };
 use alloy_primitives::{Address, B256, keccak256};
+use serde::Serialize;
 use std::{collections::BTreeSet, sync::Arc};
 
 /// Captured executable identity; storage owner is independently classified.
@@ -30,7 +31,7 @@ pub struct OwnerCatalogueLimits {
 }
 
 /// Class key only; code/source/static/caller roles still belong to frame shape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct ProcessOwnerKey {
     /// Digest of the complete frozen names and code vocabulary.
     pub epoch: B256,

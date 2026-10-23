@@ -14,7 +14,7 @@ use crate::{
     },
     world::process::OwnerCatalogue,
 };
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 
 #[cfg(test)]
 mod tests;
@@ -119,7 +119,12 @@ impl<N: WordElement> EvmStoreSummary<N> {
         budget: &mut WorkBudget,
     ) -> Result<Self, CloneError> {
         let names = catalogue.named();
-        pay_structure(self.clone_prefix_work().saturating_add(names.len()), budget)?;
+        pay_structure(
+            self.clone_prefix_work()
+                .saturating_add(names.len())
+                .saturating_add(1),
+            budget,
+        )?;
         let persistent = self
             .persistent
             .process_complement(catalogue, domain, budget)?;
@@ -150,6 +155,20 @@ impl<N: WordElement> EvmStoreSummary<N> {
                     target.insert(*owner, value);
                 }
             }
+        }
+        // Native restore retains PRECOMPILE3's touch even on Revert/Failure.
+        // Forgetting this flag during input preparation would manufacture a
+        // sticky may-touch without executing any CALL. Preserve this one fixed
+        // EVM role, independently of the named owner vocabulary. It contributes
+        // at most one boolean entry, never a new target class or dynamic owner.
+        let ripemd = Address::from_word(U256::from(3).into());
+        let ripemd_touch = self
+            .touched
+            .get(&ripemd)
+            .copied()
+            .unwrap_or(self.touched_default);
+        if ripemd_touch.is_some() {
+            touched.insert(ripemd, ripemd_touch);
         }
         let mut codes = OrderedMap::new();
         for (owner, code) in &self.codes {

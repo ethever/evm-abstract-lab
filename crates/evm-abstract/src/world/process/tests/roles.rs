@@ -2,7 +2,7 @@ use super::{address, budget, catalogue, domain, prepare, store, word};
 use crate::{
     domain::NumericValue,
     world::{
-        AddressInput,
+        AddressInput, InputScope,
         process::{
             CallRoles, ProcessAction, ProcessCallOperands, ProcessOwner, ProcessOwnerError,
             ProcessTargetAddress,
@@ -149,4 +149,59 @@ fn symbolic_logical_address_can_have_a_named_physical_owner() {
     assert!(bound.address.same_identity(&logical));
     assert_eq!(bound.address.singleton(), None);
     assert!(bound.address.contains(U256::from(0xaaa)));
+}
+
+#[test]
+fn native_input_scopes_and_inherited_roles_survive_without_equating_residual_call_targets() {
+    let domain = domain();
+    let scope = InputScope::default();
+    let other_scope = InputScope::default();
+    let parent = ProcessCallOperands {
+        address: AddressInput::unknown_to().scoped_value::<NumericValue>(scope.id()),
+        caller: AddressInput::unknown_caller().scoped_value::<NumericValue>(scope.id()),
+        value: word(17),
+    };
+    let other_address = AddressInput::unknown_to().scoped_value::<NumericValue>(other_scope.id());
+    assert!(!parent.address.same_identity(&other_address));
+    let delegate = CallRoles::for_action(ProcessAction::DelegateCall, false)
+        .unwrap()
+        .bind(
+            ProcessTargetAddress::Independent,
+            &parent,
+            domain.borrowed(),
+            &mut budget(),
+        )
+        .unwrap();
+    assert!(delegate.address.same_identity(&parent.address));
+    assert!(delegate.caller.same_identity(&parent.caller));
+    assert_eq!(delegate.value.singleton(), Some(U256::from(17)));
+    let callcode = CallRoles::for_action(ProcessAction::CallCode, false)
+        .unwrap()
+        .bind(
+            ProcessTargetAddress::Independent,
+            &parent,
+            domain.borrowed(),
+            &mut budget(),
+        )
+        .unwrap();
+    assert!(callcode.address.same_identity(&parent.address));
+    assert!(callcode.caller.same_identity(&parent.address));
+    let child = CallRoles::for_action(ProcessAction::Call, false)
+        .unwrap()
+        .bind(
+            ProcessTargetAddress::Independent,
+            &parent,
+            domain.borrowed(),
+            &mut budget(),
+        )
+        .unwrap();
+    assert!(child.caller.same_identity(&parent.address));
+    assert!(!child.address.same_identity(&parent.address));
+    assert!(!child.address.same_identity(&other_address));
+    let equality = domain
+        .borrowed()
+        .apply_budgeted(opcode::EQ, &[child.address, child.caller], &mut budget())
+        .unwrap()
+        .value;
+    assert!(equality.contains(U256::ZERO) && equality.contains(U256::ONE));
 }
