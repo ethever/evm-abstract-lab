@@ -18,6 +18,8 @@ use std::collections::BTreeMap;
 
 mod full_image;
 mod packing;
+mod scalar;
+pub(in crate::world) use scalar::scalar_in_paid;
 mod slot;
 pub(in crate::world) use slot::{slot, slot_with_payment};
 mod word;
@@ -70,83 +72,6 @@ pub(in crate::world) fn scalar_in_with_payment<
 ) -> ReadResult<EvmValue<N>> {
     scalar_in_paid(expression, context, domain, &mut ReadPayment::new(budget))
 }
-pub(in crate::world) fn scalar_in_paid<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
-    expression: &ExprId,
-    context: &Context<'_, N, D>,
-    domain: AlgebraRef<'_, D>,
-    payer: &mut ReadPayment<'_>,
-) -> ReadResult<EvmValue<N>> {
-    payer.context(context)?;
-    payer.reserve(expression.work_size().saturating_add(1))?;
-    if let Some(v) = context.value_paid(expression, domain, payer)? {
-        if let Some(word) = expression.as_constant() {
-            let literal = payer.literal(word, domain)?;
-            let joined = payer.join(&v, &literal, context, domain)?;
-            let numeric = payer.literal_numeric(word, domain)?;
-            return Ok(joined.with_numeric(numeric));
-        }
-        if let ExprKind::Ite {
-            condition,
-            then_value,
-            else_value,
-        } = expression.kind()
-        {
-            let c = scalar_in_paid(condition, context, domain, payer)?;
-            let selected = if !payer.may_nonzero(&c)? {
-                Some((else_value, false))
-            } else if !payer.may_zero(&c)? {
-                Some((then_value, true))
-            } else {
-                None
-            };
-            if let Some((value, nonzero)) = selected {
-                let branch = context.branch_paid(condition, nonzero, payer)?;
-                let selected = scalar_in_paid(value, &branch, domain, payer)?;
-                if let Some(exact) = payer.singleton(&selected)?
-                    && payer.contains(&v, exact)?
-                {
-                    let out = payer.copy(&v)?;
-                    return Ok(out.with_numeric(payer.literal_numeric(exact, domain)?));
-                }
-            }
-        }
-        return payer.copy(&v);
-    }
-    if let Some(word) = expression.as_constant() {
-        return payer.literal(word, domain);
-    }
-    match expression.kind() {
-        ExprKind::Operation { opcode, args } => {
-            let mut values = Vec::new();
-            for arg in args {
-                values.push(scalar_in_paid(arg, context, domain, payer)?);
-            }
-            payer.apply(*opcode, &values, context, domain, false)
-        }
-        ExprKind::Ite {
-            condition,
-            then_value,
-            else_value,
-        } => {
-            let c = scalar_in_paid(condition, context, domain, payer)?;
-            if !payer.may_nonzero(&c)? {
-                let branch = context.branch_paid(condition, false, payer)?;
-                scalar_in_paid(else_value, &branch, domain, payer)
-            } else if !payer.may_zero(&c)? {
-                let branch = context.branch_paid(condition, true, payer)?;
-                scalar_in_paid(then_value, &branch, domain, payer)
-            } else {
-                let branch = context.branch_paid(condition, true, payer)?;
-                let left = scalar_in_paid(then_value, &branch, domain, payer)?;
-                let branch = context.branch_paid(condition, false, payer)?;
-                let right = scalar_in_paid(else_value, &branch, domain, payer)?;
-                payer.join(&left, &right, context, domain)
-            }
-        }
-        _ => payer.top(domain),
-    }
-}
-
 pub(in crate::world) fn numeric_domain<'a, D: EvmNumericAlgebra>(
     domain: AlgebraRef<'a, D>,
 ) -> AlgebraRef<'a, D> {
