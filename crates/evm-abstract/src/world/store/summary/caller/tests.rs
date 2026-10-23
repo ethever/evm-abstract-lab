@@ -1,9 +1,11 @@
 use super::*;
-use crate::domain::ValueAlgebra;
-
-#[path = "../metered/tests/native.rs"]
-mod native;
-use native::{CALLS, Calls, Native, Policy};
+use crate::{
+    domain::ValueAlgebra,
+    world::store::{
+        InitialIndependence, LogKey,
+        summary::test_support::{CALLS, Calls, Native, Policy},
+    },
+};
 
 fn word(value: u64) -> EvmValue<Native> {
     EvmValue::constant(U256::from(value))

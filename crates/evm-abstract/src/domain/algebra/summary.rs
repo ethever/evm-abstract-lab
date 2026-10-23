@@ -18,6 +18,7 @@ mod tests;
 // handles. Native construction and query work is never inferred from this fee.
 const WRAPPER_WORK: usize = 16;
 
+#[cfg(test)]
 pub(crate) fn compact<D: EvmNumericAlgebra>(
     value: &EvmValue<D::Element>,
     domain: AlgebraRef<'_, D>,

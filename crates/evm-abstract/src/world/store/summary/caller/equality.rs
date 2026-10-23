@@ -1,6 +1,9 @@
 //! Reproduce derived summary Eq without an unquoted native comparison.
 
-use super::*;
+use super::{
+    AlgebraRef, CloneError, EvmNumericAlgebra, EvmStoreSummary, EvmValue, OrderedMap, SummaryPlane,
+    WordElement, WorkBudget, checkpoint, code_comparison_work, pay, pay_structure, scalar,
+};
 
 fn answer(equal: bool, budget: &WorkBudget) -> Result<bool, CloneError> {
     checkpoint(budget)?;

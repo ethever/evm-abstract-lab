@@ -1,9 +1,9 @@
 use super::*;
 use crate::Address;
-use crate::domain::ValueAlgebra;
-
-mod native;
-use native::{CALLS, Calls, Native, Policy};
+use crate::{
+    domain::ValueAlgebra,
+    world::store::summary::test_support::{CALLS, Calls, Native, Policy},
+};
 
 fn word(value: u64) -> EvmValue<Native> {
     EvmValue::constant(U256::from(value))

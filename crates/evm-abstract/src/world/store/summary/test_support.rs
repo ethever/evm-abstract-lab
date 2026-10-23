@@ -1,7 +1,10 @@
 //! A real private exclusion predicate, absent from its exported observation.
 
-use super::*;
-use crate::domain::{DomainSpec, NumericReduction, SummaryConstruction, WordObservation};
+use crate::domain::{
+    DomainSpec, EvmNumericAlgebra, NumericReduction, SummaryConstruction, WordElement,
+    WordObservation,
+};
+use alloy_primitives::U256;
 use serde::Serialize;
 use std::fmt;
 

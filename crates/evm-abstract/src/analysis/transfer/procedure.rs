@@ -67,12 +67,8 @@ mod solver;
 mod tests;
 
 #[cfg(test)]
-use crate::analysis::state::payload::instantiate;
-use crate::analysis::state::{
-    EvmPayloadSummary,
-    payload::{self, semantic_eq},
-    storage_observations,
-};
+use crate::analysis::state::payload::{instantiate, semantic_eq};
+use crate::analysis::state::{EvmPayloadSummary, payload, storage_observations};
 #[cfg(test)]
 use crate::analysis::state::{context, stack_alias};
 #[cfg(test)]

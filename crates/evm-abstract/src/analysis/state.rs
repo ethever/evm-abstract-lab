@@ -17,11 +17,14 @@ use crate::{
     world::{EvmByteArray, EvmByteArraySummary, EvmEntry, EvmSnapshot, EvmStoreSummary},
 };
 use alloy_primitives::Address;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 
 pub(super) mod bounded;
 #[cfg(test)]
 mod carrier_tests;
+#[cfg(test)]
 pub(super) mod context;
 pub(super) mod loop_bound;
 pub(super) mod payload;
@@ -36,8 +39,8 @@ mod transform;
 
 pub(super) use loop_bound::EvmLoopBound;
 #[cfg(test)]
-pub(super) use payload::form;
-pub(super) use payload::{form_normalized, instantiate, join, semantic_eq};
+pub(super) use payload::{form, form_normalized};
+pub(super) use payload::{instantiate, join, semantic_eq};
 pub use policy::ProcedureOutput;
 pub(super) use transform::StatePart;
 
