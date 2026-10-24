@@ -49,7 +49,19 @@ fn child_rollback(exceptional: bool) {
     let mut world = new_world();
     let fixture = fixtures::rollback(exceptional, false);
     insert(&mut world, A, &fixture, &[(0, 1)]);
-    let analysis = run(world.clone(), entry(unknown_input()));
+    let analysis = run_config(
+        world.clone(),
+        entry(unknown_input()),
+        ExecutionConfig {
+            // Only the reverting fixture needs this complete-tariff allowance.
+            max_work: if exceptional {
+                ExecutionConfig::default().max_work
+            } else {
+                40_000_000
+            },
+            ..ExecutionConfig::default()
+        },
+    );
     complete_recursion(&analysis);
     for outcome in terminals(&analysis, OutcomeKind::Return) {
         for (offset, expected) in [(0, 0), (32, 5), (64, 7)] {

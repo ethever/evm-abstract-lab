@@ -63,6 +63,7 @@ fn mutual_unknown_counter_closes_without_expanding_the_full_call_stack() {
             ExecutionConfig {
                 use_summaries,
                 root_terminal_coverage: false,
+                max_work: 40_000_000,
                 ..ExecutionConfig::default()
             },
         );
