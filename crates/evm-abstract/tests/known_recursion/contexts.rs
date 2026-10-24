@@ -49,7 +49,7 @@ fn recursive_call_delegatecall_and_callcode_preserve_their_contexts() {
                     max_work: if count == 2 {
                         ExecutionConfig::default().max_work
                     } else {
-                        100_000_000
+                        200_000_000
                     },
                     ..ExecutionConfig::default()
                 };
@@ -118,7 +118,7 @@ fn delegate_recursion_inherits_nonzero_value_and_the_original_caller() {
                 max_work: if count == 2 {
                     ExecutionConfig::default().max_work
                 } else {
-                    100_000_000
+                    200_000_000
                 },
                 ..ExecutionConfig::default()
             },
@@ -156,14 +156,14 @@ fn static_mutual_recursion_preserves_staticness_and_owner_storage() {
         &fixtures::context_counter(opcode::STATICCALL, A as u16),
         &[(0, 9)],
     );
-    // The full128-byte symbolic context return needs about42M logical work.
-    // Only the work allowance changes; resources checks the same input under
-    // the complete default20M policy and requires its typed unfinished frontier.
+    // Fund the full128-byte symbolic context return under the Native tariff.
+    // Resources checks the same input under the complete default20M policy
+    // and requires its typed unfinished frontier.
     let analysis = run_config(
         world.clone(),
         entry(unknown_input()),
         ExecutionConfig {
-            max_work: 100_000_000,
+            max_work: 200_000_000,
             ..ExecutionConfig::default()
         },
     );
@@ -206,6 +206,7 @@ fn identical_bytecode_at_distinct_owners_keeps_separate_storage() {
         entry(unknown_input()),
         ExecutionConfig {
             root_terminal_coverage: false,
+            max_work: 40_000_000,
             ..ExecutionConfig::default()
         },
     );

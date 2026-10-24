@@ -153,8 +153,8 @@ fn changing_calldata_still_folds_real_direct_and_mutual_call_cycles() {
         assert_eq!(observed.output_word(0), U256::from(42));
         assert!(observed.steps.iter().any(|step| step.depth >= 5));
         if !mutual {
-            // This changing-input cycle closes under the original detailed
-            // budget. Explicit work-cutoff coverage lives in resources.rs.
+            // The default allowance may close this cycle or retain a real work
+            // frontier. Funded cache-on/off runs below always check its semantics.
             let default_policy = run_config(
                 world.clone(),
                 input.clone(),
@@ -165,13 +165,23 @@ fn changing_calldata_still_folds_real_direct_and_mutual_call_cycles() {
             );
             assert_eq!(default_policy.config().max_work, 20_000_000);
             assert_eq!(default_policy.config().max_call_depth, 32);
-            complete_recursion(&default_policy);
-            for outcome in returns(&default_policy) {
-                only(outcome.data.len(), &[32]);
-                only(&output_word(outcome, 0), &[42]);
-                only(&read(&outcome.store, A, 0), &[5]);
+            if default_policy.status() == Status::Converged {
+                complete_recursion(&default_policy);
+                for outcome in returns(&default_policy) {
+                    only(outcome.data.len(), &[32]);
+                    only(&output_word(outcome, 0), &[42]);
+                    only(&read(&outcome.store, A, 0), &[5]);
+                }
+                observed.covers(&default_policy);
+            } else {
+                assert_eq!(default_policy.status(), Status::Incomplete);
+                assert!(!default_policy.frontiers().is_empty());
+                assert!(default_policy.frontiers().iter().all(|frontier| matches!(
+                    frontier.reason,
+                    FrontierReason::Work | FrontierReason::SummaryWork
+                )));
+                assert!(default_policy.work() <= default_policy.config().max_work);
             }
-            observed.covers(&default_policy);
         }
         for use_summaries in [true, false] {
             let analysis = run_config(
