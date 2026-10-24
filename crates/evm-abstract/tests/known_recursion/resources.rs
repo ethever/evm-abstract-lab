@@ -146,11 +146,13 @@ fn complex_symbolic_recursion_retains_real_frontiers_under_default_work() {
         assert_eq!(analysis.config().max_call_depth, 32);
         assert_eq!(analysis.status(), Status::Incomplete);
         assert!(!analysis.frontiers().is_empty());
+        // Summary lookup or registration can refuse the same shared work budget
+        // before ordinary propagation does, leaving only SummaryWork frontiers.
         assert!(
             analysis
                 .frontiers()
                 .iter()
-                .any(|f| f.reason == FrontierReason::Work)
+                .any(|f| matches!(f.reason, FrontierReason::Work | FrontierReason::SummaryWork))
         );
         assert!(
             analysis
