@@ -59,6 +59,8 @@ fn repeated_reverting_call_joins_checkpoints_and_output_ranges_before_resuming_r
         )
         .unwrap(),
         ExecutionConfig {
+            // Fund the joined rollback/output oracle under the complete native tariff.
+            max_work: 40_000_000,
             // Exercise the ordinary worklist's frame joins directly.
             analysis: Config {
                 context_depth: 0,
