@@ -8,9 +8,8 @@ use evm_abstract::{
     analysis::cooperation::{
         InputRoute, Inputs, RefinementRoute, Refinements, StackFacts, Subject,
     },
-    domain::{WordElement, symbolic::ExprKind},
+    domain::WordElement,
 };
-use revm_bytecode::opcode;
 use std::collections::BTreeSet;
 
 pub struct Provider {
@@ -82,16 +81,7 @@ where
                 else {
                     continue;
                 };
-                let ExprKind::Operation { opcode: op, args } = guard.kind() else {
-                    continue;
-                };
-                if *op == opcode::EQ
-                    && args.len() == 2
-                    && (0..2).any(|i| {
-                        matches!(args[i].kind(), ExprKind::Constant(c) if *c == U256::from(42))
-                            && args[1 - i] == value
-                    })
-                {
+                if super::super::fixture::compares_excluded_word(guard, &value) {
                     proofs.insert(index + 1);
                 }
             }

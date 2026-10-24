@@ -60,20 +60,38 @@ fn original_world_and_environment_copies_pay_actual_private_native_fee_before_cl
 #[test]
 fn original_payer_cancellation_during_private_invoice_prevents_any_copy() {
     let _scope = RECEIPT.scope();
-    let original = analysis_control::Cancellation::new();
-    let mut word = Word::expensive(1_000_000);
-    word.cancel_price = Some(original.clone());
-    let (world, entry) = input(word, false);
-    let mut budget = analysis_control::with_cancellation(&original, || WorkBudget::new(2_000_000));
-    RECEIPT.set(Receipt {
-        armed: true,
-        ..Receipt::default()
-    });
-    assert!(matches!(
-        copy(&world, &entry, &mut budget),
-        Err(CloneError::Cancelled)
-    ));
-    assert_eq!(RECEIPT.get().clones, 0);
-    assert_eq!(RECEIPT.get().bytes, 0);
-    assert!(budget.exhausted());
+    for owner in [false, true] {
+        let original = analysis_control::Cancellation::new();
+        let ambient = analysis_control::Cancellation::new();
+        let mut word = Word::expensive(1_000_000);
+        word.cancel_price = Some(if owner {
+            original.clone()
+        } else {
+            ambient.clone()
+        });
+        let (world, entry) = input(word, false);
+        let mut budget =
+            analysis_control::with_cancellation(&original, || WorkBudget::new(2_000_000));
+        RECEIPT.set(Receipt {
+            armed: true,
+            ..Receipt::default()
+        });
+        assert!(matches!(
+            analysis_control::with_cancellation(&ambient, || copy(&world, &entry, &mut budget)),
+            Err(CloneError::Cancelled)
+        ));
+        assert_eq!(RECEIPT.get().clones, 0);
+        assert_eq!(RECEIPT.get().bytes, 0);
+        if owner {
+            assert!(budget.exhausted());
+        } else {
+            // An ambient token is scoped, not installed as the ledger owner.
+            assert!(ambient.is_cancelled());
+            assert!(!budget.exhausted());
+        }
+        assert_eq!(
+            analysis_control::with_cancellation(&ambient, || checkpoint(&budget)),
+            Err(CloneError::Cancelled)
+        );
+    }
 }

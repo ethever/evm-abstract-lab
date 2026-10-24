@@ -139,15 +139,7 @@ struct Consumer {
     foreign_values: usize,
 }
 fn compares(expression: &ExprId, source: &ExprId) -> bool {
-    let ExprKind::Operation { opcode: op, args } = expression.kind() else {
-        return false;
-    };
-    *op == opcode::EQ
-        && args.len() == 2
-        && (0..2).any(|constant| {
-            matches!(args[constant].kind(), ExprKind::Constant(word) if *word == U256::from(42))
-                && args[1 - constant] == *source
-        })
+    super::bridge::fixture::compares_excluded_word(expression, source)
 }
 impl<Cx> Reduction<Cx> for Consumer
 where
@@ -255,11 +247,14 @@ fn fixture() -> (Vec<u8>, usize) {
         opcode::JUMPDEST,
         opcode::DUP1,
         opcode::PUSH1,
-        42,
+        3,
+        opcode::MUL,
+        opcode::PUSH1,
+        126,
         opcode::EQ,
         opcode::PUSH2,
         0,
-        15,
+        18,
         opcode::JUMP,
         opcode::JUMPDEST,
         opcode::PUSH2,
@@ -277,7 +272,7 @@ fn fixture() -> (Vec<u8>, usize) {
         opcode::RETURN,
     ];
     let impossible = code.len();
-    code[17..19].copy_from_slice(&(impossible as u16).to_be_bytes());
+    code[20..22].copy_from_slice(&(impossible as u16).to_be_bytes());
     code.extend([opcode::JUMPDEST, opcode::INVALID]);
     (code, impossible)
 }

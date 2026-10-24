@@ -1,7 +1,10 @@
 //! Borrowed immutable non-Copy, non-Clone policy executing the independent carrier.
 use super::carrier::ExcludingWord;
 use alloy_primitives::U256;
-use evm_abstract::domain::{DomainSpec, EvmNumericAlgebra, NumericReduction, WordElement};
+use evm_abstract::domain::{
+    DomainSpec, EvmNumericAlgebra, NumericReduction, SummaryConstruction, WordElement,
+    WordObservation,
+};
 use revm_bytecode::opcode;
 use std::{
     num::NonZeroUsize,
@@ -219,6 +222,50 @@ impl EvmNumericAlgebra for Policy<'_> {
     fn literal_quote_work(&self, _literal: U256) -> usize {
         // Fixed literal fields/empty payload and common metadata, including drop.
         64
+    }
+    fn summary_join_work(
+        &self,
+        left: &ExcludingWord,
+        right: &ExcludingWord,
+        _widen_procedure: bool,
+    ) -> usize {
+        // covering merges two exclusion trees, tests membership in both and
+        // builds at most their combined payload. Cached lengths bound every
+        // tree search/insertion; widening only updates inline endpoints.
+        let excluded = left.excluded.len().saturating_add(right.excluded.len());
+        let height = usize::BITS as usize - excluded.max(1).leading_zeros() as usize + 1;
+        1024usize.saturating_add(excluded.saturating_mul(height).saturating_mul(64))
+    }
+    fn summary_canonical_work(&self, value: &ExcludingWord) -> usize {
+        // This carrier's default canonicalization only clones its native tree.
+        value.clone_work().saturating_add(value.work_size())
+    }
+    fn summary_construction_work(&self, _construction: SummaryConstruction) -> usize {
+        // All four factories construct inline bounds and an empty exclusion
+        // tree; observation imports inspect only fixed-width components here.
+        1024
+    }
+    fn summary_equal_work(&self, left: &ExcludingWord, right: &ExcludingWord) -> usize {
+        left.work_size().saturating_add(right.work_size())
+    }
+    fn summary_is_top_work(&self, _value: &ExcludingWord) -> usize {
+        // Inline endpoints and the exclusion tree's cached emptiness only.
+        64
+    }
+    fn summary_compact_work(&self, value: &ExcludingWord) -> usize {
+        value.clone_work().saturating_add(value.work_size())
+    }
+    fn summary_restore_work(&self, value: &ExcludingWord, _previous: &ExcludingWord) -> usize {
+        // The default restoration clones current native state without querying
+        // the prior value or importing its weaker public observation.
+        value.clone_work().saturating_add(value.work_size())
+    }
+    fn summary_observation_work(&self, observation: &WordObservation) -> usize {
+        // from_observation queries singleton then copies fixed-width endpoints.
+        observation
+            .work_size()
+            .saturating_mul(256)
+            .saturating_add(1024)
     }
     fn projection_work(&self, value: &ExcludingWord) -> usize {
         value.work_size()
