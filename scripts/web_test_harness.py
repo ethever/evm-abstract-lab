@@ -210,7 +210,7 @@ def observe_webgpu(page, unavailable: str | None = None) -> None:
         addEventListener('wheel', () => { window.__webTestLastWheel = performance.now(); },
                          {capture: true, passive: true});
         const evidence = {contexts: [], adapter_requests: 0, adapters: [],
-                          devices: 0, configurations: [], textures: 0,
+                          device_requests: 0, devices: 0, configurations: [], textures: 0,
                           submissions: 0, indexed_draws: 0, errors: []};
         window.__webgpuEvidence = evidence;
         addEventListener('input', event => {
@@ -240,6 +240,9 @@ def observe_webgpu(page, unavailable: str | None = None) -> None:
             };
             const requestDevice = GPUAdapter.prototype.requestDevice;
             GPUAdapter.prototype.requestDevice = async function(...args) {
+                evidence.device_requests++;
+                if (unavailable === 'device-rejected')
+                    throw new DOMException('Injected WebGPU device rejection', 'OperationError');
                 const device = await requestDevice.apply(this, args);
                 evidence.devices++;
                 device.addEventListener('uncapturederror', event => evidence.errors.push(event.error.message));
