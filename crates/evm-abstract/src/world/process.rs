@@ -52,7 +52,7 @@ pub enum ProcessOwnerError {
     Cancelled,
     /// Native Store retention/replay could not represent the prepared state.
     #[error("{0}")]
-    Store(#[source] StoreError),
+    Store(StoreError),
 }
 
 impl From<CloneError> for ProcessOwnerError {
