@@ -109,6 +109,17 @@ class GeneratorTests(unittest.TestCase):
             for name in WITNESSES})
         self.assertEqual(self.baseline_path.read_bytes(), self.baseline_bytes)
 
+    def test_actual_selected_source_matches_the_current_interface(self):
+        # Nix projects these actual witnesses. Its immutable source has no .git,
+        # so only the commit identity is supplied; source bytes remain real.
+        with patch.object(generator.subprocess, "check_output", return_value=COMMIT + "\n"):
+            profile = generator.generate(ROOT, ROOT)
+        self.assertEqual(profile["interface"]["versions"],
+                         {"native": 15, "wire": 20, "domain": 3, "cost": 8})
+        self.assertEqual(profile["interface"]["source_witnesses"], {
+            name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+            for name in WITNESSES})
+
     def test_obsolete_or_wrong_source_contract_is_rejected_before_git(self):
         bad_sources = [
             ("crates/evm-abstract/src/analysis.rs", "pub const SCHEMA_VERSION: u16 = 13;", "native schema 15"),

@@ -1,4 +1,5 @@
-# Profile/identity contracts use only scripts and frozen JSON, never the engine.
+# Profile/identity contracts read scripts, frozen JSON and the six selected
+# source witnesses. Their source-contract regression never compiles the engine.
 { pkgs, sourceRoot, ... }:
 let
   inputs = import ../check-inputs.nix {
@@ -6,6 +7,12 @@ let
     inherit sourceRoot;
   };
   sources = inputs.files [
+    "crates/evm-abstract-cli/src/main.rs"
+    "crates/evm-abstract-cli/src/symbolic.rs"
+    "crates/evm-abstract-cli/src/numeric.rs"
+    "crates/evm-abstract/src/analysis.rs"
+    "crates/evm-abstract-protocol/src/lib.rs"
+    "crates/evm-abstract/src/domain/spec.rs"
     "scripts/benchmark-no-smt-scale.py"
     "scripts/test_benchmark_no_smt_scale.py"
     "scripts/generate-no-smt-scale-commands.py"
