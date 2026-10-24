@@ -10,36 +10,95 @@
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0e131d; color: #e0e9f4; font: 16px system-ui, sans-serif; }
       canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; }
       #boot { position: absolute; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center; padding: 24px; }
+      #boot[role="alert"] { align-content: start; overflow: auto; }
       .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
       #boot strong { color: #63d6ca; font-size: 24px; letter-spacing: .04em; }
       #boot span { color: #91a4ba; max-width: 600px; overflow-wrap: anywhere; }
+      #startup-diagnostics { max-width: 600px; text-align: left; }
+      #startup-diagnostics pre { max-height: 35vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+      #startup-diagnostics button { font: inherit; padding: 6px 12px; }
     </style>
   </head>
   <body>
-    <div id="boot" role="status"><strong>EVM ABSTRACT LAB</strong><span>Starting the WebGPU analysis workspace…</span></div>
+    <div id="boot" role="status">
+      <strong>EVM ABSTRACT LAB</strong><span>Starting the WebGPU analysis workspace…</span>
+      <details id="startup-diagnostics" hidden>
+        <summary>Startup details</summary>
+        <pre id="startup-context"></pre>
+        <button id="copy-startup-context" type="button">Copy details</button>
+      </details>
+    </div>
     <div id="analysis-status" class="sr-only" role="status" aria-live="polite">Starting</div>
     <canvas id="evm-canvas" aria-label="EVM analysis workspace: bytecode, disassembly, SSA and control-flow graph"></canvas>
     <script type="module">
+      function describeFailure(error) {
+        const messages = [];
+        const seen = new Set();
+        while (!seen.has(error)) {
+          seen.add(error);
+          messages.push(String(error));
+          if (error === null || typeof error !== 'object' || !('cause' in error)) break;
+          error = error.cause;
+        }
+        return messages.join('\nCaused by: ');
+      }
+
+      const adapterInfo = typeof GPUAdapter === 'undefined' ? 'unknown' :
+        ('info' in GPUAdapter.prototype ? 'present' : 'absent');
+      let stage = 'WebGPU availability check';
       try {
         if (!window.isSecureContext) {
           throw new Error('WebGPU requires a secure context. Open this workspace over HTTPS or localhost.');
         }
         if (!navigator.gpu) {
-          throw new Error('WebGPU is unavailable in this browser. Use a browser with WebGPU support and enable graphics acceleration.');
+          throw new Error('The WebGPU API is unavailable in this browser.');
         }
+        stage = 'WebGPU compatibility check';
+        // wgpu 30 reads adapter.info before requesting its device. An older
+        // WebGPU implementation can expose navigator.gpu without this API.
+        if (adapterInfo === 'absent') {
+          throw new Error('GPUAdapter.info is unavailable; this workspace requires that WebGPU API.');
+        }
+        stage = 'JavaScript module loading';
         const { default: init, start } = await import('./evm_abstract_web.js');
+        stage = 'WebAssembly initialization';
         await init();
-        try {
-          await start('evm-canvas');
-        } catch (cause) {
-          throw new Error('The browser could not create a usable WebGPU graphics device. Check WebGPU support and graphics acceleration.', { cause });
-        }
+        // eframe also creates the app and its text agent here. A rejection is
+        // not necessarily a graphics failure; retain the original reason.
+        stage = 'browser workspace initialization';
+        await start('evm-canvas');
         document.getElementById('boot').remove();
       } catch (error) {
-        const message = `Unable to start WebGPU: ${error instanceof Error ? error.message : error}`;
+        const reason = describeFailure(error);
+        const message = `Unable to start workspace during ${stage}: ${reason}`;
         document.querySelector('#boot span').textContent = message;
         document.getElementById('boot').setAttribute('role', 'alert');
         document.getElementById('analysis-status').textContent = `Error: ${message}`;
+        const context = [
+          `Stage: ${stage}`,
+          `Cause: ${reason}`,
+          `Secure context: ${window.isSecureContext}`,
+          `WebGPU API: ${navigator.gpu ? 'present' : 'absent'}`,
+          `GPUAdapter.info: ${adapterInfo}`,
+          `Browser: ${navigator.userAgent}`,
+        ].join('\n');
+        const details = document.getElementById('startup-context');
+        details.textContent = context;
+        document.getElementById('startup-diagnostics').hidden = false;
+        document.getElementById('copy-startup-context').addEventListener('click', async (event) => {
+          const button = event.currentTarget;
+          try {
+            await navigator.clipboard.writeText(context);
+            button.textContent = 'Copied';
+          } catch {
+            const range = document.createRange();
+            range.selectNodeContents(details);
+            const selection = window.getSelection();
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+            button.textContent = 'Details selected; copy manually';
+          }
+        });
         console.error(error);
       }
     </script>
