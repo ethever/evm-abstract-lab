@@ -1,6 +1,6 @@
 //! Frozen native test carrier with value-specific returned-Top hook controls.
 #![allow(dead_code)]
-use std::cell::{Cell, RefCell};
+use crate::test_instrumentation::{Counter, Scope};
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Targets {
     pub factories: usize,
@@ -9,16 +9,32 @@ pub(super) struct Targets {
     pub query_quotes: usize,
     pub queries: usize,
 }
-thread_local! {
-    pub(super) static TOP_FEES: Cell<(usize, usize)> = const { Cell::new((64,32)) };
-    pub(super) static TARGETS: RefCell<Targets> = const { RefCell::new(Targets {factories:0,copy_quotes:0,copies:0,query_quotes:0,queries:0}) };
+static TOP_FEES: Counter<(usize, usize)> = Counter::new((64, 32));
+static TARGETS: Counter<Targets> = Counter::new(Targets {
+    factories: 0,
+    copy_quotes: 0,
+    copies: 0,
+    query_quotes: 0,
+    queries: 0,
+});
+
+#[must_use]
+pub(super) struct FeeScope {
+    _fees: Scope<'static, (usize, usize)>,
+    _targets: Scope<'static, Targets>,
 }
-pub(super) fn configure(copy: usize, query: usize) {
+
+pub(super) fn configure(copy: usize, query: usize) -> FeeScope {
+    let fees = TOP_FEES.scope();
+    let targets = TARGETS.scope();
     TOP_FEES.set((copy, query));
-    TARGETS.set(Targets::default());
+    FeeScope {
+        _fees: fees,
+        _targets: targets,
+    }
 }
 pub(super) fn targets() -> Targets {
-    TARGETS.with_borrow(|v| *v)
+    TARGETS.get()
 }
 
 use crate::domain::{
@@ -94,7 +110,7 @@ impl Clone for Native {
     fn clone(&self) -> Self {
         CALLS.update(|calls| calls.clones += 1);
         if self.exact.is_none() && !self.excludes_seven {
-            TARGETS.with_borrow_mut(|v| v.copies += 1);
+            TARGETS.update(|v| v.copies += 1);
         }
         Self {
             exact: self.exact,
@@ -123,10 +139,13 @@ impl WordElement for Native {
     fn top() -> Self {
         CALLS.update(|calls| calls.constructions += 1);
         let mut out = Self::new(None, false);
-        let (copy, query) = TOP_FEES.get();
+        // Unarmed operations retain the carrier's ordinary default fees.
+        let mut fees = (64, 32);
+        TOP_FEES.update(|configured| fees = *configured);
+        let (copy, query) = fees;
         out.copy_fee = copy;
         out.singleton_fee = query;
-        TARGETS.with_borrow_mut(|v| v.factories += 1);
+        TARGETS.update(|v| v.factories += 1);
         out
     }
     fn constant(value: U256) -> Self {
@@ -160,13 +179,13 @@ impl WordElement for Native {
     fn singleton(&self) -> Option<U256> {
         CALLS.update(|calls| calls.singletons += 1);
         if self.exact.is_none() && !self.excludes_seven {
-            TARGETS.with_borrow_mut(|v| v.queries += 1);
+            TARGETS.update(|v| v.queries += 1);
         }
         self.exact
     }
     fn singleton_work(&self) -> usize {
         if self.exact.is_none() && !self.excludes_seven {
-            TARGETS.with_borrow_mut(|v| v.query_quotes += 1);
+            TARGETS.update(|v| v.query_quotes += 1);
         }
         self.singleton_fee
     }
@@ -185,7 +204,7 @@ impl WordElement for Native {
     }
     fn clone_work(&self) -> usize {
         if self.exact.is_none() && !self.excludes_seven {
-            TARGETS.with_borrow_mut(|v| v.copy_quotes += 1);
+            TARGETS.update(|v| v.copy_quotes += 1);
         }
         self.copy_fee
     }

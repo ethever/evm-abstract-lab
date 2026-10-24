@@ -49,11 +49,29 @@ struct Receipt {
 #[derive(Debug, thiserror::Error)]
 enum ProbeError {
     #[error("{0}")]
-    Read(#[from] Infrastructure),
+    Read(Infrastructure),
     #[error("{0}")]
-    Summary(#[from] SummaryReadError<Infrastructure>),
+    Summary(SummaryReadError<Infrastructure>),
     #[error("{0}")]
-    Bottom(#[from] PublishError<crate::domain::facts::FactError, MachineError>),
+    Bottom(PublishError<crate::domain::facts::FactError, MachineError>),
+}
+
+impl From<Infrastructure> for ProbeError {
+    fn from(error: Infrastructure) -> Self {
+        Self::Read(error)
+    }
+}
+
+impl From<SummaryReadError<Infrastructure>> for ProbeError {
+    fn from(error: SummaryReadError<Infrastructure>) -> Self {
+        Self::Summary(error)
+    }
+}
+
+impl From<PublishError<crate::domain::facts::FactError, MachineError>> for ProbeError {
+    fn from(error: PublishError<crate::domain::facts::FactError, MachineError>) -> Self {
+        Self::Bottom(error)
+    }
 }
 
 /// An explicit Bottom premise supplied through the real registered proof port.

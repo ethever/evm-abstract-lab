@@ -131,20 +131,22 @@ fn mask_bounds_matches_sparse_full_word_enumeration() {
 fn mask_bounds_completes_on_a_small_stack() {
     const CHILD: &str = "EVM_ABSTRACT_QUERY_SMALL_STACK";
     if std::env::var_os(CHILD).is_some() {
-        std::thread::Builder::new()
-            .stack_size(64 * 1024)
-            .spawn(|| {
-                let one = U256::from(1);
-                let high = one << 255;
-                let bits = KnownBits::new(one, high).unwrap();
-                assert_eq!(
-                    mask_bounds(one, U256::MAX, bits),
-                    Some((high, U256::MAX - one))
-                );
-            })
-            .unwrap()
-            .join()
-            .unwrap();
+        std::thread::scope(|scope| {
+            // The scope joins this 64 KiB worker and propagates its panic to
+            // the child test process, whose exit status the parent checks.
+            std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn_scoped(scope, || {
+                    let one = U256::from(1);
+                    let high = one << 255;
+                    let bits = KnownBits::new(one, high).unwrap();
+                    assert_eq!(
+                        mask_bounds(one, U256::MAX, bits),
+                        Some((high, U256::MAX - one))
+                    );
+                })
+                .unwrap();
+        });
         return;
     }
 

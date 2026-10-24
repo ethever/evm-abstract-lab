@@ -39,7 +39,7 @@ fn state() -> EvmStoreSummary<Native> {
 fn returned_top_clone_refuses_at_actual_second_map_hook_before_copy() {
     let _scope = CALLS.scope();
     for copy_fee in [usize::MAX, 10_000_000] {
-        configure(copy_fee, 32);
+        let _fees = configure(copy_fee, 32);
         let d = ValueAlgebra::new(Policy::default());
         let before = state();
         let mut budget = WorkBudget::new(100_000);
@@ -68,7 +68,7 @@ fn returned_top_clone_refuses_at_actual_second_map_hook_before_copy() {
 #[test]
 fn finite_returned_top_clone_is_paid_and_reaches_the_target_copy() {
     let _scope = CALLS.scope();
-    configure(50_000, 32);
+    let _fees = configure(50_000, 32);
     let d = ValueAlgebra::new(Policy::default());
     let before = state();
     let mut budget = WorkBudget::new(1_000_000);
@@ -103,7 +103,7 @@ fn finite_returned_top_clone_is_paid_and_reaches_the_target_copy() {
 #[test]
 fn replay_quotes_actual_returned_top_query_before_invoking_it() {
     let _scope = CALLS.scope();
-    configure(64, usize::MAX);
+    let _fees = configure(64, usize::MAX);
     let d = ValueAlgebra::new(Policy::default());
     let before = state();
     let mut budget = WorkBudget::new(10_000_000);
@@ -129,7 +129,7 @@ fn replay_quotes_actual_returned_top_query_before_invoking_it() {
 #[test]
 fn constructor_quote_refuses_before_factory_and_does_not_publish() {
     let _scope = CALLS.scope();
-    configure(64, 32);
+    let _fees = configure(64, 32);
     let d = ValueAlgebra::new(Policy {
         constructor_fee: usize::MAX,
         ..Policy::default()
@@ -151,7 +151,7 @@ fn constructor_quote_refuses_before_factory_and_does_not_publish() {
 #[test]
 fn cancellation_before_staging_preserves_source_and_never_invokes_factory() {
     let _scope = CALLS.scope();
-    configure(64, 32);
+    let _fees = configure(64, 32);
     let d = ValueAlgebra::new(Policy::default());
     let before = state();
     let payer = analysis_control::Cancellation::new();
@@ -173,7 +173,7 @@ fn cancellation_before_staging_preserves_source_and_never_invokes_factory() {
 #[test]
 fn private_non_target_native_predicates_and_typed_replay_source_survive() {
     let _scope = CALLS.scope();
-    configure(64, 32);
+    let _fees = configure(64, 32);
     let d = ValueAlgebra::new(Policy::default());
     let mut before = state();
     let other = Address::repeat_byte(3);
@@ -231,4 +231,35 @@ fn private_non_target_native_predicates_and_typed_replay_source_survive() {
             .unwrap()
             .symbolic_limit_reached()
     );
+}
+
+#[test]
+fn top_fee_scopes_reset_targets_and_restore_default_fees() {
+    let _scope = CALLS.scope();
+    let ordinary = Native::top();
+    assert_eq!((ordinary.copy_fee, ordinary.singleton_fee), (64, 32));
+    {
+        let _fees = configure(777, 999);
+        let top = Native::top();
+        assert_eq!((top.copy_fee, top.singleton_fee), (777, 999));
+        let _copy = top.clone();
+        assert_eq!(top.clone_work(), 777);
+        assert_eq!(top.singleton_work(), 999);
+        assert_eq!(top.singleton(), None);
+        let hooks = targets();
+        assert_eq!(hooks.factories, 1);
+        assert_eq!(hooks.copies, 1);
+        assert_eq!(hooks.copy_quotes, 1);
+        assert_eq!(hooks.queries, 1);
+        assert_eq!(hooks.query_quotes, 1);
+    }
+    let ordinary = Native::top();
+    assert_eq!((ordinary.copy_fee, ordinary.singleton_fee), (64, 32));
+    assert_eq!(CALLS.get().constructions, 3);
+    assert_eq!(CALLS.get().clones, 1);
+    assert_eq!(CALLS.get().singletons, 1);
+    let _fees = configure(64, 32);
+    assert_eq!(targets().factories, 0);
+    assert_eq!(targets().copies, 0);
+    assert_eq!(targets().queries, 0);
 }

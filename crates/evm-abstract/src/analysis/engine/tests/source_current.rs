@@ -10,7 +10,6 @@ use crate::{
     test_instrumentation::Counter,
 };
 use analysis_kernel::{Change, SlotMeta};
-use std::cell::RefCell;
 
 // Hold final presentation certification once to inspect a live, completed World
 // observation before a later native wake. The error probe models a non-budget
@@ -18,9 +17,7 @@ use std::cell::RefCell;
 static HOLD: Counter<bool> = Counter::new(false);
 static READ_REFUSAL: Counter<Option<usize>> = Counter::new(None);
 static DEPENDENCY: Counter<Option<usize>> = Counter::new(None);
-thread_local! {
-    static DEPENDENCY_SLOT: RefCell<Option<SlotMeta<usize>>> = const { RefCell::new(None) };
-}
+static DEPENDENCY_SLOT: Counter<Option<SlotMeta<usize>>> = Counter::new(None);
 
 pub(in crate::analysis::engine) fn hold_certification() -> bool {
     let mut held = false;
@@ -55,7 +52,7 @@ pub(in crate::analysis::engine) fn attach_dependency(id: usize) -> bool {
 }
 
 pub(in crate::analysis::engine) fn remember_dependency(slot: SlotMeta<usize>) {
-    DEPENDENCY_SLOT.with(|pending| *pending.borrow_mut() = Some(slot));
+    DEPENDENCY_SLOT.update(|pending| *pending = Some(slot));
 }
 
 fn fixture() -> (WorldAnalysis, usize) {
@@ -199,6 +196,7 @@ fn actual_same_version_world_preparation_failure_cannot_certify_closed_history()
 fn equal_input_version_dependency_wake_is_rejected_by_final_native_pending_check() {
     let _hold = HOLD.scope();
     let _dependency = DEPENDENCY.scope();
+    let _dependency_slot = DEPENDENCY_SLOT.scope();
     let (result, source) = fixture();
     let algebra = ValueAlgebra::new(ProductAlgebra::from_spec(result.domain_spec()));
     let policies = EnginePolicies::default();
@@ -217,7 +215,7 @@ fn equal_input_version_dependency_wake_is_rejected_by_final_native_pending_check
     rerun_source(&mut engine, source);
     assert_eq!(DEPENDENCY.get(), None);
     let record = engine.source_records[source].unwrap();
-    let slot = DEPENDENCY_SLOT.with(|slot| slot.borrow_mut().take().unwrap());
+    let slot = DEPENDENCY_SLOT.replace(None).unwrap();
     let version = input_version(&mut engine, source);
     let (_, mut driver) = engine.runtime.test_driver(engine.budget).unwrap();
     let mut premise = 0usize;

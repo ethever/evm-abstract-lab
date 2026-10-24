@@ -12,12 +12,13 @@ use crate::{
         symbolic::ExprId,
     },
     resource::WorkBudget,
+    test_instrumentation::Counter,
     world::{EvmAccount, EvmByteArray, EvmEntry, EvmWorld},
 };
 use serde::Serialize;
-use std::{cell::RefCell, fmt};
+use std::fmt;
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 struct Receipt {
     clones: usize,
     singletons: usize,
@@ -25,12 +26,10 @@ struct Receipt {
     singleton_quotes: usize,
 }
 
-thread_local! {
-    static RECEIPT: RefCell<Option<Receipt>> = const { RefCell::new(None) };
-}
+static RECEIPT: Counter<Option<Receipt>> = Counter::new(None);
 
 fn observe(f: impl FnOnce(&mut Receipt)) {
-    RECEIPT.with_borrow_mut(|receipt| {
+    RECEIPT.update(|receipt| {
         if let Some(receipt) = receipt {
             f(receipt);
         }
@@ -38,15 +37,13 @@ fn observe(f: impl FnOnce(&mut Receipt)) {
 }
 
 fn measure<T>(f: impl FnOnce() -> T) -> (T, Receipt) {
-    RECEIPT.with_borrow_mut(|receipt| {
+    let _scope = RECEIPT.scope();
+    RECEIPT.update(|receipt| {
         assert!(receipt.is_none());
         *receipt = Some(Receipt::default());
     });
     let output = f();
-    (
-        output,
-        RECEIPT.with_borrow_mut(|receipt| receipt.take().unwrap()),
-    )
+    (output, RECEIPT.replace(None).unwrap())
 }
 
 /// The exclusion is intentionally absent from WordObservation. Tariffs are
