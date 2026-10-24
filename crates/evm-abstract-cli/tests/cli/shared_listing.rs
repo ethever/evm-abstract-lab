@@ -781,7 +781,13 @@ fn all_ssa_entrypoints_adjust_numeric_columns_for_b9_b10_and_b100() {
         if command == "explain" {
             assert_raw_directory(
                 output
-                    .split_once(if detailed { "\nAnalysis\n" } else { "\nCFG\n" })
+                    .split_once(
+                        if detailed || output.contains("Global control/effect explanation") {
+                            "\nAnalysis\n"
+                        } else {
+                            "\nCFG\n"
+                        },
+                    )
                     .unwrap()
                     .0,
                 std::slice::from_ref(&program),
@@ -986,7 +992,13 @@ fn incomplete_explanations_keep_aligned_input_and_exit_two_without_partial_ssa()
         let output = world("explain", &path, ENTRY, &extra, 2);
         assert_raw_directory(
             output
-                .split_once(if detailed { "\nAnalysis\n" } else { "\nCFG\n" })
+                .split_once(
+                    if detailed || output.contains("Global control/effect explanation") {
+                        "\nAnalysis\n"
+                    } else {
+                        "\nCFG\n"
+                    },
+                )
                 .unwrap()
                 .0,
             &programs,

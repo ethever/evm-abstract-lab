@@ -120,11 +120,13 @@ V2 Pair 选用具体的 USDC/WETH 池子，Router02 与 Factory 则分别是路�
 
 Web 协议的数值仍受类型可表示范围约束：表中字段均为 `u64`，最大 18,446,744,073,709,551,615。后端还检查需要转换为原生 `usize` 的字段是否能在运行平台表示。超出类型范围的输入不会被夹紧或近似接受。CLI 使用相同的默认配置，显式参数仍可覆盖；对应选项见[CLI 精度与预算表](05-sensitivity.md#7-实验时分别调整精度与预算)。直接使用 Rust 库的 `Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 和 `RpcInput::new()` 时，仍保留各类型原有的较小默认值；它们不会隐式采用 CLI/Web 配置。
 
-wire 19 请求必须提供 `limits.numeric_model: "Product"` 或 `"FiniteSet"`。后端只在应用入口选择一次实际数值代数，报告的 `metadata.limits` 保留这个选择；终止覆盖输入还携带独立的模型标签和实际 `domain_spec`。数值限制与执行预算分别检查，标签不代替来源或策略资格。
+wire 20 请求必须提供 `limits.numeric_model: "Product"` 或 `"FiniteSet"`。后端只在应用入口选择一次实际数值代数，报告的 `metadata.limits` 保留这个选择；终止覆盖输入还携带独立的模型标签和实际 `domain_spec`。数值限制与执行预算分别检查，标签不代替来源或策略资格。
 
 任务运行期间保留上一份完整结果，并显示新任务的状态与离散进度；新任务成功后才原子替换结果。输入草稿的编辑不会改变正在查看的报告。取消、失败或迟到的旧请求也不会把旧报告冒充新任务结果。
 
-**Execution budget** 默认勾选 **Prepare conservative root terminal coverage**，与 2,000,000,000 logical work 组成快速保守默认策略。准备费用计入同一预算，可能减少剩余详细传播。详细执行仍为 `Incomplete` 时，附加记录后显示 **Detail incomplete / partial SSA** 与 **Root terminal results conservatively covered**，全部 frontier 保留，CFG 和 SSA 仍可部分完成。详细执行已 `Converged` 时可以没有证书，不显示 **Root terminal certificate not attached**；只有请求开启、详细未完成且无记录时才显示该提示。取消勾选可仅做详细分析。**Outcomes** 中的 **Conservative root terminal coverage** 使用独立的 Return/Revert/Failure alternative 和 **Original input binding**，与已观察结果分开；浏览这些内容不会改选原生状态或重新提交任务。完整语义见[根终止覆盖](19-root-terminal-coverage.md)。
+默认先构建全局过程，再把剩余预算用于详细路径。**Global model** 保留可能的调用、静态回调、构造和出口；**Detailed paths** 查看独立 native 图、指令与 SSA。符号根的详细视图会明确显示额外根地址条件；当前前缀不表示整个区域已完成，待处理路径仍保留。状态栏的全局闭合和 native 精度分别显示，详见[全局模型与详细路径](20-global-and-local.md)。
+
+**Execution budget** 保留默认勾选的 **Prepare conservative root terminal coverage**。这个可选辅助属于 native 阶段；未开始或预算不足时可没有记录，三个 tuple 不替代全局控制闭合。关闭完成调用缓存复用仍运行实际 Process 模型。[根终止覆盖](19-root-terminal-coverage.md)说明辅助 tuple 的联合数据/Store 与回滚资格。
 
 ## 分析耗时
 

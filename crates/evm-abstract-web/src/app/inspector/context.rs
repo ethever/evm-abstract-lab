@@ -6,7 +6,7 @@ use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{AnalysisReport, EnvironmentSnapshot, FrameSnapshot};
 
-pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
+pub(super) fn frame(ui: &mut Ui, report: &AnalysisReport, frame: &FrameSnapshot) {
     if let Some(key) = &frame.process {
         super::process::frame(ui, key);
         if let Some(operands) = &frame.process_operands {
@@ -32,23 +32,40 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
         .show(ui, |ui| {
             let abstract_environment =
                 frame.kind == evm_abstract_protocol::CodeKind::AbstractEnvironment;
+            let input_owner = frame.index == 0
+                && report.input_namespace().is_some()
+                && frame.storage_address.as_deref() == report.input_namespace();
+            let input_code =
+                input_owner && frame.code_address.as_deref() == report.input_namespace();
             value::text(
                 ui,
-                if abstract_environment {
+                if input_code {
+                    "Code input"
+                } else if abstract_environment {
                     "Code namespace"
                 } else {
                     "Code account"
                 },
-                frame.code_address.as_deref().unwrap_or("Not recorded"),
+                if input_code {
+                    "Supplied input program"
+                } else {
+                    frame.code_address.as_deref().unwrap_or("Not recorded")
+                },
             );
             value::text(
                 ui,
-                if frame.address_operand.is_some() {
+                if input_owner {
+                    "Root input owner"
+                } else if frame.address_operand.is_some() {
                     "Storage namespace"
                 } else {
                     "Storage owner"
                 },
-                frame.storage_address.as_deref().unwrap_or("Not recorded"),
+                if input_owner {
+                    "Symbolic ADDRESS"
+                } else {
+                    frame.storage_address.as_deref().unwrap_or("Not recorded")
+                },
             );
             if let Some(address) = &frame.address_operand {
                 value::named(ui, "Logical ADDRESS", address);
@@ -140,6 +157,30 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
 }
 
 pub(super) fn environment(ui: &mut Ui, report: &AnalysisReport) {
+    ui.label(RichText::new("Declared root input").strong());
+    match &report.metadata.root_binding {
+        evm_abstract_protocol::RootInputBinding::Physical(source) => {
+            ui.monospace(format!("Root destination: {}", source.address));
+        }
+        evm_abstract_protocol::RootInputBinding::Namespace(_) => {
+            ui.label("Root ADDRESS is symbolic; the supplied root state is an input template.");
+        }
+    }
+    super::process::source(ui, &report.metadata.declared_root_source);
+    if let Some(template) = report
+        .accounts
+        .iter()
+        .find(|account| report.input_namespace() == Some(account.address.as_str()))
+    {
+        ui.collapsing("Supplied root state", |ui| {
+            value::named(ui, "Balance", &template.balance);
+            value::named(ui, "Nonce", &template.nonce);
+            value::named(ui, "Other supplied slots", &template.storage_default);
+            for slot in &template.storage {
+                value::named(ui, &slot.slot, &slot.value);
+            }
+        });
+    }
     ui.label(RichText::new("Report work").strong());
     egui::Grid::new("report_work")
         .num_columns(2)

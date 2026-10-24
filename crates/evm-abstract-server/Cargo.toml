@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 
+[features]
+capture-replay = []
+
 [dependencies]
 alloy-primitives.workspace = true
 axum.workspace             = true
@@ -24,6 +27,7 @@ thiserror.workspace        = true
 clap.workspace             = true
 
 [dev-dependencies]
+evm-abstract-server = { path = ".", features = ["capture-replay"] }
 async-compression = { workspace = true, features = [
     "tokio",
     "zstd",

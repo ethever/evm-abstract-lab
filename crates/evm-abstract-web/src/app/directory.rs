@@ -23,6 +23,7 @@ pub(super) struct Directory {
 pub(super) enum Pick {
     Program(usize),
     Account(String),
+    RootInput,
 }
 
 impl Directory {
@@ -79,12 +80,13 @@ impl Directory {
                         let title = format!(
                             "{} · {}",
                             Symbol::Program(program.id),
-                            short(
-                                program
-                                    .code_address
-                                    .as_deref()
-                                    .unwrap_or("Constructor source")
-                            )
+                            short(program.code_address.as_deref().unwrap_or(
+                                if program.kind == evm_abstract_protocol::CodeKind::Runtime {
+                                    "Supplied input program"
+                                } else {
+                                    "Constructor source"
+                                }
+                            ))
                         );
                         if ui
                             .add(
@@ -97,10 +99,13 @@ impl Directory {
                             .on_hover_text(format!(
                                 "{:?}\n{}\n{}",
                                 program.kind,
-                                program
-                                    .code_address
-                                    .as_deref()
-                                    .unwrap_or("Constructor source"),
+                                program.code_address.as_deref().unwrap_or(
+                                    if program.kind == evm_abstract_protocol::CodeKind::Runtime {
+                                        "Supplied input program"
+                                    } else {
+                                        "Constructor source"
+                                    }
+                                ),
                                 program.code_hash
                             ))
                             .clicked()
@@ -129,6 +134,24 @@ impl Directory {
                             .color(palette::MUTED),
                     );
                     for account in &report.accounts {
+                        if report.input_namespace() == Some(account.address.as_str()) {
+                            if controls::action(ui, "Supplied root state", Density::Compact)
+                                .on_hover_text("Input program/state template for symbolic ADDRESS")
+                                .clicked()
+                            {
+                                picked = Some(Pick::RootInput);
+                            }
+                            ui.label(
+                                RichText::new(format!(
+                                    "{:?} · {} supplied slots",
+                                    account.code_kind,
+                                    account.storage.len()
+                                ))
+                                .small()
+                                .color(palette::MUTED),
+                            );
+                            continue;
+                        }
                         if !filter.is_empty()
                             && !account.address.to_ascii_lowercase().contains(&filter)
                         {

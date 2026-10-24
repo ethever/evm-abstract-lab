@@ -154,12 +154,20 @@ impl Validation<'_> {
         if programs.next().is_some() {
             return Err(invalid(Failure::Frame));
         }
+        let input_program = self.report.input_namespace() == Some(frame.code_address.as_str())
+            && matches!(&metadata.declared_root_source, crate::ProcessSource::InputProgram(source)
+                if source.hash.to_string() == frame.code_hash);
+        let code_source_matches = if input_program {
+            program.code_address.is_none()
+        } else {
+            program.code_address.as_ref() == Some(&frame.code_address)
+        };
         if input.entry_address != metadata.entry_address
             || frame.address != input.entry_address
             || frame.address_value != input.environment.to
             || frame.caller != input.environment.caller
             || frame.is_static != input.environment.is_static
-            || program.code_address.as_ref() != Some(&frame.code_address)
+            || !code_source_matches
             || program.code_hash != frame.code_hash
             || frame.mode != RootTerminalFrameCode::Runtime
             || program.kind != crate::CodeKind::Runtime

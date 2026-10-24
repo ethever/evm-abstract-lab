@@ -3,9 +3,11 @@
 mod chrome;
 mod directory;
 mod form;
+mod hybrid;
 mod inspector;
 mod job;
 mod layout;
+mod model;
 mod providers;
 mod startup;
 mod terminal_coverage;
@@ -15,7 +17,9 @@ use crate::{palette, widgets};
 use directory::{Directory, Pick};
 use egui::{Key, Modifiers, Ui};
 use evm_abstract_notation::{Symbol, WideSymbol};
-use evm_abstract_protocol::{AnalysisReport, AnalyzeReply, AnalyzeRequest, JobId, SCHEMA_VERSION};
+use evm_abstract_protocol::{
+    AnalysisNamespace, AnalysisReport, AnalyzeReply, AnalyzeRequest, JobId, SCHEMA_VERSION,
+};
 use form::AnalysisForm;
 use inspector::Inspector;
 #[cfg(target_arch = "wasm32")]
@@ -25,6 +29,7 @@ pub(crate) use inspector::shortcut::{
 pub use job::{Command, JobOperation, Message};
 use job::{Task, TaskError, TaskPhase};
 use layout::{AnalysisPanes, Pane, PaneLayout};
+use model::shown;
 
 /// Browser request failures, distinct from the backend's typed analysis errors.
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +99,7 @@ pub(crate) enum View {
 /// task runs; stale callbacks cannot replace the selected result.
 pub struct Workspace {
     report: Option<AnalysisReport>,
+    view_namespace: AnalysisNamespace,
     // Only a validated report from an accepted server result owns this ID.
     // It remains bound to the visible report across later task generations.
     report_job_id: Option<JobId>,
@@ -121,6 +127,7 @@ impl Default for Workspace {
     fn default() -> Self {
         Self {
             report: None,
+            view_namespace: AnalysisNamespace::Native,
             report_job_id: None,
             task: Task::default(),
             startup: startup::Startup::default(),
@@ -237,7 +244,18 @@ impl Workspace {
             // Freeze this frame's presentation: a title action takes effect on
             // the next frame, keeping the inspector's widget IDs unique.
             let inspector_maximized = self.report.is_some() && self.inspector.maximized();
+            if self
+                .report
+                .as_ref()
+                .is_some_and(|report| report.hybrid.is_some())
+            {
+                egui::Panel::top("model_scope")
+                    .frame(palette::chrome_frame())
+                    .show(ui, |ui| self.model_selector(ui));
+            }
             if let Some(report) = &self.report {
+                let model = report;
+                let report = shown(report, self.view_namespace);
                 egui::Panel::top("result_context")
                     .frame(palette::chrome_frame())
                     .show(ui, |ui| {
@@ -254,9 +272,10 @@ impl Workspace {
                         // Reserve the chosen panel height even for an empty snapshot;
                         // otherwise egui shrinks it after the graph's initial fit.
                         ui.set_min_height(ui.available_height());
-                        self.inspector.show(
+                        self.inspector.show_model(
                             ui,
                             report,
+                            model,
                             &mut self.selection,
                             self.account.as_deref(),
                         );
@@ -270,6 +289,7 @@ impl Workspace {
                 && viewport.x >= 1050.0
                 && let Some(report) = &self.report
             {
+                let report = shown(report, self.view_namespace);
                 egui::Panel::left("world_directory")
                     .resizable(true)
                     .default_size(196.0)
@@ -293,10 +313,13 @@ impl Workspace {
                 )
                 .show(ui, |ui| {
                     if let Some(report) = &self.report {
+                        let model = report;
+                        let report = shown(report, self.view_namespace);
                         if inspector_maximized {
-                            self.inspector.show(
+                            self.inspector.show_model(
                                 ui,
                                 report,
+                                model,
                                 &mut self.selection,
                                 self.account.as_deref(),
                             );
@@ -343,6 +366,7 @@ impl Workspace {
             let mut open = true;
             let mut pick = None;
             if let Some(report) = &self.report {
+                let report = shown(report, self.view_namespace);
                 egui::Window::new("Programs and accounts")
                     .id(egui::Id::new("directory_window"))
                     .open(&mut open)
@@ -401,7 +425,13 @@ impl Workspace {
         let Some(report) = &self.report else {
             return;
         };
+        let report = shown(report, self.view_namespace);
         match pick {
+            Pick::RootInput => {
+                self.account = None;
+                self.inspector.expanded = true;
+                self.inspector.tab = inspector::Tab::Environment;
+            }
             Pick::Program(program) => {
                 self.program = Some(program);
                 self.account = None;
@@ -457,7 +487,7 @@ impl Workspace {
         }
         self.previous_state = self.selection.state;
         if let Some(report) = &self.report
-            && let Some(state) = report
+            && let Some(state) = shown(report, self.view_namespace)
                 .cfg
                 .iter()
                 .find(|state| Some(state.id) == self.selection.state)
@@ -535,15 +565,17 @@ impl Workspace {
                         }));
                     return;
                 }
+                self.view_namespace = model::initial(&report);
+                let visible = shown(&report, self.view_namespace);
                 self.selection = Selection {
                     value: None,
-                    state: report.cfg.first().map(|state| state.id),
+                    state: visible.cfg.first().map(|state| state.id),
                     pc: None,
                 };
-                self.program = report
+                self.program = visible
                     .cfg
                     .first()
-                    .map_or(report.metadata.root_program, |state| state.program);
+                    .map_or(visible.metadata.root_program, |state| state.program);
                 self.previous_state = self.selection.state;
                 self.account = None;
                 self.disasm_focus = Selection::default();
@@ -553,7 +585,7 @@ impl Workspace {
                 self.inspector.reset_report();
                 self.previous_report = false;
                 self.directory.open =
-                    report.metadata.snapshot.is_some() || report.programs.len() > 1;
+                    visible.metadata.snapshot.is_some() || visible.programs.len() > 1;
                 self.report = Some(report);
                 self.report_job_id = report_job_id;
                 self.task.complete();
@@ -601,6 +633,26 @@ impl Workspace {
                 terminal_coverage::detail_status(report)
             ));
         }
+        if let Some(summary) = self.report.as_ref().and_then(hybrid::summary) {
+            status.push_str(&format!("; {summary}"));
+            status.push_str(match self.view_namespace {
+                AnalysisNamespace::Baseline => "; View: Global model",
+                AnalysisNamespace::Native => "; View: Detailed paths",
+            });
+            if self.view_namespace == AnalysisNamespace::Native
+                && let Some(hybrid) = self
+                    .report
+                    .as_ref()
+                    .and_then(|report| report.hybrid.as_ref())
+                && let evm_abstract_protocol::HybridNativeBinding::SymbolicOwnerNamespace(binding) =
+                    &hybrid.native_coverage().detail_binding
+            {
+                status.push_str(&format!(
+                    "; Additional condition: root ADDRESS = {}",
+                    binding.namespace
+                ));
+            }
+        }
         status
     }
 
@@ -634,6 +686,8 @@ impl Workspace {
         if self.task.phase == TaskPhase::Ready
             && let Some(report) = &self.report
         {
+            let model = report;
+            let report = shown(report, self.view_namespace);
             return format!(
                 "{}: {} instructions, {} CFG states, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}; {}; SSA details: {:?}",
                 self.task_label(),
@@ -661,7 +715,17 @@ impl Workspace {
                 self.program
                     .map_or("none".into(), |program| Symbol::Program(program)
                         .to_string()),
-                self.inspector.accessible_summary(report, self.selection),
+                self.inspector.accessible_summary(
+                    if matches!(
+                        self.inspector.tab,
+                        inspector::Tab::Coverage | inspector::Tab::Timing
+                    ) {
+                        model
+                    } else {
+                        report
+                    },
+                    self.selection
+                ),
                 self.graph.accessible_summary(),
                 self.ssa_display
             );

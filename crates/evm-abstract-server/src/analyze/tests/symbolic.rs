@@ -252,7 +252,9 @@ fn unknown_length_copy_retains_guard_and_pre_effect_state_in_json() {
     };
     input.limits.root_terminal_coverage = false;
     input.limits.max_expression_nodes = 3;
-    let partial = roundtrip(crate::analyze::analyze(input).unwrap());
+    let combined = crate::analyze::analyze(input).unwrap();
+    assert!(combined.hybrid.as_ref().unwrap().coverage.baseline_current);
+    let partial = roundtrip(super::native_detail(combined));
     assert_eq!(partial.status, api::AnalysisStatus::Incomplete);
     assert!(!partial.ssa.complete);
     assert_eq!(partial.metadata.limits.max_expression_nodes, 3);

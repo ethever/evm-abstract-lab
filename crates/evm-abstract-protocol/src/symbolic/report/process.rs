@@ -49,12 +49,20 @@ impl Validation<'_> {
         key: &ProcessFrameKey,
         program: Option<usize>,
     ) -> Result<(), ReportValidationFailure> {
+        if key.source.fork() != self.report.fork {
+            return Err(ReportValidationFailure::Process(Kind::Source));
+        }
         self.program(program)?;
         let Some(id) = program else { return Ok(()) };
         let Some(program) = self.report.programs.iter().find(|program| program.id == id) else {
             unreachable!("program reference checked")
         };
         let valid = match &key.source {
+            ProcessSource::InputProgram(source) => {
+                program.code_address.is_none()
+                    && program.code_hash == source.hash.to_string()
+                    && program.kind == crate::CodeKind::Runtime
+            }
             ProcessSource::Runtime(source) => {
                 program.code_address.as_ref() == Some(&source.source)
                     && program.code_hash == source.hash.to_string()

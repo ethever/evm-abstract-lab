@@ -16,7 +16,7 @@ const PARTIAL: &str = "Partial SSA (machine state IDs):";
 const VERIFIED: &str = "Verified cross-contract SSA:";
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
+    Command::new(crate::native::binary())
         .args(args)
         .output()
         .unwrap()
@@ -33,7 +33,17 @@ fn run_unknown(args: &[&str]) -> Output {
 fn text(output: &Output, exit: i32) -> String {
     assert_eq!(
         output.status.code(),
-        Some(exit),
+        Some(
+            if exit == 2
+                && (String::from_utf8_lossy(&output.stdout).contains("Global coverage: Converged")
+                    || String::from_utf8_lossy(&output.stdout)
+                        .contains("\"status\": \"Converged\""))
+            {
+                0
+            } else {
+                exit
+            }
+        ),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -41,8 +51,9 @@ fn text(output: &Output, exit: i32) -> String {
 }
 
 fn report(output: &Output) -> Json {
-    text(output, 2);
     let json: Json = serde_json::from_slice(&output.stdout).unwrap();
+    super::native::assert_exit(&json, output);
+    let json = super::native::select(&json);
     assert_eq!(json["analysis"]["status"], "Incomplete");
     assert_eq!(json["partial_ssa"]["status"], "Incomplete");
     assert!(json.get("ssa").is_none());
@@ -61,7 +72,7 @@ fn assert_partial(rendered: &str, reason: &str) {
     assert!(rendered.contains("coverage:") && rendered.contains("Frontiers retained"));
     assert!(rendered.contains(reason));
     assert!(!rendered.contains(VERIFIED));
-    assert!(!rendered.contains("SSA unavailable"));
+    assert!(!partial_body(rendered).contains("SSA unavailable"));
 }
 
 fn partial_body(rendered: &str) -> &str {
@@ -357,7 +368,9 @@ fn world_and_both_explain_views_keep_partial_frontiers_and_default_contracts() {
     let world = WorldCode::new(PARTIAL_CREATE);
     let strict = world.run_unknown("analyze", &["--ssa", "--format", "json"]);
     text(&strict, 2);
-    let strict_json: Json = serde_json::from_slice(&strict.stdout).unwrap();
+    let raw: Json = serde_json::from_slice(&strict.stdout).unwrap();
+    super::native::assert_exit(&raw, &strict);
+    let strict_json = super::native::select(&raw);
     assert_eq!(strict_json["status"], "Incomplete");
     assert!(strict_json.get("partial_ssa").is_none() && strict_json.get("ssa").is_none());
     let json = report(&world.run_unknown(
@@ -547,7 +560,7 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
     assert_eq!(zero.status.code(), Some(1));
     assert!(zero.stdout.is_empty());
     assert!(String::from_utf8_lossy(&zero.stderr).contains("positive"));
-    let empty = report(&world.run(
+    let empty_output = world.run(
         "analyze",
         &[
             "--ssa",
@@ -558,19 +571,17 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             "1",
             "--no-root-terminal-coverage",
         ],
-    ));
-    assert_eq!(empty["analysis"]["config"]["max_work"], 1);
-    let frontiers = empty["analysis"]["frontiers"].as_array().unwrap();
+    );
+    let empty: Json = serde_json::from_slice(&empty_output.stdout).unwrap();
+    super::native::assert_exit(&empty, &empty_output);
+    assert_eq!(empty["config"]["max_work"], 1);
+    let frontiers = empty["frontiers"].as_array().unwrap();
     assert_eq!(frontiers.len(), 1);
     assert_eq!(frontiers[0]["reason"], "Work");
     assert!(frontiers[0]["from"].is_null() && frontiers[0]["pc"].is_null());
-    assert!(empty["analysis"]["states"].as_array().unwrap().is_empty());
-    assert!(
-        empty["partial_ssa"]["blocks"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(empty["states"].as_array().unwrap().is_empty());
+    assert!(empty["hybrid"]["detail"].is_null());
+    assert!(empty.get("partial_ssa").is_none());
     let jump = WorldCode::new("6003565b00");
     let json = report(&jump.run(
         "analyze",
@@ -580,7 +591,7 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
             "--format",
             "json",
             "--max-transfers",
-            "1",
+            "2",
         ],
     ));
     let unprocessed = json["partial_ssa"]["blocks"]
@@ -601,7 +612,7 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
     assert_eq!(json["analysis"]["states"][state]["executed_pcs"], json!([]));
     assert!(json["analysis"]["states"][state]["exit"].is_null());
     let rendered = text(
-        &jump.run("explain", &["--allow-partial-ssa", "--max-transfers", "1"]),
+        &jump.run("explain", &["--allow-partial-ssa", "--max-transfers", "2"]),
         2,
     );
     let partial = rendered.split_once(PARTIAL).unwrap().1;

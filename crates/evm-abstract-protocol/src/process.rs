@@ -41,6 +41,8 @@ choice! {
 variant! {
     /// Target before code resolution; a residual class is never a concrete address.
     pub enum ProcessOwner {
+        /// Original root state namespace; may alias any physical class.
+        RootNamespace,
         /// Exact owner in the invocation's named vocabulary.
         Named(String),
         /// Remaining owners and unresolved aliases.

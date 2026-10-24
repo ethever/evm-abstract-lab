@@ -18,7 +18,32 @@ pub(in crate::analyze) fn key(native: &analysis::ProcessFrameKey) -> api::Proces
         source: execution_source,
         is_static,
     } = native;
-    let source = match *execution_source {
+    let source = source(*execution_source);
+    api::ProcessFrameKey {
+        epoch: api::ProcessDigest(epoch.0),
+        owner: owner(*physical_owner),
+        source,
+        is_static: *is_static,
+    }
+}
+
+pub(in crate::analyze) fn source(native: analysis::ProcessSource) -> api::ProcessSource {
+    match native {
+        analysis::ProcessSource::InputProgram { hash, fork: rules } => {
+            api::ProcessSource::InputProgram(api::ProcessInputProgramSource {
+                hash: api::ProcessDigest(hash.0),
+                fork: fork(rules),
+            })
+        }
+        analysis::ProcessSource::InputDelegation {
+            target,
+            hash,
+            fork: rules,
+        } => api::ProcessSource::InputDelegation(api::ProcessInputDelegationSource {
+            target: target.to_string(),
+            hash: api::ProcessDigest(hash.0),
+            fork: fork(rules),
+        }),
         analysis::ProcessSource::Runtime {
             source,
             hash,
@@ -59,12 +84,6 @@ pub(in crate::analyze) fn key(native: &analysis::ProcessFrameKey) -> api::Proces
             address: address.to_string(),
             fork: fork(rules),
         }),
-    };
-    api::ProcessFrameKey {
-        epoch: api::ProcessDigest(epoch.0),
-        owner: owner(*physical_owner),
-        source,
-        is_static: *is_static,
     }
 }
 

@@ -37,7 +37,7 @@ fn default_relation_policy_matches_web_for_program_and_world() {
 #[test]
 fn local_facts_preserve_feasible_paths_and_exclude_a_contradictory_branch() {
     // Empty PATH also guards against accidentally introducing external tools.
-    let output = Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
+    let output = Command::new(crate::native::binary())
         .env("PATH", "")
         .args([
             "cfg",

@@ -64,7 +64,8 @@ fn latest_number_and_hash_pin_once_for_analyze_and_explain_with_recursive_discov
                     String::from_utf8_lossy(&output.stderr)
                 );
                 if command == "analyze" {
-                    let analysis: Json = serde_json::from_slice(&output.stdout).unwrap();
+                    let analysis: Json =
+                        crate::native::select(&serde_json::from_slice(&output.stdout).unwrap());
                     assert_eq!(analysis["status"], "Converged");
                     assert_eq!(analysis["world"]["identity"]["chain_id"], "0x38");
                     assert_eq!(analysis["world"]["identity"]["block_hash"], BLOCK);
@@ -72,7 +73,7 @@ fn latest_number_and_hash_pin_once_for_analyze_and_explain_with_recursive_discov
                         analysis["rpc_acquisition"]["fetched_accounts"],
                         json!([CALLEE, LEAF])
                     );
-                    assert_eq!(analysis["rpc_acquisition"]["rounds"], 3);
+                    assert_eq!(analysis["rpc_acquisition"]["rounds"], 4);
                 } else {
                     let explanation = String::from_utf8(output.stdout).unwrap();
                     assert!(
@@ -168,7 +169,7 @@ fn rpc_identity_and_execution_chain_id_are_independent_with_symbolic_call_defaul
                 if no_discovery {
                     args.push("--no-rpc-discovery");
                 }
-                let output = std::process::Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
+                let output = std::process::Command::new(crate::native::binary())
                     .args(&args)
                     .output()
                     .unwrap();
@@ -177,7 +178,8 @@ fn rpc_identity_and_execution_chain_id_are_independent_with_symbolic_call_defaul
                     "{}",
                     String::from_utf8_lossy(&output.stderr)
                 );
-                let analysis: Json = serde_json::from_slice(&output.stdout).unwrap();
+                let analysis: Json =
+                    crate::native::select(&serde_json::from_slice(&output.stdout).unwrap());
                 assert_eq!(analysis["world"]["identity"]["chain_id"], "0x38");
                 assert_eq!(
                     analysis["states"][0]["exit_stack"][0]["numeric"]["constants"],

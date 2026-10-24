@@ -250,7 +250,7 @@ pub(super) fn pending(ui: &mut Ui, report: &api::AnalysisReport, id: usize) {
                     ),
                     |ui| {
                         if frame.process.is_some() {
-                            super::context::frame(ui, frame);
+                            super::context::frame(ui, report, frame);
                             return;
                         }
                         super::buffers::stack(ui, &frame.stack);

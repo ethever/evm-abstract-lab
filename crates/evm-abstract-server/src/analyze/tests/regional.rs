@@ -87,7 +87,7 @@ fn fixture_with_policy<S: analysis::ProcedureSummaryPolicy<ProductAlgebra>>(
         &Control::default(),
     )
     .unwrap();
-    assert_eq!(report.schema_version, 19);
+    assert_eq!(report.schema_version, 20);
     assert!(report.root_terminal_coverage.is_none());
     report.validate().unwrap();
     (native, report)
@@ -175,7 +175,7 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
             analysis::KnownProcessSummaries,
         );
         let raw = serde_json::to_value(render::world::evidence(&native).unwrap()).unwrap();
-        assert_eq!(raw["schema_version"], 14);
+        assert_eq!(raw["schema_version"], 15);
         assert_eq!(raw["domain_spec"]["schema_version"], 3);
         assert_eq!(raw["domain_spec"]["cost_version"], 8);
         assert!(report.root_terminal_coverage.is_none());
@@ -322,6 +322,14 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
                 }
             ))
         ));
+        let mut wrong_fork = report.clone();
+        wrong_fork.fork = api::Fork::Cancun;
+        assert_eq!(
+            wrong_fork.validate(),
+            Err(api::ReportValidationFailure::Process(
+                api::ProcessValidationKind::Source
+            ))
+        );
         let decoded: api::AnalyzeReply = serde_json::from_slice(
             &serde_json::to_vec(&api::AnalyzeReply {
                 result: Ok(report.clone()),
@@ -552,7 +560,7 @@ fn regional_known_calls_preserve_native_owner_mode_deliveries_and_pooled_roundtr
     decoded.validate().unwrap();
     assert_eq!(decoded, report);
     let raw = serde_json::to_value(render::world::evidence(&native).unwrap()).unwrap();
-    assert_eq!(raw["schema_version"], 14);
+    assert_eq!(raw["schema_version"], 15);
     assert_eq!(raw["procedure_summaries"][0]["kind"], "KnownCall");
     assert_eq!(
         raw["procedure_summaries"][0]["regional_cfg"],
