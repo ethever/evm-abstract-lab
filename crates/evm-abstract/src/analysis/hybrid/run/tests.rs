@@ -10,6 +10,8 @@ use crate::{
     resource::WorkBudget,
 };
 
+mod cache;
+
 #[test]
 fn metered_hybrid_retains_prior_actual_work_and_rejects_sticky_rescue() {
     let algebra = ValueAlgebra::new(ProductAlgebra::default());
