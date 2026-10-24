@@ -199,10 +199,10 @@ def world_graph_scopes(page, canvas, report, child, child_state, output: Path, r
     graph_mode(page, canvas, "States")
     full = graph_scope(page, "States", 4, 4, 4)
     assert full["scope"] == "All programs" and full["edges"] == full["native_edges"] == len(edges)
-    canvas.click(position={"x": 205, "y": 109})  # native program ComboBox
+    canvas.click(position={"x": 205, "y": 133})  # native program ComboBox
     rendered_frame(page)
     canvas.screenshot(path=str(output / "world-graph-program-menu.png"))
-    canvas.click(position={"x": 205, "y": 181})  # P1 · Runtime (native menu geometry)
+    canvas.click(position={"x": 205, "y": 205})  # P1 · Runtime (native menu geometry)
     settle_gesture(page)
     filtered = graph_scope(page, "States", 1, 1, 4)
     assert filtered["scope"] == symbol("P", child["id"])
@@ -242,13 +242,17 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     envelope = reply.json()
     (output / "world-task-reply.json").write_text(json.dumps({"admission_http_status": reply.admission_status, "observed_http_status": reply.status, "reply": envelope}, indent=2) + "\n")
     assert reply.status == 200 and "Ok" in envelope["result"], f"RPC world task failed: {json.dumps(envelope, sort_keys=True)}"
-    report = envelope["result"]["Ok"]
+    global_report = envelope["result"]["Ok"]
+    assert global_report["status"] == "Converged"
+    assert global_report["hybrid"]["coverage"]["baseline_current"] is True
+    assert global_report["hybrid"]["rpc"]["detail_at_current_revision"] is True
+    report = global_report["hybrid"]["detail"]
     assert len(report["programs"]) >= 2, "RPC call failed to capture the child program"
     assert {program["code_address"] for program in report["programs"]} == {rpc.root_address, rpc.child_address}
     assert max(block["frame_depth"] for block in report["cfg"]) == 2
     snapshot = report["metadata"]["snapshot"]
     assert int(snapshot["chain_id"], 16) == int(rpc.chain_id, 16) and snapshot["block_hash"] == rpc.block_hash
-    assert report["acquisition"]["requests"] > 0
+    assert global_report["acquisition"]["requests"] > 0
     assert report["outcomes"] and report["stores"] and report["byte_arrays"]
     assert any(state["exit"] and len(state["exit"]["frames"]) == 2 for state in report["states"])
     child = next(program for program in report["programs"] if program["code_address"] == rpc.child_address)
@@ -267,7 +271,7 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     # update code, SSA, graph selection and the active frame together.
     settle_gesture(page)
     canvas.screenshot(path=str(output / "world-overview.png"))
-    canvas.click(position={"x": 80, "y": 135})
+    canvas.click(position={"x": 80, "y": 159})
     expect(status).to_contain_text(f"source {symbol('P', child['id'])}")
     expect(status).to_contain_text(f"Selected {symbol('σ', child_state['id'])}")
     expect(status).to_contain_text("Frame f₁")
@@ -278,6 +282,10 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     for tab in tabs:
         select_inspector_tab(page, canvas, tab)
         expect(status).to_contain_text(tab)
+        if tab == "Acquisition":
+            acquired=global_report["acquisition"]
+            expect(status).to_contain_text(f"{acquired['rounds']} rounds · {acquired['requests']} RPC requests")
+            assert "no RPC acquisition" not in status.text_content()
         rendered_frame(page)
         png = canvas.screenshot(path=str(output / f"world-{tab.lower()}.png"))
         screenshots[tab] = hashlib.sha256(png).hexdigest()

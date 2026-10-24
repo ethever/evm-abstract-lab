@@ -542,13 +542,15 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                     BTreeMap::new()
                 }
             };
+            // The separately paid result.payload stays immutable for failure
+            // recovery. Deliver the owned input once, then copy that anchor.
+            let mut incoming = Some(payload);
             for (kind, output) in outputs {
                 let delivery = (|| -> Result<_, MachineError> {
                     solver.reserve(effects::StoreEffect::MATCH_WORK)?;
-                    payload.pay_clone_with(solver.budget)?;
-                    let returned = payload.clone();
-                    crate::resource::clone_payment::checkpoint(solver.budget)?;
-                    let frame = payload.active();
+                    let returned =
+                        take_root_payload(&mut incoming, &result.payload, solver.budget)?;
+                    let frame = result.payload.active();
                     let store = if solver.table.procedures[root].store_effect.keeps_store(
                         frame.code,
                         frame.key.mode,
@@ -558,12 +560,10 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                     ) {
                         None
                     } else if frame.key.is_static {
-                        Some(
-                            output
-                                .summary
-                                .store
-                                .apply_static_touches_with_payment(&payload.store, solver.budget)?,
-                        )
+                        Some(output.summary.store.apply_static_touches_with_payment(
+                            &result.payload.store,
+                            solver.budget,
+                        )?)
                     } else {
                         Some(
                             output
@@ -822,6 +822,22 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         }
         (result, record)
     }
+}
+
+fn take_root_payload<N: WordElement>(
+    incoming: &mut Option<EvmMachinePayload<N>>,
+    retained: &EvmMachinePayload<N>,
+    budget: &mut WorkBudget,
+) -> Result<EvmMachinePayload<N>, MachineError> {
+    crate::resource::clone_payment::checkpoint(budget)?;
+    let returned = if let Some(payload) = incoming.take() {
+        payload
+    } else {
+        retained.pay_clone_with(budget)?;
+        retained.clone()
+    };
+    crate::resource::clone_payment::checkpoint(budget)?;
+    Ok(returned)
 }
 
 #[cfg(test)]

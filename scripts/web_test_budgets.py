@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 from web_test_harness import complete_submission, observe_webgpu, open_input, rendered_frame, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import layout_modal
+from web_test_hybrid import assert_hybrid
 from web_test_pixels import text_pixels
 
 

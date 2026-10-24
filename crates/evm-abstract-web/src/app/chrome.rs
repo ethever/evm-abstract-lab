@@ -183,22 +183,24 @@ pub(super) fn result_context(
     display: &mut crate::ssa_display::SsaDisplay,
 ) {
     let source = program.and_then(|id| report.programs.iter().find(|program| program.id == id));
-    let program_label = source.map_or_else(
-        || "No captured program".into(),
-        |program| {
-            format!(
-                "{} · {:?} · {}",
-                Symbol::Program(program.id),
-                program.kind,
-                directory::short(
-                    program
-                        .code_address
-                        .as_deref()
-                        .unwrap_or("Constructor source")
+    let program_label =
+        source.map_or_else(
+            || "No captured program".into(),
+            |program| {
+                format!(
+                    "{} · {:?} · {}",
+                    Symbol::Program(program.id),
+                    program.kind,
+                    directory::short(program.code_address.as_deref().unwrap_or(
+                        match program.kind {
+                            evm_abstract_protocol::CodeKind::Runtime => "Supplied input program",
+                            evm_abstract_protocol::CodeKind::Initcode => "Constructor source",
+                            _ => "No physical code account",
+                        }
+                    ))
                 )
-            )
-        },
-    );
+            },
+        );
     let snapshot = report.metadata.snapshot.as_ref().map_or_else(
         || "Standalone bytecode".into(),
         |snapshot| {
@@ -242,7 +244,11 @@ pub(super) fn result_context(
                     )
                     .on_hover_ui(|ui| {
                         if let Some(program) = source {
-                            ui.monospace(program.code_address.as_deref().unwrap_or("Constructor source"));
+                            ui.monospace(program.code_address.as_deref().unwrap_or(match program.kind {
+                                evm_abstract_protocol::CodeKind::Runtime => "Supplied input program",
+                                evm_abstract_protocol::CodeKind::Initcode => "Constructor source",
+                                _ => "No physical code account",
+                            }));
                             ui.monospace(&program.code_hash);
                         }
                         if let Some(snapshot) = &report.metadata.snapshot {

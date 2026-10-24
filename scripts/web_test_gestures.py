@@ -124,7 +124,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             # real toolbar controls. Status and measured node widths verify the
             # representation change independently of screenshot hashes.
             expect(status).to_contain_text("CFG nodes: SSA")
-            canvas.click(position={"x": 28, "y": 86})
+            canvas.click(position={"x": 28, "y": 110})
             settle_gesture(page)
             expect(status).to_contain_text("CFG nodes: Disasm")
             disasm = node_snapshot(page, canvas, output, f"{prefix}-nodes-disasm")
@@ -132,7 +132,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             disasm_width = disasm["bounds"][2] - disasm["bounds"][0]
             assert disasm["hash"] != safari_zoom["hash"], "Disasm mode retained SSA pixels"
             assert safari_zoom["bounds"][2] - safari_zoom["bounds"][0] > disasm_width + 10, "Disasm mode did not replace the fixture's SSA definitions/effects"
-            canvas.click(position={"x": 78, "y": 86})
+            canvas.click(position={"x": 78, "y": 110})
             settle_gesture(page)
             expect(status).to_contain_text("CFG nodes: SSA")
             ssa = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa")
@@ -140,13 +140,13 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             assert ssa["hash"] != disasm["hash"], "SSA mode retained disassembly pixels"
             ssa_width = ssa["bounds"][2] - ssa["bounds"][0]
             assert ssa_width > disasm_width + 10, "SSA definitions/effects did not expand the fixture's rendered node"
-            canvas.click(position={"x": 143, "y": 86})
+            canvas.click(position={"x": 143, "y": 110})
             settle_gesture(page)
             expect(status).to_contain_text("CFG nodes: SSA")
             ssa_fit = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa-fit")
             require_selected_complete(ssa_fit)
             assert ssa_fit["bounds"][2] - ssa_fit["bounds"][0] < ssa_width, "Fit did not return the enlarged SSA graph to a readable overview"
-            canvas.click(position={"x": 28, "y": 86})
+            canvas.click(position={"x": 28, "y": 110})
             settle_gesture(page)
             expect(status).to_contain_text("CFG nodes: Disasm")
             zoom_screenshots = {}
@@ -154,7 +154,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             for layout_name, height in [("tall", 1000), ("short", 390)]:
                 page.set_viewport_size({"width": 1440, "height": height})
                 page.wait_for_function("() => { const c = document.querySelector('canvas'); return c.width === innerWidth * devicePixelRatio && c.height === innerHeight * devicePixelRatio; }")
-                canvas.click(position={"x": 143, "y": 86})
+                canvas.click(position={"x": 143, "y": 110})
                 settle_gesture(page)
                 # The restored compact toolbar ends at y=115. Include the short
                 # viewport root's real outline at y=122 after the fresh upward pan.
@@ -192,7 +192,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
 
             # Compare shortcut behavior with the actual Fit button at the same
             # viewport, without assuming where any individual node should end up.
-            canvas.click(position={"x": 143, "y": 86})
+            canvas.click(position={"x": 143, "y": 110})
             settle_gesture(page)
             fit_keys = {"button": fitted["bounds"]}
             fresh_wheel_after_fit = None

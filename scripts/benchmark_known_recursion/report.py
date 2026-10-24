@@ -23,9 +23,18 @@ def graph_sizes(report):
 
 
 def procedure_kind(procedure, mode):
+    process = procedure["frame"].get("process") if mode == "offline" else procedure.get("process")
+    if process is not None:
+        source = process["source"]
+        if isinstance(source, dict):
+            (source,) = source
+        # Process coordinates intentionally have no native mode or cursor.
+        # Keep interpretation distinct from known runtime/constructor identity.
+        return f"Process:{procedure['semantics']}:{source}"
     if mode != "offline":
         return procedure["kind"]
-    kind = procedure["frame"]["mode"]
+    frame = procedure["frame"]
+    kind = frame["mode"]
     if isinstance(kind, dict):
         (kind,) = kind
     # Match the Web CodeKind labels; tagged Precompile modes share one kind.

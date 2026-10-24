@@ -15,7 +15,9 @@ def ssa_text_snapshot(page, canvas, output, name):
     png=canvas.screenshot(path=str(output/f"{name}.png"))
     size=page.viewport_size
     bottom=workspace_content_bottom(page,png,above_inspector=True)
-    selected=screenshot_metrics(page,png,(4,75,size["width"]-4,bottom))
+    # The right-aligned SSA details control can wrap below y75 on narrow views.
+    # The left half still intersects the actual selected SSA block header only.
+    selected=screenshot_metrics(page,png,(4,75,size["width"]/2,bottom))
     assert selected["bounds"], f"missing selected native SSA header: {name}"
     # The selected state header supplies the actual start of the virtual table,
     # independently of the global metadata bar's height or responsive layout.

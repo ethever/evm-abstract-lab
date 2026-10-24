@@ -63,7 +63,7 @@ def graph_mode(page, canvas, mode: str):
     # Product toolbar labels, exercised through real pointer events. Its first
     # content/navigation row stays unchanged; scopes occupy the second row.
     x = {"Blocks": 29, "States": 84, "Local": 133}[mode]
-    canvas.click(position={"x": x, "y": 109})
+    canvas.click(position={"x": x, "y": 133})
     expect(page.locator("#analysis-status")).to_contain_text(f"CFG view: {mode}")
     settle_gesture(page)
 

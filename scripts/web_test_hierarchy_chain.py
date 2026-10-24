@@ -82,7 +82,7 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
         assert native_scene["shown_states"] == native_scene["total_states"] == metadata["expected_native_states"]
         assert native_scene["hidden_states"] == native_scene["boundary_edges"] == 0
         canvas.screenshot(path=str(output/f"{prefix}-states-overview.png"))
-        canvas.click(position={"x":225,"y":83});settle_gesture(page)
+        canvas.click(position={"x":225,"y":107});settle_gesture(page)
         expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
         native_focus = node_snapshot(page,canvas,output,f"{prefix}-states-focused")
         selected = re.search(r"Selected (σ[^;]+);",page.locator("#analysis-status").text_content())[1]
@@ -93,7 +93,7 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
         assert native_ink["preview_pixels"] > 0, "native focus did not paint real SSA instructions"
         assert layout_counts(page,report,1,mode="States") == {**native_scene,"detail":"SSA preview"}
         graph_mode(page,canvas,"Blocks")
-        canvas.click(position={"x":225,"y":83});settle_gesture(page)
+        canvas.click(position={"x":225,"y":107});settle_gesture(page)
         expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
         source_scene = layout_counts(page,report,1)
         assert source_scene == {**scene,"detail":"SSA preview"}
