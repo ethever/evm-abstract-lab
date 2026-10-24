@@ -158,6 +158,14 @@ where
     S: MachinePartition<D, Tag>,
 {
     type Key = S::Key;
+
+    fn supports_graph_replay(&self) -> bool {
+        // Frozen code-source selection survives caller-prefix rebinding and
+        // fresh-leaf renaming. Replay re-prepares each imported input and only
+        // satisfies nodes whose complete installed input still matches.
+        self.inner.supports_graph_replay()
+    }
+
     fn prepare(
         &self,
         input: &EvmMachinePayload<D::Element>,
