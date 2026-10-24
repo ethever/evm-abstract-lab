@@ -5,17 +5,25 @@ use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{self as api, AnalysisReport};
 
+pub(super) fn acquisition_summary(report: &AnalysisReport) -> String {
+    report.acquisition.as_ref().map_or_else(
+        || "Standalone bytecode: no RPC acquisition was performed.".into(),
+        |acquisition| {
+            format!(
+                "{} rounds · {} RPC requests · {} observed accounts",
+                acquisition.rounds,
+                acquisition.requests,
+                report.accounts.len()
+            )
+        },
+    )
+}
+
 pub(super) fn acquisition(ui: &mut Ui, report: &AnalysisReport) {
+    ui.label(acquisition_summary(report));
     let Some(acquisition) = &report.acquisition else {
-        ui.label("Standalone bytecode: no RPC acquisition was performed.");
         return;
     };
-    ui.label(format!(
-        "{} rounds · {} RPC requests · {} observed accounts",
-        acquisition.rounds,
-        acquisition.requests,
-        report.accounts.len()
-    ));
     ui.label(format!(
         "Refinement acquired {} additional accounts and {} initial slots",
         acquisition.fetched_accounts.len(),

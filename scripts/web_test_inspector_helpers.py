@@ -7,9 +7,9 @@ from web_test_harness import settle_gesture
 
 
 INSPECTOR_TAB_POSITIONS = {
-    "Frame": 30, "Stack": 80, "SSA value": 141, "Memory": 210,
-    "Storage": 274, "Transient": 341, "Calldata": 408, "Returndata": 481,
-    "Outcomes": 561, "Acquisition": 640, "Environment": 727, "Timing": 799, "Diagnostics": 866,
+    "Coverage": 40, "Frame": 102, "Stack": 152, "SSA value": 213, "Memory": 282,
+    "Storage": 346, "Transient": 413, "Calldata": 480, "Returndata": 553,
+    "Outcomes": 633, "Acquisition": 712, "Environment": 799, "Timing": 871, "Diagnostics": 938,
 }
 
 def hide_inspector(page, canvas):
@@ -89,7 +89,7 @@ def inspector_selected_tab(page, canvas, tab: str | None = None):
     candidates = [rect for rect in controls["selected"]
                   if abs((rect[0] + rect[2]) / 2 - INSPECTOR_TAB_POSITIONS[tab]) <= 8
                   and abs((rect[1] + rect[3] - titlebar[1] - titlebar[3]) / 2) <= 1
-                  and (tab != "Frame" or (4 <= rect[0] <= 10 and 40 <= rect[2] - rect[0] <= 50))]
+                  and (tab != "Frame" or (76 <= rect[0] <= 84 and 40 <= rect[2] - rect[0] <= 50))]
     assert len(candidates) == 1, f"expected one selected {tab} tab, got {candidates}"
     return candidates[0]
 

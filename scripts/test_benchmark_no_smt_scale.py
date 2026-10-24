@@ -43,6 +43,35 @@ class DeliveryTests(unittest.TestCase):
     def collect(self, limit=1024 * 1024):
         return scale.collect_report(self.directory, self.process, self.commands, limit)
 
+    def test_process_frames_preserve_interpretation_source_and_legacy_native_kinds(self):
+        # Minimal procedure from N4's actual native15 ProcessWithDetail export.
+        process = {"semantics": "KnownProcess", "frame": {"process": {
+            "epoch": "0xc674ad5c5183be1e0b9186c844a69c2c37bdf059200748e8bedfd9ab5e280004",
+            "owner": {"Named": "0x0000000000000000000000000000000000000101"},
+            "source": {"Runtime": {"source": "0x0000000000000000000000000000000000000101",
+                "hash": "0x0dd9fc23b9e0972b48f0c93ebb805660239a90ba27a337a9f24333a8703975cd",
+                "fork": "osaka"}}, "is_static": False}}}
+        procedures = [process, {"semantics": "Environment", "frame": {"process": {
+            **process["frame"]["process"], "source": "AnyRuntime"}}}]
+        procedures += [{"frame": {"mode": mode}} for mode in
+                       ["Runtime", "InitCode", "Unknown", "Empty", {"Precompile": "0x1"}, "InvalidDelegation"]]
+        native = {**report(), "procedure_summaries": [{"procedures": procedures}]}
+        before = copy.deepcopy(native)
+        self.write_stdout(native)
+        sample = self.collect()
+        self.assertTrue(sample["report_delivered"], sample["report_error"])
+        self.assertEqual(sample["nativefinal"]["procedure_kinds"], dict.fromkeys([
+            "Process:KnownProcess:Runtime", "Process:Environment:AnyRuntime", "Runtime", "Initcode",
+            "AbstractEnvironment", "Empty", "Precompile", "InvalidDelegation"], 1))
+        self.assertEqual(native, before)
+        self.assertNotIn("mode", process["frame"])
+        self.assertNotIn("pc", process["frame"])
+        wire = {**report(), "abstract_summaries": [{"procedures": [
+            {"kind": "Runtime", "semantics": "KnownProcess", "process": process["frame"]["process"]},
+            {"kind": "Precompile", "process": None}]}]}
+        self.assertEqual(scale.metrics(wire, "web")["procedure_kinds"], {
+            "Process:KnownProcess:Runtime": 1, "Precompile": 1})
+
     def test_hybrid_graph_metrics_and_application_totals_remain_independent(self):
         for flat in (False, True):
             with self.subTest(flat=flat):

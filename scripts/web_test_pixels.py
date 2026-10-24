@@ -433,7 +433,7 @@ def layout_card_extent(page, png):
         const canvas = document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height;
         const context=canvas.getContext('2d'); context.drawImage(image,0,0);
         const scale=image.width/innerWidth;
-        const top=Math.round(123*scale), bottom=Math.round(contentBottom*scale);
+        const top=Math.round(147*scale), bottom=Math.round(contentBottom*scale);
         const data=context.getImageData(0,top,image.width,bottom-top).data;
         let left=image.width,right=-1,first=bottom,last=-1,count=0;
         for(let y=0;y<bottom-top;y++) for(let x=4*scale;x<image.width-4*scale;x++) {

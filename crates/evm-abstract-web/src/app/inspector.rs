@@ -162,6 +162,12 @@ impl Inspector {
                 super::hybrid::summary(report).unwrap_or_else(|| "Native analysis".into())
             );
         }
+        if self.tab == Tab::Acquisition {
+            return format!(
+                "Inspector: Acquisition{mode} · {}",
+                evidence::acquisition_summary(report)
+            );
+        }
         if self.tab == Tab::Diagnostics {
             return format!(
                 "Inspector: Diagnostics{mode} · {}",
@@ -205,6 +211,12 @@ impl Inspector {
             ""
         };
         let mut interactions = String::new();
+        let input = if self.tab == Tab::Frame && summaries::original_input(report, selection.state)
+        {
+            " · Original input entry"
+        } else {
+            ""
+        };
         if self.tab == Tab::Frame
             && let Some(summary) = report
                 .abstract_summaries
@@ -219,7 +231,7 @@ impl Inspector {
             );
         }
         format!(
-            "Inspector: {} · {boundary} · {frame}{store}{interactions}{mode}",
+            "Inspector: {} · {boundary} · {frame}{store}{input}{interactions}{mode}",
             self.tab.label()
         )
     }
@@ -418,10 +430,30 @@ impl Inspector {
             Tab::Frame => {
                 if let Some(frame) = frame {
                     scroll(ui, "frame_details", |ui| {
-                        if let Some(machine) = machine {
-                            symbolic::show(ui, report, machine.path.node, "Paired path conditions");
+                        if summaries::original_input(report, selection.state) {
+                            ui.label("Original input entry. Possible execution is described by the process model below.");
+                            ui.collapsing("Original input snapshot", |ui| {
+                                if let Some(machine) = machine {
+                                    symbolic::show(
+                                        ui,
+                                        report,
+                                        machine.path.node,
+                                        "Paired path conditions",
+                                    );
+                                }
+                                context::frame(ui, report, frame);
+                            });
+                        } else {
+                            if let Some(machine) = machine {
+                                symbolic::show(
+                                    ui,
+                                    report,
+                                    machine.path.node,
+                                    "Paired path conditions",
+                                );
+                            }
+                            context::frame(ui, report, frame);
                         }
-                        context::frame(ui, report, frame);
                         summaries::show(ui, report, selection.state);
                         if controls::action(ui, "Inspect rollback store", Density::Regular)
                             .clicked()
@@ -526,7 +558,7 @@ impl Inspector {
                 context::environment(ui, report)
             }),
             Tab::Acquisition => scroll(ui, "acquisition_details", |ui| {
-                evidence::acquisition(ui, report)
+                evidence::acquisition(ui, model)
             }),
             Tab::Outcomes => self.outcomes(ui, report, selection),
             Tab::SsaValue | Tab::Timing | Tab::Diagnostics | Tab::Coverage => {

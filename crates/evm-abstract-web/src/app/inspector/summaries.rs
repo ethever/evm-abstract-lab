@@ -34,6 +34,27 @@ pub(super) fn coverage_label(closed: bool, source: SummarySourceStatus) -> &'sta
     }
 }
 
+/// The original World input and its joined process relation have different
+/// payloads. Keep the input snapshot separately labelled instead of retyping it.
+pub(super) fn original_input(report: &AnalysisReport, selected: Option<usize>) -> bool {
+    report
+        .cfg
+        .iter()
+        .any(|node| Some(node.id) == selected && node.process.is_none())
+        && report
+            .abstract_summaries
+            .iter()
+            .rev()
+            .find(|summary| Some(summary.source_state) == selected)
+            .is_some_and(|summary| {
+                summary.kind == ProcedureSummaryKind::KnownProcess
+                    && summary
+                        .root_procedure
+                        .and_then(|id| summary.procedures.get(id))
+                        .is_some_and(|procedure| procedure.process.is_some())
+            })
+}
+
 pub(super) fn show(ui: &mut Ui, report: &AnalysisReport, selected: Option<usize>) {
     let Some(state) = selected else { return };
     let latest = report

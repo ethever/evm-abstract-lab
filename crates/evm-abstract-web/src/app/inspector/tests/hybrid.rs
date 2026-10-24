@@ -65,6 +65,37 @@ fn default_coverage_panel_shows_conditioned_native_paths_without_replacing_globa
         global.abstract_summaries.len(),
         report.abstract_summaries.len()
     );
+    let mut inspector = Inspector::default();
+    let mut selection = Selection {
+        state: global.cfg.first().map(|node| node.id),
+        ..Default::default()
+    };
+    let visible = rendered_at(
+        &context,
+        &mut time,
+        vec![],
+        egui::vec2(1600.0, 2000.0),
+        |ui| inspector.show_model(ui, global, &report, &mut selection, None),
+    );
+    assert!(
+        visible
+            .iter()
+            .any(|(text, _)| text.contains("Original input entry"))
+    );
+    assert!(
+        visible
+            .iter()
+            .any(|(text, _)| text == "Original input snapshot")
+    );
+    assert!(
+        inspector
+            .accessible_summary(global, selection)
+            .contains("Original input entry")
+    );
+    assert!(!super::super::summaries::original_input(
+        native,
+        Some(native.cfg[0].id)
+    ));
     report.validate().unwrap();
 }
 
