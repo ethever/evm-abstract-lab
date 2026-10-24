@@ -3,6 +3,7 @@ use super::observation;
 use crate::{
     analysis::{
         EvmMachineOutcome, EvmRootTerminalCoverage, EvmRootTerminalOutcome, EvmWorldAnalysis,
+        HybridAnalysis, RpcHybridAnalysis, Status,
     },
     domain::WordElement,
     world::{EvmStore, EvmWorld, FingerprintError},
@@ -17,6 +18,7 @@ use serde::{
 pub struct EvmJsonEvidence<'a, N: WordElement> {
     analysis: &'a EvmWorldAnalysis<N>,
     fingerprint: B256,
+    totals: Option<Totals>,
 }
 /// Capture native evidence without converting its selected numeric carrier.
 /// The snapshot fingerprint is computed before any output is emitted.
@@ -26,11 +28,48 @@ pub fn evidence<N: WordElement>(
     Ok(EvmJsonEvidence {
         analysis,
         fingerprint: analysis.world().fingerprint()?,
+        totals: None,
     })
 }
 
+#[derive(Clone, Copy)]
+struct Totals {
+    status: Status,
+    work: usize,
+    transfers: usize,
+}
+
+/// The wrapper's actual qualification governs status/counters while the graph
+/// fields retain their selected namespace. No graph or receipt is cloned.
+pub fn hybrid_evidence<N: WordElement>(
+    source: &HybridAnalysis<N>,
+) -> Result<EvmJsonEvidence<'_, N>, FingerprintError> {
+    let mut view = evidence(source.chosen())?;
+    view.totals = Some(Totals {
+        status: source.status(),
+        work: source.work(),
+        transfers: source
+            .detail()
+            .unwrap_or_else(|| source.baseline())
+            .transfers(),
+    });
+    Ok(view)
+}
+/// Persistent-session totals remain independent of the original baseline graph.
+pub fn rpc_hybrid_evidence<N: WordElement>(
+    source: &RpcHybridAnalysis<N>,
+) -> Result<EvmJsonEvidence<'_, N>, FingerprintError> {
+    let mut view = evidence(source.chosen())?;
+    view.totals = Some(Totals {
+        status: source.status(),
+        work: source.work(),
+        transfers: source.coverage().transfers,
+    });
+    Ok(view)
+}
+
 enum Extra<'a, N: WordElement> {
-    Analysis(&'a EvmWorldAnalysis<N>, B256),
+    Analysis(&'a EvmWorldAnalysis<N>, B256, Option<Totals>),
     World(&'a EvmWorld<N>, B256),
     Outcome(&'a EvmMachineOutcome<N>),
     TerminalCoverage(&'a EvmRootTerminalCoverage<N>),
@@ -57,7 +96,12 @@ struct Fields<'a, S, N: WordElement> {
 struct Evidence<'a, N: WordElement>(Extra<'a, N>);
 impl<N: WordElement> Serialize for EvmJsonEvidence<'_, N> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        Evidence(Extra::Analysis(self.analysis, self.fingerprint)).serialize(serializer)
+        Evidence(Extra::Analysis(
+            self.analysis,
+            self.fingerprint,
+            self.totals,
+        ))
+        .serialize(serializer)
     }
 }
 impl<N: WordElement> Serialize for Evidence<'_, N> {
@@ -67,7 +111,7 @@ impl<N: WordElement> Serialize for Evidence<'_, N> {
             extra: self.0,
         };
         match self.0 {
-            Extra::Analysis(v, _) => v.serialize(serializer),
+            Extra::Analysis(v, _, _) => v.serialize(serializer),
             Extra::World(v, _) => v.serialize(serializer),
             Extra::Outcome(v) => v.serialize(serializer),
             Extra::TerminalCoverage(v) => v.serialize(serializer),
@@ -127,13 +171,22 @@ impl<S: SerializeStruct, N: WordElement> SerializeStruct for Fields<'_, S, N> {
         value: &T,
     ) -> Result<(), Self::Error> {
         match (self.extra, key) {
-            (Extra::Analysis(analysis, fingerprint), "world") => self
+            (Extra::Analysis(_, _, Some(totals)), "status") => {
+                self.inner.serialize_field(key, &totals.status)
+            }
+            (Extra::Analysis(_, _, Some(totals)), "work") => {
+                self.inner.serialize_field(key, &totals.work)
+            }
+            (Extra::Analysis(_, _, Some(totals)), "transfers") => {
+                self.inner.serialize_field(key, &totals.transfers)
+            }
+            (Extra::Analysis(analysis, fingerprint, _), "world") => self
                 .inner
                 .serialize_field(key, &Evidence(Extra::World(analysis.world(), fingerprint))),
-            (Extra::Analysis(analysis, _), "outcomes") => {
+            (Extra::Analysis(analysis, _, _), "outcomes") => {
                 self.inner.serialize_field(key, &Outcomes(analysis))
             }
-            (Extra::Analysis(analysis, _), "root_terminal_coverage") => {
+            (Extra::Analysis(analysis, _, _), "root_terminal_coverage") => {
                 if let Some(coverage) = analysis.root_terminal_coverage() {
                     self.inner
                         .serialize_field(key, &Evidence(Extra::TerminalCoverage(coverage)))
@@ -163,7 +216,7 @@ impl<S: SerializeStruct, N: WordElement> SerializeStruct for Fields<'_, S, N> {
             Extra::Store(store) => self
                 .inner
                 .serialize_field("account_observations", &Observations(store))?,
-            Extra::Analysis(_, _)
+            Extra::Analysis(_, _, _)
             | Extra::Outcome(_)
             | Extra::TerminalCoverage(_)
             | Extra::TerminalOutcome(_) => {}

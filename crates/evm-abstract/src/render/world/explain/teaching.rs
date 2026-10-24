@@ -56,6 +56,13 @@ fn render_with_mode<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element 
     algebra: &crate::domain::ValueAlgebra<D>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<String, SsaError> {
+    if analysis
+        .states()
+        .iter()
+        .any(|state| state.active().process.is_some())
+    {
+        return super::process_explanation(analysis, algebra, budget);
+    }
     crate::ssa::work::explanation(analysis, budget)?;
     // SSA admission/replay precedes report allocation. A rejected structural
     // operation cannot first build a large code/reference report.

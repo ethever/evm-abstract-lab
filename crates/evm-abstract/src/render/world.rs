@@ -17,8 +17,9 @@ use std::fmt::Write;
 
 pub(crate) mod environment;
 mod explain;
+pub use explain::process_explanation;
 mod json;
-pub use json::{EvmJsonEvidence, evidence};
+pub use json::{EvmJsonEvidence, evidence, hybrid_evidence, rpc_hybrid_evidence};
 mod partial;
 mod ssa;
 mod teaching;

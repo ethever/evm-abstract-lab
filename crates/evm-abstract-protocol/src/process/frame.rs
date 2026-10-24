@@ -47,6 +47,26 @@ impl<'de> Deserialize<'de> for ProcessDigest {
 }
 
 record! {
+    /// Supplied root bytes with no observed physical code account.
+    pub struct ProcessInputProgramSource {
+        /// Complete supplied-program digest.
+        pub hash: ProcessDigest,
+        /// Frozen execution rules.
+        pub fork: crate::Fork,
+    }
+}
+record! {
+    /// Supplied marker whose physical executable remains unobserved.
+    pub struct ProcessInputDelegationSource {
+        /// Physical pointer encoded in the marker.
+        pub target: String,
+        /// Original marker digest, not the unknown executable's code hash.
+        pub hash: ProcessDigest,
+        /// Frozen code-resolution rules.
+        pub fork: crate::Fork,
+    }
+}
+record! {
     /// Captured runtime or invalid-delegation source identity, without a byte claim.
     pub struct ProcessCapturedSource {
         /// Actual code account before interpretation.
@@ -85,6 +105,10 @@ record! {
 variant! {
     /// Executable origin independently of physical state owner and logical ADDRESS.
     pub enum ProcessSource {
+        /// Supplied original root program; no physical source account is asserted.
+        InputProgram(ProcessInputProgramSource),
+        /// Supplied marker selecting an unobserved physical executable.
+        InputDelegation(ProcessInputDelegationSource),
         /// Original captured runtime code.
         Runtime(ProcessCapturedSource),
         /// Captured constructor bytes before deployment.
@@ -156,10 +180,25 @@ variant! {
 }
 
 impl ProcessSource {
+    /// Frozen execution rules for captured, unknown and native sources alike.
+    pub fn fork(&self) -> crate::Fork {
+        match self {
+            Self::InputProgram(source) => source.fork,
+            Self::InputDelegation(source) => source.fork,
+            Self::Runtime(source) | Self::InvalidDelegation(source) => source.fork,
+            Self::InitCode(source) => source.fork,
+            Self::AnyRuntime(source) | Self::AnyInitCode(source) | Self::Empty(source) => {
+                source.fork
+            }
+            Self::Precompile(source) => source.fork,
+        }
+    }
+
     /// Executable kind from the public source, without consulting a native anchor.
     pub fn kind(&self) -> crate::CodeKind {
         match self {
-            Self::Runtime(_) => crate::CodeKind::Runtime,
+            Self::InputProgram(_) | Self::Runtime(_) => crate::CodeKind::Runtime,
+            Self::InputDelegation(_) => crate::CodeKind::AbstractEnvironment,
             Self::InitCode(_) | Self::AnyInitCode(_) => crate::CodeKind::Initcode,
             Self::AnyRuntime(_) => crate::CodeKind::AbstractEnvironment,
             Self::Empty(_) => crate::CodeKind::Empty,
@@ -171,7 +210,8 @@ impl ProcessSource {
     /// Interpretation required by this executable source.
     pub fn semantics(&self) -> super::TransferSemantics {
         match self {
-            Self::Runtime(_) => super::TransferSemantics::KnownProcess,
+            Self::InputProgram(_) | Self::Runtime(_) => super::TransferSemantics::KnownProcess,
+            Self::InputDelegation(_) => super::TransferSemantics::Environment,
             Self::InitCode(_) | Self::AnyInitCode(_) => {
                 super::TransferSemantics::ConstructorProcess
             }

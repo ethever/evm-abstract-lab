@@ -26,7 +26,7 @@ fn run_concrete(args: &[&str]) -> Output {
             }
         }
     }
-    Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
+    Command::new(crate::native::binary())
         .args(scoped)
         .output()
         .unwrap()

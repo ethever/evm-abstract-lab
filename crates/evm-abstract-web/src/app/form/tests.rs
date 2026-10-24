@@ -1,5 +1,6 @@
 use super::*;
 use egui::{Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
+use evm_abstract_protocol as api;
 use evm_abstract_protocol::RpcProvider;
 
 fn frame(ctx: &Context, form: &mut AnalysisForm, events: Vec<Event>) -> Option<AnalyzeRequest> {
@@ -323,13 +324,16 @@ fn root_terminal_checkbox_submits_the_default_and_explicit_opt_out_for_both_sour
                 let report = evm_abstract_server::analyze::analyze(submitted).unwrap();
                 report.validate().unwrap();
                 assert_eq!(report.metadata.limits, expected.limits);
+                let hybrid = report.hybrid.as_ref().unwrap();
+                assert!(!hybrid.coverage.baseline_config.root_terminal_coverage);
+                let native = report.graph(api::AnalysisNamespace::Native).unwrap();
                 if enabled {
-                    let config = &report.root_terminal_coverage.as_ref().unwrap().input.config;
+                    let config = &native.root_terminal_coverage.as_ref().unwrap().input.config;
                     assert!(config.root_terminal_coverage);
                     assert_eq!(config.max_transfers, expected.limits.max_transfers);
                     assert_eq!(config.max_work, expected.limits.max_work);
                 } else {
-                    assert!(report.root_terminal_coverage.is_none());
+                    assert!(native.root_terminal_coverage.is_none());
                 }
             }
             paint_sized(&ctx, &mut form, vec![], size);

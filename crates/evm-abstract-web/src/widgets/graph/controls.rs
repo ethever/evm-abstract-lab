@@ -227,7 +227,7 @@ impl Graph {
                             , notation_0 = Symbol::State(state));
                             let tooltip = format!(
                                 "Code: {}\nStorage: {}\nContext: {:?}",
-                                block.code_label(), block.storage_label(), block.context
+                                report.code_label(block), report.storage_label(block), block.context
                             );
                             if ui
                                 .selectable_label(selection.state == Some(state), crate::notation::widget(ui, label))

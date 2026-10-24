@@ -107,14 +107,40 @@ impl ExplainArgs {
                 execution: self.execution,
                 evm: self.evm,
             };
-            let analysis = args.analyze(algebra, control)?;
-            return world_explanation(
-                &analysis,
-                algebra,
-                reporting,
-                self.verbose,
-                self.allow_partial_ssa,
-            );
+            let analysis = args.analyze_hybrid(algebra, control)?;
+            let mut text = if analysis.native_chosen() {
+                world_explanation(
+                    analysis.chosen(),
+                    algebra,
+                    reporting,
+                    self.verbose,
+                    self.allow_partial_ssa,
+                )?
+                .0
+            } else {
+                render::world::process_explanation(analysis.chosen(), algebra, reporting)?
+            };
+            if let crate::hybrid::WorldAnalysis::Hybrid(hybrid) = &analysis {
+                text.insert_str(0, &crate::hybrid::text(hybrid));
+            } else if let crate::hybrid::WorldAnalysis::Rpc(rpc) = &analysis {
+                text.insert_str(0, &crate::hybrid::rpc_text(rpc));
+            }
+            if let Some(detail) = analysis.companion_detail() {
+                text.push_str(
+                    "\nDetailed paths (Native state IDs; conditions and pending work above):\n",
+                );
+                text.push_str(
+                    &world_explanation(
+                        detail,
+                        algebra,
+                        reporting,
+                        self.verbose,
+                        self.allow_partial_ssa,
+                    )?
+                    .0,
+                );
+            }
+            return Ok((text, analysis.status() == Status::Converged));
         }
         let args = AnalysisArgs {
             execution: self.execution,

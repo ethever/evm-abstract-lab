@@ -1,5 +1,34 @@
 use evm_abstract::{analysis, bytecode};
+use evm_abstract_protocol as api;
 use evm_abstract_protocol::{DiagnosticKind, DisasmInstruction, EdgeKind, FrontierKind};
+
+pub(super) fn root_binding(source: evm_abstract::world::RootInputBinding) -> api::RootInputBinding {
+    match source {
+        evm_abstract::world::RootInputBinding::Physical { address } => {
+            api::RootInputBinding::Physical(api::PhysicalRootInput {
+                address: address.to_string(),
+            })
+        }
+        evm_abstract::world::RootInputBinding::Namespace { coordinate } => {
+            api::RootInputBinding::Namespace(api::NamespaceRootInput {
+                coordinate: coordinate.to_string(),
+            })
+        }
+    }
+}
+
+pub(super) fn execution_config(source: &analysis::ExecutionConfig) -> api::RootTerminalConfig {
+    api::RootTerminalConfig {
+        context_depth: source.analysis.context_depth as u64,
+        max_states: source.analysis.max_states as u64,
+        max_transfers: source.analysis.max_transfers as u64,
+        max_work: source.max_work as u64,
+        max_call_depth: source.max_call_depth as u64,
+        max_memory_bytes: source.max_memory_bytes as u64,
+        use_summaries: source.use_summaries,
+        root_terminal_coverage: source.root_terminal_coverage,
+    }
+}
 
 pub(super) fn instruction(source: &bytecode::Instruction) -> DisasmInstruction {
     let (stack_inputs, stack_outputs) = source.stack_io();
@@ -288,5 +317,18 @@ pub(super) fn query(
         NQ::ScalarFactLimit => Q::ScalarFactLimit,
         NQ::ScalarFactError(error) => Q::ScalarFactError(fact_failure(error)),
         NQ::ExpressionLimit => Q::ExpressionLimit,
+    }
+}
+pub(super) fn instruction_progress(
+    source: analysis::InstructionProgress,
+) -> api::InstructionProgress {
+    match source {
+        analysis::InstructionProgress::Started => api::InstructionProgress::Started,
+        analysis::InstructionProgress::OperandsConsumed => {
+            api::InstructionProgress::OperandsConsumed
+        }
+        analysis::InstructionProgress::Completed => api::InstructionProgress::Completed,
+        analysis::InstructionProgress::Dispatched => api::InstructionProgress::Dispatched,
+        analysis::InstructionProgress::Faulted => api::InstructionProgress::Faulted,
     }
 }

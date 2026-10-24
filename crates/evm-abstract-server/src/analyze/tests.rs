@@ -1,5 +1,21 @@
 //! EvmWorld-to-report integration beyond the bytecode-only public request fixtures.
 use super::*;
+mod hybrid;
+
+/// Native opcode/SSA assertions inspect their own namespace; default global
+/// Process coverage can be closed while these precise paths remain pending.
+pub(in crate::analyze) fn native_detail(mut report: api::AnalysisReport) -> api::AnalysisReport {
+    let Some(hybrid) = &mut report.hybrid else {
+        return report;
+    };
+    if hybrid.namespace() == api::AnalysisNamespace::Native {
+        return report;
+    }
+    *hybrid
+        .detail
+        .take()
+        .expect("fixture must retain a native precision attempt")
+}
 use evm_abstract::domain::{NumericValue, ProductAlgebra, ValueAlgebra};
 use evm_abstract::{
     Fork,

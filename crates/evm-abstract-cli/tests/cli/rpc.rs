@@ -216,15 +216,24 @@ fn execute(server: &RpcServer, extra: &[&str]) -> Output {
     run_concrete(&args)
 }
 
-fn result(output: Output, exit: i32) -> Json {
+fn result(output: Output, detail_exit: i32) -> Json {
+    let report: Json = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+    super::native::assert_exit(&report, &output);
+    let result = super::native::select(&report);
+    let native = result.get("analysis").unwrap_or(&result);
     assert_eq!(
-        output.status.code(),
-        Some(exit),
-        "stderr={} stdout={}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
+        native["status"],
+        if detail_exit == 0 {
+            "Converged"
+        } else {
+            "Incomplete"
+        },
+        "precision={} Native frontiers={}",
+        report["hybrid"]["rpc"],
+        native["frontiers"]
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    result
 }
 
 fn call(op: u8, target: u16, value: u8) -> String {
@@ -280,7 +289,7 @@ fn recursive_rpc_callees_are_discovered_without_account_flags_and_cached() {
             analysis["rpc_acquisition"]["fetched_accounts"],
             json!([CALLEE, LEAF])
         );
-        assert_eq!(analysis["rpc_acquisition"]["rounds"], 3);
+        assert_eq!(analysis["rpc_acquisition"]["rounds"], 4);
         assert_eq!(
             analysis["rpc_acquisition"]["requests"].as_u64().unwrap() as usize,
             requests.len()
@@ -530,20 +539,13 @@ fn unknown_rpc_call_target_closes_procedures_without_guessing_remote_addresses()
 
 fn acquisition_failure(analysis: &Json, address: &str) -> Json {
     assert_eq!(analysis["status"], "Incomplete");
-    let failure = analysis["frontiers"]
+    let failure = analysis["rpc_acquisition"]["failures"]
         .as_array()
         .unwrap()
         .iter()
-        .find_map(|frontier| {
-            let frontier = &frontier["reason"]["RpcAcquisition"];
-            (frontier["address"] == address).then(|| frontier["failure"].clone())
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "missing typed acquisition frontier: {}",
-                analysis["frontiers"]
-            )
-        });
+        .find(|item| item["address"] == address)
+        .expect("typed optional acquisition failure")["failure"]
+        .clone();
     assert_eq!(failure["context"]["chain_id"], "0x1");
     assert_eq!(failure["context"]["block_hash"], BLOCK);
     assert!(!failure["kind"].is_null());

@@ -16,6 +16,8 @@ use evm_abstract_protocol as api;
 use std::collections::BTreeMap;
 
 pub(super) struct Pools<'a, N: WordElement> {
+    /// Original input template only; public process Stores never recreate it.
+    pub root_namespace: Option<Address>,
     control: &'a Control,
     buffers: Vec<EvmByteArray<N>>,
     buffer_roots: BTreeMap<evm_abstract::domain::symbolic::ByteStateId, Vec<usize>>,
@@ -68,6 +70,7 @@ impl<'a, N: WordElement> Pools<'a, N> {
             symbolic: symbolic::Pool::new(control),
             pending_native: Vec::new(),
             pending: Vec::new(),
+            root_namespace: None,
         }
     }
     pub fn program(
@@ -77,7 +80,9 @@ impl<'a, N: WordElement> Pools<'a, N> {
         kind: api::CodeKind,
         program: &Program,
     ) -> Result<usize, api::ApiError> {
-        self.program_identity(Some(address), hash, kind, program)
+        let source = (self.root_namespace != Some(address) || kind != api::CodeKind::Runtime)
+            .then_some(address);
+        self.program_identity(source, hash, kind, program)
     }
     fn program_identity(
         &mut self,
@@ -124,6 +129,9 @@ impl<'a, N: WordElement> Pools<'a, N> {
             return Ok(None);
         };
         match key.source {
+            evm_abstract::analysis::ProcessSource::InputProgram { hash, .. } => self
+                .program_identity(None, hash, api::CodeKind::Runtime, program)
+                .map(Some),
             evm_abstract::analysis::ProcessSource::Runtime { source, hash, .. } => self
                 .program_identity(Some(source), hash, api::CodeKind::Runtime, program)
                 .map(Some),

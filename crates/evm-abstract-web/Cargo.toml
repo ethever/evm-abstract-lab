@@ -52,4 +52,4 @@ web-sys = { version = "=0.3.104", features = [
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-evm-abstract-server = { path = "../evm-abstract-server" }
+evm-abstract-server = { path = "../evm-abstract-server", features = ["capture-replay"] }

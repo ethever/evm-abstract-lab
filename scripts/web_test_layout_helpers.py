@@ -217,7 +217,12 @@ def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_
         if "chain_id" in entry:
             assert [int(value,16) for value in environment["chain_id"]["constants"]] == [int(entry["chain_id"],16)]
     (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
-    return report
+    # Layout/SSA checks follow the visible namespace. Retain and validate the
+    # complete production reply first, including the original global relation.
+    from web_test_hybrid import assert_hybrid, displayed_graph
+    if report.get("hybrid") is not None:
+        assert_hybrid(report)
+    return displayed_graph(report)
 
 def layout_counts(page, report, expected_groups: int | None = None, mode="Blocks"):
     identities = {

@@ -2671,6 +2671,7 @@ dependencies = [
  "clap",
  "evm-abstract",
  "evm-abstract-protocol",
+ "evm-abstract-server",
  "hyper",
  "hyper-util",
  "reqwest",

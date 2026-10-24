@@ -1,6 +1,8 @@
 # 根执行的保守终止覆盖
 
-CLI 与 Web 默认采用快速保守策略：`max_work = 2_000_000_000`，`root_terminal_coverage = true`，在同一预算内为实际原始根输入准备独立的终止覆盖记录。Web 在 **Execution budget** 中默认勾选 **Prepare conservative root terminal coverage**；共享请求字段为 `limits.root_terminal_coverage`，必须是布尔值。CLI 用 `--no-root-terminal-coverage` 关闭附加覆盖，仅做详细分析；原有不带值的 `--root-terminal-coverage` 仍可使用。Rust 库的 `ExecutionConfig::default()` 同样开启覆盖，但保留自身 20000000 的 work 预算。
+CLI 与 Web 默认先构建[全局过程模型，再展开详细路径](20-global-and-local.md)。原有 `root_terminal_coverage=true` 请求保留，费用属于可选 native 阶段的同一剩余账本；全局基线始终关闭这个辅助包络。Web 的 **Prepare conservative root terminal coverage** 和 CLI 的 `--root-terminal-coverage` / `--no-root-terminal-coverage` 分别开启、关闭 native 辅助记录。基线未闭合或可选阶段未开始时，可以没有记录。Rust 原生 `run` 的默认配置继续开启它，并保留自身 20000000 的 work 预算。
+
+下面的 `status` 与单次 transfer 示例描述原生指令控制入口（CLI `cfg` / `ssa` 与原生库 `run`）。默认 Hybrid 的组合 status 来自基线当前闭合；其 native 图、frontiers、辅助 tuple 与 SSA 资格分别保存。全局模型不会由三个终止备选项代替。
 
 先分别看两个结果：
 
@@ -43,15 +45,15 @@ Store 的 `finalize_transaction_checked` 路径负责 transient 清理、touch �
 - 原始 Runtime frame：代码账户/hash、物理 storage owner、逻辑 ADDRESS、CALLER、static、入口块索引 0、空栈和空 jump history。
 - 捕获的完整 program、lift 后的 calldata/CALLVALUE、原始 saved Store 与 entered initial Store。
 
-代码账户、逻辑 ADDRESS 与物理 storage owner 必须分别读取。仅提交字节码而未提供地址时，逻辑 ADDRESS 可以仍为符号 `To`，内部物理 owner 则为 `0x1111111111111111111111111111111111111111`；这是一种有效绑定。当前账户的 code 若未知，不能从 original World 补回“已知 runtime”。捕获的正在执行的 program 与后续账户 code 效果是不同信息。
+代码账户、逻辑 ADDRESS 与物理 storage owner 必须分别读取。仅提交字节码而未提供地址时，逻辑 ADDRESS 仍可为符号 `To`；`RootInputBinding::Namespace` 将内部坐标明确标为输入模板。它不声明物理 owner。条件化 native 视图另记录额外的根地址条件及实际 Concrete To。当前账户的 code 若未知，不能从 original World 补回“已知 runtime”。捕获的正在执行的 program 与后续账户 code 效果是不同信息。
 
-wire 19 的 `input.config` 只保存执行预算，`input.domain_spec` 是实际代数捕获的数值与关系限制；`input.numeric_model` 另记录应用选择的 `Product` / `FiniteSet`。校验分别将预算、限制与模型同请求及报告 metadata 比较。模型标签不参与原生来源身份认证，不能仅凭相同标签认定两个数值策略等价。
+wire 20 的 `input.config` 只保存执行预算，`input.domain_spec` 是实际代数捕获的数值与关系限制；`input.numeric_model` 另记录应用选择的 `Product` / `FiniteSet`。校验分别将预算、限制与模型同请求及报告 metadata 比较。模型标签不参与原生来源身份认证，不能仅凭相同标签认定两个数值策略等价。
 
 补事实会产生新 revision，并从入口建立新的执行与覆盖权威。snapshot、revision、source、输入、fork、环境或策略变化后，旧证书不能冒充新请求的证书；相同 hash、显示摘要或相同 offline label 都不足以授权复用。
 
 ## Store 的缺省字段也是语义
 
-wire 19 的普通 Store 与证书 Store 使用同一 `StoreSnapshot`。原字段继续保留，另有：
+wire 20 的普通 Store 与证书 Store 使用同一 `StoreSnapshot`。原字段继续保留，另有：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -65,11 +67,11 @@ Return 的全效果包络可以没有显式账户：persistent、余额、nonce�
 
 ## wire 15 的身份迁移
 
-当前原生分析 schema 为 **14**，Web wire schema 为 **19**，域 schema 为 **3**，逻辑成本版本为 **8**。此前 native 10 / wire 15 新增可选覆盖记录；wire 15 还引入请求开关和上述 Store 字段，同时把 `InputIdentity.scope` 改为 `DecimalU64`。新 snapshot offline namespace、fact revision、input scope 也采用同一个类型。当前报告新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，与局部 `RoundLimit` 区分；cost 6 更新共享 kernel、规则和独立数值查询的逻辑收费。成本版本属于完整输入绑定与摘要策略，不能只替换版本号复用旧记录；跨成本版本的原始 work 不是同一单位。
+当前原生分析 schema 为 **15**，Web wire schema 为 **20**，域 schema 为 **3**，逻辑成本版本为 **8**。此前 native 10 / wire 15 新增可选覆盖记录；wire 15 还引入请求开关和上述 Store 字段，同时把 `InputIdentity.scope` 改为 `DecimalU64`。新 snapshot offline namespace、fact revision、input scope 也采用同一个类型。当前报告新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，与局部 `RoundLimit` 区分；cost 6 更新共享 kernel、规则和独立数值查询的逻辑收费。成本版本属于完整输入绑定与摘要策略，不能只替换版本号复用旧记录；跨成本版本的原始 work 不是同一单位。
 
 这些 opaque 身份只能编码为规范十进制**字符串**：`"0"`、`"9007199254740993"`、`"18446744073709551615"` 均有效。JSON number、空串、符号、空格、小数、指数、前导零（如 `"01"`）和超过 `u64::MAX` 的值必须拒绝。不要先经过 JavaScript `Number`，也不要为身份 alpha-renaming 丢失 namespace 的复用关系。状态/转移/work/耗时等统计计数仍保留原来的整数编码；此次迁移只改变这些 opaque identity 字段。
 
-共享类型严格检查必填字段和未知字段。当前客户端应构造完整 wire 19 请求，普通用户策略显式使用 `root_terminal_coverage: true`；复现旧基准策略时显式使用 `false`。旧 wire 14 报告还缺少 Store 默认项和字符串身份，不能只改版本号后安装。历史捕获报告、原始请求和基准 profile 继续按原版本保存。
+共享类型严格检查必填字段和未知字段。当前客户端应构造完整 wire 20 请求，普通用户策略显式使用 `root_terminal_coverage: true`；复现旧基准策略时显式使用 `false`。旧 wire 14 报告还缺少 Store 默认项和字符串身份，不能只改版本号后安装。历史捕获报告、原始请求和基准 profile 继续按原版本保存。
 
 ## 预算与验证范围
 
@@ -93,4 +95,4 @@ Terminal(Γ(I)) ⊆ Γ(Return, dataR, storeR)
 
 同提交、同一冻结 CLI ELF 的九次最终离线 native 测量见[最终集成实测](../examples/no-smt-scale/README.md#最终集成实测)。默认 2B/ON 的 WETH/USDC 详细分析仍为 `Incomplete`、native exit 2，保留全部原始 frontier；所附 `AllInputStates` / Work 记录固定包含 Return / Revert / Failure 三个联合上界，不改变详细 status、pending 或 SSA 覆盖。固定 1T/OFF 对照与原 whole-report guard、独立流式校验的边界分别列明。
 
-规模实验继续保留[固定七个 case 与原策略](../examples/no-smt-scale/README.md)：work 为 1000000000000，覆盖关闭。[命令生成器](../scripts/generate-no-smt-scale-commands.py)为每个 case 显式加入 `--no-root-terminal-coverage`；可选的 `--request-output-dir` 将 WETH/USDC 的 wire 19 请求写到独立目录，显式设置 `limits.root_terminal_coverage: false`，其余输入与限制不变。历史捕获、hash 和结果不重写。新增保守覆盖不代表这些输入已经详细闭合；性能结论仍需相同输入、完整策略和交付边界的实际测量。
+规模实验继续保留[固定七个 case 与原策略](../examples/no-smt-scale/README.md)：work 为 1000000000000，覆盖关闭。[命令生成器](../scripts/generate-no-smt-scale-commands.py)为每个 case 显式加入 `--no-root-terminal-coverage`；可选的 `--request-output-dir` 将 WETH/USDC 的 wire 20 请求写到独立目录，显式设置 `limits.root_terminal_coverage: false`，其余输入与限制不变。历史捕获、hash 和结果不重写。新增保守覆盖不代表这些输入已经详细闭合；性能结论仍需相同输入、完整策略和交付边界的实际测量。

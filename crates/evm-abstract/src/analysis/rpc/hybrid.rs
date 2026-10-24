@@ -24,7 +24,8 @@ pub enum RpcBaselineRelation {
     Uncertified,
     /// No initial facts changed after the original baseline.
     SameRevision,
-    /// Accepted exact facts restrict the same snapshot and unchanged entry/base:
+    /// Accepted exact facts restrict the same snapshot/fork and unchanged
+    /// original entry/root binding/base:
     /// concretization(current facts) is a subset of concretization(original).
     /// The ORIGINAL closed baseline therefore covers that subset. Its code
     /// sources and currentness remain qualified by the ORIGINAL revision only.
@@ -50,7 +51,10 @@ pub enum RpcPrecisionOutcome {
     Disabled,
     /// The original baseline did not certify global closure.
     BaselinePending,
-    /// Native detail is certified at the currently installed revision.
+    /// Native detail is closed at the currently installed fact revision UNDER
+    /// its reported HybridNativeBinding and effective Entry.binding. A namespace
+    /// condition does not certify the original unconditional input or replace
+    /// the conservative baseline.
     Current,
     /// Actual native or process obligations remain; inspect the retained report.
     Incomplete,
@@ -75,8 +79,9 @@ pub struct RpcHybridCoverage {
     pub current_revision: FactRevision,
     /// Revision of the last retained native graph, which can precede current facts.
     pub detail_revision: Option<FactRevision>,
-    /// Whether the retained detail consumed current facts. This binding check
-    /// does not upgrade its own kernel closure or per-entry source guards.
+    /// Whether the retained detail consumed current facts. This checks fact
+    /// revision equality only, not equality of original/effective root bindings.
+    /// The detail report's condition, Entry.binding and source guards still apply.
     pub detail_at_current_revision: bool,
     /// Initial-set coverage qualification; never a relabelled new graph proof.
     pub baseline_relation: RpcBaselineRelation,
@@ -144,7 +149,9 @@ impl<N: WordElement, E> RpcHybridAnalysis<N, E> {
         self.detail_report().and_then(HybridAnalysis::detail)
     }
 
-    /// Local native receipts keep their exact retained-input revision and phases.
+    /// Local native receipts keep their exact retained-input revision, additional
+    /// root condition, source and phases. Native15 original/effective Entry.binding
+    /// stays available even when no state or local receipt was admitted.
     /// Receipts from an older revision are historical observations of that input,
     /// even when their original per-entry currentness guard still holds.
     pub fn local_detail(&self) -> impl Iterator<Item = HybridLocalDetail<'_, N>> {

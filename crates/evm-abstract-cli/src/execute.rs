@@ -4,13 +4,13 @@
 pub(crate) mod args;
 pub(crate) use args::ExecutionArgs;
 
-use crate::{AnalysisArgs, WorldArgs, error::CliError, world};
+use crate::{AnalysisArgs, WorldArgs, error::CliError, hybrid::WorldAnalysis, world};
 use evm_abstract::{
     analysis::{
         self, AnalysisEngine, AnalysisInput, Config, EnginePolicies, EvmWorldAnalysis,
         ExecutionConfig, control::Control, cooperation::NoExtension,
     },
-    domain::{EvmNumericAlgebra, ValueAlgebra},
+    domain::{EvmNumericAlgebra, ValueAlgebra, WordElement},
     world::{
         EvmEntry,
         rpc::{self, AccountRequest, RpcBlock, RpcInput},
@@ -53,11 +53,85 @@ impl AnalysisArgs {
 }
 
 impl WorldArgs {
+    pub(crate) fn analyze_hybrid<D: EvmNumericAlgebra>(
+        self,
+        algebra: &ValueAlgebra<D>,
+        control: &Control,
+    ) -> Result<WorldAnalysis<D::Element>, CliError> {
+        let (source, config) = self.prepare()?;
+        let policies: EnginePolicies = EnginePolicies::default();
+        let mut extension = NoExtension;
+        let mut engine = AnalysisEngine::new(algebra, &policies, &mut extension);
+        match source {
+            WorldSource::Offline(input) => Ok(WorldAnalysis::from(engine.run_hybrid(
+                *input,
+                config,
+                analysis::HybridConfig::default(),
+                control,
+            )?)),
+            WorldSource::Rpc {
+                input,
+                entry,
+                discovery,
+            } => {
+                if !discovery {
+                    let world = rpc::load_with_control(&input, control)?;
+                    Ok(WorldAnalysis::from(engine.run_hybrid(
+                        AnalysisInput::new(world, *entry)?,
+                        config,
+                        analysis::HybridConfig::default(),
+                        control,
+                    )?))
+                } else {
+                    let result = analysis::analyze_rpc_hybrid(
+                        engine,
+                        &input,
+                        *entry,
+                        config,
+                        analysis::HybridConfig::default(),
+                        control,
+                    )?;
+                    for failure in result.failures() {
+                        eprintln!("RPC discovery: {failure}");
+                    }
+                    Ok(WorldAnalysis::from(result))
+                }
+            }
+        }
+    }
+
+    /// Legacy native controls share admission with the default Hybrid command.
+    #[cfg(test)]
     pub(crate) fn analyze<D: EvmNumericAlgebra>(
         self,
         algebra: &ValueAlgebra<D>,
         control: &Control,
     ) -> Result<EvmWorldAnalysis<D::Element>, CliError> {
+        let (source, config) = self.prepare()?;
+        let policies = EnginePolicies::default();
+        let mut extension = NoExtension;
+        let mut engine = AnalysisEngine::new(algebra, &policies, &mut extension);
+        match source {
+            WorldSource::Offline(input) => Ok(engine.run(*input, config, control)?),
+            WorldSource::Rpc {
+                input,
+                entry,
+                discovery,
+            } => {
+                if discovery {
+                    Ok(
+                        analysis::analyze_rpc(engine, &input, *entry, config, control)?
+                            .into_analysis(),
+                    )
+                } else {
+                    let world = rpc::load_with_control(&input, control)?;
+                    Ok(engine.run(AnalysisInput::new(world, *entry)?, config, control)?)
+                }
+            }
+        }
+    }
+
+    fn prepare<N: WordElement>(self) -> Result<(WorldSource<N>, ExecutionConfig), CliError> {
         let config = self.execution.config(!self.no_summaries);
         let entry_address = self
             .evm
@@ -67,13 +141,10 @@ impl WorldArgs {
             address: entry_address,
             environment: self.evm.environment()?,
         };
-        let policies: EnginePolicies = EnginePolicies::default();
-        let mut extension = NoExtension;
-        let mut engine = AnalysisEngine::new(algebra, &policies, &mut extension);
         match (self.world, self.rpc) {
             (Some(path), None) => {
                 let input = AnalysisInput::new(world::load(&path)?, entry)?;
-                Ok(engine.run(input, config, control)?)
+                Ok((WorldSource::Offline(Box::new(input)), config))
             }
             (None, Some(endpoint)) => {
                 let mut input = RpcInput::new(endpoint, self.fork.unwrap_or_default());
@@ -101,18 +172,25 @@ impl WorldArgs {
                 input.max_requests = self.max_rpc_requests;
                 input.max_response_bytes = self.max_rpc_response_bytes;
                 input.timeout = Duration::from_millis(self.rpc_timeout_ms);
-                if self.no_rpc_discovery {
-                    let world = rpc::load_with_control(&input, control)?;
-                    Ok(engine.run(AnalysisInput::new(world, entry)?, config, control)?)
-                } else {
-                    let result = analysis::analyze_rpc(engine, &input, entry, config, control)?;
-                    for failure in result.failures() {
-                        eprintln!("RPC discovery: {failure}");
-                    }
-                    Ok(result.into_analysis())
-                }
+                Ok((
+                    WorldSource::Rpc {
+                        input: Box::new(input),
+                        entry: Box::new(entry),
+                        discovery: !self.no_rpc_discovery,
+                    },
+                    config,
+                ))
             }
             _ => unreachable!("clap requires exactly one world input"),
         }
     }
+}
+
+enum WorldSource<N: WordElement> {
+    Offline(Box<AnalysisInput<N>>),
+    Rpc {
+        input: Box<RpcInput>,
+        entry: Box<EvmEntry<N>>,
+        discovery: bool,
+    },
 }
