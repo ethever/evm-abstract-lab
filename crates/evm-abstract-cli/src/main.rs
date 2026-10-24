@@ -5,6 +5,7 @@ mod error;
 mod evm;
 mod execute;
 mod explain;
+mod hybrid;
 mod json;
 mod number;
 mod numeric;
@@ -347,8 +348,8 @@ fn execute_with<D: EvmNumericAlgebra>(
                     )
                     .exit();
             }
-            let analysis = args.analyze(algebra, control)?;
-            world_output(
+            let analysis = args.analyze_hybrid(algebra, control)?;
+            hybrid_output(
                 &analysis,
                 algebra,
                 format,
@@ -457,6 +458,116 @@ fn execute_with<D: EvmNumericAlgebra>(
             }
         }
         Command::Explain { args } => args.run(algebra, control, &mut reporting)?,
+    };
+    Ok((output, complete))
+}
+
+fn hybrid_output<D: EvmNumericAlgebra>(
+    analysis: &hybrid::WorldAnalysis<D::Element>,
+    algebra: &ValueAlgebra<D>,
+    format: CfgFormat,
+    model: NumericModel,
+    ssa: bool,
+    allow_partial_ssa: bool,
+    reporting: &mut WorkBudget,
+) -> Result<(String, bool), CliError> {
+    let graph = analysis.chosen();
+    let complete = analysis.status() == Status::Converged;
+    if ssa
+        && !allow_partial_ssa
+        && !analysis.native_chosen()
+        && analysis
+            .companion_detail()
+            .is_none_or(|detail| detail.status() != Status::Converged)
+    {
+        eprintln!(
+            "SSA unavailable: detailed paths remain unexpanded; global coverage is {:?}",
+            analysis.status()
+        );
+    }
+    let detail_ir = analysis
+        .companion_detail()
+        .filter(|detail| {
+            matches!(format, CfgFormat::Json)
+                && ssa
+                && (detail.status() == Status::Converged || allow_partial_ssa)
+        })
+        .map(|detail| ssa::build_normalized_partial_world(detail, reporting))
+        .transpose()?;
+    let output = match analysis {
+        hybrid::WorldAnalysis::Hybrid(source) => match format {
+            CfgFormat::Json => {
+                let ir = if ssa
+                    && analysis.native_chosen()
+                    && (graph.status() == Status::Converged || allow_partial_ssa)
+                {
+                    Some(ssa::build_normalized_partial_world(graph, reporting)?)
+                } else {
+                    None
+                };
+                json::hybrid(source, ir.as_ref(), detail_ir.as_ref(), model, reporting)?
+            }
+            CfgFormat::Text => {
+                let (mut output, _) = world_output(
+                    graph,
+                    algebra,
+                    format,
+                    model,
+                    ssa && analysis.native_chosen(),
+                    allow_partial_ssa,
+                    reporting,
+                )?;
+                output.insert_str(0, &hybrid::text(source));
+                output
+            }
+            CfgFormat::Dot => format!(
+                "// Hybrid {:?}; global current={}; native detail {:?}\n{}",
+                source.coverage().chosen,
+                source.coverage().baseline_current,
+                source.coverage().detail,
+                render::world::dot(graph, algebra)
+            ),
+        },
+        hybrid::WorldAnalysis::Rpc(source) => match format {
+            CfgFormat::Json => {
+                json::rpc_hybrid(source, None, detail_ir.as_ref(), model, reporting)?
+            }
+            CfgFormat::Text => {
+                let (mut text, _) = world_output(
+                    graph,
+                    algebra,
+                    format,
+                    model,
+                    false,
+                    allow_partial_ssa,
+                    reporting,
+                )?;
+                text.insert_str(0, &hybrid::rpc_text(source));
+                text
+            }
+            CfgFormat::Dot => format!(
+                "// Global coverage {:?}; RPC precision {:?}\n{}",
+                source.status(),
+                source.coverage().precision,
+                render::world::dot(graph, algebra)
+            ),
+        },
+    };
+    let output = if let (CfgFormat::Text, Some(detail)) = (format, analysis.companion_detail()) {
+        let (detail, _) = world_output(
+            detail,
+            algebra,
+            format,
+            model,
+            ssa,
+            allow_partial_ssa,
+            reporting,
+        )?;
+        format!(
+            "{output}\nDetailed paths (Native state IDs; conditions and pending work above):\n{detail}"
+        )
+    } else {
+        output
     };
     Ok((output, complete))
 }

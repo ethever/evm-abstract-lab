@@ -197,10 +197,10 @@ pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapsho
     defaults(ui, report, store);
     let mut changed = false;
     for account in &store.accounts {
-        let initial = report
-            .accounts
-            .iter()
-            .find(|entry| entry.address == account.address);
+        let initial = report.accounts.iter().find(|entry| {
+            entry.address == account.address
+                && report.input_namespace() != Some(entry.address.as_str())
+        });
         let differs = initial != Some(account);
         if !differs {
             continue;

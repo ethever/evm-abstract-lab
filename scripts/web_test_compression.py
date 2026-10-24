@@ -3,6 +3,7 @@
 from pathlib import Path
 from playwright.sync_api import expect
 import json
+from web_test_hybrid import assert_hybrid, displayed_graph
 from web_test_harness import complete_submission, observe_webgpu
 
 
@@ -38,9 +39,10 @@ def compression_interactions(browser, url: str, output: Path):
             envelope = response.json()
             report = envelope["result"]["Ok"]
             assert report == completed.json()["result"]["Ok"]
-            assert report["schema_version"] == 19
+            assert_hybrid(report)
+            assert report["schema_version"] == 20
             assert "max_output_bytes" not in report["metadata"]["export_limits"]
-            assert report["cfg"] and report["ssa"]["blocks"]
+            assert displayed_graph(report)["cfg"] and displayed_graph(report)["ssa"]["blocks"]
             expect(page.locator("#analysis-status")).to_contain_text("Ready:")
             page.wait_for_function(
                 "url => performance.getEntriesByName(url).some(entry => entry.responseEnd > 0)",

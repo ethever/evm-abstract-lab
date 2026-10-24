@@ -407,12 +407,12 @@ fn requested_certificate_absence_is_quiet_only_when_detail_has_converged() {
             assert_eq!(report.status, api::AnalysisStatus::Incomplete);
             assert!(!report.frontiers.is_empty());
             assert_eq!(terminal_coverage::status(&report), Some(NOT_ATTACHED));
-            "Incomplete / partial SSA"
+            "Global model incomplete"
         } else {
             assert_eq!(report.status, api::AnalysisStatus::Converged);
             assert!(report.frontiers.is_empty());
             assert_eq!(terminal_coverage::status(&report), None);
-            "Model converged"
+            "Global model converged"
         };
         assert_eq!(terminal_coverage::detail_status(&report), expected_detail);
 

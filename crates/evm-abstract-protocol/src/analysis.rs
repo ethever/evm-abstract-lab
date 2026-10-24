@@ -83,6 +83,7 @@ impl CfgBlock {
     /// Actual owner class or recorded native storage address, without a representative.
     pub fn storage_label(&self) -> &str {
         match self.process.as_ref().map(|key| &key.owner) {
+            Some(crate::ProcessOwner::RootNamespace) => "Root input owner",
             Some(crate::ProcessOwner::Named(address)) => address,
             Some(crate::ProcessOwner::Residual) => "Residual owner class",
             None => self.storage_address.as_deref().unwrap_or("Not recorded"),
@@ -91,6 +92,8 @@ impl CfgBlock {
     /// Actual executable source, without exposing private process anchors.
     pub fn code_label(&self) -> &str {
         match self.process.as_ref().map(|key| &key.source) {
+            Some(crate::ProcessSource::InputProgram(_)) => "Supplied input program",
+            Some(crate::ProcessSource::InputDelegation(source)) => &source.target,
             Some(
                 crate::ProcessSource::Runtime(source)
                 | crate::ProcessSource::InvalidDelegation(source),
@@ -319,7 +322,8 @@ record! {
         pub metadata: crate::ReportMetadata,
         /// Complete captured executable programs.
         pub programs: Vec<crate::ProgramInfo>,
-        /// Initial snapshot accounts, before transaction effects.
+        /// Original input rows before effects; Namespace root binding qualifies
+        /// its coordinate as a supplied template rather than a physical account.
         pub accounts: Vec<crate::AccountState>,
         /// Entry and retained exit payloads keyed by native state.
         pub states: Vec<crate::StateDetails>,
@@ -340,5 +344,7 @@ record! {
         pub abstract_summaries: Vec<crate::AbstractSummary>,
         /// Fixed-snapshot account/storage acquisition evidence.
         pub acquisition: Option<crate::AcquisitionReport>,
+        /// Global coverage and separately qualified native detail, when requested.
+        pub hybrid: Option<Box<crate::HybridReport>>,
     }
 }

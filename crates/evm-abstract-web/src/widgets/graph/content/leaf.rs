@@ -302,8 +302,8 @@ pub(super) fn tooltip(
             |id| Symbol::Block(id).to_string()
         ),
         block.frame_depth,
-        block.code_label(),
-        block.storage_label(),
+        report.code_label(block),
+        report.storage_label(block),
         block.context,
         coverage,
         block.entry_stack.join(", "),

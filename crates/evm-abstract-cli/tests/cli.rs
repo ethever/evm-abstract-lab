@@ -57,7 +57,7 @@ fn run_concrete(args: &[&str]) -> std::process::Output {
             }
         }
     }
-    Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
+    Command::new(crate::native::binary())
         .args(scoped)
         .output()
         .unwrap()
@@ -82,8 +82,12 @@ fn work_limit_visiting_pc(
         if report.get("machine_analysis").is_some() {
             report = report["machine_analysis"].take();
         }
-        assert_eq!(report["status"] == "Converged", exit == Some(0));
-        report
+        if report.get("hybrid").is_some() {
+            native::assert_exit(&report, &output);
+        } else {
+            assert_eq!(report["status"] == "Converged", exit == Some(0));
+        }
+        native::select(&report)
     };
     let visited = |report: &serde_json::Value| {
         report["states"].as_array().unwrap().iter().any(|state| {
@@ -672,8 +676,9 @@ fn world_ssa_verifies_complete_calls_and_is_not_built_for_frontiers() {
         "missing-code",
         &["--format", "json", "--ssa", "--max-call-depth", "1"],
     );
-    assert_eq!(incomplete.status.code(), Some(2));
-    let json: serde_json::Value = serde_json::from_slice(&incomplete.stdout).unwrap();
+    let raw: serde_json::Value = serde_json::from_slice(&incomplete.stdout).unwrap();
+    native::assert_exit(&raw, &incomplete);
+    let json = native::select(&raw);
     assert_eq!(json["status"], "Incomplete");
     assert!(json.get("ssa").is_none());
     assert!(String::from_utf8_lossy(&incomplete.stderr).contains("SSA unavailable"));
@@ -726,13 +731,9 @@ fn shared_budgets_keep_typed_frontiers_and_exit_two() {
         let mut detail = args.clone();
         detail.push("--no-root-terminal-coverage");
         let output = analyze(name, &detail);
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "{name} {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        native::assert_exit(&raw, &output);
+        let json = native::select(&raw);
         assert_eq!(json["status"], "Incomplete");
         assert!(
             json["frontiers"]
@@ -853,7 +854,6 @@ fn requested_world_text_is_readable_and_format_switches_keep_complete_evidence()
         )));
     }
     let incomplete = analyze("missing-code", &["--max-call-depth", "1"]);
-    assert_eq!(incomplete.status.code(), Some(2));
     let incomplete = String::from_utf8(incomplete.stdout).unwrap();
     assert!(
         incomplete.contains("Incomplete")

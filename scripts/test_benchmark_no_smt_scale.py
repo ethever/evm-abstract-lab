@@ -43,6 +43,23 @@ class DeliveryTests(unittest.TestCase):
     def collect(self, limit=1024 * 1024):
         return scale.collect_report(self.directory, self.process, self.commands, limit)
 
+    def test_hybrid_graph_metrics_and_application_totals_remain_independent(self):
+        for flat in (False, True):
+            with self.subTest(flat=flat):
+                graph = report()
+                graph.update(status="Converged", work=100)
+                hybrid = {"coverage": {"baseline_current": False, "chosen": "Process"},
+                          "selected_graph": {"status": "Converged", "work": 100, "transfers": 7}}
+                delivered = {**graph, "status": "Incomplete", "work": 1000, "hybrid": hybrid} if flat else {
+                    "status": "Incomplete", "work": 1000, "analysis": graph, "hybrid": hybrid}
+                self.write_stdout(delivered)
+                sample = self.collect()
+                self.assertTrue(sample["report_delivered"], sample["report_error"])
+                self.assertEqual(sample["nativefinal"]["status"], "Converged")
+                self.assertEqual(sample["nativefinal"]["work"], 100)
+                self.assertEqual(sample["nativefinal"]["application"], {"status": "Incomplete", "work": 1000})
+                self.assertEqual(delivered["status"], "Incomplete")
+
     def test_external_stops_cannot_promote_even_complete_stdout_to_final(self):
         for reason in ("external_timeout", "external_rss_guard", "external_host_memory_guard",
                        "external_keyboard_interrupt", "resource_monitor_error"):
@@ -105,8 +122,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(sample["nativefinal"]["config"], {"synthetic": True})
 
     def test_native_policy_checks_model_and_algebra_limits_beyond_execution_config(self):
-        # Keep native12/cost7 profiles supported alongside native13/cost8 and current native14/cost8.
-        for version, cost_version in ((12, 7), (13, 8), (14, 8)):
+        # Keep native12/cost7 profiles supported alongside native13/cost8 and current native15/cost8.
+        for version, cost_version in ((12, 7), (13, 8), (14, 8), (15, 8)):
             with self.subTest(version=version, cost_version=cost_version):
                 self.check_native_policy(version, cost_version)
 

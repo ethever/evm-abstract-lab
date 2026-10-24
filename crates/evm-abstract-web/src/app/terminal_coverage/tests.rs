@@ -23,7 +23,9 @@ fn terminal_binding_checks_the_selected_model_and_actual_numeric_limits() {
             },
             ..api::AnalyzeRequest::default()
         };
-        let valid = evm_abstract_server::analyze::analyze(request).unwrap();
+        let valid =
+            evm_abstract_server::analyze::captured::native_bytecode(&request, &Default::default())
+                .unwrap();
         let coverage = valid.root_terminal_coverage.as_ref().unwrap();
         assert_eq!(
             valid.validate(),
@@ -80,7 +82,9 @@ pub(crate) fn report() -> AnalysisReport {
     };
     request.limits.max_transfers = 1;
     request.limits.root_terminal_coverage = true;
-    let report = evm_abstract_server::analyze::analyze(request).unwrap();
+    let report =
+        evm_abstract_server::analyze::captured::native_bytecode(&request, &Default::default())
+            .unwrap();
     report.validate().unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(!report.ssa.complete);

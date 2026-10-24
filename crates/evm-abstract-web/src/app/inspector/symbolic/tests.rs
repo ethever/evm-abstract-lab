@@ -55,7 +55,8 @@ fn actual_symbolic_copy_and_storage_reports_survive_json_and_frontend_installati
             request.limits.root_terminal_coverage = false;
             request.limits.max_expression_nodes = max_nodes;
         }
-        let report = evm_abstract_server::analyze::analyze(request).unwrap();
+        let report =
+            crate::tests::native_component(evm_abstract_server::analyze::analyze(request).unwrap());
         let wire = serde_json::to_vec(&api::AnalyzeReply { result: Ok(report) }).unwrap();
         let reply: api::AnalyzeReply = serde_json::from_slice(&wire).unwrap();
         let parsed = reply.result.as_ref().unwrap();

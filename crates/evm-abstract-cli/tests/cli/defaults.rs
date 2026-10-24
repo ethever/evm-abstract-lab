@@ -131,7 +131,7 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
         max_constraints: 128,
         ..AnalysisLimits::default()
     };
-    let world = report(analyze(
+    let output = analyze(
         "call-return-branch",
         &[
             "--format",
@@ -160,7 +160,9 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
             "--max-relations",
             "128",
         ],
-    ));
+    );
+    let world: Value = serde_json::from_slice(&output.stdout).unwrap();
+    super::native::assert_exit(&world, &output);
     policy(&world, true, &expected);
 }
 

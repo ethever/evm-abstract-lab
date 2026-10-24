@@ -55,10 +55,15 @@ fn assert_full_report(explanation: &str, report: &Output) {
     let report = text(report);
     let (model, report) = report.split_once('\n').unwrap();
     assert!(explanation.lines().any(|line| line == model));
-    assert!(
-        explanation.contains(report.trim_end()),
-        "explain must preserve the complete analyze report"
-    );
+    for graph in
+        report.split("\nDetailed paths (Native state IDs; conditions and pending work above):\n")
+    {
+        let body = graph.split_once("Analysis\n").unwrap().1.trim_end();
+        assert!(
+            explanation.contains(body),
+            "explain must preserve each complete namespaced report"
+        );
+    }
     for section in [
         "Analysis",
         "Snapshot",
@@ -176,7 +181,7 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
         let mut detail = extra.clone();
         detail.push("--no-root-terminal-coverage");
         let output = world_command("explain", name, &detail);
-        assert_eq!(output.status.code(), Some(2), "{name} {extra:?}");
+        super::native::text_exit(&output, 2);
         let explanation = text(&output);
         assert_full_report(&explanation, &world_command("analyze", name, &detail));
         let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();
@@ -695,7 +700,7 @@ fn assert_rpc_report<'scope, 'env>(
 ) {
     let oracle = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
     let report = rpc_command_named("analyze", &oracle, extra);
-    assert_eq!(report.status.code(), Some(expected_exit));
+    super::native::text_exit(&report, expected_exit);
     assert_full_report(explanation, &report);
     assert_pinned(&oracle.finish());
 }
@@ -737,10 +742,13 @@ fn rpc_explain_discovers_missing_callee_snapshot_code_with_default_and_explicit_
             let explanation = text(&output);
             let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();
             assert!(disassembly.contains(ENTRY) && disassembly.contains(CALLEE));
-            assert!(disassembly.contains("CALL") && disassembly.contains("MSTORE"));
-            assert!(
-                disassembly.contains(&keccak256(hex::decode(RPC_CALLEE_CODE).unwrap()).to_string())
-            );
+            assert!(disassembly.contains("CALL") && !disassembly.contains("MSTORE"));
+            let detail = explanation
+                .split_once("Detailed paths (Native state IDs;")
+                .unwrap()
+                .1;
+            assert!(detail.contains("MSTORE"));
+            assert!(detail.contains(&keccak256(hex::decode(RPC_CALLEE_CODE).unwrap()).to_string()));
             assert!(
                 explanation.contains("RPC acquisition")
                     && explanation.contains("fetched accounts=")
@@ -813,15 +821,10 @@ fn rpc_explain_discovery_caps_keep_typed_acquisition_frontiers_and_partial_outpu
         ] {
             let server = RpcServer::with_fixture(scope, RpcFixture::CallReturn);
             let output = rpc_command(&server, &[flag, limit]);
-            assert_eq!(
-                output.status.code(),
-                Some(2),
-                "{flag}={limit}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            super::native::text_exit(&output, 2);
             let explanation = text(&output);
-            assert!(explanation.contains("Incomplete") && explanation.contains("RpcAcquisition"));
-            assert!(explanation.contains("AcquisitionLimit") && explanation.contains(resource));
+            assert!(explanation.contains("Incomplete") && explanation.contains("RPC precision:"));
+            assert!(explanation.contains("acquisition") && explanation.contains(resource));
             assert!(explanation.contains("RPC acquisition") && explanation.contains("Frontiers"));
             assert!(explanation.contains("SSA unavailable") && !explanation.contains(VERIFIED));
             let (disassembly, _) = explanation.split_once("Analysis\n").unwrap();

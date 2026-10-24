@@ -164,8 +164,19 @@ fn real_transport_roundtrip_returns_structured_analysis() {
     ));
     assert!(header.starts_with("HTTP/1.1 200"));
     let report = reply.result.unwrap();
-    assert_eq!(report.disassembly[0].instructions[2].name, "ADD");
-    assert_eq!(report.ssa.blocks[0].instructions[2].operands.len(), 2);
+    report.validate().unwrap();
+    let hybrid = report.hybrid.as_ref().unwrap();
+    assert!(hybrid.coverage.baseline_current);
+    assert_eq!(
+        report.status,
+        evm_abstract_protocol::AnalysisStatus::Converged
+    );
+    let detail = report
+        .graph(evm_abstract_protocol::AnalysisNamespace::Native)
+        .unwrap();
+    assert!(!hybrid.local_prefixes.is_empty());
+    assert_eq!(detail.disassembly[0].instructions[2].name, "ADD");
+    assert_eq!(detail.ssa.blocks[0].instructions[2].operands.len(), 2);
     pool.shutdown().unwrap();
 }
 

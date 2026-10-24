@@ -12,7 +12,8 @@ use crate::{
     widgets,
 };
 
-/// Real offline server evidence for consumer tests; no service or RPC is started.
+/// Native-component consumer fixtures from the real default producer. Symbolic
+/// root detail is conditioned on the producer's retained owner namespace.
 pub(crate) fn procedure_report(bytecode: &str) -> AnalysisReport {
     let mut request = api::AnalyzeRequest {
         input: api::AnalysisInput::Bytecode(api::BytecodeInput {
@@ -22,10 +23,23 @@ pub(crate) fn procedure_report(bytecode: &str) -> AnalysisReport {
         ..api::AnalyzeRequest::default()
     };
     request.limits.root_terminal_coverage = false;
-    let report = evm_abstract_server::analyze::analyze(request).unwrap();
+    let report = native_component(evm_abstract_server::analyze::analyze(request).unwrap());
     report.validate().unwrap();
     assert!(!report.abstract_summaries.is_empty());
     report
+}
+
+/// Legacy native inspectors test this component independently of global coverage.
+pub(crate) fn native_component(mut report: AnalysisReport) -> AnalysisReport {
+    let Some(hybrid) = report.hybrid.take() else {
+        return report;
+    };
+    match hybrid.namespace() {
+        api::AnalysisNamespace::Native => report,
+        api::AnalysisNamespace::Baseline => {
+            *hybrid.detail.expect("fixture needs retained native detail")
+        }
+    }
 }
 
 fn instruction(pc: usize, name: &str) -> DisasmInstruction {
@@ -129,6 +143,12 @@ pub(crate) fn empty_report() -> AnalysisReport {
             },
             timings: api::AnalysisTimings::default(),
             entry_address: "0x0000000000000000000000000000000000000000".into(),
+            root_binding: api::RootInputBinding::Physical(api::PhysicalRootInput {
+                address: "0x0000000000000000000000000000000000000000".into(),
+            }),
+            declared_root_source: api::ProcessSource::AnyRuntime(api::ProcessForkSource {
+                fork: Fork::Osaka,
+            }),
             root_program: None,
             snapshot: None,
             fingerprint: format!("0x{}", "00".repeat(32)),
@@ -137,7 +157,9 @@ pub(crate) fn empty_report() -> AnalysisReport {
             postprocessing_work: 0,
             limits: api::AnalysisLimits::default(),
             environment: api::EnvironmentSnapshot {
-                to: address(api::InputSymbolKind::To),
+                to: api::AddressValue::Concrete(
+                    "0x0000000000000000000000000000000000000000".into(),
+                ),
                 caller: address(api::InputSymbolKind::Caller),
                 origin: address(api::InputSymbolKind::Caller),
                 call_value: top.clone(),
@@ -166,6 +188,7 @@ pub(crate) fn empty_report() -> AnalysisReport {
         root_terminal_coverage: None,
         abstract_summaries: vec![],
         acquisition: None,
+        hybrid: None,
         byte_arrays: vec![api::ByteArraySnapshot {
             symbolic_facts: vec![],
             symbolic: evm_abstract_protocol::ByteViewRef { node: 2 },

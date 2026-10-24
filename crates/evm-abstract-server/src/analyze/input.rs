@@ -8,6 +8,58 @@ use evm_abstract::{
 use evm_abstract_protocol as api;
 use std::{collections::BTreeMap, num::NonZeroUsize, time::Duration};
 
+/// Shared admission for the default Hybrid path and explicit native controls.
+pub(super) fn bytecode<N: WordElement>(
+    source: &api::BytecodeInput,
+    fork: evm_abstract::Fork,
+    mut environment: EvmEnvironmentValues<N>,
+) -> Result<analysis::AnalysisInput<N>, api::ApiError> {
+    use evm_abstract::{
+        bytecode::Program,
+        world::{Code, EvmAccount, EvmEntry, EvmWorld},
+    };
+    if source.bytecode.len() > api::MAX_REQUEST_BYTES {
+        return Err(invalid(
+            api::ValidationErrorKind::Bytecode,
+            "bytecode",
+            "bytecode text exceeds the request bound",
+        ));
+    }
+    let program =
+        Program::from_hex_with_fork(&source.bytecode, fork).map_err(super::errors::bytecode)?;
+    if program.byte_len() > 65_536 {
+        return Err(invalid(
+            api::ValidationErrorKind::Bytecode,
+            "bytecode",
+            "runtime bytecode exceeds 65536 bytes",
+        ));
+    }
+    let physical = source
+        .address
+        .as_ref()
+        .map(|text| address(text, "address"))
+        .transpose()?;
+    if let Some(address) = physical {
+        environment.to = address.into();
+    }
+    // The coordinate is an input namespace when logical ADDRESS is symbolic.
+    let coordinate = physical.unwrap_or_else(|| Address::repeat_byte(0x11));
+    let mut world = EvmWorld::<N>::offline(fork, "web-bytecode", "explicit browser bytecode");
+    let mut account = EvmAccount::unknown();
+    account.code = Code::Runtime(program);
+    world
+        .insert(coordinate, account)
+        .map_err(super::errors::world)?;
+    analysis::AnalysisInput::new(
+        world,
+        EvmEntry {
+            address: coordinate,
+            environment,
+        },
+    )
+    .map_err(super::config_error)
+}
+
 pub(super) fn invalid(
     kind: api::ValidationErrorKind,
     field: &str,

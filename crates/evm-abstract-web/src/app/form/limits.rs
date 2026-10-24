@@ -82,7 +82,7 @@ impl AnalysisForm {
                 "Prepare conservative root terminal coverage",
             );
             ui.label(
-                RichText::new("Preparation uses the original logical work budget. Detailed execution and SSA may still be partial.")
+                RichText::new("Global control runs first; remaining work extends detailed paths. Terminal preparation belongs to the native detail allowance and can remain unavailable.")
                     .small()
                     .color(palette::MUTED),
             );

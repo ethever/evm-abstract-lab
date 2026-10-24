@@ -1,5 +1,7 @@
 //! Typed request admission and complete immutable world-report projection.
 //! Native state/edge IDs and SSA coverage survive without a local-CFG projection.
+#[cfg(any(test, feature = "capture-replay"))]
+pub mod captured;
 mod errors;
 pub(crate) use errors::fingerprint as fingerprint_error;
 mod input;
@@ -12,15 +14,19 @@ mod ssa;
 mod symbolic;
 pub(crate) mod timing;
 mod value;
+#[cfg(test)]
 use evm_abstract::{
     Address,
+    analysis::AnalysisInput,
+    world::{Code, EvmAccount, EvmWorld},
+};
+use evm_abstract::{
     analysis::{
-        self, AnalysisEngine, AnalysisInput, EnginePolicies, control::Control,
-        cooperation::NoExtension, progress::Phase,
+        self, AnalysisEngine, EnginePolicies, control::Control, cooperation::NoExtension,
+        progress::Phase,
     },
-    bytecode::Program,
     domain::{EvmNumericAlgebra, FiniteSetAlgebra, ProductAlgebra, ValueAlgebra},
-    world::{Code, EvmAccount, EvmEntry, EvmWorld},
+    world::EvmEntry,
 };
 use evm_abstract_protocol as api;
 
@@ -131,53 +137,22 @@ fn run_typed<D: EvmNumericAlgebra>(
     let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
     let mut environment = input::environment::<D::Element>(&request.environment)?;
     let fork = input::fork(request.fork);
-    let (native, scope) = match &request.input {
+    match &request.input {
         api::AnalysisInput::Bytecode(source) => {
-            if source.bytecode.len() > api::MAX_REQUEST_BYTES {
-                return Err(input::invalid(
-                    api::ValidationErrorKind::Bytecode,
-                    "bytecode",
-                    "bytecode text exceeds the request bound",
-                ));
-            }
-            let program =
-                Program::from_hex_with_fork(&source.bytecode, fork).map_err(errors::bytecode)?;
-            if program.byte_len() > 65_536 {
-                return Err(input::invalid(
-                    api::ValidationErrorKind::Bytecode,
-                    "bytecode",
-                    "runtime bytecode exceeds 65536 bytes",
-                ));
-            }
-            // An internal owner is required by Store, but unspecified logical ADDRESS remains symbolic.
-            let address = source
-                .address
-                .as_ref()
-                .map(|text| input::address(text, "address"))
-                .transpose()?;
-            if let Some(address) = address {
-                environment.to = address.into();
-            }
-            let address = address.unwrap_or_else(|| Address::repeat_byte(0x11));
-            let mut world =
-                EvmWorld::<D::Element>::offline(fork, "web-bytecode", "explicit browser bytecode");
-            let mut account = EvmAccount::unknown();
-            account.code = Code::Runtime(program);
-            world.insert(address, account).map_err(errors::world)?;
+            let input = input::bytecode(source, fork, environment)?;
             checkpoint(control)?;
             control.observer().phase(Phase::Analyzing);
-            let input = AnalysisInput::new(
-                world,
-                EvmEntry {
-                    address,
-                    environment,
-                },
-            )
-            .map_err(config_error)?;
-            let native = engine
-                .run(input, config, control)
+            let hybrid = engine
+                .run_hybrid(input, config, analysis::HybridConfig::default(), control)
                 .map_err(errors::execution)?;
-            (native, api::AnalysisScope::SingleProgram)
+            report::hybrid::project(
+                &hybrid,
+                &request,
+                api::AnalysisScope::SingleProgram,
+                &algebra,
+                numeric_model,
+                control,
+            )
         }
         api::AnalysisInput::Rpc(source) => {
             let address = input::address(&source.address, "address")?;
@@ -185,7 +160,7 @@ fn run_typed<D: EvmNumericAlgebra>(
             let endpoint = providers.endpoint(&source.provider_id)?;
             let input = input::rpc(source, endpoint, fork, &request.limits)?;
             checkpoint(control)?;
-            let native = analysis::analyze_rpc(
+            let hybrid = analysis::analyze_rpc_hybrid(
                 engine,
                 &input,
                 EvmEntry {
@@ -193,14 +168,13 @@ fn run_typed<D: EvmNumericAlgebra>(
                     environment,
                 },
                 config,
+                analysis::HybridConfig::default(),
                 control,
             )
-            .map_err(rpc_error)?
-            .into_analysis();
-            (native, api::AnalysisScope::RpcWorld)
+            .map_err(rpc_error)?;
+            report::hybrid::rpc::project(hybrid, &request, &algebra, numeric_model, control)
         }
-    };
-    report::report(&native, &request, scope, &algebra, numeric_model, control)
+    }
 }
 
 #[cfg(test)]

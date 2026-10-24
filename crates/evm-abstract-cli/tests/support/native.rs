@@ -46,6 +46,7 @@ pub fn without_application_metadata(value: &Json) -> Json {
         .expect("postprocessing consumption is recorded");
     assert_eq!(maximum, 2_000_000_000);
     assert!(work <= maximum);
+    report.remove("hybrid");
     Json::Object(report)
 }
 
@@ -183,4 +184,135 @@ fn application_metadata_requires_postprocessing_allowance() {
         "numeric_model":"finite-set","postprocessing_work":17,
     });
     without_application_metadata(&missing);
+}
+/// A frozen physical CLI can be supplied by the evidence runner; ordinary
+/// Cargo tests retain Cargo's exact package binary as their default.
+pub fn binary() -> std::ffi::OsString {
+    std::env::var_os("EVM_ABSTRACT_TEST_BINARY")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_evm-abstract").into())
+}
+
+/// Inspect the retained Native namespace after checking the real command's
+/// global status separately. Companion SSA and acquisition data keep their
+/// source qualifiers; this helper never combines either graph's state IDs.
+#[allow(
+    dead_code,
+    reason = "shared support module is also compiled by native-only integration targets"
+)]
+pub fn select(report: &Json) -> Json {
+    let Some(hybrid) = report.get("hybrid") else {
+        return report.clone();
+    };
+    let primary = if report.get("analysis").is_some() {
+        &report["analysis"]
+    } else {
+        report
+    };
+    let native = if hybrid["coverage"]["chosen"] == "Native" {
+        primary
+    } else {
+        &hybrid["detail"]
+    };
+    if native.is_null() {
+        return report.clone();
+    }
+    assert!(native["states"].is_array());
+    let coverage = hybrid
+        .get("precision")
+        .filter(|value| !value.is_null())
+        .unwrap_or(&hybrid["coverage"]);
+    for prefix in hybrid["local_detail"].as_array().unwrap() {
+        assert_eq!(prefix["namespace"], "Native");
+        assert_eq!(prefix["binding"], coverage["detail_binding"]);
+        let id = prefix["state_id"].as_u64().unwrap();
+        assert!(
+            native["states"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|state| state["id"] == id)
+        );
+        assert_eq!(
+            prefix["executed_pcs"].as_array().unwrap().len(),
+            prefix["instructions"].as_array().unwrap().len()
+        );
+    }
+    let mut result = report.clone();
+    let mut native = native.clone();
+    if let Some(acquisition) = hybrid.get("rpc").filter(|value| !value.is_null()) {
+        native["rpc_acquisition"] = acquisition["acquisition"].clone();
+    }
+    if report.get("analysis").is_some() || hybrid.get("detail_ssa").is_some_and(|ir| !ir.is_null())
+    {
+        result["global_status"] = result["status"].clone();
+        result["status"] = native["status"].clone();
+        result["analysis"] = native;
+        if hybrid["coverage"]["chosen"] != "Native" {
+            result.as_object_mut().unwrap().remove("ssa");
+            result.as_object_mut().unwrap().remove("partial_ssa");
+            if let Some(ir) = hybrid.get("detail_ssa").filter(|value| !value.is_null()) {
+                result[if ir["status"] == "Converged" {
+                    "ssa"
+                } else {
+                    "partial_ssa"
+                }] = ir.clone();
+            }
+        }
+    } else {
+        for key in [
+            "numeric_model",
+            "postprocessing_max_work",
+            "postprocessing_work",
+        ] {
+            if let Some(value) = report.get(key) {
+                native[key] = value.clone();
+            }
+        }
+        native["hybrid"] = hybrid.clone();
+        result = native;
+    }
+    result
+}
+
+#[allow(
+    dead_code,
+    reason = "shared support module is also compiled by native-only integration targets"
+)]
+pub fn assert_exit(report: &Json, output: &std::process::Output) {
+    assert_eq!(
+        output.status.code(),
+        Some(if report["status"] == "Converged" {
+            0
+        } else {
+            2
+        }),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if let Some(hybrid) = report.get("hybrid") {
+        assert_eq!(
+            report["status"] == "Converged",
+            hybrid["coverage"]["baseline_current"] == true
+        );
+    }
+}
+
+/// Text preserves independent global closure and pending native detail.
+#[allow(
+    dead_code,
+    reason = "shared support module is also compiled by native-only integration targets"
+)]
+pub fn text_exit(output: &std::process::Output, native_exit: i32) {
+    let text = String::from_utf8_lossy(&output.stdout);
+    let expected = if text.contains("Global coverage: Converged") {
+        0
+    } else {
+        native_exit
+    };
+    assert_eq!(
+        output.status.code(),
+        Some(expected),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

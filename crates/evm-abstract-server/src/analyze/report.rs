@@ -2,6 +2,7 @@
 //! The caller retains the actual execution algebra; the model label comes from
 //! application dispatch, while captured numeric limits come from native results.
 mod environment;
+pub(super) mod hybrid;
 mod summaries;
 mod terminal;
 use super::{checkpoint, mapping, pools::Pools, rpc, ssa, value};
@@ -13,6 +14,7 @@ use evm_abstract::{
 };
 use evm_abstract_protocol as api;
 
+#[cfg(any(test, feature = "capture-replay"))]
 pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     native: &analysis::EvmWorldAnalysis<N>,
     request: &api::AnalyzeRequest,
@@ -21,11 +23,49 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     numeric_model: api::NumericModel,
     control: &Control,
 ) -> Result<api::AnalysisReport, api::ApiError> {
+    let mut postprocessing = WorkBudget::new(super::DEFAULT_POSTPROCESS_WORK);
+    with_budget(
+        native,
+        request,
+        scope,
+        algebra,
+        numeric_model,
+        control,
+        &mut postprocessing,
+    )
+}
+
+fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    native: &analysis::EvmWorldAnalysis<N>,
+    request: &api::AnalyzeRequest,
+    scope: api::AnalysisScope,
+    algebra: &ValueAlgebra<D>,
+    numeric_model: api::NumericModel,
+    control: &Control,
+    postprocessing: &mut WorkBudget,
+) -> Result<api::AnalysisReport, api::ApiError> {
     checkpoint(control)?;
     // The request's Control.scope covers this ledger and every native output
     // computation. There is no local execution projection on the server path.
-    let mut postprocessing = WorkBudget::new(super::DEFAULT_POSTPROCESS_WORK);
     let mut pools = Pools::<N>::new(control);
+    let root_binding = mapping::root_binding(native.root_binding());
+    pools.root_namespace = match native.root_binding() {
+        evm_abstract::world::RootInputBinding::Namespace { coordinate } => Some(coordinate),
+        evm_abstract::world::RootInputBinding::Physical { .. } => None,
+    };
+    let declared_root_source = native
+        .declared_root_source(postprocessing)
+        .map(super::process::source)
+        .map_err(|error| match error {
+            analysis::ProjectionError::Cancelled => super::cancelled(),
+            analysis::ProjectionError::Work => {
+                ssa::errors::convert(evm_abstract::ssa::SsaError::Work)
+            }
+            analysis::ProjectionError::MissingProgram
+            | analysis::ProjectionError::NonRuntime(_) => {
+                super::process::invalid(api::ProcessValidationKind::Source)
+            }
+        })?;
     pools.symbolic.charge(
         native
             .states()
@@ -37,7 +77,7 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             .saturating_add(native.world().accounts().len()),
     )?;
     control.observer().phase(Phase::BuildingSsa);
-    let ssa = ssa::report(native, control, &mut postprocessing, &mut pools.symbolic)?;
+    let ssa = ssa::report(native, control, postprocessing, &mut pools.symbolic)?;
     checkpoint(control)?;
     control.observer().phase(Phase::Projecting);
     let initial =
@@ -147,21 +187,25 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         .and_then(|state| state.entry.frames.first())
         .and_then(|frame| frame.program)
         .or_else(|| {
-            if !states.is_empty() {
-                return None;
-            }
-            // Admission may exhaust work before a first machine state exists. Source
-            // observations still belong to the result; following only one marker
-            // matches EIP-7702 and does not claim any instruction was executed.
-            let root = accounts
+            // This is paid declared provenance, including zero-state refusals.
+            // A namespace marker/coordinate never becomes a physical lookup.
+            pools
+                .programs
                 .iter()
-                .find(|account| account.address == native.entry().address.to_string())?;
-            root.program.or_else(|| {
-                root.delegation_target
-                    .as_ref()
-                    .and_then(|target| accounts.iter().find(|account| &account.address == target))
-                    .and_then(|account| account.program)
-            })
+                .find(|program| match &declared_root_source {
+                    api::ProcessSource::InputProgram(source) => {
+                        program.code_address.is_none()
+                            && program.kind == api::CodeKind::Runtime
+                            && program.code_hash == source.hash.to_string()
+                    }
+                    api::ProcessSource::Runtime(source) => {
+                        program.code_address.as_ref() == Some(&source.source)
+                            && program.kind == api::CodeKind::Runtime
+                            && program.code_hash == source.hash.to_string()
+                    }
+                    _ => false,
+                })
+                .map(|program| program.id)
         });
     let disassembly = root_program
         .map(|id| {
@@ -280,6 +324,8 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             .collect::<Result<_, api::ApiError>>()?,
         metadata: api::ReportMetadata {
             entry_address: native.entry().address.to_string(),
+            root_binding,
+            declared_root_source,
             root_program,
             snapshot,
             fingerprint: world
@@ -306,6 +352,7 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         root_terminal_coverage,
         abstract_summaries,
         acquisition: native.rpc_acquisition().map(rpc::acquisition),
+        hybrid: None,
     };
     checkpoint(control)?;
     Ok(report)

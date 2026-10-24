@@ -92,7 +92,7 @@ def layout_runtime_programs(report, code, metadata):
 
 def layout_runtime_request(request, report, code, metadata):
     entry = metadata["browser_entry"]
-    assert report["schema_version"] == 19 and report["root_terminal_coverage"] is None
+    assert report["schema_version"] == 20 and report["root_terminal_coverage"] is None
     assert set(request) == {"input", "fork", "environment", "limits"}
     assert request["input"] == {"Bytecode": {"bytecode": code, "address": entry.get("address")}}
     assert request["fork"] == report["fork"] == entry.get("fork", "Osaka")
@@ -152,11 +152,11 @@ def _runtime_boundary_profile(report, entry, nodes):
     starts = {nodes[frontier["from"]]["start_pc"] for frontier in frontiers
               if frontier["from"] in nodes}
     profile = None
-    if report["schema_version"] in {17,18,19} and policy["boundary"] == "root_instruction" and 3634 in starts:
+    if report["schema_version"] in {17,18,19,20} and policy["boundary"] == "root_instruction" and 3634 in starts:
         profile = "copy"
         expected = [(3634, 3645, "Relations"), (3634, 3638, "Relations")]
         assert len({frontier["from"] for frontier in frontiers}) == 1
-    elif report["schema_version"] in {17,18,19} and policy["boundary"] == "incoming" and any(
+    elif report["schema_version"] in {17,18,19,20} and policy["boundary"] == "incoming" and any(
             frontier["kind"] == "Work" for frontier in frontiers):
         profile = "router"
         expected = [(877, 884, "Relations"), (16597, 16802, "Work"),
@@ -283,8 +283,8 @@ def _runtime_current_prefix(report, source, state, block):
 
 def layout_pending_machines(report, entry):
     # Schema 14 is used only by unchanged saved-report offline controls;
-    # layout_runtime_request requires schema 19 for every browser submission.
-    assert report["schema_version"] in {14,17,18,19}
+    # layout_runtime_request requires schema 20 for every browser submission.
+    assert report["schema_version"] in {14,17,18,19,20}
     policy = entry["product_oracle"]
     assert report["status"] == entry["expected_status"] == "Incomplete" and report["frontiers"]
     pending = report["pending_machines"]
@@ -491,7 +491,7 @@ def layout_pending_machines(report, entry):
         store = report["stores"][index]
         fields = {"storage_default","transient_default","balance_default","accounts","logs",
                   "logs_unknown","storage_facts","transient_facts","touched_default"}
-        if report["schema_version"] in {17,18,19}:
+        if report["schema_version"] in {17,18,19,20}:
             fields |= {"storage_root","transient_root","nonce_default","code_default","existence_default",
                        "created_default","pending_destruction_default"}
             for name in ["storage_root","transient_root"]:reference(store[name],slot_kinds)
