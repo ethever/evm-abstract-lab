@@ -3,8 +3,8 @@
 use crate::analysis::{
     AnalysisEngine, AnalysisInput, BoundedJoin, ContextInsensitive, ContextPolicy, EnginePolicies,
     EvmWorldAnalysis, ExecutionConfig, FeedbackAcceleration, KnownProcessSummaries,
-    MergeResumeStatus, PartitionPolicy, RuntimeExecution, SemanticPolicies, StatePolicy, Status,
-    StructuralPartition,
+    MergeResumeStatus, PartitionPolicy, ProjectionError, RuntimeExecution, SemanticPolicies,
+    StatePolicy, Status, StructuralPartition,
     control::Control,
     cooperation::{Composition, CooperationError},
     engine::{
@@ -16,6 +16,7 @@ use crate::analysis::{
 use crate::{
     domain::{EvmNumericAlgebra, WordElement},
     resource::{CloneError, WorkBudget},
+    world::RootInputBinding,
 };
 
 use super::{
@@ -146,11 +147,12 @@ where
         let mut coverage = HybridCoverage {
             baseline_current,
             detail_current: false,
-            detail_binding: if baseline.entry().environment.to.as_concrete().is_some() {
-                HybridNativeBinding::OriginalOwner
-            } else {
-                HybridNativeBinding::SymbolicOwnerNamespace {
-                    namespace: baseline.entry().address,
+            detail_binding: match baseline.root_binding() {
+                RootInputBinding::Physical { .. } => HybridNativeBinding::OriginalOwner,
+                RootInputBinding::Namespace { coordinate } => {
+                    HybridNativeBinding::SymbolicOwnerNamespace {
+                        namespace: coordinate,
+                    }
                 }
             },
             local_detail_sites: 0,
@@ -230,18 +232,23 @@ where
                         }
                     }
                     coverage.detail_regions = match policy::select(
-                        &world,
-                        entry.address,
+                        &baseline,
+                        &entry,
                         hybrid.max_detail_regions,
                         budget,
                     ) {
                         Ok(regions) => regions,
-                        Err(CloneError::Work) => {
+                        Err(ProjectionError::Work) => {
                             coverage.work.preparation = budget.used().saturating_sub(start);
                             coverage.detail = DetailState::Work;
                             return Ok(None);
                         }
-                        Err(CloneError::Cancelled) => return Err(CooperationError::Cancelled),
+                        Err(ProjectionError::Cancelled) => return Err(CooperationError::Cancelled),
+                        Err(ProjectionError::MissingProgram | ProjectionError::NonRuntime(_)) => {
+                            coverage.work.preparation = budget.used().saturating_sub(start);
+                            coverage.detail = DetailState::Incomplete;
+                            return Ok(None);
+                        }
                     };
                     coverage.work.preparation = budget.used().saturating_sub(start);
                     let policies = EnginePolicies {

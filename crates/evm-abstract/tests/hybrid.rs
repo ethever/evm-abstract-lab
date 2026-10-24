@@ -1,8 +1,12 @@
 //! Baseline-first native execution, without changing the original Unknown input.
 #![allow(dead_code)]
 
+#[path = "hybrid/namespace.rs"]
+mod namespace;
 #[path = "support/native.rs"]
 mod native;
+#[path = "unknown_world/oracle.rs"]
+mod oracle;
 #[path = "unknown_world/support.rs"]
 mod support;
 
@@ -667,6 +671,13 @@ fn symbolic_root_native_currency_cannot_replace_alias_covering_process_relation(
     );
     assert!(joint(report.baseline()));
     assert!(joint(report.chosen()));
+    assert!(matches!(
+        report.coverage().detail_regions[0].source,
+        evm_abstract::analysis::ProcessSource::InputProgram { .. }
+    ));
+    let region = serde_json::to_value(report.coverage().detail_regions[0]).unwrap();
+    assert!(region["source"].get("InputProgram").is_some());
+    assert!(region.get("code_address").is_none());
     assert_accounting(&report, 100_000_000);
 }
 
