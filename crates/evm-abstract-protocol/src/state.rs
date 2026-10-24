@@ -231,7 +231,8 @@ record! {
     pub struct ProgramInfo {
         /// Index in the report program directory.
         pub id: usize,
-        /// Executable account or creation namespace.
+        /// Physical code account or native creation namespace; None for supplied
+        /// root runtime and process initcode without a physical code account.
         pub code_address: Option<String>,
         /// Hash of the captured bytes.
         pub code_hash: String,
@@ -255,7 +256,8 @@ record! {
 record! {
     /// One account in a transaction store, including unknown defaults.
     pub struct AccountState {
-        /// Storage and balance owner.
+        /// Storage and balance owner. In AnalysisReport.accounts the row named
+        /// by a Namespace root binding is the supplied root template only.
         pub address: String,
         /// Account presence.
         pub existence: AccountExistence,
@@ -557,8 +559,12 @@ record! {
 record! {
     /// Reproducibility and entry metadata for one immutable report.
     pub struct ReportMetadata {
-        /// Concrete root storage namespace.
+        /// Original root state namespace; logical ADDRESS is recorded separately.
         pub entry_address: String,
+        /// Actual physical destination or original supplied-template namespace.
+        pub root_binding: crate::RootInputBinding,
+        /// Paid declared source provenance; it does not assert a PC visit or closure.
+        pub declared_root_source: crate::ProcessSource,
         /// Resolved root executable program, including root delegation.
         pub root_program: Option<usize>,
         /// Pinned chain identity and observed header, absent for bytecode input.

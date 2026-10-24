@@ -37,11 +37,10 @@ fn named_numeric<N: WordElement>(
 impl<N: WordElement> SummaryPlane<N> {
     fn process_complement<D: EvmNumericAlgebra<Element = N>>(
         &self,
-        catalogue: &OwnerCatalogue,
+        names: &std::collections::BTreeSet<Address>,
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
     ) -> Result<Self, CloneError> {
-        let names = catalogue.named();
         pay_structure(self.clone_entries().saturating_add(names.len()), budget)?;
         let mut out = Self {
             slots: OrderedMap::new(),
@@ -118,19 +117,34 @@ impl<N: WordElement> EvmStoreSummary<N> {
         domain: AlgebraRef<'_, D>,
         budget: &mut WorkBudget,
     ) -> Result<Self, CloneError> {
-        let names = catalogue.named();
+        self.process_complement_names(catalogue.coordinates(), domain, budget)
+    }
+
+    /// Public Stores contain only physical account facts. The private namespace
+    /// cell must not shadow an unrelated physical address with the same bits.
+    pub(crate) fn process_export<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        catalogue: &OwnerCatalogue,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, CloneError> {
+        self.process_complement_names(catalogue.named(), domain, budget)
+    }
+
+    fn process_complement_names<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        names: &std::collections::BTreeSet<Address>,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, CloneError> {
         pay_structure(
             self.clone_prefix_work()
                 .saturating_add(names.len())
                 .saturating_add(1),
             budget,
         )?;
-        let persistent = self
-            .persistent
-            .process_complement(catalogue, domain, budget)?;
-        let transient = self
-            .transient
-            .process_complement(catalogue, domain, budget)?;
+        let persistent = self.persistent.process_complement(names, domain, budget)?;
+        let transient = self.transient.process_complement(names, domain, budget)?;
         let balance_default = scalar::top(domain, budget)?;
         let mut balances = OrderedMap::new();
         let mut created = OrderedMap::new();
@@ -220,5 +234,24 @@ impl<N: WordElement> EvmStoreSummary<N> {
         out.transient = transient;
         checkpoint(budget)?;
         Ok(out)
+    }
+}
+
+impl<N: WordElement> crate::world::EvmStore<N> {
+    /// Physical public projection for an outer process boundary that precedes
+    /// catalogue admission (in particular F1). Native execution retains its
+    /// original representation. No namespace coordinate becomes a code fact.
+    pub(crate) fn process_erase_namespace_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        coordinate: Address,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, crate::resource::SummaryError<crate::world::StoreError>> {
+        pay_structure(self.clone_prefix_work(), budget)?;
+        let mut names = self.addresses();
+        names.remove(&coordinate);
+        let summary = self.summary_projection_with_payment(domain, budget)?;
+        let physical = summary.process_complement_names(&names, domain, budget)?;
+        physical.instantiate_with_payment(domain, budget)
     }
 }

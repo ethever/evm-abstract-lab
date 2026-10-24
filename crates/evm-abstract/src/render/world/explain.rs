@@ -22,6 +22,23 @@ pub(super) mod teaching;
 
 type CodeIdentity = (Address, B256, FrameCode);
 
+/// A process relation has known input code but no native instruction cursor or
+/// SSA. Keep that source listing separate from its actual control/effect graph.
+pub fn process_explanation<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
+    analysis: &EvmWorldAnalysis<N>,
+    algebra: &crate::domain::ValueAlgebra<D>,
+    budget: &mut crate::resource::WorkBudget,
+) -> Result<String, SsaError> {
+    crate::ssa::work::explanation(analysis, budget)?;
+    let mut output = String::from("Global control/effect explanation\nExecution code\n");
+    write_input_code(&mut output, analysis);
+    output.push('\n');
+    output.push_str(&super::text(analysis, algebra));
+    output.push_str("\nSSA unavailable for the global process; instruction SSA belongs to the separately retained detailed paths.\n");
+    crate::ssa::pay(budget, 0)?;
+    Ok(output)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum CapturePhase {
     Entry,
@@ -77,6 +94,13 @@ fn render_with_mode<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element 
     algebra: &crate::domain::ValueAlgebra<D>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<String, SsaError> {
+    if analysis
+        .states()
+        .iter()
+        .any(|state| state.active().process.is_some())
+    {
+        return process_explanation(analysis, algebra, budget);
+    }
     crate::ssa::work::explanation(analysis, budget)?;
     // SSA admission/replay precedes report allocation. A rejected structural
     // operation cannot first build a large code/reference report.
@@ -275,13 +299,23 @@ fn write_input_code<N: WordElement>(output: &mut String, analysis: &EvmWorldAnal
         output.push_str("  No input account code observations.\n");
     }
     for (address, account) in analysis.world().accounts() {
-        writeln!(
-            output,
-            "  account={} | observed_code_hash={}",
-            super::environment::owner(analysis, *address),
-            super::hash_label(analysis.world().code_hash(*address))
-        )
-        .unwrap();
+        if matches!(analysis.root_binding(), crate::world::RootInputBinding::Namespace { coordinate } if coordinate == *address)
+        {
+            writeln!(
+                output,
+                "  supplied root program | input_code_hash={}",
+                super::hash_label(analysis.world().code_hash(*address))
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                output,
+                "  account={} | observed_code_hash={}",
+                super::environment::owner(analysis, *address),
+                super::hash_label(analysis.world().code_hash(*address))
+            )
+            .unwrap();
+        }
         match &account.code {
             Code::Runtime(program) => {
                 output.push_str("    Observed instruction list (execution not established):\n");

@@ -10,6 +10,8 @@ use crate::{
     resource::WorkBudget,
 };
 
+mod cache;
+
 #[test]
 fn metered_hybrid_retains_prior_actual_work_and_rejects_sticky_rescue() {
     let algebra = ValueAlgebra::new(ProductAlgebra::default());
@@ -107,4 +109,55 @@ fn abstract_baseline_closes_before_native_discovery_requests_unlisted_code() {
         report.coverage().work.preparation + report.coverage().work.detail
             <= report.coverage().work.detail_allowance
     );
+}
+
+#[test]
+fn every_cancellation_identity_returns_typed_error_without_normal_publication() {
+    for owner in [false, true] {
+        let original = analysis_control::Cancellation::new();
+        let ambient = analysis_control::Cancellation::new();
+        let mut budget =
+            analysis_control::with_cancellation(&original, || WorkBudget::new(20_000_000));
+        assert!(budget.charge(13));
+        if owner {
+            original.cancel();
+        } else {
+            ambient.cancel();
+        }
+        let algebra = ValueAlgebra::new(ProductAlgebra::default());
+        let policies = EnginePolicies::default();
+        let mut extension = NoExtension;
+        let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
+        let mut counters = engine::Counters::default();
+        let result = analysis_control::with_cancellation(&ambient, || {
+            AnalysisEngine::new(&algebra, &policies, &mut extension).run_hybrid_metered(
+                AnalysisInput::new(world, entry).unwrap(),
+                ExecutionConfig::default(),
+                HybridConfig::default(),
+                &mut budget,
+                &mut counters,
+                StorageReadPolicy::Abstract,
+            )
+        });
+        assert!(matches!(result, Err(CooperationError::Cancelled)));
+        assert_eq!(
+            (budget.used(), counters.states, counters.transfers),
+            (13, 0, 0)
+        );
+    }
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let (world, entry) = fixtures::fixture(&[(0x101, "00")]);
+    let control = crate::analysis::control::Control::new(Default::default());
+    control.cancellation().cancel();
+    assert!(matches!(
+        AnalysisEngine::new(&algebra, &policies, &mut extension).run_hybrid(
+            AnalysisInput::new(world, entry).unwrap(),
+            ExecutionConfig::default(),
+            HybridConfig::default(),
+            &control,
+        ),
+        Err(CooperationError::Cancelled)
+    ));
 }

@@ -1,7 +1,14 @@
 //! End-to-end checks across execution evidence, normalized SSA and strict wire data.
 
 use evm_abstract_protocol as api;
-use evm_abstract_server::analyze::analyze;
+// SSA normalization controls use the unchanged native input and native ledger;
+// Hybrid's retained prefix mapping is checked separately against these phases.
+fn analyze(input: api::AnalyzeRequest) -> Result<api::AnalysisReport, api::ApiError> {
+    evm_abstract_server::analyze::captured::native_bytecode(
+        &input,
+        &evm_abstract::analysis::control::Control::default(),
+    )
+}
 
 fn request(code: &str) -> api::AnalyzeRequest {
     let mut request = api::AnalyzeRequest {

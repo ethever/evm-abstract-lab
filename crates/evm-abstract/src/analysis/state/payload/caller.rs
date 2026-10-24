@@ -155,7 +155,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
             if left.semantics != right.semantics {
                 return Ok(false);
             }
-            if !left.same_shape(right)
+            if !left.same_shape_with_payment(right, budget)?
                 || left.environment_calldata != right.environment_calldata
                 || left.stack_aliases != right.stack_aliases
             {

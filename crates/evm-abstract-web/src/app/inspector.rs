@@ -5,6 +5,7 @@ mod buffers;
 mod context;
 mod errors;
 mod evidence;
+mod hybrid;
 mod panel;
 mod process;
 pub(crate) mod shortcut;
@@ -40,10 +41,12 @@ pub(super) enum Tab {
     Environment,
     Timing,
     Diagnostics,
+    Coverage,
 }
 
 impl Tab {
-    const ALL: [(Self, &'static str); 13] = [
+    const ALL: [(Self, &'static str); 14] = [
+        (Self::Coverage, "Coverage"),
         (Self::Frame, "Frame"),
         (Self::Stack, "Stack"),
         (Self::SsaValue, "SSA value"),
@@ -84,6 +87,7 @@ pub(super) struct Inspector {
     last_value: Option<usize>,
     outcome: usize,
     rollback: bool,
+    hybrid: hybrid::Detail,
     panel: panel::Panel,
     pub(super) timings: super::timing::Details,
     #[cfg(not(target_arch = "wasm32"))]
@@ -100,6 +104,7 @@ impl Default for Inspector {
             last_value: None,
             outcome: 0,
             rollback: false,
+            hybrid: hybrid::Detail::default(),
             panel: panel::Panel::default(),
             timings: super::timing::Details::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -150,6 +155,12 @@ impl Inspector {
         }
         if self.tab == Tab::Timing {
             return format!("Inspector: Timing{mode}");
+        }
+        if self.tab == Tab::Coverage {
+            return format!(
+                "Inspector: Coverage{mode} · {}",
+                super::hybrid::summary(report).unwrap_or_else(|| "Native analysis".into())
+            );
         }
         if self.tab == Tab::Diagnostics {
             return format!(
@@ -221,6 +232,7 @@ impl Inspector {
         self.last_value = None;
         self.outcome = 0;
         self.rollback = false;
+        self.hybrid.reset();
     }
 
     pub(super) fn select_value(&mut self, value: Option<usize>) {
@@ -248,10 +260,22 @@ impl Inspector {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn show(
         &mut self,
         ui: &mut Ui,
         report: &AnalysisReport,
+        selection: &mut Selection,
+        account: Option<&str>,
+    ) {
+        self.show_model(ui, report, report, selection, account);
+    }
+
+    pub(super) fn show_model(
+        &mut self,
+        ui: &mut Ui,
+        report: &AnalysisReport,
+        model: &AnalysisReport,
         selection: &mut Selection,
         account: Option<&str>,
     ) {
@@ -264,7 +288,7 @@ impl Inspector {
                 .max_rect(rect),
         );
         contents.set_clip_rect(contents.clip_rect().intersect(rect));
-        self.contents(&mut contents, report, selection, account);
+        self.contents(&mut contents, report, model, selection, account);
         // Content minimums must not enlarge the user's chosen panel height.
         ui.advance_cursor_after_rect(rect);
     }
@@ -273,6 +297,7 @@ impl Inspector {
         &mut self,
         ui: &mut Ui,
         report: &AnalysisReport,
+        model: &AnalysisReport,
         selection: &mut Selection,
         account: Option<&str>,
     ) {
@@ -340,7 +365,7 @@ impl Inspector {
         }
         if self.tab == Tab::Timing {
             scroll(ui, "timing_details", |ui| {
-                super::timing::show(ui, report, &self.timings);
+                super::timing::show(ui, model, &self.timings);
             });
             return;
         }
@@ -348,6 +373,10 @@ impl Inspector {
             scroll(ui, "diagnostic_details", |ui| {
                 evidence::diagnostics(ui, report, selection)
             });
+            return;
+        }
+        if self.tab == Tab::Coverage {
+            scroll(ui, "coverage_details", |ui| self.hybrid.show(ui, model));
             return;
         }
         let has_exit = report
@@ -392,7 +421,7 @@ impl Inspector {
                         if let Some(machine) = machine {
                             symbolic::show(ui, report, machine.path.node, "Paired path conditions");
                         }
-                        context::frame(ui, frame);
+                        context::frame(ui, report, frame);
                         summaries::show(ui, report, selection.state);
                         if controls::action(ui, "Inspect rollback store", Density::Regular)
                             .clicked()
@@ -464,11 +493,24 @@ impl Inspector {
                         palette::ERROR,
                         "The report references an unavailable store snapshot",
                     );
-                } else if let Some(address) =
-                    account.or_else(|| frame.and_then(|frame| frame.storage_address.as_deref()))
-                {
+                } else if let Some(address) = account.or_else(|| {
+                    frame.and_then(|frame| {
+                        let input_owner = frame.index == 0
+                            && report.input_namespace().is_some()
+                            && frame.storage_address.as_deref() == report.input_namespace();
+                        (!input_owner)
+                            .then_some(frame.storage_address.as_deref())
+                            .flatten()
+                    })
+                }) {
                     stores::storage(ui, report, store, address, self.tab == Tab::Transient);
                 } else {
+                    if report.input_namespace().is_some()
+                        && frame.is_some_and(|frame| frame.index == 0)
+                    {
+                        ui.label("Root ADDRESS is symbolic. Inspect the supplied root state under Environment, or select a physical account for its transaction state.");
+                        return;
+                    }
                     if let Some(key) = frame.and_then(|frame| frame.process.as_ref()) {
                         ui.label(format!(
                             "Physical state class: {}",
@@ -487,7 +529,7 @@ impl Inspector {
                 evidence::acquisition(ui, report)
             }),
             Tab::Outcomes => self.outcomes(ui, report, selection),
-            Tab::SsaValue | Tab::Timing | Tab::Diagnostics => {
+            Tab::SsaValue | Tab::Timing | Tab::Diagnostics | Tab::Coverage => {
                 unreachable!("definition, timing and evidence inspection use their own coordinates")
             }
         }

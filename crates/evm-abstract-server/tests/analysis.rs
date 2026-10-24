@@ -4,7 +4,17 @@ use evm_abstract_protocol::{
     AnalysisStatus, AnalyzeReply, AnalyzeRequest, ApiErrorCode, BlockCoverage, FrontierKind,
     InstructionProgress,
 };
-use evm_abstract_server::analyze::analyze;
+// These native compatibility controls retain their original input binding and
+// single native ledger. Default Hybrid graph/receipt checks live in analyze's
+// hybrid tests and the real HTTP roundtrip below.
+fn analyze(
+    input: AnalyzeRequest,
+) -> Result<evm_abstract_protocol::AnalysisReport, evm_abstract_protocol::ApiError> {
+    evm_abstract_server::analyze::captured::native_bytecode(
+        &input,
+        &evm_abstract::analysis::control::Control::default(),
+    )
+}
 
 fn request(bytecode: &str) -> AnalyzeRequest {
     let mut request = AnalyzeRequest {
@@ -947,7 +957,10 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
     assert_eq!(cfg.program, entry.program);
     let program = &partial.programs[entry.program.unwrap()];
     assert_eq!(program.bytecode, format!("0x{code}"));
-    assert_eq!(program.code_address, entry.code_address);
+    assert_eq!(
+        program.code_address, None,
+        "supplied namespace bytes have no observed physical source"
+    );
     assert_eq!(entry.code_hash.as_ref(), Some(&program.code_hash));
     let [source] = program.blocks.as_slice() else {
         panic!("expected one original source block")
@@ -1420,7 +1433,10 @@ fn large_memory_and_work_budgets_are_effective_and_smaller_choices_still_stop() 
         assert_eq!(cfg.program, Some(root));
         let program = &partial.programs[root];
         assert_eq!(program.bytecode, format!("0x{code}"));
-        assert_eq!(program.code_address, frame.code_address);
+        assert_eq!(
+            program.code_address, None,
+            "supplied code is not a physical account observation"
+        );
         assert_eq!(frame.code_hash.as_ref(), Some(&program.code_hash));
         assert_eq!(partial.disassembly, program.blocks);
         let [source] = program.blocks.as_slice() else {

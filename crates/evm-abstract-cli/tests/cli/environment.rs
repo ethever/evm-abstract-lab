@@ -22,7 +22,7 @@ const OTHER_HASH: &str = "0x2222222222222222222222222222222222222222222222222222
 const READ_ENV: &str = "30323334365f353a414243444546484a6010405f495a";
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
+    Command::new(crate::native::binary())
         .args(args)
         .output()
         .unwrap()

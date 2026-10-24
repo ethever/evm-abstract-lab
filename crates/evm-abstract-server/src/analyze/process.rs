@@ -5,7 +5,7 @@ use super::symbolic::Pool;
 pub(super) use creation::{completion, continuation};
 use evm_abstract::analysis;
 use evm_abstract_protocol as api;
-pub(super) use frame::{invocation, key, operands};
+pub(super) use frame::{invocation, key, operands, source};
 
 pub(super) fn semantics(native: analysis::TransferSemantics) -> api::TransferSemantics {
     match native {
@@ -32,6 +32,7 @@ pub(super) fn action(native: analysis::ProcessAction) -> api::ProcessAction {
 
 pub(super) fn owner(native: analysis::ProcessOwner) -> api::ProcessOwner {
     match native {
+        analysis::ProcessOwner::RootNamespace => api::ProcessOwner::RootNamespace,
         analysis::ProcessOwner::Named(address) => api::ProcessOwner::Named(address.to_string()),
         analysis::ProcessOwner::Residual => api::ProcessOwner::Residual,
     }

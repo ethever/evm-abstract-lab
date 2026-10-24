@@ -98,7 +98,7 @@ impl<N: WordElement, Bytes, Checkpoint, Operand> EvmFrame<N, Bytes, Checkpoint, 
         if self.key.process.is_some() {
             // A process retains an immutable Program handle. Its capability
             // scan is paid separately; cloning a process never traverses the
-            // captured instructions. Shape checks below require shared bytes.
+            // captured instructions. Actual equality has its own paid fallback.
             return self
                 .key
                 .process_work()
@@ -130,16 +130,25 @@ impl<N: WordElement, Bytes, Checkpoint, Operand> EvmFrame<N, Bytes, Checkpoint, 
     pub(in crate::analysis) fn same_shape(&self, other: &Self) -> bool {
         self.key == other.key
             && self.code == other.code
-            && if self.key.process.is_some() {
-                match (&self.program, &other.program) {
-                    (Some(left), Some(right)) => left.shares_capture(right),
-                    (None, None) => true,
-                    _ => false,
-                }
-            } else {
-                self.program == other.program
-            }
+            && self.program == other.program
             && self.stack.len() == other.stack.len()
+    }
+
+    pub(in crate::analysis) fn same_shape_with_payment(
+        &self,
+        other: &Self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, MachineError> {
+        crate::resource::clone_payment::pay(budget, 16)?;
+        if self.key != other.key || self.code != other.code || self.stack.len() != other.stack.len()
+        {
+            return Ok(false);
+        }
+        Ok(match (&self.program, &other.program) {
+            (Some(left), Some(right)) => left.eq_with_payment(right, budget)?,
+            (None, None) => true,
+            _ => false,
+        })
     }
 
     /// One structural rebuilding path for both unary representation maps (zip

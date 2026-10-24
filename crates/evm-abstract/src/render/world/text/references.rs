@@ -15,6 +15,7 @@ pub(super) struct References {
     pub(super) addresses: BTreeMap<Address, String>,
     pub(super) hashes: BTreeMap<B256, String>,
     owner_alias: Option<(Address, String)>,
+    root_namespace: Option<Address>,
 }
 
 impl References {
@@ -71,10 +72,17 @@ impl References {
                 .map(|(index, hash)| (hash, format!("{}", Symbol::Hash(index))))
                 .collect(),
             owner_alias,
+            root_namespace: match analysis.root_binding() {
+                crate::world::RootInputBinding::Namespace { coordinate } => Some(coordinate),
+                crate::world::RootInputBinding::Physical { .. } => None,
+            },
         }
     }
 
     pub(super) fn address(&self, address: Address) -> &str {
+        if let Some(reference) = self.addresses.get(&address) {
+            return reference;
+        }
         if let Some((internal, label)) = &self.owner_alias
             && *internal == address
         {
@@ -83,6 +91,10 @@ impl References {
         self.addresses
             .get(&address)
             .expect("all displayed addresses have references")
+    }
+
+    pub(super) fn input_program(&self, frame: &crate::analysis::FrameKey) -> bool {
+        frame.mode == FrameCode::Runtime && self.root_namespace == Some(frame.code_address)
     }
 
     pub(super) fn address_input(&self, input: AddressInput) -> String {
@@ -111,6 +123,37 @@ fn collect_key(
     hashes: &mut BTreeSet<B256>,
 ) {
     for frame in &key.frames {
+        if let Some(process) = &frame.process {
+            use crate::analysis::{ProcessOwner, ProcessSource};
+            if let ProcessOwner::Named(owner) = process.owner {
+                addresses.insert(owner);
+                concrete_inputs.insert(owner);
+            }
+            match process.source {
+                ProcessSource::Runtime { source, hash, .. }
+                | ProcessSource::InvalidDelegation { source, hash, .. } => {
+                    addresses.insert(source);
+                    concrete_inputs.insert(source);
+                    hashes.insert(hash);
+                }
+                ProcessSource::InputProgram { hash, .. } | ProcessSource::InitCode { hash, .. } => {
+                    hashes.insert(hash);
+                }
+                ProcessSource::InputDelegation { target, hash, .. } => {
+                    addresses.insert(target);
+                    concrete_inputs.insert(target);
+                    hashes.insert(hash);
+                }
+                ProcessSource::Precompile { address, .. } => {
+                    addresses.insert(address);
+                    concrete_inputs.insert(address);
+                }
+                ProcessSource::AnyRuntime { .. }
+                | ProcessSource::AnyInitCode { .. }
+                | ProcessSource::Empty { .. } => {}
+            }
+            continue;
+        }
         addresses.extend([frame.code_address, frame.address]);
         addresses.extend(
             [frame.address_value, frame.caller]

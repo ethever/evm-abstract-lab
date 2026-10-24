@@ -24,6 +24,7 @@ pub(super) fn action(kind: ProcessAction) -> &'static str {
 
 pub(super) fn owner(target: &ProcessOwner) -> String {
     match target {
+        ProcessOwner::RootNamespace => "Root input owner · possible aliases".into(),
         ProcessOwner::Named(address) => address.clone(),
         ProcessOwner::Residual => "Residual owner class · unresolved aliases".into(),
     }
@@ -53,12 +54,27 @@ pub(super) fn boundary(reason: &ProcessBoundary) -> String {
 }
 
 pub(super) fn frame(ui: &mut egui::Ui, key: &evm_abstract_protocol::ProcessFrameKey) {
-    use evm_abstract_protocol::ProcessSource as Source;
     ui.label(interpretation(key.source.semantics()));
     ui.monospace(format!("Owner class: {}", owner(&key.owner)));
     ui.monospace(format!("Catalogue epoch: {}", key.epoch));
     ui.label(format!("Static: {}", key.is_static));
-    match &key.source {
+    source(ui, &key.source);
+}
+
+pub(super) fn source(ui: &mut egui::Ui, source: &evm_abstract_protocol::ProcessSource) {
+    use evm_abstract_protocol::ProcessSource as Source;
+    match source {
+        Source::InputProgram(source) => {
+            ui.label("Supplied input program · no physical code account");
+            ui.monospace(format!("Input program hash: {}", source.hash));
+            ui.label(format!("Fork: {:?}", source.fork));
+        }
+        Source::InputDelegation(source) => {
+            ui.label("Supplied delegation marker · target code unobserved");
+            ui.monospace(format!("Delegation target: {}", source.target));
+            ui.monospace(format!("Marker hash: {}", source.hash));
+            ui.label(format!("Fork: {:?}", source.fork));
+        }
         Source::Runtime(source) => {
             ui.label("Captured runtime source");
             ui.monospace(format!("Code account: {}", source.source));

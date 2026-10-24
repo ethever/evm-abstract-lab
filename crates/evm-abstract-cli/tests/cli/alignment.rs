@@ -103,7 +103,11 @@ fn program_directory(explanation: &str) -> &str {
 }
 
 fn world_directory(explanation: &str, verbose: bool) -> &str {
-    let next_section = if verbose { "\nAnalysis\n" } else { "\nCFG\n" };
+    let next_section = if verbose || explanation.contains("Global control/effect explanation") {
+        "\nAnalysis\n"
+    } else {
+        "\nCFG\n"
+    };
     explanation.split_once(next_section).unwrap().0
 }
 

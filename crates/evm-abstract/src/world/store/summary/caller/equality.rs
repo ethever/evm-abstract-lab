@@ -2,7 +2,7 @@
 
 use super::{
     AlgebraRef, CloneError, EvmNumericAlgebra, EvmStoreSummary, EvmValue, OrderedMap, SummaryPlane,
-    WordElement, WorkBudget, checkpoint, code_comparison_work, pay, pay_structure, scalar,
+    WordElement, WorkBudget, checkpoint, codes_equal, pay_structure, scalar,
 };
 
 fn answer(equal: bool, budget: &WorkBudget) -> Result<bool, CloneError> {
@@ -85,8 +85,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
             if left_owner != right_owner {
                 return answer(false, budget);
             }
-            pay(budget, code_comparison_work(left, right))?;
-            if left != right {
+            if !codes_equal(left, right, budget)? {
                 return answer(false, budget);
             }
         }

@@ -177,14 +177,14 @@ def load_commands(path, cases):
     if (not isinstance(profile["report_exit_codes"], list) or not profile["report_exit_codes"]
             or any(type(code) is not int or code < 0 for code in profile["report_exit_codes"])):
         raise ValueError("declare nonnegative final-report exit codes")
-    if profile["interface"].get("versions", {}).get("native") in {12, 13, 14}:
+    if profile["interface"].get("versions", {}).get("native") in {12, 13, 14, 15}:
         if (profile.get("expected_native_numeric_model") not in ("product", "finite-set")
                 or not isinstance(profile.get("expected_native_domain_spec"), dict)
                 or not profile["expected_native_domain_spec"]):
-            raise ValueError("native 12/13/14 requires the selected model and complete algebra limits")
+            raise ValueError("native 12/13/14/15 requires the selected model and complete algebra limits")
         allowance = profile.get("expected_native_postprocessing_max_work")
         if type(allowance) is not int or allowance <= 0:
-            raise ValueError("native 12/13/14 requires a positive application postprocessing allowance")
+            raise ValueError("native 12/13/14/15 requires a positive application postprocessing allowance")
     for name, case in cases.items():
         entry = profile["cases"][name]
         if entry["input_identity_sha256"] != case["input_identity_sha256"]:
@@ -242,6 +242,30 @@ def native_final(report, process, accepted_exits):
     return result
 
 
+def native_view(delivered):
+    """Keep wrapper coverage authoritative while measuring its selected graph.
+
+    Raw stdout retains both graphs and every prefix. Historical native captures
+    have no wrapper and continue through the unchanged native path.
+    """
+    if not isinstance(delivered, dict) or "hybrid" not in delivered:
+        return delivered, None
+    hybrid, graph = delivered["hybrid"], delivered.get("analysis", delivered)
+    if not isinstance(hybrid, dict) or not isinstance(graph, dict):
+        raise ValueError("invalid Hybrid application envelope")
+    expected = "Converged" if hybrid["coverage"]["baseline_current"] else "Incomplete"
+    if delivered.get("status") != expected:
+        raise ValueError("Hybrid wrapper status contradicts baseline coverage")
+    view = {key: value for key, value in graph.items() if key != "hybrid"}
+    # The flat CLI carries application totals at the root. Retain the actual
+    # selected relation's source counters independently of those wrapper totals.
+    if "selected_graph" in hybrid:
+        view.update(hybrid["selected_graph"])
+    view.update({key: delivered[key] for key in
+        ("numeric_model", "postprocessing_max_work", "postprocessing_work") if key in delivered})
+    return view, hybrid
+
+
 def collect_report(directory, process, commands, report_parse_limit_bytes):
     accepted_exits = commands["report_exit_codes"]
     record = {"process": process, "exit_code": process["exit_code"],
@@ -265,19 +289,24 @@ def collect_report(directory, process, commands, report_parse_limit_bytes):
         if (directory / "stdout.log").stat().st_size > report_parse_limit_bytes:
             record["phase"] = "output_unvalidated_parse_guard"
             raise ValueError("stdout exceeds harness parsing limit; retain raw output without inferring a Report")
-        report = read_json(directory / "stdout.log")
+        delivered = read_json(directory / "stdout.log")
+        report, hybrid = native_view(delivered)
         native_version = commands.get("interface", {}).get("versions", {}).get("native")
-        if native_version in {12, 13, 14} and report.get("schema_version") != native_version:
+        if native_version in {12, 13, 14, 15} and report.get("schema_version") != native_version:
             raise ValueError(f"expected native report schema {native_version}")
-        if native_version in {12, 13, 14}:
+        if native_version in {12, 13, 14, 15}:
             allowance, used = report.get("postprocessing_max_work"), report.get("postprocessing_work")
             if (type(allowance) is not int or allowance <= 0
                     or type(used) is not int or not 0 <= used <= allowance):
                 raise ValueError("invalid native application postprocessing metadata")
         final = native_final(report, process, accepted_exits)
+        if hybrid is not None:
+            final["application"] = {key: delivered[key] for key in ("status", "work")}
+            final["hybrid"] = {key: hybrid.get(key) for key in ("coverage", "precision", "rpc", "local_detail", "selected_graph")}
+            final["graph_namespace"] = "Native" if hybrid["coverage"]["chosen"] == "Native" else "Baseline"
         record.update(nativefinal=final, report_delivered=True, phase="native_final_received")
         record["policy_matches"] = final["config"] == commands["expected_native_config"]
-        if native_version in {12, 13, 14}:
+        if native_version in {12, 13, 14, 15}:
             record["policy_matches"] = record["policy_matches"] and (
                 final.get("domain_spec") == commands["expected_native_domain_spec"]
                 and final.get("numeric_model") == commands["expected_native_numeric_model"]

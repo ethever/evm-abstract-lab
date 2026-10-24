@@ -200,6 +200,10 @@ fn native_joint<N: evm_abstract::domain::WordElement>(
     source: &analysis::EvmRootTerminalCoverage<N>,
     pools: &mut Pools<'_, N>,
 ) -> Value {
+    pools.root_namespace = match source.input().entry().binding() {
+        evm_abstract::world::RootInputBinding::Namespace { coordinate } => Some(coordinate),
+        evm_abstract::world::RootInputBinding::Physical { .. } => None,
+    };
     // Deliberately use a different directory order from report/project. This
     // oracle selects each actual native leaf, without reusing terminal::project.
     let mut outcomes: Vec<_> = source
@@ -280,7 +284,7 @@ fn explicit_opt_out_and_default_converged_none_preserve_honest_detail() {
 fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input() {
     let (native, request) = fixture(true, false, false);
     let report = project(&native, &request);
-    assert_eq!(report.schema_version, 19);
+    assert_eq!(report.schema_version, 20);
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(!report.ssa.complete);
     assert_eq!(report.cfg.len(), native.states().len());
@@ -519,6 +523,17 @@ fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_co
     assert_eq!(request.limits, limits);
     let report = crate::analyze::analyze(request).unwrap();
     report.validate().unwrap();
+    assert!(report.hybrid.as_ref().unwrap().coverage.baseline_current);
+    assert_eq!(
+        report.metadata.environment.to,
+        api::AddressValue::Symbolic(value::symbol(evm_abstract::domain::identity::Symbol::To))
+    );
+    let namespace = report.metadata.entry_address.clone();
+    assert!(
+        matches!(&report.hybrid.as_ref().unwrap().coverage.detail_binding,
+        api::HybridNativeBinding::SymbolicOwnerNamespace(binding) if binding.namespace == namespace)
+    );
+    let report = crate::analyze::tests::native_detail(report);
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(!report.ssa.complete);
     assert!(
@@ -537,10 +552,7 @@ fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_co
         input.config.root_terminal_coverage,
         limits.root_terminal_coverage
     );
-    assert_eq!(
-        input.environment.to,
-        api::AddressValue::Symbolic(value::symbol(evm_abstract::domain::identity::Symbol::To))
-    );
+    assert_eq!(input.environment.to, api::AddressValue::Concrete(namespace));
     assert_eq!(input.frame.address_value, input.environment.to);
     assert_eq!(input.frame.address, input.entry_address);
     let program = report
@@ -622,8 +634,8 @@ fn original_root_frame_requires_the_admitted_runtime_entry_shape() {
             .kind = kind;
         assert_eq!(
             invalid.validate(),
-            Err(api::ReportValidationFailure::RootTerminal(
-                api::RootTerminalValidationFailure::Frame
+            Err(api::ReportValidationFailure::Process(
+                api::ProcessValidationKind::Source
             ))
         );
     }

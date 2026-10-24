@@ -94,15 +94,6 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         if self.frames.len() != incoming.frames.len()
             || self.continuations.len() != incoming.continuations.len()
             || self
-                .frames
-                .iter()
-                .zip(&incoming.frames)
-                .any(|(left, right)| {
-                    !left.same_shape(right)
-                        || left.semantics != right.semantics
-                        || left.environment_calldata != right.environment_calldata
-                })
-            || self
                 .continuations
                 .iter()
                 .zip(&incoming.continuations)
@@ -113,6 +104,14 @@ impl<N: WordElement> EvmPayloadSummary<N> {
             return Err(MachineError::Shape);
         }
 
+        for (left, right) in self.frames.iter().zip(&incoming.frames) {
+            if !left.same_shape_with_payment(right, budget)?
+                || left.semantics != right.semantics
+                || left.environment_calldata != right.environment_calldata
+            {
+                return Err(MachineError::Shape);
+            }
+        }
         let store = self
             .store
             .join_with_payment(&incoming.store, domain, widen, budget)?;

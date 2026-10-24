@@ -305,15 +305,16 @@ fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
         let mut detail = extra.clone();
         detail.push("--no-root-terminal-coverage");
         let output = world("explain", name, &detail);
-        assert_eq!(output.status.code(), Some(2), "{name} {extra:?}");
+        super::native::text_exit(&output, 2);
         let explanation = text(&output);
         assert!(explanation.contains("Incomplete"));
         assert!(explanation.contains("SSA unavailable") && !explanation.contains(VERIFIED));
         let mut query = detail.clone();
         query.extend(["--format", "json"]);
         let report = world("analyze", name, &query);
-        assert_eq!(report.status.code(), Some(2));
-        let report: Json = serde_json::from_slice(&report.stdout).unwrap();
+        let raw: Json = serde_json::from_slice(&report.stdout).unwrap();
+        super::native::assert_exit(&raw, &report);
+        let report = super::native::select(&raw);
         assert!(!report["frontiers"].as_array().unwrap().is_empty());
         if extra == ["--max-symbolic-nodes", "2"] {
             assert_eq!(report["domain_spec"]["relations"]["max_nodes"], 2);
@@ -384,7 +385,15 @@ fn verbose_preserves_full_analyze_report_and_original_ssa_fields() {
     let full = text(&full);
     let (model, machine_report) = full.split_once('\n').unwrap();
     assert!(verbose.lines().any(|line| line == model));
-    assert!(verbose.contains(machine_report.trim_end()));
+    assert!(
+        verbose.contains(
+            machine_report
+                .split_once("Analysis\n")
+                .unwrap()
+                .1
+                .trim_end()
+        )
+    );
     for detail in [
         "State details",
         "Call summaries",

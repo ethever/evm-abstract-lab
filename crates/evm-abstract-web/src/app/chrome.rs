@@ -133,10 +133,15 @@ impl Workspace {
                 } else if self.task.phase==super::job::TaskPhase::Cancelled {
                     ui.colored_label(palette::WARNING,"Cancelled · worker cleanup acknowledged");
                 } else if let Some(report)=&self.report {
-                    let complete=report.status==AnalysisStatus::Converged&&report.ssa.complete;
+                    let complete=report.hybrid.as_ref().map_or(report.status==AnalysisStatus::Converged&&report.ssa.complete, |hybrid| hybrid.coverage.baseline_current);
                     let label=terminal_coverage::detail_status(report);
                     ui.colored_label(if complete{palette::ACCENT}else{palette::WARNING},label);
                     if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),report.metadata.work));}
+                    if let Some(hybrid)=&report.hybrid
+                        && controls::action(ui, format!("Coverage · {} prefixes", hybrid.local_prefixes.len()), Density::Regular)
+                            .on_hover_text(super::hybrid::summary(report).unwrap_or_default()).clicked() {
+                        self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Coverage;
+                    }
                     if controls::action(ui, format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len()), Density::Regular)
                         .on_hover_text(format!("{} abstract-state diagnostic entries and {} unexpanded frontiers. Repeated PCs retain separate state evidence; counts are not instructions or failed transactions.",report.diagnostics.len(),report.frontiers.len())).clicked() {
                         self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Diagnostics;

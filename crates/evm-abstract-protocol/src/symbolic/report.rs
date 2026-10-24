@@ -1,6 +1,8 @@
 //! Every graph and pool reference is checked before a consumer follows it.
+mod hybrid;
 mod process;
 mod regional;
+mod source;
 mod terminal;
 use crate::{
     AccountState, AnalysisReport, MachineSnapshot, PoolReferenceFailure, PoolReferenceKind,
@@ -273,6 +275,7 @@ impl Validation<'_> {
             }
             for procedure in &summary.procedures {
                 if let Some(key) = &procedure.process {
+                    self.process_program(key, None)?;
                     if procedure.kind != key.source.kind()
                         || procedure.semantics != key.source.semantics()
                         || procedure.is_static != key.is_static
@@ -329,6 +332,8 @@ impl AnalysisReport {
                 crate::PostprocessingWorkFailure { max_work, work },
             ));
         }
+        self.validate_source()?;
+        self.validate_hybrid()?;
         Validation {
             report: self,
             graph: &self.symbolic,

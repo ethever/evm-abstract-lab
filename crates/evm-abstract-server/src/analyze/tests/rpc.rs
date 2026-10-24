@@ -114,6 +114,11 @@ fn rpc_report_distinguishes_pinned_header_from_execution_overrides() {
         stop.store(true, Ordering::Release);
         let requests = completed.recv().unwrap();
         let report = result.unwrap();
+        report.validate().unwrap();
+        let decoded: api::AnalysisReport =
+            serde_json::from_slice(&serde_json::to_vec(&report).unwrap()).unwrap();
+        assert_eq!(decoded, report);
+        assert!(report.hybrid.as_ref().unwrap().rpc.is_some());
         let timings = &report.metadata.timings;
         assert_eq!(timings.queue_ns, 0);
         assert!(timings.pinning_ns > 0);
