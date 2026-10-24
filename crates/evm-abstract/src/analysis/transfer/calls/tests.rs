@@ -16,6 +16,7 @@ use crate::{
 };
 
 mod copy_proof;
+mod creation_payment;
 mod finish_clone;
 mod range_proof;
 

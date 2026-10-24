@@ -14,6 +14,7 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 mod bindings;
 mod memo;
+mod payment;
 pub(in crate::world::bytes) use bindings::BindingBudget;
 pub(in crate::world::bytes) use memo::{CONTEXTS, Preparation, preparation};
 
@@ -616,16 +617,6 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Context<'a, N, D> {
             demand.record_retained_context();
         }
         out
-    }
-
-    /// Slot roots previously evaluated selectors without selecting scalar
-    /// assumptions. Preserve that path when no retained branch facts exist.
-    pub(in crate::world) fn branch_when_scoped(&self, condition: &ExprId, nonzero: bool) -> Self {
-        if self.conditional.is_none_or(|facts| facts.has_no_scopes()) {
-            self.clone()
-        } else {
-            self.branch(condition, nonzero)
-        }
     }
 
     pub(in crate::world::bytes) fn value(

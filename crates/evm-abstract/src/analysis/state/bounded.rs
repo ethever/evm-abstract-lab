@@ -21,12 +21,7 @@ pub(in crate::analysis) fn reserve(
     budget: &mut WorkBudget,
     cost: usize,
 ) -> Result<(), MachineError> {
-    MachineError::check_cancelled()?;
-    if cost == usize::MAX || !budget.charge(cost) {
-        Err(MachineError::work_failure())
-    } else {
-        Ok(())
-    }
+    crate::resource::clone_payment::pay(budget, cost).map_err(MachineError::from)
 }
 
 pub(super) fn erase_guarantees<N: WordElement>(
@@ -77,6 +72,65 @@ fn coarse<N: WordElement>(mut summary: EvmPayloadSummary<N>) -> EvmPayloadSummar
     summary
 }
 
+fn restrict_with_payment<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    mut summary: EvmPayloadSummary<N>,
+    layout: &EvmPayloadSummary<N>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<EvmPayloadSummary<N>, MachineError> {
+    reserve(
+        budget,
+        summary.work_size().saturating_add(layout.work_size()),
+    )?;
+    summary.store = summary
+        .store
+        .project_to_layout_with_payment(&layout.store, domain, budget)?;
+    for (frame, shape) in summary.frames.iter_mut().zip(&layout.frames) {
+        for (bytes, shape) in frame.byte_arrays_mut().into_iter().zip(shape.byte_arrays()) {
+            *bytes = bytes.project_to_layout_with_payment(shape, domain, budget)?;
+        }
+        frame.saved_store =
+            frame
+                .saved_store
+                .project_to_layout_with_payment(&shape.saved_store, domain, budget)?;
+    }
+    Ok(summary)
+}
+
+fn coarse_with_payment<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    mut summary: EvmPayloadSummary<N>,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<EvmPayloadSummary<N>, MachineError> {
+    reserve(budget, summary.work_size())?;
+    let scalar = |value: &mut EvmValue<N>, budget: &mut WorkBudget| {
+        // Coarse state deliberately retains the interval view, not an opaque
+        // singleton answer. The selected algebra prices the new range carrier.
+        let (lower, upper) = value.interval().unsigned_bounds();
+        *value = crate::domain::summary::unsigned_range(lower, upper, domain, budget)?;
+        Ok::<_, MachineError>(())
+    };
+    summary.store = summary
+        .store
+        .forget_loop_numeric_with_payment(domain, budget)?;
+    for frame in &mut summary.frames {
+        for value in frame.values_mut() {
+            scalar(value, budget)?;
+        }
+        for bytes in frame.byte_arrays_mut() {
+            *bytes = bytes.forget_loop_content_with_payment(domain, budget)?;
+        }
+        frame.saved_store = frame
+            .saved_store
+            .forget_loop_numeric_with_payment(domain, budget)?;
+    }
+    for continuation in &mut summary.continuations {
+        scalar(&mut continuation.output_offset, budget)?;
+        scalar(&mut continuation.output_size, budget)?;
+    }
+    Ok(summary)
+}
+
 impl<N: WordElement> EvmBoundedState<N> {
     /// The caller prepays construction and persistent retention. Self-projection
     /// bounds the layout itself instead of retaining an exact byte buffer solely
@@ -90,6 +144,21 @@ impl<N: WordElement> EvmBoundedState<N> {
             layout: erase_guarantees(restrict(layout.clone(), layout, domain))?,
             coarse,
         })
+    }
+
+    /// Metered policy entry: structural reservation never stands in for a native
+    /// copy, query, algebra operation or constructor on the selected carrier.
+    pub(in crate::analysis) fn freeze_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        layout: &EvmPayloadSummary<N>,
+        coarse: bool,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, MachineError> {
+        let copied = layout.copy_for_bound_with_payment(budget)?;
+        let projected = restrict_with_payment(copied, layout, domain, budget)?;
+        let layout = erase_guarantees(projected)?;
+        reserve(budget, layout.work_size())?;
+        Ok(Self { layout, coarse })
     }
 
     pub(in crate::analysis) fn work_size(&self) -> usize {
@@ -118,6 +187,39 @@ impl<N: WordElement> EvmBoundedState<N> {
             summary
         };
         erase_guarantees(summary)
+    }
+
+    fn normalize_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        summary: EvmPayloadSummary<N>,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
+    ) -> Result<EvmPayloadSummary<N>, MachineError> {
+        let summary = restrict_with_payment(summary, &self.layout, domain, budget)?;
+        let summary = if self.coarse {
+            coarse_with_payment(summary, domain, budget)?
+        } else {
+            summary
+        };
+        let summary = erase_guarantees(summary)?;
+        reserve(budget, summary.work_size())?;
+        Ok(summary)
+    }
+
+    /// Stage each native operation against the original ledger. In particular,
+    /// a newly joined scalar is quoted again before widening or normalization.
+    pub(in crate::analysis) fn join_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        old: &EvmPayloadSummary<N>,
+        incoming: &EvmPayloadSummary<N>,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
+        widen: bool,
+    ) -> Result<EvmPayloadSummary<N>, MachineError> {
+        let incoming = incoming.copy_for_bound_with_payment(budget)?;
+        let incoming = self.normalize_with_payment(incoming, domain, budget)?;
+        let joined = old.join_bound_with_payment(&incoming, domain, budget, widen)?;
+        self.normalize_with_payment(joined, domain, budget)
     }
 
     /// Reserve the incoming normalization, joins, projection, persistent copy

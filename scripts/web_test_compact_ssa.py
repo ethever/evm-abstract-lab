@@ -27,15 +27,16 @@ def compact_ssa_interactions(browser, url: str, output: Path):
             assert metrics["selected_pixels"]>100, f"missing selected source block: {name}/{label}"
             return metrics["hash"]
         initial=source_hash("initial-ssa")
-        canvas.click(position={"x":ssa_x,"y":65});settle_gesture(page)
+        toolbar_y=89 if width==1024 else 105
+        canvas.click(position={"x":ssa_x,"y":toolbar_y});settle_gesture(page)
         explicit_ssa=source_hash("explicit-ssa")
         assert initial==explicit_ssa, f"{name} workspace did not initially open SSA"
-        canvas.click(position={"x":52,"y":65});settle_gesture(page)
+        canvas.click(position={"x":52,"y":toolbar_y});settle_gesture(page)
         disasm=source_hash("disassembly")
         assert disasm!=explicit_ssa, f"{name} Disassembly tab did not show different source content"
-        canvas.click(position={"x":ssa_x,"y":65});settle_gesture(page)
+        canvas.click(position={"x":ssa_x,"y":toolbar_y});settle_gesture(page)
         assert source_hash("ssa-return")==initial, f"{name} SSA tab did not restore its initial source content"
-        canvas.click(position={"x":52,"y":65});settle_gesture(page)
+        canvas.click(position={"x":52,"y":toolbar_y});settle_gesture(page)
         assert source_hash("disassembly-return")==disasm, f"{name} Disassembly tab did not restore source content"
         page.keyboard.press("2");settle_gesture(page);page.keyboard.press("0");settle_gesture(page)
         assert source_hash("view-return-disassembly")==disasm, f"{name} tab choice was lost across views"

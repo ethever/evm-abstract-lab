@@ -6,6 +6,94 @@ use evm_abstract_protocol::{
 use super::ReportIndex;
 
 #[test]
+fn source_current_index_distinguishes_superseded_from_latest_uncertified_and_certified() {
+    use evm_abstract_protocol::{ProcedureSummaryKind as Kind, SummarySourceStatus as Source};
+    let mut report = crate::tests::procedure_report("5f5f5f5f5f305af150602a5f5260205ff3");
+    report.abstract_summaries.truncate(1);
+    let source = report.abstract_summaries[0].source_state;
+    report.abstract_summaries[0].kind = Kind::KnownCall;
+    report.abstract_summaries[0].source_current = false;
+    assert_eq!(
+        ReportIndex::new(&report).summary_source(source, Kind::KnownCall),
+        Some(Source::Uncertified)
+    );
+    let mut latest = report.abstract_summaries[0].clone();
+    latest.kind = Kind::KnownRecursion;
+    report.abstract_summaries.push(latest);
+    let index = ReportIndex::new(&report);
+    assert_eq!(
+        index.summary_source(source, Kind::KnownCall),
+        Some(Source::Historical)
+    );
+    assert_eq!(
+        index.summary_source(source, Kind::KnownRecursion),
+        Some(Source::Uncertified)
+    );
+    report.abstract_summaries.last_mut().unwrap().source_current = true;
+    let index = ReportIndex::new(&report);
+    assert_eq!(
+        index.summary_source(source, Kind::KnownCall),
+        Some(Source::Historical)
+    );
+    assert_eq!(
+        index.summary_source(source, Kind::KnownRecursion),
+        Some(Source::Current)
+    );
+}
+
+#[test]
+fn regional_known_call_index_never_implies_recursive_or_native_termination_evidence() {
+    use evm_abstract_protocol::ProcedureSummaryKind;
+    let mut report = crate::tests::procedure_report("5f5f5f5f5f305af150602a5f5260205ff3");
+    let source = report.abstract_summaries[0].source_state;
+    let original = ReportIndex::new(&report).termination_summary(&[source]);
+    for summary in &mut report.abstract_summaries {
+        summary.kind = ProcedureSummaryKind::KnownCall;
+    }
+    let index = ReportIndex::new(&report);
+    assert!(
+        index
+            .summary_source(source, ProcedureSummaryKind::KnownCall)
+            .is_some()
+    );
+    assert!(
+        !index
+            .summary_source(source, ProcedureSummaryKind::KnownRecursion)
+            .is_some()
+    );
+    assert_eq!(index.termination_summary(&[source]), original);
+    for summary in &mut report.abstract_summaries {
+        summary.kind = ProcedureSummaryKind::KnownRecursion;
+    }
+    let index = ReportIndex::new(&report);
+    assert!(
+        index
+            .summary_source(source, ProcedureSummaryKind::KnownRecursion)
+            .is_some()
+    );
+    assert!(
+        !index
+            .summary_source(source, ProcedureSummaryKind::KnownCall)
+            .is_some()
+    );
+    for summary in &mut report.abstract_summaries {
+        summary.kind = ProcedureSummaryKind::KnownProcess;
+    }
+    let index = ReportIndex::new(&report);
+    assert!(
+        index
+            .summary_source(source, ProcedureSummaryKind::KnownProcess)
+            .is_some()
+    );
+    assert!(
+        index
+            .summary_source(source, ProcedureSummaryKind::KnownRecursion)
+            .is_none()
+    );
+    assert_eq!(index.termination_summary(&[source]), original);
+}
+
+#[test]
 fn sparse_ids_resolve_original_records_and_keep_adjacency_positions() {
     let mut report = crate::tests::report();
     for (position, id) in [91, 7, 205].into_iter().enumerate() {

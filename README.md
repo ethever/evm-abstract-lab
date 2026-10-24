@@ -152,9 +152,11 @@ nix run . -- analyze \
 nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 ```
 
-这里应得到 `"Converged"` 和 `"object"`。不加 `--ssa` 时，分析对象直接位于 JSON 根节点；加上后根节点包含 `analysis` 和 `ssa`。更详细的字段解读见[跨合约报告](docs/09-cross-contract.md#默认文本怎样读)和[输入与帧的 JSON 查询](docs/10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
+这里应得到 `"Converged"` 和 `"object"`。本例选中的 Native 关系已完成，因此 `--ssa` 输出包含 `analysis` 和 `ssa`；无主图 SSA 时仍使用平铺图字段。组合 status/work 位于外层，所选图的原始计数保存在 `.hybrid.selected_graph`。其他 Native 图与请求的明细 SSA 分别位于 `.hybrid.detail`、`.hybrid.detail_ssa`，并使用 Native 命名空间和相应输入条件。更详细的字段解读见[跨合约报告](docs/09-cross-contract.md#默认文本怎样读)和[输入与帧的 JSON 查询](docs/10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
 
 ## 怎样判断结果是否完整
+
+默认 Hybrid 的 `status` 与退出码描述全局控制／效果关系的闭合与来源资格；可选 Native 的状态、frontiers 和 SSA 另行保留。CLI `cfg`、`ssa` 与单程序 `explain` 保留原生指令入口。
 
 | 结果 | 含义 | CLI 退出码 |
 | --- | --- | --- |
@@ -162,9 +164,11 @@ nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
 | `Incomplete` | 缺少事实、遇到模型无法处理的输入或耗尽预算；输出保留原因与停止位置 | `2` |
 | 输入错误 | JSON、参数或初始 RPC 采集失败，未得到有效分析结果 | `1`；参数语法错误由 clap 报告并退出 `2` |
 
-`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。分析 JSON 的 `schema_version` 是 12，独立 Web 协议是 17，`domain_spec.schema_version` 是 3。原生机器值始终是对象：实际载体在 `.numeric`，来源、身份和表达式分别保存；product 与 finite-set 的完整候选都在 `.numeric.constants`，省略该键表示没有有限集合约束。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
+`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。原生分析 JSON 的 `schema_version` 是 15，独立 Web 协议是 20，`domain_spec.schema_version` 是 3。原生机器值始终是对象：实际载体在 `.numeric`，来源、身份和表达式分别保存；product 与 finite-set 的完整候选都在 `.numeric.constants`，省略该键表示没有有限集合约束。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
 
-RPC 分析已开始后，仍被需要的补查失败或采集额度耗尽会留下 `RpcAcquisition` 前沿，结果为 `Incomplete`、退出 `2`。采集失败的类型与来源另外保存在累计记录中，后续预算中断也不会丢失。输出中的已完成分支不能替代尚未展开的调用。
+RPC 混合分析保留原始全局关系，并用同一固定快照和累计账本扩展可选精度。后续补查失败或额度耗尽时，已经独立闭合的基线继续有效，采集失败、Native frontiers 与各自 revision 显式保留；基线本身未获认证时仍是 `Incomplete`。初始入口采集失败属于输入错误，取消返回类型化错误。原生 RPC 库入口继续用 `RpcAcquisition` 表示尚需补查的详细义务。
+
+[全局模型与详细路径](docs/20-global-and-local.md)说明保守控制／效果关系、原始输入 namespace、实际区域选择和来源有效期。
 
 当前能力覆盖多账户调用、代理执行、返回数据、persistent/transient storage、嵌套回滚与重入；还包括有明确输入的 CREATE/CREATE2、[EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) 生命周期和原生预编译。调用摘要缓存可以复用已完成的调用分析，同时保留可检查的图与状态效果。[第 09 课](docs/09-cross-contract.md)和[第 10 课](docs/10-snapshots-summaries-creation.md)解释各项条件。
 
@@ -174,7 +178,7 @@ gas 不精确计量，一般 hash 和未知环境采用保守近似，有界关�
 
 ## 浏览器工作台
 
-CLI 与 Web 默认采用快速保守策略：`max_work = 2_000_000_000`，`root_terminal_coverage = true`。独立的[根终止覆盖](docs/19-root-terminal-coverage.md)联合覆盖实际原始输入的 Return/Revert/Failure 数据与最终 Store；详细分析仍可为 `Incomplete`，CFG 与 SSA 仍可部分完成，全部 frontier 和退出码 2 继续保留。用 `--allow-partial-ssa` 查看部分 SSA（`analyze` 还需 `--ssa`）；`--no-root-terminal-coverage` 关闭附加覆盖，仅做详细分析，原有不带值的 `--root-terminal-coverage` 仍兼容。详细分析已 `Converged` 时可以不附证书，这不应显示为缺少证书的告警。
+CLI 与 Web 默认使用 `max_work = 2_000_000_000`，先建立保守的全局过程，再将剩余预算用于原始输入的 Native 细节。**Global model** 与 **Detailed paths** 保存各自的图、状态 ID 和覆盖。`root_terminal_coverage = true` 只请求 Native 阶段的[终止辅助记录](docs/19-root-terminal-coverage.md)，基线始终关闭该选项；`--no-root-terminal-coverage` 只关闭这个附件。全局闭合由实际过程依赖求得，Native 仍可保留 pending、frontiers 与部分 SSA。用 `--allow-partial-ssa` 查看当前 Native 前缀（`analyze` 还需 `--ssa`）；其完成状态独立于全局 status。
 
 ```bash
 nix run .#web
@@ -280,4 +284,4 @@ nix develop --command lychee --offline=false --scheme http --scheme https --incl
 
 [MIT license](LICENSE)。
 
-符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。Native schema 12 与 Web schema 17 使用 flat typed graphs；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，导出池的累计 work 仅作诊断统计；原生局部投影、SSA 构建与验证使用显式后处理账本预付费。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
+符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。Native schema 15 与 Web schema 20 使用 flat typed graphs；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，导出池的累计 work 仅作诊断统计；原生局部投影、SSA 构建与验证使用显式后处理账本预付费。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。

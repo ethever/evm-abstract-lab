@@ -14,9 +14,13 @@ use evm_abstract_protocol::EdgeKind;
 pub(super) const FLOW_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
 pub(super) fn edge_label(id: usize, kind: EdgeKind) -> String {
+    if let EdgeKind::Process(action) = kind {
+        return format!("{} process {action:?}", Symbol::Edge(id));
+    }
     format!(
         "{notation_0} {}",
         match kind {
+            EdgeKind::Process(_) => unreachable!("process label handled above"),
             EdgeKind::BranchTrue => "true",
             EdgeKind::BranchFalse => "false",
             EdgeKind::Jump => "jump",
@@ -64,6 +68,7 @@ pub(super) fn paint_edge_text(
     selected: bool,
 ) -> bool {
     let color = match kind {
+        EdgeKind::Process(_) => palette::PURPLE,
         EdgeKind::BranchTrue | EdgeKind::Jump => palette::ACCENT,
         EdgeKind::BranchFalse => palette::WARNING,
         EdgeKind::Call | EdgeKind::Return | EdgeKind::SummaryReturn => palette::PURPLE,

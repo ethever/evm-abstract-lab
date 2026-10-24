@@ -10,7 +10,7 @@ use super::{
     AlgebraRef, EvmEntry, EvmMachinePayload, EvmPayloadSummary, FrameCode, MachineError,
     WorkBudget,
     bounded::{EvmBoundedState, erase_guarantees, reserve},
-    form_normalized, join, semantic_eq,
+    join, semantic_eq,
 };
 
 #[cfg(test)]
@@ -35,15 +35,22 @@ fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     {
         return Err(MachineError::Shape);
     }
-    reserve(
-        budget,
+    // A direct guard can prove more than the cached scalar. Import that fact
+    // while its exact source still exists, before formation erases relations.
+    // Empty relations need neither an owned copy nor a projection traversal.
+    let refined;
+    let payload = if payload.relations.is_empty() {
         payload
-            .work_size()
-            .saturating_mul(4)
-            .saturating_add(super::payload::alias_form_work(payload))
-            .saturating_add(super::storage_observations::form_work(payload, domain)),
-    )?;
-    erase_guarantees(form_normalized(payload, entry, domain)?)
+    } else {
+        refined =
+            super::payload::caller::copy_with_scalar_guarantees(payload, entry, domain, budget)?;
+        &refined
+    };
+    // This API owns formation's traversal, native copies, aliases and storage
+    // observations; the old aggregate formation reservation must not pay twice.
+    erase_guarantees(super::payload::caller::form_normalized_with_payment(
+        payload, entry, domain, budget,
+    )?)
 }
 
 impl<N: WordElement> EvmLoopBound<N> {

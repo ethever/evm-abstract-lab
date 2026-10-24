@@ -231,8 +231,9 @@ record! {
     pub struct ProgramInfo {
         /// Index in the report program directory.
         pub id: usize,
-        /// Executable account or creation namespace.
-        pub code_address: String,
+        /// Physical code account or native creation namespace; None for supplied
+        /// root runtime and process initcode without a physical code account.
+        pub code_address: Option<String>,
         /// Hash of the captured bytes.
         pub code_hash: String,
         /// Runtime or creation-time program.
@@ -255,7 +256,8 @@ record! {
 record! {
     /// One account in a transaction store, including unknown defaults.
     pub struct AccountState {
-        /// Storage and balance owner.
+        /// Storage and balance owner. In AnalysisReport.accounts the row named
+        /// by a Namespace root binding is the supplied root template only.
         pub address: String,
         /// Account presence.
         pub existence: AccountExistence,
@@ -382,26 +384,32 @@ record! {
         /// Requested output memory span.
         pub output_size: ValueInfo,
         /// Account being created, when applicable.
-        pub creation: Option<String>,
+        pub creation: Option<crate::CreationContinuation>,
     }
 }
 record! {
     /// Execution context in root-to-active call-stack order.
     pub struct FrameSnapshot {
+        /// Explicit process identity; native-only anchor fields are absent when present.
+        pub process: Option<crate::ProcessFrameKey>,
+        /// Actual process ADDRESS/CALLER/value operands, with no anchor reconstruction.
+        pub process_operands: Option<crate::ProcessOperands>,
+        /// Constructor descriptor retained independently of native continuation coordinates.
+        pub process_creation: Option<crate::CreationContinuation>,
         /// Frame index, zero for the root.
         pub index: usize,
         /// Captured executable program ID.
         pub program: Option<usize>,
         /// Account supplying executed code.
-        pub code_address: String,
+        pub code_address: Option<String>,
         /// Captured code identity.
-        pub code_hash: String,
+        pub code_hash: Option<String>,
         /// Account owning persistent/transient storage.
-        pub storage_address: String,
+        pub storage_address: Option<String>,
         /// Logical ADDRESS, distinct from an internal namespace.
-        pub address_value: AddressValue,
+        pub address_value: Option<AddressValue>,
         /// CALLER identity.
-        pub caller: AddressValue,
+        pub caller: Option<AddressValue>,
         /// Execution-derived logical ADDRESS when no named input captures it.
         pub address_operand: Option<ValueInfo>,
         /// Execution-derived CALLER when no named input captures it.
@@ -413,17 +421,17 @@ record! {
         /// Runtime, initcode, empty or precompile mode.
         pub kind: CodeKind,
         /// Current basic-block index.
-        pub basic_block: usize,
+        pub basic_block: Option<usize>,
         /// Retained jump history.
         pub context: Vec<usize>,
         /// Bottom-to-top abstract stack.
         pub stack: Vec<ValueInfo>,
         /// Index in byte_arrays.
-        pub memory: usize,
+        pub memory: Option<usize>,
         /// Index in byte_arrays.
-        pub calldata: usize,
+        pub calldata: Option<usize>,
         /// Index in byte_arrays.
-        pub returndata: usize,
+        pub returndata: Option<usize>,
         /// Store snapshot restored if this frame fails.
         pub rollback_store: usize,
         /// Parent continuation; absent for the root.
@@ -551,8 +559,12 @@ record! {
 record! {
     /// Reproducibility and entry metadata for one immutable report.
     pub struct ReportMetadata {
-        /// Concrete root storage namespace.
+        /// Original root state namespace; logical ADDRESS is recorded separately.
         pub entry_address: String,
+        /// Actual physical destination or original supplied-template namespace.
+        pub root_binding: crate::RootInputBinding,
+        /// Paid declared source provenance; it does not assert a PC visit or closure.
+        pub declared_root_source: crate::ProcessSource,
         /// Resolved root executable program, including root delegation.
         pub root_program: Option<usize>,
         /// Pinned chain identity and observed header, absent for bytecode input.

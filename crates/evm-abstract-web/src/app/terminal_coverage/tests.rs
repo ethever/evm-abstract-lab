@@ -23,7 +23,9 @@ fn terminal_binding_checks_the_selected_model_and_actual_numeric_limits() {
             },
             ..api::AnalyzeRequest::default()
         };
-        let valid = evm_abstract_server::analyze::analyze(request).unwrap();
+        let valid =
+            evm_abstract_server::analyze::captured::native_bytecode(&request, &Default::default())
+                .unwrap();
         let coverage = valid.root_terminal_coverage.as_ref().unwrap();
         assert_eq!(
             valid.validate(),
@@ -80,7 +82,9 @@ pub(crate) fn report() -> AnalysisReport {
     };
     request.limits.max_transfers = 1;
     request.limits.root_terminal_coverage = true;
-    let report = evm_abstract_server::analyze::analyze(request).unwrap();
+    let report =
+        evm_abstract_server::analyze::captured::native_bytecode(&request, &Default::default())
+            .unwrap();
     report.validate().unwrap();
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(!report.ssa.complete);
@@ -122,7 +126,7 @@ pub(crate) fn report() -> AnalysisReport {
     assert_eq!(known.address, coverage.input.entry_address);
     assert_eq!(known.code_kind, api::CodeKind::Runtime);
     assert_eq!(known.program, root.program);
-    assert_eq!(known.code_hash.as_ref(), Some(&root.code_hash));
+    assert_eq!(known.code_hash, root.code_hash);
     assert_eq!(
         report.programs[coverage.input.program].bytecode,
         format!("0x{TWO_BLOCK_RETURN}")

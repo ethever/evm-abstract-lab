@@ -3,7 +3,7 @@ use super::{
     BoundsToMask, BuiltinWork, ComposedWork, DomainSpec, MaskToBounds, NumericReduction,
     NumericValue, ProductContext, ProductWork, Reduction, RuleError, Scope,
 };
-use crate::domain::{EvmNumericAlgebra, EvmValue, ValueAlgebra};
+use crate::domain::{EvmNumericAlgebra, EvmValue, SummaryConstruction, ValueAlgebra, WordElement};
 
 /// Native Word256 product with replaceable mask/range reductions.
 ///
@@ -98,6 +98,20 @@ where
         self.spec.numeric_widen_procedure(old, next)
     }
     fn reduce_numeric(&self, value: &NumericValue) -> NumericReduction<NumericValue> {
+        if self.builtin && analysis_control::current_cancellation().is_cancelled() {
+            return super::limited(value.clone(), crate::domain::ReductionStatus::Cancelled);
+        }
+        let literal = self
+            .builtin
+            .then(|| self.spec.native_scalar_literal(value))
+            .flatten();
+        if self.builtin && (literal.is_some() || self.spec.native_scalar_is_closed(value)) {
+            let out = literal.map_or_else(|| value.clone(), NumericValue::constant);
+            if analysis_control::current_cancellation().is_cancelled() {
+                return super::limited(out, crate::domain::ReductionStatus::Cancelled);
+            }
+            return NumericReduction::stable(out);
+        }
         if self.builtin {
             return super::close(self.spec, value.clone());
         }
@@ -124,10 +138,113 @@ where
         // Shared scalar literal factories and common literal metadata fit here.
         64
     }
+    fn summary_join_work(
+        &self,
+        left: &NumericValue,
+        right: &NumericValue,
+        widen_procedure: bool,
+    ) -> usize {
+        if widen_procedure {
+            // Native procedure widening first compares all product components:
+            // its finite equality can visit the complete two input trees. The
+            // remaining path clones next, normalizes at most two interval
+            // segments, builds two fixed-width prefix masks and may discard the
+            // finite component. No cooperation/reduction rule is invoked.
+            return 1024usize
+                .saturating_add(
+                    left.finite_constants()
+                        .work_size()
+                        .saturating_add(right.finite_constants().work_size())
+                        .saturating_mul(16),
+                )
+                .saturating_add(right.clone_work())
+                .saturating_add(right.work_size());
+        }
+        let finite = crate::domain::finite_algebra::summary_union_work(
+            left.finite_constants(),
+            right.finite_constants(),
+            self.spec.capacity(),
+        );
+        let congruence = left.congruence().join_work(right.congruence());
+        // Inline mask/hull/nonzero assembly and final native result release.
+        finite.saturating_add(congruence).saturating_add(256)
+    }
+    fn summary_canonical_work(&self, value: &NumericValue) -> usize {
+        // NumericValue's canonicalizer discovers once, then clones the actual
+        // value or creates a literal. Price both paths and final result release.
+        value
+            .singleton_work()
+            .saturating_add(value.clone_work())
+            .saturating_add(self.literal_quote_work(crate::U256::ZERO))
+            .saturating_add(value.work_size().max(13))
+    }
+    fn summary_construction_work(&self, construction: SummaryConstruction) -> usize {
+        // These exact NumericValue factories only initialize inline components;
+        // ranges normalize at most two segments. No product closure executes,
+        // even for replacement rules or an arbitrarily large finite capacity.
+        match construction {
+            SummaryConstruction::Top => 32,
+            SummaryConstruction::UnknownByte
+            | SummaryConstruction::UnknownAddress
+            | SummaryConstruction::UnsignedRange { .. } => 512,
+        }
+    }
+    fn summary_equal_work(&self, left: &NumericValue, right: &NumericValue) -> usize {
+        // Only finite equality has an input-sized scan. All other product
+        // fields are inline fixed-width words/tags, including congruence.
+        128usize.saturating_add(
+            left.finite_constants()
+                .work_size()
+                .saturating_add(right.finite_constants().work_size())
+                .saturating_mul(16),
+        )
+    }
+    fn summary_is_top_work(&self, _value: &NumericValue) -> usize {
+        // Finite Top is a tag test; masks, both interval orders, congruence and
+        // nonzero are inline. No finite candidate scan or modulo query occurs.
+        128
+    }
+    fn summary_compact_work(&self, value: &NumericValue) -> usize {
+        // Dense-range proof reads two B-tree endpoints and inline interval
+        // bounds, then copies inline components/shared handles. No closure.
+        let len = value.finite_constants().work_size();
+        let height = usize::BITS as usize - len.max(1).leading_zeros() as usize;
+        256usize
+            .saturating_add(height.saturating_mul(128))
+            .saturating_add(value.clone_work())
+            .saturating_add(value.work_size())
+    }
+    fn summary_restore_work(&self, value: &NumericValue, previous: &NumericValue) -> usize {
+        // The previous finite allocation alone can be restored; the current
+        // interval proves redundancy. Price endpoints, both possible retained
+        // payloads and shared-handle copies without running that proof.
+        self.summary_compact_work(previous)
+            .saturating_add(value.clone_work())
+            .saturating_add(value.work_size())
+            .saturating_add(32)
+    }
+    fn summary_observation_work(&self, observation: &crate::domain::WordObservation) -> usize {
+        // WordObservation::numeric copies inline fields and one shared finite
+        // handle; it neither filters candidates nor reduces components.
+        64usize.saturating_add(observation.work_size())
+    }
     fn projection_work(&self, _value: &NumericValue) -> usize {
         0
     }
     fn refinement_work(&self, value: &NumericValue, facts: usize) -> usize {
+        if self.builtin
+            && facts == 0
+            && (self.spec.native_scalar_is_closed(value)
+                || self.spec.native_scalar_literal(value).is_some())
+        {
+            // Complete inline/at-most-two-endpoint certificate, bounded interval
+            // normalization, three possible import/reduction/project copies and
+            // their result lifetimes. No cooperation kernel is built on this path.
+            return self
+                .spec
+                .native_closed_scalar_work(value.finite.work_size())
+                .unwrap();
+        }
         if self.builtin {
             self.spec.numeric_refinement_work(value, facts)
         } else {

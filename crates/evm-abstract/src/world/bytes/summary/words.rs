@@ -11,6 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 // Use the existing retained-byte envelope, with 32 bytes per complete demand.
 const WORDS: usize = COPY_FACT_LIMIT / 32;
 
+mod payment;
+pub(super) use payment::{instantiate_with_payment, project_with_payment};
+
 pub(super) fn needed<N: WordElement>(array: &EvmByteArray<N>) -> bool {
     array.conditional.retains_words()
         || array

@@ -269,6 +269,7 @@ fn actual_unknown_code_contexts_match_call_delegatecall_callcode_and_staticcall_
         assert!(observed.steps.iter().any(|step| step.code == address(U)
             && step.owner == address(owner)
             && step.caller == address(caller)
+            && step.value == U256::from(value)
             && step.is_static == (op == opcode::STATICCALL)));
         let analysis = run(world, input);
         complete_unknown(&analysis);

@@ -133,10 +133,15 @@ impl Workspace {
                 } else if self.task.phase==super::job::TaskPhase::Cancelled {
                     ui.colored_label(palette::WARNING,"Cancelled · worker cleanup acknowledged");
                 } else if let Some(report)=&self.report {
-                    let complete=report.status==AnalysisStatus::Converged&&report.ssa.complete;
+                    let complete=report.hybrid.as_ref().map_or(report.status==AnalysisStatus::Converged&&report.ssa.complete, |hybrid| hybrid.coverage.baseline_current);
                     let label=terminal_coverage::detail_status(report);
                     ui.colored_label(if complete{palette::ACCENT}else{palette::WARNING},label);
                     if wide {ui.label(format!("{} states · {} programs · {} outcomes · {} work",report.cfg.len(),report.programs.len(),report.outcomes.len(),report.metadata.work));}
+                    if let Some(hybrid)=&report.hybrid
+                        && controls::action(ui, format!("Coverage · {} prefixes", hybrid.local_prefixes.len()), Density::Regular)
+                            .on_hover_text(super::hybrid::summary(report).unwrap_or_default()).clicked() {
+                        self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Coverage;
+                    }
                     if controls::action(ui, format!("Diagnostics {}",report.diagnostics.len()+report.frontiers.len()), Density::Regular)
                         .on_hover_text(format!("{} abstract-state diagnostic entries and {} unexpanded frontiers. Repeated PCs retain separate state evidence; counts are not instructions or failed transactions.",report.diagnostics.len(),report.frontiers.len())).clicked() {
                         self.inspector.expanded=true;self.inspector.tab=inspector::Tab::Diagnostics;
@@ -178,17 +183,24 @@ pub(super) fn result_context(
     display: &mut crate::ssa_display::SsaDisplay,
 ) {
     let source = program.and_then(|id| report.programs.iter().find(|program| program.id == id));
-    let program_label = source.map_or_else(
-        || "No captured program".into(),
-        |program| {
-            format!(
-                "{} · {:?} · {}",
-                Symbol::Program(program.id),
-                program.kind,
-                directory::short(&program.code_address)
-            )
-        },
-    );
+    let program_label =
+        source.map_or_else(
+            || "No captured program".into(),
+            |program| {
+                format!(
+                    "{} · {:?} · {}",
+                    Symbol::Program(program.id),
+                    program.kind,
+                    directory::short(program.code_address.as_deref().unwrap_or(
+                        match program.kind {
+                            evm_abstract_protocol::CodeKind::Runtime => "Supplied input program",
+                            evm_abstract_protocol::CodeKind::Initcode => "Constructor source",
+                            _ => "No physical code account",
+                        }
+                    ))
+                )
+            },
+        );
     let snapshot = report.metadata.snapshot.as_ref().map_or_else(
         || "Standalone bytecode".into(),
         |snapshot| {
@@ -232,7 +244,11 @@ pub(super) fn result_context(
                     )
                     .on_hover_ui(|ui| {
                         if let Some(program) = source {
-                            ui.monospace(&program.code_address);
+                            ui.monospace(program.code_address.as_deref().unwrap_or(match program.kind {
+                                evm_abstract_protocol::CodeKind::Runtime => "Supplied input program",
+                                evm_abstract_protocol::CodeKind::Initcode => "Constructor source",
+                                _ => "No physical code account",
+                            }));
                             ui.monospace(&program.code_hash);
                         }
                         if let Some(snapshot) = &report.metadata.snapshot {

@@ -128,6 +128,8 @@ impl<N: WordElement> EvmMemo<N> {
 
     fn apply(&self, input: &EvmMachinePayload<N>) -> EvmExecution<N> {
         EvmExecution {
+            process: None,
+            process_calls: Vec::new(),
             payload: self.exit.apply(input),
             executed_pcs: self.pcs.clone(),
             instruction_progress: self.progress.clone(),

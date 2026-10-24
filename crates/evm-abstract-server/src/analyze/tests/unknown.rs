@@ -41,6 +41,19 @@ fn closed_unknown_interactions_project_as_summaries_without_invented_opcodes() {
                 && summary.procedures[0].covered_blocks.is_empty()
                 && summary.procedures[0].dependencies.is_empty())
     );
+    for summary in &report.abstract_summaries {
+        assert!(!summary.regional_cfg.nodes.is_empty());
+        for node in &summary.regional_cfg.nodes {
+            assert_eq!(node.frame.kind, api::CodeKind::AbstractEnvironment);
+            assert!(node.frame.basic_block.is_none() && node.frame.code_hash.is_none());
+            let transfer = node.transfer.as_ref().unwrap();
+            assert!(transfer.current && transfer.complete);
+            // The static shortcut summarizes effects/environment interactions.
+            // An empty call list is not evidence that callbacks cannot occur.
+            assert!(!transfer.visited_block);
+            assert!(transfer.calls.is_empty());
+        }
+    }
     assert!(
         report
             .edges

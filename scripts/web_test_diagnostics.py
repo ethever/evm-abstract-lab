@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from playwright.sync_api import expect
 import json
+from web_test_hybrid import assert_hybrid, displayed_graph
 from web_test_graph_helpers import symbol
 from web_test_harness import analysis_server, complete_submission, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import inspector_diagnostics_region, select_inspector_tab
@@ -48,9 +49,10 @@ def diagnostics_interactions(browser, url: str, args):
         assert request["fork"] == fork and posted_bytecode(reply) == code, request
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 17 and report["status"] == "Converged", report
+        assert report["schema_version"] == 20 and report["status"] == "Converged", report
         (output / f"diagnostics-{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
-        return report
+        assert_hybrid(report)
+        return displayed_graph(report)
 
     def snapshot(name, minimum_rows):
         page.mouse.move(2, 2)
@@ -131,7 +133,10 @@ def diagnostics_interactions(browser, url: str, args):
             child_canvas = child_page.locator("#evm-canvas")
             admitted = submit_rpc(child_page, child_canvas, rpc, output, "diagnostics-child", 0, [provider])
             reply = complete_submission(child_page, admitted)
-            report = reply.json()["result"]["Ok"]
+            full_report = reply.json()["result"]["Ok"]
+            assert_hybrid(full_report)
+            (output / "diagnostics-child-global-analysis.json").write_text(json.dumps(full_report, indent=2) + "\n")
+            report = displayed_graph(full_report)
             diagnostic = next(item for item in report["diagnostics"] if item["kind"] == "InvalidOpcode")
             node = next(item for item in report["cfg"] if item["id"] == diagnostic["state"])
             source = next(item for item in report["programs"] if item["id"] == node["program"])

@@ -26,6 +26,11 @@ def storage_scroll_interactions(browser, url: str, output: Path):
                    for i in range(count)) + "00"
     reply = submit_bytecode(page, canvas, code, output / "storage-scroll-input.png")
     report = reply.json()["result"]["Ok"]
+    (output / "storage-scroll-full-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report["hybrid"]["coverage"]["baseline_current"]
+    original_entry=report["states"][0]["entry"]
+    assert report["stores"][original_entry["store"]]["touched_default"] is None
+    report=report["hybrid"]["detail"]
     assert report["status"] == "Converged" and len(report["states"]) == 1
     machine = report["states"][0]["exit"]
     account = next(account for account in report["stores"][machine["store"]]["accounts"]
@@ -33,7 +38,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     store=report["stores"][machine["store"]]
     # This fixture paints the default touch prefix and exactly nine account
     # facts: the captured program is present, with no delegation row.
-    assert store["touched_default"] is None and account["touched"] is None
+    assert store["touched_default"] is False and account["touched"] is True
     assert account["program"] == 0 and account["delegation_target"] is None
     assert account["created"] is False and account["pending_destruction"] is False
     graph=report["symbolic"]["nodes"]

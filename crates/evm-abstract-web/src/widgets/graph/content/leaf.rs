@@ -7,8 +7,8 @@ use crate::{
 use egui::Color32;
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{
-    AnalysisReport, BlockCoverage, CfgBlock, DisasmInstruction, InstructionProgress, Phi, SsaBlock,
-    SsaInstruction,
+    AnalysisReport, BlockCoverage, CfgBlock, DisasmInstruction, InstructionProgress, Phi,
+    ProcedureSummaryKind, SsaBlock, SsaInstruction, SummarySourceStatus,
 };
 
 const INLINE_ITEMS: usize = 8;
@@ -32,7 +32,10 @@ pub(super) fn preview(
     let location = if abstract_environment {
         "Abstract environment".into()
     } else {
-        Symbol::Block(block.basic_block).to_string()
+        block.basic_block.map_or_else(
+            || "Process control".into(),
+            |id| Symbol::Block(id).to_string(),
+        )
     };
     let title = format!(
         "{}  ·  {}{}",
@@ -70,15 +73,53 @@ pub(super) fn preview(
         }
     };
     if abstract_environment {
-        lines.insert(
-            0,
-            ("Conservative interaction summaries".into(), palette::PURPLE),
-        );
-    } else if index.has_recursive_summary(block.id) {
-        lines.insert(0, ("Recursive bytecode summary".into(), palette::PURPLE));
+        let label = index
+            .summary_source(block.id, ProcedureSummaryKind::UnknownEnvironment)
+            .map_or_else(
+                || "Effect/environment abstraction".to_owned(),
+                |source| summary_label("Conservative interaction summaries", source),
+            );
+        lines.insert(0, (label, palette::PURPLE));
+    } else {
+        if let Some(source) = index.summary_source(block.id, ProcedureSummaryKind::KnownProcess) {
+            lines.insert(
+                0,
+                (
+                    summary_label("Conservative process · possible control", source),
+                    palette::PURPLE,
+                ),
+            );
+        }
+        if let Some(source) = index.summary_source(block.id, ProcedureSummaryKind::KnownRecursion) {
+            lines.insert(
+                0,
+                (
+                    summary_label("Recursive bytecode summary", source),
+                    palette::PURPLE,
+                ),
+            );
+        }
+        if let Some(source) = index.summary_source(block.id, ProcedureSummaryKind::KnownCall) {
+            lines.insert(
+                0,
+                (
+                    summary_label("Known bytecode call summary", source),
+                    palette::PURPLE,
+                ),
+            );
+        }
     }
     NodeText::new(title, detail, lines, coverage, frontier)
         .with_identity(vec![Symbol::State(block.id).to_string(), location])
+}
+
+fn summary_label(label: &str, source: SummarySourceStatus) -> String {
+    let scope = match source {
+        SummarySourceStatus::Current => "final source certified",
+        SummarySourceStatus::Historical => "historical observation",
+        SummarySourceStatus::Uncertified => "final source uncertified",
+    };
+    format!("{label} · {scope}")
 }
 
 pub(super) fn source_instruction(instruction: &DisasmInstruction) -> String {
@@ -256,10 +297,13 @@ pub(super) fn tooltip(
     format!(
         "State {} · basic block {}\nFrame depth: {} · code: {}\nStorage owner: {}\nContext: {:?} · coverage: {:?}\nCurrent entry stack (bottom → top): {}\n{}\n\n{}",
         Symbol::State(block.id),
-        Symbol::Block(block.basic_block),
+        block.basic_block.map_or_else(
+            || "Process control".into(),
+            |id| Symbol::Block(id).to_string()
+        ),
         block.frame_depth,
-        block.code_address,
-        block.storage_address,
+        report.code_label(block),
+        report.storage_label(block),
         block.context,
         coverage,
         block.entry_stack.join(", "),

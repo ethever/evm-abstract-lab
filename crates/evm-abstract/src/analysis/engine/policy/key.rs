@@ -122,6 +122,18 @@ scalar_keys!(
     i128
 );
 
+impl PolicyKey for crate::analysis::ProcessOwner {
+    fn key_work(&self) -> usize {
+        inline_work::<Self>()
+    }
+}
+
+impl PolicyKey for crate::analysis::ProcessAction {
+    fn key_work(&self) -> usize {
+        inline_work::<Self>()
+    }
+}
+
 impl<K: PolicyKey> PolicyKey for Option<K> {
     fn key_work(&self) -> usize {
         self.as_ref()
@@ -182,6 +194,7 @@ impl PolicyKey for FrameKey {
             .len()
             .saturating_mul(2)
             .saturating_add(inline_work::<Self>())
+            .saturating_add(self.process_work())
             .saturating_add(2)
     }
 }

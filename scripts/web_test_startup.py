@@ -5,14 +5,17 @@ import hashlib
 import json
 import re
 from web_test_example_helpers import example_page
+from web_test_hybrid import assert_hybrid, displayed_graph
 from web_test_harness import rendered_frame, webgpu_evidence
 
 
 def run_startup(context):
     page, canvas, reply = example_page(context.browser, context.url)
     result = reply.json()
-    analysis = result["result"]["Ok"]
-    assert analysis["schema_version"] == 17
+    full_analysis = result["result"]["Ok"]
+    assert_hybrid(full_analysis)
+    analysis = displayed_graph(full_analysis)
+    assert analysis["schema_version"] == 20
     assert analysis["metadata"]["postprocessing_max_work"] == 2_000_000_000
     assert 0 <= analysis["metadata"]["postprocessing_work"] <= 2_000_000_000
     assert sum(len(block["instructions"]) for block in analysis["disassembly"]) > 0

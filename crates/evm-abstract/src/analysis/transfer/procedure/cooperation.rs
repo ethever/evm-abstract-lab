@@ -127,11 +127,11 @@ impl<
         match view {
             crate::analysis::cooperation::LocalInput::Deferred => {
                 self.deferred = true;
-                self.table.nodes[id].excluded = false;
+                self.set_excluded(id, false)?;
                 Ok(None)
             }
             crate::analysis::cooperation::LocalInput::Unreachable => {
-                self.table.nodes[id].excluded = true;
+                self.set_excluded(id, true)?;
                 Ok(None)
             }
             crate::analysis::cooperation::LocalInput::Reachable { payload, limited } => {
@@ -139,7 +139,7 @@ impl<
                 self.table
                     .precision_losses
                     .extend(limited.into_iter().map(DiagnosticKind::FactExchangeLimited));
-                self.table.nodes[id].excluded = false;
+                self.set_excluded(id, false)?;
                 Ok(Some(*payload))
             }
         }
@@ -275,6 +275,47 @@ impl<
             .map_err(|error| self.cooperation.stop(error, self.budget))
     }
 
+    /// Exclusion is part of completion even when the native input/output is
+    /// unchanged. Withdraw its old proof basis before installing a new choice;
+    /// the shared kernel executes the queued readers only after this step.
+    pub(super) fn set_excluded(&mut self, id: usize, excluded: bool) -> Result<(), MachineError> {
+        if self.table.nodes[id].excluded != excluded {
+            self.source_inventory_changed()?;
+            self.table.nodes[id].excluded = excluded;
+        }
+        Ok(())
+    }
+
+    fn terminal_scan_work(&self) -> usize {
+        self.table
+            .procedures
+            .len()
+            .saturating_add(self.table.nodes.len())
+    }
+
+    fn known_terminals_covered(&mut self) -> Result<bool, MachineError> {
+        self.reserve(self.terminal_scan_work())?;
+        Ok(self.table.pending_terminals().next().is_none())
+    }
+
+    /// Final reporting uses the same live obligation as certificate publication.
+    /// Defer residuals until settlement so incremental MAY feedback can still
+    /// discover outputs; never turn an initial empty snapshot into a frontier.
+    pub(super) fn retain_terminal_frontiers(&mut self, settled: bool) -> Result<(), MachineError> {
+        if !settled || !self.table.frontiers.is_empty() || self.table.incomplete {
+            return Ok(());
+        }
+        self.reserve(self.terminal_scan_work().saturating_mul(2))?;
+        let pending = self.table.pending_terminals().collect::<Vec<_>>();
+        if !pending.is_empty() {
+            self.source_inventory_changed()?;
+            for node in pending {
+                self.frontier_node(node, super::FrontierReason::RecursiveNoTerminal, 0);
+            }
+        }
+        Ok(())
+    }
+
     fn body_point(index: usize) -> crate::analysis::cooperation::Point {
         crate::analysis::cooperation::Point {
             namespace: 1,
@@ -346,6 +387,7 @@ impl<
         to: usize,
         kind: MachineEdgeKind,
     ) -> Result<(), MachineError> {
+        self.regional_edge(from, to, kind)?;
         let edge = crate::analysis::cooperation::Edge {
             from: Self::body_point(from),
             to: Self::body_point(to),
@@ -404,16 +446,16 @@ impl<
             .outputs
             .iter()
             .map(|(kind, output)| {
-                (
+                Ok((
                     *kind,
                     crate::analysis::cooperation::SummaryOutput {
-                        data: output.summary.data.clone(),
-                        store: output.summary.store.clone(),
+                        data: output.summary.data.clone_with_payment(self.budget)?,
+                        store: output.summary.store.clone_with_payment(self.budget)?,
                         generation: output.generation,
                     },
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<_, MachineError>>()?;
         let summary =
             crate::analysis::cooperation::Summary::new(procedure.output_updates, outputs, work);
         Ok(summary)
@@ -427,6 +469,7 @@ impl<
     }
 
     pub(super) fn observe_continuation(&mut self, id: usize) -> Result<(), MachineError> {
+        self.regional_call(id)?;
         if !X::ENABLED {
             return Ok(());
         }
@@ -446,7 +489,7 @@ impl<
                 namespace: 1,
                 index: subscription.callee,
             },
-            subscription.payload.clone(),
+            subscription.payload.clone_with_payment(self.budget)?,
             work,
         );
         self.cooperation
@@ -492,10 +535,7 @@ impl<
                     self.active.as_mut().ok_or(MachineError::Shape)?,
                     self.budget,
                     |budget| {
-                        if !budget.charge(payload.work_size().saturating_mul(4)) {
-                            return Err(MachineError::work_failure());
-                        }
-                        super::instantiate(payload, domain)
+                        super::payload::caller::instantiate_with_payment(payload, domain, budget)
                     },
                 )
                 .map_err(|error| self.cooperation.stop(error, self.budget))?;
@@ -509,7 +549,8 @@ impl<
             .map_err(|error| self.cooperation.stop(error, self.budget))?;
         let closed = self.runtime.relative_closed(self.budget)?
             && self.table.frontiers.is_empty()
-            && !self.table.incomplete;
+            && !self.table.incomplete
+            && self.known_terminals_covered()?;
         self.reserve(self.table.procedures.len().saturating_mul(4))?;
         let mut summaries = Vec::with_capacity(self.table.procedures.len());
         for id in 0..self.table.procedures.len() {
@@ -542,6 +583,8 @@ impl<
                         run.observe_slot(&procedure.entry_source)?;
                         run.observe_slot(&procedure.output)?;
                     }
+                    // Terminal coverage uses these native bounds plus entry
+                    // exclusion, which advances the observed structure slot.
                     for node in &table.nodes {
                         run.observe_slot(&node.input)?;
                     }
@@ -612,6 +655,19 @@ impl<N: crate::domain::WordElement, Key: super::PolicyKey> super::EvmTable<N, Ke
         };
         if solver.run_admitted(task, token) {
             solver.run();
+        }
+        let terminals = solver
+            .runtime
+            .relative_closed(solver.budget)
+            .and_then(|settled| solver.retain_terminal_frontiers(settled));
+        if let Err(error) = terminals {
+            solver.table.frontiers.push(super::EvmExecutionFrontier {
+                pc: 0,
+                reason: error.frontier_reason(),
+                target: None,
+                range: None,
+                payload: None,
+            });
         }
         solver.table.incomplete |= !solver.table.frontiers.is_empty();
         std::mem::take(&mut solver.table.frontiers)

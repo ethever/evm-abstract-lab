@@ -98,7 +98,7 @@ fn typed_terminal<D: EvmNumericAlgebra>(
 
     // The public request dispatcher reaches the same semantic boundary for
     // either selected model, with its actual numeric policy in the binding.
-    let dispatched = analyze(request).unwrap();
+    let dispatched = super::native_detail(analyze(request).unwrap());
     dispatched.validate().unwrap();
     assert_eq!(
         dispatched

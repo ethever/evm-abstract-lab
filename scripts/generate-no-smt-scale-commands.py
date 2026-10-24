@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Bind the frozen offline corpus to an explicitly selected no-SMT CLI source.
 
-Only writes a command profile and optional wire 17 requests; never builds or
+Only writes a command profile and optional wire 20 requests; never builds or
 runs analysis. Keep outputs separate from frozen baselines. Regenerate the
 profile for the final build's exact source commit.
 
-The current interface requires native 12 / wire 17 / domain 3 / cost 7. Historical
+The current interface requires native 15 / wire 20 / domain 3 / cost 8. Historical
 profiles stay bound to their frozen source and generator; they are not upgraded.
 """
 
@@ -30,14 +30,14 @@ def generate(repository, source):
         "cost": "crates/evm-abstract/src/domain/spec.rs",
     }
     texts = {key: (source / path).read_text() for key, path in witnesses.items()}
-    for key, expected in [("native", 12), ("wire", 17)]:
+    for key, expected in [("native", 15), ("wire", 20)]:
         match = re.search(r"pub const SCHEMA_VERSION: u16 = (\d+);", texts[key])
         if match is None or int(match[1]) != expected:
             raise ValueError(f"expected {key} schema {expected}")
     if not re.search(r"schema_version:\s*3\s*,", texts["cost"]):
         raise ValueError("expected numeric policy schema 3")
-    if not re.search(r"cost_version:\s*7\s*,", texts["cost"]):
-        raise ValueError("expected logical cost version 7")
+    if not re.search(r"cost_version:\s*8\s*,", texts["cost"]):
+        raise ValueError("expected logical cost version 8")
     if re.search(r"smt_provider|smt_rlimit|embedded_smt", texts["relations"]):
         raise ValueError("selected CLI still exposes native solver policy")
     commit = subprocess.check_output(
@@ -45,13 +45,14 @@ def generate(repository, source):
     profile["interface"] = {
         "name": "no-smt-cli-world",
         "source_commit": commit,
-        "versions": {"native": 12, "wire": 17, "domain": 3, "cost": 7},
+        "versions": {"native": 15, "wire": 20, "domain": 3, "cost": 8},
         "source_witnesses": {
             path: hashlib.sha256((source / path).read_bytes()).hexdigest()
             for path in witnesses.values()
         },
         "scope": "Offline CLI interface only; measured ELF/build identity is supplied separately. "
-                 "Logical work is not comparable across cost versions.",
+                 "Logical work is not comparable across cost versions; an unchanged integer "
+                 "work limit does not imply equal effort.",
     }
     # The CLI prints an Incomplete Report before returning 2. The harness still
     # validates the JSON and keeps external stops and parse failures separate.
@@ -82,7 +83,7 @@ def generate(repository, source):
         "capacity": analysis.pop("max_constants"),
         "reduction_rounds": analysis.pop("reduction_rounds"),
         "fact_limit": analysis.pop("max_facts"),
-        "cost_version": 7, "widening_after_updates": 2,
+        "cost_version": 8, "widening_after_updates": 2,
         "provenance_policy": "scoped-expressions-and-value-identities-v3",
         "relations": analysis.pop("relations"),
     }
@@ -99,7 +100,7 @@ def generate(repository, source):
     return profile
 
 
-def derive_wire17_request(original):
+def derive_wire20_request(original):
     """Migrate one frozen wire 14 request, retaining its exact input and limits."""
     request = deepcopy(original)
     # This is an explicit historical-input derivation, never a live decoder.
@@ -114,7 +115,7 @@ def main():
     parser.add_argument("--interface-source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--request-output-dir", type=Path,
-                        help="write separate wire 17 WETH/USDC requests with the frozen 1T/off policy")
+                        help="write separate wire 20 WETH/USDC requests with the frozen 1T/off policy")
     arguments = parser.parse_args()
     repository = Path(__file__).resolve().parents[1]
     profile = generate(repository, arguments.interface_source.resolve(strict=True))
@@ -123,8 +124,8 @@ def main():
         arguments.request_output_dir.mkdir(parents=True, exist_ok=True)
         for name in ("weth", "usdc"):
             original = repository / f"examples/no-smt-scale/wire14/{name}-original-request.json"
-            request = derive_wire17_request(json.loads(original.read_bytes()))
-            output = arguments.request_output_dir / f"{name}-wire17-request.json"
+            request = derive_wire20_request(json.loads(original.read_bytes()))
+            output = arguments.request_output_dir / f"{name}-wire20-request.json"
             output.write_text(json.dumps(request, indent=2) + "\n")
 
 

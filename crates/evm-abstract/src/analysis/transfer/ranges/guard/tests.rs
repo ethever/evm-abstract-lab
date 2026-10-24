@@ -491,7 +491,8 @@ fn literal_and_cancelled_paths_keep_their_original_boundaries_without_guard_fall
     )
     .unwrap();
     let mut result = empty_execution(payload.clone());
-    let mut budget = WorkBudget::new(736);
+    let fee = super::super::LITERAL_MEMORY_METADATA_WORK + 64 * 4;
+    let mut budget = WorkBudget::new(fee);
     assert!(super::super::allow_memory(
         &mut result,
         &TestValue::top(),
@@ -503,7 +504,7 @@ fn literal_and_cancelled_paths_keep_their_original_boundaries_without_guard_fall
         ),
         19,
     ));
-    assert_eq!(budget.used(), 736);
+    assert_eq!(budget.used(), fee);
     assert!(!budget.exhausted());
     assert_eq!(result.payload, payload);
     assert!(result.frontiers.is_empty());

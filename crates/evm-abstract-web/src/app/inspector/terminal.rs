@@ -152,7 +152,7 @@ fn binding(ui: &mut Ui, report: &AnalysisReport, coverage: &RootTerminalCoverage
             ui.label("These bytes identify the original executing frame. Store inspection shows current account code separately.");
             egui::Grid::new("root_terminal_program").num_columns(2).show(ui, |ui| {
                 value::text(ui, "Program", Symbol::Program(program.id).to_string());
-                value::text(ui, "Code account", &program.code_address);
+                value::text(ui, "Code account", program.code_address.as_deref().unwrap_or("Constructor source"));
                 value::text(ui, "Code hash", &program.code_hash);
                 value::text(ui, "Code kind", format!("{:?}", program.kind));
                 value::text(ui, "Captured bytecode", &program.bytecode);

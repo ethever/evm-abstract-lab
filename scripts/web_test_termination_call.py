@@ -107,6 +107,8 @@ def termination_call_interactions(browser,args):
             assert reply.status==200 and 'Ok' in reply.json()['result'],reply.json()
             report=reply.json()['result']['Ok']
             (args.output/'termination-child-call-analysis.json').write_text(json.dumps(report,indent=2)+'\n')
+            assert report["hybrid"]["coverage"]["baseline_current"]
+            report=report["hybrid"]["detail"]
             failure,returning=_termination_call_oracle(report,rpc.root_code,rpc.root_address,rpc.child_address)
             caller=failure['from']
             sources={node['id']:node['program'] for node in report['cfg']}

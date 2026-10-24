@@ -1,4 +1,8 @@
 //! Every graph and pool reference is checked before a consumer follows it.
+mod hybrid;
+mod process;
+mod regional;
+mod source;
 mod terminal;
 use crate::{
     AccountState, AnalysisReport, MachineSnapshot, PoolReferenceFailure, PoolReferenceKind,
@@ -96,9 +100,13 @@ impl Validation<'_> {
         self.store(machine.store)?;
         self.root(SymbolicSort::Path, machine.path.node)?;
         for frame in &machine.frames {
+            self.process_frame(frame)?;
             self.program(frame.program)?;
             self.store(frame.rollback_store)?;
-            for id in [frame.memory, frame.calldata, frame.returndata] {
+            for id in [frame.memory, frame.calldata, frame.returndata]
+                .into_iter()
+                .flatten()
+            {
                 self.buffer(id)?;
             }
             self.value(&frame.call_value)?;
@@ -186,6 +194,42 @@ impl Validation<'_> {
                 self.machine(exit)?;
             }
         }
+        for block in &self.report.cfg {
+            if let Some(key) = &block.process {
+                if block.basic_block.is_some()
+                    || block.start_pc.is_some()
+                    || !block.context.is_empty()
+                    || block.code_address.is_some()
+                    || block.storage_address.is_some()
+                    || !block.instructions.is_empty()
+                    || !block.entry_stack.is_empty()
+                    || !block.exit_stack.is_empty()
+                    || !block.executed_pcs.is_empty()
+                {
+                    return Err(ReportValidationFailure::Process(
+                        crate::ProcessValidationKind::PrivateState,
+                    ));
+                }
+                self.process_program(key, block.program)?;
+                if self.report.ssa.blocks.iter().any(|ssa| {
+                    ssa.state == block.id
+                        && (!ssa.phis.is_empty()
+                            || !ssa.instructions.is_empty()
+                            || ssa.exit_frames.iter().any(|frame| !frame.is_empty()))
+                }) {
+                    return Err(ReportValidationFailure::Process(
+                        crate::ProcessValidationKind::PrivateState,
+                    ));
+                }
+            } else if block.basic_block.is_none()
+                || block.code_address.is_none()
+                || block.storage_address.is_none()
+            {
+                return Err(ReportValidationFailure::Process(
+                    crate::ProcessValidationKind::PrivateState,
+                ));
+            }
+        }
         for machine in &self.report.pending_machines {
             self.machine(machine)?;
         }
@@ -209,7 +253,7 @@ impl Validation<'_> {
             self.buffer(outcome.data)?;
             self.store(outcome.store)?;
         }
-        for summary in &self.report.abstract_summaries {
+        for (index, summary) in self.report.abstract_summaries.iter().enumerate() {
             if let Some(root) = summary.root_procedure {
                 self.pool(
                     PoolReferenceKind::AbstractProcedure,
@@ -230,6 +274,31 @@ impl Validation<'_> {
                 }));
             }
             for procedure in &summary.procedures {
+                if let Some(key) = &procedure.process {
+                    self.process_program(key, None)?;
+                    if procedure.kind != key.source.kind()
+                        || procedure.semantics != key.source.semantics()
+                        || procedure.is_static != key.is_static
+                        || procedure.code_address.is_some()
+                        || procedure.code_hash.is_some()
+                        || procedure.storage_address.is_some()
+                        || !procedure.covered_blocks.is_empty()
+                    {
+                        return Err(ReportValidationFailure::Process(
+                            crate::ProcessValidationKind::Identity,
+                        ));
+                    }
+                    let input = procedure.process_input.as_ref().ok_or(
+                        ReportValidationFailure::Process(crate::ProcessValidationKind::Operands),
+                    )?;
+                    for value in [&input.address, &input.caller, &input.value] {
+                        self.value(value)?;
+                    }
+                } else if procedure.process_input.is_some() {
+                    return Err(ReportValidationFailure::Process(
+                        crate::ProcessValidationKind::Operands,
+                    ));
+                }
                 for dependency in &procedure.dependencies {
                     self.pool(
                         PoolReferenceKind::AbstractProcedure,
@@ -238,6 +307,7 @@ impl Validation<'_> {
                     )?;
                 }
             }
+            self.regional(index, summary)?;
         }
         for value in &self.report.ssa.values {
             for fact in &value.facts {
@@ -262,6 +332,8 @@ impl AnalysisReport {
                 crate::PostprocessingWorkFailure { max_work, work },
             ));
         }
+        self.validate_source()?;
+        self.validate_hybrid()?;
         Validation {
             report: self,
             graph: &self.symbolic,

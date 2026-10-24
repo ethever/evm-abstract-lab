@@ -1,7 +1,7 @@
 use super::{MachineError, Policy, Projection};
 #[cfg(test)]
 use crate::analysis::testing::TestValue;
-use crate::domain::ValueAlgebra;
+use crate::domain::{EvmNumericAlgebra, ValueAlgebra};
 use crate::{
     analysis::{
         ExecutionConfig,
@@ -16,6 +16,8 @@ use crate::{
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
+
+mod native;
 
 #[test]
 fn optional_projection_does_not_discover_singletons_before_relevance() {
@@ -134,6 +136,24 @@ fn refinement_fees(
     )
 }
 
+fn cache_copy_fees(
+    value: &TestValue,
+    domain: crate::domain::AlgebraRef<'_, ProductAlgebra>,
+) -> (usize, usize) {
+    let imported = value
+        .numeric()
+        .constrain(&WordObservation::unsigned_range(U256::from(5), U256::from(15)).unwrap())
+        .unwrap();
+    (
+        value.numeric().clone_work() + imported.clone_work(),
+        imported.clone_work().saturating_add(
+            domain
+                .numeric_algebra()
+                .summary_equal_work(value.numeric(), value.numeric()),
+        ),
+    )
+}
+
 #[test]
 fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
     let domain = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
@@ -145,8 +165,14 @@ fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
     let raw = TestValue::top().with_expression(expression.clone());
     let (import, closure) = refinement_fees(&relations, &expression, &raw, domain);
     let fee = expression.work_size() + relations.work_size() + import + closure;
+    let (cache_insert, cache_hit) = cache_copy_fees(&raw, domain);
     for summary in [false, true] {
-        let mut budget = WorkBudget::new(2 * fee);
+        let expected = if summary {
+            fee + cache_insert + cache_hit
+        } else {
+            2 * fee
+        };
+        let mut budget = WorkBudget::new(expected);
         let mut diagnostics = Vec::new();
         let policy = if summary {
             Policy::Summary
@@ -168,7 +194,7 @@ fn summary_reuse_and_branch_feasibility_keep_their_distinct_query_contracts() {
             assert_eq!(value.expression(), raw.expression());
         }
         assert_eq!(projection.finish(), Ok(true));
-        assert_eq!(budget.used(), if summary { fee } else { 2 * fee });
+        assert_eq!(budget.used(), expected);
         assert!(diagnostics.is_empty());
 
         let mut contradictory = TestValue::unsigned_range(U256::from(20), U256::from(30))
@@ -293,14 +319,21 @@ fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
     let expressions = [ExprId::fresh().unwrap(), ExprId::fresh().unwrap()];
     let relations = bounded_relations(&expressions, &limits);
     let relation_work = relations.work_size();
+    let first = TestValue::top();
+    let first_bound = TestValue::unsigned_range(U256::from(5), U256::from(15)).unwrap();
+    let growing = TestValue::unsigned_range(U256::from(8), U256::from(100)).unwrap();
+    // The second input passes both unequal bounds in the first cached pair,
+    // once on its miss and again before reaching its own subsequently cached key.
+    let prefix_eq = domain
+        .numeric_algebra()
+        .summary_equal_work(first.numeric(), growing.numeric())
+        + domain
+            .numeric_algebra()
+            .summary_equal_work(first_bound.numeric(), growing.numeric());
     let cases = [
-        (0, TestValue::top(), 5),
-        (
-            0,
-            TestValue::unsigned_range(U256::from(8), U256::from(100)).unwrap(),
-            8,
-        ),
-        (1, TestValue::top(), 5),
+        (0, first, 5, 0),
+        (0, growing, 8, prefix_eq),
+        (1, TestValue::top(), 5, 0),
     ];
     let mut budget = WorkBudget::new(usize::MAX);
     let mut projection = Projection::new(
@@ -311,12 +344,18 @@ fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
         Policy::Summary,
     );
     let mut expected_work = 0;
-    for (index, value, lower) in cases {
+    for (index, value, lower, prefix_eq) in cases {
         let original = value.with_expression(expressions[index].clone());
         // Every uncached request pays its own namespace and actual two-phase
         // refinement, even when only the numeric input changes.
         let (import, closure) = refinement_fees(&relations, &expressions[index], &original, domain);
-        expected_work += expressions[index].work_size() + relation_work + import + closure;
+        let (cache_insert, cache_hit) = cache_copy_fees(&original, domain);
+        expected_work += expressions[index].work_size()
+            + relation_work
+            + import
+            + closure
+            + cache_insert
+            + prefix_eq;
         let mut value = original.clone();
         projection.value(&mut value);
         assert_eq!(
@@ -328,6 +367,7 @@ fn one_relation_scan_preserves_numeric_results_and_each_uncached_fee() {
         let mut repeated = original;
         projection.value(&mut repeated);
         assert_eq!(repeated, value);
+        expected_work += prefix_eq + cache_hit;
         assert_eq!(projection.budget.used(), expected_work);
     }
     assert_eq!(projection.relations_work_size_scans, 1);
@@ -348,7 +388,9 @@ fn lazy_size_keeps_the_exact_and_one_short_work_boundaries() {
     let (import, closure) = refinement_fees(&relations, &expression, &original, domain);
     // A closure refusal retains both completed first-phase payments.
     let admission = expression.work_size() + relations.work_size() + import;
-    let fee = admission + closure;
+    let (cache_insert, _) = cache_copy_fees(&original, domain);
+    let query_fee = admission + closure;
+    let fee = query_fee + cache_insert;
     for maximum in [fee, fee - 1] {
         let mut budget = WorkBudget::new(maximum);
         let mut projection = Projection::new(
@@ -372,7 +414,7 @@ fn lazy_size_keeps_the_exact_and_one_short_work_boundaries() {
         } else {
             assert_eq!(value, original);
             assert_eq!(projection.finish(), Err(MachineError::Work));
-            assert_eq!(budget.used(), admission);
+            assert_eq!(budget.used(), query_fee);
             assert!(budget.exhausted());
         }
     }
@@ -502,11 +544,72 @@ fn failed_projection_preserves_original_path_and_roots() {
         &mut budget,
         Policy::Summary,
     );
-    projection.payload(&mut refined).unwrap();
+    assert_eq!(projection.payload(&mut refined), Err(MachineError::Work));
     assert!(projection.finish().is_err());
     assert_eq!(original, input);
     assert_eq!(
         original.store.slot_root(address(0x101), false),
         refined.store.slot_root(address(0x101), false)
     );
+}
+
+#[test]
+fn branch_unknown_infeasible_work_and_cancellation_remain_distinct() {
+    use crate::domain::relational::QueryReason;
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let limits = RelationLimits::default();
+    let expression = ExprId::fresh().unwrap();
+    let relations = bounded_relations(std::slice::from_ref(&expression), &limits);
+    let raw = TestValue::top().with_expression(expression.clone());
+    let project = |mut value: TestValue, limits: &RelationLimits, budget: &mut WorkBudget| {
+        let mut diagnostics = Vec::new();
+        let mut projection = Projection::new(
+            &relations,
+            algebra.borrowed(),
+            limits,
+            budget,
+            Policy::Branch {
+                diagnostics: &mut diagnostics,
+                pc: 9,
+            },
+        );
+        projection.value(&mut value);
+        (projection.finish(), value, diagnostics)
+    };
+    let disabled = RelationLimits {
+        enabled: false,
+        ..limits
+    };
+    let (outcome, value, diagnostics) =
+        project(raw.clone(), &disabled, &mut WorkBudget::new(usize::MAX));
+    assert_eq!(outcome, Ok(true));
+    assert_eq!(value, raw);
+    assert_eq!(
+        diagnostics,
+        vec![(
+            9,
+            crate::analysis::DiagnosticKind::RelationalPrecisionLost(QueryReason::Disabled)
+        )]
+    );
+    let contradictory = TestValue::unsigned_range(U256::from(20), U256::from(30))
+        .unwrap()
+        .with_expression(expression);
+    assert_eq!(
+        project(contradictory, &limits, &mut WorkBudget::new(usize::MAX)).0,
+        Ok(false)
+    );
+    assert_eq!(
+        project(raw.clone(), &limits, &mut WorkBudget::new(0)).0,
+        Err(MachineError::Work)
+    );
+    let payer = analysis_control::Cancellation::new();
+    let mut budget = analysis_control::with_cancellation(&payer, || WorkBudget::new(usize::MAX));
+    payer.cancel();
+    let (outcome, value, diagnostics) = project(raw.clone(), &limits, &mut budget);
+    assert_eq!(
+        outcome,
+        Err(MachineError::Relations(QueryReason::Cancelled))
+    );
+    assert_eq!(value, raw);
+    assert!(diagnostics.is_empty());
 }

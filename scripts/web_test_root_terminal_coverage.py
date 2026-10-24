@@ -1,7 +1,7 @@
 """Real form coverage controls and native terminal tuples, independent of CFG evidence.
 
 This case runs only with matched server/Wasm assets. Its small two-block input
-uses one transfer deliberately; every other execution/precision default stays
+uses one global transfer plus one native transfer deliberately; other defaults stay
 unchanged. Negative transport controls are recorded separately from real jobs.
 """
 
@@ -17,13 +17,14 @@ from web_test_harness import (complete_submission, observe_webgpu, open_input,
 from web_test_inspector_helpers import (inspector_painted_controls, inspector_selected_tab, inspector_title_action,
                                         select_inspector_tab)
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_modal
+from web_test_hybrid import assert_hybrid, graph
 from web_test_pixels import assert_translation, node_snapshot, text_pixels, workspace_content_bottom
 
 
 RUNTIME = "6003565b602a5f5260205ff3"
 OWNER = "0x" + "11" * 20
 WORD_MAX = (1 << 256) - 1
-COVERED = "Root terminal results conservatively covered"
+COVERED = "Native terminal auxiliary available"
 NOT_ATTACHED = "Root terminal certificate not attached"
 STORE_FIELDS = {
     "storage_default", "transient_default", "storage_root", "transient_root",
@@ -173,7 +174,7 @@ def _binding(report, request, *, is_static):
     assert config["root_terminal_coverage"] is True
     assert binding["domain_spec"] == {
         "schema_version": 3, "word_bits": 256, "capacity": 512,
-        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 7,
+        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 8,
         "widening_after_updates": 2, "provenance_policy": "scoped-expressions-and-value-identities-v3",
         "relations": {key: limits[source] for key, source in relation_fields.items()}}
     original = next(state for state in report["states"] if state["state"] == 0)["entry"]
@@ -185,7 +186,7 @@ def _binding(report, request, *, is_static):
     assert frame == {
         "code_address": program["code_address"], "code_hash": program["code_hash"],
         "mode": "Runtime", "address": OWNER,
-        "address_value": {"Symbolic": {"kind": "To", "index": None}},
+        "address_value": {"Concrete": OWNER},
         "caller": {"Symbolic": {"kind": "Caller", "index": None}},
         "is_static": is_static, "basic_block_index": 0, "stack_height": 0, "jump_history": []}
     assert frame["address_value"] == root["address_value"] == binding["environment"]["to"]
@@ -391,12 +392,14 @@ def _observed_failures(report, independent=()):
         else:
             assert _rollback_store(report, binding, store) not in independent
             finalized += 1
-    assert pre_entry > 0 and finalized > 0, (pre_entry, finalized)
+    assert pre_entry > 0 and finalized == 0, (pre_entry, finalized)
+    # The conditioned Native root excludes the original symbolic owner alias.
+    # Exact original-binding early/late failures remain native Rust controls.
     _empty_data_controls(report, data, expected)
 
 
 def _detail(report):
-    assert report["status"] == "Incomplete" and report["transfers"] == 1
+    assert report["status"] == "Incomplete" and report["transfers"] == 2
     assert report["ssa"]["complete"] is False
     assert report["frontiers"] and all(item["kind"] == "Transfers" for item in report["frontiers"])
     entry, = [block for block in report["cfg"] if block["id"] == 0]
@@ -546,12 +549,14 @@ def _static_control(page, url, request, output):
         job = polled.json()["result"]["Ok"]
     response = page.request.get(task + "/result")
     assert response.ok, response.text()
-    report = response.json()["result"]["Ok"]
+    full_report = response.json()["result"]["Ok"]
+    assert_hybrid(full_report)
+    report = graph(full_report, "Native")
     _detail(report)
     binding = _binding(report, request, is_static=True)
     _tuples(report, binding)
     (output / "coverage-static-request.json").write_text(json.dumps(request, indent=2) + "\n")
-    (output / "coverage-static-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
+    (output / "coverage-static-analysis.json").write_text(json.dumps(full_report, indent=2) + "\n")
     return {"job_id": job["id"], "is_static": binding["frame"]["is_static"],
             "return_store": report["root_terminal_coverage"]["outcomes"][0]["store"]}
 
@@ -580,7 +585,7 @@ def _schema_control(page, canvas, output, expected_request):
         response = route.fetch()
         native_text = response.text()
         envelope = json.loads(native_text)
-        assert envelope["result"]["Ok"]["schema_version"] == 17
+        assert envelope["result"]["Ok"]["schema_version"] == 20
         envelope["result"]["Ok"]["schema_version"] = 16
         replacement = json.dumps(envelope)
         headers = dict(response.headers)
@@ -604,7 +609,7 @@ def _schema_control(page, canvas, output, expected_request):
         assert json.loads(submitted.value.request.post_data) == expected_request
         current_id = _decimal_identity(str(submitted.value.json()["result"]["Ok"]["id"]))
         try:
-            expect(status).to_contain_text("Unsupported response schema 16; expected 17", timeout=60000)
+            expect(status).to_contain_text("Unsupported response schema 16; expected 20", timeout=60000)
         finally:
             canvas.screenshot(path=str(output / "coverage-schema-rejected.png"))
         after_status = status.text_content()
@@ -616,7 +621,7 @@ def _schema_control(page, canvas, output, expected_request):
         evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
         assert intercepted == [True], intercepted
         assert len(posts) == 1 and json.loads(posts[0]) == expected_request, posts
-        assert after_status.startswith("Error: Unsupported response schema 16; expected 17; "), after_status
+        assert after_status.startswith("Error: Unsupported response schema 16; expected 20; "), after_status
         current_ids = re.findall(r"(?:^|; )Current Job ID: ([^;]+)(?=;|$)", after_status)
         retained_ids = re.findall(r"(?:^|; )Result Job ID: ([^;]+)(?=;|$)", after_status)
         assert len(current_ids) == len(retained_ids) == 1, after_status
@@ -627,7 +632,7 @@ def _schema_control(page, canvas, output, expected_request):
         assert_translation(before_card, after_card, 0, 0, tolerance=1.0)
         assert after_card["selected_kind"] == before_card["selected_kind"]
         assert after_ink == before_ink, (before_ink, after_ink)
-        return {"received": 16, "expected": 17, "retained_selection": selected,
+        return {"received": 16, "expected": 20, "retained_selection": selected,
                 "retained_result_job_id": result_id, "current_job_id": current_id,
                 "evidence": evidence, "status": after_status, "control_only": True}
     finally:
@@ -651,21 +656,23 @@ def root_terminal_coverage_interactions(context):
     defaults = json.loads(first.request.post_data)
     assert defaults["limits"] == LAYOUT_DEFAULT_LIMITS
     assert defaults["limits"]["root_terminal_coverage"] is True
-    ordinary = first.json()["result"]["Ok"]
-    assert ordinary["schema_version"] == 17 and ordinary["root_terminal_coverage"] is None
+    full_ordinary = first.json()["result"]["Ok"]
+    assert_hybrid(full_ordinary)
+    ordinary = graph(full_ordinary, "Native")
+    assert ordinary["schema_version"] == 20 and ordinary["root_terminal_coverage"] is None
     assert ordinary["status"] == "Converged" and ordinary["ssa"]["complete"] is True
     assert ordinary["frontiers"] == []
     _stores(ordinary)
     canvas, status = page.locator("#evm-canvas"), page.locator("#analysis-status")
     assert COVERED not in status.text_content() and NOT_ATTACHED not in status.text_content()
     (output / "coverage-default-enabled-request.json").write_text(first.request.post_data + "\n")
-    (output / "coverage-default-enabled-analysis.json").write_text(json.dumps(ordinary, indent=2) + "\n")
+    (output / "coverage-default-enabled-analysis.json").write_text(json.dumps(full_ordinary, indent=2) + "\n")
     canvas.screenshot(path=str(output / "coverage-default-enabled-complete.png"))
 
     execution_open, coverage_enabled = False, True
     header_offset = None
 
-    def submit(name, *, enabled, transfers=1, invalid_numeric=False):
+    def submit(name, *, enabled, transfers=2, invalid_numeric=False):
         nonlocal execution_open, coverage_enabled, header_offset
         geometry = {"captures": {}, "targets": []}
 
@@ -777,10 +784,13 @@ def root_terminal_coverage_interactions(context):
                                "root_terminal_coverage": enabled}}
         assert request == expected, (name, request, expected)
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 17 and report["metadata"]["limits"] == expected["limits"]
+        assert report["schema_version"] == 20 and report["metadata"]["limits"] == expected["limits"]
         assert report["fork"] == request["fork"] == "Osaka"
         (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
-        return report, request
+        assert_hybrid(report)
+        assert report["status"] == "Converged"
+        assert graph(report, "Baseline")["root_terminal_coverage"] is None
+        return graph(report, "Native"), request
 
     disabled, _ = submit("coverage-disabled-cap", enabled=False, invalid_numeric=True)
     assert disabled["root_terminal_coverage"] is None
@@ -791,7 +801,7 @@ def root_terminal_coverage_interactions(context):
     assert _detail(covered) == prior_detail, "attachment changed detailed receipts/CFG/SSA/frontiers/outcomes"
     binding = _binding(covered, request, is_static=False)
     _tuples(covered, binding)
-    expect(status).to_contain_text("Detail incomplete / partial SSA")
+    expect(status).to_contain_text("Global model converged")
     expect(status).to_contain_text(COVERED)
     inspect = _inspect(page, canvas, covered, output, posts)
     # Return to the original viewport before editing another actual form.
@@ -807,17 +817,22 @@ def root_terminal_coverage_interactions(context):
         response = route.fetch()
         native_text = response.text()
         envelope = json.loads(native_text)
-        native = envelope["result"]["Ok"]
+        native = graph(envelope["result"]["Ok"], "Native")
         assert native["metadata"]["limits"]["root_terminal_coverage"] is True
         assert native["root_terminal_coverage"] is not None and _detail(native) == prior_detail
         (output / "coverage-missing-certificate-client-control-native.json").write_text(native_text + "\n")
         # Explicit client presentation control: preserve real Incomplete detail
         # and remove only its certificate. This is not a native producer claim.
         ui_envelope = deepcopy(envelope)
-        ui_envelope["result"]["Ok"]["root_terminal_coverage"] = None
+        graph(ui_envelope["result"]["Ok"], "Native")["root_terminal_coverage"] = None
         replacement = json.dumps(ui_envelope)
-        ui = json.loads(replacement)["result"]["Ok"]
+        ui_report = json.loads(replacement)["result"]["Ok"]
+        ui = graph(ui_report, "Native")
         assert ui == {**native, "root_terminal_coverage": None}, "client control changed other report fields"
+        # The primary graph's object also carries the companion sidecar. Compare
+        # every global graph field independently of that deliberately edited sidecar.
+        assert {key: value for key, value in graph(ui_report, "Baseline").items() if key != "hybrid"} == {
+            key: value for key, value in graph(envelope["result"]["Ok"], "Baseline").items() if key != "hybrid"}
         (output / "coverage-missing-certificate-client-control-ui.json").write_text(replacement + "\n")
         headers = dict(response.headers)
         headers.pop("content-encoding", None)
@@ -833,10 +848,10 @@ def root_terminal_coverage_interactions(context):
         assert missing["root_terminal_coverage"] is not None and _detail(missing) == prior_detail
         assert len(missing_certificates) == 1, missing_certificates
         intercepted, = missing_certificates
-        assert missing == json.loads(intercepted["native_text"])["result"]["Ok"], "same-job native report changed"
-        assert json.loads(intercepted["ui_text"])["result"]["Ok"] == {**missing, "root_terminal_coverage": None}
+        assert missing == graph(json.loads(intercepted["native_text"])["result"]["Ok"], "Native"), "same-job native report changed"
+        assert graph(json.loads(intercepted["ui_text"])["result"]["Ok"], "Native") == {**missing, "root_terminal_coverage": None}
         expect(status).to_contain_text(NOT_ATTACHED)
-        expect(status).to_contain_text("Incomplete / partial SSA")
+        expect(status).to_contain_text("Global model converged")
         assert COVERED not in status.text_content()
         missing_status = status.text_content()
         job_ids = re.findall(r"(?:^|; )Job ID: ([^;]+)(?=;|$)", missing_status)

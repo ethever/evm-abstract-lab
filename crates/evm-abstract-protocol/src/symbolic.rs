@@ -422,6 +422,10 @@ choice! {
         MachineState,
         /// A recursive relation in its containing abstract summary.
         AbstractProcedure,
+        /// A body in the containing summary's regional table.
+        RegionalNode,
+        /// A caller continuation in the containing summary's regional table.
+        RegionalCall,
     }
 }
 record! {
@@ -447,6 +451,10 @@ record! {
 variant! {
     /// Compatibility failure before consuming a report.
     pub enum ReportValidationFailure {
+        /// Inconsistent Hybrid namespace, source, receipt or coverage facts.
+        Hybrid(crate::HybridValidationKind),
+        /// Process identity, private-state or constructor representation failure.
+        Process(crate::ProcessValidationKind),
         /// Unsupported schema version.
         Schema(u16),
         /// Incoherent application postprocessing allowance and usage.
@@ -457,11 +465,15 @@ variant! {
         Pool(PoolReferenceFailure),
         /// Inconsistent independent terminal relation or original input binding.
         RootTerminal(crate::RootTerminalValidationFailure),
+        /// Inconsistent regional identities, relationships or currentness.
+        Regional(crate::RegionalValidationFailure),
     }
 }
 impl std::fmt::Display for ReportValidationFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Hybrid(kind) => write!(f, "invalid hybrid evidence: {kind:?}"),
+            Self::Process(kind) => write!(f, "invalid process evidence: {kind:?}"),
             Self::Schema(version) => write!(
                 f,
                 "report schema {version} is unsupported; expected {}",
@@ -479,6 +491,7 @@ impl std::fmt::Display for ReportValidationFailure {
                 failure.kind, failure.index, failure.length
             ),
             Self::RootTerminal(failure) => write!(f, "root terminal binding {failure:?}"),
+            Self::Regional(failure) => write!(f, "regional evidence {failure:?}"),
         }
     }
 }

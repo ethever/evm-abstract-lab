@@ -129,8 +129,18 @@ fn creation_and_nonentry_children_cannot_trigger_known_folding() {
         let mut out = repeated();
         let children = out.call_stack.children_mut();
         match variant {
-            0 => children[1].continuation.creation = Some(address(0x102)),
-            1 => children[0].continuation.creation = Some(address(0x102)),
+            0 => {
+                children[1].continuation.creation =
+                    Some(crate::analysis::CreationContinuation::Native {
+                        destination: address(0x102),
+                    })
+            }
+            1 => {
+                children[0].continuation.creation =
+                    Some(crate::analysis::CreationContinuation::Native {
+                        destination: address(0x102),
+                    })
+            }
             2 => children[1].state.key.basic_block_index = 1,
             3 => children[1].state.stack.push(word(1)),
             _ => unreachable!(),

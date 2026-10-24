@@ -37,6 +37,9 @@ pub enum JoinBoundary {
 /// An atomic machine transformation could not retain its complete result.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum MachineError {
+    /// A required coarse-process representation or consumer is unavailable.
+    #[error("coarse process boundary: {0:?}")]
+    Process(crate::analysis::ProcessBoundary),
     /// Execution roles or continuation destinations disagree.
     #[error("machine frame or continuation shapes disagree")]
     Shape,
@@ -137,6 +140,7 @@ impl MachineError {
 
     pub(crate) fn frontier_reason(self) -> FrontierReason {
         match self {
+            Self::Process(reason) => FrontierReason::Process(reason),
             Self::Shape => FrontierReason::StateJoin(JoinBoundary::Shape),
             Self::IdentityExhausted => FrontierReason::StateJoin(JoinBoundary::IdentityExhausted),
             Self::Alternatives { limit } => {

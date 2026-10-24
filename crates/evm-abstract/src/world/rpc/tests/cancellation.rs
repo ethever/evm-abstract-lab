@@ -14,6 +14,20 @@ use {
     crate::world::test_support::TestEnvironment,
 };
 
+fn assert_closed(disconnected: mpsc::Receiver<std::io::Result<usize>>) {
+    let observed = disconnected.recv_timeout(Duration::from_secs(3)).unwrap();
+    // Dropping a partially read HTTP body can close with a TCP reset. A read
+    // timeout or any other error still fails and retains its actual diagnosis.
+    assert!(
+        matches!(&observed, Ok(0))
+            || observed.as_ref().is_err_and(|error| matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+            )),
+        "cancelled reactor must close the pending socket before session drop: {observed:?}"
+    );
+}
+
 #[test]
 fn cancelling_pending_headers_or_body_closes_socket_and_installs_no_batch_facts() {
     for body in [false, true] {
@@ -53,10 +67,7 @@ fn cancelling_pending_headers_or_body_closes_socket_and_installs_no_batch_facts(
                 start.elapsed() < Duration::from_secs(5),
                 "must not wait for the 15 second HTTP timeout"
             );
-            assert!(
-                disconnected.recv_timeout(Duration::from_secs(3)).unwrap(),
-                "cancelled reactor must close the pending socket before session drop"
-            );
+            assert_closed(disconnected);
             assert_eq!(session.world().account(address), Some(&before));
             let requests = server.requests();
             assert_eq!(requests.last().unwrap()["method"], "eth_getStorageAt");
@@ -161,7 +172,7 @@ fn cancellation_during_storage_discovery_returns_cancelled_instead_of_a_frontier
         }
         .unwrap_err();
         assert!(matches!(error, analysis::RpcAnalysisError::Cancelled(_)));
-        assert!(disconnected.recv_timeout(Duration::from_secs(3)).unwrap());
+        assert_closed(disconnected);
         let requests = server.requests();
         assert_eq!(requests.last().unwrap()["params"][1], "0x2");
         assert_eq!(

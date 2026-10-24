@@ -66,6 +66,7 @@ fn check_entry_gas_failure(
 }
 
 mod admission;
+mod known_call;
 
 #[test]
 fn direct_known_recursion_closes_with_default_depth_and_without_unknown_effects() {
@@ -305,7 +306,7 @@ fn procedure_table_without_any_terminal_retains_an_explicit_frontier() {
         &mut counters,
         transfer::StorageReadPolicy::Abstract,
     );
-    assert_eq!(record.kind, ProcedureSummaryKind::KnownRecursion);
+    assert_eq!(record.kind, ProcedureSummaryKind::KnownCall);
     assert!(!record.closed);
     let root = record.root_procedure.expect("the bytecode was admitted");
     assert_eq!(record.procedures.len(), 1);

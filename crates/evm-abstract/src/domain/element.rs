@@ -261,6 +261,21 @@ impl WordElement for NumericValue {
     }
     fn singleton_work(&self) -> usize {
         let limbs = 4;
+        if self.canonical_literal().is_some() {
+            // Quote and query each inspect only the complete fixed-width
+            // literal certificate; no tree membership or division follows.
+            return 64 * limbs;
+        }
+        // Without a candidate, singleton() returns before finite membership or
+        // modular division. These are the same cached tags and inline checks
+        // as that selection chain, not a query through a public observation.
+        if self.finite_constants().cardinality() != Some(1)
+            && self.known_bits().singleton().is_none()
+            && self.interval().singleton().is_none()
+            && self.congruence().singleton().is_none()
+        {
+            return 32 * limbs;
+        }
         let finite = self.finite_constants().cardinality().map_or(0, |len| {
             // Conservative height/key bound of the existing finite BTreeSet.
             let levels = if len < 11 {

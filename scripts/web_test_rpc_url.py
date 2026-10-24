@@ -24,10 +24,12 @@ def url_configured_world_interactions(browser, args):
             reply = complete_submission(page, admitted)
             envelope = reply.json()
             assert reply.status == 200 and "Ok" in envelope["result"], envelope
-            report = envelope["result"]["Ok"]
+            full_report = envelope["result"]["Ok"]
+            assert full_report["hybrid"]["coverage"]["baseline_current"]
+            report = full_report["hybrid"]["detail"]
             assert {program["code_address"] for program in report["programs"]} == {rpc.root_address, rpc.child_address}
             assert report["metadata"]["snapshot"]["block_hash"] == rpc.block_hash
-            assert report["acquisition"]["requests"] > 0 and rpc.requests
+            assert full_report["acquisition"]["requests"] > 0 and rpc.requests
             assert RPC_TEST_TOKEN not in json.dumps(report)
             assert endpoint not in json.dumps(report)
             (args.output / "url-default-task-reply.json").write_text(json.dumps(envelope, indent=2) + "\n")

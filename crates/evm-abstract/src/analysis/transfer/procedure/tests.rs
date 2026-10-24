@@ -10,6 +10,10 @@ use alloy_primitives::U256;
 use std::collections::VecDeque;
 
 mod context;
+mod delivery;
+pub(super) mod native_engine;
+mod no_terminal_proof;
+mod payment;
 mod policy;
 mod projection;
 mod relation_boundary_probe;

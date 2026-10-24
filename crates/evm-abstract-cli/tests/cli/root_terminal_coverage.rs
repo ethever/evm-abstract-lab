@@ -19,7 +19,7 @@ fn report(output: &Output, exit: i32) -> Json {
 }
 
 fn assert_certificate(analysis: &Json) {
-    assert_eq!(analysis["schema_version"], 12);
+    assert_eq!(analysis["schema_version"], 15);
     assert_eq!(analysis["status"], "Incomplete");
     assert!(!analysis["frontiers"].as_array().unwrap().is_empty());
     let coverage = &analysis["root_terminal_coverage"];
@@ -33,6 +33,24 @@ fn assert_certificate(analysis: &Json) {
         assert!(outcome["data"].is_object() && outcome["store"].is_object());
         assert!(outcome.get("state").is_none() && outcome.get("pc").is_none());
     }
+}
+
+fn assert_baseline_pending(report: &Json, requested: bool) {
+    assert_eq!(report["status"], "Incomplete");
+    if report["hybrid"]["rpc"].is_object() {
+        assert_eq!(report["hybrid"]["rpc"]["precision"], "BaselinePending");
+        assert_eq!(report["hybrid"]["coverage"]["detail"], "Disabled");
+    } else {
+        assert_eq!(report["hybrid"]["coverage"]["detail"], "BaselinePending");
+    }
+    assert_eq!(
+        report["hybrid"]["coverage"]["requested_native_terminal_coverage"],
+        requested
+    );
+    assert!(report["hybrid"]["detail"].is_null());
+    assert_eq!(report["config"]["root_terminal_coverage"], false);
+    assert!(report.get("root_terminal_coverage").is_none());
+    assert!(!report["frontiers"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -121,24 +139,11 @@ fn plain_native_and_world_ssa_json_forward_only_core_owned_coverage() {
         vec!["--format", "json"],
         vec!["--format", "json", "--ssa", "--allow-partial-ssa"],
     ] {
-        let with_ssa = extra.contains(&"--ssa");
         let mut arguments = vec!["--max-transfers", "1"];
         arguments.extend(extra);
         let report = report(&analyze("call-return-branch", &arguments), 2);
-        let analysis = if with_ssa {
-            &report["analysis"]
-        } else {
-            &report
-        };
-        assert_certificate(analysis);
-        assert_eq!(analysis["config"]["root_terminal_coverage"], true);
-        if with_ssa {
-            let partial = &report["partial_ssa"];
-            assert_eq!(partial["status"], "Incomplete");
-            assert_eq!(partial["frontiers"], analysis["frontiers"]);
-            assert!(report.get("root_terminal_coverage").is_none());
-            assert!(report.get("ssa").is_none());
-        }
+        assert_baseline_pending(&report, true);
+        assert!(report.get("ssa").is_none() && report.get("partial_ssa").is_none());
     }
 }
 
@@ -187,6 +192,14 @@ fn text_labels_one_certificate_and_keeps_detail_frontiers_and_partial_ssa() {
             text.contains("Incomplete") && text.contains("Transfers"),
             "{text}"
         );
+        if arguments.contains(&"--world") {
+            assert!(
+                text.contains("BaselinePending")
+                    && text.contains("Native terminal auxiliary requested: true")
+            );
+            assert_eq!(text.matches(NOTE).count(), 0);
+            continue;
+        }
         assert_eq!(text.matches(NOTE).count(), 1, "{text}");
         assert!(text.contains("scope=AllInputStates"));
         assert!(text.contains("alternatives=Return, Revert, Failure"));
@@ -225,7 +238,7 @@ fn default_and_explicit_switches_without_a_certificate_keep_the_existing_output_
                 arguments.push(flag);
             }
             let report = report(&run_concrete(&arguments), exit);
-            assert_eq!(report["schema_version"], 12);
+            assert_eq!(report["schema_version"], 15);
             assert!(report.get("root_terminal_coverage").is_none());
         }
         let mut arguments = vec!["explain", "--hex", "00"];
@@ -277,34 +290,16 @@ fn fixed_rpc_forwards_default_and_explicit_coverage_with_and_without_discovery()
                     if command == "analyze" {
                         arguments.extend(["--format", "json", "--ssa", "--allow-partial-ssa"]);
                         let report = report(&run_concrete(&arguments), 2);
-                        if enabled {
-                            assert_certificate(&report["analysis"]);
-                        } else {
-                            assert!(report["analysis"].get("root_terminal_coverage").is_none());
-                        }
-                        assert_eq!(report["analysis"]["status"], "Incomplete");
-                        assert!(
-                            !report["analysis"]["frontiers"]
-                                .as_array()
-                                .unwrap()
-                                .is_empty()
-                        );
-                        assert_eq!(
-                            report["analysis"]["config"]["root_terminal_coverage"],
-                            enabled
-                        );
-                        assert_eq!(report["analysis"]["config"]["max_work"], 2_000_000_000);
-                        assert_eq!(
-                            report["partial_ssa"]["frontiers"],
-                            report["analysis"]["frontiers"]
-                        );
+                        assert_baseline_pending(&report, enabled);
+                        assert_eq!(report["config"]["max_work"], 2_000_000_000);
+                        assert!(report.get("partial_ssa").is_none());
                     } else {
                         let output = run_concrete(&arguments);
                         assert_eq!(output.status.code(), Some(2));
                         let text = String::from_utf8(output.stdout).unwrap();
                         assert!(text.contains("Incomplete") && text.contains("Transfers"));
-                        assert!(text.contains("SSA unavailable"));
-                        assert_eq!(text.matches(NOTE).count(), usize::from(enabled), "{text}");
+                        assert!(text.contains("BaselinePending"));
+                        assert_eq!(text.matches(NOTE).count(), 0, "{text}");
                     }
                     let requests = server.finish();
                     assert!(

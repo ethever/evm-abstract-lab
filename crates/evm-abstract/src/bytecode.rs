@@ -5,14 +5,18 @@
 //! 指令名与栈输入/输出数量来自 `revm-bytecode`，这里不维护另一套 opcode 表。
 
 use crate::Fork;
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use revm_bytecode::{
     Bytecode,
     eip7702::{EIP7702_MAGIC_BYTES, Eip7702DecodeError},
     opcode::{self, OpCode},
 };
 use serde::{Serialize, Serializer};
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{Arc, OnceLock},
+};
 use thiserror::Error;
 
 #[cfg(test)]
@@ -125,16 +129,29 @@ pub struct Program {
     data: Arc<ProgramData>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, Eq, Serialize)]
 #[serde(rename = "Program")]
 struct ProgramData {
     fork: Fork,
     byte_len: usize,
     #[serde(skip)]
     bytes: Vec<u8>,
+    #[serde(skip)]
+    bytes_digest: OnceLock<B256>,
     blocks: Vec<BasicBlock>,
     #[serde(skip)]
     jumpdest_blocks: BTreeMap<usize, usize>,
+}
+
+impl PartialEq for ProgramData {
+    fn eq(&self, other: &Self) -> bool {
+        // Cache initialization is not part of the captured program's value.
+        self.fork == other.fork
+            && self.byte_len == other.byte_len
+            && self.bytes == other.bytes
+            && self.blocks == other.blocks
+            && self.jumpdest_blocks == other.jumpdest_blocks
+    }
 }
 
 impl fmt::Debug for Program {
@@ -316,6 +333,7 @@ impl Program {
                 fork,
                 byte_len: bytes.len(),
                 bytes: bytes.to_vec(),
+                bytes_digest: OnceLock::new(),
                 blocks,
                 jumpdest_blocks,
             }),
@@ -335,6 +353,48 @@ impl Program {
     /// Immutable source bytes used by CODECOPY and EXTCODECOPY.
     pub fn bytes(&self) -> &[u8] {
         &self.data.bytes
+    }
+
+    /// Identity of one immutable captured allocation, including its fork and
+    /// complete decoded stream. Cloned handles preserve this identity.
+    pub(crate) fn shares_capture(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+    }
+
+    /// Positive allocation shortcut, followed by funded full value equality.
+    /// One byte bounds one decoded instruction, block and jumpdest entry; 64
+    /// units per byte covers their fixed fields and literal bytes. No digest
+    /// equality or canonical-allocation assumption replaces the fallback.
+    pub(crate) fn eq_with_payment(
+        &self,
+        other: &Self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, crate::resource::CloneError> {
+        use crate::resource::clone_payment::{checkpoint, pay};
+        pay(budget, 16)?;
+        if self.shares_capture(other) {
+            return Ok(true);
+        }
+        pay(
+            budget,
+            self.byte_len()
+                .saturating_add(other.byte_len())
+                .saturating_mul(64)
+                .saturating_add(64),
+        )?;
+        let equal = self == other;
+        checkpoint(budget)?;
+        Ok(equal)
+    }
+
+    /// Keccak of the literal captured bytes, shared by all handles of this
+    /// immutable program. Callers retain their cold-byte work allowance even
+    /// after initialization; cache warmth must never change analysis quotes.
+    pub(crate) fn bytes_digest(&self) -> B256 {
+        *self
+            .data
+            .bytes_digest
+            .get_or_init(|| keccak256(self.bytes()))
     }
 
     /// 基本块，包括尚未证明可达的块。

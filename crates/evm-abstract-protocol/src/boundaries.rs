@@ -67,13 +67,15 @@ variant! {
 variant! {
     /// Complete typed native reason.
     pub enum FrontierDetails {
+        /// A conservative process rule remains uncovered.
+        Process(crate::ProcessBoundary),
         /// Budget boundary.
         Budget(crate::FrontierKind),
         /// Work boundary.
         Work,
         /// SummaryWork boundary.
         SummaryWork,
-        /// Recursive execution has no covered terminal behavior in this model.
+        /// A known bytecode region lacks terminal evidence in this model.
         RecursiveNoTerminal,
         /// CallDepth boundary.
         CallDepth,

@@ -131,7 +131,8 @@ fn decimal_rpc_quantities_keep_full_width_and_canonical_storage_keys() {
                     "{}",
                     String::from_utf8_lossy(&output.stderr)
                 );
-                let result: Json = serde_json::from_slice(&output.stdout).unwrap();
+                let result: Json =
+                    super::native::select(&serde_json::from_slice(&output.stdout).unwrap());
                 assert_eq!(result["status"], "Converged");
                 assert_eq!(result["world"]["identity"]["chain_id"], hex_chain);
                 // CALLVALUE; PUSH1 16; SLOAD; STOP exercises both CLI quantities.

@@ -90,7 +90,7 @@ impl Graph {
                                     Some(program.id),
                                     format!("{} · {:?}", Symbol::Program(program.id), program.kind), Density::Compact)
                                 .on_hover_text(crate::notation::widget(ui, format!(
-                                    "{}\n{}", program.code_address, program.code_hash
+                                    "{}\n{}", program.code_address.as_deref().unwrap_or("Constructor source"), program.code_hash
                                 )));
                             }
                         });
@@ -178,7 +178,7 @@ impl Graph {
                 ui.label(crate::notation::widget(ui, format!(
                     "{}:{} · {} state instances",
                     node.program.map_or("Native".into(), |id| Symbol::Program(id).to_string()),
-                    Symbol::Block(node.basic_block),
+                    node.basic_block.map_or_else(|| "Process control".into(), |id| Symbol::Block(id).to_string()),
                     node.members.len()
                 )));
                 ui.label(
@@ -227,7 +227,7 @@ impl Graph {
                             , notation_0 = Symbol::State(state));
                             let tooltip = format!(
                                 "Code: {}\nStorage: {}\nContext: {:?}",
-                                block.code_address, block.storage_address, block.context
+                                report.code_label(block), report.storage_label(block), block.context
                             );
                             if ui
                                 .selectable_label(selection.state == Some(state), crate::notation::widget(ui, label))

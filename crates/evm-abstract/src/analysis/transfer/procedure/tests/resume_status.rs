@@ -101,6 +101,30 @@ impl EvmNumericAlgebra for StatusAlgebra {
             )
             .saturating_add(facts.saturating_add(1).saturating_mul(1024))
     }
+    fn summary_join_work(&self, l: &Word, r: &Word, w: bool) -> usize {
+        Algebra.summary_join_work(l, r, w)
+    }
+    fn summary_canonical_work(&self, v: &Word) -> usize {
+        Algebra.summary_canonical_work(v)
+    }
+    fn summary_construction_work(&self, c: crate::domain::SummaryConstruction) -> usize {
+        Algebra.summary_construction_work(c)
+    }
+    fn summary_equal_work(&self, l: &Word, r: &Word) -> usize {
+        Algebra.summary_equal_work(l, r)
+    }
+    fn summary_is_top_work(&self, v: &Word) -> usize {
+        Algebra.summary_is_top_work(v)
+    }
+    fn summary_compact_work(&self, v: &Word) -> usize {
+        Algebra.summary_compact_work(v)
+    }
+    fn summary_restore_work(&self, v: &Word, p: &Word) -> usize {
+        Algebra.summary_restore_work(v, p)
+    }
+    fn summary_observation_work(&self, v: &crate::domain::WordObservation) -> usize {
+        Algebra.summary_observation_work(v)
+    }
 }
 
 #[test]

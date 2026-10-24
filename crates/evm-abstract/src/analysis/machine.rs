@@ -19,6 +19,7 @@ pub(in crate::analysis) mod fixtures;
 mod frame;
 mod join;
 mod payload;
+mod process_key;
 mod range;
 mod stack;
 mod symbolic;
@@ -80,8 +81,11 @@ impl ExecutionConfig {
 }
 
 /// Code identity and storage identity differ for DELEGATECALL, CALLCODE and 7702.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FrameKey {
+    /// A process has its own finite coordinates. Other fields are then private
+    /// canonical adapter anchors and are omitted by native serialization.
+    pub process: Option<Box<super::ProcessFrameKey>>,
     /// Account supplying executed runtime bytecode after delegation resolution.
     pub code_address: Address,
     /// Hash of captured executable code, including creation initcode.
@@ -125,8 +129,8 @@ pub struct EvmContinuation<N: WordElement> {
     pub output_offset: EvmValue<N>,
     /// Requested output length; bytes beyond actual returndata stay unchanged.
     pub output_size: EvmValue<N>,
-    /// CREATE/CREATE2 deploy at this address and resume with an address result.
-    pub creation: Option<Address>,
+    /// CREATE/CREATE2 retain a concrete native or class-valued process result.
+    pub creation: Option<super::CreationContinuation>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -188,10 +192,17 @@ impl<N: WordElement> EvmMachinePayload<N> {
     }
 
     pub(crate) fn work_size(&self) -> usize {
+        let store_work = if self
+            .call_stack
+            .iter()
+            .all(|frame| frame.key.process.is_some())
+        {
+            self.store.process_work_size()
+        } else {
+            self.store.work_size()
+        };
         let cost = self.call_stack.iter().fold(
-            self.store
-                .work_size()
-                .saturating_add(self.relations.work_size()),
+            store_work.saturating_add(self.relations.work_size()),
             |cost, frame| cost.saturating_add(frame.work_size()),
         );
         self.call_stack.children().iter().fold(cost, |cost, child| {
@@ -265,6 +276,8 @@ pub enum MachineEdgeKind {
     Revert,
     /// A procedure relation resumes the parent with this termination category.
     Summary(OutcomeKind),
+    /// A coarse region repeats after a local primitive without entering a child.
+    Process(super::ProcessAction),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -282,6 +295,8 @@ pub struct MachineEdge {
 /// whose return value and effects were guessed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum FrontierReason {
+    /// An explicit coarse-process semantic rule has not been covered.
+    Process(super::ProcessBoundary),
     /// Global state or transfer budget was reached.
     Budget(Limit),
     /// The shared work budget cannot cover the next operation.
@@ -290,7 +305,7 @@ pub enum FrontierReason {
     SummaryWork,
     /// Another frame would exceed the external-call depth budget.
     CallDepth,
-    /// Recursive bytecode stabilized without covering any finite terminal behavior.
+    /// A live known bytecode region stabilized without covering finite terminal behavior.
     RecursiveNoTerminal,
     /// A modeled byte range exceeds the declared memory or representation policy.
     Memory,
@@ -386,6 +401,10 @@ pub struct EvmProcedureSummaryOutput<N: WordElement> {
 /// A procedure participating in the joint known/unknown fixed point.
 #[derive(Clone, Debug, Serialize)]
 pub struct EvmProcedureSummary<N: WordElement> {
+    /// Joined logical invocation bounds for a process; None for native code.
+    pub process_input: Option<super::EvmProcessInvocation<N>>,
+    /// Interpretation is independent of the captured Program/code identity.
+    pub semantics: super::TransferSemantics,
     /// Executable and context shape, independent of suspended caller stacks.
     pub frame: FrameKey,
     /// Whole-store numerical input invariant, including transient and lifecycle state.
@@ -398,16 +417,24 @@ pub struct EvmProcedureSummary<N: WordElement> {
     pub input_updates: usize,
     /// Number of strict output expansions.
     pub output_updates: usize,
-    /// Captured-program block indexes actually analyzed, never invented unknown PCs.
+    /// Cumulative historical observations of visited captured-program blocks.
+    /// These do not certify execution of the current joined input; use current
+    /// regional transfer receipts for that distinction. Unknown PCs are never invented.
     pub covered_blocks: Vec<usize>,
 }
 
 /// Why ordinary stack execution entered the relative procedure worklist.
+/// The trigger is captured before callee detachment; recursive dependencies
+/// discovered during saturation do not change it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ProcedureSummaryKind {
+    /// Captured runtime selected by the explicit coarse process policy.
+    KnownProcess,
     /// An unobserved implementation or symbolic target remainder.
     UnknownEnvironment,
-    /// A known runtime entry repeats an executable/storage context in its ancestors.
+    /// A known runtime CALL entry admitted before any repeated active call edge.
+    KnownCall,
+    /// A known runtime entry selected by a repeated structural call edge on its stack.
     KnownRecursion,
 }
 
@@ -416,14 +443,21 @@ pub enum ProcedureSummaryKind {
 pub struct EvmProcedureSummaryRecord<N: WordElement> {
     /// Main machine node whose execution requested this relation.
     pub source_state: usize,
+    /// Certified for this source's final successful, still-valid World evaluation.
+    /// False means uncertified currentness, not proof that historical facts are
+    /// stale or false. Regional closure and global closure remain separate.
+    pub source_current: bool,
     /// Actual source of the abstraction; known runtime remains known runtime.
     pub kind: ProcedureSummaryKind,
     /// Entry procedure index, absent when entry or evidence construction failed.
     pub root_procedure: Option<usize>,
-    /// Every whole-payload invariant and dependency has stabilized, without a frontier.
+    /// Regional-system closure observed at this snapshot's retained input and
+    /// dependency basis; neither current global closure nor source currency.
     pub closed: bool,
     /// Known bytecode and unknown procedures solved together.
     pub procedures: Vec<EvmProcedureSummary<N>>,
+    /// Coarse native regional CFG, separate from machine instruction/SSA evidence.
+    pub regional_cfg: super::transfer::procedure::EvmRegionalCfg,
     /// Relative block states retained by the shared worklist.
     pub state_count: usize,
     /// Metered block/environment transfers performed for this request.
@@ -450,6 +484,20 @@ impl<N: WordElement> Clone for EvmProcedureEvidence<N> {
 impl<N: WordElement> EvmProcedureEvidence<N> {
     fn as_slice(&self) -> &[EvmProcedureSummaryRecord<N>] {
         self.0.as_slice()
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(super) fn is_unique(&self) -> bool {
+        Arc::strong_count(&self.0) == 1
+    }
+
+    /// Only a prepaid final certification may change flags. Replay shares this
+    /// Arc and cannot acquire a mutable view or copy the retained Store reports.
+    pub(super) fn unique_records(&mut self) -> Option<&mut [EvmProcedureSummaryRecord<N>]> {
+        Arc::get_mut(&mut self.0).map(Vec::as_mut_slice)
     }
 
     pub(super) fn push(&mut self, record: EvmProcedureSummaryRecord<N>) {

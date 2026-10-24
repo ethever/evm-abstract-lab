@@ -24,6 +24,7 @@ pub(super) struct Step {
     pub(super) owner: Address,
     pub(super) caller: Address,
     pub(super) is_static: bool,
+    pub(super) value: U256,
     pub(super) pc: usize,
     pub(super) opcode: u8,
     pub(super) is_init: bool,
@@ -44,6 +45,7 @@ impl<CTX> Inspector<CTX, EthInterpreter> for Trace {
             owner: interpreter.input.target_address,
             caller: interpreter.input.caller_address,
             is_static: interpreter.runtime_flag.is_static,
+            value: interpreter.input.call_value,
             pc: interpreter.bytecode.pc(),
             opcode: interpreter.bytecode.opcode(),
             is_init: interpreter.input.bytecode_address.is_none(),
@@ -141,6 +143,14 @@ pub(super) fn execute(
     world: &EvmWorld<NumericValue>,
     entry: &EvmEntry<NumericValue>,
 ) -> Observation {
+    execute_with_gas(world, entry, 10_000_000)
+}
+
+pub(super) fn execute_with_gas(
+    world: &EvmWorld<NumericValue>,
+    entry: &EvmEntry<NumericValue>,
+    gas_limit: u64,
+) -> Observation {
     let mut db = InMemoryDB::default();
     let mut initial_storage = BTreeMap::new();
     for (owner, account) in world.accounts() {
@@ -184,7 +194,7 @@ pub(super) fn execute(
             TxEnv::builder()
                 .caller(entry.environment.caller.as_concrete().unwrap())
                 .kind(TxKind::Call(entry.address))
-                .gas_limit(10_000_000)
+                .gas_limit(gas_limit)
                 .data(
                     entry
                         .environment

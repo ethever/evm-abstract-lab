@@ -358,6 +358,12 @@ let
               || (type == "directory" && lib.hasPrefix "${rel}/" packagePath)
             ) paths
             || (examples && (rel == "examples" || lib.hasPrefix "examples/" rel))
+            # Crane's dummy retains manifests, not workspace lint policy. Keep
+            # this input in every real closure, including Clippy's lib cache.
+            || lib.elem rel [
+              "clippy.toml"
+              ".clippy.toml"
+            ]
           )
           && (mode.kind == "test" || !(lib.any developmentTarget paths));
       };

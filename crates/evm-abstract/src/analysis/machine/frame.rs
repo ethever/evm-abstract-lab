@@ -95,6 +95,16 @@ impl<N: WordElement, Bytes, Checkpoint, Operand> EvmFrame<N, Bytes, Checkpoint, 
     }
 
     pub(in crate::analysis) fn metadata_work(&self) -> usize {
+        if self.key.process.is_some() {
+            // A process retains an immutable Program handle. Its capability
+            // scan is paid separately; cloning a process never traverses the
+            // captured instructions. Actual equality has its own paid fallback.
+            return self
+                .key
+                .process_work()
+                .saturating_add(self.key.jump_history.len())
+                .saturating_add(16);
+        }
         self.program
             .as_ref()
             .map_or(0, |program| {
@@ -106,6 +116,7 @@ impl<N: WordElement, Bytes, Checkpoint, Operand> EvmFrame<N, Bytes, Checkpoint, 
                     })
             })
             .saturating_add(self.key.jump_history.len())
+            .saturating_add(self.key.process_work())
     }
 
     pub(crate) fn byte_arrays(&self) -> [&Bytes; 3] {
@@ -121,6 +132,23 @@ impl<N: WordElement, Bytes, Checkpoint, Operand> EvmFrame<N, Bytes, Checkpoint, 
             && self.code == other.code
             && self.program == other.program
             && self.stack.len() == other.stack.len()
+    }
+
+    pub(in crate::analysis) fn same_shape_with_payment(
+        &self,
+        other: &Self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, MachineError> {
+        crate::resource::clone_payment::pay(budget, 16)?;
+        if self.key != other.key || self.code != other.code || self.stack.len() != other.stack.len()
+        {
+            return Ok(false);
+        }
+        Ok(match (&self.program, &other.program) {
+            (Some(left), Some(right)) => left.eq_with_payment(right, budget)?,
+            (None, None) => true,
+            _ => false,
+        })
     }
 
     /// One structural rebuilding path for both unary representation maps (zip
@@ -200,7 +228,9 @@ impl<N: WordElement> EvmFrameState<N> {
         pay(budget, self.stack.len().saturating_add(4))?;
         // FrameKey owns jump_history. Program and saved_store clone handles,
         // including snapshots containing arbitrarily expensive private N.
-        let mut work = 32usize.saturating_add(self.key.jump_history.len().saturating_mul(2));
+        let mut work = 32usize
+            .saturating_add(self.key.jump_history.len().saturating_mul(2))
+            .saturating_add(self.key.process_work());
         for value in self.values() {
             work = work.saturating_add(value_work(value, budget)?);
         }
@@ -234,11 +264,13 @@ impl<N: WordElement> EvmFrameState<N> {
             .map(EvmValue::work_size)
             .chain(self.byte_arrays().map(EvmByteArray::work_size))
             .fold(
-                self.saved_store
-                    .state()
-                    .work_size()
-                    .saturating_add(self.metadata_work())
-                    .saturating_add(3),
+                (if self.key.process.is_some() {
+                    self.saved_store.state().process_work_size()
+                } else {
+                    self.saved_store.state().work_size()
+                })
+                .saturating_add(self.metadata_work())
+                .saturating_add(3),
                 usize::saturating_add,
             )
     }

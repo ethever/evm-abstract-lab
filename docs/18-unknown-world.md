@@ -164,6 +164,8 @@ CALL 返回后的第一个基本块按成功位 0 / 1 分开传播，随后恢�
 
 ## 6. 怎样从报告读到这些区别
 
+混合入口先求全局过程关系，再按区域保留原生精度。其输入、闭合条件和两份图的关系见[全局模型与详细路径](20-global-and-local.md)。
+
 | 内容 | native JSON | Web／文本中的含义 |
 | --- | --- | --- |
 | 实际展开代码 | `states`、指令执行证据 | 已捕获的实际指令与块 |
@@ -172,11 +174,27 @@ CALL 返回后的第一个基本块按成功位 0 / 1 分开传播，随后恢�
 | 摘要内部实际执行的已知块 | procedure `covered_blocks`、代码身份 | 过程级覆盖来源，不冒充主图展开轨迹 |
 | 尚未完成 | `frontiers` 与 `closed: false` | 真实预算／状态／效果缺口 |
 
-协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、块覆盖和迭代计数。Web 可在对应节点的 inspector 中查看。native JSON 则保留过程输入和结果 Store；当前两种报告的 schema 版本分别为 native 12、Web protocol 17。
+协议报告把摘要投影为 `abstract_summaries`，包含入口 state、过程依赖、历史块观察和迭代计数。`KnownCall` 表示已知代码调用从入口进入过程关系，`KnownRecursion` 表示递归触发，`UnknownEnvironment` 表示未知执行；入口类型与关系内部是否存在递归依赖分别记录。Web 在对应节点显示已知调用或递归标签，inspector 的 `Regional control flow` 展开实际区域节点、控制流边及 `Calls and returns`。native JSON 保留过程输入和结果 Store；当前两种报告的 schema 版本分别为 native 15、Web protocol 20。
+
+每条摘要的 `regional_cfg` 使用自己的 node/call ID，边的目标在同一摘要内解析，不能当作主 CFG 的机器状态 ID 或 SSA 名称。节点保留自身的捕获代码 hash、代码地址、状态 owner、逻辑 ADDRESS、CALLER 和 static 模式。原生指令执行另有栈高度、跳转上下文和程序块索引，块也可能是程序末尾的合成续点；环境与保守过程不提供指令访问证据。`successors` 是累计准入拓扑；`transfer` 则是实际转换的记录，分别保存输入 revision、`current`、`complete`、`visited_block` 和真实边类型。这里的 `current` 仅相对于该条摘要的观察。对最终 World 的当前性还要求摘要 `source_current=true`，并且没有同一 `source_state` 的后续记录；局部 revision 仍须匹配。被后续记录替代的观察是历史；最新记录的 `source_current=false` 表示最终来源未获认证，不能仅凭 false 断言它已经过时。历史与未认证记录仍可查看。`covered_blocks` 只表示历史观察，不证明当前 joined input 的覆盖。
+
+native 15 / wire 20 将过程的解释方式记为 `semantics`，与原始代码身份分别保存：`Native` 执行原生指令、空代码或预编译；`Environment` 表示未观测实现的环境抽象；`KnownProcess` 表示已捕获 Runtime 的保守过程。库接口显式选择 `KnownProcessSummaries` 策略才启用后者，其入口标为 `kind=KnownProcess`。原始 Program、hash、fork 与 Runtime 种类仍然保留；wire 中这类区域节点的 `basic_block=null`、receipt 的 `visited_block=false`，不能据此填充指令 PC 或 SSA。
+
+`transfer.process` 记录实际采用的 `repeat`、`actions` 和 `unresolved`。`Call`、`StaticCall`、`DelegateCall`、`CallCode`、`Create`、`Create2` 是动作种类，与被调用帧的代码种类各自独立。Web 显示“Conservative process · possible control”、实际保留的调用和出口，以及尚未展开的规则。只读回调仍是控制行为；没有父帧可见写入不表示它可以从控制证据中删除。调用的 `target` 保留代码解析前的目标，`Named` 是明确地址，`Residual` 是剩余 owner 与别名类，不能显示成占位地址。未覆盖规则也以 `FrontierDetails.Process` 保留，不能解释为已完成的空效果。
+
+过程身份位于 `frame.process` / `procedure.process`，包含完整 256 位 `epoch`、`owner` 类、`source` 与 `is_static`。`epoch` 使用完整十六进制字符串，不是局部 revision 或截断的 generation。`Named` / `Residual` 描述物理状态类，不能从它们推导逻辑 ADDRESS 或不同实例相等；`procedure.process_input` 的 ADDRESS、CALLER、value 是原生表实际保留的汇合输入。它们可以包含多个 subscriber 的贡献，不能据此证明某次调用与共享 callee 输入逐项相等。机器快照另以 `process_operands` 保留实际绑定的操作数。
+
+process 的旧 `code_address`、`storage_address`、`address_value`、`caller`、块索引和栈高度等 native-only 字段为空；私有栈、跳转上下文和指令数组也不作为过程事实导出。已知代码身份改由 `source.Runtime` 保存 source/hash/fork；捕获的构造代码由 `source.InitCode` 保存 hash/fork，不声明它已经是部署后的 runtime。`AnyRuntime` / `AnyInitCode` 没有虚构 source account、hash 或 Program。`Empty`、`Precompile`、`InvalidDelegation` 分别保留自己的执行种类；预编译身份不是捕获字节或指令访问证据。捕获 initcode 的程序目录项可以没有 account source address。
+
+实际调用的 `scope=Primitive` 表示一条原始动作，后续未知链由单独的 residual 依赖表示。未提供 scope 时，界面保留“not recorded”，不会把它猜成 primitive 或某种已闭合链。`ConstructorProcess` 与 runtime 过程分开；原生 `CreationContinuation` / wire continuation 记录 creator、destination 类和 epoch。`process.creations` 保存已经应用的 allocation guard、当前帧异常与本地零结果拒绝；真正进入的 constructor 仍通过区域调用表示。`delivery.creation` 只投影实际投递的 `Address(class)` / `Zero`、parent returndata、部署和 post-nonce rollback 分类，不能把 CREATE 成功表示为 CALL 的布尔 `1`，也不能由一个 Return 自行补出部署成功。构造完成前，账户 runtime 仍按原生 Store 的 Empty 事实展示。
+
+阅读覆盖时分别检查：区域记录自己的 node/call 命名空间、最终来源的 `source_current`、本条 receipt 的 revision/current、观察输入的 `closed`，以及整份报告的 status/frontiers。过程动作或某个出口已被记录，只说明这些替代行为进入了当前模型；它们不能替代剩余规则与全局闭合检查。域格式仍为 3，逻辑费用版本仍为 8。
+
+调用记录把 caller 节点、callee 过程及其入口，与实际投递到 caller 续点的 Return/Revert/Failure 分开。每次 delivery 保留输入 revision、输出 generation、当前性及真实续点边类型。`closed` 保存该观察输入快照的关系闭包，不能单独证明它覆盖最终输入。`current` 或 `complete` 单独都不表示整个模型已经闭合；详细状态、SSA 和 frontier 仍由原生结果决定。环境的效果摘要本身不能证明没有回调。读取 `KnownProcess` 或携带 `process` 规则的环境转换时，还须按动作、调用和返回记录检查实际保留的回调与待展开义务；父帧没有可见写入也不能替代这项控制检查。
 
 历史上，native 8 将旧 `unknown_summaries` 统一为 `procedure_summaries`，Web protocol 13 新增摘要的 `kind` 和 `root_procedure`；native 9／Web protocol 14 随后移除了原生 SMT 策略与结果字段。消费者应按版本同步迁移。Web 的已知递归节点显示 Recursive bytecode summary，Frame inspector 显示 Recursive bytecode；未知过程继续显示 Abstract environment／Abstract interactions。
 
-当前原生 schema 12 的账户代码采用 `{"Runtime":{"fork":"osaka","byte_len":1,"bytecode":"0x00"}}` 这样的格式；`Runtime` 内仅含 `fork`、`byte_len` 和 `bytecode`。小写、带 `0x` 前缀的 `bytecode` 保留该观测捕获的全部原始字节，包括无效指令、截断 PUSH 数据和不可达尾部；`byte_len` 是原始字节数。消费者使用导出的 fork 调用 `Program::from_hex_with_fork(bytecode, fork)` 重建程序。World、当前 Store、saved_store 与 outcome Store 分别输出各自持有的代码版本，不向当前 World 重新查询历史代码。此前读取账户 `Runtime.blocks` 的消费者须迁移；独立 Program、`EvmFrameState<N>.program` 和单程序 `analysis.program` 仍提供 decoded `blocks`，wire schema 17 的 `programs[].blocks` 也保持原格式。
+当前原生 schema 15 的账户代码采用 `{"Runtime":{"fork":"osaka","byte_len":1,"bytecode":"0x00"}}` 这样的格式；`Runtime` 内仅含 `fork`、`byte_len` 和 `bytecode`。小写、带 `0x` 前缀的 `bytecode` 保留该观测捕获的全部原始字节，包括无效指令、截断 PUSH 数据和不可达尾部；`byte_len` 是原始字节数。消费者使用导出的 fork 调用 `Program::from_hex_with_fork(bytecode, fork)` 重建程序。World、当前 Store、saved_store 与 outcome Store 分别输出各自持有的代码版本，不向当前 World 重新查询历史代码。此前读取账户 `Runtime.blocks` 的消费者须迁移；独立 Program、`EvmFrameState<N>.program` 和单程序 `analysis.program` 仍提供 decoded `blocks`，wire schema 18 的 `programs[].blocks` 也保持原格式。
 
 下面是引入已知递归时留存的 `self-return-42.json` 历史 Chromium 截图，字段与界面按当时版本解读。选中的是有代码哈希、storage owner 和 caller continuation 的 Runtime frame；下方记录当时的闭合过程摘要。这份历史证据不代表当前版本的浏览器验收或 USDC 性能结果。
 

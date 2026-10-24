@@ -264,8 +264,8 @@ fn default_coverage_and_the_entire_certificate_survive_existing_ssa_envelopes() 
         &crate::json::program(&analysis, &ir, NumericModel::Product, &reporting).unwrap(),
     )
     .unwrap();
-    assert_eq!(native["schema_version"], 12);
-    assert_eq!(machine["schema_version"], 12);
+    assert_eq!(native["schema_version"], 15);
+    assert_eq!(machine["schema_version"], 15);
     assert_metadata(&forwarded, &reporting);
     assert_eq!(forwarded["analysis"], native);
     assert_eq!(forwarded["machine_analysis"], machine);
@@ -311,7 +311,7 @@ fn default_coverage_and_the_entire_certificate_survive_existing_ssa_envelopes() 
         &crate::json::world(&analysis, Some(&ir), NumericModel::Product, &reporting).unwrap(),
     )
     .unwrap();
-    assert_eq!(native["schema_version"], 12);
+    assert_eq!(native["schema_version"], 15);
     for field in [
         "numeric_model",
         "postprocessing_max_work",
@@ -365,10 +365,18 @@ fn explain_forwards_default_enable_and_disable_to_raw_and_world_execution() {
             assert!(!complete);
             assert!(text.contains("Incomplete") && text.contains("Transfers"));
             assert!(text.contains("SSA unavailable"));
+            let world_input = input[0] == "--world";
+            if world_input {
+                assert!(text.contains("Detailed paths: BaselinePending"), "{text}");
+                assert!(
+                    text.contains(&format!("Native terminal auxiliary requested: {enabled}")),
+                    "{text}"
+                );
+            }
             assert_eq!(
                 text.matches("Root terminal coverage (conservative)")
                     .count(),
-                usize::from(enabled),
+                usize::from(enabled && !world_input),
                 "{text}"
             );
         }

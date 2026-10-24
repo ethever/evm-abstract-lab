@@ -497,6 +497,90 @@ impl ScalarFacts {
         Ok(())
     }
 
+    // Both transactional insertion paths share the same predicate algebra.
+    // The caller validates the staged result before committing a changed slot.
+    fn apply_predicate(
+        &mut self,
+        subject: Symbol,
+        predicate: UnaryPredicate,
+    ) -> Result<(), FactError> {
+        let contradiction = || FactError::Contradiction { subject };
+        let bit_set = matches!(&predicate, UnaryPredicate::BitSet(_));
+        match predicate {
+            UnaryPredicate::Exact(value) => {
+                self.constrain_finite(&FiniteConstantSet::constant(value), subject)?;
+            }
+            UnaryPredicate::MemberOf(set) => self.constrain_finite(&set.0, subject)?,
+            UnaryPredicate::KnownBits(bits) => {
+                self.bits = Some(match self.bits {
+                    Some(current) => current.meet(bits).map_err(|_| contradiction())?,
+                    None => bits,
+                });
+            }
+            UnaryPredicate::BitSet(index) | UnaryPredicate::BitClear(index) => {
+                let mask = U256::from(1) << usize::from(index.get());
+                let bits = if bit_set {
+                    BitConstraints {
+                        zero: U256::ZERO,
+                        one: mask,
+                    }
+                } else {
+                    BitConstraints {
+                        zero: mask,
+                        one: U256::ZERO,
+                    }
+                };
+                self.bits = Some(match self.bits {
+                    Some(current) => current.meet(bits).map_err(|_| contradiction())?,
+                    None => bits,
+                });
+            }
+            UnaryPredicate::UnsignedBounds(bounds) => {
+                self.unsigned = Some(match self.unsigned {
+                    Some(current) => current.meet(bounds).map_err(|_| contradiction())?,
+                    None => bounds,
+                });
+            }
+            UnaryPredicate::SignedBounds(bounds) => {
+                self.signed = Some(match self.signed {
+                    Some(current) => current.meet(bounds).map_err(|_| contradiction())?,
+                    None => bounds,
+                });
+            }
+            UnaryPredicate::Congruent(congruence) => {
+                self.congruence = Some(match &self.congruence {
+                    Some(current) => current.meet(&congruence).ok_or_else(contradiction)?,
+                    None => congruence,
+                });
+            }
+            UnaryPredicate::IsZero => {
+                self.constrain_finite(&FiniteConstantSet::constant(U256::ZERO), subject)?;
+            }
+            UnaryPredicate::NonZero => self.nonzero = true,
+            UnaryPredicate::IsAddress => {
+                self.address = true;
+                let address_bits = BitConstraints {
+                    zero: U256::MAX << 160,
+                    one: U256::ZERO,
+                };
+                self.bits = Some(match self.bits {
+                    Some(current) => current.meet(address_bits).map_err(|_| contradiction())?,
+                    None => address_bits,
+                });
+            }
+            UnaryPredicate::IsCodeAddress => self.code_address = true,
+            UnaryPredicate::PossibleOrigins(origins) => {
+                self.origins = Some(match &self.origins {
+                    Some(current) => current
+                        .meet(&origins)
+                        .ok_or(FactError::OriginContradiction { subject })?,
+                    None => origins,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn validate(&mut self, subject: Symbol) -> Result<(), FactError> {
         #[cfg(test)]
         tests::SCALAR_VALIDATIONS.update(|count| *count += 1);
@@ -637,6 +721,12 @@ impl FactLattice {
                 required: set.values().len(),
             });
         }
+        if self.binary.is_empty()
+            && self.relations.is_empty()
+            && let Fact::Unary(fact) = fact
+        {
+            return self.insert_independent_unary(fact);
+        }
         let mut next = self.clone();
         next.apply(fact)?;
         let required = next.atoms();
@@ -651,6 +741,38 @@ impl FactLattice {
         }
         *self = next;
         Ok(FactChange::Strengthened)
+    }
+
+    // Without relations, only this scalar can change. Stage it instead of
+    // copying both maps; each fact keeps its own validation and commit boundary.
+    fn insert_independent_unary(&mut self, fact: UnaryFact) -> Result<FactChange, FactError> {
+        let previous = self.scalars.get(&fact.subject);
+        let mut next = previous.cloned().unwrap_or_default();
+        next.apply_predicate(fact.subject, fact.predicate)?;
+        let unchanged = previous == Some(&next);
+        if !unchanged {
+            next.validate(fact.subject)?;
+        }
+        // An unchanged slot was already validated at its last commit. Keep the
+        // capacity check, including insert's earlier full MemberOf preflight.
+        let required = self.atoms() - previous.map_or(0, ScalarFacts::atoms) + next.atoms();
+        if required > self.max_atoms {
+            return Err(FactError::Capacity {
+                max_atoms: self.max_atoms,
+                required,
+            });
+        }
+        // Validation can filter a changed finite component back to the old one.
+        let changed = !unchanged && previous != Some(&next);
+        if changed {
+            self.scalars.insert(fact.subject, next);
+        }
+        let normalized = self.normalize_independent_scalars();
+        Ok(if changed || normalized {
+            FactChange::Strengthened
+        } else {
+            FactChange::Unchanged
+        })
     }
 
     fn apply(&mut self, fact: Fact) -> Result<(), FactError> {
@@ -754,18 +876,31 @@ impl FactLattice {
     /// 总节点数和边数都受 atoms 上限约束，不建立无界反馈队列。
     fn normalize_equalities(&mut self) -> Result<(), FactError> {
         if self.binary.is_empty() && self.relations.is_empty() {
-            // apply_unary 已校验数值；没有等价边时无需复制、meet 和再次校验。
-            // 必须先记录槽位再清理 default，与通用路径的 identity 映射一致。
+            self.normalize_independent_scalars();
+            return Ok(());
+        }
+        self.normalize_equalities_general()
+    }
+
+    fn normalize_independent_scalars(&mut self) -> bool {
+        // Record keys before default cleanup, preserving the general path's
+        // identity entries. Reuse the map when it already has those identities.
+        let changed = self.representatives.len() != self.scalars.len()
+            || self
+                .scalars
+                .keys()
+                .any(|symbol| self.representatives.get(symbol) != Some(symbol));
+        if changed {
             self.representatives = self
                 .scalars
                 .keys()
                 .map(|&symbol| (symbol, symbol))
                 .collect();
-            let default = ScalarFacts::default();
-            self.scalars.retain(|_, scalar| *scalar != default);
-            return Ok(());
         }
-        self.normalize_equalities_general()
+        let before = self.scalars.len();
+        let default = ScalarFacts::default();
+        self.scalars.retain(|_, scalar| *scalar != default);
+        changed || before != self.scalars.len()
     }
 
     fn normalize_equalities_general(&mut self) -> Result<(), FactError> {
@@ -864,83 +999,9 @@ impl FactLattice {
     }
 
     fn apply_unary(&mut self, fact: UnaryFact) -> Result<(), FactError> {
-        let subject = fact.subject;
-        let scalar = self.scalars.entry(subject).or_default();
-        let contradiction = || FactError::Contradiction { subject };
-        let bit_set = matches!(&fact.predicate, UnaryPredicate::BitSet(_));
-        match fact.predicate {
-            UnaryPredicate::Exact(value) => {
-                scalar.constrain_finite(&FiniteConstantSet::constant(value), subject)?;
-            }
-            UnaryPredicate::MemberOf(set) => scalar.constrain_finite(&set.0, subject)?,
-            UnaryPredicate::KnownBits(bits) => {
-                scalar.bits = Some(match scalar.bits {
-                    Some(current) => current.meet(bits).map_err(|_| contradiction())?,
-                    None => bits,
-                });
-            }
-            UnaryPredicate::BitSet(index) | UnaryPredicate::BitClear(index) => {
-                let mask = U256::from(1) << usize::from(index.get());
-                let bits = if bit_set {
-                    BitConstraints {
-                        zero: U256::ZERO,
-                        one: mask,
-                    }
-                } else {
-                    BitConstraints {
-                        zero: mask,
-                        one: U256::ZERO,
-                    }
-                };
-                scalar.bits = Some(match scalar.bits {
-                    Some(current) => current.meet(bits).map_err(|_| contradiction())?,
-                    None => bits,
-                });
-            }
-            UnaryPredicate::UnsignedBounds(bounds) => {
-                scalar.unsigned = Some(match scalar.unsigned {
-                    Some(current) => current.meet(bounds).map_err(|_| contradiction())?,
-                    None => bounds,
-                });
-            }
-            UnaryPredicate::SignedBounds(bounds) => {
-                scalar.signed = Some(match scalar.signed {
-                    Some(current) => current.meet(bounds).map_err(|_| contradiction())?,
-                    None => bounds,
-                });
-            }
-            UnaryPredicate::Congruent(congruence) => {
-                scalar.congruence = Some(match &scalar.congruence {
-                    Some(current) => current.meet(&congruence).ok_or_else(contradiction)?,
-                    None => congruence,
-                });
-            }
-            UnaryPredicate::IsZero => {
-                scalar.constrain_finite(&FiniteConstantSet::constant(U256::ZERO), subject)?;
-            }
-            UnaryPredicate::NonZero => scalar.nonzero = true,
-            UnaryPredicate::IsAddress => {
-                scalar.address = true;
-                let address_bits = BitConstraints {
-                    zero: U256::MAX << 160,
-                    one: U256::ZERO,
-                };
-                scalar.bits = Some(match scalar.bits {
-                    Some(current) => current.meet(address_bits).map_err(|_| contradiction())?,
-                    None => address_bits,
-                });
-            }
-            UnaryPredicate::IsCodeAddress => scalar.code_address = true,
-            UnaryPredicate::PossibleOrigins(origins) => {
-                scalar.origins = Some(match &scalar.origins {
-                    Some(current) => current
-                        .meet(&origins)
-                        .ok_or(FactError::OriginContradiction { subject })?,
-                    None => origins,
-                });
-            }
-        }
-        scalar.validate(subject)
+        let scalar = self.scalars.entry(fact.subject).or_default();
+        scalar.apply_predicate(fact.subject, fact.predicate)?;
+        scalar.validate(fact.subject)
     }
 
     /// 由显式 Eq 事实构成的等价关系；不使用 PC、来源或摘要相似性。

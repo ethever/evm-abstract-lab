@@ -5,17 +5,25 @@ use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{self as api, AnalysisReport};
 
+pub(super) fn acquisition_summary(report: &AnalysisReport) -> String {
+    report.acquisition.as_ref().map_or_else(
+        || "Standalone bytecode: no RPC acquisition was performed.".into(),
+        |acquisition| {
+            format!(
+                "{} rounds · {} RPC requests · {} observed accounts",
+                acquisition.rounds,
+                acquisition.requests,
+                report.accounts.len()
+            )
+        },
+    )
+}
+
 pub(super) fn acquisition(ui: &mut Ui, report: &AnalysisReport) {
+    ui.label(acquisition_summary(report));
     let Some(acquisition) = &report.acquisition else {
-        ui.label("Standalone bytecode: no RPC acquisition was performed.");
         return;
     };
-    ui.label(format!(
-        "{} rounds · {} RPC requests · {} observed accounts",
-        acquisition.rounds,
-        acquisition.requests,
-        report.accounts.len()
-    ));
     ui.label(format!(
         "Refinement acquired {} additional accounts and {} initial slots",
         acquisition.fetched_accounts.len(),
@@ -276,13 +284,18 @@ pub(super) fn diagnostic_summary(report: &AnalysisReport) -> String {
 fn frontier_reason(ui: &mut Ui, reason: &api::FrontierDetails) {
     use api::FrontierDetails as R;
     match reason {
+        R::Process(reason) => value::text(
+            ui,
+            "Unexpanded process rule",
+            super::process::boundary(reason),
+        ),
         R::Budget(resource) => value::text(ui, "Reached budget", format!("{resource:?}")),
         R::Work => value::text(ui, "Boundary", "Execution work budget"),
         R::SummaryWork => value::text(ui, "Boundary", "Summary work budget"),
         R::RecursiveNoTerminal => value::text(
             ui,
             "Boundary",
-            "Recursive execution has no covered terminal behavior",
+            "Known bytecode region lacks terminal evidence",
         ),
         R::CallDepth => value::text(ui, "Boundary", "External call depth"),
         R::Memory => value::text(ui, "Boundary", "Logical memory policy; unexpanded inputs"),

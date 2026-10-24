@@ -224,7 +224,7 @@ channel 通常用 [`Ascending<JoinPolicy>` 或 `Descending<RefinePolicy>`](../cr
 
 不能从内建载体查询便宜推断自定义载体也便宜，也不能重复收取完整报价已覆盖的内部查询。缺失的报价不代表免费；受计费路径中的 `literal_quote_work` 默认以 `usize::MAX` 在构造前拒绝。没有账本的纯库调用由调用者承担工作。
 
-局部结果必须连同结束原因读取：精度轮数/事实容量限制保留安全的已完成结果，`WorkLimit`、`Cancelled`、`KernelFailure` 分别记录工作中断、取消与协议失败，不能都解释为“规则已稳定”。原生报告 schema 为 [12](../crates/evm-abstract/src/analysis.rs)，wire schema 为 [17](../crates/evm-abstract-protocol/src/lib.rs)，`DomainSpec` 的成本版本为 [7](../crates/evm-abstract/src/domain/spec.rs)；报告格式与逻辑工作单位各自有版本。
+局部结果必须连同结束原因读取：精度轮数/事实容量限制保留安全的已完成结果，`WorkLimit`、`Cancelled`、`KernelFailure` 分别记录工作中断、取消与协议失败，不能都解释为“规则已稳定”。原生报告 schema 为 [14](../crates/evm-abstract/src/analysis.rs)，wire schema 为 [19](../crates/evm-abstract-protocol/src/lib.rs)，`DomainSpec` 的成本版本为 [8](../crates/evm-abstract/src/domain/spec.rs)；报告格式与逻辑工作单位各自有版本。
 
 ## 共同闭包与客户端责任
 

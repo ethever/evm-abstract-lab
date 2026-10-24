@@ -17,17 +17,22 @@ use crate::{
         Code, Existence,
         bytes::{
             numeric,
-            summary::{
-                EvmByteArraySummary, instantiate_scalar, join_scalar, scalar,
-                scalar_expression_work,
-            },
+            summary::{EvmByteArraySummary, instantiate_scalar, join_scalar, scalar},
         },
     },
 };
 use alloy_primitives::{Address, U256};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod caller;
 mod layout;
+mod metered;
+mod payment;
+mod process;
+mod process_allocation;
+mod process_effects;
+#[cfg(test)]
+mod test_support;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SummaryPlane<N: WordElement> {
@@ -275,39 +280,19 @@ impl<N: WordElement> SummaryPlane<N> {
         owners.into_iter().fold(
             numeric.saturating_mul(2).saturating_add(2),
             |work, owner| {
-                let values = self
-                    .slots
+                // Cover both observed-input and zero-root replay without
+                // discovering which native values are singletons. The larger
+                // shape includes each constrained read and its operand cache.
+                self.slots
                     .range((owner, U256::ZERO)..=(owner, U256::MAX))
-                    .map(|(_, value)| value)
-                    .collect::<Vec<_>>();
-                let zero = self.default_at(owner).singleton() == Some(U256::ZERO);
-                let observed = values.iter().fold(2usize, |nodes, value| {
-                    nodes
-                        .saturating_add(if value.singleton().is_some() { 1 } else { 4 })
-                        .saturating_add(value.numeric().work_size())
-                });
-                let root = if zero {
-                    values.iter().fold(1usize, |nodes, value| {
-                        nodes
-                            .saturating_add(2)
-                            .saturating_add(if value.singleton().is_some() {
-                                1
-                            } else {
-                                value.numeric().work_size().saturating_add(8)
-                            })
-                    })
-                } else {
-                    observed
-                };
-                values
-                    .iter()
-                    .fold(work.saturating_add(root), |work, value| {
-                        if !zero || value.singleton().is_some() {
-                            return work;
-                        }
-                        let numeric = value.numeric().work_size();
-                        let expression = numeric.saturating_add(8);
-                        work.saturating_add(numeric).saturating_add(expression)
+                    .fold(work.saturating_add(2), |work, (_, value)| {
+                        work.saturating_add(
+                            value
+                                .numeric()
+                                .work_size()
+                                .saturating_mul(3)
+                                .saturating_add(18),
+                        )
                     })
             },
         )
@@ -520,12 +505,14 @@ impl<N: WordElement> EvmStore<N> {
 impl<N: WordElement> EvmStoreSummary<N> {
     /// Retained numerical payload plus a conservative independent replay bound.
     /// No cost from discarded source identities or write history survives reuse.
+    /// Uses the largest replay shape without querying native singletons. These
+    /// structural units do not pay for native queries, copies or algebra hooks.
     pub fn work_size(&self) -> usize {
         let scalar = self.balances.values().chain(self.nonces.values()).fold(
             self.balance_default.numeric().work_size().saturating_mul(2),
             |work, value| {
                 work.saturating_add(value.numeric().work_size().saturating_mul(2))
-                    .saturating_add(scalar_expression_work(value))
+                    .saturating_add(value.numeric().work_size().saturating_add(8))
             },
         );
         let fields = self
@@ -558,7 +545,7 @@ impl<N: WordElement> EvmStoreSummary<N> {
                     .iter()
                     .fold(work.saturating_add(log.data.work_size()), |work, value| {
                         work.saturating_add(value.numeric().work_size().saturating_mul(2))
-                            .saturating_add(scalar_expression_work(value))
+                            .saturating_add(value.numeric().work_size().saturating_add(8))
                     })
             },
         )

@@ -4,7 +4,7 @@
 //! Summary import memoizes numerical upper bounds; branch metadata keeps its
 //! feasibility checks and precision diagnostics. Both share query accounting.
 
-use crate::domain::EvmNumericAlgebra;
+use crate::domain::{EvmNumericAlgebra, WordElement};
 
 use super::{
     AlgebraRef, EvmByteArray, EvmMachinePayload, EvmValue, MachineError, RelationState, WorkBudget,
@@ -13,6 +13,7 @@ use crate::domain::{
     relational::{EvmScalarQuery, QueryReason, RelationLimits},
     symbolic::{ExprId, ExprKind},
 };
+use crate::resource::clone_payment::{checkpoint, finish_quote, pay};
 use crate::{
     analysis::{DiagnosticKind, state::StatePart},
     world::EvmStore,
@@ -33,6 +34,22 @@ pub(in crate::analysis) enum Policy<'a> {
 }
 
 type ProjectionCache<N> = BTreeMap<ExprId, Vec<(N, Option<N>)>>;
+
+fn numeric_equal<D: EvmNumericAlgebra>(
+    left: &D::Element,
+    right: &D::Element,
+    domain: AlgebraRef<'_, D>,
+    budget: &mut WorkBudget,
+) -> Result<bool, MachineError> {
+    checkpoint(budget)?;
+    pay(
+        budget,
+        domain.numeric_algebra().summary_equal_work(left, right),
+    )?;
+    let equal = left == right;
+    checkpoint(budget)?;
+    Ok(equal)
+}
 
 pub(in crate::analysis) struct Projection<'a, D: EvmNumericAlgebra> {
     relations: &'a RelationState,
@@ -71,22 +88,16 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
     }
 
     fn reserve(&mut self, cost: usize) -> bool {
-        if self.budget.charge(cost) {
-            return true;
+        match pay(self.budget, cost) {
+            Ok(()) => true,
+            Err(error) => {
+                self.outcome = Err(error.into());
+                false
+            }
         }
-        // Branch metadata preserves the transfer's Work boundary. Summary
-        // construction also checks cancellation when recording a refusal.
-        let error = if matches!(&self.policy, Policy::Summary) {
-            MachineError::work_failure()
-        } else {
-            MachineError::Work
-        };
-        self.outcome = Err(error);
-        false
     }
 
-    /// Branch callers stop between metadata segments; summary import retains
-    /// its original whole-state traversal even after optional import fails.
+    /// Callers stop before another segment could materialize an owned copy.
     pub(in crate::analysis) fn stopped(&self) -> bool {
         !matches!(self.outcome, Ok(true))
     }
@@ -97,17 +108,43 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
         if self.stopped() || expression.as_constant().is_some() || self.relations.is_empty() {
             return;
         }
-        let summary = matches!(&self.policy, Policy::Summary);
-        if summary
-            && let Some(cached) = self.cache.get(expression)
-            && let Some((_, refined)) = cached.iter().find(|(old, _)| old == value.numeric())
-        {
-            if let Some(refined) = refined {
-                *value = value
-                    .clone()
-                    .with_numeric_after_singleton(refined.clone(), None);
-            }
+        if let Err(error) = checkpoint(self.budget) {
+            self.outcome = Err(error.into());
             return;
+        }
+        let summary = matches!(&self.policy, Policy::Summary);
+        if summary && let Some(cached) = self.cache.get(expression) {
+            for (old, refined) in cached {
+                // Geometry/copy reservations do not fund an opaque native Eq.
+                // Preserve short-circuiting, but pay each predicate actually run.
+                let matches = (|| {
+                    if numeric_equal(old, value.numeric(), self.domain, self.budget)? {
+                        return Ok(true);
+                    }
+                    match refined {
+                        Some(refined) => {
+                            numeric_equal(refined, value.numeric(), self.domain, self.budget)
+                        }
+                        None => Ok(false),
+                    }
+                })();
+                match matches {
+                    Err(error) => {
+                        self.outcome = Err(error);
+                        return;
+                    }
+                    Ok(false) => continue,
+                    Ok(true) => {}
+                }
+                if let Some(refined) = refined {
+                    if let Err(error) = pay(self.budget, refined.clone_work()) {
+                        self.outcome = Err(error.into());
+                        return;
+                    }
+                    value.replace_numeric_after_singleton(refined.clone(), None);
+                }
+                return;
+            }
         }
         let relation_work = *self.relations_work_size.get_or_insert_with(|| {
             #[cfg(test)]
@@ -136,16 +173,12 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
         ) {
             Ok(answer) => answer,
             Err(_) => {
-                self.outcome = Err(if summary {
-                    MachineError::work_failure()
-                } else {
-                    MachineError::Work
-                });
+                self.outcome = Err(checkpoint(self.budget)
+                    .err()
+                    .map_or(MachineError::Work, MachineError::from));
                 return;
             }
         };
-        // The import/whole reservation precedes this optional cache copy too.
-        let old = summary.then(|| value.numeric().clone());
         let refined = match answer {
             EvmScalarQuery::Refined { numeric, .. } => Some(*numeric),
             EvmScalarQuery::Infeasible if !summary => {
@@ -170,21 +203,39 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
                 None
             }
         };
-        if let Some(refined) = &refined {
-            // The refinement operation owns any discovery. Applying its bound,
-            // including a cached one, must not run an opaque metadata query.
-            *value = value
-                .clone()
-                .with_numeric_after_singleton(refined.clone(), None);
-        }
-        if let Some(old) = old {
-            let cache = self.cache.entry(expression.clone()).or_default();
-            if let Some(refined) = &refined
-                && refined != &old
-            {
-                cache.push((refined.clone(), Some(refined.clone())));
+        if summary {
+            // One entry also recognizes its refined bound on the next visit.
+            // Quote every unavoidable native copy before invoking Clone.
+            if let Err(error) = checkpoint(self.budget) {
+                self.outcome = Err(error.into());
+                return;
             }
-            cache.push((old, refined));
+            let copies = (|| {
+                let old = finish_quote(value.numeric().clone_work(), self.budget)?;
+                let refined = match &refined {
+                    Some(numeric) => finish_quote(numeric.clone_work(), self.budget)?,
+                    None => 0,
+                };
+                finish_quote(old.saturating_add(refined), self.budget)
+            })();
+            let copies = match copies {
+                Ok(copies) => copies,
+                Err(error) => {
+                    self.outcome = Err(error.into());
+                    return;
+                }
+            };
+            if !self.reserve(copies) {
+                return;
+            }
+            self.cache
+                .entry(expression.clone())
+                .or_default()
+                .push((value.numeric().clone(), refined.clone()));
+        }
+        if let Some(refined) = refined {
+            // Native refinement already owns this bound and its discovery.
+            value.replace_numeric_after_singleton(refined, None);
         }
     }
 
@@ -217,6 +268,16 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
     }
 
     pub(in crate::analysis) fn store(&mut self, store: &mut EvmStore<D::Element>) {
+        if self.stopped() || self.relations.is_empty() {
+            return;
+        }
+        // Mutable imbl traversal can clone shared map nodes before reaching
+        // our callback. The owned-Store quote bounds those native copies too.
+        #[cfg(feature = "imbl")]
+        if let Err(error) = store.pay_clone_with(self.budget) {
+            self.outcome = Err(error.into());
+            return;
+        }
         store.update_values(&mut |value| self.value(value));
         store.refine_operands(&mut |expression, value| self.expression(expression, value));
     }
@@ -229,14 +290,25 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
         &mut self,
         payload: &mut EvmMachinePayload<D::Element>,
     ) -> Result<(), MachineError> {
+        // No scalar can change without a retained guarantee. In particular,
+        // do not materialize every rollback Cow merely to run no-op callbacks.
+        if self.relations.is_empty() {
+            return checkpoint(self.budget).map_err(MachineError::from);
+        }
         self.store(&mut payload.store);
+        self.outcome.clone()?;
         payload.call_stack.transform(&mut |part| {
             match part {
                 StatePart::Value(value) => self.value(value),
                 StatePart::Bytes(bytes) => self.bytes(bytes),
-                StatePart::Store(store) => self.store(store.to_mut()),
+                StatePart::Store(store) => {
+                    if matches!(store, std::borrow::Cow::Borrowed(_)) {
+                        store.pay_clone_with(self.budget)?;
+                    }
+                    self.store(store.to_mut());
+                }
             }
-            Ok(())
+            self.outcome.clone().map(|_| ())
         })
     }
 }

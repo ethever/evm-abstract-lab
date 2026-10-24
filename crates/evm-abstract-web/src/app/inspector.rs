@@ -5,7 +5,9 @@ mod buffers;
 mod context;
 mod errors;
 mod evidence;
+mod hybrid;
 mod panel;
+mod process;
 pub(crate) mod shortcut;
 mod ssa;
 mod stores;
@@ -39,10 +41,12 @@ pub(super) enum Tab {
     Environment,
     Timing,
     Diagnostics,
+    Coverage,
 }
 
 impl Tab {
-    const ALL: [(Self, &'static str); 13] = [
+    const ALL: [(Self, &'static str); 14] = [
+        (Self::Coverage, "Coverage"),
         (Self::Frame, "Frame"),
         (Self::Stack, "Stack"),
         (Self::SsaValue, "SSA value"),
@@ -83,6 +87,7 @@ pub(super) struct Inspector {
     last_value: Option<usize>,
     outcome: usize,
     rollback: bool,
+    hybrid: hybrid::Detail,
     panel: panel::Panel,
     pub(super) timings: super::timing::Details,
     #[cfg(not(target_arch = "wasm32"))]
@@ -99,6 +104,7 @@ impl Default for Inspector {
             last_value: None,
             outcome: 0,
             rollback: false,
+            hybrid: hybrid::Detail::default(),
             panel: panel::Panel::default(),
             timings: super::timing::Details::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -150,6 +156,18 @@ impl Inspector {
         if self.tab == Tab::Timing {
             return format!("Inspector: Timing{mode}");
         }
+        if self.tab == Tab::Coverage {
+            return format!(
+                "Inspector: Coverage{mode} · {}",
+                super::hybrid::summary(report).unwrap_or_else(|| "Native analysis".into())
+            );
+        }
+        if self.tab == Tab::Acquisition {
+            return format!(
+                "Inspector: Acquisition{mode} · {}",
+                evidence::acquisition_summary(report)
+            );
+        }
         if self.tab == Tab::Diagnostics {
             return format!(
                 "Inspector: Diagnostics{mode} · {}",
@@ -193,19 +211,27 @@ impl Inspector {
             ""
         };
         let mut interactions = String::new();
-        if self.tab == Tab::Frame {
-            for summary in &report.abstract_summaries {
-                if Some(summary.source_state) == selection.state {
-                    interactions = format!(" · {} · closed", summaries::label(summary.kind));
-                    if !summary.closed {
-                        interactions = format!(" · {} · open", summaries::label(summary.kind));
-                        break;
-                    }
-                }
-            }
+        let input = if self.tab == Tab::Frame && summaries::original_input(report, selection.state)
+        {
+            " · Original input entry"
+        } else {
+            ""
+        };
+        if self.tab == Tab::Frame
+            && let Some(summary) = report
+                .abstract_summaries
+                .iter()
+                .rev()
+                .find(|summary| Some(summary.source_state) == selection.state)
+        {
+            interactions = format!(
+                " · {} · {}",
+                summaries::label(summary.kind),
+                summaries::coverage_label(summary.closed, summary.source_status(false))
+            );
         }
         format!(
-            "Inspector: {} · {boundary} · {frame}{store}{interactions}{mode}",
+            "Inspector: {} · {boundary} · {frame}{store}{input}{interactions}{mode}",
             self.tab.label()
         )
     }
@@ -218,6 +244,7 @@ impl Inspector {
         self.last_value = None;
         self.outcome = 0;
         self.rollback = false;
+        self.hybrid.reset();
     }
 
     pub(super) fn select_value(&mut self, value: Option<usize>) {
@@ -245,10 +272,22 @@ impl Inspector {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn show(
         &mut self,
         ui: &mut Ui,
         report: &AnalysisReport,
+        selection: &mut Selection,
+        account: Option<&str>,
+    ) {
+        self.show_model(ui, report, report, selection, account);
+    }
+
+    pub(super) fn show_model(
+        &mut self,
+        ui: &mut Ui,
+        report: &AnalysisReport,
+        model: &AnalysisReport,
         selection: &mut Selection,
         account: Option<&str>,
     ) {
@@ -261,7 +300,7 @@ impl Inspector {
                 .max_rect(rect),
         );
         contents.set_clip_rect(contents.clip_rect().intersect(rect));
-        self.contents(&mut contents, report, selection, account);
+        self.contents(&mut contents, report, model, selection, account);
         // Content minimums must not enlarge the user's chosen panel height.
         ui.advance_cursor_after_rect(rect);
     }
@@ -270,6 +309,7 @@ impl Inspector {
         &mut self,
         ui: &mut Ui,
         report: &AnalysisReport,
+        model: &AnalysisReport,
         selection: &mut Selection,
         account: Option<&str>,
     ) {
@@ -337,7 +377,7 @@ impl Inspector {
         }
         if self.tab == Tab::Timing {
             scroll(ui, "timing_details", |ui| {
-                super::timing::show(ui, report, &self.timings);
+                super::timing::show(ui, model, &self.timings);
             });
             return;
         }
@@ -345,6 +385,10 @@ impl Inspector {
             scroll(ui, "diagnostic_details", |ui| {
                 evidence::diagnostics(ui, report, selection)
             });
+            return;
+        }
+        if self.tab == Tab::Coverage {
+            scroll(ui, "coverage_details", |ui| self.hybrid.show(ui, model));
             return;
         }
         let has_exit = report
@@ -386,10 +430,30 @@ impl Inspector {
             Tab::Frame => {
                 if let Some(frame) = frame {
                     scroll(ui, "frame_details", |ui| {
-                        if let Some(machine) = machine {
-                            symbolic::show(ui, report, machine.path.node, "Paired path conditions");
+                        if summaries::original_input(report, selection.state) {
+                            ui.label("Original input entry. Possible execution is described by the process model below.");
+                            ui.collapsing("Original input snapshot", |ui| {
+                                if let Some(machine) = machine {
+                                    symbolic::show(
+                                        ui,
+                                        report,
+                                        machine.path.node,
+                                        "Paired path conditions",
+                                    );
+                                }
+                                context::frame(ui, report, frame);
+                            });
+                        } else {
+                            if let Some(machine) = machine {
+                                symbolic::show(
+                                    ui,
+                                    report,
+                                    machine.path.node,
+                                    "Paired path conditions",
+                                );
+                            }
+                            context::frame(ui, report, frame);
                         }
-                        context::frame(ui, frame);
                         summaries::show(ui, report, selection.state);
                         if controls::action(ui, "Inspect rollback store", Density::Regular)
                             .clicked()
@@ -404,7 +468,11 @@ impl Inspector {
             }
             Tab::Stack => {
                 if let Some(frame) = frame {
-                    buffers::stack(ui, &frame.stack);
+                    if frame.process.is_some() {
+                        ui.label("Process summaries do not record an instruction stack.");
+                    } else {
+                        buffers::stack(ui, &frame.stack);
+                    }
                 } else {
                     ui.label("No frame stack available.");
                 }
@@ -416,7 +484,11 @@ impl Inspector {
                         Tab::Calldata => frame.calldata,
                         _ => frame.returndata,
                     };
-                    buffers::show(ui, report, id, self.tab.label());
+                    if let Some(id) = id {
+                        buffers::show(ui, report, id, self.tab.label());
+                    } else {
+                        ui.label("This process has no instruction byte-array snapshot.");
+                    }
                 } else {
                     ui.label("No frame byte-array snapshot available.");
                 }
@@ -453,22 +525,43 @@ impl Inspector {
                         palette::ERROR,
                         "The report references an unavailable store snapshot",
                     );
-                } else if let Some(address) =
-                    account.or_else(|| frame.map(|frame| frame.storage_address.as_str()))
-                {
+                } else if let Some(address) = account.or_else(|| {
+                    frame.and_then(|frame| {
+                        let input_owner = frame.index == 0
+                            && report.input_namespace().is_some()
+                            && frame.storage_address.as_deref() == report.input_namespace();
+                        (!input_owner)
+                            .then_some(frame.storage_address.as_deref())
+                            .flatten()
+                    })
+                }) {
                     stores::storage(ui, report, store, address, self.tab == Tab::Transient);
                 } else {
-                    ui.label("Select a state or account to inspect its storage.");
+                    if report.input_namespace().is_some()
+                        && frame.is_some_and(|frame| frame.index == 0)
+                    {
+                        ui.label("Root ADDRESS is symbolic. Inspect the supplied root state under Environment, or select a physical account for its transaction state.");
+                        return;
+                    }
+                    if let Some(key) = frame.and_then(|frame| frame.process.as_ref()) {
+                        ui.label(format!(
+                            "Physical state class: {}",
+                            process::owner(&key.owner)
+                        ));
+                        ui.label("Inspect the transaction store; this class does not supply a concrete storage address.");
+                    } else {
+                        ui.label("Select a state or account to inspect its storage.");
+                    }
                 }
             }
             Tab::Environment => scroll(ui, "environment_details", |ui| {
                 context::environment(ui, report)
             }),
             Tab::Acquisition => scroll(ui, "acquisition_details", |ui| {
-                evidence::acquisition(ui, report)
+                evidence::acquisition(ui, model)
             }),
             Tab::Outcomes => self.outcomes(ui, report, selection),
-            Tab::SsaValue | Tab::Timing | Tab::Diagnostics => {
+            Tab::SsaValue | Tab::Timing | Tab::Diagnostics | Tab::Coverage => {
                 unreachable!("definition, timing and evidence inspection use their own coordinates")
             }
         }

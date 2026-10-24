@@ -14,13 +14,28 @@ use crate::{
 
 use super::{EvmPayloadSummary, bounded::EvmBoundedState, payload};
 
+mod regional;
+
 #[cfg(test)]
 mod tests;
 
 impl<N: WordElement> EvmPayloadSummary<N> {
+    /// Copy the complete native summary, preserving aliases and observations.
+    pub fn copy_for_policy<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        cx: &mut PolicyContext<'_, D>,
+    ) -> Result<Self, MachineError> {
+        self.clone_with_payment(cx.budget)
+    }
+
     /// Structural report projection, independent of the policy's actual key.
     pub fn key(&self) -> &MachineKey {
         &self.location
+    }
+
+    /// Interpretation of the active relative input, independently of code kind.
+    pub fn semantics(&self) -> crate::analysis::TransferSemantics {
+        self.active().semantics
     }
 
     /// Shape of the active relative frame, without exposing summary internals.
@@ -34,14 +49,12 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         input: &EvmMachinePayload<N>,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
-        cx.reserve(
-            input
-                .policy_work_size()
-                .saturating_mul(4)
-                .saturating_add(payload::alias_form_work(input))
-                .saturating_add(super::storage_observations::form_work(input, cx.domain)),
+        let summary = payload::caller::form_normalized_with_payment(
+            input,
+            cx.environment,
+            cx.domain,
+            cx.budget,
         )?;
-        let summary = payload::form_normalized(input, cx.environment, cx.domain)?;
         cx.reserve(0)?;
         Ok(summary)
     }
@@ -52,8 +65,15 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         &self,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<EvmMachinePayload<N>, MachineError> {
-        cx.reserve(self.work_size().saturating_mul(4))?;
-        let input = payload::instantiate(self, cx.domain)?;
+        if self.frames.iter().any(|frame| {
+            frame.key.process.is_some()
+                || frame.semantics == crate::analysis::TransferSemantics::KnownProcess
+        }) {
+            return Err(MachineError::Process(
+                crate::analysis::ProcessBoundary::NativeInstantiation,
+            ));
+        }
+        let input = payload::caller::instantiate_with_payment(self, cx.domain, cx.budget)?;
         cx.reserve(0)?;
         Ok(input)
     }
@@ -66,25 +86,22 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
-        // Initial admission still calls the selected policy. Identical borrowed
-        // inputs prove x union x = x without rebuilding every byte/store
-        // template. Explicit widening remains an independent operation.
-        if acceleration == Acceleration::Join && std::ptr::eq(self, incoming) {
-            cx.reserve(self.work_size())?;
-            let joined = self.clone();
+        // Independent replays can have the same complete numerical bound.
+        // Prove idempotence before rebuilding every byte/store template;
+        // explicit widening remains an independent operation.
+        if acceleration == Acceleration::Join
+            && (std::ptr::eq(self, incoming)
+                || self.eq_with_payment(incoming, cx.domain, cx.budget)?)
+        {
+            let joined = self.clone_with_payment(cx.budget)?;
             cx.reserve(0)?;
             return Ok(joined);
         }
-        cx.reserve(
-            self.work_size()
-                .saturating_add(incoming.work_size())
-                .saturating_mul(4),
-        )?;
-        let joined = payload::join(
-            self,
+        let joined = self.join_with_payment(
             incoming,
             cx.domain,
             acceleration == Acceleration::Widen,
+            cx.budget,
         )?;
         cx.reserve(0)?;
         Ok(joined)
@@ -96,8 +113,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         &self,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
-        cx.reserve(self.work_size().saturating_mul(3))?;
-        let mut prepared = self.clone();
+        let mut prepared = self.clone_with_payment(cx.budget)?;
         for frame in &mut prepared.frames {
             frame.key.jump_history.clear();
         }
@@ -128,9 +144,9 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         acceleration: Acceleration,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
-        cx.reserve(self.work_size().saturating_mul(4))?;
-        let representation = EvmBoundedState::freeze(self, true, cx.domain)?;
-        let joined = representation.join(
+        let representation =
+            EvmBoundedState::freeze_with_payment(self, true, cx.domain, cx.budget)?;
+        let joined = representation.join_with_payment(
             self,
             incoming,
             cx.domain,
@@ -147,8 +163,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         other: &Self,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<bool, MachineError> {
-        cx.reserve(self.work_size().saturating_add(other.work_size()))?;
-        let equal = payload::semantic_eq(self, other);
+        let equal = self.eq_with_payment(other, cx.domain, cx.budget)?;
         cx.reserve(0)?;
         Ok(equal)
     }
@@ -157,7 +172,8 @@ impl<N: WordElement> EvmPayloadSummary<N> {
 /// A terminal procedure's independent numerical data and transaction effects.
 /// Source identities are projected away; solver generations are not semantic
 /// content and remain with the publication owner. Equality compares semantic
-/// content; callers prepay both `work_size` quotes before a comparison.
+/// content. Derived Clone/Eq remain caller-funded; metered callers use the
+/// complete native invoices and `eq_with_payment`, not structural sizes.
 #[derive(Clone, Debug)]
 pub struct ProcedureOutput<N: WordElement> {
     pub(in crate::analysis) data: EvmByteArraySummary<N>,
@@ -180,13 +196,8 @@ impl<N: WordElement> ProcedureOutput<N> {
         store: &EvmStore<N>,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
-        cx.reserve(
-            data.work_size()
-                .saturating_add(store.work_size())
-                .saturating_mul(4),
-        )?;
-        let data = data.summary_projection(cx.domain)?;
-        let store = store.summary_projection(cx.domain)?;
+        let data = data.summary_projection_with_payment(cx.domain, cx.budget)?;
+        let store = store.summary_projection_with_payment(cx.domain, cx.budget)?;
         Self::from_summaries(data, store, cx)
     }
 
@@ -202,6 +213,40 @@ impl<N: WordElement> ProcedureOutput<N> {
         let output = Self { data, store, work };
         cx.reserve(0)?;
         Ok(output)
+    }
+
+    pub(in crate::analysis) fn clone_work_with(
+        &self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<usize, MachineError> {
+        crate::resource::clone_payment::pay(budget, 1)?;
+        let work = self
+            .data
+            .clone_work_with(budget)?
+            .saturating_add(self.store.clone_work_with(budget)?)
+            .saturating_add(4);
+        Ok(crate::resource::clone_payment::finish_quote(work, budget)?)
+    }
+
+    pub(in crate::analysis) fn clone_with_payment(
+        &self,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<Self, MachineError> {
+        let work = self.clone_work_with(budget)?;
+        crate::resource::clone_payment::pay(budget, work)?;
+        let result = self.clone();
+        crate::resource::clone_payment::checkpoint(budget)?;
+        Ok(result)
+    }
+
+    pub(in crate::analysis) fn eq_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        other: &Self,
+        domain: crate::domain::AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<bool, MachineError> {
+        Ok(self.data.eq_with_payment(&other.data, domain, budget)?
+            && self.store.eq_with_payment(&other.store, domain, budget)?)
     }
 
     /// Independent return/revert bytes, without exposing mutable internals.
@@ -227,8 +272,7 @@ impl<N: WordElement> ProcedureOutput<N> {
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
         if acceleration == Acceleration::Join && std::ptr::eq(self, incoming) {
-            cx.reserve(self.work_size())?;
-            let joined = self.clone();
+            let joined = self.clone_with_payment(cx.budget)?;
             cx.reserve(0)?;
             return Ok(joined);
         }
@@ -238,8 +282,12 @@ impl<N: WordElement> ProcedureOutput<N> {
                 .saturating_mul(4),
         )?;
         let widen = acceleration == Acceleration::Widen;
-        let data = self.data.join(&incoming.data, cx.domain, widen);
-        let store = self.store.join(&incoming.store, cx.domain, widen);
+        let data = self
+            .data
+            .join_with_payment(&incoming.data, cx.domain, widen, cx.budget)?;
+        let store = self
+            .store
+            .join_with_payment(&incoming.store, cx.domain, widen, cx.budget)?;
         Self::from_summaries(data, store, cx)
     }
 
@@ -250,8 +298,12 @@ impl<N: WordElement> ProcedureOutput<N> {
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<Self, MachineError> {
         cx.reserve(self.work_size().saturating_mul(4))?;
-        let data = self.data.forget_loop_content();
-        let store = self.store.forget_loop_numeric();
+        let data = self
+            .data
+            .forget_loop_content_with_payment(cx.domain, cx.budget)?;
+        let store = self
+            .store
+            .forget_loop_numeric_with_payment(cx.domain, cx.budget)?;
         Self::from_summaries(data, store, cx)
     }
 
@@ -269,22 +321,22 @@ impl<N: WordElement> ProcedureOutput<N> {
                 .saturating_mul(8),
         )?;
         let widen = acceleration == Acceleration::Widen;
-        let data = self.data.forget_loop_content().join(
-            &incoming
-                .data
-                .project_to_layout(&self.data, cx.domain)
-                .forget_loop_content(),
-            cx.domain,
-            widen,
-        );
-        let store = self.store.forget_loop_numeric().join(
-            &incoming
-                .store
-                .project_to_layout(&self.store, cx.domain)
-                .forget_loop_numeric(),
-            cx.domain,
-            widen,
-        );
+        let data = self
+            .data
+            .forget_loop_content_with_payment(cx.domain, cx.budget)?;
+        let incoming_data = incoming
+            .data
+            .project_to_layout_with_payment(&self.data, cx.domain, cx.budget)?
+            .forget_loop_content_with_payment(cx.domain, cx.budget)?;
+        let data = data.join_with_payment(&incoming_data, cx.domain, widen, cx.budget)?;
+        let store = self
+            .store
+            .forget_loop_numeric_with_payment(cx.domain, cx.budget)?;
+        let incoming_store = incoming
+            .store
+            .project_to_layout_with_payment(&self.store, cx.domain, cx.budget)?
+            .forget_loop_numeric_with_payment(cx.domain, cx.budget)?;
+        let store = store.join_with_payment(&incoming_store, cx.domain, widen, cx.budget)?;
         Self::from_summaries(data, store, cx)
     }
 }

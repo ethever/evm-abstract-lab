@@ -35,7 +35,7 @@ enum Reply {
     Delay(Duration),
     Hold {
         started: std::sync::mpsc::Sender<()>,
-        closed: std::sync::mpsc::Sender<bool>,
+        closed: std::sync::mpsc::Sender<std::io::Result<usize>>,
         body: bool,
     },
 }
@@ -109,11 +109,14 @@ impl Server {
                     Reply::Trickle(value) => (200, serde_json::to_vec(&value).unwrap(), true),
                     Reply::Http(status) => (status, Vec::new(), false),
                     Reply::Hold { started, closed, body } => {
+                        // Cancellation has a five-second deadline. The request
+                        // parsing timeout must not end this observation first.
+                        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                         if body {
                             stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n{").unwrap();
                         }
                         started.send(()).unwrap();
-                        let disconnected = matches!(stream.read(&mut [0]), Ok(0));
+                        let disconnected = stream.read(&mut [0]);
                         closed.send(disconnected).unwrap();
                         continue;
                     }

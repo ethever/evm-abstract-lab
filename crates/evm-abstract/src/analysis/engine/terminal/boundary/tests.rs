@@ -16,6 +16,8 @@ use crate::{
 fn retention(cause: Option<RetentionCause>) -> Execution {
     let algebra = crate::domain::ValueAlgebra::new(ProductAlgebra::default());
     Execution {
+        process: None,
+        process_calls: Vec::new(),
         payload: fixtures::payload(algebra.borrowed()),
         executed_pcs: Vec::new(),
         instruction_progress: Vec::new(),

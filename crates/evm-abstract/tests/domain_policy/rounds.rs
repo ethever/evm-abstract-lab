@@ -22,7 +22,9 @@ fn freshly_published_bounds_reach_scalar_within_the_first_allowance() {
     assert_eq!(value.singleton(), Some(U256::from(33)));
     let checked = one_round.reduce(&value);
     assert_eq!(checked.status, ReductionStatus::Stable);
-    assert_eq!(checked.rounds, 1);
+    // The closed-native certificate recognizes this already canonical value;
+    // no scalar reduction executes, so the actual reduction count is zero.
+    assert_eq!(checked.rounds, 0);
     assert_eq!(checked.value, value);
     let witnesses: Vec<_> = (10_u64..=40)
         .filter(|x| x % 12 == 9 && x & 16 == 0)

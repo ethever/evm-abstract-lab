@@ -194,4 +194,30 @@ impl EvmNumericAlgebra for Algebra {
     fn refinement_work(&self, _value: &Word, _facts: usize) -> usize {
         usize::MAX
     }
+    fn summary_join_work(&self, left: &Word, right: &Word, _: bool) -> usize {
+        left.clone_work()
+            .saturating_add(right.clone_work())
+            .saturating_add(256)
+    }
+    fn summary_canonical_work(&self, value: &Word) -> usize {
+        value.clone_work()
+    }
+    fn summary_construction_work(&self, _: crate::domain::SummaryConstruction) -> usize {
+        256
+    }
+    fn summary_equal_work(&self, _: &Word, _: &Word) -> usize {
+        64
+    }
+    fn summary_is_top_work(&self, _: &Word) -> usize {
+        64
+    }
+    fn summary_compact_work(&self, value: &Word) -> usize {
+        value.clone_work()
+    }
+    fn summary_restore_work(&self, value: &Word, _: &Word) -> usize {
+        value.clone_work()
+    }
+    fn summary_observation_work(&self, _: &WordObservation) -> usize {
+        256
+    }
 }

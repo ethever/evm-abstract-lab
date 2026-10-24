@@ -12,6 +12,28 @@ use alloy_primitives::U256;
 use revm_bytecode::opcode;
 use std::fmt::Debug;
 
+pub(crate) mod summary;
+
+/// Native scalar constructors used by paid summary operations.
+///
+/// Literals use the selected algebra's existing `literal_quote_work` instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SummaryConstruction {
+    /// No numeric constraints.
+    Top,
+    /// One unobserved byte.
+    UnknownByte,
+    /// One unobserved EVM address, including its native width guarantees.
+    UnknownAddress,
+    /// An inclusive, ordered unsigned interval.
+    UnsignedRange {
+        /// Inclusive lower endpoint.
+        lower: U256,
+        /// Inclusive upper endpoint.
+        upper: U256,
+    },
+}
+
 /// A result proof travels with the unchanged numeric element. An absent query
 /// is distinct from a completed discovery that found no singleton.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -115,6 +137,55 @@ pub trait EvmNumericAlgebra: Debug {
     fn literal_quote_work(&self, _literal: U256) -> usize {
         usize::MAX
     }
+    /// Complete native fee for ONE summary join, or ONE procedure widening when
+    /// `widen_procedure` is true. Includes internal copies/queries, construction
+    /// and release of the result; facade metadata is charged separately. Inspect
+    /// cached representation metadata only, without executing a numeric hook.
+    /// A later operation on the result must obtain its own actual-value quote.
+    fn summary_join_work(
+        &self,
+        _left: &Self::Element,
+        _right: &Self::Element,
+        _widen_procedure: bool,
+    ) -> usize {
+        usize::MAX
+    }
+    /// Complete native `canonical_for_summary` fee, including its internal
+    /// queries/copies and returned value's construction/release. No discovery
+    /// runs while quoting; unknown work refuses paid summary normalization.
+    fn summary_canonical_work(&self, _value: &Self::Element) -> usize {
+        usize::MAX
+    }
+    /// Complete selected carrier constructor and result-release fee. Inspect
+    /// only the requested construction, never construct a trial numeric value.
+    fn summary_construction_work(&self, _construction: SummaryConstruction) -> usize {
+        usize::MAX
+    }
+    /// Complete native equality predicate fee. Cached representation sizes
+    /// only: quoting must not execute `Element::eq` or any discovery query.
+    /// The common value wrapper's metadata comparison is separately funded.
+    fn summary_equal_work(&self, _left: &Self::Element, _right: &Self::Element) -> usize {
+        usize::MAX
+    }
+    /// Complete native `is_top` predicate fee, without executing it to quote.
+    fn summary_is_top_work(&self, _value: &Self::Element) -> usize {
+        usize::MAX
+    }
+    /// Complete native compaction, including all predicates, copies and result
+    /// construction/release. Quote cached representation metadata only.
+    fn summary_compact_work(&self, _value: &Self::Element) -> usize {
+        usize::MAX
+    }
+    /// Complete restoration of redundant presentation from this exact previous
+    /// carrier. Quotation must not run the proof, singleton or native equality.
+    fn summary_restore_work(&self, _value: &Self::Element, _previous: &Self::Element) -> usize {
+        usize::MAX
+    }
+    /// Complete native `Element::from_observation` factory and result release.
+    /// The observation is borrowed; no discovery/import is performed to quote.
+    fn summary_observation_work(&self, _observation: &super::WordObservation) -> usize {
+        usize::MAX
+    }
     /// Complete BYTE quotes (numeric and facade operand work) are identical
     /// for all literal indices0..31 and the same retained word.
     fn byte_quotes_uniform(&self) -> bool {
@@ -161,7 +232,9 @@ pub trait EvmNumericAlgebra: Debug {
     ) -> usize {
         2
     }
-    /// Upper bound for policy projection beyond ordinary input cloning.
+    /// Upper bound for policy projection beyond ordinary input cloning. Covers
+    /// all additional native queries and construction; facade
+    /// metadata copying is paid independently. Quote without executing the hook.
     fn projection_work(&self, value: &Self::Element) -> usize;
     /// Complete guarantee-import/reduction envelope, including queries/copies
     /// inside `constrain`, import and reduction. Queries by the caller on the
@@ -272,6 +345,35 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     }
     fn literal_quote_work(&self, literal: U256) -> usize {
         D::literal_quote_work(self, literal)
+    }
+    fn summary_join_work(
+        &self,
+        left: &Self::Element,
+        right: &Self::Element,
+        widen_procedure: bool,
+    ) -> usize {
+        D::summary_join_work(self, left, right, widen_procedure)
+    }
+    fn summary_canonical_work(&self, value: &Self::Element) -> usize {
+        D::summary_canonical_work(self, value)
+    }
+    fn summary_construction_work(&self, construction: SummaryConstruction) -> usize {
+        D::summary_construction_work(self, construction)
+    }
+    fn summary_equal_work(&self, left: &Self::Element, right: &Self::Element) -> usize {
+        D::summary_equal_work(self, left, right)
+    }
+    fn summary_is_top_work(&self, value: &Self::Element) -> usize {
+        D::summary_is_top_work(self, value)
+    }
+    fn summary_compact_work(&self, value: &Self::Element) -> usize {
+        D::summary_compact_work(self, value)
+    }
+    fn summary_restore_work(&self, value: &Self::Element, previous: &Self::Element) -> usize {
+        D::summary_restore_work(self, value, previous)
+    }
+    fn summary_observation_work(&self, observation: &super::WordObservation) -> usize {
+        D::summary_observation_work(self, observation)
     }
     fn byte_quotes_uniform(&self) -> bool {
         D::byte_quotes_uniform(self)

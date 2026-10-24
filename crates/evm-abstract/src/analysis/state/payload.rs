@@ -9,6 +9,9 @@ use super::{
     stack_alias::StackAliases,
 };
 
+pub(in crate::analysis) mod caller;
+pub(super) mod payment;
+
 fn scalar<N: WordElement>(value: &EvmValue<N>) -> EvmValue<N> {
     EvmValue::from_numeric(value.numeric().clone())
 }
@@ -44,7 +47,12 @@ impl<N: WordElement> EvmPayloadSummary<N> {
     }
 
     pub(in crate::analysis) fn measure_work(&self) -> usize {
-        let store_work = self.store.work_size();
+        let process = self.frames.iter().all(|frame| frame.key.process.is_some());
+        let store_work = if process {
+            self.store.process_work_size()
+        } else {
+            self.store.work_size()
+        };
         let observation_work = self
             .storage_observations
             .work_size(&self.active().stack, &self.active().stack_aliases);
@@ -56,7 +64,11 @@ impl<N: WordElement> EvmPayloadSummary<N> {
                         .byte_arrays()
                         .into_iter()
                         .fold(work, |work, bytes| work.saturating_add(bytes.work_size()))
-                        .saturating_add(frame.saved_store.work_size())
+                        .saturating_add(if frame.key.process.is_some() {
+                            frame.saved_store.process_work_size()
+                        } else {
+                            frame.saved_store.work_size()
+                        })
                         .saturating_add(frame.stack_aliases.work_size())
                         .saturating_add(frame.metadata_work())
                         .saturating_add(4),
@@ -74,24 +86,6 @@ impl<N: WordElement> EvmPayloadSummary<N> {
     }
 }
 
-/// Tree lookup/allocation and numeric Eq are reserved before alias formation.
-/// Numeric Eq short-circuits unequal finite lengths; equal bounds have equal
-/// numeric traversal sizes. Source expression comparison is never required.
-pub(in crate::analysis) fn alias_form_work<N: WordElement>(
-    payload: &EvmMachinePayload<N>,
-) -> usize {
-    payload.call_stack.iter().fold(0usize, |work, frame| {
-        if frame.code == FrameCode::Unknown {
-            work
-        } else {
-            frame.stack.iter().fold(
-                work.saturating_add(StackAliases::work_for_len(frame.stack.len())),
-                |work, value| work.saturating_add(value.work_size().saturating_mul(2)),
-            )
-        }
-    })
-}
-
 #[cfg(test)]
 pub(in crate::analysis) fn form<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     payload: &EvmMachinePayload<N>,
@@ -104,6 +98,7 @@ pub(in crate::analysis) fn form<N: WordElement, D: EvmNumericAlgebra<Element = N
 /// Form a bound after the caller applies its immutable context policy. Keeping
 /// these histories unchanged prevents a default canonicalizer from overriding
 /// a custom context. Unknown-environment roots still erase private context.
+#[cfg(test)]
 pub(in crate::analysis) fn form_normalized<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     payload: &EvmMachinePayload<N>,
     entry: &EvmEntry<N>,
@@ -112,6 +107,7 @@ pub(in crate::analysis) fn form_normalized<N: WordElement, D: EvmNumericAlgebra<
     form_with_history(payload, entry, domain, false)
 }
 
+#[cfg(test)]
 fn form_with_history<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     payload: &EvmMachinePayload<N>,
     entry: &EvmEntry<N>,
@@ -171,6 +167,11 @@ fn form_with_history<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                 summary.key.basic_block_index = 0;
             }
             Ok(EvmFrameSummary {
+                semantics: if unknown {
+                    super::super::TransferSemantics::Environment
+                } else {
+                    super::super::TransferSemantics::Native
+                },
                 frame: summary,
                 stack_aliases,
             })
@@ -218,7 +219,10 @@ pub(in crate::analysis) fn join<N: WordElement, D: EvmNumericAlgebra<Element = N
             .join(&next.storage_observations, domain, widen)?;
     let mut frames = Vec::with_capacity(old.frames.len());
     for (left, right) in old.frames.iter().zip(&next.frames) {
-        if !left.same_shape(right) || left.environment_calldata != right.environment_calldata {
+        if !left.same_shape(right)
+            || left.semantics != right.semantics
+            || left.environment_calldata != right.environment_calldata
+        {
             return Err(MachineError::Shape);
         }
         let stack = left
@@ -229,6 +233,7 @@ pub(in crate::analysis) fn join<N: WordElement, D: EvmNumericAlgebra<Element = N
             .collect();
         let stack_aliases = left.stack_aliases.intersect(&right.stack_aliases)?;
         frames.push(EvmFrameSummary {
+            semantics: left.semantics,
             frame: left.try_zip(
                 right,
                 stack,

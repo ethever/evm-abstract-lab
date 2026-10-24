@@ -133,13 +133,13 @@ impl Summary {
         .filter_map(|(varies, label)| varies.then_some(label))
         .collect()
     }
-    fn roles(&self, first: Option<&CfgBlock>) -> String {
+    fn roles(&self, report: &AnalysisReport, first: Option<&CfgBlock>) -> String {
         let differences = self.differences();
         let mut text = if differences.is_empty() {
             first.map_or("Frame roles unavailable".into(), |first| {
                 format!(
                     "Storage {} · depth {}",
-                    short_address(&first.storage_address),
+                    short_address(report.storage_label(first)),
                     first.frame_depth
                 )
             })
@@ -165,7 +165,10 @@ fn title(node: &DisplayNode) -> String {
         node.program
             .map_or("No program".into(), |program| Symbol::Program(program)
                 .to_string()),
-        Symbol::Block(node.basic_block),
+        node.basic_block.map_or_else(
+            || "Process control".into(),
+            |id| Symbol::Block(id).to_string()
+        ),
         node.members.len()
     )
 }
@@ -216,7 +219,7 @@ pub(super) fn preview(
         }
     }
     lines.push((
-        abbreviate(&summary.roles(first), super::SSA_COLUMNS),
+        abbreviate(&summary.roles(report, first), super::SSA_COLUMNS),
         palette::MUTED,
     ));
     if let Some(block) = first.filter(|_| summary.shared_source) {
@@ -307,7 +310,7 @@ pub(super) fn tooltip(
             lines.push(format!(
                 "{notation_0} · {coverage:?} · depth {} · storage {} · {} history items",
                 block.frame_depth,
-                block.storage_address,
+                report.storage_label(block),
                 block.context.len(),
                 notation_0 = Symbol::State(state)
             ));

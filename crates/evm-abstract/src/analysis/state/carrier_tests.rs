@@ -17,6 +17,7 @@ use crate::{
 use alloy_primitives::U256;
 use std::{cell::Cell, fmt, num::NonZeroUsize};
 
+mod clone_payment;
 mod joins;
 mod numeric;
 mod projection;
@@ -102,6 +103,36 @@ impl EvmNumericAlgebra for Algebra {
             .saturating_add(1)
             .saturating_mul(value.work_size())
             .saturating_mul(32)
+    }
+    // This carrier owns only a fixed-size interval and one optional word. Each
+    // summary envelope includes its bounded limb work, queries and output copy;
+    // native equality and canonicalization must still pay their separate hook.
+    fn summary_join_work(&self, _: &ExcludingWord, _: &ExcludingWord, _: bool) -> usize {
+        512
+    }
+    fn summary_canonical_work(&self, _: &ExcludingWord) -> usize {
+        512
+    }
+    fn summary_construction_work(&self, _: crate::domain::SummaryConstruction) -> usize {
+        512
+    }
+    fn summary_equal_work(&self, _: &ExcludingWord, _: &ExcludingWord) -> usize {
+        512
+    }
+    fn summary_is_top_work(&self, _: &ExcludingWord) -> usize {
+        512
+    }
+    fn summary_compact_work(&self, _: &ExcludingWord) -> usize {
+        512
+    }
+    fn summary_restore_work(&self, _: &ExcludingWord, _: &ExcludingWord) -> usize {
+        512
+    }
+    fn summary_observation_work(&self, observation: &WordObservation) -> usize {
+        observation
+            .work_size()
+            .saturating_add(1)
+            .saturating_mul(512)
     }
 }
 

@@ -6,39 +6,92 @@ use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{AnalysisReport, EnvironmentSnapshot, FrameSnapshot};
 
-pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
+pub(super) fn frame(ui: &mut Ui, report: &AnalysisReport, frame: &FrameSnapshot) {
+    if let Some(key) = &frame.process {
+        super::process::frame(ui, key);
+        if let Some(operands) = &frame.process_operands {
+            egui::Grid::new("process_operands")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    value::named(ui, "Logical ADDRESS", &operands.address);
+                    value::named(ui, "CALLER", &operands.caller);
+                    value::named(ui, "CALLVALUE", &operands.value);
+                });
+        }
+        if let Some(descriptor) = &frame.process_creation {
+            super::process::creation(ui, descriptor);
+        }
+        ui.label(format!(
+            "Rollback snapshot: {}",
+            Symbol::Store(frame.rollback_store)
+        ));
+        return;
+    }
     egui::Grid::new("frame_context")
         .num_columns(2)
         .show(ui, |ui| {
             let abstract_environment =
                 frame.kind == evm_abstract_protocol::CodeKind::AbstractEnvironment;
+            let input_owner = frame.index == 0
+                && report.input_namespace().is_some()
+                && frame.storage_address.as_deref() == report.input_namespace();
+            let input_code =
+                input_owner && frame.code_address.as_deref() == report.input_namespace();
             value::text(
                 ui,
-                if abstract_environment {
+                if input_code {
+                    "Code input"
+                } else if abstract_environment {
                     "Code namespace"
                 } else {
                     "Code account"
                 },
-                &frame.code_address,
+                if input_code {
+                    "Supplied input program"
+                } else {
+                    frame.code_address.as_deref().unwrap_or("Not recorded")
+                },
             );
             value::text(
                 ui,
-                if frame.address_operand.is_some() {
+                if input_owner {
+                    "Root input owner"
+                } else if frame.address_operand.is_some() {
                     "Storage namespace"
                 } else {
                     "Storage owner"
                 },
-                &frame.storage_address,
+                if input_owner {
+                    "Symbolic ADDRESS"
+                } else {
+                    frame.storage_address.as_deref().unwrap_or("Not recorded")
+                },
             );
             if let Some(address) = &frame.address_operand {
                 value::named(ui, "Logical ADDRESS", address);
             } else {
-                value::text(ui, "Logical ADDRESS", value::address(&frame.address_value));
+                value::text(
+                    ui,
+                    "Logical ADDRESS",
+                    frame
+                        .address_value
+                        .as_ref()
+                        .map(value::address)
+                        .unwrap_or_else(|| "Not recorded".into()),
+                );
             }
             if let Some(caller) = &frame.caller_operand {
                 value::named(ui, "CALLER", caller);
             } else {
-                value::text(ui, "CALLER", value::address(&frame.caller));
+                value::text(
+                    ui,
+                    "CALLER",
+                    frame
+                        .caller
+                        .as_ref()
+                        .map(value::address)
+                        .unwrap_or_else(|| "Not recorded".into()),
+                );
             }
             value::named(ui, "CALLVALUE", &frame.call_value);
             value::text(
@@ -56,7 +109,7 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
                 if abstract_environment {
                     "Not observed"
                 } else {
-                    &frame.code_hash
+                    frame.code_hash.as_deref().unwrap_or("Not recorded")
                 },
             );
             value::text(
@@ -65,7 +118,14 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
                 if abstract_environment {
                     "Abstract environment".into()
                 } else {
-                    format!("{} · {:?}", Symbol::Block(frame.basic_block), frame.context)
+                    format!(
+                        "{} · {:?}",
+                        frame.basic_block.map_or_else(
+                            || "No instruction block".into(),
+                            |id| Symbol::Block(id).to_string()
+                        ),
+                        frame.context
+                    )
                 },
             );
             value::text(
@@ -90,13 +150,37 @@ pub(super) fn frame(ui: &mut Ui, frame: &FrameSnapshot) {
                 value::named(ui, "Output offset", &continuation.output_offset);
                 value::named(ui, "Output span", &continuation.output_size);
                 if let Some(address) = &continuation.creation {
-                    value::text(ui, "Creation target", address);
+                    super::process::creation(ui, address);
                 }
             });
     }
 }
 
 pub(super) fn environment(ui: &mut Ui, report: &AnalysisReport) {
+    ui.label(RichText::new("Declared root input").strong());
+    match &report.metadata.root_binding {
+        evm_abstract_protocol::RootInputBinding::Physical(source) => {
+            ui.monospace(format!("Root destination: {}", source.address));
+        }
+        evm_abstract_protocol::RootInputBinding::Namespace(_) => {
+            ui.label("Root ADDRESS is symbolic; the supplied root state is an input template.");
+        }
+    }
+    super::process::source(ui, &report.metadata.declared_root_source);
+    if let Some(template) = report
+        .accounts
+        .iter()
+        .find(|account| report.input_namespace() == Some(account.address.as_str()))
+    {
+        ui.collapsing("Supplied root state", |ui| {
+            value::named(ui, "Balance", &template.balance);
+            value::named(ui, "Nonce", &template.nonce);
+            value::named(ui, "Other supplied slots", &template.storage_default);
+            for slot in &template.storage {
+                value::named(ui, &slot.slot, &slot.value);
+            }
+        });
+    }
     ui.label(RichText::new("Report work").strong());
     egui::Grid::new("report_work")
         .num_columns(2)

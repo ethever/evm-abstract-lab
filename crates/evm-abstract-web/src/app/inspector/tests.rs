@@ -3,6 +3,8 @@ use super::*;
 use evm_abstract_protocol as api;
 
 mod diagnostics;
+mod hybrid;
+mod regional;
 mod scroll_bounds;
 mod storage;
 
@@ -16,10 +18,12 @@ fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
     };
     report.abstract_summaries.push(api::AbstractSummary {
         source_state: 0,
+        source_current: true,
         kind: api::ProcedureSummaryKind::UnknownEnvironment,
         root_procedure: None,
         closed: true,
         procedures: vec![],
+        regional_cfg: api::RegionalCfg::default(),
         state_count: 1,
         transfers: 1,
         propagations: 0,
@@ -34,6 +38,14 @@ fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
     let known = inspector.accessible_summary(&report, selection);
     assert!(known.contains("Recursive bytecode · closed"));
     assert!(!known.contains("Abstract interactions"));
+    report.abstract_summaries[0].kind = api::ProcedureSummaryKind::KnownCall;
+    let known = inspector.accessible_summary(&report, selection);
+    assert!(known.contains("Known bytecode call · closed"));
+    assert!(!known.contains("Recursive bytecode"));
+    report.abstract_summaries[0].kind = api::ProcedureSummaryKind::KnownProcess;
+    let process = inspector.accessible_summary(&report, selection);
+    assert!(process.contains("Conservative runtime process · closed"));
+    assert!(!process.contains("Known bytecode call"));
     report.abstract_summaries[0].kind = api::ProcedureSummaryKind::UnknownEnvironment;
     report.abstract_summaries[0].closed = false;
     assert!(
@@ -231,24 +243,27 @@ fn store() -> api::StoreSnapshot {
 fn frame(index: usize, rollback_store: usize) -> api::FrameSnapshot {
     let owner = account().address;
     api::FrameSnapshot {
+        process: None,
+        process_operands: None,
+        process_creation: None,
         index,
         program: None,
-        code_address: owner.clone(),
-        code_hash: "0x00".into(),
-        storage_address: owner.clone(),
-        address_value: api::AddressValue::Concrete(owner.clone()),
-        caller: api::AddressValue::Concrete(owner),
+        code_address: Some(owner.clone()),
+        code_hash: Some("0x00".into()),
+        storage_address: Some(owner.clone()),
+        address_value: Some(api::AddressValue::Concrete(owner.clone())),
+        caller: Some(api::AddressValue::Concrete(owner)),
         address_operand: None,
         caller_operand: None,
         call_value: word("0x0"),
         is_static: false,
         kind: api::CodeKind::Runtime,
-        basic_block: 0,
+        basic_block: Some(0),
         context: vec![],
         stack: vec![],
-        memory: 0,
-        calldata: 0,
-        returndata: 0,
+        memory: Some(0),
+        calldata: Some(0),
+        returndata: Some(0),
         rollback_store,
         continuation: None,
     }
@@ -713,7 +728,7 @@ fn native_state_and_frame_symbols_match_accessibility_without_renumbering() {
             frame.program = Some(128);
             frame.code_address = report.cfg[0].code_address.clone();
             frame.storage_address = report.cfg[0].storage_address.clone();
-            frame.code_hash = report.programs[0].code_hash.clone();
+            frame.code_hash = Some(report.programs[0].code_hash.clone());
             frame
         })
         .collect();

@@ -8,17 +8,17 @@ use std::{
 #[path = "../tests/support/work_boundary.rs"]
 pub(crate) mod work_boundary;
 
-pub(crate) struct Counter<T: Copy> {
+pub(crate) struct Counter<T> {
     initial: T,
     entries: Mutex<Vec<(ThreadId, T)>>,
 }
 
-pub(crate) struct Scope<'a, T: Copy> {
+pub(crate) struct Scope<'a, T> {
     counter: &'a Counter<T>,
     owner: ThreadId,
 }
 
-impl<T: Copy> Counter<T> {
+impl<T> Counter<T> {
     pub(crate) const fn new(initial: T) -> Self {
         Self {
             initial,
@@ -34,14 +34,19 @@ impl<T: Copy> Counter<T> {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub(crate) fn scope(&self) -> Scope<'_, T> {
+    // Only scope initialization clones the template. Non-Copy observed values
+    // can then move into and out of the scope through replace without cloning.
+    pub(crate) fn scope(&self) -> Scope<'_, T>
+    where
+        T: Clone,
+    {
         let owner = thread::current().id();
         let mut entries = self.entries();
         assert!(
             entries.iter().all(|(id, _)| *id != owner),
             "counter scope already active on this thread"
         );
-        entries.push((owner, self.initial));
+        entries.push((owner, self.initial.clone()));
         Scope {
             counter: self,
             owner,
@@ -61,7 +66,10 @@ impl<T: Copy> Counter<T> {
         }
     }
 
-    pub(crate) fn get(&self) -> T {
+    pub(crate) fn get(&self) -> T
+    where
+        T: Copy,
+    {
         let mut value = None;
         self.update(|current| value = Some(*current));
         value.expect("counter scope must be active on this thread")
@@ -78,7 +86,7 @@ impl<T: Copy> Counter<T> {
     }
 }
 
-impl<T: Copy> Drop for Scope<'_, T> {
+impl<T> Drop for Scope<'_, T> {
     fn drop(&mut self) {
         let mut entries = self.counter.entries();
         if let Some(index) = entries.iter().position(|(id, _)| *id == self.owner) {
@@ -86,3 +94,6 @@ impl<T: Copy> Drop for Scope<'_, T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

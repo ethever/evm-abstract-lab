@@ -64,7 +64,7 @@ fn invalid_bytes_and_fork_rules_survive_json_and_text_output() {
             "json",
         ])))
         .unwrap();
-        assert_eq!(report["schema_version"], 12);
+        assert_eq!(report["schema_version"], 15);
         assert_eq!(report["status"], "Converged");
         assert_eq!(report["frontiers"], json!([]));
         let diagnostics = report["diagnostics"].as_array().unwrap();

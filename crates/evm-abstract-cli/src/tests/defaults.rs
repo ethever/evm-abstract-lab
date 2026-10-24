@@ -99,6 +99,50 @@ fn raw_hex_file_and_offline_world_execute_with_web_defaults() {
 }
 
 #[test]
+fn primary_analyze_default_exports_both_hybrid_graphs_and_typed_native_prefixes() {
+    let world = format!(
+        "{}/../../examples/worlds/identity-precompile.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let parsed = Cli::try_parse_from([
+        "evm-abstract",
+        "analyze",
+        "--world",
+        &world,
+        "--evm.to",
+        ENTRY,
+        "--format",
+        "json",
+    ])
+    .unwrap();
+    let (output, complete) = crate::execute(parsed.command, &Control::default()).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(complete);
+    assert_eq!(report["status"], "Converged");
+    assert_eq!(report["schema_version"], 15);
+    let hybrid = &report["hybrid"];
+    assert_eq!(hybrid["coverage"]["chosen"], "Native");
+    assert_eq!(hybrid["coverage"]["baseline_current"], true);
+    assert_eq!(
+        hybrid["coverage"]["requested_native_terminal_coverage"],
+        true
+    );
+    assert_eq!(hybrid["baseline"]["schema_version"], 15);
+    assert!(hybrid["detail"].is_null());
+    let prefixes = hybrid["local_detail"].as_array().unwrap();
+    assert!(!prefixes.is_empty());
+    for prefix in prefixes {
+        assert_eq!(prefix["namespace"], "Native");
+        assert_eq!(prefix["scope"], "RetainedInputPrefix");
+        assert_eq!(
+            prefix["executed_pcs"].as_array().unwrap().len(),
+            prefix["instructions"].as_array().unwrap().len()
+        );
+        assert!(prefix["frontiers"].is_array());
+    }
+}
+
+#[test]
 fn explicit_previous_policy_is_not_replaced_by_larger_defaults() {
     let expected = AnalysisLimits {
         max_constants: 8,

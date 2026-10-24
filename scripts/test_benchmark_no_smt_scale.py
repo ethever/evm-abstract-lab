@@ -43,6 +43,52 @@ class DeliveryTests(unittest.TestCase):
     def collect(self, limit=1024 * 1024):
         return scale.collect_report(self.directory, self.process, self.commands, limit)
 
+    def test_process_frames_preserve_interpretation_source_and_legacy_native_kinds(self):
+        # Minimal procedure from N4's actual native15 ProcessWithDetail export.
+        process = {"semantics": "KnownProcess", "frame": {"process": {
+            "epoch": "0xc674ad5c5183be1e0b9186c844a69c2c37bdf059200748e8bedfd9ab5e280004",
+            "owner": {"Named": "0x0000000000000000000000000000000000000101"},
+            "source": {"Runtime": {"source": "0x0000000000000000000000000000000000000101",
+                "hash": "0x0dd9fc23b9e0972b48f0c93ebb805660239a90ba27a337a9f24333a8703975cd",
+                "fork": "osaka"}}, "is_static": False}}}
+        procedures = [process, {"semantics": "Environment", "frame": {"process": {
+            **process["frame"]["process"], "source": "AnyRuntime"}}}]
+        procedures += [{"frame": {"mode": mode}} for mode in
+                       ["Runtime", "InitCode", "Unknown", "Empty", {"Precompile": "0x1"}, "InvalidDelegation"]]
+        native = {**report(), "procedure_summaries": [{"procedures": procedures}]}
+        before = copy.deepcopy(native)
+        self.write_stdout(native)
+        sample = self.collect()
+        self.assertTrue(sample["report_delivered"], sample["report_error"])
+        self.assertEqual(sample["nativefinal"]["procedure_kinds"], dict.fromkeys([
+            "Process:KnownProcess:Runtime", "Process:Environment:AnyRuntime", "Runtime", "Initcode",
+            "AbstractEnvironment", "Empty", "Precompile", "InvalidDelegation"], 1))
+        self.assertEqual(native, before)
+        self.assertNotIn("mode", process["frame"])
+        self.assertNotIn("pc", process["frame"])
+        wire = {**report(), "abstract_summaries": [{"procedures": [
+            {"kind": "Runtime", "semantics": "KnownProcess", "process": process["frame"]["process"]},
+            {"kind": "Precompile", "process": None}]}]}
+        self.assertEqual(scale.metrics(wire, "web")["procedure_kinds"], {
+            "Process:KnownProcess:Runtime": 1, "Precompile": 1})
+
+    def test_hybrid_graph_metrics_and_application_totals_remain_independent(self):
+        for flat in (False, True):
+            with self.subTest(flat=flat):
+                graph = report()
+                graph.update(status="Converged", work=100)
+                hybrid = {"coverage": {"baseline_current": False, "chosen": "Process"},
+                          "selected_graph": {"status": "Converged", "work": 100, "transfers": 7}}
+                delivered = {**graph, "status": "Incomplete", "work": 1000, "hybrid": hybrid} if flat else {
+                    "status": "Incomplete", "work": 1000, "analysis": graph, "hybrid": hybrid}
+                self.write_stdout(delivered)
+                sample = self.collect()
+                self.assertTrue(sample["report_delivered"], sample["report_error"])
+                self.assertEqual(sample["nativefinal"]["status"], "Converged")
+                self.assertEqual(sample["nativefinal"]["work"], 100)
+                self.assertEqual(sample["nativefinal"]["application"], {"status": "Incomplete", "work": 1000})
+                self.assertEqual(delivered["status"], "Incomplete")
+
     def test_external_stops_cannot_promote_even_complete_stdout_to_final(self):
         for reason in ("external_timeout", "external_rss_guard", "external_host_memory_guard",
                        "external_keyboard_interrupt", "resource_monitor_error"):
@@ -105,19 +151,25 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(sample["nativefinal"]["config"], {"synthetic": True})
 
     def test_native_policy_checks_model_and_algebra_limits_beyond_execution_config(self):
+        # Keep native12/cost7 profiles supported alongside native13/cost8 and current native15/cost8.
+        for version, cost_version in ((12, 7), (13, 8), (14, 8), (15, 8)):
+            with self.subTest(version=version, cost_version=cost_version):
+                self.check_native_policy(version, cost_version)
+
+    def check_native_policy(self, version, cost_version):
         # Synthetic envelopes check the harness boundary, never EVM coverage.
-        native = {**report(), "schema_version": 12, "numeric_model": "product",
-                  "domain_spec": {"capacity": 512, "cost_version": 7},
+        native = {**report(), "schema_version": version, "numeric_model": "product",
+                  "domain_spec": {"capacity": 512, "cost_version": cost_version},
                   "postprocessing_max_work": 2_000_000_000, "postprocessing_work": 7}
-        self.commands.update(interface={"versions": {"native": 12}},
+        self.commands.update(interface={"versions": {"native": version}},
                              expected_native_numeric_model="product",
                              expected_native_domain_spec=copy.deepcopy(native["domain_spec"]),
                              expected_native_postprocessing_max_work=2_000_000_000)
         self.write_stdout(native)
         self.assertTrue(self.collect()["policy_matches"])
         for field, value in [("numeric_model", "finite-set"),
-                             ("domain_spec", {"capacity": 1, "cost_version": 7}),
-                             ("domain_spec", {"capacity": 512, "cost_version": 6}),
+                             ("domain_spec", {"capacity": 1, "cost_version": cost_version}),
+                             ("domain_spec", {"capacity": 512, "cost_version": cost_version - 1}),
                              ("postprocessing_max_work", 1_000_000_000)]:
             with self.subTest(field=field, value=value):
                 self.write_stdout({**native, field: value})

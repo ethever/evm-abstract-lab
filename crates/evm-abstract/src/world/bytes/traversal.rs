@@ -182,29 +182,7 @@ impl<N: WordElement> EvmByteArray<N> {
 
 /// Charge retained concrete payloads once per shared state, independently of
 /// logical copy lengths and without traversing any payload bytes.
+/// The root caches this census; warmth never discounts the charge.
 pub(super) fn exact_work(root: &ByteStateId) -> usize {
-    let mut work = 0usize;
-    let mut seen = BTreeSet::new();
-    let mut pending = vec![root.clone()];
-    while let Some(state) = pending.pop() {
-        if !seen.insert(state.id()) {
-            continue;
-        }
-        match state.kind() {
-            ByteStateKind::Exact(bytes) => work = work.saturating_add(bytes.len()),
-            ByteStateKind::WriteByte { previous, .. }
-            | ByteStateKind::WriteWord { previous, .. } => pending.push(previous.clone()),
-            ByteStateKind::Copy {
-                previous, source, ..
-            } => pending.extend([previous.clone(), source.state.clone()]),
-            ByteStateKind::Slice { source } => pending.push(source.state.clone()),
-            ByteStateKind::Ite {
-                then_state,
-                else_state,
-                ..
-            } => pending.extend([then_state.clone(), else_state.clone()]),
-            _ => {}
-        }
-    }
-    work
+    root.exact_payload_bytes()
 }

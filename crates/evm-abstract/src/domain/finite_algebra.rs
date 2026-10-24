@@ -6,8 +6,8 @@
 //! the frozen capacity. Shared relation/fact limits still come from DomainSpec.
 
 use super::{
-    DomainSpec, EvmNumericAlgebra, FiniteConstantSet, NumericReduction, WordElement,
-    WordObservation, concrete,
+    DomainSpec, EvmNumericAlgebra, FiniteConstantSet, NumericReduction, SummaryConstruction,
+    WordElement, WordObservation, concrete,
     facts::{FactError, Symbol},
 };
 use alloy_primitives::U256;
@@ -43,6 +43,32 @@ impl Default for FiniteSetAlgebra {
 fn tree_entry_work(size: usize) -> usize {
     let levels = usize::BITS as usize - size.max(1).leading_zeros() as usize;
     levels.saturating_add(1).saturating_mul(64)
+}
+
+/// The native finite join merges two ordered iterators into a fresh bounded
+/// B-tree. Cached lengths bound all merge comparisons, insertion/split work and
+/// release, including the temporary capacity+1 tree discarded on overflow.
+pub(super) fn summary_union_work(
+    left: &FiniteConstantSet,
+    right: &FiniteConstantSet,
+    capacity: usize,
+) -> usize {
+    if left.reuses_union(right, capacity) {
+        // Two fixed-width identity/capacity decisions plus a shared handle;
+        // retain the complete tree's eventual release allowance as well.
+        return 128usize.saturating_add(left.work_size());
+    }
+    if right.reuses_union(left, capacity) {
+        return 128usize.saturating_add(right.work_size());
+    }
+    let (Some(left), Some(right)) = (left.cardinality(), right.cardinality()) else {
+        return 8; // Top absorption constructs no candidate tree.
+    };
+    let visits = left.saturating_add(right);
+    let output = visits.min(capacity.saturating_add(1));
+    64usize
+        .saturating_add(visits.saturating_mul(64))
+        .saturating_add(output.saturating_mul(tree_entry_work(output).saturating_add(16)))
 }
 
 fn cartesian_visits(mut cardinalities: impl Iterator<Item = Option<usize>>) -> Option<usize> {
@@ -266,10 +292,93 @@ impl EvmNumericAlgebra for FiniteSetAlgebra {
         LITERAL_WORK
     }
 
+    fn summary_join_work(
+        &self,
+        left: &Self::Element,
+        right: &Self::Element,
+        widen_procedure: bool,
+    ) -> usize {
+        let union = summary_union_work(left, right, self.spec.capacity());
+        if !widen_procedure {
+            return union;
+        }
+        // Procedure widening performs a fresh union, then compares old with
+        // that actual tree before the cached-cardinality test. Equality can
+        // walk every old/result key even when both shared handles differ.
+        let output = match (left.cardinality(), right.cardinality()) {
+            (Some(left), Some(right)) => left.saturating_add(right).min(self.spec.capacity()),
+            _ => 0,
+        };
+        union.saturating_add(32).saturating_add(
+            left.cardinality()
+                .unwrap_or(0)
+                .saturating_add(output)
+                .saturating_mul(16),
+        )
+    }
+
+    fn summary_canonical_work(&self, value: &Self::Element) -> usize {
+        // FiniteConstantSet inherits the identity canonicalizer: one shared
+        // handle clone. Include final release of the entire retained tree.
+        COPY_WORK.saturating_add(WordElement::work_size(value))
+    }
+
+    fn summary_construction_work(&self, construction: SummaryConstruction) -> usize {
+        match construction {
+            SummaryConstruction::Top => 8,
+            // The default WordElement constructors create a fixed-width
+            // WordObservation, then this carrier's from_observation. It tests
+            // singleton and at most constructs one literal B-tree; it does not
+            // enumerate the byte/range image, regardless of configured capacity.
+            SummaryConstruction::UnknownByte
+            | SummaryConstruction::UnknownAddress
+            | SummaryConstruction::UnsignedRange { .. } => 512 + LITERAL_WORK,
+        }
+    }
+
     fn byte_quotes_uniform(&self) -> bool {
         // Numeric quotes depend on cached operand cardinalities, never on the
         // literal index. Facade metadata likewise sees an exact one-word index.
         true
+    }
+
+    fn summary_equal_work(&self, left: &Self::Element, right: &Self::Element) -> usize {
+        // Arc equality can compare every B-tree key when pointers differ.
+        8usize.saturating_add(
+            left.work_size()
+                .saturating_add(right.work_size())
+                .saturating_mul(16),
+        )
+    }
+
+    fn summary_is_top_work(&self, _value: &Self::Element) -> usize {
+        2 // The carrier's Top/Finite tag, without a candidate query.
+    }
+    fn summary_compact_work(&self, value: &Self::Element) -> usize {
+        COPY_WORK.saturating_add(WordElement::work_size(value))
+    }
+    fn summary_restore_work(&self, value: &Self::Element, _previous: &Self::Element) -> usize {
+        // This carrier inherits the unchanged-value restoration hook.
+        self.summary_compact_work(value)
+    }
+    fn summary_observation_work(&self, observation: &WordObservation) -> usize {
+        let finite = observation.finite_constants();
+        if let Some(len) = finite.cardinality() {
+            // from_observation filters the complete cover by all predicates.
+            // Each visit can search that tree and perform one Word256 modulo;
+            // rebuilding/release is bounded by the original cover cardinality.
+            128usize.saturating_add(
+                len.saturating_mul(
+                    4096usize
+                        .saturating_add(tree_entry_work(len).saturating_mul(2))
+                        .saturating_add(32),
+                ),
+            )
+        } else {
+            // Fixed-width observation singleton validation, then at most one
+            // literal tree. No enumeration of an unsigned range occurs.
+            4096 + 512 + LITERAL_WORK
+        }
     }
 
     fn projection_work(&self, _value: &Self::Element) -> usize {

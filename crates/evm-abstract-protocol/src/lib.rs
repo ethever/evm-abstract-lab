@@ -10,14 +10,17 @@ mod codec;
 mod analysis;
 mod boundaries;
 mod errors;
+mod hybrid;
 mod input_errors;
 mod jobs;
+mod process;
 mod query_errors;
 mod request;
 mod rpc;
 mod rpc_causes;
 mod rpc_providers;
 mod session_errors;
+mod source;
 mod ssa;
 mod ssa_errors;
 mod state;
@@ -28,14 +31,17 @@ mod terminal;
 pub use analysis::*;
 pub use boundaries::*;
 pub use errors::*;
+pub use hybrid::*;
 pub use input_errors::*;
 pub use jobs::*;
+pub use process::*;
 pub use query_errors::*;
 pub use request::*;
 pub use rpc::*;
 pub use rpc_causes::*;
 pub use rpc_providers::*;
 pub use session_errors::*;
+pub use source::*;
 pub use ssa::*;
 pub use ssa_errors::*;
 pub use state::*;
@@ -46,8 +52,8 @@ pub use terminal::*;
 /// Same-origin analysis endpoint.
 pub const API_PATH: &str = "/api/tasks";
 /// Wire schema version, independent of native report JSON.
-/// Version 17 selects native numeric models and separates numeric policy from execution budgets.
-pub const SCHEMA_VERSION: u16 = 17;
+/// Version 20 qualifies root templates, process sources and conditional native detail.
+pub const SCHEMA_VERSION: u16 = 20;
 /// Maximum UTF-8 JSON request body accepted by the server.
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 

@@ -241,19 +241,32 @@ pub(super) fn pending(ui: &mut Ui, report: &api::AnalysisReport, id: usize) {
                 ui.collapsing(
                     format!(
                         "Frame {} · storage {} · code {}",
-                        frame.index, frame.storage_address, frame.code_address
+                        frame.index,
+                        frame
+                            .storage_address
+                            .as_deref()
+                            .unwrap_or("Process owner class"),
+                        frame.code_address.as_deref().unwrap_or("Process source")
                     ),
                     |ui| {
+                        if frame.process.is_some() {
+                            super::context::frame(ui, report, frame);
+                            return;
+                        }
                         super::buffers::stack(ui, &frame.stack);
-                        super::buffers::show(ui, report, frame.memory, "Pre-effect memory");
-                        super::buffers::show(ui, report, frame.calldata, "Captured calldata");
+                        if let Some(id) = frame.memory {
+                            super::buffers::show(ui, report, id, "Pre-effect memory");
+                        }
+                        if let Some(id) = frame.calldata {
+                            super::buffers::show(ui, report, id, "Captured calldata");
+                        }
                         if let Some(store) = report.stores.get(machine.store) {
                             for transient in [false, true] {
                                 super::stores::storage(
                                     ui,
                                     report,
                                     Some(store),
-                                    &frame.storage_address,
+                                    frame.storage_address.as_deref().unwrap_or("Not recorded"),
                                     transient,
                                 );
                             }

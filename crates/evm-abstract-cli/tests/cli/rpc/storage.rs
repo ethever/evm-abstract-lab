@@ -35,17 +35,13 @@ fn assert_pinned(requests: &[Json]) {
 
 fn storage_failure(analysis: &Json, address: &str, slot: U256) -> Json {
     assert_eq!(analysis["status"], "Incomplete");
-    let failure = analysis["frontiers"]
+    let failure = analysis["rpc_acquisition"]["failures"]
         .as_array()
         .unwrap()
         .iter()
-        .find_map(|frontier| {
-            let acquisition = &frontier["reason"]["RpcAcquisition"];
-            (acquisition["address"] == address
-                && acquisition["failure"]["context"]["slot"] == json!(slot))
-            .then(|| acquisition["failure"].clone())
-        })
-        .unwrap_or_else(|| panic!("missing storage acquisition failure: {analysis}"));
+        .find(|item| item["address"] == address && item["slot"] == json!(slot))
+        .expect("typed optional storage acquisition failure")["failure"]
+        .clone();
     assert_eq!(failure["context"]["chain_id"], "0x1");
     assert_eq!(failure["context"]["block_hash"], BLOCK);
     assert_eq!(failure["context"]["account"], address);
@@ -173,41 +169,70 @@ fn explicit_slot_and_fetched_zero_are_cached_across_repeated_sloads() {
 
 #[test]
 fn nested_delegatecall_fetches_proxy_storage_instead_of_implementation_storage() {
-    thread::scope(|scope| {
-        let entry_code = format!("{}5000", call(0xf4, 0x200, 0));
-        let implementation_code = format!("{}5000", call(0xf4, 0x300, 0));
-        let fixture = Fixture::new(&[
-            (ENTRY, &entry_code),
-            (CALLEE, &implementation_code),
-            (LEAF, "5f5400"),
-        ]);
-        let server = RpcServer::new(scope, move |request| {
-            if request["method"] == "eth_getStorageAt" {
-                assert_eq!(request["params"][0], ENTRY);
-                storage_reply(request, U256::from(42))
+    for additional in [false, true] {
+        thread::scope(|scope| {
+            let entry_code = format!("{}5000", call(0xf4, 0x200, 0));
+            let implementation_code = format!("{}5000", call(0xf4, 0x300, 0));
+            let fixture = Fixture::new(&[
+                (ENTRY, &entry_code),
+                (CALLEE, &implementation_code),
+                (LEAF, "5f5400"),
+            ]);
+            let server = RpcServer::new(scope, move |request| {
+                if request["method"] == "eth_getStorageAt" {
+                    assert_eq!(request["params"][0], ENTRY);
+                    storage_reply(request, U256::from(42))
+                } else {
+                    fixture.reply(request)
+                }
+            });
+            let args = if additional {
+                vec!["--ssa", "--max-work", "5000000000"]
             } else {
-                fixture.reply(request)
+                vec!["--ssa"]
+            };
+            let output = execute(&server, &args);
+            let report: Json = serde_json::from_slice(&output.stdout).unwrap();
+            crate::native::assert_exit(&report, &output);
+            assert_eq!(report["status"], "Converged");
+            let export = crate::native::select(&report);
+            let analysis = export.get("analysis").unwrap_or(&export);
+            if additional || analysis["status"] == "Converged" {
+                let analysis = verified_export(&export);
+                assert!(analysis["states"].as_array().unwrap().iter().any(|state| {
+                    let frame = state["key"]["frames"].as_array().unwrap().last().unwrap();
+                    frame["code_address"] == LEAF
+                        && frame["address"] == ENTRY
+                        && state["exit_stack"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|value| contains(value, U256::from(42)))
+                }));
+            } else {
+                // The fixed default snapshot has already acquired the proxy slot,
+                // but optional execution still refers to the earlier revision.
+                // Preserve that pending prefix rather than claim the loaded word.
+                let rpc = &report["hybrid"]["rpc"];
+                assert_eq!(rpc["precision"], "Work");
+                assert_eq!(rpc["detail_at_current_revision"], false);
+                assert!(rpc["detail_revision"].as_u64() < rpc["current_revision"].as_u64());
+                assert!(
+                    analysis["frontiers"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|frontier| frontier["reason"]["MissingStorage"]["address"] == ENTRY)
+                );
             }
+            let requests = server.finish();
+            assert_eq!(requests_for(&requests, "eth_getStorageAt", ENTRY).len(), 1);
+            for implementation in [CALLEE, LEAF] {
+                assert!(requests_for(&requests, "eth_getStorageAt", implementation).is_empty());
+            }
+            assert_pinned(&requests);
         });
-        let export = result(execute(&server, &["--ssa"]), 0);
-        let analysis = verified_export(&export);
-        assert!(analysis["states"].as_array().unwrap().iter().any(|state| {
-            let frame = state["key"]["frames"].as_array().unwrap().last().unwrap();
-            frame["code_address"] == LEAF
-                && frame["address"] == ENTRY
-                && state["exit_stack"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|value| contains(value, U256::from(42)))
-        }));
-        let requests = server.finish();
-        assert_eq!(requests_for(&requests, "eth_getStorageAt", ENTRY).len(), 1);
-        for implementation in [CALLEE, LEAF] {
-            assert!(requests_for(&requests, "eth_getStorageAt", implementation).is_empty());
-        }
-        assert_pinned(&requests);
-    });
+    }
 }
 
 #[test]
@@ -271,7 +296,7 @@ fn symbolic_calldata(server: &RpcServer, extra: &[&str]) -> std::process::Output
         "json",
     ];
     args.extend_from_slice(extra);
-    Command::new(env!("CARGO_BIN_EXE_evm-abstract"))
+    Command::new(crate::native::binary())
         .args(args)
         .output()
         .unwrap()
@@ -501,7 +526,9 @@ fn storage_refinement_does_not_reset_execution_transfer_budget() {
         assert_eq!(analysis["transfers"], 2);
         assert_eq!(analysis["rpc_acquisition"]["rounds"], 2);
         let requests = server.finish();
-        assert_eq!(requests_for(&requests, "eth_getStorageAt", ENTRY).len(), 1);
+        // The global phase already consumed the cumulative allowance. Native
+        // SLOAD is unexpanded and cannot start another acquisition round.
+        assert_eq!(requests_for(&requests, "eth_getStorageAt", ENTRY).len(), 0);
         assert_pinned(&requests);
     });
 }

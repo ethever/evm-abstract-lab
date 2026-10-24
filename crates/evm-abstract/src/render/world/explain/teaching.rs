@@ -56,6 +56,13 @@ fn render_with_mode<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element 
     algebra: &crate::domain::ValueAlgebra<D>,
     budget: &mut crate::resource::WorkBudget,
 ) -> Result<String, SsaError> {
+    if analysis
+        .states()
+        .iter()
+        .any(|state| state.active().process.is_some())
+    {
+        return super::process_explanation(analysis, algebra, budget);
+    }
     crate::ssa::work::explanation(analysis, budget)?;
     // SSA admission/replay precedes report allocation. A rejected structural
     // operation cannot first build a large code/reference report.
@@ -543,6 +550,9 @@ fn write_frontiers<N: WordElement>(
             frontier.reason
         )
         .unwrap();
+        if frontier.reason == crate::analysis::FrontierReason::RecursiveNoTerminal {
+            output.push_str("    Known bytecode region lacks terminal evidence.\n");
+        }
         if let Some(target) = &frontier.target {
             output.push_str("    target frames (oldest caller first):\n");
             for (frame, key) in target.frames.iter().enumerate() {

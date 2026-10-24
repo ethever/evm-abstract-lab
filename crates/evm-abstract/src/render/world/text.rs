@@ -44,6 +44,14 @@ pub fn render<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
         analysis.outcomes().len()
     )
     .unwrap();
+    match analysis.root_binding() {
+        crate::world::RootInputBinding::Namespace { .. } => output.push_str(
+            "  root input=supplied program/state template | logical ADDRESS remains symbolic\n",
+        ),
+        crate::world::RootInputBinding::Physical { address } => {
+            writeln!(output, "  root destination={address}").unwrap();
+        }
+    }
     writeln!(
         output,
         "  fork={} | transfers={} | work={}",
@@ -182,6 +190,34 @@ pub fn render<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
     for state in analysis.states() {
         let frame = state.entry.active();
         writeln!(output, "  {}", Symbol::State(state.id)).unwrap();
+        if let Some(process) = &frame.key.process {
+            write_table(
+                &mut output,
+                "    ",
+                &["Field", "Value"],
+                &[
+                    vec!["process owner class".into(), format!("{:?}", process.owner)],
+                    vec!["source".into(), format!("{:?}", process.source)],
+                    vec!["epoch".into(), process.epoch.to_string()],
+                    vec![
+                        "logical ADDRESS".into(),
+                        frame
+                            .address_operand
+                            .as_ref()
+                            .map_or("Not recorded".into(), ToString::to_string),
+                    ],
+                    vec![
+                        "CALLER".into(),
+                        frame
+                            .caller_operand
+                            .as_ref()
+                            .map_or("Not recorded".into(), ToString::to_string),
+                    ],
+                    vec!["call value".into(), frame.call_value.to_string()],
+                ],
+            );
+            continue;
+        }
         write_table(
             &mut output,
             "    ",
@@ -367,6 +403,9 @@ pub fn render<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
             frontier.reason
         )
         .unwrap();
+        if frontier.reason == crate::analysis::FrontierReason::RecursiveNoTerminal {
+            output.push_str("    Known bytecode region lacks terminal evidence.\n");
+        }
         if let Some(target) = &frontier.target {
             writeln!(
                 output,
@@ -410,10 +449,26 @@ pub fn render<N: WordElement, D: crate::domain::EvmNumericAlgebra<Element = N>>(
 }
 
 fn frame_cells(frame: &FrameKey, refs: &References) -> Vec<String> {
+    if let Some(process) = &frame.process {
+        return vec![
+            "Process control".into(),
+            "Not recorded".into(),
+            format!("{:?}", process.source),
+            format!("{:?}", process.owner),
+            "See invocation".into(),
+            process.is_static.to_string(),
+            "Conservative process".into(),
+            "See source identity".into(),
+        ];
+    }
     vec![
         format!("{}", Symbol::Block(frame.basic_block_index)),
         frame.stack_height.to_string(),
-        refs.address(frame.code_address).to_owned(),
+        if refs.input_program(frame) {
+            "Supplied input program".into()
+        } else {
+            refs.address(frame.code_address).to_owned()
+        },
         refs.address_input(frame.address_value),
         refs.address_input(frame.caller),
         frame.is_static.to_string(),

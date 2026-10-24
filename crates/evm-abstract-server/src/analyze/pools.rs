@@ -16,6 +16,8 @@ use evm_abstract_protocol as api;
 use std::collections::BTreeMap;
 
 pub(super) struct Pools<'a, N: WordElement> {
+    /// Original input template only; public process Stores never recreate it.
+    pub root_namespace: Option<Address>,
     control: &'a Control,
     buffers: Vec<EvmByteArray<N>>,
     buffer_roots: BTreeMap<evm_abstract::domain::symbolic::ByteStateId, Vec<usize>>,
@@ -68,6 +70,7 @@ impl<'a, N: WordElement> Pools<'a, N> {
             symbolic: symbolic::Pool::new(control),
             pending_native: Vec::new(),
             pending: Vec::new(),
+            root_namespace: None,
         }
     }
     pub fn program(
@@ -77,8 +80,19 @@ impl<'a, N: WordElement> Pools<'a, N> {
         kind: api::CodeKind,
         program: &Program,
     ) -> Result<usize, api::ApiError> {
+        let source = (self.root_namespace != Some(address) || kind != api::CodeKind::Runtime)
+            .then_some(address);
+        self.program_identity(source, hash, kind, program)
+    }
+    fn program_identity(
+        &mut self,
+        address: Option<Address>,
+        hash: B256,
+        kind: api::CodeKind,
+        program: &Program,
+    ) -> Result<usize, api::ApiError> {
         self.symbolic.charge(1)?;
-        let address = address.to_string();
+        let address = address.map(|address| address.to_string());
         let hash = hash.to_string();
         for id in 0..self.programs.len() {
             self.symbolic.charge(1)?;
@@ -105,6 +119,27 @@ impl<'a, N: WordElement> Pools<'a, N> {
             blocks: blocks(program),
         });
         Ok(id)
+    }
+    pub(super) fn process_program(
+        &mut self,
+        key: &evm_abstract::analysis::ProcessFrameKey,
+        program: Option<&Program>,
+    ) -> Result<Option<usize>, api::ApiError> {
+        let Some(program) = program else {
+            return Ok(None);
+        };
+        match key.source {
+            evm_abstract::analysis::ProcessSource::InputProgram { hash, .. } => self
+                .program_identity(None, hash, api::CodeKind::Runtime, program)
+                .map(Some),
+            evm_abstract::analysis::ProcessSource::Runtime { source, hash, .. } => self
+                .program_identity(Some(source), hash, api::CodeKind::Runtime, program)
+                .map(Some),
+            evm_abstract::analysis::ProcessSource::InitCode { hash, .. } => self
+                .program_identity(None, hash, api::CodeKind::Initcode, program)
+                .map(Some),
+            _ => Ok(None),
+        }
     }
     pub fn buffer(&mut self, source: &EvmByteArray<N>) -> Result<usize, api::ApiError> {
         self.symbolic.charge(1)?;
@@ -350,6 +385,51 @@ impl<'a, N: WordElement> Pools<'a, N> {
             .map(|(index, frame)| {
                 checkpoint(self.control)?;
                 let key = &frame.key;
+                if let Some(process_key) = key.process.as_deref() {
+                    self.symbolic.charge(48)?;
+                    let address = frame.address_operand.as_ref().ok_or_else(|| {
+                        super::process::invalid(api::ProcessValidationKind::Operands)
+                    })?;
+                    let caller = frame.caller_operand.as_ref().ok_or_else(|| {
+                        super::process::invalid(api::ProcessValidationKind::Operands)
+                    })?;
+                    let process_operands = super::process::operands(
+                        address,
+                        caller,
+                        &frame.call_value,
+                        &mut self.symbolic,
+                    )?;
+                    let process_creation = index
+                        .checked_sub(1)
+                        .and_then(|child| source.call_stack.children().get(child))
+                        .and_then(|child| child.continuation.creation)
+                        .map(super::process::continuation);
+                    return Ok(api::FrameSnapshot {
+                        process: Some(super::process::key(process_key)),
+                        process_operands: Some(process_operands),
+                        process_creation,
+                        index,
+                        program: self.process_program(process_key, frame.program.as_ref())?,
+                        code_address: None,
+                        code_hash: None,
+                        storage_address: None,
+                        address_value: None,
+                        caller: None,
+                        address_operand: None,
+                        caller_operand: None,
+                        call_value: self.symbolic.value(&frame.call_value)?,
+                        is_static: process_key.is_static,
+                        kind: super::process::key(process_key).source.kind(),
+                        basic_block: None,
+                        context: vec![],
+                        stack: vec![],
+                        memory: None,
+                        calldata: None,
+                        returndata: None,
+                        rollback_store: self.store(frame.saved_store.state())?,
+                        continuation: None,
+                    });
+                }
                 self.symbolic.charge(
                     key.jump_history
                         .len()
@@ -372,18 +452,21 @@ impl<'a, N: WordElement> Pools<'a, N> {
                             return_block: next.return_block,
                             output_offset: self.symbolic.value(&next.output_offset)?,
                             output_size: self.symbolic.value(&next.output_size)?,
-                            creation: next.creation.map(|address| address.to_string()),
+                            creation: next.creation.map(super::process::continuation),
                         })
                     })
                     .transpose()?;
                 Ok(api::FrameSnapshot {
+                    process: None,
+                    process_operands: None,
+                    process_creation: None,
                     index,
                     program,
-                    code_address: key.code_address.to_string(),
-                    code_hash: key.code_hash.to_string(),
-                    storage_address: key.address.to_string(),
-                    address_value: value::address(key.address_value),
-                    caller: value::address(key.caller),
+                    code_address: Some(key.code_address.to_string()),
+                    code_hash: Some(key.code_hash.to_string()),
+                    storage_address: Some(key.address.to_string()),
+                    address_value: Some(value::address(key.address_value)),
+                    caller: Some(value::address(key.caller)),
                     address_operand: frame
                         .address_operand
                         .as_ref()
@@ -397,16 +480,16 @@ impl<'a, N: WordElement> Pools<'a, N> {
                     call_value: self.symbolic.value(&frame.call_value)?,
                     is_static: key.is_static,
                     kind: mode(frame.code),
-                    basic_block: key.basic_block_index,
+                    basic_block: Some(key.basic_block_index),
                     context: key.jump_history.clone(),
                     stack: frame
                         .stack
                         .iter()
                         .map(|v| self.symbolic.value(v))
                         .collect::<Result<_, _>>()?,
-                    memory: self.buffer(&frame.memory)?,
-                    calldata: self.buffer(&frame.calldata)?,
-                    returndata: self.buffer(&frame.returndata)?,
+                    memory: Some(self.buffer(&frame.memory)?),
+                    calldata: Some(self.buffer(&frame.calldata)?),
+                    returndata: Some(self.buffer(&frame.returndata)?),
                     rollback_store: self.store(frame.saved_store.state())?,
                     continuation,
                 })
