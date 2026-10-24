@@ -57,6 +57,13 @@ fn account(code: &[u8]) -> EvmAccount<NumericValue> {
 }
 
 fn run(world: EvmWorld<NumericValue>) -> EvmWorldAnalysis<NumericValue> {
+    run_config(world, ExecutionConfig::default())
+}
+
+fn run_config(
+    world: EvmWorld<NumericValue>,
+    config: ExecutionConfig,
+) -> EvmWorldAnalysis<NumericValue> {
     let analysis = native::run(
         &native::product(),
         AnalysisInput::new(
@@ -69,7 +76,7 @@ fn run(world: EvmWorld<NumericValue>) -> EvmWorldAnalysis<NumericValue> {
             ),
         )
         .unwrap(),
-        ExecutionConfig::default(),
+        config,
         &Control::default(),
     )
     .unwrap();
@@ -314,7 +321,13 @@ fn unknown_one_byte_continuation_preserves_every_uncopied_suffix_byte() {
     let mut caller = account(&code);
     caller.balance = word(1_000_000);
     world.insert(address(PARENT), caller).unwrap();
-    let analysis = run(world);
+    let analysis = run_config(
+        world,
+        ExecutionConfig {
+            max_work: 40_000_000,
+            ..Default::default()
+        },
+    );
     assert!(!analysis.procedure_summaries().is_empty());
     assert!(
         analysis
