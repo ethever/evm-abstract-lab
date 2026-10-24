@@ -14,7 +14,7 @@ use crate::domain::{
 };
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 mod full_image;
 mod packing;
@@ -198,6 +198,91 @@ impl<'s> ReadChoices<'s> {
     }
 }
 
+struct OperationEntry<N: WordElement> {
+    opcode: u8,
+    arguments: Vec<EvmValue<N>>,
+    value: EvmValue<N>,
+}
+
+// One immutable Reader algebra owns this memo. Keys retain the complete native
+// operands, never public observations or a structural fingerprint.
+struct OperationMemo<N: WordElement> {
+    values: Vec<OperationEntry<N>>,
+    entries: usize,
+    work: usize,
+}
+
+impl<N: WordElement> OperationMemo<N> {
+    fn apply<D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        opcode: u8,
+        arguments: Vec<EvmValue<N>>,
+        context: &Context<'_, N, D>,
+        domain: AlgebraRef<'_, D>,
+        payer: &mut ReadPayment<'_>,
+    ) -> ReadResult<EvmValue<N>> {
+        payer.context(context)?;
+        // An unpaid frontend can still have a real Context/Demand payer.
+        // Only the original apply path can charge that payer; it cannot fund
+        // this memo's additional equality, copies or retained entries.
+        if !payer.is_paid() {
+            return payer.apply(opcode, &arguments, context, domain, false);
+        }
+        payer.reserve(self.values.len().saturating_add(1))?;
+        'lookup: for entry in &self.values {
+            if entry.opcode != opcode || entry.arguments.len() != arguments.len() {
+                continue;
+            }
+            let mut equal = true;
+            for (old, new) in entry.arguments.iter().zip(&arguments) {
+                // Stored-state Eq omits temporary definitions, while apply can
+                // use them for alias-sensitive identities such as x XOR x.
+                payer.reserve(4)?;
+                if !old.identity().runtime_eq(new.identity()) {
+                    equal = false;
+                    break;
+                }
+                let compared = payer.try_equal(old, new, domain)?;
+                payer.context(context)?;
+                match compared {
+                    Some(true) => {}
+                    Some(false) => {
+                        equal = false;
+                        break;
+                    }
+                    None => break 'lookup,
+                }
+            }
+            if equal {
+                payer.context(context)?;
+                let out = payer.copy(&entry.value)?;
+                payer.context(context)?;
+                return Ok(out);
+            }
+        }
+        let value = payer.apply(opcode, &arguments, context, domain, false)?;
+        let work = arguments
+            .iter()
+            .fold(value.work_size().saturating_add(8), |work, value| {
+                work.saturating_add(value.work_size())
+            });
+        if self.entries < WORD_CACHE_ENTRIES
+            && work <= WORD_CACHE_WORK.saturating_sub(self.work)
+            && let Some(cached) = payer.try_cache_copy(&value, work.saturating_add(1), context)?
+        {
+            self.values.push(OperationEntry {
+                opcode,
+                arguments,
+                value: cached,
+            });
+            self.entries += 1;
+            self.work += work;
+        }
+        payer.context(context)?;
+        Ok(value)
+    }
+}
+
 /// A batch of reads using exactly the same immutable facts and numeric policy.
 /// Cached values keep all metadata and never escape this evaluator's lifetime.
 pub(super) struct Reader<
@@ -209,6 +294,18 @@ pub(super) struct Reader<
     domain: AlgebraRef<'a, D>,
     word_bytes: BTreeMap<ExprId, EvmValue<N>>,
     retained_work: usize,
+    operations: Rc<RefCell<OperationMemo<N>>>,
+}
+
+impl<N: WordElement, D: EvmNumericAlgebra<Element = N>> Drop for Reader<'_, N, D> {
+    fn drop(&mut self) {
+        let mut memo = self.operations.borrow_mut();
+        memo.entries -= self.word_bytes.len();
+        memo.work -= self.word_bytes.iter().fold(0usize, |work, (key, value)| {
+            work.saturating_add(key.work_size())
+                .saturating_add(value.work_size())
+        });
+    }
 }
 
 impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
@@ -222,6 +319,11 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
             domain: numeric_domain(domain),
             word_bytes: BTreeMap::new(),
             retained_work: 0,
+            operations: Rc::new(RefCell::new(OperationMemo {
+                values: Vec::new(),
+                entries: 0,
+                work: 0,
+            })),
         }
     }
 
@@ -241,6 +343,19 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
             Context::new_with_payment(facts, conditional, domain, budget)?,
             domain,
         ))
+    }
+    fn scalar_paid(
+        &self,
+        expression: &ExprId,
+        payer: &mut ReadPayment<'_>,
+    ) -> ReadResult<EvmValue<N>> {
+        scalar::scalar_in_paid_with_memo(
+            expression,
+            &self.context,
+            self.domain,
+            payer,
+            Some(&self.operations),
+        )
     }
     #[cfg(test)]
     fn word_byte_union(&mut self, expression: &ExprId) -> EvmValue<N> {
@@ -325,13 +440,17 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
         };
         payer.context(&self.context)?;
         let work = expression.work_size().saturating_add(value.work_size());
-        if self.word_bytes.len() < WORD_CACHE_ENTRIES
+        let mut memo = self.operations.borrow_mut();
+        if memo.entries < WORD_CACHE_ENTRIES
+            && work <= WORD_CACHE_WORK.saturating_sub(memo.work)
             && work <= WORD_CACHE_WORK.saturating_sub(self.retained_work)
         {
             payer.reserve(work.saturating_add(self.word_bytes.len()).saturating_add(1))?;
             let cached = payer.copy(&value)?;
             self.word_bytes.insert(expression.clone(), cached);
             self.retained_work += work;
+            memo.entries += 1;
+            memo.work += work;
         }
         Ok(value)
     }
@@ -451,10 +570,13 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                     index,
                     word,
                 } => {
-                    let branch = Self::with_context(
-                        reader.context.branch_paid(condition, nonzero, payer)?,
-                        reader.domain,
-                    );
+                    let branch = Self {
+                        context: reader.context.branch_paid(condition, nonzero, payer)?,
+                        domain: reader.domain,
+                        word_bytes: BTreeMap::new(),
+                        retained_work: 0,
+                        operations: Rc::clone(&reader.operations),
+                    };
                     branches.push(branch);
                     tasks.push(ReadTask::EndBranch);
                     tasks.push(if word {
@@ -501,7 +623,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 then_state,
                 else_state,
             } => {
-                let c = scalar_in_paid(condition, &context, domain, payer)?;
+                let c = self.scalar_paid(condition, payer)?;
                 let branch = |nonzero, state| ReadTask::Branch {
                     condition,
                     nonzero,
@@ -556,7 +678,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
                 length, bindings, ..
             } => {
                 let i = scalar_in_paid(index, &context, domain, payer)?;
-                let len = scalar_in_paid(length, &context, domain, payer)?;
+                let len = self.scalar_paid(length, payer)?;
                 let (index_lower, index_upper) = payer.bounds(&i)?;
                 let (length_lower, length_upper) = payer.bounds(&len)?;
                 if index_lower >= length_upper {
@@ -661,7 +783,7 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
             } => {
                 let i = scalar_in_paid(index, &context, domain, payer)?;
                 let dst = scalar_in_paid(destination, &context, domain, payer)?;
-                let len = scalar_in_paid(length, &context, domain, payer)?;
+                let len = self.scalar_paid(length, payer)?;
                 if let (Some(indices), Some(destinations), Some(lengths)) = (
                     payer.candidates(&i)?,
                     payer.candidates(&dst)?,
@@ -728,8 +850,8 @@ impl<'a, N: WordElement, D: EvmNumericAlgebra<Element = N>> Reader<'a, N, D> {
         let context = self.context.clone();
         let domain = self.domain;
         let rel = scalar_in_paid(relative, &context, domain, payer)?;
-        let off = scalar_in_paid(&view.offset, &context, domain, payer)?;
-        let len = scalar_in_paid(&view.length, &context, domain, payer)?;
+        let off = self.scalar_paid(&view.offset, payer)?;
+        let len = self.scalar_paid(&view.length, payer)?;
         if let (Some(relatives), Some(offsets), Some(lengths)) = (
             payer.candidates(&rel)?,
             payer.candidates(&off)?,

@@ -98,6 +98,77 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         checkpoint(budget)?;
         Ok(result)
     }
+    // This census owns only outer Vec/frame/continuation coordinates. Every
+    // scalar, byte array, Store/checkpoint and observation retains its original
+    // full clone census and fee below; no opaque payload is scanned here.
+    fn clone_structure_work_with(&self, budget: &mut WorkBudget) -> Result<usize, MachineError> {
+        let entries = self
+            .frames
+            .len()
+            .saturating_add(self.location.frames.len())
+            .saturating_add(self.continuations.len())
+            .saturating_add(1);
+        // Fund this once-only borrowed metadata census before its loops.
+        pay(budget, entries.saturating_mul(64).saturating_add(24))?;
+        let key_work = |key: &crate::analysis::FrameKey| {
+            24usize
+                .saturating_add(
+                    size_of::<crate::analysis::FrameKey>()
+                        .div_ceil(size_of::<usize>())
+                        .saturating_mul(4),
+                )
+                .saturating_add(key.jump_history.len().saturating_mul(8))
+                .saturating_add(if key.process.is_some() {
+                    size_of::<crate::analysis::ProcessFrameKey>()
+                        .div_ceil(size_of::<usize>())
+                        .saturating_mul(4)
+                        .saturating_add(8)
+                } else {
+                    0
+                })
+        };
+        let mut work = 64usize.saturating_add(entries.saturating_mul(8));
+        for frame in &self.frames {
+            // Later Native copy quotes visit every stack/call/implicit scalar.
+            // This fixed per-value iterator credit is separate from those full
+            // Native quotations and their actual Clone payment.
+            pay(
+                budget,
+                frame.stack.len().saturating_add(3).saturating_mul(8),
+            )?;
+            work = work
+                .saturating_add(key_work(&frame.key))
+                .saturating_add(frame.stack_aliases.clone_work())
+                .saturating_add(frame.stack.len().saturating_add(3).saturating_mul(4))
+                .saturating_add(32);
+            // Preserve the complete cold legacy Program allowance using cached
+            // byte length. Process capture handles retain their fixed bound.
+            work = work.saturating_add(if frame.key.process.is_some() {
+                16
+            } else {
+                frame
+                    .program
+                    .as_ref()
+                    .map_or(0, |program| program.byte_len().saturating_mul(2))
+            });
+        }
+        for key in &self.location.frames {
+            work = work.saturating_add(key_work(key));
+        }
+        work = work.saturating_add(
+            self.continuations.len().saturating_mul(
+                size_of::<crate::analysis::CreationContinuation>()
+                    .div_ceil(size_of::<usize>())
+                    .saturating_mul(4)
+                    .saturating_add(32),
+            ),
+        );
+        // check_shape reads only the two cached cardinalities, already funded
+        // by the census header. The returned fee is paid separately before the
+        // actual derived Clone, allocation and retained/released metadata.
+        Ok(work)
+    }
+
     /// Invoice exactly one derived Clone, including observations and aliases.
     /// Census work is paid here; callers (including kernel read_slot) pay the
     /// returned fee before copying. It does not fund queries on the copy.
@@ -105,11 +176,9 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         &self,
         budget: &mut WorkBudget,
     ) -> Result<usize, MachineError> {
-        pay(budget, self.work_size())?;
+        let structure = self.clone_structure_work_with(budget)?;
         self.check_shape()?;
-        let mut work = self
-            .work_size()
-            .saturating_add(self.store.clone_work_with(budget)?);
+        let mut work = structure.saturating_add(self.store.clone_work_with(budget)?);
         for frame in &self.frames {
             for value in frame.values() {
                 work = work.saturating_add(value_work(value, budget)?);

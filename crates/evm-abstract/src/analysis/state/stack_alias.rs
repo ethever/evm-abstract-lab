@@ -32,6 +32,12 @@ impl StackAliases {
         Self::work_for_len(self.0.len())
     }
 
+    /// One derived Vec<usize> Clone, its allocation and retained/released slots.
+    /// Formation and intersection keep their separate tree-pass envelope.
+    pub(in crate::analysis) fn clone_work(&self) -> usize {
+        self.0.len().saturating_mul(8).saturating_add(16)
+    }
+
     /// Only membership in this partition is evidence; absent positions never alias.
     pub(in crate::analysis) fn same_class(&self, left: usize, right: usize) -> bool {
         matches!((self.0.get(left), self.0.get(right)), (Some(a), Some(b)) if a == b)

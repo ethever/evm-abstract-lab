@@ -123,8 +123,29 @@ impl FiniteConstantSet {
         }
     }
 
+    /// Cached positive identity for the exact immutable union. Singleton
+    /// words need one fixed-width comparison; other independent sets merge.
+    pub(super) fn reuses_union(&self, other: &Self, capacity: usize) -> bool {
+        match (&self.0, &other.0) {
+            (Kind::Finite(left), Kind::Finite(right)) if left.len() <= capacity => {
+                Arc::ptr_eq(left, right)
+                    || (left.len() == 1 && right.len() == 1 && left.first() == right.first())
+                    || (left.len() == 2
+                        && right.len() == 1
+                        && (right.first() == left.first() || right.first() == left.last()))
+            }
+            _ => false,
+        }
+    }
+
     /// 覆盖两个组件的并集；Top 吸收，超过容量时退化为 Top。
     pub fn join(&self, other: &Self, capacity: NonZeroUsize) -> Self {
+        if self.reuses_union(other, capacity.get()) {
+            return self.clone();
+        }
+        if other.reuses_union(self, capacity.get()) {
+            return other.clone();
+        }
         let (Some(left), Some(right)) = (self.as_values(), other.as_values()) else {
             return Self::top();
         };

@@ -98,6 +98,20 @@ where
         self.spec.numeric_widen_procedure(old, next)
     }
     fn reduce_numeric(&self, value: &NumericValue) -> NumericReduction<NumericValue> {
+        if self.builtin && analysis_control::current_cancellation().is_cancelled() {
+            return super::limited(value.clone(), crate::domain::ReductionStatus::Cancelled);
+        }
+        let literal = self
+            .builtin
+            .then(|| self.spec.native_scalar_literal(value))
+            .flatten();
+        if self.builtin && (literal.is_some() || self.spec.native_scalar_is_closed(value)) {
+            let out = literal.map_or_else(|| value.clone(), NumericValue::constant);
+            if analysis_control::current_cancellation().is_cancelled() {
+                return super::limited(out, crate::domain::ReductionStatus::Cancelled);
+            }
+            return NumericReduction::stable(out);
+        }
         if self.builtin {
             return super::close(self.spec, value.clone());
         }
@@ -151,26 +165,7 @@ where
             right.finite_constants(),
             self.spec.capacity(),
         );
-        // Congruence storage is fixed inline Word256 data, so these tag/field
-        // comparisons never invoke a native singleton, export or carrier hook.
-        let congruence = if left.congruence() == right.congruence()
-            || left.congruence().is_top()
-            || right.congruence().is_top()
-        {
-            64
-        } else if left.congruence().modulus_residue().is_none()
-            && right.congruence().modulus_residue().is_none()
-        {
-            // Two exact classes use gcd(0,0), then gcd(0,difference): no
-            // Euclidean loop. Only difference/new's four-limb remainder remain.
-            512
-        } else {
-            // At most two 256-bit gcds and one remainder. Each gcd has <=512
-            // Euclidean reductions; 256 units per reduction cover the pinned
-            // four-limb Lehmer matrix/shift/division/update routines, including
-            // failed matrix attempts. Shortcut paths only reduce this work.
-            2 * 512 * 256 + 512
-        };
+        let congruence = left.congruence().join_work(right.congruence());
         // Inline mask/hull/nonzero assembly and final native result release.
         finite.saturating_add(congruence).saturating_add(256)
     }
@@ -237,6 +232,19 @@ where
         0
     }
     fn refinement_work(&self, value: &NumericValue, facts: usize) -> usize {
+        if self.builtin
+            && facts == 0
+            && (self.spec.native_scalar_is_closed(value)
+                || self.spec.native_scalar_literal(value).is_some())
+        {
+            // Complete inline/at-most-two-endpoint certificate, bounded interval
+            // normalization, three possible import/reduction/project copies and
+            // their result lifetimes. No cooperation kernel is built on this path.
+            return self
+                .spec
+                .native_closed_scalar_work(value.finite.work_size())
+                .unwrap();
+        }
         if self.builtin {
             self.spec.numeric_refinement_work(value, facts)
         } else {

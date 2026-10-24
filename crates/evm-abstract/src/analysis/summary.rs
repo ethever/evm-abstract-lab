@@ -29,6 +29,8 @@ use std::{
 
 #[cfg(test)]
 mod cancellation;
+#[cfg(test)]
+mod capture_tests;
 mod replay;
 #[cfg(test)]
 pub(super) use replay::Prepared;
@@ -564,6 +566,26 @@ fn relative<N: WordElement>(payload: &EvmMachinePayload<N>, prefix: usize) -> Ev
     }
 }
 
+fn relative_completed_call<N: WordElement>(
+    call: &EvmCompletedCall<N>,
+    prefix: usize,
+) -> EvmCompletedCall<N> {
+    // Preserve the surviving copies' order. Cloning the whole call first would
+    // copy its absolute payload only to discard it after relative projection.
+    let data = call.data.clone();
+    let output_store = call.output_store.clone();
+    let output_data = call.output_data.clone();
+    let payload = relative(&call.payload, prefix);
+    EvmCompletedCall {
+        payload,
+        kind: call.kind,
+        data,
+        output_store,
+        output_kind: call.output_kind,
+        output_data,
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "complete certificate evidence and precision partition"
@@ -707,11 +729,7 @@ fn capture<N: WordElement, Tag: PolicyKey, T>(
                 .collect(),
             completed_calls: completed_calls[*id]
                 .iter()
-                .cloned()
-                .map(|mut call| {
-                    call.payload = relative(&call.payload, depth - 1);
-                    call
-                })
+                .map(|call| relative_completed_call(call, depth - 1))
                 .collect(),
         });
     }

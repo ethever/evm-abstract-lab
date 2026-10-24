@@ -36,6 +36,16 @@ pub(in crate::world) fn scalar_in_paid<N: WordElement, D: EvmNumericAlgebra<Elem
     domain: AlgebraRef<'_, D>,
     payer: &mut ReadPayment<'_>,
 ) -> ReadResult<EvmValue<N>> {
+    scalar_in_paid_with_memo(expression, context, domain, payer, None)
+}
+
+pub(super) fn scalar_in_paid_with_memo<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    expression: &ExprId,
+    context: &Context<'_, N, D>,
+    domain: AlgebraRef<'_, D>,
+    payer: &mut ReadPayment<'_>,
+    memo: Option<&std::cell::RefCell<super::OperationMemo<N>>>,
+) -> ReadResult<EvmValue<N>> {
     // The first Evaluate must pass its existing context/reservation before
     // any continuation stack grows. Keep it inline and charge it only once.
     let mut first = Some(Task::Evaluate(expression));
@@ -90,7 +100,12 @@ pub(in crate::world) fn scalar_in_paid<N: WordElement, D: EvmNumericAlgebra<Elem
             }
             Task::Apply { opcode, arguments } => {
                 let args = values.split_off(values.len() - arguments);
-                Some(payer.apply(opcode, &args, context, domain, false)?)
+                Some(match memo {
+                    Some(memo) => memo
+                        .borrow_mut()
+                        .apply(opcode, args, context, domain, payer)?,
+                    None => payer.apply(opcode, &args, context, domain, false)?,
+                })
             }
             Task::Select {
                 condition,

@@ -54,6 +54,31 @@ impl<'b> ReadPayment<'b> {
             None => Ok(left == right),
         }
     }
+    pub(super) fn try_equal<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        left: &EvmValue<N>,
+        right: &EvmValue<N>,
+        domain: AlgebraRef<'_, D>,
+    ) -> ReadResult<Option<bool>> {
+        self.check()?;
+        if !self.is_paid() {
+            return Ok(Some(left == right));
+        }
+        let work = summary::equality_work(left, right, domain);
+        self.check()?;
+        if work == usize::MAX
+            || self
+                .budget
+                .as_ref()
+                .is_some_and(|budget| !budget.can_afford(work))
+        {
+            return Ok(None);
+        }
+        self.reserve(work)?;
+        let equal = left == right;
+        self.check()?;
+        Ok(Some(equal))
+    }
     pub(in crate::world) fn unpaid() -> Self {
         Self { budget: None }
     }
@@ -98,6 +123,35 @@ impl<'b> ReadPayment<'b> {
             Some(budget) => Ok(summary::clone_value(value, budget)?),
             None => Ok(value.clone()),
         }
+    }
+    /// An optional cache cannot exhaust the ledger merely to retain an already
+    /// funded result. Inspect the actual copy quote before choosing retention.
+    pub(super) fn try_cache_copy<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+        &mut self,
+        value: &EvmValue<N>,
+        structure: usize,
+        context: &Context<'_, N, D>,
+    ) -> ReadResult<Option<EvmValue<N>>> {
+        self.context(context)?;
+        let copy = value.clone_work();
+        self.context(context)?;
+        let Some(work) = structure
+            .checked_add(copy)
+            .filter(|work| *work != usize::MAX)
+        else {
+            return Ok(None);
+        };
+        if self
+            .budget
+            .as_ref()
+            .is_some_and(|budget| !budget.can_afford(work))
+        {
+            return Ok(None);
+        }
+        self.reserve(work)?;
+        let value = value.clone();
+        self.context(context)?;
+        Ok(Some(value))
     }
     pub(in crate::world) fn copy_numeric<N: WordElement>(&mut self, value: &N) -> ReadResult<N> {
         self.check()?;

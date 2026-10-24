@@ -106,6 +106,12 @@ impl ValueIdentity {
     pub fn input(&self) -> Option<&InputIdentity> {
         self.input.as_ref()
     }
+    /// Compare the temporary metadata of a pure operation's complete inputs.
+    /// Persistent state equality deliberately keeps its separate input-only law.
+    pub(crate) fn runtime_eq(&self, other: &Self) -> bool {
+        self.runtime == other.runtime
+    }
+
     /// Same immutable input or same temporary definition, never merely the same
     /// scalar constraints or source labels.
     pub fn same_identity(&self, other: &Self) -> bool {

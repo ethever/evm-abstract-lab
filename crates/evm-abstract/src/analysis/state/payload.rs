@@ -86,24 +86,6 @@ impl<N: WordElement> EvmPayloadSummary<N> {
     }
 }
 
-/// Structural tree/metadata traversal size for alias formation. The paid
-/// builder separately reserves the actual algebra's native equality tariff;
-/// this size never substitutes for that quote. Pure builders are caller-funded.
-pub(in crate::analysis) fn alias_form_work<N: WordElement>(
-    payload: &EvmMachinePayload<N>,
-) -> usize {
-    payload.call_stack.iter().fold(0usize, |work, frame| {
-        if frame.code == FrameCode::Unknown {
-            work
-        } else {
-            frame.stack.iter().fold(
-                work.saturating_add(StackAliases::work_for_len(frame.stack.len())),
-                |work, value| work.saturating_add(value.work_size().saturating_mul(2)),
-            )
-        }
-    })
-}
-
 #[cfg(test)]
 pub(in crate::analysis) fn form<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     payload: &EvmMachinePayload<N>,

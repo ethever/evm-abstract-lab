@@ -158,7 +158,8 @@ fn local_cancellation_is_reported_without_poisoning_possible_unknown_interaction
     insert(&mut world, A, &a, &[(0, 42)]);
     insert(&mut world, C, &c.finish(), &[(0, 5)]);
     // The removed solver-fuel fixture now exercises real scoped cancellation.
-    // The fresh retry uses the same world, input and complete default policy.
+    // The fresh retry uses the same world, input and complete policy, with a
+    // separate semantic allowance. Pre-cancellation still uses the real default.
     let input = entry(EvmByteArray::<NumericValue>::empty());
     let control = Control::new(Observer::default());
     control.cancellation().cancel();
@@ -172,7 +173,14 @@ fn local_cancellation_is_reported_without_poisoning_possible_unknown_interaction
         cancelled,
         Err(evm_abstract::analysis::cooperation::CooperationError::Cancelled)
     ));
-    let analysis = run_config(world, input, ExecutionConfig::default());
+    let analysis = run_config(
+        world,
+        input,
+        ExecutionConfig {
+            max_work: 40_000_000,
+            ..Default::default()
+        },
+    );
     let outcomes = returns(&analysis);
     for expected in [5, 9] {
         assert!(

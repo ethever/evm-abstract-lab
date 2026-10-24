@@ -96,7 +96,9 @@ fn actual_unknown_to_known_c_write_and_readonly_guard_match_revm() {
                 max_work: if enabled == 1 {
                     callback_closure_config().max_work
                 } else {
-                    evm_abstract::analysis::ExecutionConfig::default().max_work
+                    // Fund semantic completion under the complete Native
+                    // tariff; the library default remains a resource cutoff.
+                    40_000_000
                 },
                 root_terminal_coverage: false,
                 ..Default::default()
@@ -172,7 +174,14 @@ fn unknown_delegating_known_code_still_covers_its_guarded_cross_owner_call() {
         && step.owner == address(A)
         && step.caller == address(U)
         && step.pc == a.labels["allowed"]));
-    let analysis = run(world, input);
+    let analysis = run_config(
+        world,
+        input,
+        evm_abstract::analysis::ExecutionConfig {
+            max_work: 40_000_000,
+            ..Default::default()
+        },
+    );
     complete_unknown(&analysis);
     observed.covers(&analysis);
     for outcome in returns(&analysis) {

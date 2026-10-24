@@ -132,6 +132,38 @@ impl Congruence {
         }
     }
 
+    /// Quote the actual join path using only fixed inline class fields. The
+    /// same cheap gcd classifier below is used by execution; an unclassified
+    /// intermediate keeps the full two-Euclidean-loop upper bound.
+    pub(crate) fn join_work(&self, other: &Self) -> usize {
+        if self == other || self.is_top() || other.is_top() {
+            return 64;
+        }
+        let (left_modulus, left_residue) = self.integer_class();
+        let (right_modulus, right_residue) = other.integer_class();
+        if left_modulus == U256::ZERO && right_modulus == U256::ZERO {
+            return 512;
+        }
+        let difference = if left_residue >= right_residue {
+            left_residue - right_residue
+        } else {
+            right_residue - left_residue
+        };
+        const EUCLID: usize = 512 * 256;
+        const INLINE: usize = 256;
+        let Some(common) = inline_gcd(left_modulus, right_modulus) else {
+            return 2 * EUCLID + 512;
+        };
+        let final_gcd = if inline_gcd(common, difference).is_some() {
+            INLINE
+        } else {
+            EUCLID
+        };
+        // Each inline decision inspects four limbs. Final new() either masks
+        // a power-of-two residue or performs one bounded four-limb remainder.
+        INLINE + final_gcd + 512
+    }
+
     /// 精确 CRT 交集。中间 lcm 可以超过 256 bit，不能用回绕后的模数。
     /// 大于 word 宇宙的 lcm 只可能留下一个成员，也可能交集为空。
     pub fn meet(&self, other: &Self) -> Option<Self> {
@@ -417,18 +449,25 @@ impl Congruence {
     }
 }
 
-fn gcd(a: U256, b: U256) -> U256 {
+fn inline_gcd(a: U256, b: U256) -> Option<U256> {
+    if a == b {
+        return Some(a);
+    }
     if a == U256::ZERO {
-        return b;
+        return Some(b);
     }
     if b == U256::ZERO {
-        return a;
+        return Some(a);
     }
     if a.is_power_of_two() || b.is_power_of_two() {
         // 先排除零，避免把 trailing_zeros 的 256 哨兵当作移位量。
-        return U256::from(1) << a.trailing_zeros().min(b.trailing_zeros());
+        return Some(U256::from(1) << a.trailing_zeros().min(b.trailing_zeros()));
     }
-    a.gcd(b)
+    None
+}
+
+fn gcd(a: U256, b: U256) -> U256 {
+    inline_gcd(a, b).unwrap_or_else(|| a.gcd(b))
 }
 
 fn unsigned(value: U256) -> BigUint {

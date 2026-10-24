@@ -70,7 +70,7 @@ mod tests;
 
 #[cfg(test)]
 use crate::analysis::state::payload::{instantiate, semantic_eq};
-use crate::analysis::state::{EvmPayloadSummary, payload, storage_observations};
+use crate::analysis::state::{EvmPayloadSummary, payload};
 #[cfg(test)]
 use crate::analysis::state::{context, stack_alias};
 #[cfg(test)]
