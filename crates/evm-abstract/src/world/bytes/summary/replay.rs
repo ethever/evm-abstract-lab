@@ -16,6 +16,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 type Error = SummaryError<RangeError>;
 
+mod validation;
+
 fn source(error: impl Into<RangeError>) -> Error {
     SummaryError::Source(error.into())
 }
@@ -270,41 +272,41 @@ fn check<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     domain: AlgebraRef<'_, D>,
     budget: &mut WorkBudget,
 ) -> Result<(), Error> {
+    // The identity join only checked these cached metrics and cloned its root.
+    // Keep its StateError boundary without constructing a selector or handle.
+    pay(budget, validation::METADATA_WORK)?;
+    let limits = limits(domain);
+    crate::domain::symbolic::state_check(out.root.nodes(), out.root.depth(), limits)
+        .map_err(|error| source(StateError::from(error)))?;
+    // ConditionalFacts::check reads its cached entries/largest expression,
+    // limited flag and depth, even when nonempty; it never visits native facts.
+    pay(budget, validation::METADATA_WORK)?;
+    out.conditional.check(limits).map_err(source)?;
+    // check_value reads only wrapper flags and cached expression metrics. Fund
+    // all map iteration before visiting values, independently of opaque N.
     pay(
         budget,
-        graph_work(
-            out.root
-                .work_size()
-                .saturating_add(out.bytes.len())
-                .saturating_add(out.operands.len()),
-        ),
+        out.bytes
+            .len()
+            .saturating_add(out.operands.len())
+            .saturating_add(2)
+            .saturating_mul(validation::METADATA_WORK),
     )?;
-    out.root
-        .join_guarded(
-            &out.root,
-            ExprId::constant(U256::ZERO),
-            limits(domain).into(),
-        )
-        .map_err(source)?;
-    out.conditional.check(limits(domain)).map_err(source)?;
     for value in [&out.length, &out.default]
         .into_iter()
         .chain(out.bytes.values())
         .chain(out.operands.values())
     {
-        pay(
-            budget,
-            graph_work(value.expression().map_or(1, ExprId::work_size)),
-        )?;
-        super::super::check_value(value, limits(domain)).map_err(source)?;
+        checkpoint(budget)?;
+        super::super::check_value(value, limits).map_err(source)?;
     }
-    for expression in super::super::traversal::expressions(&out.root) {
-        crate::domain::symbolic::state_check(
-            expression.nodes(),
-            expression.depth(),
-            limits(domain),
-        )
-        .map_err(source)?;
-    }
+    validation::expressions(&out.root, budget, |expression| {
+        crate::domain::symbolic::state_check(expression.nodes(), expression.depth(), limits)
+            .map_err(source)
+    })?;
+    checkpoint(budget)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
