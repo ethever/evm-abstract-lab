@@ -47,6 +47,9 @@ def storage_table_interactions(browser, url: str, output: Path):
         reply=submit_bytecode(page,canvas,code,output/f"storage-table-input-{revision}.png")
         assert reply.status==200,reply.json()
         report=reply.json()["result"]["Ok"]
+        (output/f"storage-table-full-analysis-{revision}.json").write_text(json.dumps(report,indent=2)+"\n")
+        assert report["hybrid"]["coverage"]["baseline_current"]
+        report=report["hybrid"]["detail"] if report["hybrid"]["coverage"]["chosen"]!="Native" else report
         assert report["status"]=="Converged" and len(report["states"])==1
         machine=report["states"][0]["exit"]
         account=next(account for account in report["stores"][machine["store"]]["accounts"]

@@ -37,7 +37,10 @@ def hierarchy_call_interactions(browser,args):
             admitted=submit_rpc(page,canvas,rpc,args.output,"hierarchy-calls",0,providers)
             reply=complete_submission(page,admitted)
             assert reply.status==200 and "Ok" in reply.json()["result"],reply.json()
-            report=reply.json()["result"]["Ok"]
+            full_report=reply.json()["result"]["Ok"]
+            (args.output/"hierarchy-nested-calls-full-analysis.json").write_text(json.dumps(full_report,indent=2)+"\n")
+            assert full_report["hybrid"]["coverage"]["baseline_current"]
+            report=full_report["hybrid"]["detail"]
             assert len(report["programs"])>=3
             assert max(state["frame_depth"] for state in report["cfg"])==3
             assert sum(edge["kind"]=="Call" for edge in report["edges"])>=2

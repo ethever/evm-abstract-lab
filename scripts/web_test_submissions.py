@@ -27,13 +27,19 @@ def run_submissions(context):
     partial = submit_bytecode(page, canvas, "5a5f5ff0", context.output / "uncovered-creation-input.png")
     assert partial.status == 200
     partial_reply = partial.json()
-    incomplete = partial_reply["result"]["Ok"]
+    (context.output / "incomplete.json").write_text(json.dumps(partial_reply, indent=2) + "\n")
+    global_report = partial_reply["result"]["Ok"]
+    assert global_report["status"] == "Converged"
+    assert global_report["hybrid"]["coverage"]["baseline_current"] is True
+    assert global_report["hybrid"]["coverage"]["chosen"] == "ProcessWithDetail"
+    incomplete = global_report["hybrid"]["detail"]
     assert incomplete["status"] == "Incomplete"
     assert any(frontier["kind"] == "Creation" and "UnknownInitCode" in frontier["detail"] for frontier in incomplete["frontiers"])
     assert not incomplete["ssa"]["complete"]
     expect(status).to_contain_text("Incomplete")
     expect(status).to_contain_text("SSA partial")
-    (context.output / "incomplete.json").write_text(json.dumps(partial_reply, indent=2) + "\n")
+    expect(status).to_contain_text("Global coverage closed")
+    expect(status).to_contain_text("View: Detailed paths")
     canvas.screenshot(path=str(context.output / "incomplete.png"))
     result = {"invalid_bytecode": invalid.json()["result"]["Err"]["code"],
               "arithmetic": arithmetic.json()["result"]["Ok"]["status"],

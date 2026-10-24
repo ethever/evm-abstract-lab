@@ -826,8 +826,13 @@ def root_terminal_coverage_interactions(context):
         ui_envelope = deepcopy(envelope)
         graph(ui_envelope["result"]["Ok"], "Native")["root_terminal_coverage"] = None
         replacement = json.dumps(ui_envelope)
-        ui = json.loads(replacement)["result"]["Ok"]
+        ui_report = json.loads(replacement)["result"]["Ok"]
+        ui = graph(ui_report, "Native")
         assert ui == {**native, "root_terminal_coverage": None}, "client control changed other report fields"
+        # The primary graph's object also carries the companion sidecar. Compare
+        # every global graph field independently of that deliberately edited sidecar.
+        assert {key: value for key, value in graph(ui_report, "Baseline").items() if key != "hybrid"} == {
+            key: value for key, value in graph(envelope["result"]["Ok"], "Baseline").items() if key != "hybrid"}
         (output / "coverage-missing-certificate-client-control-ui.json").write_text(replacement + "\n")
         headers = dict(response.headers)
         headers.pop("content-encoding", None)

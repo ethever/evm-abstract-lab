@@ -116,15 +116,23 @@ def _termination_oracle(report, code, kind):
     # Symbolic logical ADDRESS may touch RIPEMD at entry. late_failure retains
     # a rolled-back Failure at this exact source, alongside STOP/REVERT/INVALID.
     details=next(item for item in report['states'] if item['state']==entry['id'])
-    assert report['stores'][details['entry']['store']]['touched_default'] is None
-    _assert_root_outcomes(report,{entry['id']:{'Failure'},target['id']:{kind,'Failure'}})
+    if 'Symbolic' in report['metadata']['environment']['to']:
+        assert report['stores'][details['entry']['store']]['touched_default'] is None
+        _assert_root_outcomes(report,{entry['id']:{'Failure'},target['id']:{kind,'Failure'}})
+    else:
+        # REVERT retains its opcode failure alternative. STOP's symbolic-owner
+        # finalization failure is outside this explicitly conditioned input.
+        _conditioned_root_outcomes(report,{entry['id']:{'Failure'},
+                                          target['id']:({'Revert','Failure'} if kind=='Revert' else {kind})})
     return entry,target
 
 
 def _mixed_termination_oracle(report):
     members={node['id'] for node in report['cfg'] if node['start_pc']==9}
     assert len(members)==2
-    expected={node['id']:{'Failure'} for node in report['cfg']}
+    conditioned='Concrete' in report['metadata']['environment']['to']
+    expected={node['id']:(set() if conditioned else {'Failure'}) for node in report['cfg']}
+    if conditioned:expected[report['cfg'][0]['id']].add('Failure')
     for node in report['cfg']:
         instructions={0:[(0,0x34,'Completed'),(1,0x60,'Completed'),(3,0x57,'Dispatched')],
                       4:[(4,0x60,'Completed'),(6,0x56,'Dispatched')],
@@ -133,11 +141,29 @@ def _mixed_termination_oracle(report):
             assert len(node['entry_stack']) in (0,1)
             tail=[(10,0x50,'Faulted')] if not node['entry_stack'] else [(10,0x50,'Completed'),(11,0x00,'Dispatched')]
             instructions[9]=[(9,0x5b,'Completed')]+tail
-            if node['entry_stack']:expected[node['id']].add('Return')
+            expected[node['id']].add('Return' if node['entry_stack'] else 'Failure')
         _assert_root_block(report,node,'346007576009565b5f5b5000',instructions[node['start_pc']])
-    assert {tuple(sorted(expected[member])) for member in members}=={('Failure','Return'),('Failure',)}
-    _assert_root_outcomes(report,expected)
+    assert {tuple(sorted(expected[member])) for member in members}==({('Return',),('Failure',)} if conditioned else {('Failure','Return'),('Failure',)})
+    if conditioned:_conditioned_root_outcomes(report,expected)
+    else:_assert_root_outcomes(report,expected)
     return members
+
+
+def _conditioned_root_outcomes(report, expected):
+    """No-op terminal fixtures under the explicit Native root-address subset."""
+    assert report['metadata']['environment']['to']=={'Concrete':report['metadata']['entry_address']}
+    observed={state:set() for state in expected}
+    for outcome in report['outcomes']:
+        observed[outcome['state']].add(outcome['kind'])
+        entry=next(state['entry'] for state in report['states'] if state['state']==outcome['state'])
+        saved=report['stores'][entry['frames'][0]['rollback_store']]
+        assert saved['touched_default'] is False
+        assert report['stores'][outcome['store']]==saved, outcome
+        data=report['byte_arrays'][outcome['data']]
+        assert not data['memory'] and data['length']['constants']==['0x0']
+        view=report['symbolic']['nodes'][data['symbolic']['node']]['View']
+        assert report['symbolic']['nodes'][view['length']['node']]=={'Constant':'0x0'}
+    assert observed==expected, observed
 
 
 def _select_native(page, canvas, scene, state, program, color):
@@ -162,16 +188,22 @@ def termination_interactions(browser, url, args):
                                 ('revert','6003565b5f5ffd','Revert','ordinary'),
                                 ('failure','6003565bfe','Failure','failure')]:
         report=layout_submission(page,canvas,code,output,f'termination-{name}')
+        original=json.loads((output/f'termination-{name}-analysis.json').read_text())
+        assert original['metadata']['environment']['to']=={'Symbolic':{'kind':'To','index':None}}
+        assert original['stores'][original['states'][0]['entry']['store']]['touched_default'] is None
+        assert original['hybrid']['coverage']['baseline_current']
+        expect(page.locator('#analysis-status')).to_contain_text('Additional condition: root ADDRESS =')
         entry,target=_termination_oracle(report,code,kind)
+        color={'Return':'normal','Revert':'ordinary','Failure':'failure'}[kind]
         graph_mode(page,canvas,'States');page.keyboard.press('f');settle_gesture(page)
         before=node_snapshot(page,canvas,output,f'termination-{name}-unselected',measure_nodes=True)
         candidate=_select_native(page,canvas,before,target['id'],target['program'],color)
         left,top,right,bottom=candidate['bounds']
         selected=node_snapshot(page,canvas,output,f'termination-{name}-selected',measure_nodes=True)
         ending=selected_ending(page)
-        expected_ending={'kind':'exception' if kind=='Failure' else 'mixed / possible ending',
+        expected_ending={'kind':{'Return':'normal','Revert':'mixed / possible ending','Failure':'exception'}[kind],
                          'members':1,'root_normal':int(kind=='Return'),'root_revert':int(kind=='Revert'),
-                         'root_failure':1,'frame_normal':0,'frame_revert':0,'frame_failure':0,
+                         'root_failure':int(kind!='Return'),'frame_normal':0,'frame_revert':0,'frame_failure':0,
                          'continuing':0,'unresolved':0,'non_current':0,'unobserved':0}
         assert ending==expected_ending,ending
         assert selected['selected_kind']==color,selected
@@ -195,7 +227,7 @@ def termination_interactions(browser, url, args):
         _select_native(page,canvas,scene,entry['id'],entry['program'],'ordinary')
         mixed=selected_ending(page)
         assert mixed=={**expected_ending,'kind':'mixed / possible ending','root_normal':0,
-                       'root_revert':0,'continuing':1},mixed
+                       'root_revert':0,'root_failure':1,'continuing':1},mixed
         neutral=node_snapshot(page,canvas,output,f'termination-{name}-entry-mixed')
         assert neutral['selected_kind']=='ordinary',neutral
         results[name]['entry_mixed']=mixed
@@ -210,7 +242,7 @@ def termination_interactions(browser, url, args):
     assert any(f"Selected {symbol('σ',member)}; source {symbol('P',root)};" in page.locator('#analysis-status').text_content() for member in members)
     summary=selected_ending(page)
     assert summary=={'kind':'mixed / possible ending','members':2,'root_normal':1,'root_revert':0,
-                     'root_failure':2,'frame_normal':0,'frame_revert':0,'frame_failure':0,
+                     'root_failure':1,'frame_normal':0,'frame_revert':0,'frame_failure':0,
                      'continuing':0,'unresolved':0,'non_current':0,'unobserved':0},summary
     mixed=node_snapshot(page,canvas,output,'termination-mixed-block-selected',measure_nodes=True)
     assert mixed['selected_kind']=='ordinary',mixed

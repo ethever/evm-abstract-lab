@@ -17,7 +17,10 @@ def block_overview_interactions(browser, url: str, output: Path):
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as initial:
         page.goto(url, wait_until="networkidle")
     initial_reply = complete_submission(page, initial.value)
-    report = initial_reply.json()["result"]["Ok"]
+    full_report = initial_reply.json()["result"]["Ok"]
+    (output / "overview-initial-full-analysis.json").write_text(json.dumps(full_report, indent=2) + "\n")
+    assert full_report["hybrid"]["coverage"]["baseline_current"]
+    report = full_report["hybrid"]["detail"]
     assert len(report["cfg"]) == len(report["ssa"]["blocks"]) == 5
     identities = {state["id"]: (state["program"], state["basic_block"], state["start_pc"]) for state in report["cfg"]}
     assert len(set(identities.values())) == 4
@@ -53,6 +56,7 @@ def block_overview_interactions(browser, url: str, output: Path):
     assert loop_reply.status == 200 and "Ok" in loop_reply.json()["result"], loop_reply.json()
     loop = loop_reply.json()["result"]["Ok"]
     (output / "overview-loop-analysis.json").write_text(json.dumps(loop, indent=2) + "\n")
+    loop = loop["hybrid"]["detail"]
     assert loop["metadata"]["limits"]["context_depth"] == 128
     assert loop["status"] == "Converged" and loop["ssa"]["complete"]
     assert len(loop["cfg"]) == len(loop["ssa"]["blocks"]) == 131
@@ -88,7 +92,7 @@ def block_overview_interactions(browser, url: str, output: Path):
                     (129, "  σ₁₂₉  ")]
     for index, (state, query) in enumerate(search_forms):
         if index:
-            canvas.click(position={"x": 300, "y": 109})  # Instances toolbar
+            canvas.click(position={"x": 300, "y": 133})  # Instances toolbar
             settle_gesture(page)
         pick_graph_instance(page, canvas, state, query)
     canvas.screenshot(path=str(output / "overview-loop-symbol-search.png"))
@@ -112,7 +116,7 @@ def block_overview_interactions(browser, url: str, output: Path):
     assert all(value["constants"] == ["0x0"] for value in frame["stack"][:-1])
     page.keyboard.press("2")
     settle_gesture(page)
-    canvas.click(position={"x": 300, "y": 109})  # Instances toolbar
+    canvas.click(position={"x": 300, "y": 133})  # Instances toolbar
     settle_gesture(page)
     pick_graph_instance(page, canvas, 129)
     graph_mode(page, canvas, "Local")

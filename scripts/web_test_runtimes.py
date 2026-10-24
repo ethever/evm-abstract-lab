@@ -5,7 +5,7 @@ import json
 import re
 from collections import Counter
 from playwright.sync_api import expect
-from web_test_graph_helpers import graph_mode, pick_graph_instance, symbol
+from web_test_graph_helpers import graph_mode, symbol
 from web_test_harness import settle_gesture, webgpu_evidence
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_counts, layout_fixture, layout_page, layout_submission
 from web_test_pixels import layout_ink, node_snapshot
@@ -333,9 +333,10 @@ def layout_pending_machines(report, entry):
         reference(machine["path"],path_kinds)
         pool(machine["store"],report["stores"]);stores.add(machine["store"])
         for index,frame in enumerate(machine["frames"]):
-            assert set(frame) == {"index","program","code_address","code_hash","storage_address","address_value",
+            assert set(frame) == {"process","process_operands","process_creation","index","program","code_address","code_hash","storage_address","address_value",
                                   "caller","address_operand","caller_operand","call_value","is_static","kind","basic_block","context","stack",
                                   "memory","calldata","returndata","rollback_store","continuation"}
+            assert frame["process"] is None and frame["process_operands"] is None and frame["process_creation"] is None
             assert frame["index"] == index and frame["program"] in programs
             program = programs[frame["program"]]
             assert frame["code_hash"] == program["code_hash"] and frame["kind"] == program["kind"]
@@ -671,7 +672,8 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
               f"unknown_closed={[summary['closed'] for summary in report['abstract_summaries']]} "
               f"analyzing_ns={report['metadata']['timings']['analyzing_ns']}",flush=True)
         request=json.loads((args.output/f"{name}-request.json").read_text())
-        request_evidence=layout_runtime_request(request,report,code,metadata)
+        original_report=json.loads((args.output/f"{name}-analysis.json").read_text())
+        request_evidence=layout_runtime_request(request,original_report,code,metadata)
         layout_runtime_programs(report,code,metadata)
         assert {block["state"] for block in report["ssa"]["blocks"]} == {node["id"] for node in report["cfg"]}
         assert report["status"] == entry["expected_status"]
@@ -716,8 +718,14 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         assert native_scene["nodes"] == len(report["cfg"]) and native_scene["edges"] == len(report["edges"])
         canvas.screenshot(path=str(args.output/f"hierarchy-{name}-states-overview.png"))
         chosen=next(block for block in report["ssa"]["blocks"] if block["instructions"] and block["coverage"] == "Current")
-        pick_graph_instance(page,canvas,chosen["state"])
-        canvas.click(position={"x":225,"y":83});settle_gesture(page)
+        # States mode has no aggregate Instances chooser. Select the original
+        # root instruction through Code, then return to the unchanged scene.
+        assert chosen["state"] == report["cfg"][0]["id"] and report["cfg"][0]["start_pc"] == 0
+        page.keyboard.press("1");settle_gesture(page)
+        canvas.click(position={"x":80,"y":156});settle_gesture(page)
+        expect(page.locator("#analysis-status")).to_contain_text(f"Selected {symbol('σ',chosen['state'])};")
+        page.keyboard.press("2");settle_gesture(page)
+        canvas.click(position={"x":225,"y":107});settle_gesture(page)
         expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
         assert _runtime_zoom_percent(page.locator("#analysis-status").text_content()) == 100
         native_focus=node_snapshot(page,canvas,args.output,f"hierarchy-{name}-states-focused")
@@ -732,7 +740,7 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
             if action == "fit":page.keyboard.press("f")
             elif action == "zoom":
                 page.mouse.move(700,500);page.keyboard.down("Control");page.mouse.wheel(0,-80);page.keyboard.up("Control")
-            else:canvas.click(position={"x":225,"y":83})
+            else:canvas.click(position={"x":225,"y":107})
             settle_gesture(page)
             scene_path=args.output/f"hierarchy-{name}-states-{action}-scene.json"
             screenshot_path=args.output/f"hierarchy-{name}-states-{action}.png"
@@ -763,7 +771,7 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         refocus_ink=layout_ink(page,canvas.screenshot(),native_refocus["bounds"])
         assert refocus_ink["preview_pixels"] > 0, "real-runtime refocus did not restore the chosen SSA instructions"
         graph_mode(page,canvas,"Blocks")
-        canvas.click(position={"x":225,"y":83});settle_gesture(page)
+        canvas.click(position={"x":225,"y":107});settle_gesture(page)
         assert scene_counts() == {**scene,"detail":"SSA preview"}
         expect(page.locator("#analysis-status")).to_contain_text(f"Selected {selected};")
         focused=node_snapshot(page,canvas,args.output,f"hierarchy-{name}-source-ssa-focused")

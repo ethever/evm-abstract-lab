@@ -718,7 +718,9 @@ impl Workspace {
                 self.inspector.accessible_summary(
                     if matches!(
                         self.inspector.tab,
-                        inspector::Tab::Coverage | inspector::Tab::Timing
+                        inspector::Tab::Coverage
+                            | inspector::Tab::Timing
+                            | inspector::Tab::Acquisition
                     ) {
                         model
                     } else {
