@@ -32,6 +32,8 @@ Return 提交子帧共享效果；Revert／Failure 使用对应的保存点。co
 
 例如两个位置进入同一个带返回目标的子程序，选中区域的不同 history 可以让两份栈值分别汇合，从而保留各自的 Jump 目标。实际准备状态和相对位置先完成 history 处理，再交给原有 key／join 策略；owner、来源、static、caller 与 rollback 仍按原表示保留。
 
+所选调用者的历史仍可出现在未选中子调用的完整机器 key 中；细节阶段也继续执行未选中的 native 代码。这些上下文组合仍消耗可选预算，全局过程的闭合不依赖它们全部完成。
+
 ## 输入、物理账户与来源
 
 native 15 的 `entry.binding` 与 wire 20 的 `metadata.root_binding` 在没有接纳任何状态时也存在。库的 `root_binding()` 不依赖已执行帧；`declared_root_source(...)` 单独支付原始声明来源的读取，不构成 PC 访问证据。
