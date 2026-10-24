@@ -7,14 +7,15 @@
 use super::HybridRegion;
 use crate::{
     analysis::{
-        Acceleration, AccelerationInput, AccelerationPolicy, EvmMachinePayload, FrameKey,
-        MachineError, MachinePartition, PartitionRefusal, PartitionResult, Partitioned,
+        Acceleration, AccelerationInput, AccelerationPolicy, EvmMachinePayload, EvmWorldAnalysis,
+        FrameKey, MachineError, MachinePartition, PartitionRefusal, PartitionResult, Partitioned,
         PartitionedRelative, PolicyContext, PolicySite, ProcedureOutput, ProcedureSummaryPolicy,
-        RelativePartitionResult, RelativeState, RuntimeExecution, WholeStatePolicy,
+        ProcessSource, ProjectionError, RelativePartitionResult, RelativeState, RuntimeExecution,
+        WholeStatePolicy,
     },
     domain::{EvmNumericAlgebra, WordElement, symbolic::ExprId},
-    resource::{CloneError, WorkBudget, clone_payment::pay},
-    world::{Code, EvmWorld},
+    resource::{WorkBudget, clone_payment::pay},
+    world::{Code, EvmEntry, RootInputBinding},
 };
 use std::collections::BTreeSet;
 
@@ -27,11 +28,17 @@ pub(super) fn selected(regions: &[HybridRegion], frame: &FrameKey) -> bool {
 }
 
 pub(super) fn select<N: WordElement>(
-    world: &EvmWorld<N>,
-    root: crate::Address,
+    original: &EvmWorldAnalysis<N>,
+    entry: &EvmEntry<N>,
     limit: usize,
     budget: &mut WorkBudget,
-) -> Result<Vec<HybridRegion>, CloneError> {
+) -> Result<Vec<HybridRegion>, ProjectionError> {
+    let world = original.world();
+    let declared = original.declared_root_source(budget)?;
+    let namespace = match original.root_binding() {
+        RootInputBinding::Physical { .. } => None,
+        RootInputBinding::Namespace { coordinate } => Some(coordinate),
+    };
     pay(
         budget,
         world.accounts().len().saturating_mul(8).saturating_add(128),
@@ -39,10 +46,12 @@ pub(super) fn select<N: WordElement>(
     let mut regions = Vec::new();
     // Root code receives precision first. Remaining immutable code accounts use
     // the world's stable order, including code sources shared by many owners.
-    let (source, mode, _) =
-        crate::analysis::transfer::resolve_code(world.fork(), root, |address| {
-            world.accounts().get(&address).map(|account| &account.code)
-        });
+    let (source, mode, _) = crate::analysis::transfer::resolve_entry_code(
+        world.fork(),
+        entry.address,
+        entry.environment.to,
+        |address| world.accounts().get(&address).map(|account| &account.code),
+    );
     let source = (mode == crate::analysis::FrameCode::Runtime).then_some(source);
     for (address, account) in source
         .and_then(|source| world.accounts().get_key_value(&source))
@@ -51,7 +60,7 @@ pub(super) fn select<N: WordElement>(
             world
                 .accounts()
                 .iter()
-                .filter(|(address, _)| Some(**address) != source),
+                .filter(|(address, _)| Some(**address) != source && Some(**address) != namespace),
         )
     {
         if regions.len() >= limit {
@@ -62,9 +71,27 @@ pub(super) fn select<N: WordElement>(
                 budget,
                 program.byte_len().saturating_mul(4).saturating_add(8),
             )?;
+            let hash = program.bytes_digest();
+            let provenance = if Some(*address) == source {
+                match declared {
+                    ProcessSource::InputProgram { .. } | ProcessSource::Runtime { .. } => declared,
+                    _ => ProcessSource::Runtime {
+                        source: *address,
+                        hash,
+                        fork: program.fork(),
+                    },
+                }
+            } else {
+                ProcessSource::Runtime {
+                    source: *address,
+                    hash,
+                    fork: program.fork(),
+                }
+            };
             regions.push(HybridRegion {
+                source: provenance,
                 code_address: *address,
-                code_hash: program.bytes_digest(),
+                code_hash: hash,
             });
         }
     }

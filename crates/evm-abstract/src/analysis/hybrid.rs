@@ -36,7 +36,11 @@ impl Default for HybridConfig {
 /// modes and rollback state remain distinct in the original full machine key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct HybridRegion {
-    /// Original account supplying the captured executable, independent of owner.
+    /// Declared input or observed physical executable, independent of owner.
+    pub source: super::ProcessSource,
+    /// Kernel matching coordinate, including a conditional root namespace.
+    /// This is not an observed account; public labels use `source` instead.
+    #[serde(skip)]
     pub code_address: crate::Address,
     /// Complete identity of the captured runtime bytes, not a short generation.
     pub code_hash: alloy_primitives::B256,
@@ -93,7 +97,7 @@ pub enum DetailState {
     Work,
     /// Native detail retains its actual incomplete frontiers or stale evidence.
     Incomplete,
-    /// Native detail is closed and current for the same original input.
+    /// Native detail is closed and current under its explicit input binding.
     Current,
 }
 
