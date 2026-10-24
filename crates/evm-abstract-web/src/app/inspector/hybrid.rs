@@ -39,7 +39,11 @@ impl Detail {
         };
         let precision = evidence.native_coverage();
         ui.label(RichText::new(hybrid::summary(report).unwrap_or_default()).strong());
-        ui.label("The global model keeps all covered call, callback and creation routes. Detailed paths describe their recorded inputs; pending paths remain covered by the global model.");
+        ui.label(if evidence.coverage.baseline_current {
+            "The global model keeps all covered call, callback and creation routes. Detailed paths describe their recorded inputs; pending paths remain covered by the global model."
+        } else {
+            "Global coverage is incomplete. Pending call, callback and creation routes still require analysis; detailed paths describe their recorded inputs."
+        });
         ui.label(format!("{} code sources retain jump contexts; other code uses joined contexts. More analysis work can extend the detailed observations.", precision.detail_regions.len()));
         if let Some(rpc) = &evidence.rpc {
             ui.label(format!(
@@ -95,7 +99,11 @@ impl Detail {
             self.reset();
         }
         let Some(graph) = report.graph(self.namespace) else {
-            ui.label("Detailed paths are not available yet. Global coverage is retained.");
+            ui.label(if evidence.coverage.baseline_current {
+                "Detailed paths are not available yet. Global coverage is retained."
+            } else {
+                "Detailed paths await completion of global coverage."
+            });
             return;
         };
         if self.namespace == AnalysisNamespace::Native && !graph.frontiers.is_empty() {
