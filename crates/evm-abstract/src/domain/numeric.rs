@@ -17,6 +17,10 @@ pub struct NumericValue {
     pub(super) congruence: Congruence,
     pub(super) nonzero: bool,
 }
+#[cfg(test)]
+pub(super) static SINGLETON_CALLS: crate::test_instrumentation::Counter<(usize, usize)> =
+    crate::test_instrumentation::Counter::new((0, 0));
+
 impl NumericValue {
     /// Exact unsigned word.
     pub fn constant(value: U256) -> Self {
@@ -133,14 +137,32 @@ impl NumericValue {
             && self.interval.contains(value)
             && self.congruence.contains(value)
     }
+    /// A complete native literal certificate, including signed bounds and the
+    /// nonzero flag. No observation export or numeric query is used to find it.
+    pub(super) fn canonical_literal(&self) -> Option<U256> {
+        let word = self.finite.singleton()?;
+        (self.bits == KnownBits::exact(word)
+            && self.interval == Interval::exact(word)
+            && self.congruence == Congruence::exact(word)
+            && self.nonzero == (word != U256::ZERO))
+            .then_some(word)
+    }
+
     /// 单点查询使用全部组件，而不依赖有限集合是否可用。
     pub fn singleton(&self) -> Option<U256> {
+        #[cfg(test)]
+        SINGLETON_CALLS.update(|calls| calls.0 += 1);
+        if let Some(word) = self.canonical_literal() {
+            return Some(word);
+        }
         let value = self
             .finite
             .singleton()
             .or_else(|| self.bits.singleton())
             .or_else(|| self.interval.singleton())
             .or_else(|| self.congruence.singleton())?;
+        #[cfg(test)]
+        SINGLETON_CALLS.update(|calls| calls.1 += 1);
         self.contains(value).then_some(value)
     }
     /// 零未被任何组件排除。

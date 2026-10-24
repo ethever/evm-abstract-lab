@@ -63,13 +63,14 @@ pub use evidence::{
     EvmRegionalTransfer,
 };
 mod recursion;
+mod report;
 mod solver;
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 use crate::analysis::state::payload::{instantiate, semantic_eq};
-use crate::analysis::state::{EvmPayloadSummary, payload, storage_observations};
+use crate::analysis::state::{EvmPayloadSummary, payload};
 #[cfg(test)]
 use crate::analysis::state::{context, stack_alias};
 #[cfg(test)]
@@ -501,6 +502,9 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         if let Err(error) = solver.retain_terminal_frontiers(relative_closed) {
             super::boundary(&mut result, 0, error.frontier_reason());
         }
+        // Execution still uses its original paid equality/copy cache. Once all
+        // deliveries finish, its owned arrays can move into read-only reports.
+        let mut data_sources: Vec<report::Data<N>> = Vec::new();
         if let Some(root) = root {
             let procedure = &solver.table.procedures[root];
             let entry_source = solver
@@ -508,6 +512,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 .entry_source(root)
                 .expect("retained root procedure");
             debug_assert_eq!(entry_source.namespace, namespace);
+            let entry_revision = *entry_source.revision;
             let output_work = output_clone_work(&procedure.outputs, solver.budget);
             // Reading even an empty output relation retains the outer consumer.
             // A later callee publication then wakes this exact World job.
@@ -537,14 +542,15 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                     BTreeMap::new()
                 }
             };
-            let mut data_sources: Vec<(EvmByteArraySummary<N>, EvmByteArray<N>)> = Vec::new();
+            // The separately paid result.payload stays immutable for failure
+            // recovery. Deliver the owned input once, then copy that anchor.
+            let mut incoming = Some(payload);
             for (kind, output) in outputs {
                 let delivery = (|| -> Result<_, MachineError> {
                     solver.reserve(effects::StoreEffect::MATCH_WORK)?;
-                    payload.pay_clone_with(solver.budget)?;
-                    let returned = payload.clone();
-                    crate::resource::clone_payment::checkpoint(solver.budget)?;
-                    let frame = payload.active();
+                    let returned =
+                        take_root_payload(&mut incoming, &result.payload, solver.budget)?;
+                    let frame = result.payload.active();
                     let store = if solver.table.procedures[root].store_effect.keeps_store(
                         frame.code,
                         frame.key.mode,
@@ -554,12 +560,10 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                     ) {
                         None
                     } else if frame.key.is_static {
-                        Some(
-                            output
-                                .summary
-                                .store
-                                .apply_static_touches_with_payment(&payload.store, solver.budget)?,
-                        )
+                        Some(output.summary.store.apply_static_touches_with_payment(
+                            &result.payload.store,
+                            solver.budget,
+                        )?)
                     } else {
                         Some(
                             output
@@ -571,10 +575,14 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                     // Cached numerical equality and EACH cache copy own their
                     // actual native tariffs, independently of the slot read.
                     let mut cached = None;
-                    for (bound, data) in &data_sources {
-                        if bound.eq_with_payment(&output.summary.data, domain, solver.budget)? {
-                            data.pay_clone_with(solver.budget)?;
-                            let copied = data.clone();
+                    for source in &data_sources {
+                        if source.bound.eq_with_payment(
+                            &output.summary.data,
+                            domain,
+                            solver.budget,
+                        )? {
+                            source.data.pay_clone_with(solver.budget)?;
+                            let copied = source.data.clone();
                             crate::resource::clone_payment::checkpoint(solver.budget)?;
                             cached = Some(copied);
                             break;
@@ -591,7 +599,18 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                         data.pay_clone_with(solver.budget)?;
                         let copied = data.clone();
                         crate::resource::clone_payment::checkpoint(solver.budget)?;
-                        data_sources.push((bound, copied));
+                        data_sources.push(report::Data::new(
+                            report::Source {
+                                namespace,
+                                procedure: root,
+                                entry_revision,
+                                kind,
+                                generation: output.generation,
+                            },
+                            bound,
+                            copied,
+                            solver.budget,
+                        )?);
                         data
                     };
                     Ok((returned, store, data))
@@ -665,6 +684,10 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 .cloned()
                 .map(|kind| (0, kind)),
         );
+        // Cache insertion and output export both follow OutcomeKind order. A
+        // materialization is consumed only by its exact original producer;
+        // independent executable subscribers never read this iterator.
+        let mut data_sources = data_sources.into_iter().peekable();
         let evidence_work = solver
             .table
             .procedures
@@ -724,10 +747,23 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                                 .map(|(kind, output)| {
                                     Ok(EvmProcedureSummaryOutput {
                                         kind: *kind,
-                                        data: output
-                                            .summary
-                                            .data
-                                            .instantiate_with_payment(domain, solver.budget)?,
+                                        data: match report::take_data(
+                                            &mut data_sources,
+                                            report::Source {
+                                                namespace: procedure.namespace,
+                                                procedure: id,
+                                                entry_revision: *input.revision,
+                                                kind: *kind,
+                                                generation: output.generation,
+                                            },
+                                            solver.budget,
+                                        )? {
+                                            Some(data) => data,
+                                            None => output
+                                                .summary
+                                                .data
+                                                .instantiate_with_payment(domain, solver.budget)?,
+                                        },
                                         store: process::export_store(
                                             &output.summary.store,
                                             solver.table.process_catalogue.as_deref(),
@@ -786,6 +822,22 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         }
         (result, record)
     }
+}
+
+fn take_root_payload<N: WordElement>(
+    incoming: &mut Option<EvmMachinePayload<N>>,
+    retained: &EvmMachinePayload<N>,
+    budget: &mut WorkBudget,
+) -> Result<EvmMachinePayload<N>, MachineError> {
+    crate::resource::clone_payment::checkpoint(budget)?;
+    let returned = if let Some(payload) = incoming.take() {
+        payload
+    } else {
+        retained.pay_clone_with(budget)?;
+        retained.clone()
+    };
+    crate::resource::clone_payment::checkpoint(budget)?;
+    Ok(returned)
 }
 
 #[cfg(test)]

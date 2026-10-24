@@ -68,7 +68,16 @@ fn equal_relative_replays_pay_comparison_and_copy_without_rebuilding_or_skipping
             .unwrap()
     );
     let fee = measured.used();
-    assert!(fee < rebuilt.used());
+    // Faster primitive joins need not cost more than comparison plus copying
+    // for this particular fixture. The shortcut must still fund the complete
+    // equality and actual copy, without a new join/factory allowance.
+    let mut compared_and_copied = WorkBudget::new(1_000_000);
+    assert!(
+        left.eq_with_payment(&right, domain, &mut compared_and_copied)
+            .unwrap()
+    );
+    left.clone_with_payment(&mut compared_and_copied).unwrap();
+    assert_eq!(fee, compared_and_copied.used());
     for (limit, succeeds) in [(fee, true), (fee - 1, false)] {
         let mut budget = WorkBudget::new(limit);
         let joined = left.covering_join(

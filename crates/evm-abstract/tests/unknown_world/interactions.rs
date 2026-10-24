@@ -26,14 +26,10 @@ fn unknown_callee_can_succeed_and_continue_parent_without_direct_storage_havoc()
     }
 }
 
-fn check_busy_x(nested: bool, use_summaries: bool) {
+fn check_busy_x(nested: bool, config: evm_abstract::analysis::ExecutionConfig) {
     let code = fixtures::busy_x(nested);
     let mut world = new_world();
     insert(&mut world, A, &code, &[]);
-    let config = evm_abstract::analysis::ExecutionConfig {
-        use_summaries,
-        ..Default::default()
-    };
     let analysis = run_config(world, entry(calldata(0)), config);
     complete_unknown(&analysis);
     assert!(!analysis.procedure_summaries().is_empty());
@@ -83,7 +79,7 @@ fn check_busy_x(nested: bool, use_summaries: bool) {
 
 #[test]
 fn busy_x_closes_repeated_callbacks_at_zero_one_two_and_preserves_busy() {
-    check_busy_x(false, true);
+    check_busy_x(false, Default::default());
 }
 
 #[test]
@@ -99,7 +95,16 @@ fn nested_busy_x_keeps_precision_and_closure_in_each_cache_mode() {
         ),
     ] {
         eprintln!("case={case}");
-        check_busy_x(true, use_summaries);
+        check_busy_x(
+            true,
+            evm_abstract::analysis::ExecutionConfig {
+                // Both cache modes verify funded semantic closure; default
+                // ledger exhaustion is covered by the resource regressions.
+                max_work: 40_000_000,
+                use_summaries,
+                ..Default::default()
+            },
+        );
     }
 }
 

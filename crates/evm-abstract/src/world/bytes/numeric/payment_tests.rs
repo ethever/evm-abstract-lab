@@ -25,6 +25,7 @@ struct Counts {
     tops: usize,
     literals: usize,
     packs: usize,
+    equalities: usize,
 }
 static COUNTS: crate::test_instrumentation::Counter<Counts> =
     crate::test_instrumentation::Counter::new(Counts {
@@ -36,6 +37,7 @@ static COUNTS: crate::test_instrumentation::Counter<Counts> =
         tops: 0,
         literals: 0,
         packs: 0,
+        equalities: 0,
     });
 
 #[derive(Debug, Serialize)]
@@ -85,6 +87,7 @@ impl Clone for Word {
 }
 impl PartialEq for Word {
     fn eq(&self, other: &Self) -> bool {
+        COUNTS.update(|n| n.equalities += 1);
         (self.exact, self.odd, self.copy_fee, self.query_fee)
             == (other.exact, other.odd, other.copy_fee, other.query_fee)
     }
@@ -139,6 +142,7 @@ struct Policy {
     result_copy: usize,
     pack_query: usize,
     literal: usize,
+    equality: usize,
 }
 impl Default for Policy {
     fn default() -> Self {
@@ -146,6 +150,7 @@ impl Default for Policy {
             result_copy: 64,
             pack_query: 64,
             literal: 64,
+            equality: 64,
         }
     }
 }
@@ -224,7 +229,11 @@ impl EvmNumericAlgebra for Policy {
         128
     }
     fn summary_equal_work(&self, _left: &Word, _right: &Word) -> usize {
-        64
+        self.equality
+    }
+    fn summary_canonical_work(&self, value: &Word) -> usize {
+        // The default Word canonicalizer performs exactly one native Clone.
+        value.clone_work().saturating_add(value.work_size())
     }
     fn summary_is_top_work(&self, _value: &Word) -> usize {
         64
@@ -521,4 +530,531 @@ fn cancellation_after_real_fact_copy_returns_typed_error_without_top() {
         assert_eq!(result, Err(SummaryError::Budget(CloneError::Cancelled)));
         assert_eq!((COUNTS.get().clones, COUNTS.get().tops), (1, 0));
     }
+}
+
+fn scalar_and(key: &ExprId) -> ExprId {
+    ExprId::operation(
+        opcode::AND,
+        &[key.clone(), ExprId::constant(U256::from(255))],
+        ExprLimits::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn scalar_operation_memo_keeps_private_native_and_source_identity_and_declines_unavailable_equality()
+ {
+    let _scope = COUNTS.scope();
+    let a = ExprId::fresh().unwrap();
+    let b = ExprId::fresh().unwrap();
+    let c = ExprId::fresh().unwrap();
+    let facts = Facts::from([
+        (
+            a.clone(),
+            EvmValue::from_numeric(Word::private()).with_identity(17, 1),
+        ),
+        (
+            b.clone(),
+            EvmValue::from_numeric(Word::plain(None)).with_identity(17, 1),
+        ),
+        (
+            c.clone(),
+            EvmValue::from_numeric(Word::private()).with_identity(17, 2),
+        ),
+    ]);
+    let domain = ValueAlgebra::new(Policy::default());
+    let mut budget = WorkBudget::new(1_000_000);
+    let reader = Reader::with_payment(&facts, None, domain.borrowed(), &mut budget).unwrap();
+    COUNTS.set(Counts::default());
+    let first = reader
+        .scalar_paid(
+            &scalar_and(&a),
+            &mut super::payment::ReadPayment::new(&mut budget),
+        )
+        .unwrap();
+    let second = reader
+        .scalar_paid(
+            &scalar_and(&b),
+            &mut super::payment::ReadPayment::new(&mut budget),
+        )
+        .unwrap();
+    reader
+        .scalar_paid(
+            &scalar_and(&c),
+            &mut super::payment::ReadPayment::new(&mut budget),
+        )
+        .unwrap();
+    assert_eq!(COUNTS.get().operations, 3);
+    assert_eq!(
+        first.numeric().observation(),
+        second.numeric().observation()
+    );
+    assert!(first.numeric().odd && !second.numeric().odd);
+    reader
+        .scalar_paid(
+            &scalar_and(&a),
+            &mut super::payment::ReadPayment::new(&mut budget),
+        )
+        .unwrap();
+    assert_eq!(COUNTS.get().operations, 3);
+    assert!(reader.operations.borrow().entries <= super::WORD_CACHE_ENTRIES);
+    assert!(reader.operations.borrow().work <= super::WORD_CACHE_WORK);
+
+    let domain = ValueAlgebra::new(Policy {
+        equality: usize::MAX,
+        ..Policy::default()
+    });
+    let mut budget = WorkBudget::new(1_000_000);
+    let reader = Reader::with_payment(&facts, None, domain.borrowed(), &mut budget).unwrap();
+    COUNTS.set(Counts::default());
+    for _ in 0..2 {
+        let value = reader
+            .scalar_paid(
+                &scalar_and(&a),
+                &mut super::payment::ReadPayment::new(&mut budget),
+            )
+            .unwrap();
+        assert!(value.numeric().odd);
+    }
+    assert_eq!(COUNTS.get().operations, 2);
+    assert_eq!(COUNTS.get().equalities, 0);
+    assert!(!budget.exhausted());
+}
+
+#[test]
+fn scalar_operation_memo_hit_copy_refuses_before_clone_and_never_rescues_a_stopped_ledger() {
+    let _scope = COUNTS.scope();
+    let key = ExprId::fresh().unwrap();
+    let facts = Facts::from([(key.clone(), EvmValue::from_numeric(Word::private()))]);
+    let domain = ValueAlgebra::new(Policy {
+        result_copy: 4096,
+        ..Policy::default()
+    });
+    let mut setup = WorkBudget::new(1_000_000);
+    let reader = Reader::with_payment(&facts, None, domain.borrowed(), &mut setup).unwrap();
+    let expression = scalar_and(&key);
+    reader
+        .scalar_paid(
+            &expression,
+            &mut super::payment::ReadPayment::new(&mut setup),
+        )
+        .unwrap();
+    let before = setup.used();
+    COUNTS.set(Counts::default());
+    reader
+        .scalar_paid(
+            &expression,
+            &mut super::payment::ReadPayment::new(&mut setup),
+        )
+        .unwrap();
+    let fee = setup.used() - before;
+    let complete = COUNTS.get();
+    assert_eq!(complete.operations, 0);
+    let mut denied = WorkBudget::new(fee - 1);
+    COUNTS.set(Counts::default());
+    assert_eq!(
+        reader.scalar_paid(
+            &expression,
+            &mut super::payment::ReadPayment::new(&mut denied)
+        ),
+        Err(SummaryError::Budget(CloneError::Work))
+    );
+    assert_eq!(COUNTS.get().operations, 0);
+    assert_eq!(COUNTS.get().clones + 1, complete.clones);
+    assert_eq!(COUNTS.get().bad_clones, 0);
+    COUNTS.set(Counts::default());
+    assert_eq!(
+        reader.scalar_paid(
+            &expression,
+            &mut super::payment::ReadPayment::new(&mut denied)
+        ),
+        Err(SummaryError::Budget(CloneError::Work))
+    );
+    assert_eq!(COUNTS.get(), Counts::default());
+    for captured in [false, true] {
+        let token = analysis_control::Cancellation::new();
+        let mut budget = if captured {
+            analysis_control::with_cancellation(&token, || WorkBudget::new(1_000_000))
+        } else {
+            WorkBudget::new(1_000_000)
+        };
+        token.cancel();
+        COUNTS.set(Counts::default());
+        let mut run = || {
+            reader.scalar_paid(
+                &expression,
+                &mut super::payment::ReadPayment::new(&mut budget),
+            )
+        };
+        let result = if captured {
+            run()
+        } else {
+            analysis_control::with_cancellation(&token, run)
+        };
+        assert_eq!(result, Err(SummaryError::Budget(CloneError::Cancelled)));
+        assert_eq!(COUNTS.get(), Counts::default());
+    }
+}
+
+#[test]
+fn actual_guarded_reader_resolves_private_operands_before_shared_scalar_operation_reuse() {
+    use crate::world::bytes::conditional::ConditionalFacts;
+    let _scope = COUNTS.scope();
+    let domain = ValueAlgebra::new(Policy::default());
+    let guard = ExprId::fresh().unwrap();
+    let key = ExprId::fresh().unwrap();
+    let common = Facts::new();
+    let yes = Facts::from([(key.clone(), EvmValue::from_numeric(Word::private()))]);
+    let no = Facts::from([(key.clone(), EvmValue::from_numeric(Word::plain(None)))]);
+    let empty = ConditionalFacts::default();
+    let conditional = ConditionalFacts::join(
+        (&yes, &empty),
+        (&no, &empty),
+        &common,
+        guard.clone(),
+        ExprLimits::default(),
+    )
+    .unwrap();
+    let length = ExprId::operation(
+        opcode::AND,
+        &[key, ExprId::constant(U256::ONE)],
+        ExprLimits::default(),
+    )
+    .unwrap();
+    let copy = ByteStateId::zero()
+        .copy(
+            ExprId::constant(U256::ZERO),
+            ByteView::new(
+                ByteStateId::exact(Arc::from([7u8])),
+                ExprId::constant(U256::ZERO),
+                ExprId::constant(U256::ONE),
+            ),
+            length,
+            StateLimits::default(),
+        )
+        .unwrap();
+    let later = copy
+        .write_byte(
+            ExprId::constant(U256::from(99)),
+            ExprId::constant(U256::ONE),
+            StateLimits::default(),
+        )
+        .unwrap();
+    let root = copy
+        .join_guarded(&later, guard, StateLimits::default())
+        .unwrap();
+    let mut budget = WorkBudget::new(1_000_000);
+    let mut reader =
+        Reader::with_payment(&common, Some(&conditional), domain.borrowed(), &mut budget).unwrap();
+    COUNTS.set(Counts::default());
+    let first = reader
+        .read_with_payment(&root, &ExprId::constant(U256::ZERO), &mut budget)
+        .unwrap();
+    assert!(first.contains(U256::ZERO) && first.contains(U256::from(7)));
+    assert_eq!(COUNTS.get().operations, 2);
+    let second = reader
+        .read_with_payment(&root, &ExprId::constant(U256::ZERO), &mut budget)
+        .unwrap();
+    assert!(second.contains(U256::ZERO) && second.contains(U256::from(7)));
+    assert_eq!(COUNTS.get().operations, 2);
+}
+
+#[test]
+fn scalar_memo_correlated_xor_cannot_be_reused_for_independent_runtime_definitions() {
+    let _scope = COUNTS.scope();
+    let keys: Vec<_> = (0..4).map(|_| ExprId::fresh().unwrap()).collect();
+    let facts = Facts::from([
+        (
+            keys[0].clone(),
+            EvmValue::from_numeric(Word::plain(None)).with_identity(71, 1),
+        ),
+        (
+            keys[1].clone(),
+            EvmValue::from_numeric(Word::plain(None)).with_identity(71, 1),
+        ),
+        (
+            keys[2].clone(),
+            EvmValue::from_numeric(Word::plain(None)).with_identity(71, 2),
+        ),
+        (
+            keys[3].clone(),
+            EvmValue::from_numeric(Word::plain(None)).with_identity(71, 3),
+        ),
+    ]);
+    let domain = ValueAlgebra::new(Policy::default());
+    let mut budget = WorkBudget::new(1_000_000);
+    let reader = Reader::with_payment(&facts, None, domain.borrowed(), &mut budget).unwrap();
+    let correlated = ExprId::operation(opcode::XOR, &keys[..2], ExprLimits::default()).unwrap();
+    let independent = ExprId::operation(opcode::XOR, &keys[2..], ExprLimits::default()).unwrap();
+    let first = reader
+        .scalar_paid(
+            &correlated,
+            &mut super::payment::ReadPayment::new(&mut budget),
+        )
+        .unwrap();
+    assert_eq!(first.numeric().exact, Some(U256::ZERO));
+    let second = reader
+        .scalar_paid(
+            &independent,
+            &mut super::payment::ReadPayment::new(&mut budget),
+        )
+        .unwrap();
+    assert_eq!(second.numeric().exact, None);
+    assert!(second.contains(U256::ONE));
+    let expected = super::scalar_in_paid(
+        &independent,
+        &reader.context,
+        reader.domain,
+        &mut super::payment::ReadPayment::unpaid(),
+    )
+    .unwrap();
+    assert_eq!(second, expected);
+    let cached_unpaid = reader
+        .scalar_paid(&independent, &mut super::payment::ReadPayment::unpaid())
+        .unwrap();
+    assert_eq!(cached_unpaid, expected);
+}
+
+#[test]
+fn unpaid_operation_frontend_uses_original_context_without_memo_copies() {
+    let _scope = COUNTS.scope();
+    let domain = ValueAlgebra::new(Policy {
+        result_copy: 1_000_000,
+        ..Policy::default()
+    });
+    let facts = Facts::new();
+    let conditional = crate::world::bytes::conditional::ConditionalFacts::default();
+    let offset = EvmValue::<Word>::constant(U256::ZERO);
+    let preparation = crate::world::bytes::conditional::preparation(
+        100,
+        &offset,
+        0,
+        0,
+        &conditional,
+        domain.borrowed(),
+    );
+    let args = vec![
+        EvmValue::from_numeric(Word::private()),
+        EvmValue::constant(U256::from(255)),
+    ];
+    let mut budget = WorkBudget::new(100_000);
+    let entries;
+    let counts;
+    {
+        let context = Context::budgeted(
+            &facts,
+            &conditional,
+            domain.borrowed(),
+            &preparation,
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap();
+        let mut memo = super::OperationMemo {
+            values: Vec::new(),
+            entries: 0,
+            work: 0,
+        };
+        COUNTS.set(Counts::default());
+        let result = memo
+            .apply(
+                opcode::AND,
+                args,
+                &context,
+                domain.borrowed(),
+                &mut super::payment::ReadPayment::unpaid(),
+            )
+            .unwrap();
+        assert!(result.contains(U256::from(3)) && !result.contains(U256::from(2)));
+        entries = memo.values.len();
+        counts = COUNTS.get();
+        eprintln!(
+            "original demand: entries={entries}, clones={}, payments={:?}",
+            counts.clones,
+            context.demand_payments()
+        );
+    }
+    eprintln!(
+        "original demand ledger: used={} maximum=100000, one result Clone quote=1000000",
+        budget.used()
+    );
+    assert!(budget.used() < 1_000_000);
+    assert_eq!(counts.clones, 0);
+    assert_eq!(counts.equalities, 0);
+    assert_eq!(
+        entries, 0,
+        "ReadPayment::unpaid may still carry an original paid Context; optional native retention cannot bypass its tariff"
+    );
+}
+
+#[test]
+fn copy_and_view_evaluate_guarded_length_before_unavailable_retained_query() {
+    let _scope = COUNTS.scope();
+    let domain = ValueAlgebra::new(Policy::default());
+    let condition = ExprId::fresh().unwrap();
+    let len = ExprId::ite(
+        condition.clone(),
+        ExprId::constant(U256::ONE),
+        ExprId::constant(U256::from(3)),
+        ExprLimits::default(),
+    )
+    .unwrap();
+    let facts = Facts::from([
+        (
+            condition,
+            EvmValue::from_numeric(Word::plain(Some(U256::ONE))),
+        ),
+        (
+            len.clone(),
+            EvmValue::from_numeric(Word {
+                query_fee: usize::MAX,
+                ..Word::private()
+            }),
+        ),
+    ]);
+    let mut setup = WorkBudget::new(1_000_000);
+    let context = Context::with_payment(&facts, None, domain.borrowed(), &mut setup).unwrap();
+    // The ordinary scalar evaluator selects length1 and preserves the private
+    // odd constraint without querying the opaque retained bound.
+    COUNTS.set(Counts::default());
+    let evaluated =
+        super::scalar_in_with_payment(&len, &context, domain.borrowed(), &mut setup).unwrap();
+    assert_eq!(evaluated.numeric().exact, Some(U256::ONE));
+    assert!(evaluated.contains(U256::ONE) && !evaluated.contains(U256::from(2)));
+    assert_eq!(COUNTS.get().bad_queries, 0);
+    let zero = ExprId::constant(U256::ZERO);
+    let at = ExprId::constant(U256::from(2));
+    let previous = ByteStateId::zero()
+        .write_byte(
+            at.clone(),
+            ExprId::constant(U256::from(7)),
+            StateLimits::default(),
+        )
+        .unwrap();
+    let backing = ByteStateId::exact(Arc::from([0xaau8, 0xbb, 0xcc]));
+    let source = ByteView::new(
+        backing.clone(),
+        zero.clone(),
+        ExprId::constant(U256::from(3)),
+    );
+    let copied = previous
+        .clone()
+        .copy(
+            zero.clone(),
+            source.clone(),
+            len.clone(),
+            StateLimits::default(),
+        )
+        .unwrap();
+    let literal_copy = previous
+        .copy(
+            zero.clone(),
+            source,
+            ExprId::constant(U256::ONE),
+            StateLimits::default(),
+        )
+        .unwrap();
+    let sliced = backing
+        .clone()
+        .slice(zero.clone(), len, StateLimits::default())
+        .unwrap();
+    let literal_slice = backing
+        .slice(zero, ExprId::constant(U256::ONE), StateLimits::default())
+        .unwrap();
+    let mut results = Vec::new();
+    for (name, root, control, expected) in [
+        ("COPY", copied, literal_copy, 7u8),
+        ("view", sliced, literal_slice, 0u8),
+    ] {
+        let mut budget = WorkBudget::new(1_000_000);
+        let mut reader =
+            Reader::with_payment(&facts, None, domain.borrowed(), &mut budget).unwrap();
+        let control = reader
+            .read_with_payment(&control, &at, &mut budget)
+            .unwrap();
+        assert_eq!(control.numeric().exact, Some(U256::from(expected)));
+        COUNTS.set(Counts::default());
+        let result = reader.read_with_payment(&root, &at, &mut budget);
+        eprintln!(
+            "optional {name} bound: scalar length1 succeeds; read={result:?}; bad_queries={}",
+            COUNTS.get().bad_queries
+        );
+        results.push((name, result, expected));
+    }
+    for (name, result, expected) in results {
+        assert!(
+            result.is_ok(),
+            "optional {name} proof must not require an unavailable retained singleton query before normal ITE evaluation"
+        );
+        assert_eq!(result.unwrap().numeric().exact, Some(U256::from(expected)));
+    }
+}
+
+#[test]
+fn output_join_keeps_supported_original_path_when_standalone_equality_is_unavailable() {
+    use crate::{
+        analysis::{Acceleration, PolicyContext, ProcedureOutput},
+        world::{EvmEntry, EvmStore, EvmWorld},
+    };
+    let _scope = COUNTS.scope();
+    let domain = ValueAlgebra::new(Policy {
+        equality: usize::MAX,
+        ..Policy::default()
+    });
+    let world = EvmWorld::<Word>::new(crate::Fork::Cancun, "empty output old-path control");
+    let entry = EvmEntry::<Word>::new(alloy_primitives::Address::ZERO);
+    let store = EvmStore::new(&world, domain.borrowed());
+    let data = EvmByteArray::<Word>::empty();
+    let mut setup = WorkBudget::new(1_000_000);
+    let data = data
+        .summary_projection_with_payment(domain.borrowed(), &mut setup)
+        .unwrap();
+    let store = store
+        .summary_projection_with_payment(domain.borrowed(), &mut setup)
+        .unwrap();
+    let left = ProcedureOutput::from_summaries(
+        data,
+        store,
+        &mut PolicyContext::new(domain.borrowed(), &entry, &mut setup),
+    )
+    .unwrap();
+    let right = left.clone();
+    assert!(!std::ptr::eq(&left, &right));
+    // Exact pre-change body, with the old pointer fast path inapplicable.
+    let mut old = WorkBudget::new(1_000_000);
+    let old_result = (|| -> Result<ProcedureOutput<Word>, crate::analysis::MachineError> {
+        let mut cx = PolicyContext::new(domain.borrowed(), &entry, &mut old);
+        cx.reserve(
+            left.work_size()
+                .saturating_add(right.work_size())
+                .saturating_mul(4),
+        )?;
+        let data = left
+            .data()
+            .join_with_payment(right.data(), cx.domain, false, cx.budget)?;
+        let store = left
+            .store()
+            .join_with_payment(right.store(), cx.domain, false, cx.budget)?;
+        ProcedureOutput::from_summaries(data, store, &mut cx)
+    })();
+    assert!(
+        old_result.is_ok(),
+        "do not flag an optional capability unless the exact old body is supported: {old_result:?}"
+    );
+    let mut current = WorkBudget::new(1_000_000);
+    let result = left.covering_join(
+        &right,
+        Acceleration::Join,
+        &mut PolicyContext::new(domain.borrowed(), &entry, &mut current),
+    );
+    eprintln!(
+        "ProcedureOutput Eq MAX: exact old Join succeeds used={}; new shortcut={result:?} used={}",
+        old.used(),
+        current.used()
+    );
+    assert!(
+        result.is_ok(),
+        "optional Eq shortcut must not newly reject a supported original output Join"
+    );
+    assert_eq!(current.used(), old.used());
 }

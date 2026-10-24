@@ -39,7 +39,10 @@ pub(in super::super) fn refresh_with_payment<N: WordElement, D: EvmNumericAlgebr
     };
     // The pure refresh uses numeric::read with no conditional environment.
     let mut reader = None;
-    for index in out.bytes.keys().copied().collect::<Vec<_>>() {
+    pay(budget, out.bytes.len().saturating_mul(8))?;
+    let previous = std::mem::take(&mut out.bytes);
+    let mut refreshed = Vec::with_capacity(previous.len());
+    for (index, previous) in previous {
         checkpoint(budget)?;
         let at = U256::from(index);
         let mut direct = None;
@@ -86,14 +89,14 @@ pub(in super::super) fn refresh_with_payment<N: WordElement, D: EvmNumericAlgebr
                     .read_with_payment(&out.root, &ExprId::constant(at), budget)?
             }
         };
-        let value = match out.bytes.get(&index) {
-            Some(previous) => summary::restore(&value, previous, domain, budget)?,
-            None => value,
-        };
+        let value = summary::restore(&value, &previous, domain, budget)?;
         let value = summary::scalar(&value, domain, budget)?;
-        pay(budget, graph_work(out.bytes.len()))?;
-        out.bytes.insert(index, value);
+        refreshed.push((index, value));
     }
+    // Original native reads/restoration retain their own fees. Rebuild the
+    // staged presentation once from its sorted owned values, without N copies.
+    pay(budget, graph_work(refreshed.len()))?;
+    out.bytes = refreshed.into_iter().collect();
     checkpoint(budget)?;
     Ok(())
 }

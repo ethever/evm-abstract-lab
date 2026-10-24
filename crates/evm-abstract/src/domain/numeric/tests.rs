@@ -370,3 +370,114 @@ fn restoration_refuses_stale_wide_bounds_holes_overflow_and_every_current_finite
         assert_eq!(current.restore_redundant_finite_from(&previous), current);
     }
 }
+
+#[test]
+fn negative_singleton_queries_pay_the_fixed_native_path_without_membership_or_division() {
+    use crate::{
+        domain::{EvmValue, WordElement, summary},
+        resource::WorkBudget,
+    };
+    let _scope = SINGLETON_CALLS.scope();
+    let mut values = vec![
+        NumericValue::top(),
+        NumericValue::unknown_byte(),
+        NumericValue::unknown_address(),
+    ];
+    values.push(NumericValue {
+        finite: FiniteConstantSet::try_from_values((0u64..512).map(U256::from).collect()).unwrap(),
+        bits: KnownBits::new(U256::MAX << 9, U256::ZERO).unwrap(),
+        interval: Interval::new_unsigned(U256::ZERO, U256::from(511)).unwrap(),
+        congruence: crate::domain::congruence::Congruence::new(U256::from(3), U256::ONE).unwrap(),
+        nonzero: true,
+    });
+    for numeric in values {
+        let value = EvmValue::from_numeric(numeric);
+        let fee = value.numeric().singleton_work();
+        SINGLETON_CALLS.set((0, 0));
+        let mut exact = WorkBudget::new(fee);
+        assert_eq!(summary::singleton(&value, &mut exact).unwrap(), None);
+        assert_eq!(exact.used(), fee);
+        assert_eq!(SINGLETON_CALLS.get(), (1, 0));
+        SINGLETON_CALLS.set((0, 0));
+        let mut denied = WorkBudget::new(fee - 1);
+        assert!(summary::singleton(&value, &mut denied).is_err());
+        assert_eq!(SINGLETON_CALLS.get(), (0, 0));
+        assert!(denied.used() < fee);
+    }
+    let candidate = EvmValue::from_numeric(NumericValue {
+        finite: FiniteConstantSet::try_from_values(
+            [U256::ONE, U256::from(7)].into_iter().collect(),
+        )
+        .unwrap(),
+        bits: KnownBits::exact(U256::from(7)),
+        interval: Interval::new_unsigned(U256::ZERO, U256::from(9)).unwrap(),
+        congruence: crate::domain::congruence::Congruence::new(U256::from(3), U256::ONE).unwrap(),
+        nonzero: true,
+    });
+    let fee = candidate.numeric().singleton_work();
+    assert!(fee >= 4096);
+    SINGLETON_CALLS.set((0, 0));
+    let mut exact = WorkBudget::new(fee);
+    assert_eq!(
+        summary::singleton(&candidate, &mut exact).unwrap(),
+        Some(U256::from(7))
+    );
+    assert_eq!(exact.used(), fee);
+    assert_eq!(SINGLETON_CALLS.get(), (1, 1));
+}
+
+#[test]
+fn canonical_literal_queries_keep_every_native_component_and_skip_redundant_membership() {
+    use crate::{
+        domain::{EvmValue, WordElement, summary},
+        resource::WorkBudget,
+    };
+    let _scope = SINGLETON_CALLS.scope();
+    for word in [
+        U256::ZERO,
+        U256::ONE,
+        U256::from(170),
+        U256::ONE << 255,
+        U256::MAX,
+    ] {
+        let value = EvmValue::from_numeric(NumericValue::constant(word));
+        let fee = value.numeric().singleton_work();
+        assert_eq!(fee, 256);
+        SINGLETON_CALLS.set((0, 0));
+        let mut paid = WorkBudget::new(fee);
+        assert_eq!(summary::singleton(&value, &mut paid).unwrap(), Some(word));
+        assert_eq!(paid.used(), fee);
+        assert_eq!(SINGLETON_CALLS.get(), (1, 0));
+        SINGLETON_CALLS.set((0, 0));
+        let mut denied = WorkBudget::new(fee - 1);
+        assert!(summary::singleton(&value, &mut denied).is_err());
+        assert_eq!(SINGLETON_CALLS.get(), (0, 0));
+    }
+    for numeric in [
+        NumericValue {
+            nonzero: true,
+            ..NumericValue::constant(U256::ZERO)
+        },
+        NumericValue {
+            bits: KnownBits::exact(U256::ONE),
+            ..NumericValue::constant(U256::ZERO)
+        },
+        NumericValue {
+            interval: Interval::exact(U256::ONE),
+            ..NumericValue::constant(U256::ZERO)
+        },
+        NumericValue {
+            congruence: Congruence::exact(U256::ONE),
+            ..NumericValue::constant(U256::ZERO)
+        },
+    ] {
+        assert!(numeric.canonical_literal().is_none());
+        let value = EvmValue::from_numeric(numeric);
+        let fee = value.numeric().singleton_work();
+        assert!(fee > 256);
+        SINGLETON_CALLS.set((0, 0));
+        let mut paid = WorkBudget::new(fee);
+        assert_eq!(summary::singleton(&value, &mut paid).unwrap(), None);
+        assert_eq!(SINGLETON_CALLS.get(), (1, 1));
+    }
+}

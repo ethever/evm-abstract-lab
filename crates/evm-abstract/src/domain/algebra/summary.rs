@@ -284,6 +284,19 @@ fn join_metadata_work<N: WordElement>(left: &EvmValue<N>, right: &EvmValue<N>) -
         .saturating_add(expression)
 }
 
+/// Exact complete comparison quote, shared with optional callers that must
+/// decline an unavailable comparison before committing a ledger charge.
+pub(crate) fn equality_work<D: EvmNumericAlgebra>(
+    left: &EvmValue<D::Element>,
+    right: &EvmValue<D::Element>,
+    domain: AlgebraRef<'_, D>,
+) -> usize {
+    domain
+        .numeric_algebra()
+        .summary_equal_work(left.numeric(), right.numeric())
+        .saturating_add(join_metadata_work(left, right))
+}
+
 /// Full wrapper equality, including the separately priced actual native Eq.
 pub(crate) fn equal<D: EvmNumericAlgebra>(
     left: &EvmValue<D::Element>,
@@ -292,15 +305,9 @@ pub(crate) fn equal<D: EvmNumericAlgebra>(
     budget: &mut WorkBudget,
 ) -> Result<bool, CloneError> {
     checkpoint(budget)?;
-    let native = domain
-        .numeric_algebra()
-        .summary_equal_work(left.numeric(), right.numeric());
-    // The same origin/expression bound covers equality without constructing
-    // any metadata union. It deliberately does not price native Eq by size.
-    pay(
-        budget,
-        native.saturating_add(join_metadata_work(left, right)),
-    )?;
+    // The quote includes all metadata without constructing a union, and
+    // separately prices the actual opaque native predicate.
+    pay(budget, equality_work(left, right, domain))?;
     let answer = left == right;
     checkpoint(budget)?;
     Ok(answer)

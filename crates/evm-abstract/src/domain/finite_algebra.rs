@@ -53,6 +53,14 @@ pub(super) fn summary_union_work(
     right: &FiniteConstantSet,
     capacity: usize,
 ) -> usize {
+    if left.reuses_union(right, capacity) {
+        // Two fixed-width identity/capacity decisions plus a shared handle;
+        // retain the complete tree's eventual release allowance as well.
+        return 128usize.saturating_add(left.work_size());
+    }
+    if right.reuses_union(left, capacity) {
+        return 128usize.saturating_add(right.work_size());
+    }
     let (Some(left), Some(right)) = (left.cardinality(), right.cardinality()) else {
         return 8; // Top absorption constructs no candidate tree.
     };

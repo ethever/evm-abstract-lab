@@ -13,16 +13,52 @@ fn byte_source(error: SummaryError<crate::world::RangeError>) -> SummaryError<St
     error.map_source(StoreError::from)
 }
 
+fn candidate_count(keys: &crate::world::Candidates<'_>) -> usize {
+    keys.finite
+        .map_or_else(|| usize::from(keys.singleton.is_some()), BTreeSet::len)
+}
+
 fn candidates<N: WordElement>(
     value: &EvmValue<N>,
     budget: &mut WorkBudget,
 ) -> Result<Option<BTreeSet<U256>>, SummaryError<StoreError>> {
-    // The reader owns native candidate-view/query payment. Reserve the copied
-    // U256 key set separately; this structural bill authorizes no native hook.
-    pay_structure(value.numeric().work_size(), budget)?;
-    Ok(numeric::candidates_with_payment(value, budget)
-        .map_err(byte_source)?
-        .map(|keys| keys.iter().copied().collect()))
+    // Native discovery owns its existing complete view/singleton fees. Only an
+    // actual finite result allocates a copied coordinate tree; cached length is
+    // available after discovery and before any key is visited or allocated.
+    pay(budget, 16)?;
+    let Some(keys) = numeric::candidates_with_payment(value, budget).map_err(byte_source)? else {
+        return Ok(None);
+    };
+    pay_structure(candidate_count(&keys), budget)?;
+    let out = keys.iter().copied().collect();
+    checkpoint(budget)?;
+    Ok(Some(out))
+}
+
+fn candidate_subset<N: WordElement>(
+    value: &EvmValue<N>,
+    keys: &BTreeSet<U256>,
+    budget: &mut WorkBudget,
+) -> Result<bool, SummaryError<StoreError>> {
+    pay(budget, 16)?;
+    let Some(written) = numeric::candidates_with_payment(value, budget).map_err(byte_source)?
+    else {
+        return Ok(false);
+    };
+    let count = candidate_count(&written);
+    // Each borrowed U256 membership visits at most all retained keys, with
+    // four-limb comparison and tree-edge overhead. Fund full iteration/setup
+    // and cleanup without constructing an intermediate coordinate tree.
+    pay(
+        budget,
+        count
+            .saturating_mul(keys.len().saturating_add(1))
+            .saturating_mul(32)
+            .saturating_add(16),
+    )?;
+    let subset = written.is_subset(keys);
+    checkpoint(budget)?;
+    Ok(subset)
 }
 
 fn branch<N: WordElement>(
@@ -110,7 +146,7 @@ fn remaining_upper<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             let old = remaining_upper(plane, previous, keys, domain, budget, memo)?;
             let key = numeric::scalar_with_payment(key, &plane.operands, domain, budget)
                 .map_err(byte_source)?;
-            if candidates(&key, budget)?.is_some_and(|written| written.is_subset(keys)) {
+            if candidate_subset(&key, keys, budget)? {
                 old
             } else {
                 let value = numeric::scalar_with_payment(value, &plane.operands, domain, budget)
@@ -310,3 +346,6 @@ impl<N: WordElement> EvmStore<N> {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests;

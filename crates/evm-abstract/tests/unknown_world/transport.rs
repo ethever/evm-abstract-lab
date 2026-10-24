@@ -92,7 +92,15 @@ fn one_byte_unknown_return_or_revert_keeps_the_uncopied_requested_suffix() {
     let a = parent(true);
     let mut world = new_world();
     insert(&mut world, A, &a, &[]);
-    let analysis = run(world.clone(), entry(EvmByteArray::<NumericValue>::empty()));
+    let analysis = run_config(
+        world.clone(),
+        entry(EvmByteArray::<NumericValue>::empty()),
+        evm_abstract::analysis::ExecutionConfig {
+            // Preserve the byte/oracle contract under the complete Native tariff.
+            max_work: 40_000_000,
+            ..Default::default()
+        },
+    );
     complete_unknown(&analysis);
     let outcomes = returns(&analysis);
     for outcome in outcomes {
