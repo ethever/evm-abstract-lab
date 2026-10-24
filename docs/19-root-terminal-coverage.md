@@ -15,6 +15,8 @@ CLI 与 Web 默认先构建[全局过程模型，再展开详细路径](20-globa
 
 详细分析已 `Converged` 时，即使默认开启覆盖也可以没有附加记录；界面与文本不应因此显示 **Root terminal certificate not attached**。详细分析为 `Incomplete` 且没有记录时，只能说明未附加证书，不能从 `None` 推断某个未报告的原因。wire 报告显式使用 `null`；原生 JSON 省略未附加的可选字段。
 
+Hybrid 的退出码依据组合 status；Native 的未完成状态和 frontier 继续保留。原始根为 Namespace 时，辅助记录绑定的是准备后的 Native 输入，包含额外的 `To = namespace` 条件；它不会把该条件覆盖扩展为整个原始符号根的覆盖。
+
 ## 从同一份原始输入读三个备选项
 
 原生 `EvmRootTerminalCoverage<N>` 的 `scope` 为 `AllInputStates`。`input` 绑定实际原始根输入，`outcomes` 固定按 **Return、Revert、Failure** 排序，每项只有 `kind`、`data` 和 `store`。wire 的后两项分别引用真实 `byte_arrays`、`stores` 池；它们不含终止状态 ID 或终止 PC。`trigger` 中的 mandatory-retention state/PC 指向被中断的详细指令，不是额外构造的终止位置。
