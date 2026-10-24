@@ -257,7 +257,11 @@ impl<N: WordElement> EvmByteArraySummary<N> {
                 summary::clone_value(&out.length, budget)?,
             );
         }
-        super::presentation::refresh_with_payment(&mut out, bare_cells, domain, budget)?;
+        // Literal constructors already emitted and canonicalized every native
+        // cell. Only Cells needs to reconcile its fresh source with its bounds.
+        if matches!(self.content, Content::Cells(_)) {
+            super::presentation::refresh_with_payment(&mut out, bare_cells, domain, budget)?;
+        }
         super::words::instantiate_with_payment(&self.words, &mut out, domain, budget)?;
         check(&out, domain, budget)?;
         checkpoint(budget)?;

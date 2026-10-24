@@ -32,12 +32,20 @@ impl<N: WordElement> EvmByteArraySummary<N> {
             keys.sort_unstable();
             keys.dedup();
             let mut cells = BTreeMap::new();
+            let mut unknown = None;
             for index in keys.into_iter().take(super::super::COPY_FACT_LIMIT) {
                 let left = self.content.at_with_payment(index, domain, budget)?;
                 let right = other.content.at_with_payment(index, domain, budget)?;
                 let value = summary::join_scalar(&left, &right, domain, widen, budget)?;
-                let unknown = summary::unknown_byte(domain, budget)?;
-                if !numeric_equal(&value, &unknown, domain, budget)? {
+                if unknown.is_none() {
+                    unknown = Some(summary::unknown_byte(domain, budget)?);
+                }
+                if !numeric_equal(
+                    &value,
+                    unknown.as_ref().expect("paid sentinel"),
+                    domain,
+                    budget,
+                )? {
                     pay(budget, coordinate_work(cells.len()).saturating_add(2))?;
                     cells.insert(index, value);
                 }

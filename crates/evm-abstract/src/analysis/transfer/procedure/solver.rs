@@ -1,6 +1,9 @@
 //! Joint known/unknown procedure worklist and per-caller return propagation.
 
 use super::Composition;
+use std::borrow::Cow;
+
+mod caller_template;
 use super::admission;
 use crate::analysis::engine::policy::{self, KeyIndex};
 use crate::analysis::engine::{
@@ -32,7 +35,7 @@ impl<
 {
     fn form(
         &mut self,
-        payload: &EvmMachinePayload<D::Element>,
+        mut payload: EvmMachinePayload<D::Element>,
     ) -> Result<EvmPayloadSummary<D::Element>, MachineError> {
         let runtime_process =
             self.policies.state.runtime_execution() == crate::analysis::RuntimeExecution::Process;
@@ -42,14 +45,40 @@ impl<
             ));
         }
         if runtime_process {
-            self.freeze_process_catalogue(payload)?;
+            self.freeze_process_catalogue(&payload)?;
         }
-        let mut refined = super::payload::caller::copy_with_scalar_guarantees(
-            payload,
-            self.entry,
-            self.domain,
-            self.budget,
-        )?;
+        let mut refined = if runtime_process || X::ENABLED {
+            super::payload::caller::copy_with_scalar_guarantees(
+                &payload,
+                self.entry,
+                self.domain,
+                self.budget,
+            )?
+        } else {
+            // Legacy callers already retain a separately paid original failure
+            // frontier. Project this owned input without another whole copy.
+            // Projection still walks every retained structural field, even
+            // when unrelated relations cause no native query. Fund that walk
+            // separately from its actual native queries and Cow copies.
+            if !payload.relations.is_empty() {
+                self.reserve(payload.policy_work_size())?;
+            }
+            let relations = std::mem::take(&mut payload.relations);
+            let limits = self.domain.spec().relations();
+            let mut projection = crate::analysis::state::projection::Projection::new(
+                &relations,
+                self.domain,
+                &limits,
+                self.budget,
+                crate::analysis::state::projection::Policy::Summary,
+            );
+            let projected = projection.payload(&mut payload);
+            let finished = projection.finish();
+            payload.relations = relations;
+            projected?;
+            finished?;
+            payload
+        };
         let history_work = refined.call_stack.iter().fold(0usize, |work, frame| {
             work.saturating_add(if frame.code == FrameCode::Unknown {
                 0
@@ -59,14 +88,9 @@ impl<
                     .normalization_work(frame.key.jump_history.len())
             })
         });
-        self.reserve(
-            history_work
-                .saturating_add(super::payload::alias_form_work(&refined))
-                .saturating_add(super::storage_observations::form_work(
-                    &refined,
-                    self.domain,
-                )),
-        )?;
+        // The alias and observation builders below pay their own complete
+        // discovery. Only context normalization runs outside those builders.
+        self.reserve(history_work)?;
         for frame in refined.call_stack.iter_mut() {
             if frame.code != FrameCode::Unknown {
                 self.policies.context.normalize(&mut frame.key.jump_history);
@@ -245,8 +269,7 @@ impl<
         from: Option<usize>,
         creation: bool,
     ) -> Result<usize, MachineError> {
-        self.reserve(payload.work_size().saturating_mul(4))?;
-        let payload = self.form(&payload)?;
+        let payload = self.form(payload)?;
         let PartitionedRelative { key, payload } =
             self.partition_relative(payload, PolicySite::Procedure, None)?;
         let lookup_key = (self.namespace, policy::clone_key(&key, self.budget)?);
@@ -385,8 +408,7 @@ impl<
         resume_status: Option<bool>,
         from: usize,
     ) -> Result<usize, MachineError> {
-        self.reserve(payload.work_size().saturating_mul(4))?;
-        let payload = self.form(&payload)?;
+        let payload = self.form(payload)?;
         self.enqueue_summary(procedure, payload, resume_status, Some(from))
     }
 
@@ -1268,7 +1290,7 @@ impl<
             .active_child()
             .is_some_and(|child| child.continuation.creation.is_some());
         let callee = self.procedure_from(callee_payload, Some(from), creation)?;
-        let payload = self.form(&payload)?;
+        let payload = self.form(payload)?;
         let PartitionedRelative { key, payload } =
             self.partition_relative(payload, PolicySite::Subscriber, None)?;
         let key = (from, callee, (action, key));
@@ -1513,7 +1535,12 @@ impl<
         let Availability::Value(outputs) = outputs.state else {
             return Err(MachineError::Shape);
         };
-        for (kind, output) in outputs {
+        // The snapshot is detached from the subscriber slot and stays stable
+        // through all outputs. Only its final consumer can take ownership;
+        // previous deliveries retain their separately paid copies.
+        let mut template_payload = Some(template_payload);
+        let output_count = outputs.len();
+        for (ordinal, (kind, output)) in outputs.into_iter().enumerate() {
             self.producer = Some(super::Producer {
                 kind: 1,
                 id: subscriber,
@@ -1526,13 +1553,16 @@ impl<
                 other: Some(outputs_version),
                 parent: None,
             });
-            if !self.deliver(
-                subscriber,
-                kind,
-                template.version,
-                &template_payload,
-                &output,
-            )? {
+            let payload = if ordinal + 1 == output_count {
+                Cow::Owned(template_payload.take().expect("last detached template"))
+            } else {
+                Cow::Borrowed(
+                    template_payload
+                        .as_ref()
+                        .expect("retained detached template"),
+                )
+            };
+            if !self.deliver(subscriber, kind, template.version, payload, &output)? {
                 return Ok(false);
             }
         }
@@ -1544,7 +1574,7 @@ impl<
         subscriber: usize,
         kind: OutcomeKind,
         template_version: Version,
-        template: &EvmPayloadSummary<D::Element>,
+        template: Cow<'_, EvmPayloadSummary<D::Element>>,
         output: &EvmOutput<D::Element>,
     ) -> Result<bool, MachineError> {
         self.reserve(0)?;
@@ -1576,7 +1606,7 @@ impl<
             .last()
             .and_then(|continuation| continuation.creation)
         {
-            self.deliver_process_creation(subscriber, from, kind, template, output, creation)?;
+            self.deliver_process_creation(subscriber, from, kind, &template, output, creation)?;
             self.table.subscribers[subscriber]
                 .delivered
                 .insert(kind, stamp);
@@ -1596,22 +1626,19 @@ impl<
             // arbitrary further steps. Its numerical form intentionally erases
             // the result stack, private memory and returndata. Advance that
             // same bound directly; reconstructing erased arrays adds no facts.
-            let work = template
-                .work_size()
-                .saturating_add(if kind == OutcomeKind::Return {
-                    output.summary.store.work_size()
-                } else {
-                    template.active().saved_store.work_size()
-                });
-            self.reserve(work.saturating_mul(4))?;
-            let mut resumed = template.clone_with_payment(self.budget)?;
+            // Copies and Store operations below own their full invoices. Only
+            // the fixed frame/continuation/location pops run outside them.
+            self.reserve(3)?;
+            let template_work = template.work_size();
+            let parent_process = template.frames[0].key.process.is_some();
+            let mut resumed = caller_template::into_owned_with_payment(template, self.budget)?;
             let child = resumed.frames.pop().expect("a subscribed child");
             resumed.continuations.pop();
             resumed.location.frames.pop();
             if !keep_store {
                 resumed.store = if kind == OutcomeKind::Return {
                     output.summary.store.clone_with_payment(self.budget)?
-                } else if template.frames[0].key.process.is_some() {
+                } else if parent_process {
                     // Rebind failure to this subscriber's checkpoint, retaining
                     // the native sticky-touch exception from the failed child.
                     // Other subscribers' unwritten data must not be replayed.
@@ -1623,6 +1650,9 @@ impl<
                         .frame
                         .saved_store
                         .instantiate_with_payment(self.domain, self.budget)?;
+                    // Rollback/touch traversal precedes the later census and
+                    // needs its own allowance, beyond both native copies.
+                    self.reserve(template_work.saturating_add(output.work))?;
                     failed.restore(crate::world::EvmSnapshot::from_state(saved));
                     failed.summary_projection_with_payment(self.domain, self.budget)?
                 } else {
@@ -1631,6 +1661,10 @@ impl<
             }
             // Changing the active frame and EvmStore<D::Element> invalidates current-read templates.
             resumed.storage_observations = Default::default();
+            // This separate census visits the surviving input/checkpoint and
+            // incoming effects. Their complete cached bounds fund the walk;
+            // the earlier copy invoices do not pay for a second traversal.
+            self.reserve(template_work.saturating_add(output.work))?;
             resumed.work = resumed.measure_work();
             let to =
                 self.enqueue_summary(self.table.nodes[from].procedure, resumed, None, Some(from))?;
@@ -1642,14 +1676,8 @@ impl<
             self.table.propagations += 1;
             return Ok(true);
         }
-        self.reserve(
-            template
-                .work_size()
-                .saturating_add(output.work)
-                .saturating_mul(4),
-        )?;
         let mut payload =
-            payload::caller::instantiate_with_payment(template, self.domain, self.budget)?;
+            payload::caller::instantiate_with_payment(&template, self.domain, self.budget)?;
         // Installed constraints still refer only to the old immutable snapshot.
         // Never reinstall those read bounds after replacing the EvmStore<D::Element>.
         if !keep_store {

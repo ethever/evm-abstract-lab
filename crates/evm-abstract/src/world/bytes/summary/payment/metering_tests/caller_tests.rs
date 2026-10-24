@@ -487,3 +487,58 @@ fn exact_materialization_fee_succeeds_and_one_less_publishes_no_runtime_array() 
     );
     assert_eq!(source.content, leaf(32, Some(U256::from(7))).content);
 }
+
+#[test]
+fn cell_join_borrows_one_paid_unknown_sentinel_and_retains_each_private_result() {
+    let _scope = RECEIPT.scope();
+    let domain = ValueAlgebra::new(Policy::default());
+    let make = |upper| EvmByteArraySummary {
+        length: EvmValue::constant(U256::from(4)),
+        memory: false,
+        words: BTreeMap::new(),
+        content: Content::Cells(
+            (0..4)
+                .map(|index| {
+                    (
+                        index,
+                        EvmValue::from_numeric(Word::window(
+                            U256::ZERO,
+                            U256::from(upper),
+                            Some(U256::ONE),
+                        )),
+                    )
+                })
+                .collect(),
+        ),
+    };
+    let left = make(7u64);
+    let right = make(8u64);
+    let expected = left.join(&right, domain.borrowed(), false);
+    reset();
+    let mut budget = WorkBudget::new(1_000_000);
+    let actual = left
+        .join_with_payment(&right, domain.borrowed(), false, &mut budget)
+        .unwrap();
+    assert_eq!(hooks(Hook::UnknownByte), 1);
+    assert_eq!(actual, expected);
+    let Content::Cells(cells) = &actual.content else {
+        panic!("private cells were discarded");
+    };
+    assert_eq!(cells.len(), 4);
+    assert!(cells.values().all(|value| !value.contains(U256::ONE)));
+    let denied = ValueAlgebra::new(Policy {
+        refusal: Some((Hook::UnknownByte, Stage::Constructed)),
+        ..Policy::default()
+    });
+    reset();
+    assert_eq!(
+        left.join_with_payment(
+            &right,
+            denied.borrowed(),
+            false,
+            &mut WorkBudget::new(1_000_000)
+        ),
+        Err(CloneError::Work)
+    );
+    assert_eq!(hooks(Hook::UnknownByte), 0);
+}

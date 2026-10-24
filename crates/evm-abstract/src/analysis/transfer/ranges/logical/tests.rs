@@ -530,7 +530,14 @@ fn literal_boundary_keeps_pre_effect_gas_failure_and_live_payload_on_either_deci
         (U256::MAX, U256::ZERO, true),
     ] {
         let mut result = empty_execution(payload.clone());
-        let mut budget = WorkBudget::new(config.max_work);
+        let literal_query_work = 64 * 4;
+        let range_work = if size == U256::ZERO {
+            super::super::LITERAL_MEMORY_METADATA_WORK + literal_query_work
+        } else {
+            2 * (super::super::LITERAL_MEMORY_METADATA_WORK + literal_query_work)
+                + super::super::LITERAL_MEMORY_BOUNDS_WORK
+        };
+        let mut budget = WorkBudget::new(gas_work + range_work);
         let transfer_algebra = ValueAlgebra::new(ProductAlgebra::default());
         let mut transfer = context(&config, &mut budget, transfer_algebra.borrowed());
         transfer.procedure = false;
@@ -545,10 +552,7 @@ fn literal_boundary_keeps_pre_effect_gas_failure_and_live_payload_on_either_deci
             allowed
         );
         assert_eq!(result.payload, payload);
-        assert_eq!(
-            budget.used(),
-            gas_work + if size == U256::ZERO { 736 } else { 1_600 }
-        );
+        assert_eq!(budget.used(), gas_work + range_work);
         assert!(!budget.exhausted());
         assert!(result.frontiers.is_empty());
         assert!(result.diagnostics.is_empty());
@@ -600,7 +604,7 @@ fn preflight_refusal_preserves_the_already_emitted_gas_failure() {
             let mut budget = WorkBudget::new(if cancelled {
                 config.max_work
             } else {
-                gas_work + super::super::LITERAL_MEMORY_METADATA_WORK + 608 - 1
+                gas_work + super::super::LITERAL_MEMORY_METADATA_WORK + 64 * 4 - 1
             });
             if cancelled {
                 assert!(super::failure(

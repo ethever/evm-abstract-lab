@@ -189,6 +189,74 @@ impl DomainSpec {
         })
     }
 
+    // A complete closed certificate replaces a cooperation kernel only when the
+    // original policy admits it. Constrained fact limits and overflow retain the
+    // original status/refusal path. This also funds the certificate, up to three
+    // import/reduction/project copies and their retained/released native payloads.
+    pub(super) fn native_closed_scalar_work(self, finite: usize) -> Option<usize> {
+        if self.fact_limit() < 8
+            || self.numeric_closure_work(self.capacity().max(finite), Some(1)) == usize::MAX
+        {
+            return None;
+        }
+        Some(576usize.saturating_add(finite.saturating_add(24).saturating_mul(3)))
+    }
+
+    pub(super) fn native_scalar_is_closed(self, value: &NumericValue) -> bool {
+        self.native_closed_scalar_work(value.finite.work_size())
+            .is_some()
+            && (canonical_literal(value)
+                || (stable_scalar(self, value)
+                    && (value.bits == KnownBits::top()
+                        || (value.bits.zero() | value.bits.one()).bit(255)))
+                || (self.capacity() >= 2
+                    && value.finite.as_values().is_some_and(|set| {
+                        set.len() == 2
+                            && set.first() == Some(&U256::ZERO)
+                            && set.last() == Some(&U256::ONE)
+                    })
+                    && value.bits == KnownBits::new(!U256::ONE, U256::ZERO).unwrap()
+                    && value.interval
+                        == super::interval::Interval::new_unsigned(U256::ZERO, U256::ONE).unwrap()
+                    && value.congruence.is_top()
+                    && !value.nonzero))
+    }
+
+    // These complete input shapes have one feasible word. A full builtin
+    // kernel publishes its canonical fields and confirms them in two cycles.
+    // Keep smaller schedules/fact policies and every unproved component shape
+    // on the original path. No candidate search or modular query is needed.
+    pub(super) fn native_scalar_literal(self, value: &NumericValue) -> Option<U256> {
+        if self.reduction_rounds() < 2 || self.native_closed_scalar_work(1).is_none() {
+            return None;
+        }
+        let word = if value.finite.is_top() && value.congruence.is_top() {
+            value
+                .bits
+                .singleton()
+                .or_else(|| value.interval.singleton())
+                .or_else(|| {
+                    (self.capacity() >= 2
+                        && value.nonzero
+                        && value.interval.unsigned_bounds() == (U256::ZERO, U256::ONE))
+                        .then_some(U256::ONE)
+                })?
+        } else {
+            let word = value.finite.singleton()?;
+            if value.bits != KnownBits::exact(word)
+                || value.interval != super::interval::Interval::exact(word)
+                || value.congruence.singleton() != Some(word)
+            {
+                return None;
+            }
+            word
+        };
+        (value.bits.contains(word)
+            && value.interval.contains(word)
+            && (!value.nonzero || word != U256::ZERO))
+            .then_some(word)
+    }
+
     pub(super) fn numeric_refinement_work(self, value: &NumericValue, facts: usize) -> usize {
         self.numeric_refinement_work_with(value, facts, None)
     }
@@ -330,7 +398,7 @@ impl DomainSpec {
                 // NOT yields Top; ISZERO yields the already aligned boolean
                 // product (finite two or finite Top at capacity one).
                 Some((
-                    3,
+                    if op == opcode::ISZERO { 2 } else { 3 },
                     if op == opcode::ISZERO {
                         self.capacity().min(2)
                     } else {
@@ -341,31 +409,84 @@ impl DomainSpec {
             (Some(a), Some(b), None) => {
                 let literal_top =
                     (canonical_literal(a) && b.is_top()) || (a.is_top() && canonical_literal(b));
-                if literal_top && matches!(op, opcode::ADD | opcode::SUB) {
+                if op == opcode::AND
+                    && self.reduction_rounds() >= 2
+                    && self.native_closed_scalar_work(1).is_some()
+                    && [(a, b), (b, a)].into_iter().any(|(value, mask)| {
+                        let Some(mask_word) =
+                            mask.finite.singleton().filter(|_| canonical_literal(mask))
+                        else {
+                            return false;
+                        };
+                        let zero = value.bits.zero() | !mask_word;
+                        let one = value.bits.one() & mask_word;
+                        value.finite.is_top()
+                            && value.congruence.is_top()
+                            // Exact interval operands take Interval::transfer's
+                            // concrete path, not its [0, min_hi] AND bound. Keep
+                            // that path's original invoice even if mask fields
+                            // alone imply a different singleton.
+                            && value.interval.singleton().is_none()
+                            && mask_word != U256::ZERO
+                            && mask_word != U256::MAX
+                            && zero | one == U256::MAX
+                            && one <= value.interval.unsigned_bounds().1.min(mask_word)
+                    })
+                {
+                    // Raw AND has an exact mask, finite/congruence Top and a
+                    // containing interval. native_scalar_literal constructs its
+                    // canonical word, replacing all actual cooperation jobs.
+                    return quote
+                        .saturating_sub(self.numeric_closure_work(self.capacity(), Some(3)))
+                        .saturating_add(self.native_closed_scalar_work(1).unwrap());
+                } else if literal_top && matches!(op, opcode::ADD | opcode::SUB) {
                     // Translating all Word256 values by a literal is a bijection;
                     // all three component transfers are Top, with no facts to add.
                     Some((2, 1))
-                } else if self.capacity() < 256
-                    && ((op == opcode::BYTE
-                        && canonical_literal(a)
-                        && a.finite
-                            .singleton()
-                            .is_some_and(|index| index < U256::from(32))
-                        && b.is_top())
-                        || (op == opcode::AND
-                            && a.is_top()
-                            && canonical_literal(b)
-                            && b.finite.singleton() == Some(U256::from(255))))
+                } else if literal_top
+                    && (op == opcode::EQ
+                        || (matches!(op, opcode::LT | opcode::GT)
+                            && [a, b].into_iter().any(|value| {
+                                canonical_literal(value)
+                                    && value.finite.singleton().is_some_and(|literal| {
+                                        literal != U256::ZERO && literal != U256::MAX
+                                    })
+                            })))
                 {
-                    // The unconstrained-byte cube is already aligned, and its
-                    // 256 values cannot be reconstructed at this capacity.
+                    // Every component already describes the same boolean:
+                    // finite {0,1} (or finite Top below capacity two), one-bit
+                    // masks/ranges and Top congruence. The one builtin pass
+                    // confirms it; endpoint comparisons keep the ordinary path.
+                    Some((2, self.capacity().min(2)))
+                } else if (self.capacity() < 256
+                    && op == opcode::BYTE
+                    && canonical_literal(a)
+                    && a.finite
+                        .singleton()
+                        .is_some_and(|index| index < U256::from(32))
+                    && b.is_top())
+                    || (op == opcode::AND
+                        && [(a, b), (b, a)].into_iter().any(|(value, mask)| {
+                            value.is_top()
+                                && canonical_literal(mask)
+                                && mask.finite.singleton().is_some_and(|mask| {
+                                    let width = mask.count_ones();
+                                    mask != U256::ZERO
+                                        && mask & mask.wrapping_add(U256::ONE) == U256::ZERO
+                                        && (width >= usize::BITS as usize
+                                            || (1usize << width) > self.capacity())
+                                })
+                        }))
+                {
+                    // These complete byte/low-mask cubes are already aligned;
+                    // their finite images cannot be rebuilt at this capacity.
                     Some((2, 1))
                 } else if op == opcode::EQ && (address_literal_eq(a, b) || address_literal_eq(b, a))
                 {
                     // Each component admits the literal in the complete address
                     // cube, so EQ's finite/mask/range outputs are the same
                     // already aligned boolean. No comparison rule is removed.
-                    Some((3, self.capacity().min(2)))
+                    Some((2, self.capacity().min(2)))
                 } else {
                     None
                 }
@@ -373,9 +494,25 @@ impl DomainSpec {
             _ => None,
         };
         if let Some((old_rounds, finite)) = closed {
+            let boolean = matches!(op, 0x10..=0x15)
+                && ((op == opcode::ISZERO && a.is_some() && b.is_none())
+                    || (op != opcode::ISZERO && a.is_some() && b.is_some() && c.is_none()));
+            let input_finite = if boolean {
+                self.capacity().min(2)
+            } else {
+                self.capacity()
+            };
+            // Each positive raw-output case above is the complete Top, boolean
+            // or low-bit cube recognized by native_scalar_is_closed. Its actual
+            // reducer returns a paid native copy without constructing a kernel.
+            // Keep tuple visits, raw component evaluation, facade fold and input
+            // work; replace only the closure that is actually omitted.
+            let closure = self
+                .native_closed_scalar_work(finite)
+                .unwrap_or_else(|| self.numeric_closure_work(finite, Some(1)));
             quote
-                .saturating_sub(self.numeric_closure_work(self.capacity(), Some(old_rounds)))
-                .saturating_add(self.numeric_closure_work(finite, Some(1)))
+                .saturating_sub(self.numeric_closure_work(input_finite, Some(old_rounds)))
+                .saturating_add(closure)
         } else {
             quote
         }
@@ -441,7 +578,17 @@ impl DomainSpec {
         // low-bit congruence inferred from these shapes are compatible with
         // their endpoints: one scalar pass aligns their summaries/optional
         // complete cover; a second confirms it, in either operand order.
-        let rounds = if len == 2 && shapes == 3 {
+        let boolean = supported && matches!(op, 0x10..=0x15);
+        let rounds = if boolean {
+            // Each raw component admits only zero/one. One alternative can be
+            // removed and propagated once; a second builtin cycle confirms it.
+            Some(2)
+        } else if supported && op == opcode::BYTE {
+            // Raw BYTE has a byte cube and a full-byte/zero interval, without
+            // an independent modular constraint. One alignment/cover pass and
+            // its confirmation suffice; enumeration above retains all tuples.
+            Some(2)
+        } else if len == 2 && shapes == 3 {
             Some(2)
         } else if len > 0 && dyadic {
             // Transfer of dyadic/Top/exact inputs stays dyadic unless complete
@@ -472,9 +619,18 @@ impl DomainSpec {
         };
         visits
             .saturating_add(4096)
-            .saturating_add(
-                closure_work.unwrap_or_else(|| self.numeric_closure_work(self.capacity(), rounds)),
-            )
+            .saturating_add(closure_work.unwrap_or_else(|| {
+                self.numeric_closure_work(
+                    if boolean {
+                        self.capacity().min(2)
+                    } else if supported && op == opcode::BYTE {
+                        self.capacity().min(256)
+                    } else {
+                        self.capacity()
+                    },
+                    rounds,
+                )
+            }))
             .saturating_add(size)
             .saturating_add(concrete)
     }

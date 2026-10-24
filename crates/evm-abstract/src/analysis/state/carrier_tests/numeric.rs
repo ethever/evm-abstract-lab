@@ -12,10 +12,51 @@ static FINITE: OnceLock<FiniteConstantSet> = OnceLock::new();
 static BITS: OnceLock<KnownBits> = OnceLock::new();
 static CONGRUENCE: OnceLock<Congruence> = OnceLock::new();
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub(super) struct ExcludingWord {
     bounds: Interval,
     excluded: Option<U256>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CloneReceipt {
+    pub(super) clones: usize,
+    pub(super) quotes: usize,
+    pub(super) exports: usize,
+    pub(super) fee: usize,
+    pub(super) cancel_quote: bool,
+    pub(super) cancel_clone: bool,
+}
+impl CloneReceipt {
+    pub(super) const fn new(fee: usize) -> Self {
+        Self {
+            clones: 0,
+            quotes: 0,
+            exports: 0,
+            fee,
+            cancel_quote: false,
+            cancel_clone: false,
+        }
+    }
+}
+pub(super) static CLONE_RECEIPT: crate::test_instrumentation::Counter<CloneReceipt> =
+    crate::test_instrumentation::Counter::new(CloneReceipt::new(32));
+
+impl Clone for ExcludingWord {
+    fn clone(&self) -> Self {
+        let mut cancel = false;
+        CLONE_RECEIPT.update(|r| {
+            r.clones += 1;
+            cancel = r.cancel_clone;
+        });
+        if cancel {
+            analysis_control::current_cancellation().cancel();
+        }
+        Self {
+            bounds: self.bounds,
+            excluded: self.excluded,
+        }
+    }
 }
 
 impl ExcludingWord {
@@ -80,6 +121,7 @@ impl WordElement for ExcludingWord {
         })
     }
     fn observation(&self) -> WordObservation {
+        CLONE_RECEIPT.update(|r| r.exports += 1);
         if let Some(word) = self.singleton() {
             return WordObservation::constant(word);
         }
@@ -134,6 +176,19 @@ impl WordElement for ExcludingWord {
     }
     fn is_top(&self) -> bool {
         self.bounds.is_top() && self.excluded.is_none()
+    }
+    fn clone_work(&self) -> usize {
+        let mut fee = 32;
+        let mut cancel = false;
+        CLONE_RECEIPT.update(|r| {
+            r.quotes += 1;
+            fee = r.fee;
+            cancel = r.cancel_quote;
+        });
+        if cancel {
+            analysis_control::current_cancellation().cancel();
+        }
+        fee
     }
     fn work_size(&self) -> usize {
         // Includes construction and retention of the exported range observation.

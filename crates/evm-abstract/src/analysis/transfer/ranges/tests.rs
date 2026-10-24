@@ -313,6 +313,11 @@ mod literal_memory {
 
     use crate::analysis::transfer::testing::context;
 
+    // Four-limb certificate checks replace membership for complete literals;
+    // an absent candidate returns before finite lookup or modular division.
+    const LITERAL_QUERY_WORK: usize = 64 * 4;
+    const NO_CANDIDATE_QUERY_WORK: usize = 32 * 4;
+
     fn assert_uninstalled(result: &Execution, before: &MachinePayload) {
         assert_eq!(&result.payload, before);
         assert!(result.outcomes.is_empty());
@@ -367,7 +372,13 @@ mod literal_memory {
                         allowed,
                         "offset={offset}, size={size}, K={capacity}, relations={enabled}"
                     );
-                    assert_eq!(budget.used(), if size == U256::ZERO { 736 } else { 1_600 });
+                    let fee = if size == U256::ZERO {
+                        LITERAL_MEMORY_METADATA_WORK + LITERAL_QUERY_WORK
+                    } else {
+                        2 * (LITERAL_MEMORY_METADATA_WORK + LITERAL_QUERY_WORK)
+                            + LITERAL_MEMORY_BOUNDS_WORK
+                    };
+                    assert_eq!(budget.used(), fee);
                     assert!(budget.used() < 31_200);
                     assert!(!budget.exhausted());
                     assert!(result.frontiers.is_empty());
@@ -416,7 +427,11 @@ mod literal_memory {
         );
         let general_offset = domain.join(&value(U256::ZERO), &value(U256::MAX));
         assert!(!general_offset.congruence().is_top());
-        assert!(literal_memory_singleton_work(&general_offset) > 4_096);
+        assert_eq!(general_offset.singleton(), None);
+        assert_eq!(
+            literal_memory_singleton_work(&general_offset),
+            NO_CANDIDATE_QUERY_WORK
+        );
         for offset in [
             TestValue::top(),
             TestValue::top().with_expression(ExprId::fresh().unwrap()),
@@ -424,7 +439,7 @@ mod literal_memory {
             value(U256::MAX),
         ] {
             for (size, query_work) in [
-                (&value(U256::ZERO), 608),
+                (&value(U256::ZERO), LITERAL_QUERY_WORK),
                 (&numeric_zero, 512),
                 (&exact_zero, 512),
                 (&modulo_zero, 4_608),
@@ -479,7 +494,47 @@ mod literal_memory {
     }
 
     #[test]
-    fn finite_cardinality_prices_first_and_candidate_lookup_without_capacity_amplification() {
+    fn zero_size_skips_the_expensive_independent_offset_quote_and_query() {
+        use crate::{
+            analysis::transfer::query::tests::{Policy, RECEIPT, Word},
+            domain::EvmValue,
+        };
+
+        let _receipt = RECEIPT.scope();
+        let offset_work = 100_003;
+        RECEIPT.update(|receipt| receipt.fee = offset_work);
+        let domain = ValueAlgebra::new(Policy);
+        let config = ExecutionConfig::default();
+        let offset = EvmValue::<Word>::constant(U256::from(7));
+        for size in [U256::ZERO, U256::ONE] {
+            let fee = LITERAL_MEMORY_METADATA_WORK
+                + 64
+                + if size == U256::ZERO {
+                    0
+                } else {
+                    LITERAL_MEMORY_METADATA_WORK + offset_work + LITERAL_MEMORY_BOUNDS_WORK
+                };
+            let mut budget = WorkBudget::new(fee);
+            assert_eq!(
+                super::super::literal_memory_range(
+                    &offset,
+                    &EvmValue::constant(size),
+                    &mut context(&config, &mut budget, domain.borrowed()),
+                ),
+                Ok(Some(true))
+            );
+            assert_eq!(budget.used(), fee);
+            assert!(!budget.exhausted());
+            let expected = usize::from(size != U256::ZERO);
+            assert_eq!(
+                (RECEIPT.get().quotes, RECEIPT.get().queries),
+                (expected, expected)
+            );
+        }
+    }
+
+    #[test]
+    fn finite_cardinality_skips_membership_without_a_singleton_candidate() {
         let config = ExecutionConfig::default();
         let config_numeric = crate::analysis::testing::NumericLimits {
             max_constants: 512,
@@ -488,20 +543,17 @@ mod literal_memory {
         let domain =
             crate::domain::ValueAlgebra::new(ProductAlgebra::from_spec(config_numeric.spec()));
         let domain = domain.borrowed();
-        for (len, query_work) in [
-            (1, 608),
-            (2, 608),
-            (3, 640),
-            (10, 864),
-            (11, 1_280),
-            (71, 1_664),
-            (512, 2_432),
-        ] {
+        for len in [1, 2, 3, 10, 11, 71, 512] {
             let size = (1..len).fold(value(U256::ZERO), |set, item| {
                 domain.join(&set, &value(U256::from(item)))
             });
             assert_eq!(size.finite_constants().cardinality(), Some(len));
             assert_eq!(size.singleton(), (len == 1).then_some(U256::ZERO));
+            let query_work = if len == 1 {
+                LITERAL_QUERY_WORK
+            } else {
+                NO_CANDIDATE_QUERY_WORK
+            };
             assert_eq!(literal_memory_singleton_work(&size), query_work);
             let fee = LITERAL_MEMORY_METADATA_WORK + query_work;
             let mut budget = WorkBudget::new(fee);
@@ -551,7 +603,11 @@ mod literal_memory {
         assert_eq!(literal_memory_singleton_work(&size), 608);
         let config = ExecutionConfig::default();
         let config_numeric = crate::analysis::testing::NumericLimits::default();
-        let mut budget = WorkBudget::new(1_600);
+        let fee = 2 * LITERAL_MEMORY_METADATA_WORK
+            + 608
+            + LITERAL_QUERY_WORK
+            + LITERAL_MEMORY_BOUNDS_WORK;
+        let mut budget = WorkBudget::new(fee);
         let mut result = execution();
         let before = result.payload.clone();
         assert!(!allow_memory(
@@ -565,7 +621,7 @@ mod literal_memory {
             ),
             7,
         ));
-        assert_eq!(budget.used(), 1_600);
+        assert_eq!(budget.used(), fee);
         assert!(!budget.exhausted());
         assert!(result.frontiers.is_empty());
         assert_uninstalled(&result, &before);
@@ -628,28 +684,45 @@ mod literal_memory {
         assert_eq!(LITERAL_MEMORY_BOUNDS_WORK, 128);
         let operands = (value(U256::ZERO), value(U256::ONE));
         let original = operands.clone();
-        for (limit, paid) in [(735, 128), (863, 736), (1_471, 864), (1_599, 1_472)] {
+        let size_query = LITERAL_MEMORY_METADATA_WORK + LITERAL_QUERY_WORK;
+        let offset_metadata = size_query + LITERAL_MEMORY_METADATA_WORK;
+        let offset_query = offset_metadata + LITERAL_QUERY_WORK;
+        let fee = offset_query + LITERAL_MEMORY_BOUNDS_WORK;
+        for (limit, paid) in [
+            (size_query - 1, LITERAL_MEMORY_METADATA_WORK),
+            (offset_metadata - 1, size_query),
+            (offset_query - 1, offset_metadata),
+            (fee - 1, offset_query),
+            (fee, fee),
+        ] {
             let mut result = execution();
             let before = result.payload.clone();
             let mut budget = WorkBudget::new(prior + limit);
             assert!(budget.charge(prior));
-            assert!(!allow_memory(
-                &mut result,
-                &operands.0,
-                &operands.1,
-                &mut context(
-                    &config,
-                    &mut budget,
-                    ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
+            assert_eq!(
+                allow_memory(
+                    &mut result,
+                    &operands.0,
+                    &operands.1,
+                    &mut context(
+                        &config,
+                        &mut budget,
+                        ValueAlgebra::new(&ProductAlgebra::from_spec(config_numeric.spec()))
+                    ),
+                    7,
                 ),
-                7,
-            ));
+                limit == fee
+            );
             assert_eq!(budget.used(), prior + paid);
-            assert!(budget.exhausted());
+            assert_eq!(budget.exhausted(), limit != fee);
             assert_uninstalled(&result, &before);
-            assert_eq!(result.frontiers.len(), 1);
-            assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
-            assert_eq!(result.frontiers[0].target, Some(before.key()));
+            if limit == fee {
+                assert!(result.frontiers.is_empty());
+            } else {
+                assert_eq!(result.frontiers.len(), 1);
+                assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+                assert_eq!(result.frontiers[0].target, Some(before.key()));
+            }
             assert_eq!(operands, original);
         }
     }
@@ -706,14 +779,12 @@ mod literal_memory {
                     };
                 assert_eq!(
                     preflight,
-                    if size.constants().is_some() {
-                        if size.singleton().is_some() {
-                            1_376
-                        } else {
-                            4_832
-                        }
+                    if size.singleton().is_some() {
+                        2 * LITERAL_MEMORY_METADATA_WORK
+                            + LITERAL_QUERY_WORK
+                            + NO_CANDIDATE_QUERY_WORK
                     } else {
-                        640
+                        LITERAL_MEMORY_METADATA_WORK + NO_CANDIDATE_QUERY_WORK
                     },
                 );
                 // Builder stages replaced the blanket reservation. Quote their

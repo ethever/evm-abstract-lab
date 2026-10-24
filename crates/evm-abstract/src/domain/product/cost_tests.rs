@@ -133,7 +133,7 @@ fn closure_quote_funds_rule_and_graph_reservations_across_capacity_and_step_limi
                 );
                 let result = algebra.reduce_numeric(&input);
                 let (used, dependencies, steps) = cooperation::PROTOCOL_WORK.get();
-                let quote = domain.refinement_work(&input, 0);
+                let quote = algebra.refinement_work(&input, 0);
                 assert!(
                     used <= quote,
                     "capacity={capacity} rounds={rounds}: {used}>{quote}"
@@ -155,7 +155,7 @@ fn closure_quote_funds_rule_and_graph_reservations_across_capacity_and_step_limi
 }
 
 #[test]
-fn stable_inputs_pay_one_cycle_and_finite_inputs_pay_at_most_two() {
+fn closed_inputs_skip_the_kernel_and_finite_inputs_pay_at_most_two() {
     let _counter = cooperation::PROTOCOL_WORK.scope();
     for capacity in [1, 8, 512] {
         let one = domain(capacity, 1);
@@ -169,8 +169,8 @@ fn stable_inputs_pay_one_cycle_and_finite_inputs_pay_at_most_two() {
             let result = eight.reduce_numeric(&value);
             assert_eq!(result.status, ReductionStatus::Stable);
             assert_eq!(result.value, value);
-            assert_eq!(result.rounds, 1);
-            assert_eq!(cooperation::PROTOCOL_WORK.get().2, 4);
+            assert_eq!(result.rounds, 0);
+            assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
         }
         let value = finite(128);
         assert_eq!(
@@ -714,7 +714,7 @@ fn native_product_quotes_cover_numeric_symbolic_and_metadata_work() {
 }
 
 #[test]
-fn opcode_quotes_pay_real_closed_jobs_and_decline_at_byte_capacity_boundaries() {
+fn opcode_quotes_pay_closed_copies_and_decline_at_byte_capacity_boundaries() {
     let _counter = cooperation::PROTOCOL_WORK.scope();
     for capacity in [1, 2, 8, 255, 256, 512] {
         for rounds in [1, 2, 4, 8] {
@@ -775,8 +775,8 @@ fn opcode_quotes_pay_real_closed_jobs_and_decline_at_byte_capacity_boundaries() 
                 assert!(cooperation::PROTOCOL_WORK.get().0 <= quote);
                 if capacity < 256 || !matches!(op, opcode::BYTE | opcode::AND) {
                     assert_eq!(actual.status, ReductionStatus::Stable);
-                    assert_eq!(actual.rounds, 1);
-                    assert_eq!(cooperation::PROTOCOL_WORK.get().2, 4);
+                    assert_eq!(actual.rounds, 0);
+                    assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
                 }
             }
         }
@@ -804,7 +804,7 @@ fn opcode_quotes_pay_real_closed_jobs_and_decline_at_byte_capacity_boundaries() 
 }
 
 #[test]
-fn address_cube_eq_literal_quote_keeps_four_real_jobs_and_declines_other_shapes() {
+fn address_cube_eq_literal_quote_skips_the_kernel_and_declines_other_shapes() {
     let _counter = cooperation::PROTOCOL_WORK.scope();
     let max = U256::MAX >> 96usize;
     for capacity in [1, 2, 8, 512] {
@@ -833,8 +833,8 @@ fn address_cube_eq_literal_quote_keeps_four_real_jobs_and_declines_other_shapes(
                     cooperation::PROTOCOL_WORK.set((0, 0, 0));
                     let result = algebra.apply_detailed(opcode::EQ, &args);
                     assert_eq!(result.status, ReductionStatus::Stable);
-                    assert_eq!(result.rounds, 1);
-                    assert_eq!(cooperation::PROTOCOL_WORK.get().2, 4);
+                    assert_eq!(result.rounds, 0);
+                    assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
                     assert!(cooperation::PROTOCOL_WORK.get().0 <= quote);
                     assert!(result.value.contains(U256::ZERO) && result.value.contains(U256::ONE));
                 }
@@ -1213,7 +1213,7 @@ fn staged_scalar_refusal_keeps_paid_prefix_without_running_required_rules() {
         actual,
         state.refine_numeric(&x, input.numeric(), domain, &limits)
     );
-    assert_eq!(cooperation::PROTOCOL_WORK.get().2, 4);
+    assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
     let import = full.used().checked_sub(closure).unwrap();
     assert!(import > 0 && full.used() < domain.refinement_work(&input, state.len()));
     for (budget_size, paid_prefix) in [(import - 1, 0), (import + closure - 1, import)] {
@@ -1351,4 +1351,453 @@ fn custom_scalar_backend_keeps_one_whole_quote_and_never_clones_while_quoting() 
         "custom whole quote must not acquire a second closure charge"
     );
     assert!(copies.get() > 0);
+}
+
+#[test]
+fn literal_top_boolean_quotes_fund_the_closed_copy_and_refuse_before_execution() {
+    let _counter = cooperation::PROTOCOL_WORK.scope();
+    for capacity in [1, 2, 8, 255, 256, 512] {
+        for rounds in [1, 2, 4, 8] {
+            let policy = domain(capacity, rounds);
+            let algebra = ValueAlgebra::new(policy);
+            for op in [opcode::EQ, opcode::LT, opcode::GT] {
+                for literal in [U256::ZERO, U256::ONE, U256::from(16), U256::MAX] {
+                    if op != opcode::EQ && matches!(literal, U256::ZERO | U256::MAX) {
+                        continue;
+                    }
+                    for reverse in [false, true] {
+                        let mut args = [
+                            EvmValue::<NumericValue>::constant(literal),
+                            EvmValue::<NumericValue>::top(),
+                        ];
+                        if reverse {
+                            args.reverse();
+                        }
+                        let quote = algebra.operation_work(op, &args);
+                        cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                        let mut denied = WorkBudget::new(quote - 1);
+                        assert!(algebra.apply_budgeted(op, &args, &mut denied).is_err());
+                        assert_eq!(denied.used(), 0);
+                        assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+                        let mut paid = WorkBudget::new(quote);
+                        let result = algebra.apply_budgeted(op, &args, &mut paid).unwrap();
+                        assert_eq!(paid.used(), quote);
+                        assert_eq!(result.status, ReductionStatus::Stable);
+                        assert_eq!(result.rounds, 0);
+                        let actual = cooperation::PROTOCOL_WORK.get();
+                        assert_eq!(actual, (0, 0, 0));
+                        assert!(actual.0 <= quote);
+                        assert!(result.value.contains(U256::ZERO));
+                        assert!(result.value.contains(U256::ONE));
+                        assert!(!result.value.contains(U256::from(2)));
+                        assert_eq!(result.value, algebra.apply(op, &args));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn low_mask_quotes_skip_the_kernel_and_preserve_capacity_boundaries() {
+    let _counter = cooperation::PROTOCOL_WORK.scope();
+    for capacity in [1, 2, 8, 255, 256, 512] {
+        for rounds in [1, 2, 4, 8] {
+            let algebra = ValueAlgebra::new(domain(capacity, rounds));
+            for width in [1, 2, 8, 9, 63, 64, 160, 255, 256] {
+                let mask = U256::MAX >> (256 - width);
+                if width < usize::BITS as usize && (1usize << width) <= capacity {
+                    continue;
+                }
+                for reverse in [false, true] {
+                    let mut args = [EvmValue::<NumericValue>::top(), EvmValue::constant(mask)];
+                    if reverse {
+                        args.reverse();
+                    }
+                    let quote = algebra.operation_work(opcode::AND, &args);
+                    cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                    let mut paid = WorkBudget::new(quote);
+                    let result = algebra
+                        .apply_budgeted(opcode::AND, &args, &mut paid)
+                        .unwrap();
+                    assert_eq!(paid.used(), quote);
+                    assert_eq!(result.status, ReductionStatus::Stable);
+                    assert_eq!(result.rounds, 0);
+                    let actual = cooperation::PROTOCOL_WORK.get();
+                    assert_eq!(actual, (0, 0, 0));
+                    assert!(actual.0 <= quote);
+                    assert_eq!(result.value.known_bits().zero(), !mask);
+                    assert_eq!(
+                        result.value.interval().unsigned_bounds(),
+                        (U256::ZERO, mask)
+                    );
+                    assert!(result.value.contains(U256::ZERO) && result.value.contains(mask));
+                    assert_eq!(result.value, algebra.apply(opcode::AND, &args));
+                    cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                    let mut denied = WorkBudget::new(quote - 1);
+                    assert!(
+                        algebra
+                            .apply_budgeted(opcode::AND, &args, &mut denied)
+                            .is_err()
+                    );
+                    assert_eq!(denied.used(), 0);
+                    assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn boolean_output_schedule_quote_funds_actual_nonliteral_and_conflicting_products() {
+    let _counter = cooperation::PROTOCOL_WORK.scope();
+    let samples = [
+        NumericValue::top(),
+        NumericValue::unsigned_range(U256::ZERO, U256::from(16)).unwrap(),
+        NumericValue {
+            nonzero: true,
+            ..NumericValue::top()
+        },
+        NumericValue {
+            congruence: Congruence::new(U256::from(3), U256::ONE).unwrap(),
+            ..NumericValue::top()
+        },
+        cycle(),
+        finite(12),
+        NumericValue {
+            finite: FiniteConstantSet::constant(U256::ZERO),
+            bits: KnownBits::exact(U256::ONE),
+            ..NumericValue::top()
+        },
+    ];
+    for capacity in [1, 2, 8, 512] {
+        for rounds in [1, 2, 4, 8] {
+            let algebra = ValueAlgebra::new(domain(capacity, rounds));
+            for input in &samples {
+                for op in [
+                    opcode::LT,
+                    opcode::GT,
+                    opcode::SLT,
+                    opcode::SGT,
+                    opcode::EQ,
+                    opcode::ISZERO,
+                ] {
+                    for literal in [U256::ZERO, U256::from(16), U256::MAX] {
+                        for reverse in [false, true] {
+                            let mut args = vec![EvmValue::from_numeric(input.clone())];
+                            if op != opcode::ISZERO {
+                                args.push(EvmValue::constant(literal));
+                            }
+                            if reverse {
+                                args.reverse();
+                            }
+                            let quote = algebra.operation_work(op, &args);
+                            cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                            let mut denied = WorkBudget::new(quote - 1);
+                            assert!(algebra.apply_budgeted(op, &args, &mut denied).is_err());
+                            assert_eq!(denied.used(), 0);
+                            assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+                            let mut paid = WorkBudget::new(quote);
+                            let result = algebra.apply_budgeted(op, &args, &mut paid).unwrap();
+                            assert_eq!(paid.used(), quote);
+                            let actual = cooperation::PROTOCOL_WORK.get();
+                            assert!(
+                                actual.0 <= quote,
+                                "op={op:#x} cap={capacity} rounds={rounds} actual={actual:?} quote={quote} input={input:?}"
+                            );
+                            let expected = algebra.apply_detailed(op, &args);
+                            assert_eq!(result.value, expected.value);
+                            assert_eq!(result.status, expected.status);
+                            assert_eq!(result.rounds, expected.rounds);
+                            assert_eq!(result.strengthened, expected.strengthened);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn byte_output_schedule_quote_funds_full_native_protocol_at_all_capacity_boundaries() {
+    let _counter = cooperation::PROTOCOL_WORK.scope();
+    let words = [
+        NumericValue::top(),
+        NumericValue::unknown_address(),
+        NumericValue::unsigned_range(U256::from(257), U256::from(511)).unwrap(),
+        NumericValue {
+            bits: KnownBits::new(U256::MAX << 4, U256::ONE).unwrap(),
+            ..NumericValue::top()
+        },
+        NumericValue {
+            congruence: Congruence::new(U256::from(3), U256::ONE).unwrap(),
+            ..NumericValue::top()
+        },
+        cycle(),
+        finite(12),
+    ];
+    let indices = [
+        NumericValue::top(),
+        NumericValue::unsigned_range(U256::ZERO, U256::from(31)).unwrap(),
+        NumericValue::constant(U256::ZERO),
+        NumericValue::constant(U256::from(31)),
+        NumericValue::constant(U256::from(32)),
+    ];
+    for capacity in [1, 2, 8, 255, 256, 512] {
+        for rounds in [1, 2, 4, 8] {
+            let algebra = ValueAlgebra::new(domain(capacity, rounds));
+            for index in &indices {
+                for word in &words {
+                    let args = [
+                        EvmValue::from_numeric(index.clone()),
+                        EvmValue::from_numeric(word.clone()),
+                    ];
+                    let quote = algebra.operation_work(opcode::BYTE, &args);
+                    cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                    let mut paid = WorkBudget::new(quote);
+                    let result = algebra
+                        .apply_budgeted(opcode::BYTE, &args, &mut paid)
+                        .unwrap();
+                    assert_eq!(paid.used(), quote);
+                    let actual = cooperation::PROTOCOL_WORK.get();
+                    assert!(
+                        actual.0 <= quote,
+                        "cap={capacity} rounds={rounds} actual={actual:?} quote={quote} index={index:?} word={word:?}"
+                    );
+                    let expected = algebra.apply_detailed(opcode::BYTE, &args);
+                    assert_eq!(result.value, expected.value);
+                    assert_eq!(result.status, expected.status);
+                    assert_eq!(result.rounds, expected.rounds);
+                    assert_eq!(result.strengthened, expected.strengthened);
+                    cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                    let mut denied = WorkBudget::new(quote - 1);
+                    assert!(
+                        algebra
+                            .apply_budgeted(opcode::BYTE, &args, &mut denied)
+                            .is_err()
+                    );
+                    assert_eq!(denied.used(), 0);
+                    assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn closed_native_certificate_matches_whole_kernel_and_keeps_near_miss_statuses() {
+    let _scope = cooperation::PROTOCOL_WORK.scope();
+    let boolean = NumericValue {
+        finite: FiniteConstantSet::try_from_values([U256::ZERO, U256::ONE].into_iter().collect())
+            .unwrap(),
+        bits: KnownBits::new(!U256::ONE, U256::ZERO).unwrap(),
+        interval: Interval::new_unsigned(U256::ZERO, U256::ONE).unwrap(),
+        congruence: Congruence::top(),
+        nonzero: false,
+    };
+    let mut cases = 0;
+    for capacity in [1, 2, 8, 255, 256, 512] {
+        for rounds in [1, 2, 4, 8] {
+            for facts in [1, 2, 7, 8, 256] {
+                let spec = DomainSpec::new(
+                    NonZeroUsize::new(capacity).unwrap(),
+                    NonZeroUsize::new(rounds).unwrap(),
+                    NonZeroUsize::new(facts).unwrap(),
+                );
+                let policy = ProductAlgebra::from_spec(spec);
+                let reference = ProductAlgebra::new(spec, BoundsToMask, MaskToBounds);
+                let sign_unknown = |zero, one| {
+                    let bits = KnownBits::new(zero, one).unwrap();
+                    let (lo, hi) = bits.unsigned_bounds();
+                    NumericValue {
+                        bits,
+                        interval: Interval::new_unsigned(lo, hi).unwrap(),
+                        nonzero: one != U256::ZERO,
+                        ..NumericValue::top()
+                    }
+                };
+                let values = [
+                    NumericValue::top(),
+                    NumericValue::constant(U256::ZERO),
+                    NumericValue::constant(U256::ONE),
+                    NumericValue::constant(U256::MAX),
+                    NumericValue::unknown_byte(),
+                    NumericValue::unknown_address(),
+                    boolean.clone(),
+                    NumericValue {
+                        nonzero: true,
+                        interval: Interval::new_unsigned(U256::ZERO, U256::ONE).unwrap(),
+                        ..NumericValue::top()
+                    },
+                    NumericValue {
+                        nonzero: true,
+                        ..boolean.clone()
+                    },
+                    NumericValue {
+                        interval: Interval::new_unsigned(U256::ZERO, U256::from(2)).unwrap(),
+                        ..boolean.clone()
+                    },
+                    sign_unknown(U256::ZERO, U256::ONE << 254),
+                    sign_unknown(U256::ONE << 254, U256::ZERO),
+                    NumericValue {
+                        bits: KnownBits::exact(U256::from(769)),
+                        ..NumericValue::top()
+                    },
+                    NumericValue {
+                        nonzero: false,
+                        ..NumericValue::constant(U256::from(2304))
+                    },
+                ];
+                for (i, value) in values.iter().enumerate() {
+                    cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                    let actual = policy.reduce_numeric(value);
+                    let work = cooperation::PROTOCOL_WORK.get();
+                    let expected = reference.reduce_numeric(value);
+                    assert_eq!(
+                        actual.value, expected.value,
+                        "value cap={capacity} rounds={rounds} facts={facts} case={i}"
+                    );
+                    assert_eq!(
+                        actual.status, expected.status,
+                        "status cap={capacity} rounds={rounds} facts={facts} case={i}"
+                    );
+                    let closed = i <= 3
+                        || i == 5
+                        || (i == 4 && capacity.min(facts) < 256)
+                        || (i == 6 && capacity >= 2);
+                    let normalized =
+                        rounds >= 2 && (matches!(i, 12 | 13) || (i == 7 && capacity >= 2));
+                    if facts >= 8 && (closed || normalized) {
+                        assert_eq!(
+                            work,
+                            (0, 0, 0),
+                            "certified path ran a kernel cap={capacity} rounds={rounds} facts={facts} case={i}"
+                        );
+                        assert_eq!((actual.rounds, actual.strengthened), (0, 0));
+                        assert_eq!(actual.status, ReductionStatus::Stable);
+                    } else {
+                        assert_eq!(
+                            (actual.rounds, actual.strengthened),
+                            (expected.rounds, expected.strengthened)
+                        );
+                    }
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 1680);
+}
+
+#[test]
+fn masked_literal_actual_path_matches_original_kernel_and_pays_exact_boundary() {
+    let _scope = cooperation::PROTOCOL_WORK.scope();
+    let mask = (U256::ONE << 160) - U256::ONE;
+    for cap in [1, 2, 8, 256, 512] {
+        for rounds in [1, 2, 4, 8] {
+            for facts in [1, 7, 8, 256] {
+                let spec = DomainSpec::new(
+                    NonZeroUsize::new(cap).unwrap(),
+                    NonZeroUsize::new(rounds).unwrap(),
+                    NonZeroUsize::new(facts).unwrap(),
+                );
+                let policy = ProductAlgebra::from_spec(spec);
+                let reference = ProductAlgebra::new(spec, BoundsToMask, MaskToBounds);
+                for word in [
+                    U256::ZERO,
+                    U256::ONE,
+                    U256::from(257),
+                    U256::from(769),
+                    mask,
+                ] {
+                    let bits = KnownBits::new(mask ^ word, word).unwrap();
+                    let value = NumericValue {
+                        bits,
+                        ..NumericValue::top()
+                    };
+                    for reverse in [false, true] {
+                        let mut args = [
+                            EvmValue::from_numeric(value.clone()),
+                            EvmValue::constant(mask),
+                        ];
+                        if reverse {
+                            args.reverse();
+                        }
+                        let algebra = ValueAlgebra::new(policy);
+                        let quote = algebra.operation_work(opcode::AND, &args);
+                        cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                        let mut paid = WorkBudget::new(quote);
+                        let actual = algebra
+                            .apply_budgeted(opcode::AND, &args, &mut paid)
+                            .unwrap();
+                        let protocol = cooperation::PROTOCOL_WORK.get();
+                        let expected = reference
+                            .apply_numeric(opcode::AND, args.iter().map(EvmValue::numeric));
+                        assert_eq!(
+                            actual.value.numeric(),
+                            &expected.value,
+                            "cap={cap} rounds={rounds} facts={facts}"
+                        );
+                        assert_eq!(
+                            actual.status, expected.status,
+                            "cap={cap} rounds={rounds} facts={facts}"
+                        );
+                        assert_eq!(paid.used(), quote);
+                        if facts >= 8 && rounds >= 2 {
+                            assert_eq!(protocol, (0, 0, 0));
+                            assert_eq!(actual.value.singleton(), Some(word));
+                        }
+                        cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                        let mut denied = WorkBudget::new(quote - 1);
+                        assert!(
+                            algebra
+                                .apply_budgeted(opcode::AND, &args, &mut denied)
+                                .is_err()
+                        );
+                        assert_eq!(denied.used(), 0);
+                        assert_eq!(cooperation::PROTOCOL_WORK.get(), (0, 0, 0));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn masked_literal_quote_keeps_the_exact_interval_path_funded() {
+    let _scope = cooperation::PROTOCOL_WORK.scope();
+    let mask = (U256::ONE << 160) - U256::ONE;
+    for cap in [1, 2, 8, 256] {
+        for rounds in [1, 2, 4, 8] {
+            let policy = domain(cap, rounds);
+            let spec = policy.spec();
+            let reference = ProductAlgebra::new(spec, BoundsToMask, MaskToBounds);
+            for interval_word in [U256::ZERO, U256::ONE, U256::from(2)] {
+                let value = NumericValue {
+                    bits: KnownBits::new(mask ^ U256::ONE, U256::ONE).unwrap(),
+                    interval: Interval::exact(interval_word),
+                    ..NumericValue::top()
+                };
+                for reverse in [false, true] {
+                    let mut args = [value.clone(), NumericValue::constant(mask)];
+                    if reverse {
+                        args.reverse();
+                    }
+                    let quote = policy.operation_work(opcode::AND, args.iter());
+                    assert_eq!(
+                        quote,
+                        spec.numeric_transfer_work(opcode::AND, args.iter(), None),
+                        "cap={cap} rounds={rounds} interval={interval_word} reverse={reverse}"
+                    );
+                    cooperation::PROTOCOL_WORK.set((0, 0, 0));
+                    let actual = policy.apply_numeric(opcode::AND, args.iter());
+                    let work = cooperation::PROTOCOL_WORK.get().0;
+                    let expected = reference.apply_numeric(opcode::AND, args.iter());
+                    assert_eq!(actual.value, expected.value);
+                    assert_eq!(actual.status, expected.status);
+                    assert!(work <= quote);
+                }
+            }
+        }
+    }
 }

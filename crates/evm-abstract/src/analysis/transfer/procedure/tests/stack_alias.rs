@@ -82,11 +82,35 @@ fn formation_is_prepaid_and_cancellation_does_not_install_a_partial_entry() {
         crate::analysis::transfer::procedure::testing::initial(&world, &entry, domain).unwrap();
     let x = fresh();
     input.active_mut().stack = vec![x.clone(), x];
-    let first_fee = input.work_size().saturating_mul(4);
-    let alias_fee = super::super::payload::alias_form_work(&input);
     let history_fee = super::super::context::work_size(input.active().key.jump_history.len());
+    assert!(input.relations.is_empty());
+    let structural_fee = input.policy_work_size();
+    let mut prefix = WorkBudget::new(config.max_work);
+    assert!(prefix.charge(history_fee.saturating_add(structural_fee)));
+    crate::analysis::state::storage_observations::EvmStorageObservations::form_with_payment(
+        &input,
+        domain,
+        &mut prefix,
+    )
+    .unwrap();
+    // Form copies the complete native stack before the alias builder. Its
+    // separately paid tree allowance must refuse before installing an entry.
+    let before_alias = input
+        .active()
+        .stack
+        .iter()
+        .fold(prefix.used(), |work, value| {
+            work.saturating_add(
+                crate::domain::WordElement::clone_work(value.numeric()).saturating_add(16),
+            )
+        });
+    let alias_fee = StackAliases::work_for_len(input.active().stack.len());
     assert!(alias_fee > 0);
-    for maximum in [0, first_fee + alias_fee + history_fee - 1] {
+    for (maximum, used) in [
+        (0, 0),
+        (history_fee + structural_fee - 1, history_fee),
+        (before_alias + alias_fee - 1, before_alias),
+    ] {
         let mut table = Table::default();
         let mut budget = WorkBudget::new(maximum);
         let mut counters = Counters::default();
@@ -106,7 +130,7 @@ fn formation_is_prepaid_and_cancellation_does_not_install_a_partial_entry() {
         );
         assert!(table.nodes.is_empty() && table.procedures.is_empty());
         assert!(budget.exhausted());
-        assert_eq!(budget.used(), if maximum == 0 { 0 } else { first_fee });
+        assert_eq!(budget.used(), used);
     }
 
     let control = crate::analysis::control::Control::new(Default::default());

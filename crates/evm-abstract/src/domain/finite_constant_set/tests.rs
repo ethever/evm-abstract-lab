@@ -425,3 +425,77 @@ fn shared_byte_candidates_keep_complete_native_json_and_debug_values() {
         format!("FiniteConstantSet(Finite({:?}))", set.as_values().unwrap())
     );
 }
+
+#[test]
+fn union_reuses_only_proved_complete_captures_and_singletons_within_capacity() {
+    for source in [
+        finite(&[7]),
+        finite(&[1, 3]),
+        finite(&[0, 2, 4, 6, 8, 10, 12, 14]),
+    ] {
+        let sibling = source.clone();
+        for limit in [1, 2, 8, 512] {
+            let expected = FiniteConstantSet::collect_bounded(
+                source
+                    .as_values()
+                    .unwrap()
+                    .union(sibling.as_values().unwrap())
+                    .copied(),
+                capacity(limit),
+            )
+            .unwrap();
+            let actual = source.join(&sibling, capacity(limit));
+            assert_eq!(actual, expected);
+            match (&source.0, &actual.0) {
+                (Kind::Finite(original), Kind::Finite(reused)) => {
+                    assert!(Arc::ptr_eq(original, reused))
+                }
+                (_, Kind::Top) => assert!(source.cardinality().unwrap() > limit),
+                _ => unreachable!(),
+            }
+        }
+    }
+    let left = finite(&[7]);
+    let independent = finite(&[7]);
+    let actual = left.join(&independent, capacity(1));
+    let (Kind::Finite(left), Kind::Finite(independent), Kind::Finite(actual)) =
+        (&left.0, &independent.0, &actual.0)
+    else {
+        unreachable!()
+    };
+    assert!(!Arc::ptr_eq(left, independent));
+    assert!(Arc::ptr_eq(left, actual));
+    let left = finite(&[1, 3]);
+    let independent = finite(&[1, 3]);
+    assert!(!left.reuses_union(&independent, 8));
+    let actual = left.join(&independent, capacity(8));
+    assert_eq!(actual, left);
+    let (Kind::Finite(left), Kind::Finite(actual)) = (&left.0, &actual.0) else {
+        unreachable!()
+    };
+    assert!(!Arc::ptr_eq(left, actual));
+}
+
+#[test]
+fn two_candidate_union_with_a_known_member_keeps_full_capacity_and_source_capture() {
+    let pair = finite(&[0, 170]);
+    for member in [0, 170] {
+        let point = finite(&[member]);
+        for reverse in [false, true] {
+            let actual = if reverse {
+                point.join(&pair, capacity(2))
+            } else {
+                pair.join(&point, capacity(2))
+            };
+            assert_eq!(actual, pair);
+            let (Kind::Finite(source), Kind::Finite(result)) = (&pair.0, &actual.0) else {
+                unreachable!()
+            };
+            assert!(Arc::ptr_eq(source, result));
+        }
+        assert!(pair.join(&point, capacity(1)).is_top());
+        assert!(point.join(&pair, capacity(1)).is_top());
+    }
+    assert_eq!(pair.join(&finite(&[1]), capacity(3)), finite(&[0, 1, 170]));
+    assert!(pair.join(&finite(&[1]), capacity(2)).is_top());
+}
