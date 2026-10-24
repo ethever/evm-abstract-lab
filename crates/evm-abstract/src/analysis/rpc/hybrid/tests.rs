@@ -7,15 +7,17 @@ use crate::{
     U256,
     analysis::{
         AnalysisEngine, AnalysisInput, EnginePolicies, ExecutionConfig, FrontierReason,
-        HybridConfig, MachineEdgeKind, Status, analyze_rpc_hybrid,
+        HybridConfig, HybridInterpretation, HybridLocalScope, HybridNativeBinding, MachineEdgeKind,
+        ProcessSource, ProjectionError, Status, analyze_rpc_hybrid,
         control::Control,
         cooperation::NoExtension,
         layers::{AnalysisSession, Observation, SessionError, SnapshotId},
         transfer::StorageReadPolicy,
     },
     domain::{NumericValue, ProductAlgebra, ValueAlgebra},
+    resource::WorkBudget,
     world::{
-        AddressInput, EvmEntry, EvmEnvironmentValues,
+        AddressInput, EvmEntry, EvmEnvironmentValues, RootInputBinding,
         rpc::{RpcFailureKind, RpcInput},
     },
 };
@@ -82,6 +84,14 @@ fn try_run(
 
 fn assert_accounting(report: &RpcHybridAnalysis<NumericValue>, maximum: usize) {
     let c = report.coverage();
+    let original = report.baseline().baseline();
+    let binding = original.root_binding();
+    assert_eq!(binding, original.entry().binding());
+    assert_eq!(report.latest().baseline().root_binding(), binding);
+    assert_eq!(
+        serde_json::to_value(original.entry()).unwrap()["binding"],
+        serde_json::to_value(binding).unwrap()
+    );
     assert!(report.work() <= maximum);
     assert_eq!(report.work(), c.work);
     assert_eq!(report.work(), report.baseline().work() + c.precision_work);
@@ -101,11 +111,59 @@ fn assert_accounting(report: &RpcHybridAnalysis<NumericValue>, maximum: usize) {
         assert_eq!(detail.snapshot(), &c.snapshot);
         assert_eq!(Some(detail.revision()), c.detail_revision);
         assert!(detail.work() <= report.work());
+        let native_binding = report.detail_report().unwrap().coverage().detail_binding;
+        match native_binding {
+            HybridNativeBinding::OriginalOwner => {
+                assert_eq!(detail.root_binding(), binding);
+                assert!(
+                    report
+                        .detail_report()
+                        .unwrap()
+                        .coverage()
+                        .detail_regions
+                        .iter()
+                        .all(|region| matches!(region.source, ProcessSource::Runtime { .. }))
+                );
+            }
+            HybridNativeBinding::SymbolicOwnerNamespace { namespace } => {
+                assert_eq!(
+                    binding,
+                    RootInputBinding::Namespace {
+                        coordinate: namespace
+                    }
+                );
+                assert_eq!(
+                    detail.root_binding(),
+                    RootInputBinding::Physical { address: namespace }
+                );
+            }
+        }
     }
     for receipt in report.local_detail() {
         assert_eq!(receipt.snapshot, &c.snapshot);
         assert_eq!(Some(receipt.revision), c.detail_revision);
+        assert_eq!(
+            receipt.binding,
+            report.detail_report().unwrap().coverage().detail_binding
+        );
+        assert_eq!(
+            receipt.scope,
+            match receipt.binding {
+                HybridNativeBinding::OriginalOwner => HybridLocalScope::RetainedInputPrefix,
+                HybridNativeBinding::SymbolicOwnerNamespace { .. } =>
+                    HybridLocalScope::NativeOwnerNamespacePrefix,
+            }
+        );
     }
+}
+
+fn declared_source(report: &crate::analysis::EvmWorldAnalysis<NumericValue>) -> ProcessSource {
+    // Independent presentation work pays only the core's declared-input getter.
+    // It cannot admit/restart a kernel, alter the Session ledger or certify closure.
+    let mut provenance = WorkBudget::new(1024);
+    let source = report.declared_root_source(&mut provenance).unwrap();
+    assert!(provenance.used() > 0);
+    source
 }
 
 #[test]
@@ -268,6 +326,10 @@ fn delegated_root_then_two_storage_demands_restart_under_one_ledger() {
             report.latest().coverage().detail_regions[0].code_address,
             address(0x200)
         );
+        assert_eq!(
+            report.latest().coverage().detail_regions[0].source,
+            declared_source(report.detail().unwrap())
+        );
         assert!(
             report
                 .local_detail()
@@ -278,6 +340,26 @@ fn delegated_root_then_two_storage_demands_restart_under_one_ledger() {
             report.coverage().acquisition.states_created > report.detail().unwrap().states().len()
         );
         assert!(report.latest().coverage().work.prior > report.baseline().work());
+        assert_eq!(
+            declared_source(report.baseline().baseline()),
+            ProcessSource::AnyRuntime {
+                fork: crate::Fork::Osaka
+            }
+        );
+        assert_eq!(
+            declared_source(report.detail().unwrap()),
+            ProcessSource::Runtime {
+                source: address(0x200),
+                hash: report
+                    .detail()
+                    .unwrap()
+                    .world()
+                    .runtime(address(0x200))
+                    .unwrap()
+                    .bytes_digest(),
+                fork: crate::Fork::Osaka,
+            }
+        );
         assert_accounting(&report, product_config().max_work);
     });
 }
@@ -651,6 +733,32 @@ fn incomplete_original_baseline_cannot_start_optional_precision() {
         assert_eq!(refused.coverage().precision_work, 0);
         assert_eq!(refused.coverage().acquisition.rounds, 1);
         assert!(refused.detail().is_none());
+        let baseline = refused.baseline().baseline();
+        assert!(baseline.states().is_empty());
+        assert_eq!(
+            baseline.root_binding(),
+            RootInputBinding::Physical {
+                address: address(0x101)
+            }
+        );
+        let spent = refused.work();
+        assert_eq!(
+            declared_source(baseline),
+            ProcessSource::Runtime {
+                source: address(0x101),
+                hash: alloy_primitives::keccak256([0]),
+                fork: crate::Fork::Osaka,
+            }
+        );
+        let mut unpaid_projection = WorkBudget::new(0);
+        assert_eq!(
+            baseline.declared_root_source(&mut unpaid_projection),
+            Err(ProjectionError::Work)
+        );
+        assert_eq!(unpaid_projection.used(), 0);
+        assert_eq!(refused.work(), spent);
+        assert_eq!(refused.status(), Status::Incomplete);
+        assert_eq!(refused.coverage().acquisition.rounds, 1);
         assert_accounting(&refused, config.max_work);
     });
 }
@@ -765,6 +873,27 @@ fn original_payer_cancellation_is_not_replaced_by_a_different_ambient_control() 
         session.states_created(),
         session.transfers_used(),
         session.facts().revision(),
+    );
+    let ambient = Control::new(Default::default());
+    ambient.cancellation().cancel();
+    assert!(matches!(
+        session.run_hybrid_uncached(
+            HybridConfig::default(),
+            StorageReadPolicy::Discover,
+            &ambient,
+        ),
+        Err(SessionError::Cancelled(_))
+    ));
+    assert!(!owner.cancellation().is_cancelled());
+    assert!(!session.payer_cancelled());
+    assert_eq!(
+        (
+            session.work_used(),
+            session.states_created(),
+            session.transfers_used(),
+            session.facts().revision()
+        ),
+        state
     );
     owner.cancellation().cancel();
     let unrelated = Control::new(Default::default());
@@ -954,5 +1083,114 @@ fn same_proxy_at_generic_twenty_million_never_resets_or_rescues_unclosed_baselin
             assert!(report.coverage().acquisition.fetched_storage.is_empty());
             assert!(report.detail().is_none());
         }
+    });
+}
+
+#[test]
+fn symbolic_rpc_entry_keeps_original_namespace_and_only_conditions_paid_native_detail() {
+    thread::scope(|scope| {
+        let server = Server::new(scope, fixture("00"));
+        let mut original = entry();
+        original.environment.to = AddressInput::unknown_to();
+        let values = original.environment.clone();
+        let algebra = ValueAlgebra::new(ProductAlgebra::default());
+        let policies = EnginePolicies::default();
+        let mut extension = NoExtension;
+        let report = analyze_rpc_hybrid(
+            AnalysisEngine::new(&algebra, &policies, &mut extension),
+            &server.input(),
+            original,
+            product_config(),
+            HybridConfig::default(),
+            &Control::default(),
+        )
+        .unwrap();
+        let baseline = report.baseline().baseline();
+        assert_eq!(
+            report.status(),
+            Status::Converged,
+            "{:?}",
+            report.coverage()
+        );
+        assert_eq!(
+            baseline.root_binding(),
+            RootInputBinding::Namespace {
+                coordinate: address(0x101)
+            }
+        );
+        assert!(matches!(
+            baseline.entry().environment.to,
+            AddressInput::Symbolic(_)
+        ));
+        assert_eq!(baseline.entry().environment.caller, values.caller);
+        assert_eq!(baseline.entry().environment.value, values.value);
+        assert_eq!(baseline.entry().environment.calldata, values.calldata);
+        assert_eq!(
+            declared_source(baseline),
+            ProcessSource::InputProgram {
+                hash: alloy_primitives::keccak256([0]),
+                fork: crate::Fork::Osaka,
+            }
+        );
+        assert!(
+            baseline
+                .outcomes()
+                .iter()
+                .any(|outcome| outcome.kind == crate::analysis::OutcomeKind::Failure)
+        );
+        assert!(
+            baseline
+                .outcomes()
+                .iter()
+                .all(|outcome| outcome.store.code(address(0x101)).is_none()),
+            "public Process Stores, including F1, cannot publish the private template as physical code"
+        );
+        let detail_report = report.detail_report().expect("paid native precision");
+        let detail = detail_report.detail().unwrap();
+        assert_eq!(
+            detail_report.coverage().detail_binding,
+            HybridNativeBinding::SymbolicOwnerNamespace {
+                namespace: address(0x101)
+            }
+        );
+        let region = detail_report
+            .coverage()
+            .detail_regions
+            .first()
+            .expect("selected supplied program");
+        assert_eq!(region.source, declared_source(baseline));
+        let region_json = serde_json::to_value(region).unwrap();
+        assert_eq!(
+            region_json["source"],
+            serde_json::to_value(region.source).unwrap()
+        );
+        assert!(region_json.get("code_address").is_none());
+        let mut conditional = baseline.entry().clone();
+        conditional.environment.to = address(0x101).into();
+        assert_eq!(detail.entry(), &conditional);
+        assert_eq!(
+            detail.root_binding(),
+            RootInputBinding::Physical {
+                address: address(0x101)
+            }
+        );
+        assert_ne!(
+            detail_report.coverage().chosen,
+            HybridInterpretation::Native
+        );
+        assert!(std::ptr::eq(report.chosen(), baseline));
+        assert!(detail_report.coverage().work.preparation > 0);
+        assert!(report.coverage().detail_at_current_revision);
+        let sites = report.local_detail().collect::<Vec<_>>();
+        assert!(!sites.is_empty());
+        assert!(sites.iter().all(|site| site.scope
+            == HybridLocalScope::NativeOwnerNamespacePrefix
+            && site.binding
+                == HybridNativeBinding::SymbolicOwnerNamespace {
+                    namespace: address(0x101)
+                }));
+        assert!(report.coverage().restrictions.is_empty());
+        assert_eq!(server.count("eth_getCode", address(0x101)), 1);
+        assert_accounting(&report, product_config().max_work);
     });
 }

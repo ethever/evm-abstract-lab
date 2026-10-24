@@ -36,6 +36,9 @@ where
             // quoting another projection or admitting a second interpretation.
             crate::resource::clone_payment::checkpoint(budget).map_err(session_clone_error)?;
             self.counters.set_observer(control.observer());
+            // Preserve the original Entry.binding and exact fact interpretation.
+            // Only the hybrid owner's paid detached native copy may materialize
+            // an additional namespace condition; this retained input never does.
             let input = project_input(
                 &self.catalog,
                 &self.input,
