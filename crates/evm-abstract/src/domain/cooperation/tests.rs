@@ -200,10 +200,11 @@ fn large_default_operand_quotation_is_stable_and_does_not_run_reducers() {
 }
 
 #[test]
-fn default_copy_and_singleton_hooks_keep_the_existing_admission_tariffs() {
+fn default_copy_and_singleton_hooks_price_the_native_literal_certificate() {
     let value = EvmValue::<NumericValue>::constant(U256::from(7));
     assert_eq!(value.numeric().clone_work(), 12);
-    assert_eq!(value.singleton_work(), 608);
+    // Quote and query validate the fixed-width complete component certificate.
+    assert_eq!(value.singleton_work(), 64 * 4);
     assert_eq!(
         value.clone_work(),
         20 + value.provenance().origins().work_size() * 4
