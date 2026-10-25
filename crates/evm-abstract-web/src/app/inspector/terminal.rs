@@ -1,19 +1,20 @@
 //! Inspect the native joint terminal tuples without inventing CFG coordinates.
 //! This module receives only an immutable, already validated report; it cannot
 //! select a state or turn widened display values into new input authority.
+use crate::report::ReportView;
 
 use super::{buffers, context, stores, symbolic, value};
 use crate::{notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::{Symbol, WideSymbol};
 use evm_abstract_protocol::{
-    AnalysisReport, RootTerminalConfig, RootTerminalCoverage, RootTerminalDomainSpec,
-    RootTerminalInputBinding, RootTerminalOutcome, RootTerminalSnapshot,
+    RootTerminalConfig, RootTerminalCoverage, RootTerminalDomainSpec, RootTerminalInputBinding,
+    RootTerminalOutcome, RootTerminalSnapshot,
 };
 
-pub(super) fn show(ui: &mut Ui, report: &AnalysisReport) {
+pub(super) fn show(ui: &mut Ui, report: &ReportView<'_>) {
     let Some(coverage) = &report.root_terminal_coverage else {
-        if let Some(status) = super::super::terminal_coverage::status(report) {
+        if let Some(status) = super::super::terminal_coverage::status(report.model) {
             ui.label(status);
             ui.separator();
         }
@@ -37,7 +38,7 @@ pub(super) fn show(ui: &mut Ui, report: &AnalysisReport) {
     ui.separator();
 }
 
-fn alternative(ui: &mut Ui, report: &AnalysisReport, outcome: &RootTerminalOutcome) {
+fn alternative(ui: &mut Ui, report: &ReportView<'_>, outcome: &RootTerminalOutcome) {
     if let Some(bytes) = report.byte_arrays.get(outcome.data) {
         ui.horizontal_wrapped(|ui| {
             ui.label(format!("Data snapshot #{} · length", outcome.data));
@@ -60,7 +61,7 @@ fn alternative(ui: &mut Ui, report: &AnalysisReport, outcome: &RootTerminalOutco
     });
 }
 
-fn binding(ui: &mut Ui, report: &AnalysisReport, coverage: &RootTerminalCoverage) {
+fn binding(ui: &mut Ui, report: &ReportView<'_>, coverage: &RootTerminalCoverage) {
     let input = &coverage.input;
     egui::Grid::new("root_terminal_binding")
         .num_columns(2)
@@ -179,7 +180,7 @@ fn binding(ui: &mut Ui, report: &AnalysisReport, coverage: &RootTerminalCoverage
     }
 }
 
-fn original_inputs(ui: &mut Ui, report: &AnalysisReport, input: &RootTerminalInputBinding) {
+fn original_inputs(ui: &mut Ui, report: &ReportView<'_>, input: &RootTerminalInputBinding) {
     ui.collapsing("Original calldata", |ui| {
         ui.allocate_ui(egui::vec2(ui.available_width(), 140.0), |ui| {
             buffers::show(ui, report, input.calldata, "Original root calldata");

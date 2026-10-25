@@ -1,17 +1,19 @@
 //! Real egui interactions retain native identity behind display-only groups.
 use super::{click, frame, painted_text, report, source_program};
+use crate::tests::AnalysisReport;
+use crate::tests::fixture::attach_snapshots;
 use crate::{
     Workspace,
     app::{Selection, View},
 };
 use egui::{Context, Event, FullOutput, Key, Modifiers, MouseWheelUnit, Rect, TouchPhase, Vec2};
-use evm_abstract_protocol::{
-    self as api, AnalysisReport, AnalyzeReply, CfgEdge, DisasmBlock, EdgeKind,
-};
+use evm_abstract_protocol::{AnalyzeReply, CfgEdge, DisasmBlock, EdgeKind};
 
 fn workspace(report: AnalysisReport) -> Workspace {
     let mut workspace = Workspace::default();
-    workspace.receive(Ok(AnalyzeReply { result: Ok(report) }));
+    workspace.receive(Ok(AnalyzeReply {
+        result: Ok((report).into()),
+    }));
     workspace.view = View::Graph;
     workspace
 }
@@ -134,127 +136,15 @@ fn grouped_report(count: usize) -> AnalysisReport {
             kind: EdgeKind::Jump,
         })
         .collect();
-    result.disassembly.truncate(1);
-    result.programs[0].blocks.truncate(1);
+    std::sync::Arc::make_mut(&mut result.model.programs[0])
+        .blocks
+        .truncate(1);
+    std::sync::Arc::make_mut(&mut result.model.programs[0])
+        .blocks
+        .truncate(1);
     result.transfers = count as u64;
     attach_snapshots(&mut result);
     result
-}
-
-fn scalar(value: usize) -> api::ValueInfo {
-    let text = format!("0x{value:x}");
-    api::ValueInfo {
-        nonzero: false,
-        summary: format!("{{{text}}}"),
-        constants: Some(vec![text.clone()]),
-        known_zero: "0x0".into(),
-        known_one: text.clone(),
-        unsigned: api::WordBounds {
-            lower: text.clone(),
-            upper: text.clone(),
-        },
-        signed: api::WordBounds {
-            lower: text.clone(),
-            upper: text.clone(),
-        },
-        congruence: api::CongruenceValue::Exact(text),
-        origins: Some(vec![api::ValueOrigin::Constant]),
-        code_address_role: false,
-        identity: None,
-        expression: None,
-        symbolic_limit: false,
-    }
-}
-
-fn attach_snapshots(report: &mut AnalysisReport) {
-    let top = report.metadata.environment.call_value.clone();
-    report.stores = vec![api::StoreSnapshot {
-        storage_facts: vec![],
-        transient_facts: vec![],
-        storage_default: top.clone(),
-        transient_default: scalar(0),
-        storage_root: api::SlotStateRef { node: 3 },
-        transient_root: api::SlotStateRef { node: 3 },
-        nonce_default: top.clone(),
-        code_default: None,
-        existence_default: api::AccountExistence::Unknown,
-        created_default: Some(false),
-        pending_destruction_default: Some(false),
-        balance_default: top,
-        touched_default: Some(false),
-        accounts: vec![],
-        logs: vec![],
-        logs_unknown: false,
-    }];
-    report.byte_arrays.truncate(1);
-    for memory in [true, false] {
-        report.byte_arrays.push(api::ByteArraySnapshot {
-            symbolic_facts: vec![],
-            symbolic: evm_abstract_protocol::ByteViewRef { node: 2 },
-            length: scalar(0),
-            default: scalar(0),
-            values: vec![],
-            cells: vec![],
-            memory,
-        });
-    }
-    report.states = report
-        .cfg
-        .iter()
-        .map(|block| {
-            let program = report
-                .programs
-                .iter()
-                .find(|program| Some(program.id) == block.program)
-                .unwrap();
-            let entry = api::MachineSnapshot {
-                path: evm_abstract_protocol::PathRef { node: 4 },
-                frames: vec![api::FrameSnapshot {
-                    process: None,
-                    process_operands: None,
-                    process_creation: None,
-                    index: 0,
-                    program: block.program,
-                    code_address: block.code_address.clone(),
-                    code_hash: Some(program.code_hash.clone()),
-                    storage_address: block.storage_address.clone(),
-                    address_value: Some(api::AddressValue::Concrete(
-                        block.storage_address.clone().unwrap(),
-                    )),
-                    caller: Some(report.metadata.environment.caller.clone()),
-                    address_operand: None,
-                    caller_operand: None,
-                    call_value: report.metadata.environment.call_value.clone(),
-                    is_static: false,
-                    kind: program.kind,
-                    basic_block: block.basic_block,
-                    context: block.context.clone(),
-                    stack: vec![scalar(block.id)],
-                    memory: Some(1),
-                    calldata: Some(0),
-                    returndata: Some(2),
-                    rollback_store: 0,
-                    continuation: None,
-                }],
-                store: 0,
-            };
-            api::StateDetails {
-                state: block.id,
-                exit: Some(entry.clone()),
-                entry,
-            }
-        })
-        .collect();
-}
-fn assert_scope(workspace: &Workspace, mode: &str, nodes: usize, states: &str) {
-    let status = workspace.accessible_status();
-    for expected in [
-        format!("CFG view: {mode}"),
-        format!("{nodes} shown nodes"),
-        format!("{states} states"),
-    ] {
-        assert!(status.contains(&expected), "missing {expected}: {status}");
-    }
 }
 
 #[test]
@@ -455,13 +345,13 @@ fn states_and_program_filter_preserve_cross_program_local_neighbors() {
     child.id = 777;
     child.program = Some(1);
     child.code_address = Some("0x2222222222222222222222222222222222222222".into());
-    report.programs.push(source_program(
+    report.model.programs.push(source_program(
         1,
         child.code_address.clone(),
         vec![DisasmBlock {
             id: child.basic_block.unwrap(),
             start_pc: 0,
-            instructions: child.instructions.clone(),
+            instructions: report.source(0).instructions.clone(),
         }],
     ));
     report.cfg.push(child);
@@ -534,7 +424,7 @@ fn new_reports_in_code_or_ssa_views_announce_that_graph_display_is_pending() {
         );
         assert_eq!(workspace.view, view);
         workspace.receive(Ok(AnalyzeReply {
-            result: Ok(grouped_report(2)),
+            result: Ok((grouped_report(2)).into()),
         }));
         settled(&ctx, &mut workspace);
         let status = workspace.accessible_status();
@@ -559,5 +449,16 @@ fn new_reports_in_code_or_ssa_views_announce_that_graph_display_is_pending() {
         );
         settled(&ctx, &mut workspace);
         assert_scope(&workspace, "Blocks", 1, "2/2");
+    }
+}
+
+fn assert_scope(workspace: &Workspace, mode: &str, nodes: usize, states: &str) {
+    let status = workspace.accessible_status();
+    for expected in [
+        format!("CFG view: {mode}"),
+        format!("{nodes} shown nodes"),
+        format!("{states} states"),
+    ] {
+        assert!(status.contains(&expected), "missing {expected}: {status}");
     }
 }

@@ -1,5 +1,6 @@
 //! One native state's existing card semantics, with bounded preview traversal.
 use super::{DISASM_ROWS, NodeText, NodeView, ReportIndex, SSA_COLUMNS, SSA_ROWS, abbreviate};
+use crate::report::ReportView;
 use crate::{
     palette,
     ssa_display::{SsaDisplay, operation_parts, source_text},
@@ -7,15 +8,15 @@ use crate::{
 use egui::Color32;
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{
-    AnalysisReport, BlockCoverage, CfgBlock, DisasmInstruction, InstructionProgress, Phi,
-    ProcedureSummaryKind, SsaBlock, SsaInstruction, SummarySourceStatus,
+    BlockCoverage, CfgBlock, DisasmInstruction, InstructionProgress, Phi, ProcedureSummaryKind,
+    SsaBlock, SsaInstruction, SummarySourceStatus,
 };
 
 const INLINE_ITEMS: usize = 8;
 const INLINE_FRAMES: usize = 2;
 
 pub(super) fn preview(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     index: &ReportIndex,
     block: &CfgBlock,
     view: NodeView,
@@ -62,7 +63,7 @@ pub(super) fn preview(
         if frontier { " · !" } else { "" }
     );
     let mut lines = match view {
-        NodeView::Disassembly => disassembly_preview(block, coverage),
+        NodeView::Disassembly => disassembly_preview(report, block, coverage),
         NodeView::Ssa => {
             detail.push_str(if ssa.is_some_and(|ssa| ssa.incoming_complete) {
                 " · incoming complete"
@@ -129,9 +130,13 @@ pub(super) fn source_instruction(instruction: &DisasmInstruction) -> String {
         .map_or(String::new(), |value| format!(" {}", abbreviate(value, 15)));
     format!("{:04x}  {}{operand}", instruction.pc, instruction.name)
 }
-fn disassembly_preview(block: &CfgBlock, coverage: BlockCoverage) -> Vec<(String, Color32)> {
-    let mut lines: Vec<_> = block
-        .instructions
+fn disassembly_preview(
+    report: &ReportView<'_>,
+    block: &CfgBlock,
+    coverage: BlockCoverage,
+) -> Vec<(String, Color32)> {
+    let instructions = report.instructions(block);
+    let mut lines: Vec<_> = instructions
         .iter()
         .take(DISASM_ROWS)
         .map(|instruction| {
@@ -151,9 +156,9 @@ fn disassembly_preview(block: &CfgBlock, coverage: BlockCoverage) -> Vec<(String
             (source_instruction(instruction), color)
         })
         .collect();
-    if block.instructions.len() > DISASM_ROWS {
+    if instructions.len() > DISASM_ROWS {
         lines.push((
-            format!("+{} instructions", block.instructions.len() - DISASM_ROWS),
+            format!("+{} instructions", instructions.len() - DISASM_ROWS),
             palette::MUTED,
         ));
     }
@@ -259,7 +264,7 @@ fn instruction_preview(instruction: &SsaInstruction, display: SsaDisplay) -> (St
 }
 
 pub(super) fn tooltip(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     index: &ReportIndex,
     block: &CfgBlock,
     view: NodeView,
@@ -277,8 +282,8 @@ pub(super) fn tooltip(
     let body = match view {
         NodeView::Disassembly => format!(
             "Disassembly\n{}",
-            block
-                .instructions
+            report
+                .instructions(block)
                 .iter()
                 .map(|instruction| format!(
                     "{:04x}  {}{}",
@@ -312,7 +317,7 @@ pub(super) fn tooltip(
     )
 }
 fn ssa_tooltip(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     index: &ReportIndex,
     state: usize,
     block: Option<&SsaBlock>,

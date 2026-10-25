@@ -13,6 +13,8 @@ fn status(task: &mut Task, operation: JobOperation, state: JobState) {
         operation,
         Ok(JobReply {
             result: Ok(JobSnapshot {
+                publication: (state == evm_abstract_protocol::JobState::Completed)
+                    .then(crate::tests::native_publication),
                 id: JobId(17),
                 state,
                 progress: AnalysisProgress::default(),
@@ -100,6 +102,7 @@ fn superseded_and_wrong_identity_callbacks_never_replace_the_current_task() {
         JobOperation::Submit,
         Ok(JobReply {
             result: Ok(JobSnapshot {
+                publication: None,
                 id: JobId(18),
                 state: JobState::Running,
                 progress: AnalysisProgress::default(),
@@ -112,6 +115,7 @@ fn superseded_and_wrong_identity_callbacks_never_replace_the_current_task() {
         JobOperation::Poll,
         Ok(JobReply {
             result: Ok(JobSnapshot {
+                publication: Some(crate::tests::native_publication()),
                 id: JobId(19),
                 state: JobState::Completed,
                 progress: AnalysisProgress::default(),
@@ -241,12 +245,12 @@ fn postprocessing_metadata_is_required_and_invalid_usage_keeps_the_previous_repo
         boundary.metadata.postprocessing_work = work;
         boundary.validate().unwrap();
         workspace.receive(Ok(api::AnalyzeReply {
-            result: Ok(boundary.clone()),
+            result: Ok((boundary.clone()).into()),
         }));
-        assert_eq!(workspace.report.as_ref(), Some(&boundary));
+        assert_eq!(workspace.report.as_ref(), Some(&boundary.clone().into()));
     }
     workspace.receive(Ok(api::AnalyzeReply {
-        result: Ok(valid.clone()),
+        result: Ok((valid.clone()).into()),
     }));
     for (max_work, work) in [(0, 0), (0, 1), (1, 2), (u64::MAX - 1, u64::MAX)] {
         let mut invalid = valid.clone();
@@ -259,8 +263,8 @@ fn postprocessing_metadata_is_required_and_invalid_usage_keeps_the_previous_repo
             ))
         );
         workspace.receive(Ok(api::AnalyzeReply {
-            result: Ok(invalid),
+            result: Ok((invalid).into()),
         }));
-        assert_eq!(workspace.report.as_ref(), Some(&valid));
+        assert_eq!(workspace.report.as_ref(), Some(&valid.clone().into()));
     }
 }

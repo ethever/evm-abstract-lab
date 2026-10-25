@@ -1,19 +1,18 @@
 //! Persistent/transient storage and finalized state changes remain separate.
+use crate::report::ReportView;
 
 use super::value;
 use crate::palette;
 use egui::{RichText, Ui, UiBuilder};
 use egui_extras::{Column, TableBuilder};
 use evm_abstract_notation::Symbol;
-use evm_abstract_protocol::{
-    AccountCode, AccountState, AnalysisReport, StorageEntry, StoreSnapshot, ValueInfo,
-};
+use evm_abstract_protocol::{AccountCode, AccountState, StorageEntry, StoreSnapshot, ValueInfo};
 
 mod slots;
 
 pub(super) fn account<'a>(
     store: Option<&'a StoreSnapshot>,
-    report: &'a AnalysisReport,
+    report: &'a ReportView<'_>,
     address: &str,
 ) -> Option<&'a AccountState> {
     match store {
@@ -30,7 +29,7 @@ pub(super) fn account<'a>(
 
 pub(super) fn storage(
     ui: &mut Ui,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     store: Option<&StoreSnapshot>,
     address: &str,
     transient: bool,
@@ -192,7 +191,7 @@ fn storage_rows(ui: &mut Ui, entries: &[StorageEntry], transient: bool) {
     );
 }
 
-pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapshot) {
+pub(super) fn changes(ui: &mut Ui, report: &ReportView<'_>, store: &StoreSnapshot) {
     touch_default(ui, store);
     defaults(ui, report, store);
     let mut changed = false;
@@ -354,7 +353,7 @@ pub(super) fn changes(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapsho
     }
 }
 
-fn defaults(ui: &mut Ui, report: &AnalysisReport, store: &StoreSnapshot) {
+fn defaults(ui: &mut Ui, report: &ReportView<'_>, store: &StoreSnapshot) {
     ui.collapsing("Unlisted accounts and storage bases", |ui| {
         egui::Grid::new("store_defaults")
             .num_columns(2)

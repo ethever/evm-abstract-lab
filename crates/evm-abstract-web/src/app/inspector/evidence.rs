@@ -1,11 +1,12 @@
 //! Acquisition and model-coverage evidence remain visible independently of selection.
 use super::{errors, value};
+use crate::report::ReportView;
 use crate::{app::Selection, notation, palette};
 use egui::{RichText, Ui};
 use evm_abstract_notation::Symbol;
-use evm_abstract_protocol::{self as api, AnalysisReport};
+use evm_abstract_protocol::{self as api};
 
-pub(super) fn acquisition_summary(report: &AnalysisReport) -> String {
+pub(super) fn acquisition_summary(report: &ReportView<'_>) -> String {
     report.acquisition.as_ref().map_or_else(
         || "Standalone bytecode: no RPC acquisition was performed.".into(),
         |acquisition| {
@@ -19,7 +20,7 @@ pub(super) fn acquisition_summary(report: &AnalysisReport) -> String {
     )
 }
 
-pub(super) fn acquisition(ui: &mut Ui, report: &AnalysisReport) {
+pub(super) fn acquisition(ui: &mut Ui, report: &ReportView<'_>) {
     ui.label(acquisition_summary(report));
     let Some(acquisition) = &report.acquisition else {
         return;
@@ -80,7 +81,7 @@ pub(super) fn acquisition(ui: &mut Ui, report: &AnalysisReport) {
     }
 }
 
-pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut Selection) {
+pub(super) fn diagnostics(ui: &mut Ui, report: &ReportView<'_>, selection: &mut Selection) {
     if report.diagnostics.is_empty() && report.frontiers.is_empty() {
         ui.label("No diagnostics or unexpanded frontiers reported.");
     } else {
@@ -193,7 +194,7 @@ pub(super) fn diagnostics(ui: &mut Ui, report: &AnalysisReport, selection: &mut 
     }
 }
 
-fn diagnostic_counts(report: &AnalysisReport) -> String {
+fn diagnostic_counts(report: &ReportView<'_>) -> String {
     format!(
         "{} abstract-state diagnostic entries · {} unexpanded frontiers",
         report.diagnostics.len(),
@@ -267,7 +268,7 @@ fn diagnostic_presentation(diagnostic: &api::Diagnostic) -> DiagnosticPresentati
 }
 
 /// The canvas and assistive live region share the typed diagnostic evidence.
-pub(super) fn diagnostic_summary(report: &AnalysisReport) -> String {
+pub(super) fn diagnostic_summary(report: &ReportView<'_>) -> String {
     let mut summary = format!(
         "{}; counts are abstract-state entries, not instructions or transactions",
         diagnostic_counts(report)

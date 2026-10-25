@@ -1,5 +1,6 @@
 //! Virtual table rows and graph nodes have their own hit targets;
 //! selections contain protocol identities instead of screen coordinates.
+use crate::report::ReportView;
 
 mod disassembly;
 mod graph;
@@ -112,7 +113,7 @@ pub(crate) use graph::layout as test_layout;
 pub(crate) use ssa::content_columns as test_content_columns;
 
 pub(crate) fn coverage(
-    report: &evm_abstract_protocol::AnalysisReport,
+    report: &ReportView<'_>,
     state: usize,
 ) -> evm_abstract_protocol::BlockCoverage {
     report

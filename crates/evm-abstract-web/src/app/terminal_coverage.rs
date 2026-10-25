@@ -19,10 +19,11 @@ pub(super) fn status(report: &AnalysisReport) -> Option<&'static str> {
             }))
         .then_some(NOT_ATTACHED);
     }
-    if report.root_terminal_coverage.is_some() {
+    let graph = report.selected_graph()?;
+    if graph.root_terminal_coverage.is_some() {
         Some(COVERED)
-    } else if report.metadata.limits.root_terminal_coverage
-        && (report.status != AnalysisStatus::Converged || !report.ssa.complete)
+    } else if graph.metadata.limits.root_terminal_coverage
+        && (graph.status != AnalysisStatus::Converged || !graph.ssa.complete)
     {
         Some(NOT_ATTACHED)
     } else {
@@ -38,9 +39,12 @@ pub(super) fn detail_status(report: &AnalysisReport) -> &'static str {
             "Global model incomplete"
         };
     }
-    if report.status == AnalysisStatus::Converged && report.ssa.complete {
+    let Some(graph) = report.selected_graph() else {
+        return "Incomplete / partial SSA";
+    };
+    if graph.status == AnalysisStatus::Converged && graph.ssa.complete {
         "Model converged"
-    } else if report.root_terminal_coverage.is_some() {
+    } else if graph.root_terminal_coverage.is_some() {
         "Detail incomplete / partial SSA"
     } else {
         "Incomplete / partial SSA"

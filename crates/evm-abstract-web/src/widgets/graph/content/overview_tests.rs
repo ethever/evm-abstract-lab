@@ -3,7 +3,7 @@ use super::{DisplayNode, NodeView, ReportIndex, node_preview, node_tooltip};
 use egui::{Context, RawInput};
 use evm_abstract_protocol as api;
 
-fn grouped() -> (api::AnalysisReport, DisplayNode) {
+fn grouped() -> (crate::tests::AnalysisReport, DisplayNode) {
     let mut report = crate::tests::report();
     let source = report.cfg[2].clone();
     let ssa = report.ssa.blocks[2].clone();
@@ -31,7 +31,7 @@ fn grouped() -> (api::AnalysisReport, DisplayNode) {
     (report, node)
 }
 fn details(
-    report: &api::AnalysisReport,
+    report: &crate::tests::AnalysisReport,
     state: usize,
     storage: &str,
     caller: &str,
@@ -75,12 +75,13 @@ fn details(
 #[test]
 fn grouped_ssa_never_relabels_one_members_names_as_the_whole_block() {
     let (report, node) = grouped();
-    let index = ReportIndex::new(&report);
+    let index = ReportIndex::new(&(report).view());
     let context = Context::default();
     crate::notation::initialize_fonts(&context);
     let mut output =
         context.run_ui(RawInput::default(), |ui| {
-            let preview = node_preview(ui.painter(), &report, &index, &node, NodeView::Ssa);
+            let preview =
+                node_preview(ui.painter(), &(report).view(), &index, &node, NodeView::Ssa);
             assert_eq!(preview.title, "P₀:B₂ · 3 states");
             assert!(
                 preview
@@ -106,7 +107,7 @@ fn grouped_ssa_never_relabels_one_members_names_as_the_whole_block() {
                 basic_block: node.basic_block,
                 start_pc: node.start_pc,
             };
-            let exact = node_tooltip(&report, &index, &singleton, NodeView::Ssa);
+            let exact = node_tooltip(&(report).view(), &index, &singleton, NodeView::Ssa);
             assert!(exact.contains("%9001 = φ"));
             assert!(exact.contains("%9101 = ADD"));
             assert!(!exact.contains("%9000 = φ"));
@@ -155,11 +156,11 @@ fn mixed_receipts_and_call_storage_roles_remain_visible_without_a_fake_current_g
         };
         2
     ];
-    let index = ReportIndex::new(&report);
+    let index = ReportIndex::new(&(report).view());
     let context = Context::default();
     crate::notation::initialize_fonts(&context);
     let mut output = context.run_ui(RawInput::default(), |ui| {
-        let preview = node_preview(ui.painter(), &report, &index, &node, NodeView::Ssa);
+        let preview = node_preview(ui.painter(), &(report).view(), &index, &node, NodeView::Ssa);
         assert_eq!(preview.coverage, api::BlockCoverage::Stale);
         assert!(preview.frontier);
         assert!(preview.detail.contains("2 frontiers"));
@@ -177,7 +178,7 @@ fn mixed_receipts_and_call_storage_roles_remain_visible_without_a_fake_current_g
         for field in ["storage", "depth", "caller", "static"] {
             assert!(roles.0.contains(field), "missing role {field}: {}", roles.0);
         }
-        let tooltip = node_tooltip(&report, &index, &node, NodeView::Ssa);
+        let tooltip = node_tooltip(&(report).view(), &index, &node, NodeView::Ssa);
         for required in [
             "σ₂₀₅",
             "σ₉₉₉",
@@ -232,11 +233,11 @@ fn large_receipts_keep_preview_bounded_and_generate_complete_details_only_on_dem
         basic_block: group.basic_block,
         start_pc: group.start_pc,
     };
-    let index = ReportIndex::new(&report);
+    let index = ReportIndex::new(&(report).view());
     let context = Context::default();
     crate::notation::initialize_fonts(&context);
     let mut output = context.run_ui(RawInput::default(), |ui| {
-        let preview = node_preview(ui.painter(), &report, &index, &node, NodeView::Ssa);
+        let preview = node_preview(ui.painter(), &(report).view(), &index, &node, NodeView::Ssa);
         assert!(preview.tooltip.is_empty());
         assert!(preview.lines.len() <= 8);
         assert!(
@@ -251,7 +252,7 @@ fn large_receipts_keep_preview_bounded_and_generate_complete_details_only_on_dem
                 .iter()
                 .any(|(line, _)| line.contains("%1999") || line.contains("%88888"))
         );
-        let full = node_tooltip(&report, &index, &node, NodeView::Ssa);
+        let full = node_tooltip(&(report).view(), &index, &node, NodeView::Ssa);
         for required in ["%1999", "03e7", "f₃₁ [", "e₉₀₀ → σ₉₉₉", "μ₇₀→μ₇₁ · %88888"]
         {
             assert!(full.contains(required), "full lazy tooltip lost {required}");
@@ -272,8 +273,8 @@ fn group_member_hover_is_bounded_and_keeps_original_sparse_ids() {
         node.members.push(block.id);
         report.cfg.push(block);
     }
-    let index = ReportIndex::new(&report);
-    let tooltip = node_tooltip(&report, &index, &node, NodeView::Ssa);
+    let index = ReportIndex::new(&(report).view());
+    let tooltip = node_tooltip(&(report).view(), &index, &node, NodeView::Ssa);
     assert!(tooltip.contains("σ₂₀₅ ·"));
     assert!(tooltip.contains("σ₃₉₂ ·"));
     assert!(!tooltip.contains("σ₄₀₉ ·"));

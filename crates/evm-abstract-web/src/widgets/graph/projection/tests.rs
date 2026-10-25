@@ -1,6 +1,7 @@
+use crate::tests::AnalysisReport;
 use std::collections::BTreeSet;
 
-use evm_abstract_protocol::{AnalysisReport, AnalysisStatus, CfgEdge, EdgeKind};
+use evm_abstract_protocol::{AnalysisStatus, CfgEdge, EdgeKind};
 
 use super::{DisplayGraph, GraphMode, LOCAL_STATE_LIMIT, ReportIndex};
 
@@ -42,8 +43,15 @@ fn blocks_fold_129_contexts_without_changing_native_analysis_or_member_ids() {
     report.cfg[128].frame_depth = 4;
     report.cfg[128].storage_address = Some("different storage owner".into());
     let before = report.clone();
-    let index = ReportIndex::new(&report);
-    let graph = DisplayGraph::build(&report, &index, GraphMode::default(), None, None, 2);
+    let index = ReportIndex::new(&(report).view());
+    let graph = DisplayGraph::build(
+        &(report).view(),
+        &index,
+        GraphMode::default(),
+        None,
+        None,
+        2,
+    );
     let ids: Vec<_> = report.cfg.iter().map(|state| state.id).collect();
     assert_eq!(graph.nodes.len(), 1);
     assert_eq!(graph.nodes[0].id, 10);
@@ -75,11 +83,18 @@ fn source_identity_includes_program_and_block_but_synthetic_states_stay_separate
     report.cfg[5].start_pc = None;
     report.cfg[6].basic_block = Some(1);
     report.cfg[7].start_pc = Some(9);
-    let index = ReportIndex::new(&report);
-    let all = DisplayGraph::build(&report, &index, GraphMode::Blocks, None, None, 2);
+    let index = ReportIndex::new(&(report).view());
+    let all = DisplayGraph::build(&(report).view(), &index, GraphMode::Blocks, None, None, 2);
     assert_eq!(all.nodes.len(), 8);
     assert!(all.nodes.iter().all(|node| node.members == [node.id]));
-    let filtered = DisplayGraph::build(&report, &index, GraphMode::Blocks, Some(9), None, 2);
+    let filtered = DisplayGraph::build(
+        &(report).view(),
+        &index,
+        GraphMode::Blocks,
+        Some(9),
+        None,
+        2,
+    );
     assert_eq!(filtered.nodes.len(), 1);
     assert_eq!(filtered.nodes[0].members, [17]);
     assert_eq!(filtered.hidden_states, 7);
@@ -97,8 +112,8 @@ fn folding_keeps_edge_kinds_and_all_native_endpoints_available() {
         edge(400, 31, 17, EdgeKind::Return),
         edge(500, 9999, 10, EdgeKind::Call),
     ];
-    let index = ReportIndex::new(&report);
-    let graph = DisplayGraph::build(&report, &index, GraphMode::Blocks, None, None, 2);
+    let index = ReportIndex::new(&(report).view());
+    let graph = DisplayGraph::build(&(report).view(), &index, GraphMode::Blocks, None, None, 2);
     assert_eq!(
         graph.edges,
         [
@@ -111,14 +126,14 @@ fn folding_keeps_edge_kinds_and_all_native_endpoints_available() {
     assert_eq!(graph.edge_members[&300], [300]);
     for displayed in &graph.edges {
         for native_id in &graph.edge_members[&displayed.id] {
-            let native = index.edge(&report, *native_id).unwrap();
+            let native = index.edge(&(report).view(), *native_id).unwrap();
             assert_eq!(graph.state_to_node[&native.from], displayed.from);
             assert_eq!(graph.state_to_node[&native.to], displayed.to);
             assert_eq!(native.kind, displayed.kind);
         }
     }
     assert_eq!(graph.boundary_edges, 0);
-    let states = DisplayGraph::build(&report, &index, GraphMode::States, None, None, 2);
+    let states = DisplayGraph::build(&(report).view(), &index, GraphMode::States, None, None, 2);
     assert_eq!(states.edges, report.edges[..4]);
     assert!(states.nodes.iter().all(|node| node.members == [node.id]));
     assert!(
@@ -140,19 +155,40 @@ fn local_follows_incoming_and_outgoing_calls_across_program_scope_and_counts_bou
         edge(100, 24, 31, EdgeKind::Return),
         edge(110, 31, 38, EdgeKind::Jump),
     ];
-    let index = ReportIndex::new(&report);
-    let local = DisplayGraph::build(&report, &index, GraphMode::Local, Some(0), Some(24), 1);
+    let index = ReportIndex::new(&(report).view());
+    let local = DisplayGraph::build(
+        &(report).view(),
+        &index,
+        GraphMode::Local,
+        Some(0),
+        Some(24),
+        1,
+    );
     assert_eq!(
         local.nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
         [17, 24, 31]
     );
     assert_eq!(local.edges, report.edges[1..3]);
     assert_eq!((local.hidden_states, local.boundary_edges), (2, 2));
-    let isolated = DisplayGraph::build(&report, &index, GraphMode::Local, None, Some(24), 0);
+    let isolated = DisplayGraph::build(
+        &(report).view(),
+        &index,
+        GraphMode::Local,
+        None,
+        Some(24),
+        0,
+    );
     assert_eq!(isolated.nodes[0].id, 24);
     assert_eq!(isolated.nodes.len(), 1);
     assert_eq!((isolated.hidden_states, isolated.boundary_edges), (4, 2));
-    let scoped = DisplayGraph::build(&report, &index, GraphMode::States, Some(9), None, 2);
+    let scoped = DisplayGraph::build(
+        &(report).view(),
+        &index,
+        GraphMode::States,
+        Some(9),
+        None,
+        2,
+    );
     assert_eq!(scoped.edges, report.edges[1..2]);
     assert_eq!((scoped.hidden_states, scoped.boundary_edges), (3, 2));
 }
@@ -165,9 +201,9 @@ fn local_caps_dense_neighborhood_deterministically_and_accounts_for_all_omitted_
         .enumerate()
         .map(|(position, state)| edge(position + 1000, 10, state.id, EdgeKind::Jump))
         .collect();
-    let index = ReportIndex::new(&report);
+    let index = ReportIndex::new(&(report).view());
     let graph = DisplayGraph::build(
-        &report,
+        &(report).view(),
         &index,
         GraphMode::Local,
         None,
@@ -186,7 +222,7 @@ fn local_caps_dense_neighborhood_deterministically_and_accounts_for_all_omitted_
         expected
     );
     let fallback = DisplayGraph::build(
-        &report,
+        &(report).view(),
         &index,
         GraphMode::Local,
         None,
@@ -196,8 +232,8 @@ fn local_caps_dense_neighborhood_deterministically_and_accounts_for_all_omitted_
     assert_eq!(graph.state_to_node, fallback.state_to_node);
     let empty = crate::tests::empty_report();
     let empty_graph = DisplayGraph::build(
-        &empty,
-        &ReportIndex::new(&empty),
+        &(empty).view(),
+        &ReportIndex::new(&(empty).view()),
         GraphMode::Local,
         None,
         None,

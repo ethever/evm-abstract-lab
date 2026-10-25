@@ -2695,6 +2695,7 @@ dependencies = [
  "evm-abstract-notation",
  "evm-abstract-protocol",
  "evm-abstract-server",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
  "wasm-bindgen",

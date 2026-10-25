@@ -8,7 +8,7 @@ use evm_abstract_protocol as api;
 mod table;
 
 struct Panel<'a> {
-    report: &'a api::AnalysisReport,
+    report: &'a crate::tests::AnalysisReport,
     store: Option<&'a api::StoreSnapshot>,
     address: &'a str,
     transient: bool,
@@ -59,7 +59,13 @@ impl Panel<'_> {
                 self.transient,
                 self.address,
             )));
-            stores::storage(ui, self.report, self.store, self.address, self.transient);
+            stores::storage(
+                ui,
+                &(self.report).view(),
+                self.store,
+                self.address,
+                self.transient,
+            );
             let mut layers = context.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
             if !layers.contains(&ui.layer_id()) {
                 layers.push(ui.layer_id());
@@ -156,13 +162,13 @@ fn entries(count: usize) -> Vec<api::StorageEntry> {
         .collect()
 }
 
-fn storage_report(count: usize) -> api::AnalysisReport {
+fn storage_report(count: usize) -> crate::tests::AnalysisReport {
     let mut report = crate::tests::report();
     let mut initial = account();
     initial.code_hash = Some("0xfeed".into());
     initial.delegation_target = Some("0x3333333333333333333333333333333333333333".into());
     initial.program = Some(7);
-    report.programs.push(crate::tests::source_program(
+    report.model.programs.push(crate::tests::source_program(
         7,
         Some(initial.address.clone()),
         vec![],
@@ -466,7 +472,7 @@ fn current_rollback_and_suspended_frame_stores_render_their_own_slots() {
             &mut time,
             vec![],
             egui::vec2(1200.0, 600.0),
-            |ui| inspector.show(ui, &report, &mut selection, None),
+            |ui| inspector.show(ui, &(report).view(), &mut selection, None),
         );
         assert!(
             visible.iter().any(|(text, _)| text == expected),
@@ -484,7 +490,11 @@ fn current_rollback_and_suspended_frame_stores_render_their_own_slots() {
 fn missing_accounts_and_explicit_zero_keep_their_own_unknown_or_zero_defaults() {
     let mut report = storage_report(1);
     let unknown = |summary: &str| {
-        let mut value = crate::tests::empty_report().metadata.environment.call_value;
+        let mut value = crate::tests::empty_report()
+            .metadata
+            .environment
+            .call_value
+            .clone();
         value.summary = summary.into();
         value
     };

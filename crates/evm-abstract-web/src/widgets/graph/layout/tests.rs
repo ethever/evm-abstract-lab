@@ -1,7 +1,8 @@
+use crate::tests::AnalysisReport;
 use std::collections::BTreeMap;
 
 use egui::{Pos2, Rect, Vec2};
-use evm_abstract_protocol::{AnalysisReport, CfgEdge, EdgeKind};
+use evm_abstract_protocol::{CfgEdge, EdgeKind};
 
 use super::{Placement, for_report};
 
@@ -131,7 +132,7 @@ fn unequal_diamond_cards_and_joint_labels_keep_collision_free_geometry() {
             (10, 91, 205, EdgeKind::Fallthrough),
         ],
     );
-    let placement = for_report(&report, &sizes);
+    let placement = for_report(&(report).view(), &sizes);
     assert_eq!(placement.nodes.len(), 4);
     assert_eq!(placement.edges.len(), 4);
     validate(&report, &placement);
@@ -151,7 +152,7 @@ fn shortcut_label_and_route_stay_between_a_and_b_instead_of_false_back_routing()
             (5, 42, 91, EdgeKind::Jump),
         ],
     );
-    let placement = for_report(&report, &sizes);
+    let placement = for_report(&(report).view(), &sizes);
     validate(&report, &placement);
     let a = placement.nodes[&42];
     let b = placement.nodes[&91];
@@ -177,7 +178,7 @@ fn cycles_self_edges_and_parallel_edges_keep_original_targets_and_visible_labels
             (7, 7, 42, EdgeKind::BranchFalse),
         ],
     );
-    let placement = for_report(&report, &sizes);
+    let placement = for_report(&(report).view(), &sizes);
     validate(&report, &placement);
     assert_eq!(placement.edges.len(), 5);
     assert_ne!(placement.edges[&3].path, placement.edges[&7].path);
@@ -195,7 +196,7 @@ fn long_sparse_ids_and_dangling_edges_do_not_create_phantom_leaves_or_labels() {
             (12, usize::MAX, 99, EdgeKind::Jump),
         ],
     );
-    let placement = for_report(&report, &sizes);
+    let placement = for_report(&(report).view(), &sizes);
     assert_eq!(placement.nodes.len(), 2);
     assert_eq!(placement.edges.len(), 1);
     assert!(placement.edges.contains_key(&usize::MAX));
@@ -213,15 +214,15 @@ fn disconnected_components_and_same_input_have_deterministic_geometry() {
         ],
         &[(2, 1, 8, EdgeKind::Jump), (3, 19, 101, EdgeKind::Jump)],
     );
-    let first = for_report(&report, &sizes);
+    let first = for_report(&(report).view(), &sizes);
     validate(&report, &first);
-    assert_eq!(first, for_report(&report, &sizes));
+    assert_eq!(first, for_report(&(report).view(), &sizes));
 }
 
 #[test]
 fn empty_report_has_no_geometry_or_placeholder_labels() {
     let (report, sizes) = fixture(&[], &[]);
-    let placement = for_report(&report, &sizes);
+    let placement = for_report(&(report).view(), &sizes);
     assert!(
         placement.nodes.is_empty() && placement.edges.is_empty() && placement.groups.is_empty()
     );

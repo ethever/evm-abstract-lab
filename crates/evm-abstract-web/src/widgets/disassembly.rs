@@ -1,18 +1,19 @@
 //! Virtual source rows use content-sized PC and opcode/operand columns.
+use crate::report::ReportView;
 
 use evm_abstract_notation::Symbol;
 mod tooltip;
 
 use egui::{FontId, ScrollArea, Sense, Ui, Vec2};
 use egui_extras::{Column, TableBuilder};
-use evm_abstract_protocol::{AnalysisReport, BlockCoverage, DisasmInstruction};
+use evm_abstract_protocol::{BlockCoverage, DisasmInstruction};
 
 use super::{ROW_HEIGHT, heading, text};
 use crate::{app::Selection, palette};
 
 pub(crate) fn disassembly(
     ui: &mut Ui,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     program: Option<usize>,
     selection: &mut Selection,
     previous: &mut Selection,
@@ -28,7 +29,7 @@ pub(crate) fn disassembly(
 
 fn contents(
     ui: &mut Ui,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     program: Option<usize>,
     selection: &mut Selection,
     previous: &mut Selection,
@@ -180,7 +181,7 @@ fn contents(
 /// the table itself. A bounded parent can still expose overflow by scrolling.
 pub(crate) fn natural_width(
     ui: &Ui,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     program: Option<usize>,
     selection: Selection,
 ) -> f32 {
@@ -256,7 +257,7 @@ impl Row<'_> {
     }
 }
 
-fn rows(report: &AnalysisReport, program: Option<usize>, selection: Selection) -> Vec<Row<'_>> {
+fn rows<'a>(report: &ReportView<'a>, program: Option<usize>, selection: Selection) -> Vec<Row<'a>> {
     let mut rows = Vec::new();
     let Some(source) = program.and_then(|id| report.programs.iter().find(|source| source.id == id))
     else {

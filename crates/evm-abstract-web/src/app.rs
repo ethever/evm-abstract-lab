@@ -7,7 +7,7 @@ mod hybrid;
 mod inspector;
 mod job;
 mod layout;
-mod model;
+pub(crate) mod model;
 mod providers;
 mod startup;
 mod terminal_coverage;
@@ -18,7 +18,8 @@ use directory::{Directory, Pick};
 use egui::{Key, Modifiers, Ui};
 use evm_abstract_notation::{Symbol, WideSymbol};
 use evm_abstract_protocol::{
-    AnalysisNamespace, AnalysisReport, AnalyzeReply, AnalyzeRequest, JobId, SCHEMA_VERSION,
+    AnalysisNamespace, AnalysisReport, AnalyzeReply, AnalyzeRequest, JobId, JobPublication,
+    JobResultReply, SCHEMA_VERSION,
 };
 use form::AnalysisForm;
 use inspector::Inspector;
@@ -29,7 +30,6 @@ pub(crate) use inspector::shortcut::{
 pub use job::{Command, JobOperation, Message};
 use job::{Task, TaskError, TaskPhase};
 use layout::{AnalysisPanes, Pane, PaneLayout};
-use model::shown;
 
 /// Browser request failures, distinct from the backend's typed analysis errors.
 #[derive(Debug, thiserror::Error)]
@@ -99,7 +99,7 @@ pub(crate) enum View {
 /// task runs; stale callbacks cannot replace the selected result.
 pub struct Workspace {
     report: Option<AnalysisReport>,
-    view_namespace: AnalysisNamespace,
+    report_view: model::ReportViewState,
     // Only a validated report from an accepted server result owns this ID.
     // It remains bound to the visible report across later task generations.
     report_job_id: Option<JobId>,
@@ -127,7 +127,7 @@ impl Default for Workspace {
     fn default() -> Self {
         Self {
             report: None,
-            view_namespace: AnalysisNamespace::Native,
+            report_view: model::ReportViewState::default(),
             report_job_id: None,
             task: Task::default(),
             startup: startup::Startup::default(),
@@ -254,8 +254,7 @@ impl Workspace {
                     .show(ui, |ui| self.model_selector(ui));
             }
             if let Some(report) = &self.report {
-                let model = report;
-                let report = shown(report, self.view_namespace);
+                let report = &self.report_view.shown(report);
                 egui::Panel::top("result_context")
                     .frame(palette::chrome_frame())
                     .show(ui, |ui| {
@@ -272,10 +271,9 @@ impl Workspace {
                         // Reserve the chosen panel height even for an empty snapshot;
                         // otherwise egui shrinks it after the graph's initial fit.
                         ui.set_min_height(ui.available_height());
-                        self.inspector.show_model(
+                        self.inspector.show(
                             ui,
                             report,
-                            model,
                             &mut self.selection,
                             self.account.as_deref(),
                         );
@@ -289,7 +287,7 @@ impl Workspace {
                 && viewport.x >= 1050.0
                 && let Some(report) = &self.report
             {
-                let report = shown(report, self.view_namespace);
+                let report = &self.report_view.shown(report);
                 egui::Panel::left("world_directory")
                     .resizable(true)
                     .default_size(196.0)
@@ -313,13 +311,11 @@ impl Workspace {
                 )
                 .show(ui, |ui| {
                     if let Some(report) = &self.report {
-                        let model = report;
-                        let report = shown(report, self.view_namespace);
+                        let report = &self.report_view.shown(report);
                         if inspector_maximized {
-                            self.inspector.show_model(
+                            self.inspector.show(
                                 ui,
                                 report,
-                                model,
                                 &mut self.selection,
                                 self.account.as_deref(),
                             );
@@ -366,7 +362,7 @@ impl Workspace {
             let mut open = true;
             let mut pick = None;
             if let Some(report) = &self.report {
-                let report = shown(report, self.view_namespace);
+                let report = &self.report_view.shown(report);
                 egui::Window::new("Programs and accounts")
                     .id(egui::Id::new("directory_window"))
                     .open(&mut open)
@@ -407,7 +403,7 @@ impl Workspace {
                 ui.ctx().request_repaint();
             }
         }
-        if self.task.busy()
+        if self.task.needs_refresh()
             || self
                 .report_timing
                 .as_ref()
@@ -425,7 +421,7 @@ impl Workspace {
         let Some(report) = &self.report else {
             return;
         };
-        let report = shown(report, self.view_namespace);
+        let report = &self.report_view.shown(report);
         match pick {
             Pick::RootInput => {
                 self.account = None;
@@ -487,7 +483,9 @@ impl Workspace {
         }
         self.previous_state = self.selection.state;
         if let Some(report) = &self.report
-            && let Some(state) = shown(report, self.view_namespace)
+            && let Some(state) = self
+                .report_view
+                .shown(report)
                 .cfg
                 .iter()
                 .find(|state| Some(state.id) == self.selection.state)
@@ -526,7 +524,7 @@ impl Workspace {
                     self.task.frontend.parsing_ns.saturating_add(parsing_ns);
                 match *result {
                     Err(error) => self.task.retry_result(TaskError::Transport(error)),
-                    Ok(AnalyzeReply { result: Err(error) })
+                    Ok(JobResultReply { result: Err(error) })
                         if matches!(
                             error.code,
                             evm_abstract_protocol::ApiErrorCode::QueueFull
@@ -536,73 +534,110 @@ impl Workspace {
                     {
                         self.task.retry_result(TaskError::Api(error))
                     }
-                    result => self.receive_result(result, Some(id)),
+                    Ok(JobResultReply { result: Err(error) }) => {
+                        self.task.reject_result(None, TaskError::Api(error))
+                    }
+                    Ok(JobResultReply { result: Ok(result) }) => {
+                        if result.id != id {
+                            self.task.retry_result(TaskError::Identity {
+                                expected: id,
+                                received: result.id,
+                            });
+                            return;
+                        }
+                        if !self.task.accepts_publication(&result.publication) {
+                            self.task.discard_result();
+                            return;
+                        }
+                        let publication = &result.publication;
+                        if publication.model_closed
+                            != (result.report.status
+                                == evm_abstract_protocol::AnalysisStatus::Converged)
+                            || result.report.global.is_some()
+                                != publication.global_version.is_some()
+                            || result.report.native.is_some()
+                                != publication.native_version.is_some()
+                            || [publication.global_version, publication.native_version]
+                                .into_iter()
+                                .flatten()
+                                .any(|version| version > publication.version)
+                            || self
+                                .task
+                                .advertised_publication()
+                                .is_some_and(|advertised| {
+                                    advertised.version == publication.version
+                                        && advertised != publication
+                                })
+                        {
+                            self.task
+                                .reject_result(Some(publication.version), TaskError::Publication);
+                            return;
+                        }
+                        self.install_report(result.report, Some(id), Some(result.publication));
+                    }
                 }
             }
         }
     }
 
-    /// Apply a typed immutable result; schema failures never enter view state.
-    /// Reports received directly have no server Job ID association.
+    /// Apply a typed immutable result without a server Job ID association.
+    /// Direct replacement also retires any outstanding result callback.
     pub fn receive(&mut self, result: Result<AnalyzeReply, TransportError>) {
-        self.receive_result(result, None);
-    }
-
-    fn receive_result(
-        &mut self,
-        result: Result<AnalyzeReply, TransportError>,
-        report_job_id: Option<JobId>,
-    ) {
-        let prepare_started = timing::now();
         match result {
-            Ok(AnalyzeReply { result: Ok(report) }) if report.schema_version == SCHEMA_VERSION => {
-                if let Err(failure) = report.validate() {
-                    self.task
-                        .fail(TaskError::Api(evm_abstract_protocol::ApiError {
-                            code: evm_abstract_protocol::ApiErrorCode::WorkerFailed,
-                            message: failure.to_string(),
-                            details: evm_abstract_protocol::ErrorDetails::Report(failure),
-                        }));
-                    return;
-                }
-                self.view_namespace = model::initial(&report);
-                let visible = shown(&report, self.view_namespace);
-                self.selection = Selection {
-                    value: None,
-                    state: visible.cfg.first().map(|state| state.id),
-                    pc: None,
-                };
-                self.program = visible
-                    .cfg
-                    .first()
-                    .map_or(visible.metadata.root_program, |state| state.program);
-                self.previous_state = self.selection.state;
-                self.account = None;
-                self.disasm_focus = Selection::default();
-                self.ssa_focus = Selection::default();
-                self.ssa_cache.clear();
-                self.graph.reset_report();
-                self.inspector.reset_report();
-                self.previous_report = false;
-                self.directory.open =
-                    visible.metadata.snapshot.is_some() || visible.programs.len() > 1;
-                self.report = Some(report);
-                self.report_job_id = report_job_id;
-                self.task.complete();
-                let mut frontend = self.task.frontend.clone();
-                frontend.view_ns = timing::elapsed_ns(prepare_started, timing::now());
-                self.report_timing = Some(timing::ReportTiming {
-                    generation: self.task.generation(),
-                    wait: self.task.wait.clone(),
-                    frontend,
-                    pending: true,
-                });
-            }
-            Ok(AnalyzeReply { result: Ok(report) }) => self.task.fail(TaskError::Schema {
-                received: report.schema_version,
-            }),
+            Ok(AnalyzeReply { result: Ok(report) }) => self.install_report(report, None, None),
             Ok(AnalyzeReply { result: Err(error) }) => self.task.fail(TaskError::Api(error)),
             Err(error) => self.task.fail(TaskError::Transport(error)),
+        }
+    }
+
+    fn install_report(
+        &mut self,
+        report: AnalysisReport,
+        report_job_id: Option<JobId>,
+        publication: Option<JobPublication>,
+    ) {
+        let prepare_started = timing::now();
+        if report.schema_version != SCHEMA_VERSION {
+            self.task.reject_result(
+                publication.as_ref().map(|publication| publication.version),
+                TaskError::Schema {
+                    received: report.schema_version,
+                },
+            );
+            return;
+        }
+        if let Err(failure) = report.validate() {
+            self.task
+                .fail(TaskError::Api(evm_abstract_protocol::ApiError {
+                    code: evm_abstract_protocol::ApiErrorCode::WorkerFailed,
+                    message: failure.to_string(),
+                    details: evm_abstract_protocol::ErrorDetails::Report(failure),
+                }));
+            return;
+        }
+        let replacement =
+            report_job_id.is_none() || self.previous_report || self.report_job_id != report_job_id;
+        self.report = Some(report);
+        self.activate_view(model::Activation::Report {
+            replacement,
+            publication: publication.clone(),
+        });
+        self.previous_report = false;
+        self.report_job_id = report_job_id;
+        if let Some(publication) = publication {
+            self.task.published(publication);
+        } else {
+            self.task.complete();
+        }
+        if replacement {
+            let mut frontend = self.task.frontend.clone();
+            frontend.view_ns = timing::elapsed_ns(prepare_started, timing::now());
+            self.report_timing = Some(timing::ReportTiming {
+                generation: self.task.generation(),
+                wait: self.task.wait.clone(),
+                frontend,
+                pending: true,
+            });
         }
     }
 
@@ -625,6 +660,18 @@ impl Workspace {
         if self.report.is_some() && self.report_job_id.is_none() {
             status.push_str("; Result Job ID: unavailable");
         }
+        if let Some(publication) = self.report_view.publication() {
+            let version = |value: Option<evm_abstract_protocol::PublicationVersion>| {
+                value.map_or("unavailable".into(), |version| version.0.to_string())
+            };
+            status.push_str(&format!(
+                "; Publication: {}; Global graph: {}; Native graph: {}; Closed model: {}",
+                publication.version.0,
+                version(publication.global_version),
+                version(publication.native_version),
+                publication.model_closed
+            ));
+        }
         if let Some(report) = &self.report
             && let Some(coverage) = terminal_coverage::status(report)
         {
@@ -635,11 +682,11 @@ impl Workspace {
         }
         if let Some(summary) = self.report.as_ref().and_then(hybrid::summary) {
             status.push_str(&format!("; {summary}"));
-            status.push_str(match self.view_namespace {
+            status.push_str(match self.report_view.namespace() {
                 AnalysisNamespace::Baseline => "; View: Global model",
                 AnalysisNamespace::Native => "; View: Detailed paths",
             });
-            if self.view_namespace == AnalysisNamespace::Native
+            if self.report_view.namespace() == AnalysisNamespace::Native
                 && let Some(hybrid) = self
                     .report
                     .as_ref()
@@ -683,11 +730,10 @@ impl Workspace {
         {
             return format!("Error: {error}");
         }
-        if self.task.phase == TaskPhase::Ready
+        if !self.previous_report
             && let Some(report) = &self.report
         {
-            let model = report;
-            let report = shown(report, self.view_namespace);
+            let report = &self.report_view.shown(report);
             return format!(
                 "{}: {} instructions, {} CFG states, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}; {}; SSA details: {:?}",
                 self.task_label(),
@@ -715,19 +761,7 @@ impl Workspace {
                 self.program
                     .map_or("none".into(), |program| Symbol::Program(program)
                         .to_string()),
-                self.inspector.accessible_summary(
-                    if matches!(
-                        self.inspector.tab,
-                        inspector::Tab::Coverage
-                            | inspector::Tab::Timing
-                            | inspector::Tab::Acquisition
-                    ) {
-                        model
-                    } else {
-                        report
-                    },
-                    self.selection
-                ),
+                self.inspector.accessible_summary(report, self.selection),
                 self.graph.accessible_summary(),
                 self.ssa_display
             );
@@ -803,7 +837,7 @@ impl Workspace {
             parts.push("Previous report timing".into());
         }
         if let Some(report) = &self.report {
-            parts.push(timing::backend_summary(&report.metadata.timings));
+            parts.push(timing::backend_summary(&report.timings));
             if let Some(timing) = &self.report_timing {
                 if self.previous_report
                     && let Some(wait) = timing.wait.summary(timing::now())

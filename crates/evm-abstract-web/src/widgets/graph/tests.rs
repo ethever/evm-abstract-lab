@@ -1,7 +1,7 @@
+use crate::tests::AnalysisReport;
 use egui::{Context, Pos2, RawInput, Rect, Vec2};
 use evm_abstract_protocol::{
-    AnalysisReport, AnalysisScope, AnalysisStatus, CfgBlock, CfgEdge, DisasmInstruction, EdgeKind,
-    Fork, SsaReport,
+    AnalysisScope, AnalysisStatus, CfgBlock, CfgEdge, DisasmInstruction, EdgeKind, Fork, SsaReport,
 };
 
 use super::{Graph, node_text};
@@ -19,15 +19,16 @@ struct SceneSnapshot {
 
 fn snapshot(graph: &Graph) -> SceneSnapshot {
     SceneSnapshot {
-        nodes: graph.placement.nodes.clone(),
+        nodes: graph.scene.placement.nodes.clone(),
         edges: graph
+            .scene
             .placement
             .edges
             .iter()
             .map(|(id, edge)| (*id, edge.path.clone(), edge.label))
             .collect(),
-        bounds: graph.placement.bounds,
-        groups: graph.placement.groups.clone(),
+        bounds: graph.scene.placement.bounds,
+        groups: graph.scene.placement.groups.clone(),
     }
 }
 
@@ -92,12 +93,12 @@ fn frozen_scene_waits_for_a_usable_initial_canvas() {
     let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::splat(1.0));
     assert!(
-        graph.placement.nodes.is_empty(),
+        graph.scene.placement.nodes.is_empty(),
         "a temporary 1px canvas must not determine the permanent layout"
     );
-    assert!(graph.layout_pending);
+    assert!(graph.scene.layout_pending);
     render(&ctx, &mut graph, &report, Vec2::new(900.0, 600.0));
-    assert_eq!(graph.placement.nodes.len(), report.cfg.len());
+    assert_eq!(graph.scene.placement.nodes.len(), report.cfg.len());
     assert_scene_fits(&graph);
 }
 
@@ -109,14 +110,14 @@ fn a_sizing_pass_cannot_consume_the_first_layout_or_fit() {
     let mut graph = disassembly_graph();
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
         ui.scope_builder(egui::UiBuilder::new().sizing_pass(), |ui| {
-            graph.show(ui, &report, &mut Selection::default());
+            graph.show(ui, &(report).view(), &mut Selection::default());
         });
     });
     output.textures_delta.clear();
-    assert!(graph.placement.nodes.is_empty());
-    assert!(graph.layout_pending && graph.fit_pending);
+    assert!(graph.scene.placement.nodes.is_empty());
+    assert!(graph.scene.layout_pending && graph.fit_pending);
     render(&ctx, &mut graph, &report, Vec2::new(900.0, 600.0));
-    assert_eq!(graph.placement.nodes.len(), report.cfg.len());
+    assert_eq!(graph.scene.placement.nodes.len(), report.cfg.len());
     assert_scene_fits(&graph);
 }
 
@@ -130,12 +131,15 @@ fn a_new_report_gets_a_new_initial_layout_and_fit() {
     let old_scene = snapshot(&graph);
     graph.zoom_at(Vec2::new(33.0, 91.0), 0.7);
     graph.pan += Vec2::new(90.0, -25.0);
-    graph.reset_report();
-    assert!(graph.placement.nodes.is_empty());
+    graph.activate(crate::app::model::ReportViewId::fixture(
+        2,
+        evm_abstract_protocol::AnalysisNamespace::Native,
+    ));
+    assert!(graph.scene.placement.nodes.is_empty());
     assert!(graph.viewport.is_none());
     assert_eq!(graph.content, super::NodeView::Disassembly);
-    let instruction = report.cfg[0].instructions[0].clone();
-    report.cfg[0].instructions.push(instruction);
+    let instruction = report.source_mut(0).instructions[0].clone();
+    report.source_mut(0).instructions.push(instruction);
     let size = Vec2::new(390.0, 720.0);
     render(&ctx, &mut graph, &report, size);
     let mut fresh = disassembly_graph();
@@ -158,16 +162,6 @@ fn report() -> AnalysisReport {
             code_address: Some("0x11".into()),
             storage_address: Some("0x11".into()),
             program: Some(0),
-            instructions: vec![DisasmInstruction {
-                pc: index * 2,
-                opcode: 0,
-                name: "STOP".into(),
-                immediate: None,
-                size: 1,
-                valid: true,
-                stack_inputs: 0,
-                stack_outputs: 0,
-            }],
             entry_stack: vec![],
             exit_stack: vec![],
             executed_pcs: vec![index * 2],
@@ -178,24 +172,32 @@ fn report() -> AnalysisReport {
         .map(|block| evm_abstract_protocol::DisasmBlock {
             id: block.basic_block.unwrap(),
             start_pc: block.start_pc.unwrap(),
-            instructions: block.instructions.clone(),
+            instructions: vec![DisasmInstruction {
+                pc: block.start_pc.unwrap(),
+                opcode: 0,
+                name: "STOP".into(),
+                immediate: None,
+                size: 1,
+                valid: true,
+                stack_inputs: 0,
+                stack_outputs: 0,
+            }],
         })
         .collect::<Vec<_>>();
-    let mut report = AnalysisReport {
+    let mut report = crate::tests::empty_report();
+    report.model.programs = vec![crate::tests::source_program(
+        0,
+        cfg[0].code_address.clone(),
+        disassembly,
+    )];
+    *report = evm_abstract_protocol::AnalysisGraph {
         symbolic: crate::tests::symbolic_graph(),
         pending_machines: vec![],
-        schema_version: evm_abstract_protocol::SCHEMA_VERSION,
         scope: AnalysisScope::SingleProgram,
         fork: Fork::Osaka,
         byte_len: 18,
         status: AnalysisStatus::Converged,
         transfers: 9,
-        disassembly: disassembly.clone(),
-        programs: vec![crate::tests::source_program(
-            0,
-            cfg[0].code_address.clone(),
-            disassembly,
-        )],
         cfg,
         edges: (1..9)
             .map(|index| CfgEdge {
@@ -216,7 +218,7 @@ fn report() -> AnalysisReport {
         },
         diagnostics: vec![],
         frontiers: vec![],
-        ..crate::tests::empty_report()
+        ..std::sync::Arc::unwrap_or_clone(crate::tests::empty_report().model.native.unwrap())
     };
     report.metadata.root_program = Some(0);
     report
@@ -240,7 +242,7 @@ fn render(ctx: &Context, graph: &mut Graph, report: &AnalysisReport, size: Vec2)
             ..RawInput::default()
         },
         |ui| {
-            graph.show(ui, report, &mut Selection::default());
+            graph.show(ui, &(report).view(), &mut Selection::default());
         },
     );
     output.textures_delta.clear();
@@ -248,7 +250,7 @@ fn render(ctx: &Context, graph: &mut Graph, report: &AnalysisReport, size: Vec2)
 
 fn assert_scene_fits(graph: &Graph) {
     let viewport = Rect::from_min_size(Pos2::ZERO, graph.viewport.unwrap());
-    let scene = graph.screen_rect(viewport, graph.placement.bounds);
+    let scene = graph.screen_rect(viewport, graph.scene.placement.bounds);
     assert!(
         viewport.contains_rect(scene),
         "scene {scene:?} escapes viewport {viewport:?}"
@@ -262,12 +264,16 @@ fn assert_scene_fits(graph: &Graph) {
 fn diamond() -> AnalysisReport {
     let mut report = report();
     report.cfg.truncate(4);
-    for (block, names) in report.cfg.iter_mut().zip([
-        vec!["PUSH0", "CALLDATALOAD", "PUSH1", "JUMPI"],
-        vec!["JUMPDEST", "PUSH1"],
-        vec!["PUSH1", "PUSH1", "JUMP"],
-        vec!["JUMPDEST", "PUSH1", "ADD", "STOP"],
-    ]) {
+    for (block, names) in std::sync::Arc::make_mut(&mut report.model.programs[0])
+        .blocks
+        .iter_mut()
+        .zip([
+            vec!["PUSH0", "CALLDATALOAD", "PUSH1", "JUMPI"],
+            vec!["JUMPDEST", "PUSH1"],
+            vec!["PUSH1", "PUSH1", "JUMP"],
+            vec!["JUMPDEST", "PUSH1", "ADD", "STOP"],
+        ])
+    {
         block.instructions = names
             .into_iter()
             .enumerate()
@@ -322,7 +328,7 @@ fn render_with_chrome(ctx: &Context, graph: &mut Graph, report: &AnalysisReport,
             egui::Panel::bottom("test_status")
                 .exact_size(24.0)
                 .show(ui, |_| {});
-            graph.show(ui, report, &mut Selection::default());
+            graph.show(ui, &(report).view(), &mut Selection::default());
         },
     );
     output.textures_delta.clear();
@@ -342,7 +348,11 @@ fn fresh_scenes_have_identical_geometry_in_every_initial_viewport() {
         ] {
             let mut graph = disassembly_graph();
             render_with_chrome(&ctx, &mut graph, &report, size);
-            assert!(graph.layout_error.is_none(), "{:?}", graph.layout_error);
+            assert!(
+                graph.scene.layout_error.is_none(),
+                "{:?}",
+                graph.scene.layout_error
+            );
             assert_scene_fits(&graph);
             let scene = snapshot(&graph);
             if let Some(reference) = &reference {
@@ -376,15 +386,24 @@ fn fit_centers_the_complete_scene_in_a_roomy_canvas() {
 fn zoom_below_eight_percent_preserves_gesture_direction_anchor_and_geometry() {
     let mut report = report();
     let template = report.cfg[0].clone();
+    let source_template = report.source(0).clone();
+    std::sync::Arc::make_mut(&mut report.model.programs[0]).blocks = (0..128)
+        .map(|index| {
+            let mut source = source_template.clone();
+            source.id = index;
+            source.start_pc = index;
+            source.instructions[0].pc = index;
+            source.instructions[0].opcode = 0x5b;
+            source.instructions[0].name = "JUMPDEST".into();
+            source
+        })
+        .collect();
     report.cfg = (0..128)
         .map(|index| {
             let mut block = template.clone();
             block.id = index * 7;
             block.basic_block = Some(index);
             block.start_pc = Some(index);
-            block.instructions[0].pc = index;
-            block.instructions[0].opcode = 0x5b;
-            block.instructions[0].name = "JUMPDEST".into();
             block.executed_pcs = vec![index];
             block
         })
@@ -402,7 +421,11 @@ fn zoom_below_eight_percent_preserves_gesture_direction_anchor_and_geometry() {
     let mut graph = disassembly_graph();
     let screen = Vec2::new(900.0, 380.0);
     render(&ctx, &mut graph, &report, screen);
-    assert!(graph.layout_error.is_none(), "{:?}", graph.layout_error);
+    assert!(
+        graph.scene.layout_error.is_none(),
+        "{:?}",
+        graph.scene.layout_error
+    );
     assert_scene_fits(&graph);
     assert!(
         graph.zoom > 0.0 && graph.zoom < 0.08,
@@ -449,19 +472,19 @@ fn resize_preserves_manual_canvas_coordinates_and_fit_centers_the_scene() {
     graph.pan += Vec2::new(17.0, -21.0);
     let pan = graph.pan;
     let zoom = graph.zoom;
-    let nodes = graph.placement.nodes.clone();
+    let nodes = graph.scene.placement.nodes.clone();
     graph.update_viewport(
-        &report,
+        &(report).view(),
         Vec2::new(390.0, 600.0),
         &egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING),
     );
     assert_eq!(graph.pan, pan);
     assert_eq!(graph.zoom, zoom);
-    assert_eq!(graph.placement.nodes, nodes);
+    assert_eq!(graph.scene.placement.nodes, nodes);
     assert!(!graph.fitted);
     graph.queue_fit();
     graph.update_viewport(
-        &report,
+        &(report).view(),
         Vec2::new(390.0, 600.0),
         &egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING),
     );
@@ -493,11 +516,11 @@ fn focus_selected_centers_its_measured_rect_and_enters_manual_mode() {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
             ..RawInput::default()
         },
-        |ui| graph.show(ui, &report, &mut selection),
+        |ui| graph.show(ui, &(report).view(), &mut selection),
     );
     output.textures_delta.clear();
     let world_center = (graph.viewport.unwrap() * 0.5 - graph.pan) / graph.zoom;
-    assert!((world_center - graph.placement.nodes[&49].center().to_vec2()).length() < 0.001);
+    assert!((world_center - graph.scene.placement.nodes[&49].center().to_vec2()).length() < 0.001);
     assert!(!graph.fitted);
     assert_eq!(selection.state, Some(49));
 }
@@ -511,20 +534,31 @@ fn content_measurement_shrinks_short_nodes_and_retains_empty_frame_semantics() {
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
         let short = node_text(
             ui.painter(),
-            &report,
+            &(report).view(),
             &report.cfg[0],
             super::NodeView::Disassembly,
         );
         let mut source = report.cfg[0].clone();
-        source.instructions = vec![source.instructions[0].clone(); 6];
-        source.instructions[0].name = "DELEGATECALL".into();
-        source.instructions[0].immediate = Some("0xabcdef0123456789abcdef".into());
-        let long = node_text(ui.painter(), &report, &source, super::NodeView::Disassembly);
-        source.instructions.clear();
+        let mut expanded = report.clone();
+        let instructions = &mut expanded.source_mut(0).instructions;
+        *instructions = vec![instructions[0].clone(); 6];
+        instructions[0].name = "DELEGATECALL".into();
+        instructions[0].immediate = Some("0xabcdef0123456789abcdef".into());
+        let long = node_text(
+            ui.painter(),
+            &expanded.view(),
+            &source,
+            super::NodeView::Disassembly,
+        );
         source.start_pc = None;
         source.program = None;
         source.frame_depth = 2;
-        let empty = node_text(ui.painter(), &report, &source, super::NodeView::Disassembly);
+        let empty = node_text(
+            ui.painter(),
+            &(report).view(),
+            &source,
+            super::NodeView::Disassembly,
+        );
         assert!(empty.lines.is_empty());
         assert!(empty.detail.starts_with("no bytecode"));
         assert!(empty.size.y < short.size.y);
@@ -562,18 +596,18 @@ fn cycles_self_edges_and_label_detours_are_inside_fit_bounds() {
     let mut graph = disassembly_graph();
     render(&ctx, &mut graph, &report, Vec2::new(390.0, 500.0));
     for id in [42, 44] {
-        let route = &graph.placement.edges[&id];
+        let route = &graph.scene.placement.edges[&id];
         assert!(
             route
                 .path
                 .iter()
-                .all(|point| point.is_finite() && graph.placement.bounds.contains(*point))
+                .all(|point| point.is_finite() && graph.scene.placement.bounds.contains(*point))
         );
         assert_ne!(
             route.path[route.path.len() - 1],
             route.path[route.path.len() - 2]
         );
-        assert!(graph.placement.bounds.contains_rect(route.label));
+        assert!(graph.scene.placement.bounds.contains_rect(route.label));
     }
     assert_scene_fits(&graph);
 }
@@ -595,9 +629,9 @@ fn painted_virtual_labels_remain_outside_state_cards_when_zoomed() {
         let scene = snapshot(&graph);
         for zoom in [0.36, 0.5, 1.0, 2.5] {
             graph.zoom = zoom;
-            graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2() * zoom;
+            graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2() * zoom;
             graph.fitted = false;
-            let size = (graph.placement.bounds.size() * zoom + Vec2::new(40.0, 160.0))
+            let size = (graph.scene.placement.bounds.size() * zoom + Vec2::new(40.0, 160.0))
                 .max(Vec2::new(900.0, 900.0));
             let mut input = RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
@@ -611,7 +645,7 @@ fn painted_virtual_labels_remain_outside_state_cards_when_zoomed() {
             let mut canvas = Rect::NOTHING;
             let mut output = ctx.run_ui(input, |ui| {
                 let available = ui.available_rect_before_wrap();
-                graph.show(ui, &report, &mut Selection::default());
+                graph.show(ui, &(report).view(), &mut Selection::default());
                 canvas = Rect::from_min_size(
                     available.right_bottom() - graph.viewport.unwrap(),
                     graph.viewport.unwrap(),
@@ -637,12 +671,12 @@ fn painted_virtual_labels_remain_outside_state_cards_when_zoomed() {
                     .unwrap_or_else(|| {
                         panic!("missing readable label {name}, DPR{density}, zoom{zoom}")
                     });
-                let label = graph.screen_rect(canvas, graph.placement.edges[&edge.id].label);
+                let label = graph.screen_rect(canvas, graph.scene.placement.edges[&edge.id].label);
                 assert!(
                     label.contains_rect(text),
                     "{name} text{text:?} exceeds label{label:?}"
                 );
-                for node in graph.placement.nodes.values() {
+                for node in graph.scene.placement.nodes.values() {
                     let node = graph.screen_rect(canvas, *node);
                     assert!(
                         !node.intersect(label).is_positive(),

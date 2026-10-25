@@ -15,11 +15,16 @@ fn natural(ctx: &Context, workspace: &Workspace) -> [f32; 2] {
     let mut output = ctx.run_ui(RawInput::default(), |ui| {
         let report = workspace.report.as_ref().unwrap();
         widths = [
-            widgets::disassembly_width(ui, report, workspace.program, workspace.selection)
-                .max(PANE_MIN),
+            widgets::disassembly_width(
+                ui,
+                &crate::tests::fixture_view(report),
+                workspace.program,
+                workspace.selection,
+            )
+            .max(PANE_MIN),
             widgets::ssa_width(
                 ui,
-                report,
+                &crate::tests::fixture_view(report),
                 workspace.program,
                 workspace.ssa_display,
                 workspace.selection,
@@ -110,9 +115,15 @@ fn long_push_and_phi_keep_a_graph_budget_without_hiding_source_data() {
     let mut workspace = ready();
     let report = workspace.report.as_mut().unwrap();
     let immediate = format!("0x{}", "fe".repeat(32));
-    report.programs[0].blocks[0].instructions[0].name = "PUSH32".into();
-    report.programs[0].blocks[0].instructions[0].immediate = Some(immediate.clone());
-    report.ssa.blocks[2].phis[0].inputs = (0..80)
+    std::sync::Arc::make_mut(&mut report.programs[0]).blocks[0].instructions[0].name =
+        "PUSH32".into();
+    std::sync::Arc::make_mut(&mut report.programs[0]).blocks[0].instructions[0].immediate =
+        Some(immediate.clone());
+    std::sync::Arc::make_mut(report.native.as_mut().unwrap())
+        .ssa
+        .blocks[2]
+        .phis[0]
+        .inputs = (0..80)
         .map(|id| PhiInput {
             edge: id,
             predecessor: id,
@@ -147,23 +158,26 @@ fn selected_child_source_and_reanalysis_remeasure_automatic_panes() {
     settled(&ctx, &mut workspace, size);
     let original = widths(&workspace, size);
     let report = workspace.report.as_mut().unwrap();
-    let mut child = report.cfg[0].clone();
+    let mut child = report.native.as_mut().unwrap().cfg[0].clone();
     child.id = 99;
     child.frame_depth = 2;
     child.start_pc = Some(1000);
-    child.instructions[0].pc = 1000;
-    child.instructions[0].name = "PUSH32".into();
-    child.instructions[0].immediate = Some(format!("0x{}", "ff".repeat(32)));
     child.program = Some(1);
     let mut source = report.programs[0].clone();
-    source.id = 1;
-    source.blocks = vec![evm_abstract_protocol::DisasmBlock {
+    std::sync::Arc::make_mut(&mut source).id = 1;
+    let mut instructions = source.blocks[0].instructions.clone();
+    instructions[0].pc = 1000;
+    instructions[0].name = "PUSH32".into();
+    instructions[0].immediate = Some(format!("0x{}", "ff".repeat(32)));
+    std::sync::Arc::make_mut(&mut source).blocks = vec![evm_abstract_protocol::DisasmBlock {
         id: child.basic_block.unwrap(),
         start_pc: 1000,
-        instructions: child.instructions.clone(),
+        instructions,
     }];
     report.programs.push(source);
-    report.cfg.push(child);
+    std::sync::Arc::make_mut(report.native.as_mut().unwrap())
+        .cfg
+        .push(child);
     workspace.selection = Selection {
         value: None,
         state: Some(99),
@@ -180,11 +194,14 @@ fn selected_child_source_and_reanalysis_remeasure_automatic_panes() {
     settled(&ctx, &mut workspace, size);
     assert!((widths(&workspace, size)[0] - original[0]).abs() < 1.0);
     let mut replacement = crate::tests::report();
-    replacement.programs[0].blocks[0].instructions[0].immediate =
-        Some(format!("0x{}", "ab".repeat(32)));
+    std::sync::Arc::make_mut(&mut replacement.model.programs[0]).blocks[0].instructions[0]
+        .immediate = Some(format!("0x{}", "ab".repeat(32)));
+    replacement.ssa.blocks[0].instructions[0].immediate =
+        replacement.source(0).instructions[0].immediate.clone();
+    crate::tests::refresh_operation(&mut replacement.ssa.blocks[0].instructions[0]);
     workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
-        result: Ok(replacement),
+        result: Ok((replacement).into()),
     }));
     settled(&ctx, &mut workspace, size);
     assert!(widths(&workspace, size)[0] > original[0] + 200.0);
@@ -245,11 +262,11 @@ fn manual_divider_widths_survive_growth_content_changes_and_reanalysis() {
         }
     }
     let mut replacement = crate::tests::report();
-    replacement.programs[0].blocks[0].instructions[0].immediate =
-        Some(format!("0x{}", "ff".repeat(32)));
+    std::sync::Arc::make_mut(&mut replacement.model.programs[0]).blocks[0].instructions[0]
+        .immediate = Some(format!("0x{}", "ff".repeat(32)));
     workspace.initial_command();
     workspace.receive(Ok(AnalyzeReply {
-        result: Ok(replacement),
+        result: Ok((replacement).into()),
     }));
     settled(&ctx, &mut workspace, size);
     let next = widths(&workspace, size);
@@ -295,8 +312,13 @@ fn long_code_in_a_world_directory_does_not_squeeze_the_graph_to_a_thin_column() 
     let mut workspace = ready();
     workspace.directory.open = true;
     let report = workspace.report.as_mut().unwrap();
-    report.programs[0].blocks[0].instructions[0].immediate = Some(format!("0x{}", "ef".repeat(32)));
-    report.ssa.blocks[2].phis[0].inputs = (0..70)
+    std::sync::Arc::make_mut(&mut report.programs[0]).blocks[0].instructions[0].immediate =
+        Some(format!("0x{}", "ef".repeat(32)));
+    std::sync::Arc::make_mut(report.native.as_mut().unwrap())
+        .ssa
+        .blocks[2]
+        .phis[0]
+        .inputs = (0..70)
         .map(|id| PhiInput {
             edge: id,
             predecessor: id,

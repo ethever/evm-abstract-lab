@@ -71,7 +71,7 @@ fn ui_only_clone_renders_all_three_alternatives_with_no_observed_outcomes() {
             events,
             egui::vec2(1200.0, 1100.0),
             |ui| {
-                inspector.outcomes(ui, &ui_only_report, &mut selection);
+                inspector.outcomes(ui, &(ui_only_report).view(), &mut selection);
             },
         )
     };
@@ -138,7 +138,7 @@ fn original_binding_retains_full_identity_logical_address_and_captured_program()
             events,
             egui::vec2(1600.0, 1800.0),
             |ui| {
-                binding(ui, &report, coverage);
+                binding(ui, &(report).view(), coverage);
             },
         )
     };
@@ -179,6 +179,7 @@ fn original_binding_retains_full_identity_logical_address_and_captured_program()
     }
     let text = draw(vec![]);
     let program = report
+        .model
         .programs
         .iter()
         .find(|program| program.id == input.program)
@@ -215,7 +216,7 @@ fn terminal_bytes_come_from_each_alternatives_actual_pool_reference() {
                 events,
                 egui::vec2(1200.0, 900.0),
                 |ui| {
-                    alternative(ui, &report, outcome);
+                    alternative(ui, &(report).view(), outcome);
                 },
             )
         };
@@ -266,7 +267,7 @@ fn ordinary_store_defaults_show_actual_bases_and_unknown_code_without_source_fal
             events,
             egui::vec2(1200.0, 1000.0),
             |ui| {
-                stores::changes(ui, &report, returned);
+                stores::changes(ui, &(report).view(), returned);
             },
         )
     };
@@ -316,7 +317,7 @@ fn ordinary_store_defaults_show_actual_bases_and_unknown_code_without_source_fal
     assert!(
         !text
             .iter()
-            .any(|(label, _)| label == &report.programs[0].bytecode)
+            .any(|(label, _)| label == &report.model.programs[0].bytecode)
     );
     report.validate().unwrap();
 }
@@ -354,7 +355,7 @@ fn unlisted_code_defaults_preserve_runtime_empty_delegation_and_unknown_meanings
                 events,
                 egui::vec2(1200.0, 1000.0),
                 |ui| {
-                    stores::changes(ui, &report, &store);
+                    stores::changes(ui, &(report).view(), &store);
                 },
             )
         };

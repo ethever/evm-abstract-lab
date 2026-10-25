@@ -25,6 +25,8 @@ fn status(workspace: &mut Workspace, generation: u64, state: api::JobState) {
         operation: JobOperation::Submit,
         result: Ok(api::JobReply {
             result: Ok(api::JobSnapshot {
+                publication: (state == api::JobState::Completed)
+                    .then(crate::tests::native_publication),
                 id: api::JobId(17),
                 state,
                 progress: api::AnalysisProgress::default(),
@@ -90,8 +92,10 @@ fn result_wait_includes_actual_first_visible_view_and_does_not_force_hidden_grap
     workspace.initial_command();
     workspace.view = View::Ssa;
     let mut report = report();
-    report.metadata.timings = backend();
-    workspace.receive(Ok(api::AnalyzeReply { result: Ok(report) }));
+    report.model.timings = backend();
+    workspace.receive(Ok(api::AnalyzeReply {
+        result: Ok((report).into()),
+    }));
     assert!(
         workspace.task.wait.running(),
         "JSON receipt is not view readiness"
@@ -176,9 +180,9 @@ fn disconnected_polling_keeps_elapsed_live_while_terminal_failure_and_cancel_fre
     assert!(workspace.accessible_status().contains("Total wait:"));
     workspace.initial_command();
     let mut invalid = report();
-    invalid.schema_version = 0;
+    invalid.model.schema_version = 0;
     workspace.receive(Ok(api::AnalyzeReply {
-        result: Ok(invalid),
+        result: Ok((invalid).into()),
     }));
     assert_eq!(workspace.task.phase, TaskPhase::Failed);
     assert!(!workspace.task.wait.running());
@@ -190,6 +194,7 @@ fn result_retries_accumulate_client_work_and_stale_callbacks_cannot_relabel_prev
     let mut workspace = Workspace::default();
     workspace.initial_command();
     status(&mut workspace, 1, api::JobState::Completed);
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(Message::Result {
         generation: 1,
         id: api::JobId(17),
@@ -199,11 +204,17 @@ fn result_retries_accumulate_client_work_and_stale_callbacks_cannot_relabel_prev
     });
     assert!(workspace.task.wait.running());
     let mut report = report();
-    report.metadata.timings = backend();
+    report.model.timings = backend();
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(Message::Result {
         generation: 1,
         id: api::JobId(17),
-        result: Box::new(Ok(api::AnalyzeReply { result: Ok(report) })),
+        result: Box::new(Ok(crate::tests::job_result(
+            api::JobId(17),
+            api::AnalyzeReply {
+                result: Ok((report).into()),
+            },
+        ))),
         transfer_ns: 30_000_000,
         parsing_ns: 10_000_000,
     });
@@ -214,12 +225,16 @@ fn result_retries_accumulate_client_work_and_stale_callbacks_cannot_relabel_prev
     workspace.initial_command();
     assert!(workspace.task.wait.running());
     assert_eq!(workspace.task.frontend, Frontend::default());
+    let _ = workspace.task.next_command(f64::MAX);
     workspace.receive_message(Message::Result {
         generation: 1,
         id: api::JobId(17),
-        result: Box::new(Ok(api::AnalyzeReply {
-            result: Ok(crate::tests::empty_report()),
-        })),
+        result: Box::new(Ok(crate::tests::job_result(
+            api::JobId(17),
+            api::AnalyzeReply {
+                result: Ok((crate::tests::empty_report()).into()),
+            },
+        ))),
         transfer_ns: u64::MAX,
         parsing_ns: u64::MAX,
     });
@@ -239,6 +254,7 @@ fn narrow_status_keeps_the_elapsed_clock_visible_and_backend_stages_are_authorit
     let mut workspace = Workspace::default();
     workspace.initial_command();
     let mut snapshot = api::JobSnapshot {
+        publication: None,
         id: api::JobId(17),
         state: api::JobState::Running,
         progress: api::AnalysisProgress::default(),
@@ -272,15 +288,17 @@ fn completed_timing_inspector_keeps_all_backend_and_frontend_phases_readable() {
     let mut workspace = Workspace::default();
     workspace.initial_command();
     let mut report = report();
-    report.metadata.timings = backend();
-    workspace.receive(Ok(api::AnalyzeReply { result: Ok(report) }));
+    report.model.timings = backend();
+    workspace.receive(Ok(api::AnalyzeReply {
+        result: Ok((report).into()),
+    }));
     workspace.inspector.tab = crate::app::inspector::Tab::Timing;
     frame(&mut workspace, egui::vec2(1440.0, 1600.0));
     workspace.inspector.timings = workspace.timing_details();
     let visible = paint(egui::vec2(1440.0, 1600.0), |ui| {
         workspace.inspector.show(
             ui,
-            workspace.report.as_ref().unwrap(),
+            &crate::tests::fixture_view(workspace.report.as_ref().unwrap()),
             &mut workspace.selection,
             None,
         );

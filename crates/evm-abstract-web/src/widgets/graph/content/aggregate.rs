@@ -1,8 +1,9 @@
 //! Source-block summaries count native instances without combining their SSA.
 use super::{DisplayNode, NodeText, NodeView, ReportIndex, abbreviate, leaf};
 use crate::palette;
+use crate::report::ReportView;
 use evm_abstract_notation::Symbol;
-use evm_abstract_protocol::{AnalysisReport, BlockCoverage, CfgBlock, FrameSnapshot};
+use evm_abstract_protocol::{BlockCoverage, CfgBlock, FrameSnapshot};
 
 const MEMBERS_IN_TOOLTIP: usize = 12;
 const SHARED_SOURCE_ROWS: usize = 3;
@@ -47,7 +48,7 @@ struct Summary {
     shared_source: bool,
 }
 impl Summary {
-    fn collect(report: &AnalysisReport, index: &ReportIndex, node: &DisplayNode) -> Self {
+    fn collect(report: &ReportView<'_>, index: &ReportIndex, node: &DisplayNode) -> Self {
         let mut summary = Self {
             shared_source: true,
             ..Self::default()
@@ -79,14 +80,9 @@ impl Summary {
                 summary.storage_varies |= first.storage_address != block.storage_address;
                 summary.depth_varies |= first.frame_depth != block.frame_depth;
                 summary.code_varies |= first.code_address != block.code_address;
-                // Only the source prefix shown below is compared. The immutable
-                // program/block identity supplies the common source namespace.
-                summary.shared_source &= first.instructions.len() == block.instructions.len()
-                    && first
-                        .instructions
-                        .iter()
-                        .take(SHARED_SOURCE_ROWS)
-                        .eq(block.instructions.iter().take(SHARED_SOURCE_ROWS));
+                // One catalog entry supplies every instance of the same source.
+                summary.shared_source &=
+                    first.source_block().is_some() && first.source_block() == block.source_block();
             } else {
                 summary.shared_source = false;
             }
@@ -133,7 +129,7 @@ impl Summary {
         .filter_map(|(varies, label)| varies.then_some(label))
         .collect()
     }
-    fn roles(&self, report: &AnalysisReport, first: Option<&CfgBlock>) -> String {
+    fn roles(&self, report: &ReportView<'_>, first: Option<&CfgBlock>) -> String {
         let differences = self.differences();
         let mut text = if differences.is_empty() {
             first.map_or("Frame roles unavailable".into(), |first| {
@@ -153,7 +149,7 @@ impl Summary {
     }
 }
 fn active_frame<'a>(
-    report: &'a AnalysisReport,
+    report: &'a ReportView<'_>,
     index: &ReportIndex,
     state: usize,
 ) -> Option<&'a FrameSnapshot> {
@@ -181,7 +177,7 @@ fn short_address(address: &str) -> String {
 }
 
 pub(super) fn preview(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     index: &ReportIndex,
     node: &DisplayNode,
     view: NodeView,
@@ -223,9 +219,9 @@ pub(super) fn preview(
         palette::MUTED,
     ));
     if let Some(block) = first.filter(|_| summary.shared_source) {
+        let instructions = report.instructions(block);
         lines.extend(
-            block
-                .instructions
+            instructions
                 .iter()
                 .take(SHARED_SOURCE_ROWS)
                 .map(|instruction| {
@@ -239,11 +235,11 @@ pub(super) fn preview(
                     )
                 }),
         );
-        if block.instructions.len() > SHARED_SOURCE_ROWS {
+        if instructions.len() > SHARED_SOURCE_ROWS {
             lines.push((
                 format!(
                     "+{} source instructions",
-                    block.instructions.len() - SHARED_SOURCE_ROWS
+                    instructions.len() - SHARED_SOURCE_ROWS
                 ),
                 palette::MUTED,
             ));
@@ -290,7 +286,7 @@ fn compact_members(node: &DisplayNode) -> String {
 }
 
 pub(super) fn tooltip(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     index: &ReportIndex,
     node: &DisplayNode,
     view: NodeView,

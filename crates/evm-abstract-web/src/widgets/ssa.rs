@@ -1,5 +1,6 @@
 //! SSA uses compact virtual table rows. Tokens retain semantic coloring while
 //! native state/PC targets keep table selection linked to the graph and source.
+use crate::report::ReportView;
 
 use evm_abstract_notation::Symbol;
 mod cache;
@@ -10,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Color32, FontId, ScrollArea, Sense, Ui, Vec2};
 use egui_extras::{Column, TableBuilder};
-use evm_abstract_protocol::{AnalysisReport, BlockCoverage, InstructionProgress};
+use evm_abstract_protocol::{BlockCoverage, InstructionProgress};
 
 use super::{ROW_HEIGHT, heading, row_background, text};
 use crate::{
@@ -21,7 +22,7 @@ use crate::{
 
 pub(crate) fn ssa_cached(
     ui: &mut Ui,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     program: Option<usize>,
     display: SsaDisplay,
     selection: &mut Selection,
@@ -38,7 +39,7 @@ pub(crate) fn ssa_cached(
 
 fn contents(
     ui: &mut Ui,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     program: Option<usize>,
     display: SsaDisplay,
     selection: &mut Selection,
@@ -167,7 +168,7 @@ fn contents(
 /// inputs, effects and transitions. Graph folding never folds these SSA rows.
 pub(crate) fn natural_width_cached(
     ui: &Ui,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     program: Option<usize>,
     display: SsaDisplay,
     selection: Selection,
@@ -189,7 +190,7 @@ fn row_width(ui: &Ui, columns: usize) -> f32 {
 #[cfg(test)]
 pub(crate) fn ssa(
     ui: &mut Ui,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     program: Option<usize>,
     display: SsaDisplay,
     selection: &mut Selection,
@@ -209,7 +210,7 @@ pub(crate) fn ssa(
 #[cfg(test)]
 pub(crate) fn natural_width(
     ui: &Ui,
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     program: Option<usize>,
     display: SsaDisplay,
     selection: Selection,
@@ -306,7 +307,7 @@ fn frames(frames: &[Vec<usize>]) -> String {
 }
 
 fn scoped_states(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     program: Option<usize>,
     selection: Selection,
 ) -> BTreeSet<usize> {
@@ -323,7 +324,7 @@ fn scoped_states(
 }
 
 fn scoped_rows(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     program: Option<usize>,
     display: SsaDisplay,
     selection: Selection,
@@ -335,12 +336,12 @@ fn scoped_rows(
 }
 
 #[cfg(test)]
-fn rows(report: &AnalysisReport) -> Vec<Row> {
+fn rows(report: &ReportView<'_>) -> Vec<Row> {
     build_rows(report, SsaDisplay::Full, Selection::default(), |_| true)
 }
 
 fn build_rows(
-    report: &AnalysisReport,
+    report: &ReportView<'_>,
     display: SsaDisplay,
     selection: Selection,
     include: impl Fn(usize) -> bool,
@@ -625,7 +626,7 @@ fn build_rows(
 /// The same tokens determine paint and scroll extents, so no data-bearing row
 /// (including a transition or exit stack) can overrun the horizontal viewport.
 #[cfg(test)]
-pub(crate) fn content_columns(report: &AnalysisReport) -> usize {
+pub(crate) fn content_columns(report: &ReportView<'_>) -> usize {
     rows(report)
         .iter()
         .map(Row::columns)

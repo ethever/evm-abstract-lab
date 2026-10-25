@@ -164,6 +164,7 @@ mod tests {
             operation: JobOperation::Submit,
             result: Ok(JobReply {
                 result: Ok(JobSnapshot {
+                    publication: None,
                     id: JobId(17),
                     state: JobState::Running,
                     progress: AnalysisProgress::default(),

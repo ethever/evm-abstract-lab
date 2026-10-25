@@ -31,46 +31,46 @@ fn accessible_summary_tracks_the_selected_abstract_interaction_coverage() {
     });
     assert!(
         inspector
-            .accessible_summary(&report, selection)
+            .accessible_summary(&(report).view(), selection)
             .contains("Abstract interactions · closed")
     );
     report.abstract_summaries[0].kind = api::ProcedureSummaryKind::KnownRecursion;
-    let known = inspector.accessible_summary(&report, selection);
+    let known = inspector.accessible_summary(&(report).view(), selection);
     assert!(known.contains("Recursive bytecode · closed"));
     assert!(!known.contains("Abstract interactions"));
     report.abstract_summaries[0].kind = api::ProcedureSummaryKind::KnownCall;
-    let known = inspector.accessible_summary(&report, selection);
+    let known = inspector.accessible_summary(&(report).view(), selection);
     assert!(known.contains("Known bytecode call · closed"));
     assert!(!known.contains("Recursive bytecode"));
     report.abstract_summaries[0].kind = api::ProcedureSummaryKind::KnownProcess;
-    let process = inspector.accessible_summary(&report, selection);
+    let process = inspector.accessible_summary(&(report).view(), selection);
     assert!(process.contains("Conservative runtime process · closed"));
     assert!(!process.contains("Known bytecode call"));
     report.abstract_summaries[0].kind = api::ProcedureSummaryKind::UnknownEnvironment;
     report.abstract_summaries[0].closed = false;
     assert!(
         inspector
-            .accessible_summary(&report, selection)
+            .accessible_summary(&(report).view(), selection)
             .contains("Abstract interactions · open")
     );
     report.abstract_summaries[0].source_state = 1;
     assert!(
         !inspector
-            .accessible_summary(&report, selection)
+            .accessible_summary(&(report).view(), selection)
             .contains("Abstract interactions")
     );
     report.abstract_summaries[0].source_state = 0;
     inspector.tab = Tab::Stack;
     assert!(
         !inspector
-            .accessible_summary(&report, selection)
+            .accessible_summary(&(report).view(), selection)
             .contains("Abstract interactions")
     );
     inspector.tab = Tab::Frame;
     inspector.expanded = false;
     assert!(
         !inspector
-            .accessible_summary(&report, selection)
+            .accessible_summary(&(report).view(), selection)
             .contains("Abstract interactions")
     );
 }
@@ -247,9 +247,9 @@ fn frame(index: usize, rollback_store: usize) -> api::FrameSnapshot {
         process_operands: None,
         process_creation: None,
         index,
-        program: None,
-        code_address: Some(owner.clone()),
-        code_hash: Some("0x00".into()),
+        program: Some(0),
+        code_address: Some(format!("0x{}", "00".repeat(20))),
+        code_hash: Some(format!("0x{}", "00".repeat(32))),
         storage_address: Some(owner.clone()),
         address_value: Some(api::AddressValue::Concrete(owner.clone())),
         caller: Some(api::AddressValue::Concrete(owner)),
@@ -312,7 +312,7 @@ fn a_new_report_reusing_s0_cannot_keep_a_historical_exit_or_outcome_selection() 
     let mut workspace = crate::Workspace::default();
     let mut report = crate::tests::report();
     report.stores = vec![store()];
-    report.states = vec![api::StateDetails {
+    report.states[0] = api::StateDetails {
         state: 0,
         entry: api::MachineSnapshot {
             path: evm_abstract_protocol::PathRef { node: 4 },
@@ -320,7 +320,7 @@ fn a_new_report_reusing_s0_cannot_keep_a_historical_exit_or_outcome_selection() 
             store: 0,
         },
         exit: None,
-    }];
+    };
     workspace.inspector.point = Point::Exit;
     workspace.inspector.frame = Some(7);
     workspace.inspector.last_state = Some(0);
@@ -328,11 +328,16 @@ fn a_new_report_reusing_s0_cannot_keep_a_historical_exit_or_outcome_selection() 
     workspace.inspector.rollback = true;
     workspace.inspector.tab = Tab::Memory;
     workspace.inspector.expanded = false;
-    workspace.receive(Ok(api::AnalyzeReply { result: Ok(report) }));
+    workspace.receive(Ok(api::AnalyzeReply {
+        result: Ok((report).into()),
+    }));
     assert!(
         workspace
             .inspector
-            .machine(workspace.report.as_ref().unwrap(), workspace.selection)
+            .machine(
+                &crate::tests::fixture_view(workspace.report.as_ref().unwrap()),
+                workspace.selection
+            )
             .is_some()
     );
     assert!(workspace.inspector.frame.is_none());
@@ -538,7 +543,7 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
         ..Inspector::default()
     };
     let text = rendered(&context, &mut time, vec![], |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     assert!(
         text.iter().any(|(text, _)| text == "Return/revert length"),
@@ -551,7 +556,7 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
         .1
         .center();
     let opened = click(&context, &mut time, position, |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     let menu = opened
         .iter()
@@ -571,11 +576,11 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
                 phase: egui::TouchPhase::Move,
             },
         ],
-        |ui| inspector.show(ui, &report, &mut selection, None),
+        |ui| inspector.show(ui, &(report).view(), &mut selection, None),
     );
     for _ in 0..30 {
         visible = rendered(&context, &mut time, vec![], |ui| {
-            inspector.show(ui, &report, &mut selection, None)
+            inspector.show(ui, &(report).view(), &mut selection, None)
         });
     }
     let last = visible
@@ -585,7 +590,7 @@ fn many_outcomes_keep_details_visible_and_the_last_exact_result_selectable() {
         .1
         .center();
     let selected = click(&context, &mut time, last, |ui| {
-        inspector.show(ui, &report, &mut selection, None)
+        inspector.show(ui, &(report).view(), &mut selection, None)
     });
     assert_eq!(inspector.outcome, 63);
     assert_eq!(selection.state, Some(report.outcomes[63].state));
@@ -618,7 +623,7 @@ fn relational_frontier_details_show_fact_arity_and_all_local_boundaries() {
     let mut time = 0.0;
     let mut selection = Selection::default();
     let arity = rendered(&context, &mut time, vec![], |ui| {
-        evidence::diagnostics(ui, &report, &mut selection)
+        evidence::diagnostics(ui, &(report).view(), &mut selection)
     });
     for required in [
         "Pure-operation operand count mismatch",
@@ -656,7 +661,7 @@ fn relational_frontier_details_show_fact_arity_and_all_local_boundaries() {
     ] {
         report.frontiers[0].reason = api::FrontierDetails::Relations(reason);
         let visible = rendered(&context, &mut time, vec![], |ui| {
-            evidence::diagnostics(ui, &report, &mut selection)
+            evidence::diagnostics(ui, &(report).view(), &mut selection)
         });
         assert!(
             visible.iter().any(|(text, _)| text == expected),
@@ -719,7 +724,7 @@ fn native_state_and_frame_symbols_match_accessibility_without_renumbering() {
     report.edges.clear();
     report.ssa.blocks.truncate(1);
     report.ssa.blocks[0].state = 425;
-    report.programs[0].id = 128;
+    std::sync::Arc::make_mut(&mut report.model.programs[0]).id = 128;
     report.metadata.root_program = Some(128);
     report.stores = (0..129).map(|_| store()).collect();
     let frames = (0..18)
@@ -728,7 +733,7 @@ fn native_state_and_frame_symbols_match_accessibility_without_renumbering() {
             frame.program = Some(128);
             frame.code_address = report.cfg[0].code_address.clone();
             frame.storage_address = report.cfg[0].storage_address.clone();
-            frame.code_hash = Some(report.programs[0].code_hash.clone());
+            frame.code_hash = Some(report.model.programs[0].code_hash.clone());
             frame
         })
         .collect();
@@ -741,7 +746,9 @@ fn native_state_and_frame_symbols_match_accessibility_without_renumbering() {
         },
         exit: None,
     }];
-    workspace.receive(Ok(api::AnalyzeReply { result: Ok(report) }));
+    workspace.receive(Ok(api::AnalyzeReply {
+        result: Ok((report).into()),
+    }));
     assert_eq!(workspace.selection.state, Some(425));
     assert_eq!(workspace.program, Some(128));
     let status = workspace.accessible_status();
@@ -753,9 +760,12 @@ fn native_state_and_frame_symbols_match_accessibility_without_renumbering() {
     let mut time = 0.0;
     let report = workspace.report.as_ref().unwrap();
     let visible = rendered(&context, &mut time, vec![], |ui| {
-        workspace
-            .inspector
-            .show(ui, report, &mut workspace.selection, None);
+        workspace.inspector.show(
+            ui,
+            &crate::tests::fixture_view(report),
+            &mut workspace.selection,
+            None,
+        );
     });
     for expected in ["σ425", "Frame f17"] {
         assert!(
@@ -784,7 +794,7 @@ fn frontier_symbol_click_retains_original_state_and_instruction_coordinates() {
     let mut time = 0.0;
     let mut selection = Selection::default();
     let visible = rendered(&context, &mut time, vec![], |ui| {
-        evidence::diagnostics(ui, &report, &mut selection)
+        evidence::diagnostics(ui, &(report).view(), &mut selection)
     });
     let position = visible
         .iter()
@@ -793,7 +803,7 @@ fn frontier_symbol_click_retains_original_state_and_instruction_coordinates() {
         .1
         .center();
     click(&context, &mut time, position, |ui| {
-        evidence::diagnostics(ui, &report, &mut selection)
+        evidence::diagnostics(ui, &(report).view(), &mut selection)
     });
     assert_eq!(
         selection,
@@ -985,6 +995,7 @@ fn task_progress_and_typed_task_error_keep_the_full_u64_handle() {
     let mut workspace = crate::Workspace::default();
     workspace.task.phase = crate::app::job::TaskPhase::Running;
     workspace.task.snapshot = Some(api::JobSnapshot {
+        publication: None,
         id: api::JobId(u64::MAX),
         state: api::JobState::Running,
         progress: api::AnalysisProgress::default(),
@@ -1054,7 +1065,7 @@ fn identical_log_captions_keep_independent_captured_code_panels() {
     let mut time = 0.0;
     let size = egui::vec2(1100.0, 900.0);
     let before = rendered_at(&context, &mut time, vec![], size, |ui| {
-        stores::changes(ui, &report, &source)
+        stores::changes(ui, &(report).view(), &source)
     });
     let caption = format!("{} · Runtime · pc 0x7 · 0 topics", account().address);
     let headers: Vec<_> = before.iter().filter(|(text, _)| text == &caption).collect();
@@ -1074,11 +1085,11 @@ fn identical_log_captions_keep_independent_captured_code_panels() {
                 },
             ],
             size,
-            |ui| stores::changes(ui, &report, &source),
+            |ui| stores::changes(ui, &(report).view(), &source),
         );
     }
     let visible = rendered_at(&context, &mut time, vec![], size, |ui| {
-        stores::changes(ui, &report, &source)
+        stores::changes(ui, &(report).view(), &source)
     });
     assert!(
         visible
@@ -1108,7 +1119,7 @@ fn touched_only_account_versions_are_visible_as_changes_with_unchanged_data_root
         &mut time,
         vec![],
         egui::vec2(900.0, 700.0),
-        |ui| stores::changes(ui, &report, &source),
+        |ui| stores::changes(ui, &(report).view(), &source),
     );
     assert!(
         !initial
@@ -1122,7 +1133,7 @@ fn touched_only_account_versions_are_visible_as_changes_with_unchanged_data_root
             &mut time,
             vec![],
             egui::vec2(900.0, 700.0),
-            |ui| stores::changes(ui, &report, &source),
+            |ui| stores::changes(ui, &(report).view(), &source),
         );
         assert!(
             visible

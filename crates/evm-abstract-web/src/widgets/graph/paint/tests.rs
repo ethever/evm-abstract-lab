@@ -1,9 +1,10 @@
+use crate::tests::AnalysisReport;
 use std::collections::BTreeMap;
 
 use egui::{Context, Event, FullOutput, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 use evm_abstract_protocol::{
-    AnalysisReport, BlockCoverage, CfgEdge, EdgeKind, Frontier, FrontierDetails, FrontierKind,
-    InstructionProgress, Outcome, OutcomeKind, SsaInstruction,
+    BlockCoverage, CfgEdge, EdgeKind, Frontier, FrontierDetails, FrontierKind, InstructionProgress,
+    Outcome, OutcomeKind, SsaInstruction,
 };
 
 use super::super::{Graph, content::NodeView, layout::Group, projection::GraphMode};
@@ -27,7 +28,7 @@ fn frame(
     let mut canvas = Rect::NOTHING;
     let mut output = ctx.run_ui(input, |ui| {
         let available = ui.available_rect_before_wrap();
-        graph.show(ui, report, selection);
+        graph.show(ui, &(report).view(), selection);
         canvas = Rect::from_min_size(
             available.right_bottom() - graph.viewport.unwrap(),
             graph.viewport.unwrap(),
@@ -54,6 +55,7 @@ fn card_text<'a>(output: &'a FullOutput, graph: &Graph, canvas: Rect) -> Vec<&'a
         .iter()
         .filter(|shape| {
             graph
+                .scene
                 .placement
                 .nodes
                 .values()
@@ -77,16 +79,18 @@ struct Geometry {
 
 fn geometry(graph: &Graph) -> Geometry {
     Geometry {
-        nodes: graph.placement.nodes.clone(),
+        nodes: graph.scene.placement.nodes.clone(),
         edges: graph
+            .scene
             .placement
             .edges
             .iter()
             .map(|(id, route)| (*id, route.path.clone(), route.label))
             .collect(),
-        groups: graph.placement.groups.clone(),
-        bounds: graph.placement.bounds,
+        groups: graph.scene.placement.groups.clone(),
+        bounds: graph.scene.placement.bounds,
         sizes: graph
+            .scene
             .nodes
             .iter()
             .map(|(id, text)| (*id, text.size))
@@ -103,7 +107,7 @@ fn initialized(mode: GraphMode) -> (Context, Graph, AnalysisReport, Selection) {
     let mut selection = Selection::default();
     frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     graph.fitted = false;
-    graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2();
+    graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2();
     (ctx, graph, report, selection)
 }
 
@@ -118,7 +122,10 @@ fn semantic_zoom_paints_native_ids_then_exact_ssa_without_changing_geometry() {
             edge.to = 205;
         }
     }
-    graph.reset_report();
+    graph.activate(crate::app::model::ReportViewId::fixture(
+        2,
+        evm_abstract_protocol::AnalysisNamespace::Native,
+    ));
     frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     graph.fitted = false;
     let measured = geometry(&graph);
@@ -132,7 +139,7 @@ fn semantic_zoom_paints_native_ids_then_exact_ssa_without_changing_geometry() {
         (1.0, true),
     ] {
         graph.zoom = zoom;
-        graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2() * zoom;
+        graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2() * zoom;
         let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
         let labels = card_text(&output, &graph, canvas);
         if preview {
@@ -179,11 +186,15 @@ fn semantic_zoom_preserves_real_spatial_group_rectangles_and_members() {
     // Removing the shortcut leaves a strict 0 -> 1 -> 2 sequence. This must
     // exercise a real container, rather than comparing two empty group lists.
     report.edges.retain(|edge| edge.id != 1);
-    graph.reset_report();
+    graph.activate(crate::app::model::ReportViewId::fixture(
+        2,
+        evm_abstract_protocol::AnalysisNamespace::Native,
+    ));
     frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     graph.fitted = false;
     assert!(
         graph
+            .scene
             .placement
             .groups
             .iter()
@@ -193,7 +204,7 @@ fn semantic_zoom_preserves_real_spatial_group_rectangles_and_members() {
     let measured = geometry(&graph);
     for zoom in [0.20, 0.54, 0.60, 0.66, 1.0, 2.0, 0.40] {
         graph.zoom = zoom;
-        graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2() * zoom;
+        graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2() * zoom;
         frame(&ctx, &mut graph, &report, &mut selection, vec![]);
         assert_eq!(
             geometry(&graph),
@@ -209,10 +220,10 @@ fn native_state_selection_works_in_both_identity_and_preview_modes() {
     let measured = geometry(&graph);
     for zoom in [0.40, 1.0] {
         graph.zoom = zoom;
-        graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2() * zoom;
+        graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2() * zoom;
         let (_, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
         let point = graph
-            .screen_rect(canvas, graph.placement.nodes[&2])
+            .screen_rect(canvas, graph.scene.placement.nodes[&2])
             .center();
         selection = Selection {
             value: None,
@@ -265,7 +276,7 @@ fn compact_source_groups_show_members_without_presenting_one_state_as_the_group(
     frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     graph.fitted = false;
     graph.zoom = 0.40;
-    graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2() * graph.zoom;
+    graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2() * graph.zoom;
     let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     let labels = card_text(&output, &graph, canvas);
     assert!(labels.contains(&"P₀:B₂ · 2 states"));
@@ -288,7 +299,7 @@ fn zooming_restores_the_selected_disassembly_preview() {
     let measured = geometry(&graph);
     for (zoom, visible) in [(0.40, false), (1.0, true)] {
         graph.zoom = zoom;
-        graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2() * zoom;
+        graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2() * zoom;
         let (output, _) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
         assert_eq!(
             text(&output).iter().any(|line| line.contains("000a  ADD")),
@@ -341,7 +352,7 @@ fn native_graph(report: &AnalysisReport) -> (Context, Graph, Selection) {
     frame(&ctx, &mut graph, report, &mut selection, vec![]);
     graph.fitted = false;
     graph.zoom = 1.0;
-    graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2();
+    graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2();
     (ctx, graph, selection)
 }
 
@@ -360,8 +371,8 @@ fn ssa_detail_switch_paints_stack_receipts_and_phases_with_frozen_geometry() {
     let original = report.ssa.blocks[2].instructions.clone();
     let (ctx, mut graph, mut selection) = native_graph(&report);
     let measured = geometry(&graph);
-    let edges = graph.display.edges.clone();
-    let labels = graph.edge_labels.clone();
+    let edges = graph.scene.display.edges.clone();
+    let labels = graph.scene.edge_labels.clone();
     let camera = (graph.zoom, graph.pan);
     for display in [SsaDisplay::Compact, SsaDisplay::Full, SsaDisplay::Compact] {
         graph.set_ssa_display(display, selection);
@@ -387,17 +398,17 @@ fn ssa_detail_switch_paints_stack_receipts_and_phases_with_frozen_geometry() {
             && line.contains("Dispatched")
             && line.contains('μ')));
         assert_eq!(geometry(&graph), measured);
-        assert_eq!(graph.display.edges, edges);
-        assert_eq!(graph.edge_labels, labels);
+        assert_eq!(graph.scene.display.edges, edges);
+        assert_eq!(graph.scene.edge_labels, labels);
         assert_eq!((graph.zoom, graph.pan), camera);
-        assert!(!graph.layout_pending);
+        assert!(!graph.scene.layout_pending);
         assert!(!graph.fit_pending);
     }
     assert_eq!(report.ssa.blocks[2].instructions, original);
-    let node = &graph.display.nodes[graph.node_positions[&2]];
+    let node = &graph.scene.display.nodes[graph.scene.node_positions[&2]];
     let tooltip = super::super::content::node_tooltip(
-        &report,
-        graph.index.as_ref().unwrap(),
+        &(report).view(),
+        graph.scene.index.as_ref().unwrap(),
         node,
         NodeView::Ssa,
     );
@@ -455,7 +466,7 @@ fn compact_ssa_paints_faults_unfinished_stack_operations_and_effects() {
             && line.contains("Started"))
     );
     assert!(
-        graph.nodes[&2]
+        graph.scene.nodes[&2]
             .lines
             .iter()
             .any(|(line, color)| line.contains("DUP16") && *color == crate::palette::ERROR)
@@ -502,10 +513,10 @@ fn compact_preview_fills_filtered_quota_and_temporarily_reveals_a_buried_native_
             assert!(revealed[0].starts_with(&format!("{pc:04x}")));
         }
         assert!(lines.iter().any(|line| line.contains("STOP")));
-        assert_eq!(graph.nodes[&2].lines.len(), 8);
+        assert_eq!(graph.scene.nodes[&2].lines.len(), 8);
         assert_eq!(geometry(&graph), measured);
         assert_eq!((graph.zoom, graph.pan), camera);
-        assert!(!graph.layout_pending);
+        assert!(!graph.scene.layout_pending);
     }
 }
 
@@ -537,10 +548,10 @@ fn selected_stack_row_fits_natural_reserved_width_and_retains_full_tooltip() {
     );
     assert_eq!(geometry(&graph), measured);
     assert_eq!((graph.zoom, graph.pan), camera);
-    let node = &graph.display.nodes[graph.node_positions[&2]];
+    let node = &graph.scene.display.nodes[graph.scene.node_positions[&2]];
     let tooltip = super::super::content::node_tooltip(
-        &report,
-        graph.index.as_ref().unwrap(),
+        &(report).view(),
+        graph.scene.index.as_ref().unwrap(),
         node,
         NodeView::Ssa,
     );
@@ -567,7 +578,7 @@ fn ssa_detail_and_selected_pc_keep_aggregate_cards_as_source_summaries() {
     frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     graph.fitted = false;
     graph.zoom = 1.0;
-    graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2();
+    graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2();
     let measured = geometry(&graph);
     for display in [SsaDisplay::Compact, SsaDisplay::Full] {
         graph.set_ssa_display(display, selection);
@@ -609,7 +620,7 @@ fn card<'a>(
     canvas: Rect,
     state: usize,
 ) -> &'a egui::epaint::RectShape {
-    let expected = graph.screen_rect(canvas, graph.placement.nodes[&state]);
+    let expected = graph.screen_rect(canvas, graph.scene.placement.nodes[&state]);
     output
         .shapes
         .iter()
@@ -692,17 +703,20 @@ fn coverage_and_frontier_warnings_have_independent_dashes_and_selection_outline(
         assert_eq!(painted.stroke.color, crate::palette::ACCENT);
         assert_eq!(painted.stroke.width, 1.5);
         assert!(warning_dashes(&output, painted.rect) > 4);
-        assert!(graph.nodes[&state].badges[0].0.contains("incomplete"));
+        assert!(graph.scene.nodes[&state].badges[0].0.contains("incomplete"));
     }
     // An unresolved state without any ending evidence stays neutral and never
     // gains a normal-end badge merely because no continuation was observed.
     report.outcomes.clear();
-    graph.reset_report();
+    graph.activate(crate::app::model::ReportViewId::fixture(
+        2,
+        evm_abstract_protocol::AnalysisNamespace::Native,
+    ));
     let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     let painted = card(&output, &graph, canvas, 0);
     assert_eq!(painted.fill, crate::palette::PANEL);
     assert!(warning_dashes(&output, painted.rect) > 4);
-    assert!(graph.nodes[&0].badges.is_empty());
+    assert!(graph.scene.nodes[&0].badges.is_empty());
 }
 
 #[test]
@@ -710,23 +724,23 @@ fn mixed_aggregate_counts_and_may_terminate_cards_keep_a_neutral_fill() {
     let mut report = terminal_report();
     report.cfg[1].basic_block = Some(0);
     report.cfg[1].start_pc = report.cfg[0].start_pc;
-    report.cfg[1].instructions = report.cfg[0].instructions.clone();
+    report.source_mut(1).instructions = report.source_mut(0).instructions.clone();
     let (ctx, mut graph, mut selection) = native_graph(&report);
     graph.set_mode(GraphMode::Blocks);
     frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     graph.fitted = false;
     graph.zoom = 1.0;
-    graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2();
+    graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2();
     let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     assert_eq!(card(&output, &graph, canvas, 0).fill, crate::palette::PANEL);
     let lines = card_text(&output, &graph, canvas);
     assert!(lines.contains(&"Mixed / incomplete termination"));
     assert!(lines.contains(&"Root end: normal 1 · REVERT 1"));
     assert!(lines.contains(&"Select an instance for SSA"));
-    let node = &graph.display.nodes[graph.node_positions[&0]];
+    let node = &graph.scene.display.nodes[graph.scene.node_positions[&0]];
     let tooltip = super::super::content::node_tooltip(
-        &report,
-        graph.index.as_ref().unwrap(),
+        &(report).view(),
+        graph.scene.index.as_ref().unwrap(),
         node,
         NodeView::Ssa,
     );
@@ -738,7 +752,10 @@ fn mixed_aggregate_counts_and_may_terminate_cards_keep_a_neutral_fill() {
         to: 0,
         kind: EdgeKind::Fallthrough,
     });
-    graph.reset_report();
+    graph.activate(crate::app::model::ReportViewId::fixture(
+        2,
+        evm_abstract_protocol::AnalysisNamespace::Native,
+    ));
     let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     assert_eq!(card(&output, &graph, canvas, 2).fill, crate::palette::PANEL);
     assert!(card_text(&output, &graph, canvas).contains(&"May terminate · continuing 1"));
@@ -758,13 +775,13 @@ fn frame_return_badges_low_zoom_and_ssa_detail_share_frozen_measured_geometry() 
     });
     let (ctx, mut graph, mut selection) = native_graph(&report);
     let measured = geometry(&graph);
-    let topology = graph.display.edges.clone();
-    let preview_budget = graph.nodes[&2].lines.len();
+    let topology = graph.scene.display.edges.clone();
+    let preview_budget = graph.scene.nodes[&2].lines.len();
     for display in [SsaDisplay::Compact, SsaDisplay::Full] {
         graph.set_ssa_display(display, selection);
         for (zoom, detailed) in [(1.0, true), (0.4, false)] {
             graph.zoom = zoom;
-            graph.pan = Vec2::splat(20.0) - graph.placement.bounds.min.to_vec2() * zoom;
+            graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2() * zoom;
             let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
             assert_eq!(
                 card(&output, &graph, canvas, 2).fill,
@@ -780,15 +797,15 @@ fn frame_return_badges_low_zoom_and_ssa_detail_share_frozen_measured_geometry() 
                     && !line.contains('%')));
             }
             assert_eq!(geometry(&graph), measured);
-            assert_eq!(graph.display.edges, topology);
-            assert_eq!(graph.nodes[&2].lines.len(), preview_budget);
-            assert_eq!(graph.nodes[&2].badges.len(), 1);
+            assert_eq!(graph.scene.display.edges, topology);
+            assert_eq!(graph.scene.nodes[&2].lines.len(), preview_budget);
+            assert_eq!(graph.scene.nodes[&2].badges.len(), 1);
         }
     }
-    let node = &graph.display.nodes[graph.node_positions[&2]];
+    let node = &graph.scene.display.nodes[graph.scene.node_positions[&2]];
     let tooltip = super::super::content::node_tooltip(
-        &report,
-        graph.index.as_ref().unwrap(),
+        &(report).view(),
+        graph.scene.index.as_ref().unwrap(),
         node,
         NodeView::Ssa,
     );
