@@ -633,6 +633,24 @@
         "dylint-driver-concurrency",
         "lean-proofs"
       ]
+    },
+    {
+      "name": "pure-runtime-report-oracle-isolation",
+      "description": "Pure report checker edits invalidate its offline leaf and current runtime browser consumers, without rebuilding Rust or Wasm.",
+      "mutations": [
+        {
+          "path": "scripts/web_test_runtime_report.py",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "web-report-oracles",
+        "web-browser-runtime-weth9",
+        "web-browser-runtime-router02",
+        "web-browser-runtime-multicall3",
+        "web-browser-registry",
+        "web-browser"
+      ]
     }
   ]
 }

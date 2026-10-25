@@ -67,40 +67,10 @@ fn selected_fork_controls_the_submitted_execution_rules() {
     for fork in [Fork::Cancun, Fork::Osaka] {
         let output = paint_sized(&ctx, &mut form, vec![], size).1;
         let selector = text_center(&output, &format!("{:?}", form.fork));
-        for pressed in [true, false] {
-            paint_sized(
-                &ctx,
-                &mut form,
-                vec![
-                    Event::PointerMoved(selector),
-                    Event::PointerButton {
-                        pos: selector,
-                        button: PointerButton::Primary,
-                        pressed,
-                        modifiers: Modifiers::NONE,
-                    },
-                ],
-                size,
-            );
-        }
+        click_sized(&ctx, &mut form, selector, size);
         let menu = paint_sized(&ctx, &mut form, vec![], size).1;
         let target = text_center(&menu, &format!("{fork:?}"));
-        for pressed in [true, false] {
-            paint_sized(
-                &ctx,
-                &mut form,
-                vec![
-                    Event::PointerMoved(target),
-                    Event::PointerButton {
-                        pos: target,
-                        button: PointerButton::Primary,
-                        pressed,
-                        modifiers: Modifiers::NONE,
-                    },
-                ],
-                size,
-            );
-        }
+        click_sized(&ctx, &mut form, target, size);
         assert_eq!(form.fork, fork);
         assert_eq!(form.request().fork, fork);
     }
@@ -118,38 +88,21 @@ fn precision_selector_submits_each_supported_numeric_model() {
         ..AnalysisForm::default()
     };
     let size = Vec2::new(1440.0, 1400.0);
-    let click = |form: &mut AnalysisForm, pos| {
-        for pressed in [true, false] {
-            paint_sized(
-                &ctx,
-                form,
-                vec![
-                    Event::PointerMoved(pos),
-                    Event::PointerButton {
-                        pos,
-                        button: PointerButton::Primary,
-                        pressed,
-                        modifiers: Modifiers::NONE,
-                    },
-                ],
-                size,
-            );
-        }
-    };
+
     for _ in 0..3 {
         paint_sized(&ctx, &mut form, vec![], size);
     }
     let output = paint_sized(&ctx, &mut form, vec![], size).1;
-    click(&mut form, text_center(&output, "Precision"));
+    click_sized(&ctx, &mut form, text_center(&output, "Precision"), size);
     for (model, current, choice) in [
         (NumericModel::FiniteSet, "Product", "Finite set"),
         (NumericModel::Product, "Finite set", "Product"),
     ] {
         let output = paint_sized(&ctx, &mut form, vec![], size).1;
         text_center(&output, "Numeric model");
-        click(&mut form, text_center(&output, current));
+        click_sized(&ctx, &mut form, text_center(&output, current), size);
         let output = paint_sized(&ctx, &mut form, vec![], size).1;
-        click(&mut form, text_center(&output, choice));
+        click_sized(&ctx, &mut form, text_center(&output, choice), size);
         assert_eq!(
             form.request().limits,
             AnalysisLimits {
@@ -163,24 +116,7 @@ fn precision_selector_submits_each_supported_numeric_model() {
 }
 
 fn click(ctx: &Context, form: &mut AnalysisForm, pos: Pos2) -> Option<AnalyzeRequest> {
-    let mut request = None;
-    for pressed in [true, false] {
-        request = frame(
-            ctx,
-            form,
-            vec![
-                Event::PointerMoved(pos),
-                Event::PointerButton {
-                    pos,
-                    button: PointerButton::Primary,
-                    pressed,
-                    modifiers: Modifiers::NONE,
-                },
-            ],
-        )
-        .or(request);
-    }
-    request
+    click_sized(ctx, form, pos, Vec2::new(900.0, 700.0))
 }
 
 fn providers() -> Vec<RpcProvider> {

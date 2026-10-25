@@ -82,6 +82,12 @@ fn created_owner_unknown_delegate_selfdestruct_is_covered_or_has_explicit_creati
     assert_eq!(observed.output_word(0), U256::from(runtime_size));
     assert_eq!(observed.output_word(32), U256::from(7));
     assert!(observed.deleted.contains(&destination));
+    let removed = &observed.accounts[&destination];
+    assert!(!removed.exists);
+    assert_eq!(removed.nonce, 0);
+    assert_eq!(removed.balance, U256::ZERO);
+    assert_eq!(removed.code.as_deref(), Some([].as_slice()));
+    assert_eq!(removed.storage[&U256::ZERO], U256::ZERO);
     assert!(
         observed
             .steps

@@ -46,9 +46,8 @@ fn both_complete_strategies_cover_recursive_body_output_and_feedback_growth() {
                 witness
                     .steps
                     .iter()
-                    .filter(|(code, pc)| {
-                        *code == address(ROOT) && *pc == fixture.labels["recursive_call"]
-                    })
+                    .filter(|step| step.code == address(ROOT)
+                        && step.pc == fixture.labels["recursive_call"])
                     .count()
                     >= 6,
                 "the witness must exceed the unfolding bound"
@@ -234,7 +233,12 @@ fn both_strategies_cover_unknown_callbacks_and_each_rollback_scope() {
                 } else {
                     "callback_success"
                 }];
-                assert!(witness.steps.contains(&(address(ROOT), callback_pc)));
+                assert!(
+                    witness
+                        .steps
+                        .iter()
+                        .any(|step| step.code == address(ROOT) && step.pc == callback_pc)
+                );
                 assert_eq!(
                     witness.storage[&(address(ROOT), U256::ZERO)],
                     U256::from(if outer_revert { 0 } else { 7 })

@@ -503,16 +503,10 @@ def _inspect(page, canvas, report, output, posts):
 
 
 def _invalid_requests(page, url, request, output):
-    controls = [
-        ("numeric-string", "max_transfers", "1"),
-        ("numeric-overflow", "max_transfers", 1 << 64),
-        ("boolean-string", "root_terminal_coverage", "true"),
-        ("boolean-number", "root_terminal_coverage", 1),
-        ("unknown-limit", "root_terminal_coverag", True),
-        ("obsolete-selector", "domain_profile", "Product"),
-        ("obsolete-model", "numeric_model", "ConstantsOnly"),
-        ("missing-model", "numeric_model", None),
-    ]
+    # The full malformed-limit matrix lives in server tests/http/requests.rs.
+    # Keep a real browser transport/error parse here, alongside the form and
+    # schema recovery controls below.
+    controls = [("numeric-string", "max_transfers", "1")]
     results = {}
     for name, field, value in controls:
         invalid = deepcopy(request)

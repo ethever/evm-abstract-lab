@@ -456,7 +456,7 @@ fn delegate_echo(revert: bool) {
                 OutcomeKind::Return
             }
         );
-        assert_eq!(observed.output, calldata);
+        assert_eq!(observed.data, calldata);
     }
     assert_eq!(checkpoint.state(), &captured);
     assert_eq!(initial.active().saved_store, checkpoint);
@@ -495,7 +495,7 @@ fn concrete_delegate_echo_witnesses_validate_the_symbolic_fixture_bytecode() {
                     }
                 );
                 assert_eq!(
-                    concrete.output, input,
+                    concrete.data, input,
                     "fork={fork} revert={revert} length={length}"
                 );
             }
@@ -567,7 +567,7 @@ fn concrete_zero_length_copy_does_not_expand_memory() {
     let analysis = run_world(world.clone(), entry.clone(), config());
     return_words(&analysis, &[0]);
     let concrete = super::oracle::compare(&world, &entry, &analysis);
-    assert_eq!(concrete.output, U256::ZERO.to_be_bytes::<32>());
+    assert_eq!(concrete.data, U256::ZERO.to_be_bytes::<32>());
 }
 
 #[test]

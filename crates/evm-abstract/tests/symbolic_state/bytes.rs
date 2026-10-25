@@ -49,7 +49,7 @@ fn big_endian_unaligned_overlays_preserve_each_historical_word() {
         let analysis = run_world(world.clone(), entry.clone(), config());
         complete(&analysis);
         let concrete = oracle::compare(&world, &entry, &analysis);
-        assert_eq!(concrete.output, expected);
+        assert_eq!(concrete.data, expected);
         for outcome in analysis
             .outcomes()
             .iter()
@@ -89,7 +89,7 @@ fn mcopy_overlaps_read_the_source_before_either_direction_is_written() {
             let analysis = run_world(world.clone(), entry.clone(), config());
             complete(&analysis);
             let concrete = oracle::compare(&world, &entry, &analysis);
-            assert_eq!(concrete.output, expected);
+            assert_eq!(concrete.data, expected);
             assert!(
                 analysis
                     .outcomes()
@@ -120,7 +120,7 @@ fn zero_length_mcopy_with_maximal_offsets_keeps_msize_zero() {
     let entry = entry(EvmByteArray::<NumericValue>::empty());
     let analysis = run_world(world.clone(), entry.clone(), config());
     complete(&analysis);
-    assert_eq!(oracle::compare(&world, &entry, &analysis).output, [0; 32]);
+    assert_eq!(oracle::compare(&world, &entry, &analysis).data, [0; 32]);
     assert!(
         analysis
             .outcomes()
@@ -170,7 +170,7 @@ fn call_output_overwrites_only_the_actual_return_prefix() {
         let analysis = run_world(world.clone(), entry.clone(), config());
         complete(&analysis);
         let concrete = oracle::compare(&world, &entry, &analysis);
-        assert_eq!(concrete.output, expected);
+        assert_eq!(concrete.data, expected);
         no_bad_branch(&analysis, &root, ROOT);
     }
 }
@@ -204,9 +204,9 @@ fn returndata_zero_length_at_end_is_valid_but_past_end_and_overflow_fault() {
             let concrete = oracle::compare(&world, &entry, &analysis);
             assert_eq!(concrete.kind, expected_kind, "source={source} size={size}");
             if expected_kind == OutcomeKind::Return {
-                assert_eq!(concrete.output, [0; 32]);
+                assert_eq!(concrete.data, [0; 32]);
             } else {
-                assert!(concrete.output.is_empty());
+                assert!(concrete.data.is_empty());
             }
         }
     }

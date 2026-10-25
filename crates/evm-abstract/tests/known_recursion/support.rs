@@ -35,35 +35,33 @@ pub(super) struct Fixture {
 }
 
 /// Resolve bytecode labels only; both executors retain their own EVM semantics.
+#[path = "../support/assembly.rs"]
+mod bytecode;
+
 #[derive(Default)]
 pub(super) struct Assembly {
-    bytes: Vec<u8>,
-    labels: BTreeMap<&'static str, usize>,
-    fixups: Vec<(usize, &'static str)>,
+    raw: bytecode::Assembly,
 }
 
 impl Assembly {
     pub(super) fn op(&mut self, op: u8) -> &mut Self {
-        self.bytes.push(op);
+        self.raw.op(op);
         self
     }
 
     pub(super) fn push(&mut self, value: u16) -> &mut Self {
-        self.bytes.push(opcode::PUSH2);
-        self.bytes.extend(value.to_be_bytes());
+        self.raw.push(value);
         self
     }
 
-    pub(super) fn label(&mut self, label: &'static str) -> &mut Self {
-        assert!(self.labels.insert(label, self.bytes.len()).is_none());
-        self.op(opcode::JUMPDEST)
+    pub(super) fn label(&mut self, name: &'static str) -> &mut Self {
+        self.raw.label(name);
+        self
     }
 
-    pub(super) fn jump(&mut self, label: &'static str) -> &mut Self {
-        self.bytes.push(opcode::PUSH2);
-        self.fixups.push((self.bytes.len(), label));
-        self.bytes.extend([0, 0]);
-        self.op(opcode::JUMPI)
+    pub(super) fn jump(&mut self, name: &'static str) -> &mut Self {
+        self.raw.jump(name, true);
+        self
     }
 
     pub(super) fn input(&mut self) -> &mut Self {
@@ -120,14 +118,11 @@ impl Assembly {
             .op(opcode::CALL)
     }
 
-    pub(super) fn finish(mut self) -> Fixture {
-        for (position, label) in self.fixups {
-            self.bytes[position..position + 2]
-                .copy_from_slice(&u16::try_from(self.labels[&label]).unwrap().to_be_bytes());
-        }
+    pub(super) fn finish(self) -> Fixture {
+        let assembled = self.raw.finish();
         Fixture {
-            bytes: self.bytes,
-            labels: self.labels,
+            bytes: assembled.bytes,
+            labels: assembled.labels,
         }
     }
 }
