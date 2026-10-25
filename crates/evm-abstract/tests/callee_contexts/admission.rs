@@ -9,7 +9,7 @@ use evm_abstract::{
 use revm_bytecode::opcode;
 use support::{A, Assembly, U, address, insert, new_world};
 
-struct RootRegional;
+pub(super) struct RootRegional;
 
 impl<D: EvmNumericAlgebra> ProcedureSummaryPolicy<D> for RootRegional {
     fn summarize_known_root(&self, frame: &FrameKey) -> bool {

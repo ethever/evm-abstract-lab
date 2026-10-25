@@ -267,7 +267,12 @@ impl<
         let payload = self.form(payload)?;
         let PartitionedRelative { key, payload } =
             self.partition_relative(payload, PolicySite::Procedure, None)?;
-        let lookup_key = (self.namespace, policy::clone_key(&key, self.budget)?);
+        let environment_calldata = payload.active().environment_calldata;
+        let lookup_key = (
+            self.namespace,
+            environment_calldata,
+            policy::clone_key(&key, self.budget)?,
+        );
         if let Some(id) = self.table.procedures_by_key.get(&lookup_key, self.budget)? {
             self.table.reused += 1;
             if let Some(from) = from {
@@ -341,7 +346,8 @@ impl<
         self.table.regional_snapshot = None;
         PolicyContext::new(self.domain, self.entry, self.budget).reserve(0)?;
         let mut index = std::mem::take(&mut self.table.procedures_by_key);
-        let created = index.insert_with((self.namespace, key), self.budget, |budget| {
+        let entry_key = (self.namespace, environment_calldata, key);
+        let created = index.insert_with(entry_key, self.budget, |budget| {
             let scope = self.runtime.relative;
             let output = self
                 .runtime

@@ -235,6 +235,10 @@ type ProcessCall = (
     crate::analysis::ProcessAction,
     crate::analysis::ProcessOwner,
 );
+// Calldata interpretation is a mandatory shape of the detached frame, even
+// when a policy gives an original root and a self-DELEGATECALL the same key.
+// Keep it private: it is neither optional history nor a new source/owner.
+type ProcedureKey<K> = (usize, bool, K);
 type SubscriberKey<K> = (usize, usize, (Option<ProcessCall>, K));
 
 struct EvmSubscriber<N: WordElement> {
@@ -271,7 +275,7 @@ pub(in crate::analysis) struct EvmTable<
     )>,
     /// Immutable source control only; dynamic extension inputs never enter it.
     process_control: process::ControlCache,
-    procedures_by_key: KeyIndex<(usize, Key)>,
+    procedures_by_key: KeyIndex<ProcedureKey<Key>>,
     nodes: Vec<EvmNode<N>>,
     subscribers: Vec<EvmSubscriber<N>>,
     // Each continuation/callee pair scopes the injected finite vocabulary.

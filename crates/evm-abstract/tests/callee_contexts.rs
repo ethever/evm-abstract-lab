@@ -4,6 +4,8 @@
 
 #[path = "callee_contexts/admission.rs"]
 mod admission;
+#[path = "callee_contexts/calldata_origin.rs"]
+mod calldata_origin;
 #[path = "support/native.rs"]
 mod native;
 #[path = "unknown_world/oracle.rs"]
