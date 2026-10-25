@@ -636,3 +636,19 @@ fn work_and_round_caps_are_independent_for_built_in_rule_composition() {
     assert_eq!(bounds.status, ReductionStatus::Stable);
     assert_eq!(bounds.value, result.value);
 }
+#[test]
+fn kernel_protocol_composition_preserves_existing_lawful_numeric_tariffs() {
+    use super::super::cost;
+
+    // Compatibility controls, separate from the quote-vs-actual schedule tests.
+    // A deliberate kernel tariff change must update this evidence and the
+    // coordinated cost version; adapters must never copy its weights instead.
+    assert_eq!(cost::STEP_WORK, 26);
+    assert_eq!(cost::query_work(8), 68);
+    assert_eq!(cost::publish_work(16, 8), 129);
+    assert_eq!(cost::fixed_work(0), 613);
+    assert_eq!(cost::fixed_work(512), 1125);
+    assert_eq!(cost::fixed_work(usize::MAX), usize::MAX);
+    assert_eq!(cost::query_work(usize::MAX), usize::MAX);
+    assert_eq!(cost::publish_work(0, usize::MAX), usize::MAX);
+}

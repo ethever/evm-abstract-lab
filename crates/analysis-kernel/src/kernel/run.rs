@@ -3,7 +3,7 @@
 use super::{FactId, JobId, JobState, Kernel, Meter, ReadMode, reserve};
 use crate::{
     AdmissionPolicy, Answer, Availability, Capability, Change, Channel, KernelError, LocalClosure,
-    PublishError, Scope, Scoped, Version, algebra::PublicationPolicy,
+    PublishError, Scope, Scoped, Version, algebra::PublicationPolicy, cost,
 };
 use std::marker::PhantomData;
 
@@ -306,13 +306,11 @@ impl<J, M: Meter> Run<'_, J, M> {
                 Availability::Value(old) => Q::drop_work(old),
                 _ => 0,
             };
-            Q::value_work(&next).saturating_add(drop_work)
+            cost::publication_value_work(Q::value_work(&next), drop_work)
         } else {
-            0
+            cost::publication_value_work(0, 0)
         };
-        let work = value_work
-            .saturating_add(coverage.as_ref().map_or(0, |update| update.work))
-            .saturating_add(1);
+        let work = value_work.saturating_add(coverage.as_ref().map_or(0, |update| update.work));
         let local_topology = (self.scope() == key.scope).then_some((directory, key.scope));
         let changes =
             self.kernel
@@ -647,7 +645,7 @@ impl<J, M: Meter> Run<'_, J, M> {
     pub fn finish(mut self, closure: LocalClosure) -> Result<(), KernelError<M::Stop>> {
         // Completion still consults the root ledger when a callback invalidated
         // itself. Do not hide a real stop behind the recoverable stale boundary.
-        reserve(self.meter, 1)?;
+        reserve(self.meter, cost::FINISH_WORK)?;
         if self.finished {
             return Ok(());
         }

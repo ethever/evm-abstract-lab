@@ -1,5 +1,9 @@
 use super::{Noop, Stop};
-use crate::{Closure, Kernel, KernelError, Meter, Nil, ScopeKey, SolveError, solve};
+use crate::{
+    Closure, Kernel, KernelError, Meter, Nil, ScopeKey, SolveError,
+    cost::{self, ReportCounts},
+    solve,
+};
 use std::cell::Cell;
 
 #[derive(Default)]
@@ -114,6 +118,7 @@ fn every_successful_report_prepays_traversal_on_the_same_root_ledger() {
     let (mut kernel, mut meter) = closed_kernel();
     for max_steps in [0, 1, 1] {
         let before = (meter.calls, meter.used);
+        let stats = kernel.statistics();
         let report = solve(&mut kernel, &mut Noop, &mut Nil, &mut meter, max_steps).unwrap();
         assert_eq!(report.closure, Closure::Closed);
         assert_eq!(report.steps, 0);
@@ -125,6 +130,16 @@ fn every_successful_report_prepays_traversal_on_the_same_root_ledger() {
         assert!(
             meter.used > before.1 + 4096,
             "retained facts contribute even without ready jobs"
+        );
+        assert_eq!(
+            meter.used - before.1,
+            cost::report_metadata_work(stats.facts)
+                + cost::report_work(ReportCounts {
+                    facts: stats.facts,
+                    scopes: stats.scopes,
+                    ..ReportCounts::default()
+                }),
+            "adapter report tariffs must fund exactly the real zero-step report"
         );
     }
 }

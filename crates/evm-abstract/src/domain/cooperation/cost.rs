@@ -1,6 +1,7 @@
 //! Explicit cost contracts for the selected fixed-input reduction assembly.
 
 use super::{DomainSpec, bits::BoundsToMask, bounds::MaskToBounds};
+use analysis_kernel::cost::{self as kernel, ReportCounts};
 
 /// Upper bound for one component evaluation, including its `Charges`, queries,
 /// publications and publication policies. Dispatch and final reporting are paid
@@ -85,42 +86,82 @@ impl<M, R> ProductWork<M, R> for BoundedWork {
 // A non-seed job has at most four read/required edges, and any value/head has
 // at most three readers/demands. There are no producer guards, foreign premises,
 // lifecycle operations or explicit obligations in this ephemeral topology.
-// Kernel tree_work(n) = floor(log2(n + 1)) + 2, so t(1)=3 and t(3..=6)=4.
 // Every capability call is counted, including repeat observations of one edge.
-const INTERN_WORK: usize = 3 + 9; // existing scope table and existing unit key
-pub(in crate::domain) const STEP_WORK: usize = 3 + (2 * 4 + 12) + 3;
+const INTERN_WORK: usize = kernel::tree_work(1) + kernel::key_lookup_work(1, 1);
+pub(in crate::domain) const STEP_WORK: usize = kernel::dispatch_work(3);
 
 pub(in crate::domain) fn query_work(value: usize) -> usize {
-    // Required observe: 2*t(reads) + t(readers) + 2, then t(required) +
-    // t(demands) + 2 = 24. Both the scope head and value are observed. Discovery
-    // pays only the first 14; numeric Read uses Required, so reserve both indexes.
-    INTERN_WORK.saturating_add(2 * 24).saturating_add(value)
+    // Required observes both the scope head and value. The numeric topology has
+    // at most four read/required edges per job and three readers/demands per fact.
+    let observation = kernel::observation_work(4, 3).saturating_add(kernel::requirement_work(4, 3));
+    INTERN_WORK
+        .saturating_add(observation.saturating_mul(2))
+        .saturating_add(value)
 }
 pub(in crate::domain) fn publish_work(policy: usize, value: usize) -> usize {
     // A descending replacement has one changed fact and no semantic seeds.
-    // Plan7 + install1 + fact2 + batch enqueue66 + three wake visits9 = 85.
-    // The batch upper bound includes geometric growth: with <=3 pending jobs
-    // and <=3 wakes, 3*(t(6)+6) + 6*6 = 66, even for duplicate pending readers.
+    // At most three pending jobs and three wakes; use a full queue to cover all
+    // geometric growth, even when some of those readers are already pending.
     // Numeric capabilities use value_work for both clone and retained-old drop.
     INTERN_WORK
         .saturating_add(policy)
-        .saturating_add(value.saturating_mul(2))
-        .saturating_add(85)
+        .saturating_add(kernel::change_plan_work(1))
+        .saturating_add(kernel::change_install_work(
+            1,
+            3,
+            kernel::enqueue_work(3, 3, 3),
+            kernel::publication_value_work(value, value),
+        ))
 }
+
+fn first_write_work(scope_facts: usize) -> usize {
+    // This channel has no scope directory or key yet. Creating the directory
+    // adds one fact before interning its singleton unit key.
+    kernel::tree_work(0)
+        .saturating_add(kernel::channel_scope_insert_work(0, scope_facts))
+        .saturating_add(kernel::key_lookup_work(0, 1))
+        .saturating_add(kernel::key_insert_work(0, 1, scope_facts.saturating_add(1)))
+}
+
 pub(in crate::domain) fn fixed_work(finite: usize) -> usize {
-    // Scope11, channels12, seal1. Registration pays 7 + t(jobs) + enqueue;
-    // successive queue lengths/capacities are 0/0, 1/1, 2/2 and 3/4.
-    let registration = (7 + 2 + 15) + (7 + 3 + 21) + (7 + 3 + 28) + (7 + 4 + 10);
-    let setup: usize = 11 + 3 * 4 + registration + 1;
-    // Each first write interns its scoped directory and value: 29,31,31.
-    // Each changes two facts: semantic-directory classification4, plan13,
-    // fact writes4 and installation1, plus its value. No old value/readers yet.
-    // Seed dispatch has four queued jobs: selection24 + handle/begin/finish3.
-    let seed = (29 + 31 + 31 + 3 * (4 + 13 + 4 + 1) + 24 + 27usize).saturating_add(finite);
-    // solve calls solve_report, not closure_in_metered: metadata11, base16,
-    // <=3 pending, four jobs, ten facts, one scope and <=12 read edges. Required
-    // indexes are covered by the new 12-per-fact traversal; coverage stays zero.
-    let report = 11 + 16 + 4 * 3 + 8 * 4 + 12 * 10 + 4 + 6 * 12;
+    // Successive queue lengths/minimum capacities are 0/0, 1/1, 2/2 and 3/4.
+    let registration = kernel::registration_work(0, kernel::enqueue_work(0, 0, 1))
+        .saturating_add(kernel::registration_work(1, kernel::enqueue_work(1, 1, 1)))
+        .saturating_add(kernel::registration_work(2, kernel::enqueue_work(2, 2, 1)))
+        .saturating_add(kernel::registration_work(3, kernel::enqueue_work(3, 4, 1)));
+    let setup = kernel::tree_work(0)
+        .saturating_add(kernel::scope_insert_work(0))
+        .saturating_add(kernel::CHANNEL_WORK.saturating_mul(3))
+        .saturating_add(registration)
+        .saturating_add(kernel::SEAL_SCOPE_WORK);
+    // Three first writes each add a directory and value to this scope. Each
+    // changes two facts and classifies only its directory as a semantic seed.
+    // No old values/readers; each guarantee has eight fields, plus finite data.
+    let seed_publication = kernel::semantic_seed_work(0, 1)
+        .saturating_add(kernel::change_plan_work(2))
+        .saturating_add(kernel::change_install_work(
+            2,
+            0,
+            kernel::enqueue_work(3, 4, 0),
+            kernel::publication_value_work(8, 0),
+        ));
+    let seed = first_write_work(1)
+        .saturating_add(first_write_work(3))
+        .saturating_add(first_write_work(5))
+        .saturating_add(seed_publication.saturating_mul(3))
+        .saturating_add(finite)
+        .saturating_add(kernel::dispatch_work(4));
+    // solve reports <=3 pending jobs, all four jobs/ten facts/one scope, at most
+    // twelve read edges and no producer-family coverage in this assembly.
+    let report =
+        kernel::report_metadata_work(10).saturating_add(kernel::report_work(ReportCounts {
+            pending: 3,
+            jobs: 4,
+            facts: 10,
+            scopes: 1,
+            readers: 12,
+            coverage: 0,
+        }));
     setup.saturating_add(seed).saturating_add(report)
 }
 pub(in crate::domain) fn scalar_work(spec: DomainSpec, finite: usize) -> usize {
