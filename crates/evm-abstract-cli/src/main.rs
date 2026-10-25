@@ -9,6 +9,7 @@ mod hybrid;
 mod json;
 mod number;
 mod numeric;
+mod staged;
 mod symbolic;
 mod world;
 
@@ -60,6 +61,9 @@ enum Command {
         /// Emit recorded partial SSA when frontiers remain; the exit code stays 2.
         #[arg(long, requires = "ssa")]
         allow_partial_ssa: bool,
+        /// Flush a closed global result as JSON Lines before optional Native work.
+        #[arg(long, conflicts_with_all = ["format", "ssa", "allow_partial_ssa"])]
+        staged_json: bool,
     },
     /// Decode ordinary EVM runtime bytecode under the selected fork (default: Osaka).
     Disasm {
@@ -339,7 +343,18 @@ fn execute_with<D: EvmNumericAlgebra>(
             format,
             ssa,
             allow_partial_ssa,
+            staged_json,
         } => {
+            if staged_json {
+                let mut stdout = io::stdout().lock();
+                let mut publisher =
+                    staged::Stream::new(&mut stdout, &mut reporting, model, control);
+                let analysis =
+                    args.analyze_hybrid_with_publisher(algebra, control, &mut publisher)?;
+                let complete = analysis.status() == Status::Converged;
+                publisher.finish(&analysis)?;
+                return Ok((String::new(), complete));
+            }
             if allow_partial_ssa && matches!(format, CfgFormat::Dot) {
                 Cli::command()
                     .error(

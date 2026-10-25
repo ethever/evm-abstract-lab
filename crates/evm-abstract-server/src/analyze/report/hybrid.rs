@@ -177,6 +177,7 @@ pub(in crate::analyze) fn coverage<N: WordElement>(
             }
         },
         detail: match coverage.detail {
+            analysis::DetailState::Pending => api::HybridDetailState::Pending,
             analysis::DetailState::Disabled => api::HybridDetailState::Disabled,
             analysis::DetailState::BaselinePending => api::HybridDetailState::BaselinePending,
             analysis::DetailState::ProcessPolicy => api::HybridDetailState::ProcessPolicy,

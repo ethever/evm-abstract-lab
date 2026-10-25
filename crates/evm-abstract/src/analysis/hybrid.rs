@@ -8,6 +8,7 @@ mod input;
 mod policy;
 mod run;
 
+use super::publication::ModelHandle;
 use super::{EvmMachineState, EvmWorldAnalysis, Status};
 use crate::domain::WordElement;
 use serde::{Serialize, Serializer, ser::SerializeStruct};
@@ -89,6 +90,8 @@ pub enum HybridInterpretation {
 pub enum DetailState {
     /// No work was requested for optional precision.
     Disabled,
+    /// The closed global model is published before optional Native preparation.
+    Pending,
     /// Baseline has a frontier or lacks a current source/closure certificate.
     BaselinePending,
     /// Caller supplied process policies rather than a native precision policy.
@@ -149,7 +152,7 @@ pub struct HybridCoverage {
 /// SSA. Snapshot, fact revision and source identities are preserved across both.
 #[derive(Debug)]
 pub struct HybridAnalysis<N: WordElement> {
-    baseline: EvmWorldAnalysis<N>,
+    baseline: ModelHandle<N>,
     detail: Option<EvmWorldAnalysis<N>>,
     coverage: HybridCoverage,
 }
@@ -224,6 +227,28 @@ fn local<N: WordElement>(state: &EvmMachineState<N>) -> bool {
 }
 
 impl<N: WordElement> HybridAnalysis<N> {
+    /// An outer RPC adapter first runs only Global, then admits Native under
+    /// its retained payer. Qualify that initial publication with the outer
+    /// request before exposing it; the immutable graph itself never changes.
+    pub(in crate::analysis) fn defer_detail(&mut self, requested: HybridConfig) {
+        debug_assert!(self.detail.is_none());
+        self.coverage.requested_detail_work = requested.max_detail_work;
+        if self.coverage.baseline_current {
+            self.coverage.detail =
+                if requested.max_detail_work == 0 || requested.max_detail_regions == 0 {
+                    DetailState::Disabled
+                } else {
+                    DetailState::Pending
+                };
+        }
+    }
+
+    /// Retain this graph independently of optional precision and worker lifetime.
+    /// Its snapshot, revision, root binding and source evidence remain unchanged.
+    pub fn baseline_handle(&self) -> ModelHandle<N> {
+        self.baseline.clone()
+    }
+
     /// Conservative process graph, with real action/callback dependencies.
     pub fn baseline(&self) -> &EvmWorldAnalysis<N> {
         &self.baseline
@@ -302,13 +327,7 @@ impl<N: WordElement> HybridAnalysis<N> {
         self.coverage.work.total
     }
     /// Transfer ownership to applications without cloning either native graph.
-    pub fn into_parts(
-        self,
-    ) -> (
-        EvmWorldAnalysis<N>,
-        Option<EvmWorldAnalysis<N>>,
-        HybridCoverage,
-    ) {
+    pub fn into_parts(self) -> (ModelHandle<N>, Option<EvmWorldAnalysis<N>>, HybridCoverage) {
         (self.baseline, self.detail, self.coverage)
     }
 }
