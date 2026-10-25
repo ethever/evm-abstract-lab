@@ -146,7 +146,6 @@ impl Validation<'_> {
         // Pool membership was checked above. A captured executable is never
         // recovered from a possibly havoced current account's code field.
         let mut programs = self
-            .report
             .programs
             .iter()
             .filter(|program| program.id == input.program);

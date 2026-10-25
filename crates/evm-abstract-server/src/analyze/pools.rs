@@ -58,7 +58,11 @@ pub(super) fn mode(code: FrameCode) -> api::CodeKind {
     }
 }
 impl<'a, N: WordElement> Pools<'a, N> {
+    #[cfg(test)]
     pub fn new(control: &'a Control) -> Self {
+        Self::with_programs(control, Vec::new())
+    }
+    pub fn with_programs(control: &'a Control, programs: Vec<api::ProgramInfo>) -> Self {
         Self {
             control,
             buffers: Vec::new(),
@@ -66,7 +70,7 @@ impl<'a, N: WordElement> Pools<'a, N> {
             stores_native: Vec::new(),
             buffers_dto: Vec::new(),
             stores: Vec::new(),
-            programs: Vec::new(),
+            programs,
             symbolic: symbolic::Pool::new(control),
             pending_native: Vec::new(),
             pending: Vec::new(),
@@ -97,7 +101,11 @@ impl<'a, N: WordElement> Pools<'a, N> {
         for id in 0..self.programs.len() {
             self.symbolic.charge(1)?;
             let item = &self.programs[id];
-            if item.code_address == address && item.code_hash == hash && item.kind == kind {
+            if item.code_address == address
+                && item.code_hash == hash
+                && item.kind == kind
+                && item.fork == mapping::fork(program.fork())
+            {
                 return Ok(item.id);
             }
         }
@@ -113,6 +121,7 @@ impl<'a, N: WordElement> Pools<'a, N> {
         self.programs.push(api::ProgramInfo {
             id,
             code_address: address,
+            fork: mapping::fork(program.fork()),
             code_hash: hash,
             kind,
             bytecode: hex::encode_prefixed(program.bytes()),

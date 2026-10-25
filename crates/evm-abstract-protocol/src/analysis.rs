@@ -69,8 +69,6 @@ record! {
         pub storage_address: Option<String>,
         /// Active source program in the report directory.
         pub program: Option<usize>,
-        /// Source instructions for this frame, including generated initcode.
-        pub instructions: Vec<DisasmInstruction>,
         /// Active stack on entry, bottom to top; each entry is an abstract value summary.
         pub entry_stack: Vec<String>,
         /// Last observed active exit stack, bottom to top.
@@ -292,10 +290,8 @@ record! {
     }
 }
 record! {
-    /// Immutable structured analysis artifact consumed by all custom widgets.
-    pub struct AnalysisReport {
-        /// Must equal the consumer's supported protocol version.
-        pub schema_version: u16,
+    /// One graph namespace with independent machine, SSA and pool identities.
+    pub struct AnalysisGraph {
         /// Explicit input/model scope.
         pub scope: AnalysisScope,
         /// Execution rules fixed during decoding.
@@ -306,8 +302,6 @@ record! {
         pub status: AnalysisStatus,
         /// Executed transfers, including revisits.
         pub transfers: u64,
-        /// Complete root source disassembly.
-        pub disassembly: Vec<DisasmBlock>,
         /// Reachable native machine-state nodes.
         pub cfg: Vec<CfgBlock>,
         /// Observed native graph edges.
@@ -320,8 +314,6 @@ record! {
         pub frontiers: Vec<Frontier>,
         /// Pinned identity and effective root environment.
         pub metadata: crate::ReportMetadata,
-        /// Complete captured executable programs.
-        pub programs: Vec<crate::ProgramInfo>,
         /// Original input rows before effects; Namespace root binding qualifies
         /// its coordinate as a supplied template rather than a physical account.
         pub accounts: Vec<crate::AccountState>,
@@ -344,7 +336,86 @@ record! {
         pub abstract_summaries: Vec<crate::AbstractSummary>,
         /// Fixed-snapshot account/storage acquisition evidence.
         pub acquisition: Option<crate::AcquisitionReport>,
-        /// Global coverage and separately qualified native detail, when requested.
-        pub hybrid: Option<Box<crate::HybridReport>>,
+    }
+}
+
+record! {
+    /// Immutable publication with fixed graph placement and one source catalog.
+    /// Numeric machine/SSA/pool identities belong to their graph namespace.
+    pub struct AnalysisReport {
+        /// Must equal the consumer's supported protocol version.
+        pub schema_version: u16,
+        /// Explicit initial display choice; selecting a view never moves graphs.
+        pub selected_view: crate::AnalysisNamespace,
+        /// Global model closure, independent of optional detail and display choice.
+        pub status: AnalysisStatus,
+        /// Cumulative execution work across all phases and fact revisions.
+        pub work: u64,
+        /// Cumulative transfers across all phases and fact revisions.
+        pub transfers: u64,
+        /// Work charged to this publication's shared postprocessing ledger.
+        pub postprocessing_work: u64,
+        /// Processing and queue durations, separate from semantic graph identity.
+        pub timings: crate::AnalysisTimings,
+        /// Complete immutable source directory shared by both graph namespaces.
+        pub programs: Vec<crate::ProgramInfo>,
+        /// Conservative global graph, when global analysis was requested.
+        pub global: Option<AnalysisGraph>,
+        /// Native graph, including honest pending detail when available.
+        pub native: Option<AnalysisGraph>,
+        /// Global/native qualifications, receipts and optional RPC revision chain.
+        pub hybrid: Option<crate::HybridReport>,
+    }
+}
+record! {
+    /// Source coordinate, independent of graph namespace and execution reachability.
+    #[derive(Copy)]
+    pub struct SourceBlockRef {
+        /// Report-local immutable program identity.
+        pub program: usize,
+        /// Program-local syntactic block identity.
+        pub basic_block: usize,
+    }
+}
+impl CfgBlock {
+    /// Captured source block, without asserting that any opcode was executed.
+    pub fn source_block(&self) -> Option<SourceBlockRef> {
+        Some(SourceBlockRef {
+            program: self.program?,
+            basic_block: self.basic_block?,
+        })
+    }
+}
+impl AnalysisReport {
+    /// Follow numeric state/SSA/pool IDs only within this namespace.
+    pub fn graph(&self, namespace: crate::AnalysisNamespace) -> Option<&AnalysisGraph> {
+        match namespace {
+            crate::AnalysisNamespace::Baseline => self.global.as_ref(),
+            crate::AnalysisNamespace::Native => self.native.as_ref(),
+        }
+    }
+    /// Explicitly selected graph; absent on a structurally invalid publication.
+    pub fn selected_graph(&self) -> Option<&AnalysisGraph> {
+        self.graph(self.selected_view)
+    }
+    /// Resolve a captured source coordinate from the one immutable catalog.
+    pub fn source_block(&self, source: SourceBlockRef) -> Option<&DisasmBlock> {
+        self.programs
+            .iter()
+            .find(|program| program.id == source.program)?
+            .blocks
+            .iter()
+            .find(|block| block.id == source.basic_block)
+    }
+    /// Root source disassembly in a particular namespace, including unreachable code.
+    pub fn disassembly(&self, namespace: crate::AnalysisNamespace) -> Option<&[DisasmBlock]> {
+        let id = self.graph(namespace)?.metadata.root_program?;
+        Some(
+            &self
+                .programs
+                .iter()
+                .find(|program| program.id == id)?
+                .blocks,
+        )
     }
 }

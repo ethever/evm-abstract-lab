@@ -1,4 +1,21 @@
 //! Declared root input provenance is independent of execution or source currency.
+choice! {
+    /// Inconsistent reference to the publication's immutable source directory.
+    pub enum SourceValidationKind {
+        /// Program identities must be unique, including their source qualifications.
+        ProgramIdentity,
+        /// Syntactic block IDs and instruction PCs must be unique within a program.
+        BlockIdentity,
+        /// A referenced program was decoded using different execution rules.
+        Fork,
+        /// The referenced source block does not exist or has a different start PC.
+        Block,
+        /// An execution/SSA receipt refers to a different source instruction.
+        Instruction,
+        /// A frame's code provenance disagrees with its program reference.
+        Frame,
+    }
+}
 record! {
     /// An original root with an established physical destination.
     pub struct PhysicalRootInput {
@@ -23,7 +40,7 @@ variant! {
     }
 }
 
-impl crate::AnalysisReport {
+impl crate::AnalysisGraph {
     /// Original input row at this coordinate is a template, independent of the
     /// physical accounts in transaction Stores. Never use it for a physical lookup.
     pub fn input_namespace(&self) -> Option<&str> {
