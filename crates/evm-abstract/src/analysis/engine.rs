@@ -993,8 +993,16 @@ impl<
                 == super::RuntimeExecution::Process)
                 || entry.active().code == super::FrameCode::Unknown
                 || transfer::procedure::is_recursive_entry(entry)
-                || (self.policies.state.supports_early_known_admission()
-                    && transfer::procedure::is_known_call_entry(entry));
+                || (transfer::procedure::is_known_call_entry(entry)
+                    && self
+                        .policies
+                        .state
+                        .summarize_known_call(&entry.active().key))
+                || (transfer::procedure::is_known_root_entry(entry)
+                    && self
+                        .policies
+                        .state
+                        .summarize_known_root(&entry.active().key));
             if (relative_procedure
                 || cache
                     .as_ref()

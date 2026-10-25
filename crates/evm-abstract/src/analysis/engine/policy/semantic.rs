@@ -548,6 +548,21 @@ pub trait ProcedureSummaryPolicy<D: EvmNumericAlgebra> {
         false
     }
 
+    /// Choose early admission for this known runtime source. The engine checks
+    /// the ordinary CALL entry shape first. Selection only detaches the callee;
+    /// its caller continuation and checkpoint remain independent obligations.
+    /// Existing policies keep their uniform admission choice by default.
+    fn summarize_known_call(&self, _frame: &crate::analysis::FrameKey) -> bool {
+        self.supports_early_known_admission()
+    }
+
+    /// Admit a known root's initial block into the same relative solver.
+    /// This explicit opt-in is independent of CALL admission; ordinary Native
+    /// roots retain their existing execution path by default.
+    fn summarize_known_root(&self, _frame: &crate::analysis::FrameKey) -> bool {
+        false
+    }
+
     /// Cover a relative body/subscriber input under the selected schedule.
     fn admit_relative(
         &self,
@@ -877,6 +892,14 @@ where
     }
     fn supports_early_known_admission(&self) -> bool {
         self.summary.supports_early_known_admission()
+    }
+
+    fn summarize_known_call(&self, frame: &crate::analysis::FrameKey) -> bool {
+        self.summary.summarize_known_call(frame)
+    }
+
+    fn summarize_known_root(&self, frame: &crate::analysis::FrameKey) -> bool {
+        self.summary.summarize_known_root(frame)
     }
 
     fn admit_relative(

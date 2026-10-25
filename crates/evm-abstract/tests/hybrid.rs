@@ -393,11 +393,14 @@ fn partial_native_sites_layer_on_closed_baseline_while_another_region_is_pending
             .iter()
             .any(|(_, edge)| *edge == MachineEdgeKind::Call)
     }));
-    assert!(
-        sites
-            .iter()
-            .any(|site| site.state.active().code_address == address(U))
-    );
+    assert!(detail.procedure_summaries().iter().any(|record| {
+        record.regional_cfg.nodes.iter().any(|node| {
+            node.frame.code_address == address(U)
+                && node.transfer.as_ref().is_some_and(|transfer| {
+                    transfer.current && transfer.complete && transfer.visited_block
+                })
+        })
+    }));
     assert!(
         sites
             .iter()
@@ -543,7 +546,50 @@ fn selected_contexts_refine_joined_jump_targets_while_the_other_region_remains_p
         assert!(result.coverage().baseline_current);
         assert_accounting(result, 2_000_000_000);
     }
-    let coarse_targets = targets(&coarse);
+    // Unselected bodies execute in the relative table; their current transfer
+    // receipts carry control edges without inventing World instruction PCs.
+    let coarse_targets = coarse
+        .detail()
+        .unwrap()
+        .procedure_summaries()
+        .iter()
+        .flat_map(|record| {
+            record.regional_cfg.nodes.iter().filter_map(|node| {
+                let transfer = node.transfer.as_ref()?;
+                let source = record.procedures[node.procedure].frame.code_address;
+                let evm_abstract::world::Code::Runtime(program) =
+                    &coarse.detail().unwrap().world().accounts()[&source].code
+                else {
+                    return None;
+                };
+                let block = program.blocks().get(node.frame.basic_block_index)?;
+                if node.frame.code_address != address(U)
+                    || !block
+                        .instructions
+                        .iter()
+                        .any(|instruction| instruction.pc == dispatch)
+                    || !transfer.current
+                    || !transfer.complete
+                    || !transfer.visited_block
+                {
+                    return None;
+                }
+                Some(
+                    transfer
+                        .successors
+                        .iter()
+                        .filter(|edge| {
+                            edge.kind == MachineEdgeKind::Intraprocedural(EdgeKind::Jump)
+                        })
+                        .map(|edge| {
+                            let to = &record.regional_cfg.nodes[edge.to];
+                            program.blocks()[to.frame.basic_block_index].instructions[0].pc
+                        })
+                        .collect::<std::collections::BTreeSet<_>>(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
     let precise_targets = targets(&precise);
     let expected = std::collections::BTreeSet::from([
         fixture.labels["return_one"],

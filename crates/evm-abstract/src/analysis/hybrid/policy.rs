@@ -314,6 +314,15 @@ where
     fn supports_early_known_admission(&self) -> bool {
         self.inner.supports_early_known_admission()
     }
+    fn summarize_known_call(&self, frame: &FrameKey) -> bool {
+        // Retain selected caller histories in their continuations, outside the
+        // unselected callee's relative body identity. The supplied summary
+        // policy still owns covering input/output admission and refusal.
+        !selected(self.regions, frame) || self.inner.summarize_known_call(frame)
+    }
+    fn summarize_known_root(&self, frame: &FrameKey) -> bool {
+        self.inner.summarize_known_root(frame)
+    }
     fn admit_relative(
         &self,
         current: &RelativeState<D::Element>,

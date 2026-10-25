@@ -77,7 +77,9 @@ use crate::analysis::state::{context, stack_alias};
 pub(in crate::analysis) use coarse_retry::prepare as prepare_runtime_retry;
 #[cfg(test)]
 use payload::join;
-pub(in crate::analysis) use recursion::{is_known_call_entry, is_recursive_entry};
+pub(in crate::analysis) use recursion::{
+    is_known_call_entry, is_known_root_entry, is_recursive_entry,
+};
 
 /// This is an internal owner namespace, never an observed account address.
 /// All unknown-owner effects are abstracted together, including possible aliases.

@@ -4,6 +4,20 @@ use crate::domain::WordElement;
 
 use crate::analysis::{EvmChildFrame, EvmFrameState, EvmMachinePayload, FrameCode};
 
+/// Only the initial known root shape is eligible for explicit root admission.
+/// An arbitrary later World block must not silently change interpretation.
+pub(in crate::analysis) fn is_known_root_entry<N: WordElement>(
+    payload: &EvmMachinePayload<N>,
+) -> bool {
+    let frame = payload.active();
+    payload.call_stack.depth() == 1
+        && frame.code == FrameCode::Runtime
+        && frame.key.mode == FrameCode::Runtime
+        && frame.program.is_some()
+        && frame.key.basic_block_index == 0
+        && frame.stack.is_empty()
+}
+
 /// Admit an ordinary known CALL-family child before its first block executes.
 /// The relative input detaches only the callee; its complete caller continuation
 /// and rollback checkpoint remain available for output resumption. Creation uses
