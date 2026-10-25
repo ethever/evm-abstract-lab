@@ -25,6 +25,24 @@ fn roundtrip(error: &api::ApiError) {
 }
 
 #[test]
+fn unsupported_cooperation_view_keeps_its_category_and_requested_contract() {
+    use evm_abstract::analysis::{RuntimeExecution, cooperation::InputViews};
+    let source = CooperationError::<std::convert::Infallible>::UnsupportedView {
+        supported: InputViews::Native,
+        requested: RuntimeExecution::Process,
+    };
+    let message = source.to_string();
+    let projected = execution(source);
+    assert_eq!(projected.code, api::ApiErrorCode::Internal);
+    assert_eq!(projected.message, message);
+    assert_eq!(
+        projected.details,
+        api::ErrorDetails::Execution(api::ExecutionFailureKind::UnsupportedView)
+    );
+    roundtrip(&projected);
+}
+
+#[test]
 fn cancelled_real_fingerprint_stays_cancelled_in_the_protocol_error() {
     let world = world(ExprId::fresh().unwrap());
     let previous = world.fingerprint().unwrap();

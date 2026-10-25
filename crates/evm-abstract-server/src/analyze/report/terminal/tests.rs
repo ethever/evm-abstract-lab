@@ -474,11 +474,13 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     for which in 0..5 {
         let mut wrong = report.clone();
         match which {
-            0 => wrong.native.as_mut().unwrap().stores[coverage.outcomes[2].store]
+            0 => std::sync::Arc::make_mut(wrong.native.as_mut().unwrap()).stores
+                [coverage.outcomes[2].store]
                 .accounts
                 .retain(|account| account.address != ripemd),
             1 => {
-                let owner = wrong.native.as_mut().unwrap().stores[coverage.outcomes[2].store]
+                let owner = std::sync::Arc::make_mut(wrong.native.as_mut().unwrap()).stores
+                    [coverage.outcomes[2].store]
                     .accounts
                     .iter_mut()
                     .find(|account| account.address == ripemd)
@@ -492,7 +494,9 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
             }
             2 => {
                 let api::Expression::SlotsIte(root) =
-                    &mut wrong.native.as_mut().unwrap().symbolic.nodes[failed.storage_root.node]
+                    &mut std::sync::Arc::make_mut(wrong.native.as_mut().unwrap())
+                        .symbolic
+                        .nodes[failed.storage_root.node]
                 else {
                     unreachable!()
                 };
@@ -500,7 +504,9 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
             }
             3 => {
                 let api::Expression::SlotsInput(root) =
-                    &mut wrong.native.as_mut().unwrap().symbolic.nodes[returned.storage_root.node]
+                    &mut std::sync::Arc::make_mut(wrong.native.as_mut().unwrap())
+                        .symbolic
+                        .nodes[returned.storage_root.node]
                 else {
                     unreachable!()
                 };
@@ -508,8 +514,9 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
             }
             _ => {
                 let api::Expression::Input(identity) =
-                    &mut wrong.native.as_mut().unwrap().symbolic.nodes
-                        [binding.call_value.expression.unwrap().node]
+                    &mut std::sync::Arc::make_mut(wrong.native.as_mut().unwrap())
+                        .symbolic
+                        .nodes[binding.call_value.expression.unwrap().node]
                 else {
                     unreachable!()
                 };
@@ -519,7 +526,7 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
         assert_ne!(
             canonical_joint(
                 report_joint(&wrong),
-                &wrong.native.as_mut().unwrap().symbolic
+                &std::sync::Arc::make_mut(wrong.native.as_mut().unwrap()).symbolic
             ),
             actual
         );
@@ -674,10 +681,7 @@ fn original_root_frame_requires_the_admitted_runtime_entry_shape() {
         (0, 0, vec![0]),
     ] {
         let mut invalid = report.clone();
-        let frame = &mut invalid
-            .native
-            .as_mut()
-            .unwrap()
+        let frame = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
             .root_terminal_coverage
             .as_mut()
             .unwrap()
@@ -713,22 +717,21 @@ fn original_root_frame_requires_the_admitted_runtime_entry_shape() {
         ),
     ] {
         let mut invalid = report.clone();
-        let input = &mut invalid
-            .native
-            .as_mut()
-            .unwrap()
+        let input = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
             .root_terminal_coverage
             .as_mut()
             .unwrap()
             .input;
         input.frame.mode = mode;
         // Matching a non-runtime program kind cannot admit a different root.
-        invalid
-            .programs
-            .iter_mut()
-            .find(|program| program.id == input.program)
-            .unwrap()
-            .kind = kind;
+        std::sync::Arc::make_mut(
+            invalid
+                .programs
+                .iter_mut()
+                .find(|program| program.id == input.program)
+                .unwrap(),
+        )
+        .kind = kind;
         assert_eq!(
             invalid.validate(),
             Err(api::ReportValidationFailure::Process(
@@ -870,23 +873,18 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
         .state;
     for which in 0..3 {
         let mut invalid = report.clone();
-        let api::RootTerminalTrigger::MandatoryRetention(trigger) = &mut invalid
-            .native
-            .as_mut()
-            .unwrap()
-            .root_terminal_coverage
-            .as_mut()
-            .unwrap()
-            .trigger
+        let api::RootTerminalTrigger::MandatoryRetention(trigger) =
+            &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+                .root_terminal_coverage
+                .as_mut()
+                .unwrap()
+                .trigger
         else {
             unreachable!()
         };
         match which {
             0 => trigger.pc = usize::MAX,
-            1 => invalid
-                .native
-                .as_mut()
-                .unwrap()
+            1 => std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
                 .frontiers
                 .retain(|frontier| {
                     frontier.from != Some(expected.state) || frontier.pc != Some(expected.pc)
@@ -894,10 +892,7 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
             _ => trigger.state = other_state,
         }
         assert!(
-            invalid
-                .native
-                .as_mut()
-                .unwrap()
+            std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
                 .states
                 .iter()
                 .any(|state| state.state == expected.state)
@@ -910,14 +905,12 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
         );
     }
     let mut invalid = report;
-    let api::RootTerminalTrigger::MandatoryRetention(trigger) = &mut invalid
-        .native
-        .as_mut()
-        .unwrap()
-        .root_terminal_coverage
-        .as_mut()
-        .unwrap()
-        .trigger
+    let api::RootTerminalTrigger::MandatoryRetention(trigger) =
+        &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+            .root_terminal_coverage
+            .as_mut()
+            .unwrap()
+            .trigger
     else {
         unreachable!()
     };
@@ -1045,15 +1038,13 @@ fn chain_identity_and_static_nonselected_account_state_survive_projection() {
         api::Expression::SlotsZero
     );
     let mut invalid = report.clone();
-    let api::RootTerminalSnapshot::Chain(snapshot) = &mut invalid
-        .native
-        .as_mut()
-        .unwrap()
-        .root_terminal_coverage
-        .as_mut()
-        .unwrap()
-        .input
-        .snapshot
+    let api::RootTerminalSnapshot::Chain(snapshot) =
+        &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+            .root_terminal_coverage
+            .as_mut()
+            .unwrap()
+            .input
+            .snapshot
     else {
         unreachable!()
     };
@@ -1125,19 +1116,17 @@ fn ordinary_stores_export_unlisted_defaults_and_actual_unscoped_templates() {
     let (native, request) = fixture(false, false, false);
     let report = project(&native, &request);
     let mut invalid = report.clone();
-    invalid.native.as_mut().unwrap().stores[0].storage_root.node =
-        report.selected_graph().unwrap().symbolic.nodes.len();
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap()).stores[0]
+        .storage_root
+        .node = report.selected_graph().unwrap().symbolic.nodes.len();
     assert!(matches!(
         invalid.validate(),
         Err(api::ReportValidationFailure::Symbolic(_))
     ));
     invalid = report;
-    invalid.native.as_mut().unwrap().stores[0]
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap()).stores[0]
         .transient_root
-        .node = invalid
-        .native
-        .as_mut()
-        .unwrap()
+        .node = std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
         .metadata
         .environment
         .call_value
@@ -1159,10 +1148,7 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         (2, api::PoolReferenceKind::Program),
     ] {
         let mut invalid = report.clone();
-        let input = &mut invalid
-            .native
-            .as_mut()
-            .unwrap()
+        let input = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
             .root_terminal_coverage
             .as_mut()
             .unwrap()
@@ -1177,10 +1163,7 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         );
     }
     let mut invalid = report.clone();
-    invalid
-        .native
-        .as_mut()
-        .unwrap()
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
         .root_terminal_coverage
         .as_mut()
         .unwrap()
@@ -1192,10 +1175,7 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         Err(api::ReportValidationFailure::Symbolic(_))
     ));
     let mut invalid = report.clone();
-    invalid
-        .native
-        .as_mut()
-        .unwrap()
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
         .root_terminal_coverage
         .as_mut()
         .unwrap()
@@ -1212,10 +1192,7 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         ))
     );
     let mut invalid = report.clone();
-    invalid
-        .native
-        .as_mut()
-        .unwrap()
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
         .root_terminal_coverage
         .as_mut()
         .unwrap()
@@ -1228,10 +1205,7 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         ))
     );
     let mut invalid = report.clone();
-    let outcomes = &mut invalid
-        .native
-        .as_mut()
-        .unwrap()
+    let outcomes = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
         .root_terminal_coverage
         .as_mut()
         .unwrap()
@@ -1252,10 +1226,7 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         api::RootTerminalValidationFailure::InputIdentity,
     ] {
         let mut invalid = report.clone();
-        let input = &mut invalid
-            .native
-            .as_mut()
-            .unwrap()
+        let input = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
             .root_terminal_coverage
             .as_mut()
             .unwrap()

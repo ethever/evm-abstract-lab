@@ -87,6 +87,8 @@ record! {
 choice! {
     /// Native engine failure; contextual diagnostics remain in ApiError.message.
     pub enum ExecutionFailureKind {
+        /// The component assembly does not support the requested semantic view.
+        UnsupportedView,
         /// Shared analyzer scope, dependency, identity or resource protocol failed.
         Protocol,
         /// Required immutable input initialization failed.

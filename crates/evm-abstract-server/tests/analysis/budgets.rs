@@ -40,21 +40,26 @@ fn sparse_memory_above_the_old_ceiling_returns_the_complete_word() {
         report.status,
         AnalysisStatus::Converged,
         "{:?}",
-        report.frontiers
+        report.selected_graph().unwrap().frontiers
     );
-    assert!(report.ssa.complete);
+    assert!(report.selected_graph().unwrap().ssa.complete);
     assert!(
-        report.metadata.work > 100_000_000,
+        report.selected_graph().unwrap().metadata.work > 100_000_000,
         "work={}",
-        report.metadata.work
+        report.selected_graph().unwrap().metadata.work
     );
-    assert_eq!(report.metadata.limits, selected_limits);
+    assert_eq!(
+        report.selected_graph().unwrap().metadata.limits,
+        selected_limits
+    );
     let returned = report
+        .selected_graph()
+        .unwrap()
         .outcomes
         .iter()
         .find(|outcome| outcome.kind == evm_abstract_protocol::OutcomeKind::Return)
         .unwrap();
-    let bytes = &report.byte_arrays[returned.data];
+    let bytes = &report.selected_graph().unwrap().byte_arrays[returned.data];
     assert_eq!(bytes.length.constants, Some(vec!["0x20".into()]));
     let word = returned_word();
     assert!(buffer_matches(&report, bytes, &word));
@@ -79,14 +84,20 @@ fn work_refusal_retains_the_actual_mstore_prefix_and_pending_effect() {
     bounded.limits.max_work = 100_000_000;
     let work_limits = bounded.limits.clone();
     let partial = analyze(bounded).unwrap();
-    assert_eq!(partial.metadata.limits, work_limits);
+    assert_eq!(
+        partial.selected_graph().unwrap().metadata.limits,
+        work_limits
+    );
     assert_eq!(partial.status, AnalysisStatus::Incomplete);
-    assert!(!partial.ssa.complete);
-    assert!(partial.metadata.work > 0 && partial.metadata.work <= work_limits.max_work);
-    let [frontier] = partial.frontiers.as_slice() else {
+    assert!(!partial.selected_graph().unwrap().ssa.complete);
+    assert!(
+        partial.selected_graph().unwrap().metadata.work > 0
+            && partial.selected_graph().unwrap().metadata.work <= work_limits.max_work
+    );
+    let [frontier] = partial.selected_graph().unwrap().frontiers.as_slice() else {
         panic!(
             "expected one pending MSTORE Work refusal: {:?}",
-            partial.frontiers
+            partial.selected_graph().unwrap().frontiers
         )
     };
     assert_eq!(frontier.reason, FrontierDetails::Work);
@@ -107,13 +118,13 @@ fn work_refusal_retains_the_actual_mstore_prefix_and_pending_effect() {
     } else {
         "after a committed MSTORE prefix"
     };
-    let [state] = partial.states.as_slice() else {
+    let [state] = partial.selected_graph().unwrap().states.as_slice() else {
         panic!("expected only the root state {phase}")
     };
-    let [cfg] = partial.cfg.as_slice() else {
+    let [cfg] = partial.selected_graph().unwrap().cfg.as_slice() else {
         panic!("expected only the root CFG block {phase}")
     };
-    let [block] = partial.ssa.blocks.as_slice() else {
+    let [block] = partial.selected_graph().unwrap().ssa.blocks.as_slice() else {
         panic!("expected only the root SSA block {phase}")
     };
     assert_eq!(
@@ -146,7 +157,10 @@ fn work_refusal_retains_the_actual_mstore_prefix_and_pending_effect() {
         panic!("expected one original source block")
     };
     assert_eq!((source.id, source.start_pc), (0, 0));
-    assert_eq!(cfg.instructions, source.instructions);
+    assert!(std::ptr::eq(
+        partial.source_block(cfg.source_block().unwrap()).unwrap(),
+        source
+    ));
     let prefix: Vec<_> = (0..=completed_writes)
         .flat_map(|write| [7 * write, 7 * write + 2, 7 * write + 6])
         .collect();
@@ -209,10 +223,15 @@ fn work_refusal_retains_the_actual_mstore_prefix_and_pending_effect() {
                 ]
             );
             for (operand, constant) in step.operands.iter().zip(["0x100000", "0x2a"]) {
-                assert!(partial.ssa.values[*operand].facts.iter().any(|fact| {
-                    fact.status == SsaFactStatus::Current
-                        && fact.constant.as_deref() == Some(constant)
-                }));
+                assert!(
+                    partial.selected_graph().unwrap().ssa.values[*operand]
+                        .facts
+                        .iter()
+                        .any(|fact| {
+                            fact.status == SsaFactStatus::Current
+                                && fact.constant.as_deref() == Some(constant)
+                        })
+                );
             }
         } else {
             assert_eq!(step.opcode, if index % 3 == 0 { 0x60 } else { 0x62 });
@@ -220,7 +239,9 @@ fn work_refusal_retains_the_actual_mstore_prefix_and_pending_effect() {
             let [result] = step.results.as_slice() else {
                 panic!("every prefix PUSH must retain its original definition")
             };
-            let SsaValueOrigin::Instruction(origin) = &partial.ssa.values[*result].origin else {
+            let SsaValueOrigin::Instruction(origin) =
+                &partial.selected_graph().unwrap().ssa.values[*result].origin
+            else {
                 panic!("PUSH result must retain its instruction origin")
             };
             assert_eq!(
@@ -232,10 +253,19 @@ fn work_refusal_retains_the_actual_mstore_prefix_and_pending_effect() {
     let pending = block.instructions.last().unwrap();
     assert_eq!((pending.pc, pending.opcode), (pc, 0x52));
     assert_eq!(block.exit_effect, pending.effect_result.unwrap());
-    assert_eq!(partial.ssa.effect_count, effects.len());
-    assert_eq!(partial.ssa.value_count, 2 * (completed_writes + 1));
-    assert_eq!(partial.ssa.values.len(), partial.ssa.value_count);
-    assert!(!partial.ssa.values.iter().any(|value| {
+    assert_eq!(
+        partial.selected_graph().unwrap().ssa.effect_count,
+        effects.len()
+    );
+    assert_eq!(
+        partial.selected_graph().unwrap().ssa.value_count,
+        2 * (completed_writes + 1)
+    );
+    assert_eq!(
+        partial.selected_graph().unwrap().ssa.values.len(),
+        partial.selected_graph().unwrap().ssa.value_count
+    );
+    assert!(!partial.selected_graph().unwrap().ssa.values.iter().any(|value| {
         matches!(&value.origin, SsaValueOrigin::Instruction(origin)
             if origin.state == 0 && (origin.pc >= pc || origin.instruction_index >= prefix.len() - 1))
     }));
@@ -251,12 +281,26 @@ fn work_refusal_retains_the_actual_mstore_prefix_and_pending_effect() {
     );
     assert_eq!(block.exit_frames, [Vec::<usize>::new()]);
     assert!(cfg.exit_stack.is_empty());
-    assert!(partial.edges.is_empty());
-    assert!(partial.ssa.transitions.is_empty());
-    assert!(partial.ssa.deferred_edges.is_empty());
-    assert!(partial.outcomes.iter().all(|outcome| {
-        outcome.state == 0 && outcome.kind == evm_abstract_protocol::OutcomeKind::Failure
-    }));
+    assert!(partial.selected_graph().unwrap().edges.is_empty());
+    assert!(partial.selected_graph().unwrap().ssa.transitions.is_empty());
+    assert!(
+        partial
+            .selected_graph()
+            .unwrap()
+            .ssa
+            .deferred_edges
+            .is_empty()
+    );
+    assert!(
+        partial
+            .selected_graph()
+            .unwrap()
+            .outcomes
+            .iter()
+            .all(|outcome| {
+                outcome.state == 0 && outcome.kind == evm_abstract_protocol::OutcomeKind::Failure
+            })
+    );
     let exit = state
         .exit
         .as_ref()
@@ -269,7 +313,7 @@ fn work_refusal_retains_the_actual_mstore_prefix_and_pending_effect() {
     let mut unchanged = entry.clone();
     unchanged.memory = frame.memory;
     assert_eq!(frame, &unchanged);
-    let initial_memory = &partial.byte_arrays[entry.memory.unwrap()];
+    let initial_memory = &partial.selected_graph().unwrap().byte_arrays[entry.memory.unwrap()];
     assert!(initial_memory.memory);
     assert!(buffer_matches(&partial, initial_memory, &[]));
     assert!(initial_memory.cells.is_empty());
@@ -279,24 +323,37 @@ fn work_refusal_retains_the_actual_mstore_prefix_and_pending_effect() {
         max_nodes: work_limits.max_expression_nodes.try_into().unwrap(),
         max_depth: work_limits.max_expression_depth.try_into().unwrap(),
     };
-    let initial = native_view(&partial.symbolic, initial_memory.symbolic.node, limits).unwrap();
+    let initial = native_view(
+        &partial.selected_graph().unwrap().symbolic,
+        initial_memory.symbolic.node,
+        limits,
+    )
+    .unwrap();
     assert_eq!(initial.offset.as_constant(), Some(U256::ZERO));
     assert_eq!(initial.length.as_constant(), Some(U256::ZERO));
     assert!(matches!(initial.state.kind(), ByteStateKind::Zero));
-    let Expression::View(initial_view) = &partial.symbolic.nodes[initial_memory.symbolic.node]
+    let Expression::View(initial_view) =
+        &partial.selected_graph().unwrap().symbolic.nodes[initial_memory.symbolic.node]
     else {
         panic!("entry memory must retain its original view")
     };
     assert!(matches!(
-        partial.symbolic.nodes[initial_view.state.node],
+        partial.selected_graph().unwrap().symbolic.nodes[initial_view.state.node],
         Expression::BytesZero
     ));
-    let memory = &partial.byte_arrays[frame.memory.unwrap()];
+    let memory = &partial.selected_graph().unwrap().byte_arrays[frame.memory.unwrap()];
     assert!(memory.memory);
     assert_eq!(memory.default, initial_memory.default);
-    let captured = native_view(&partial.symbolic, memory.symbolic.node, limits).unwrap();
+    let captured = native_view(
+        &partial.selected_graph().unwrap().symbolic,
+        memory.symbolic.node,
+        limits,
+    )
+    .unwrap();
     assert_eq!(captured.offset.as_constant(), Some(U256::ZERO));
-    let Expression::View(view) = &partial.symbolic.nodes[memory.symbolic.node] else {
+    let Expression::View(view) =
+        &partial.selected_graph().unwrap().symbolic.nodes[memory.symbolic.node]
+    else {
         panic!("pending MSTORE must retain its captured memory view")
     };
     // Identical writes are idempotent in the physical root. Only the complete
@@ -310,13 +367,15 @@ fn work_refusal_retains_the_actual_mstore_prefix_and_pending_effect() {
     } else {
         assert_eq!(memory.length.constants, Some(vec!["0x100020".into()]));
         assert_eq!(captured.length.as_constant(), Some(U256::from(0x100020)));
-        let Expression::WriteWord(write) = &partial.symbolic.nodes[view.state.node] else {
+        let Expression::WriteWord(write) =
+            &partial.selected_graph().unwrap().symbolic.nodes[view.state.node]
+        else {
             panic!("committed prefix must retain its raw WriteWord")
         };
         assert_eq!(write.previous, initial_view.state);
         for (operand, constant) in [(write.offset, "0x100000"), (write.value, "0x2a")] {
             assert_eq!(
-                partial.symbolic.nodes[operand.node],
+                partial.selected_graph().unwrap().symbolic.nodes[operand.node],
                 Expression::Constant(constant.into())
             );
         }
@@ -370,17 +429,17 @@ fn expression_refusal_keeps_expansion_but_does_not_commit_the_first_mstore() {
     source.address = Some(owner.into());
     let limits = bounded.limits.clone();
     let partial = analyze(bounded).unwrap();
-    assert_eq!(partial.metadata.limits, limits);
+    assert_eq!(partial.selected_graph().unwrap().metadata.limits, limits);
     assert_eq!(
-        partial.metadata.environment.to,
+        partial.selected_graph().unwrap().metadata.environment.to,
         AddressValue::Concrete(owner.into())
     );
     assert_eq!(partial.status, AnalysisStatus::Incomplete);
-    assert!(!partial.ssa.complete);
-    let [frontier] = partial.frontiers.as_slice() else {
+    assert!(!partial.selected_graph().unwrap().ssa.complete);
+    let [frontier] = partial.selected_graph().unwrap().frontiers.as_slice() else {
         panic!(
             "expected only the first MSTORE refusal: {:?}",
-            partial.frontiers
+            partial.selected_graph().unwrap().frontiers
         )
     };
     assert_eq!(
@@ -393,7 +452,7 @@ fn expression_refusal_keeps_expansion_but_does_not_commit_the_first_mstore() {
     assert_eq!((frontier.from, frontier.pc), (Some(0), Some(6)));
     assert!(frontier.range.is_none());
     assert!(frontier.payload.is_none());
-    let [block] = partial.ssa.blocks.as_slice() else {
+    let [block] = partial.selected_graph().unwrap().ssa.blocks.as_slice() else {
         panic!("expected only the root SSA block")
     };
     assert_eq!(block.state, 0);
@@ -422,17 +481,22 @@ fn expression_refusal_keeps_expansion_but_does_not_commit_the_first_mstore() {
         effect = next;
     }
     assert_eq!(block.exit_effect, effect);
-    assert_eq!(partial.ssa.effect_count, 4);
-    assert_eq!(partial.ssa.value_count, 2);
-    assert_eq!(partial.ssa.values.len(), 2);
+    assert_eq!(partial.selected_graph().unwrap().ssa.effect_count, 4);
+    assert_eq!(partial.selected_graph().unwrap().ssa.value_count, 2);
+    assert_eq!(partial.selected_graph().unwrap().ssa.values.len(), 2);
     assert_eq!((store.pc, store.opcode), (6, 0x52));
     assert_eq!(store.progress, InstructionProgress::OperandsConsumed);
     assert_eq!(store.operands, [offset.results[0], value.results[0]]);
     for (operand, constant) in store.operands.iter().zip(["0x100000", "0x2a"]) {
-        assert!(partial.ssa.values[*operand].facts.iter().any(|fact| {
-            fact.status == evm_abstract_protocol::SsaFactStatus::Current
-                && fact.constant.as_deref() == Some(constant)
-        }));
+        assert!(
+            partial.selected_graph().unwrap().ssa.values[*operand]
+                .facts
+                .iter()
+                .any(|fact| {
+                    fact.status == evm_abstract_protocol::SsaFactStatus::Current
+                        && fact.constant.as_deref() == Some(constant)
+                })
+        );
     }
     assert!(store.results.is_empty());
     assert!(store.effect_result.is_some());
@@ -448,19 +512,26 @@ fn expression_refusal_keeps_expansion_but_does_not_commit_the_first_mstore() {
         ]
     );
     assert_eq!(block.exit_frames, [Vec::<usize>::new()]);
-    let [state] = partial.states.as_slice() else {
+    let [state] = partial.selected_graph().unwrap().states.as_slice() else {
         panic!("expected only the root state")
     };
-    let [cfg] = partial.cfg.as_slice() else {
+    let [cfg] = partial.selected_graph().unwrap().cfg.as_slice() else {
         panic!("expected only the root CFG block")
     };
     assert_eq!((state.state, cfg.id), (0, 0));
     assert_eq!(cfg.executed_pcs, [0, 2, 6]);
     assert!(cfg.entry_stack.is_empty());
     assert!(cfg.exit_stack.is_empty());
-    assert!(partial.edges.is_empty());
-    assert!(partial.ssa.transitions.is_empty());
-    assert!(partial.ssa.deferred_edges.is_empty());
+    assert!(partial.selected_graph().unwrap().edges.is_empty());
+    assert!(partial.selected_graph().unwrap().ssa.transitions.is_empty());
+    assert!(
+        partial
+            .selected_graph()
+            .unwrap()
+            .ssa
+            .deferred_edges
+            .is_empty()
+    );
     let exit = state.exit.as_ref().unwrap();
     assert_eq!(exit.store, state.entry.store);
     assert_eq!(exit.path, state.entry.path);
@@ -469,7 +540,7 @@ fn expression_refusal_keeps_expansion_but_does_not_commit_the_first_mstore() {
     };
     assert_eq!(
         entry.address_value.as_ref(),
-        Some(&partial.metadata.environment.to)
+        Some(&partial.selected_graph().unwrap().metadata.environment.to)
     );
     let [frame] = exit.frames.as_slice() else {
         panic!("pending MSTORE must retain the root frame")
@@ -478,23 +549,25 @@ fn expression_refusal_keeps_expansion_but_does_not_commit_the_first_mstore() {
     let mut unchanged = entry.clone();
     unchanged.memory = frame.memory;
     assert_eq!(frame, &unchanged);
-    let initial_memory = &partial.byte_arrays[entry.memory.unwrap()];
+    let initial_memory = &partial.selected_graph().unwrap().byte_arrays[entry.memory.unwrap()];
     assert!(buffer_matches(&partial, initial_memory, &[]));
-    let memory = &partial.byte_arrays[frame.memory.unwrap()];
+    let memory = &partial.selected_graph().unwrap().byte_arrays[frame.memory.unwrap()];
     assert!(memory.memory);
     assert_eq!(memory.length.constants, Some(vec!["0x100020".into()]));
     assert!(memory.cells.is_empty());
     assert_eq!(memory.default, initial_memory.default);
     assert_eq!(memory.default.constants, Some(vec!["0x0".into()]));
-    let Expression::View(view) = &partial.symbolic.nodes[memory.symbolic.node] else {
+    let Expression::View(view) =
+        &partial.selected_graph().unwrap().symbolic.nodes[memory.symbolic.node]
+    else {
         panic!("refused write retains memory view")
     };
     assert!(matches!(
-        partial.symbolic.nodes[view.state.node],
+        partial.selected_graph().unwrap().symbolic.nodes[view.state.node],
         Expression::BytesZero
     ));
     let captured = native_view(
-        &partial.symbolic,
+        &partial.selected_graph().unwrap().symbolic,
         memory.symbolic.node,
         ExprLimits {
             max_nodes: limits.max_expression_nodes.try_into().unwrap(),
@@ -507,6 +580,8 @@ fn expression_refusal_keeps_expansion_but_does_not_commit_the_first_mstore() {
     assert!(matches!(captured.state.kind(), ByteStateKind::Zero));
     assert!(
         partial
+            .selected_graph()
+            .unwrap()
             .symbolic
             .nodes
             .iter()
@@ -514,6 +589,8 @@ fn expression_refusal_keeps_expansion_but_does_not_commit_the_first_mstore() {
     );
     assert!(
         partial
+            .selected_graph()
+            .unwrap()
             .outcomes
             .iter()
             .all(|outcome| { outcome.kind == evm_abstract_protocol::OutcomeKind::Failure })
@@ -538,20 +615,20 @@ fn symbolic_entry_rollback_refusal_executes_no_submitted_instruction() {
     assert_eq!(source.bytecode, code);
     let limits = bounded.limits.clone();
     let partial = analyze(bounded).unwrap();
-    assert_eq!(partial.metadata.limits, limits);
+    assert_eq!(partial.selected_graph().unwrap().metadata.limits, limits);
     assert_eq!(
-        partial.metadata.environment.to,
+        partial.selected_graph().unwrap().metadata.environment.to,
         AddressValue::Symbolic(InputSymbol {
             kind: InputSymbolKind::To,
             index: None,
         })
     );
     assert_eq!(partial.status, AnalysisStatus::Incomplete);
-    assert!(!partial.ssa.complete);
-    let [frontier] = partial.frontiers.as_slice() else {
+    assert!(!partial.selected_graph().unwrap().ssa.complete);
+    let [frontier] = partial.selected_graph().unwrap().frontiers.as_slice() else {
         panic!(
             "expected only the symbolic entry refusal: {:?}",
-            partial.frontiers
+            partial.selected_graph().unwrap().frontiers
         )
     };
     assert_eq!(
@@ -562,13 +639,13 @@ fn symbolic_entry_rollback_refusal_executes_no_submitted_instruction() {
     assert_eq!((frontier.from, frontier.pc), (Some(0), Some(0)));
     assert!(frontier.range.is_none());
     assert!(frontier.payload.is_none());
-    let [state] = partial.states.as_slice() else {
+    let [state] = partial.selected_graph().unwrap().states.as_slice() else {
         panic!("expected only the symbolic root state")
     };
-    let [cfg] = partial.cfg.as_slice() else {
+    let [cfg] = partial.selected_graph().unwrap().cfg.as_slice() else {
         panic!("expected only the symbolic root CFG block")
     };
-    let [block] = partial.ssa.blocks.as_slice() else {
+    let [block] = partial.selected_graph().unwrap().ssa.blocks.as_slice() else {
         panic!("expected only the symbolic root SSA block")
     };
     assert_eq!((state.state, cfg.id, block.state), (0, 0, 0));
@@ -583,38 +660,55 @@ fn symbolic_entry_rollback_refusal_executes_no_submitted_instruction() {
     assert!(block.open_incoming.is_empty());
     assert_eq!(block.exit_frames, [Vec::<usize>::new()]);
     assert_eq!(block.exit_effect, block.effect);
-    assert_eq!(partial.ssa.value_count, 0);
-    assert!(partial.ssa.values.is_empty());
-    assert!(partial.edges.is_empty());
-    assert!(partial.ssa.transitions.is_empty());
-    assert!(partial.ssa.deferred_edges.is_empty());
+    assert_eq!(partial.selected_graph().unwrap().ssa.value_count, 0);
+    assert!(partial.selected_graph().unwrap().ssa.values.is_empty());
+    assert!(partial.selected_graph().unwrap().edges.is_empty());
+    assert!(partial.selected_graph().unwrap().ssa.transitions.is_empty());
+    assert!(
+        partial
+            .selected_graph()
+            .unwrap()
+            .ssa
+            .deferred_edges
+            .is_empty()
+    );
     assert_eq!(state.exit.as_ref(), Some(&state.entry));
-    assert_eq!(partial.stores[state.entry.store].touched_default, None);
+    assert_eq!(
+        partial.selected_graph().unwrap().stores[state.entry.store].touched_default,
+        None
+    );
     let [frame] = state.entry.frames.as_slice() else {
         panic!("expected the original symbolic root frame")
     };
     assert!(frame.stack.is_empty());
     assert_eq!(
         frame.address_value.as_ref(),
-        Some(&partial.metadata.environment.to)
+        Some(&partial.selected_graph().unwrap().metadata.environment.to)
     );
     assert_eq!(
-        partial.stores[frame.rollback_store].touched_default,
+        partial.selected_graph().unwrap().stores[frame.rollback_store].touched_default,
         Some(false)
     );
-    let memory = &partial.byte_arrays[frame.memory.unwrap()];
+    let memory = &partial.selected_graph().unwrap().byte_arrays[frame.memory.unwrap()];
     assert!(memory.memory);
     assert!(buffer_matches(&partial, memory, &[]));
     assert!(memory.cells.is_empty());
     assert_eq!(memory.default.constants, Some(vec!["0x0".into()]));
-    let Expression::View(view) = &partial.symbolic.nodes[memory.symbolic.node] else {
+    let Expression::View(view) =
+        &partial.selected_graph().unwrap().symbolic.nodes[memory.symbolic.node]
+    else {
         panic!("symbolic entry retains its initial memory view")
     };
     assert!(matches!(
-        partial.symbolic.nodes[view.state.node],
+        partial.selected_graph().unwrap().symbolic.nodes[view.state.node],
         Expression::BytesZero
     ));
-    let root = partial.metadata.root_program.unwrap();
+    let root = partial
+        .selected_graph()
+        .unwrap()
+        .metadata
+        .root_program
+        .unwrap();
     assert_eq!(frame.program, Some(root));
     assert_eq!(cfg.program, Some(root));
     let program = &partial.programs[root];
@@ -624,15 +718,28 @@ fn symbolic_entry_rollback_refusal_executes_no_submitted_instruction() {
         "supplied code is not a physical account observation"
     );
     assert_eq!(frame.code_hash.as_ref(), Some(&program.code_hash));
-    assert_eq!(partial.disassembly, program.blocks);
+    assert_eq!(
+        partial.disassembly(partial.selected_view).unwrap(),
+        program.blocks
+    );
     let [source] = program.blocks.as_slice() else {
         panic!("expected the complete original source block")
     };
     assert_eq!((source.id, source.start_pc), (0, 0));
-    assert_eq!(cfg.instructions, source.instructions);
+    assert!(std::ptr::eq(
+        partial.source_block(cfg.source_block().unwrap()).unwrap(),
+        source
+    ));
     assert_eq!(source.instructions.len(), 20 * 3 + 3);
-    assert!(partial.outcomes.iter().all(|outcome| {
-        outcome.state == 0 && outcome.kind == evm_abstract_protocol::OutcomeKind::Failure
-    }));
+    assert!(
+        partial
+            .selected_graph()
+            .unwrap()
+            .outcomes
+            .iter()
+            .all(|outcome| {
+                outcome.state == 0 && outcome.kind == evm_abstract_protocol::OutcomeKind::Failure
+            })
+    );
     partial.validate().unwrap();
 }

@@ -95,8 +95,9 @@ fn recursive_bytecode_projects_a_closed_relation_without_fabricating_instruction
         report.selected_graph().unwrap().abstract_summaries
     );
     let mut invalid = parsed;
-    invalid.native.as_mut().unwrap().abstract_summaries[0].root_procedure = Some(
-        invalid.native.as_mut().unwrap().abstract_summaries[0]
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap()).abstract_summaries[0]
+        .root_procedure = Some(
+        std::sync::Arc::make_mut(invalid.native.as_mut().unwrap()).abstract_summaries[0]
             .procedures
             .len(),
     );

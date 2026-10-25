@@ -12,7 +12,7 @@ use crate::{
 
 struct Validation<'a> {
     report: &'a AnalysisGraph,
-    programs: &'a [crate::ProgramInfo],
+    programs: &'a [std::sync::Arc<crate::ProgramInfo>],
     graph: &'a SymbolicGraph,
 }
 impl Validation<'_> {
@@ -331,7 +331,10 @@ impl Validation<'_> {
 }
 impl AnalysisGraph {
     /// Check graph-local references against the publication's shared source directory.
-    pub fn validate(&self, programs: &[crate::ProgramInfo]) -> Result<(), ReportValidationFailure> {
+    pub fn validate(
+        &self,
+        programs: &[std::sync::Arc<crate::ProgramInfo>],
+    ) -> Result<(), ReportValidationFailure> {
         let max_work = self.metadata.postprocessing_max_work;
         let work = self.metadata.postprocessing_work;
         if max_work == 0 || work > max_work {

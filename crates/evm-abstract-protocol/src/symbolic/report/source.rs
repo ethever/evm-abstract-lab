@@ -147,7 +147,7 @@ impl super::Validation<'_> {
 impl AnalysisGraph {
     pub(super) fn validate_source(
         &self,
-        programs: &[crate::ProgramInfo],
+        programs: &[std::sync::Arc<crate::ProgramInfo>],
     ) -> Result<(), ReportValidationFailure> {
         let invalid = || ReportValidationFailure::Process(Kind::Source);
         match (&self.metadata.source_snapshot, &self.metadata.snapshot) {

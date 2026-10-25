@@ -112,7 +112,8 @@ fn closed_unknown_interactions_project_as_summaries_without_invented_opcodes() {
     );
 
     let mut invalid = parsed;
-    let summary = &mut invalid.native.as_mut().unwrap().abstract_summaries[0];
+    let summary =
+        &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap()).abstract_summaries[0];
     let invalid_dependency = summary.procedures.len();
     summary.procedures[0].dependencies.push(invalid_dependency);
     assert!(matches!(
