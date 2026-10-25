@@ -15,6 +15,7 @@ use serde::Serialize;
 use std::fmt;
 
 static CLONES: Counter<usize> = Counter::new(0);
+static CLONED_PAYLOAD: Counter<usize> = Counter::new(0);
 static LITERALS: Counter<usize> = Counter::new(0);
 static QUERIES: Counter<usize> = Counter::new(0);
 
@@ -32,15 +33,18 @@ struct Word {
     numeric: NumericValue,
     hidden: Hidden,
     payload: Vec<u8>,
+    refuse_clone: bool,
 }
 
 impl Clone for Word {
     fn clone(&self) -> Self {
         CLONES.update(|n| *n += 1);
+        CLONED_PAYLOAD.update(|n| *n += self.payload.len());
         Self {
             numeric: self.numeric.clone(),
             hidden: self.hidden,
             payload: self.payload.clone(),
+            refuse_clone: self.refuse_clone,
         }
     }
 }
@@ -61,6 +65,7 @@ impl WordElement for Word {
             numeric: NumericValue::constant(n),
             hidden: Hidden::None,
             payload: Vec::new(),
+            refuse_clone: false,
         }
     }
     fn from_observation(facts: &WordObservation) -> Self {
@@ -68,6 +73,7 @@ impl WordElement for Word {
             numeric: NumericValue::from_observation(facts),
             hidden: Hidden::None,
             payload: Vec::new(),
+            refuse_clone: false,
         }
     }
     fn observation(&self) -> WordObservation {
@@ -111,6 +117,9 @@ impl WordElement for Word {
         self.numeric.work_size().saturating_add(self.payload.len())
     }
     fn clone_work(&self) -> usize {
+        if self.refuse_clone {
+            return usize::MAX;
+        }
         self.numeric.clone_work().saturating_add(self.payload.len())
     }
 }
@@ -120,7 +129,8 @@ impl WordElement for Word {
 struct Policy {
     default: ProductAlgebra,
     applies: Cell<usize>,
-    quoted_payloads: Cell<Option<(usize, usize)>>,
+    quoted_payloads: Cell<Option<(usize, usize, usize)>>,
+    joined_offset_payload: Cell<usize>,
     refuse: bool,
     cancel: bool,
 }
@@ -134,6 +144,10 @@ impl EvmNumericAlgebra for Policy {
         value.clone()
     }
     fn join_numeric(&self, left: &Word, right: &Word) -> Word {
+        if left.numeric.known_bits().singleton() == Some(U256::ZERO) {
+            self.joined_offset_payload
+                .set(self.joined_offset_payload.get().max(left.payload.len()));
+        }
         if left == right {
             left.clone()
         } else {
@@ -180,6 +194,7 @@ impl EvmNumericAlgebra for Policy {
                     numeric: NumericValue::unknown_byte(),
                     hidden,
                     payload: word.payload.clone(),
+                    refuse_clone: false,
                 });
             }
         }
@@ -202,17 +217,22 @@ impl EvmNumericAlgebra for Policy {
     fn uniform_word_bytes(&self, word: &Word) -> bool {
         word.hidden == Hidden::OddWord
     }
-    fn uniform_word_numeric_work(&self, word: &Word, length: &Word) -> usize {
-        self.quoted_payloads
-            .set(Some((word.payload.len(), length.payload.len())));
+    fn uniform_word_numeric_work(&self, offset: &Word, word: &Word, length: &Word) -> usize {
+        self.quoted_payloads.set(Some((
+            offset.payload.len(),
+            word.payload.len(),
+            length.payload.len(),
+        )));
         if self.refuse {
             return usize::MAX;
         }
         // Complete numeric copies/queries, literals, BYTE results and length
         // joins. This test policy has no scalar reduction graph; 256 lifetimes
-        // cover the bounded 32-cell writer and its temporary numeric values.
+        // cover the bounded 32-cell writer and its temporary numeric values,
+        // including constant normalization's join on the actual zero carrier.
         word.work_size()
             .saturating_add(length.work_size())
+            .saturating_add(offset.work_size())
             .saturating_add(4096)
             .saturating_mul(256)
     }
@@ -223,6 +243,7 @@ fn source(hidden: Hidden, payload: usize) -> EvmValue<Word> {
         numeric: NumericValue::top(),
         hidden,
         payload: vec![7; payload],
+        refuse_clone: false,
     })
     .with_expression(ExprId::fresh().unwrap())
 }
@@ -248,9 +269,172 @@ fn opaque_quote_borrows_actual_elements_without_queries_literals_or_copies() {
             .uniform_word_write_work(&offset, &value, algebra.borrowed())
             .unwrap();
         assert_eq!(work == usize::MAX, refuse);
-        assert_eq!(policy.quoted_payloads.get(), Some((8192, 0)));
+        assert_eq!(policy.quoted_payloads.get(), Some((0, 8192, 0)));
         assert_eq!((CLONES.get(), LITERALS.get(), QUERIES.get()), (0, 0, 0));
         assert_eq!(policy.applies.get(), 0);
+    }
+}
+
+#[test]
+fn literal_zero_offset_private_copies_and_normalization_are_prepaid_or_refused() {
+    let _clones = CLONES.scope();
+    let _payload = CLONED_PAYLOAD.scope();
+    let _literals = LITERALS.scope();
+    let _queries = QUERIES.scope();
+    let policy = Policy::default();
+    let algebra = ValueAlgebra::new(&policy);
+    let domain = algebra.borrowed();
+    let mut world = EvmWorld::new(Fork::Osaka, "opaque zero-offset work");
+    world
+        .insert(
+            address(0x101),
+            EvmAccount::from_hex("525b00", Fork::Osaka).unwrap(),
+        )
+        .unwrap();
+    let entry = EvmEntry::new(address(0x101));
+    let config = ExecutionConfig::default();
+    let program = Program::from_hex_with_fork("525b00", Fork::Osaka).unwrap();
+    let input = transfer::initial(&world, &entry, domain).unwrap();
+    let value = source(Hidden::OddWord, 0);
+    let mut baseline_structure = None;
+    for (bytes, refuse_clone) in [(0, false), (4096, false), (16384, false), (16384, true)] {
+        // Only the actual zero offset's private copy payload/quote varies.
+        // Public scalar facts, literal provenance, word, policy and memory agree.
+        let mut zero = Word::constant(U256::ZERO);
+        zero.payload = vec![7; bytes];
+        zero.refuse_clone = refuse_clone;
+        let args = [
+            EvmValue::constant(U256::ZERO).with_numeric(zero),
+            value.clone(),
+        ];
+        let mut payload = input.clone();
+        payload.active_mut().stack = vec![args[1].clone(), args[0].clone()];
+        let execution = transfer::empty_execution(payload.clone());
+        let mut expected = payload.clone();
+        expected.active_mut().stack.clear();
+        let refused_payload = payload.clone();
+        CLONES.set(0);
+        CLONED_PAYLOAD.set(0);
+        LITERALS.set(0);
+        QUERIES.set(0);
+        policy.applies.set(0);
+        policy.joined_offset_payload.set(0);
+        let work = execution
+            .payload
+            .active()
+            .memory
+            .uniform_word_write_work(&args[0], &args[1], domain)
+            .unwrap();
+        assert_eq!(work == usize::MAX, refuse_clone);
+        assert_eq!(policy.quoted_payloads.get(), Some((bytes, 0, 0)));
+        assert_eq!((CLONES.get(), LITERALS.get(), QUERIES.get()), (0, 0, 0));
+        let mut preparation = WorkBudget::new(config.max_work);
+        let quoted = operation_work_budgeted(
+            &execution,
+            opcode::MSTORE,
+            &args,
+            &program,
+            domain,
+            &config,
+            &entry,
+            &mut preparation,
+        )
+        .map(writer_work);
+        assert_eq!(preparation.used(), 0);
+        assert_eq!((CLONES.get(), LITERALS.get(), QUERIES.get()), (0, 0, 0));
+        assert_eq!(policy.joined_offset_payload.get(), 0);
+        if refuse_clone {
+            assert_eq!(quoted, Err(FrontierReason::Work));
+        } else {
+            assert_eq!(quoted.unwrap(), work);
+        }
+        let mut refused = WorkBudget::new(if refuse_clone {
+            config.max_work
+        } else {
+            work - 1
+        });
+        let result = transfer::execute(
+            &world,
+            &entry,
+            refused_payload,
+            &config,
+            domain,
+            &RecentDistinctJumps,
+            &mut refused,
+            transfer::StorageReadPolicy::Abstract,
+        );
+        assert_eq!(
+            CLONED_PAYLOAD.get(),
+            0,
+            "refusal precedes all actual offset copies"
+        );
+        assert_eq!(policy.joined_offset_payload.get(), 0);
+        assert_eq!(policy.applies.get(), 0);
+        assert_eq!(result.payload, expected, "refusal precedes touch_memory");
+        assert_eq!(result.frontiers.len(), 1);
+        assert_eq!(result.frontiers[0].reason, FrontierReason::Work);
+        // Entry/instruction payments precede this quote and remain charged.
+        // MAX is rejected before a writer charge attempt. A finite fee that
+        // cannot be charged also leaves the ledger sticky-refused.
+        assert!(refused.used() > 0 && refused.used() < work);
+        if !refuse_clone {
+            assert!(refused.exhausted());
+        }
+        if refuse_clone {
+            continue;
+        }
+        // Numeric normalization sees the offset too, but its independent quote
+        // must not hide the writer's own missing staging-copy reservation.
+        let numeric = policy.uniform_word_numeric_work(
+            args[0].numeric(),
+            args[1].numeric(),
+            execution.payload.active().memory.len().numeric(),
+        );
+        let structure = work - numeric;
+        let baseline = *baseline_structure.get_or_insert(structure);
+        if bytes > 0 {
+            assert!(
+                structure > baseline,
+                "writer staging must quote the actual offset"
+            );
+        }
+        CLONED_PAYLOAD.set(0);
+        // Real transfer also pays its gas-failure/range/touch phases, outside
+        // the writer quote. Keep the original execution allowance for those.
+        let mut budget = WorkBudget::new(config.max_work);
+        let result = transfer::execute(
+            &world,
+            &entry,
+            payload,
+            &config,
+            domain,
+            &RecentDistinctJumps,
+            &mut budget,
+            transfer::StorageReadPolicy::Abstract,
+        );
+        let copied = CLONED_PAYLOAD.get();
+        if bytes > 0 {
+            assert!(copied >= bytes, "execute the actual deep-copy carrier");
+            assert!(
+                structure - baseline >= copied,
+                "pay every observed private staging copy"
+            );
+            assert_eq!(
+                policy.joined_offset_payload.get(),
+                bytes,
+                "normalization joins the same actual carrier supplied to its quote"
+            );
+        }
+        assert!(result.frontiers.is_empty(), "{:?}", result.frontiers);
+        assert!(budget.used() >= work);
+        assert_eq!(policy.applies.get(), 1);
+        let memory = &result.payload.active().memory;
+        assert_eq!(memory.stored_bytes().len(), 32);
+        for (_, byte) in memory.stored_bytes() {
+            assert_eq!(byte.numeric().hidden, Hidden::OddByte);
+            assert!(byte.contains(U256::ONE));
+            assert!(!byte.contains(U256::ZERO));
+        }
     }
 }
 

@@ -116,13 +116,18 @@ impl<const PRECISE: bool> EvmNumericAlgebra for BytePolicy<PRECISE> {
     fn uniform_word_bytes(&self, word: &NumericValue) -> bool {
         !PRECISE && self.default.uniform_word_bytes(word)
     }
-    fn uniform_word_numeric_work(&self, word: &NumericValue, length: &NumericValue) -> usize {
+    fn uniform_word_numeric_work(
+        &self,
+        offset: &NumericValue,
+        word: &NumericValue,
+        length: &NumericValue,
+    ) -> usize {
         if PRECISE {
             return usize::MAX;
         }
         self.word_surcharge.map_or(usize::MAX, |surcharge| {
             self.default
-                .uniform_word_numeric_work(word, length)
+                .uniform_word_numeric_work(offset, word, length)
                 .saturating_add(EXTRA_WORK)
                 .saturating_add(surcharge)
         })

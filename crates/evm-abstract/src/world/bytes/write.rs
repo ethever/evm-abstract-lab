@@ -90,7 +90,7 @@ impl<N: WordElement> EvmByteArray<N> {
         if !eligible(self, offset, value, 32, domain) {
             return None;
         }
-        Some(work(self, value, domain))
+        Some(work(self, offset, value, domain))
     }
     /// The writer owns arithmetic pass admission: source provenance and host-index
     /// feasibility are structural properties, independent of numeric transfer.
@@ -133,14 +133,17 @@ impl<N: WordElement> EvmByteArray<N> {
 
 fn work<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     array: &EvmByteArray<N>,
+    offset: &EvmValue<N>,
     value: &EvmValue<N>,
     domain: AlgebraRef<'_, D>,
 ) -> usize {
     use crate::domain::{provenance::MAX_ORIGINS, symbolic::ExprId};
 
-    let numeric = domain
-        .numeric_algebra()
-        .uniform_word_numeric_work(value.numeric(), array.length.numeric());
+    let numeric = domain.numeric_algebra().uniform_word_numeric_work(
+        offset.numeric(),
+        value.numeric(),
+        array.length.numeric(),
+    );
     if numeric == usize::MAX {
         return usize::MAX;
     }
@@ -148,7 +151,9 @@ fn work<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     // Input numeric copies use their actual carrier quotes. The policy quote
     // owns copies of newly projected byte results, unavailable before payment.
     const METADATA_COPY: usize = MAX_ORIGINS + 4;
-    let copy = [value, &array.length, &array.default]
+    // A proved literal zero can still carry deep private storage. Normalizing
+    // and remembering it copies that actual element before constant folding.
+    let copy = [offset, value, &array.length, &array.default]
         .into_iter()
         .map(|value| value.numeric().clone_work())
         .max()

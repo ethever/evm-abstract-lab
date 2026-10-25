@@ -203,6 +203,9 @@ pub trait EvmNumericAlgebra: Debug {
     /// Complete numeric work for the uniform 32-byte projection certified by
     /// `uniform_word_bytes`, plus finite scalar joins when extending `length`.
     /// Fund numeric operand/result copies, queries and literal construction.
+    /// `offset` is the actual element proved to be literal zero. Remembering
+    /// that literal joins this element with `Element::constant(0)` before
+    /// canonicalizing it; fund that policy-dependent join and its result too.
     /// Refresh evaluates BYTE once and retains its result for 32 cells. Staging
     /// may also evaluate all 32 BYTEs when this opaque word is a singleton with
     /// nonconstant provenance; certification alone does not exclude that case.
@@ -212,7 +215,12 @@ pub trait EvmNumericAlgebra: Debug {
     /// Quote only cached metadata of these actual opaque elements. No trial
     /// literals, projections or singleton discovery may execute to quote.
     /// MAX declines metered execution before effects; pure calls are caller-funded.
-    fn uniform_word_numeric_work(&self, _word: &Self::Element, _length: &Self::Element) -> usize {
+    fn uniform_word_numeric_work(
+        &self,
+        _offset: &Self::Element,
+        _word: &Self::Element,
+        _length: &Self::Element,
+    ) -> usize {
         usize::MAX
     }
     /// Upper bound for policy projection beyond ordinary input cloning. Covers
@@ -366,8 +374,13 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     fn uniform_word_bytes(&self, word: &Self::Element) -> bool {
         D::uniform_word_bytes(self, word)
     }
-    fn uniform_word_numeric_work(&self, word: &Self::Element, length: &Self::Element) -> usize {
-        D::uniform_word_numeric_work(self, word, length)
+    fn uniform_word_numeric_work(
+        &self,
+        offset: &Self::Element,
+        word: &Self::Element,
+        length: &Self::Element,
+    ) -> usize {
+        D::uniform_word_numeric_work(self, offset, word, length)
     }
     fn projection_work(&self, value: &Self::Element) -> usize {
         D::projection_work(self, value)

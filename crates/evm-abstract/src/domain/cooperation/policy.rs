@@ -287,11 +287,18 @@ where
             && word.interval().singleton().is_none()
             && word.congruence().singleton().is_none()
     }
-    fn uniform_word_numeric_work(&self, word: &NumericValue, length: &NumericValue) -> usize {
+    fn uniform_word_numeric_work(
+        &self,
+        _offset: &NumericValue,
+        word: &NumericValue,
+        length: &NumericValue,
+    ) -> usize {
         if !self.builtin {
             return usize::MAX;
         }
         // These exact carriers copy inline words and a shared finite handle.
+        // The admitted zero offset's normalization join is fixed-width too;
+        // the numeric copy/literal envelope below covers that inline result.
         // No common value metadata or memory/graph representation is priced here.
         const NUMERIC_COPY: usize = 12;
         let exact_length = length.known_bits().singleton().is_some_and(|n| {
