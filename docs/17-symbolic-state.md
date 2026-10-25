@@ -105,4 +105,4 @@ Native schema 15 与 Web schema 20 的 LOG 来源身份同时包含 emitter、co
 
 教程中的同址 memory/storage、有限别名、完整 word 往返、重叠复制与矛盾分支例子，各自核对一项具体关系。未知 memory 地址或 calldata 长度本身不会强制产生物化策略前沿；是否完成要读取实际 `status`、outcomes 与 frontiers。`LoopBound` 还需分别验证投影覆盖原载荷、join/widening 覆盖旧新输入、独立实例化覆盖摘要，以及“投影 → 实例化 → 再投影”得到稳定的规范上界；单次规范相等或清除历史 cases 不能替代这些义务。固定布局不保证任意 EVM 循环都完成；历史读取、回滚、日志及摘要重放仍须按实际图、输入与分析额度分别检查。库默认 1024 节点与 CLI 默认 16384 节点也不是同一种验证条件，不能由简单例子的通过推断全部默认策略已验证。
 
-协议验收还须从真实 COPY/storage alias 分析经过 typed report、JSON 解析、前端引用校验与 SSA，并覆盖大共享图、range prestate、预算和取消。旧 SMT 实现的专项源码 SHA、fork、输入假设、provider/rlimit、节点/状态/求解成本、内存与耗时保留于历史的 [Issue #111 集成验收](issue111-validation.md)；最终提交的完整 Nix 门禁结果另记于实施 PR。
+协议验收还须从真实 COPY/storage alias 分析经过 typed report、JSON 解析、前端引用校验与 SSA，并覆盖大共享图、range prestate、预算和取消。旧 SMT 实现的冻结源码、语义结论、现有回归与原记录读取命令见 [Issue #111 历史结论](issue111-validation.md)；最终提交的完整 Nix 门禁结果另记于实施 PR。

@@ -1,37 +1,33 @@
-# 已知代码递归与验收记录
+# 已知代码递归：历史结论与回归入口
 
-已知 bytecode 递归已接入共享过程不动点；原 Unknown USDC 的完成时间目标仍开放。以下观测绑定代码 `4212e5addd3672a9becdb7cd01d0ded75d836eb9`、main `f70afa2b383d574649831c3ff10a885947a1126a`。关键数据见[选定证据](evidence/known-recursion-selected-validation.json)。
+历史观测绑定源码 `4212e5addd3672a9becdb7cd01d0ded75d836eb9`、main `f70afa2b383d574649831c3ff10a885947a1126a`（native8 / wire13）。该版本已将已知递归接入共享过程不动点；原 WETH 请求交付 `Incomplete`，原 USDC 请求被外部超时终止，没有最终报告。这些观测不能证明原 Unknown 请求已完成，也不用于判断当前版本性能。
 
-| 原请求 | 实际交付 | 单次观测与边界 |
-| --- | --- | --- |
-| WETH | HTTP 200，`Incomplete` | body 32.233947 秒；analysis 31.728704 秒；137 states、486 transfers、32 outcomes；26 frontiers：8 `StateJoin(Shape)`、18 `Relations(ExpressionLimit)`；partial SSA，开放 `UnknownEnvironment` |
-| USDC | 无报告，`external_timeout` | process wall 900.607233 秒；CPU 902.173378 秒；RSS 峰值 2,294,704 KiB；最后仍为 `Running/Analyzing` round 4；最终 native status、frontier 和摘要闭合未知 |
+生成运行记录已移出 Git 工作树；完整原记录可从清理前的提交读取：
 
-WETH 与 348 的完整导出比较只排序无序 `PathAtoms` 和完整 symbolic/storage/transient fact 键值对，排除 `metadata.work`/`metadata.timings`；其余字段一致，包括表达式身份、roots、entry/exit 和 pending machines、CFG、诊断及摘要。work 实际同为 52,254,064,022；348 body 为 32.681550 秒。单样本不建立统计加速，导出一致也不泛化为数学关系等价。
+```sh
+git show 3801d1d22a2341d0961b4a9a621771be2de5a375:docs/evidence/known-recursion-selected-validation.json
+```
 
-USDC 最后进度为累计 4227 states、4898 transfers、823,722,197,022 work、2 accounts / 2 slots / 29 requests；它们不是最终图规模、最终 work 或实际槽成员清单。与选定历史 348、8d、5048 的同 900 秒 NoReport 记录一样，本轮没有可比较的最终精度，不能据此称 Work 耗尽或性能修复。
+## 保留的输入与语义要求
 
-## 实现与精度边界
+[输入清单](../examples/known-recursion/captured/manifest.json)、[原 USDC 请求](../examples/known-recursion/captured/usdc-original-request.json)、[原 WETH 请求](../examples/known-recursion/captured/weth-original-request.json)及初始 observed worlds 保留原始字节与 SHA256。它们固定 Osaka、Ethereum chain 1、区块 26180958 / `0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499`；caller、call value、calldata 内容与长度保持 Unknown，未观察的槽保持未知。
 
-- 已知递归按活动栈上重复的结构调用边准入；已返回的相同 callsite 不构成递归。共享输入增长触发重算，输出 generation 通知订阅者；闭合要求队列为空且无 frontier，没有真实终态时保留 `RecursiveNoTerminal`。调用身份、owner、static 状态、checkpoint 和回滚参与求解。
-- 过程内实际循环及递归反馈触发 widening，有界 MRU 保留跳转来源。有限 stack alias 保留 must-equality；persistent storage observations 限于已知代码活动帧、具体逻辑 owner、栈顶 16 个位置，root ≤64 nodes、key ≤32 nodes、fact work ≤512、Members ≤8。任意世界关系和挂起父帧 read 模板不在此保证中。
-- branch/state joint 只安装已证明结论，branch 上限 16 targets / 4096 bits，未决项保留原求解。较强共同前缀的 Unique/Infeasible 不写入较弱 Fi 缓存。typed canonical-key cache 使用完整 Eq、有界保留和付费维护；literal fold、pointer HashMap 与专用线性维护计费一并保留。
-- Z3 候选族复用仅用于已付款 chunk 中 3–32 个同宽 syntactic literals。完整 base→target→after 和 UF lemmas 在 push 外，首次真实 cache miss 惰性构造，每项 native literal EQ push/check/pop；每项原 fee、rlimit、cancel、未决顺序及完整 Fi 缓存保持。unique/pair、非 literal 和其他 provider 保持原路径。
+[100 字节 USDC 见证](../examples/known-recursion/captured/usdc-100-byte-witness.json)是独立的具体输入，不替换原请求。[捕获回归](../crates/evm-abstract/tests/known_recursion/captured.rs)实际执行 selfCALL、selfDELEGATECALL 和 implementation 写入，并检查外层 Revert 后的 storage 与日志回滚。
 
-单个真实捕获候选族的 native check CPU 为 2.438→0.143 秒，两侧均 32 SAT；C/D/E 控制显示策略与断言顺序也贡献差异，不能归因于纯复用或外推为 USDC 整体收益。选定测试日志为 364 个唯一测试（134 embedded + 124 domain relational + 42 transfer relations + 21 known + 43 unknown），均 actual 0；query_pair 19 是 embedded 的子集。fmt、两 crate all-target Clippy、标准 Nix release 和 matching assets 构建也为 actual 0。
+[`known_recursion`](../crates/evm-abstract/tests/known_recursion.rs)及[可运行自调用示例](../examples/known-recursion/README.md)保留下列验收边界：
 
-同代码基线的私有诊断在 USDC 第 4 轮记录到约 71.48 秒的后段窗口：1212 次 native 检查累计 60.53 秒，其中 fresh Solver 为 55.48 秒、literal family 为 5.06 秒，均在过程表外。Context 外围配对差约 1.90 秒，取消监控配对差约 0.075 秒；这些是已完成的 wall spans，嵌套跨度不能相加为 CPU 分解。该窗口说明剩余热点仍是多个精化消费者的独立求解；诊断构建与单窗口不能代替标准请求的完成时间对照。
+- 活动栈上重复调用边与先后返回的普通调用分别处理；owner、code、static、返回控制和回滚检查点不能混淆。
+- 输入增长使依赖结果重新计算；无真实终态、仍有依赖或前沿时，不能把摘要命中称为闭合。
+- 终止、返回数据、账户效果和日志由[独立 revm 见证](../crates/evm-abstract/tests/known_recursion/oracle.rs)联合检查。
+- 深度与 work 资源不足时保留真实前沿。历史深度 3 的闭合用例与深度 2 的 `CallDepth` 对照分别验收，不能把内部摘要闭合当作外层完成。
 
-数值积摘要仍会忘记部分参数→输出及跨帧 Store 关系，有界 MRU、深度包络和 SMT/资源限制仍影响精度。`--no-summaries` 仍执行强制递归不动点，不能当作逐层展开对照，该独立对照验收仍开放；显式增加预算的功能例子不证明默认策略或原请求完成。
+数值摘要可能扩大参数到输出、跨帧 storage 的关系；`--no-summaries` 仍保留递归闭合，不是逐层展开的独立对照。旧 Z3 插桩结果仅描述该历史版本，不属于当前执行路径。
 
-CLI 的未知调用目标回归分别检查深度 3 与深度 2：前者进入重复活动边的递归摘要后收敛、无 frontier；后者在准入前受分析深度限制，保留 `Incomplete` 和 `CallDepth`，不能把环境摘要闭合误当作整个请求完成。两者均验证不猜测远端账户，也不额外读取 storage。
+## 复查命令
 
-后续工作分为两条路线：按消费需求精化符号值，减少普通分支上的重复求解；以及在资源边界生成可解释的部分报告。前者必须保证摘要形成、widening 和报告快照不会提前丢掉尚未使用的关系；后者须区分预算停止、用户取消与后端错误，并为报告生成保留资源。本次不引入默认时间预算，也不采用已证实在摘要忘掉关系时造成额外数值精度损失的放宽投影实验。
+```sh
+nix develop --no-update-lock-file -c \
+  cargo test --locked --offline -p evm-abstract --test known_recursion
+```
 
-## 复现与报告契约
-
-[输入清单](../examples/known-recursion/captured/manifest.json)、[原 USDC](../examples/known-recursion/captured/usdc-original-request.json)和[原 WETH](../examples/known-recursion/captured/weth-original-request.json)固定 Osaka、区块 26180958 / `0x5219691ff60b20005fa597d2bb5e4b11e3ddb68f24fb528a900c8dafbb84b499`；caller、call value、calldata 内容与长度均 Unknown。100 字节 witness 是不同范围。使用[测量脚本](../scripts/benchmark-known-recursion.py)及 matching native/Web assets；本批 WETH/USDC 外部护栏分别为 120/900 秒、CPU48–55、RSS 8 GiB、主机可用内存下限 20 GiB。
-
-native schema 8，wire schema 13。#126/#127 后 export work 为诊断计数，native/HTTP JSON 不再有整份输出字节 cap；typed 节点数、深度、exact byte payload、StateRoot、取消和序列化校验仍保留。RPC response limit 属于事实获取。最终完整门禁的干净提交、命令、实际退出码与远端 head 核对单列于 PR。
-
-[Issue #123](https://github.com/ethever/evm-abstract-lab/issues/123) 的原请求完成时间验收仍开放。
+固定离线与 RPC acquisition 是不同输入边界。当前 CLI profile 和 HTTP 请求按[固定规模检查流程](../examples/no-smt-scale/README.md)从实际构建源码派生，保留原始 capture；新的运行输出放在仓库外。报告闭合、任务完成、取消和导出结果分别读取，完整提交门禁按[本地检查](local-ci.md)执行。

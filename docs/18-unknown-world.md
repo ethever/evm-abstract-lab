@@ -212,8 +212,8 @@ process 的旧 `code_address`、`storage_address`、`address_value`、`caller`�
 
 [`benchmark-unknown-world.py`](../scripts/benchmark-unknown-world.py) 在干净提交上交替开启／关闭复用，验证完整覆盖和返回值精度后才记录成功样本。测量包含 CLI 分析和 JSON 导出；要求传入由该提交新构建的 release 二进制，并使用新的输出目录。库测试和 CLI 可选择不同的 work 与关系策略；比较计费 work 时还须固定成本版本，旧 SMT 查询额度不能换算为当前局部传播的 work，work 也不等于毫秒。
 
-原始 SMT 版本的历史记录见 [Issue #124 验收与性能](issue124-validation.md)，包含当时的 43 个测试、六份示例、同精度 release 对照和独立原生 SMT 成本。其中的库默认预算、CLI 测量策略、open 原生输入和创建边界描述对应当时实现，不能直接视为当前版本的验收或性能结果。
+原始 SMT 版本的冻结源码、语义结论、六份示例与原记录读取命令见 [Issue #124 历史结论](issue124-validation.md)。当时的验收不代表当前版本已通过；当前输入与断言由上述回归定义。
 
-普通已知递归的具体执行见证、原始 USDC / WETH 请求与独立复现命令见 [已知递归验收与性能](known-recursion-validation.md)。[自调用返回 42 的示例](../examples/known-recursion/README.md)用于理解递归结果如何从实际 CALL 失败后的继续执行开始建立。
+普通已知递归的具体执行见证、原始 USDC / WETH 请求与独立复查命令见 [已知递归历史结论](known-recursion-validation.md)。[自调用返回 42 的示例](../examples/known-recursion/README.md)用于理解递归结果如何从实际 CALL 失败后的继续执行开始建立。
 
 返回[课程导航](../README.md#验证与源码导航)，或继续阅读[符号与关系域](15-symbolic-relations.md)。
