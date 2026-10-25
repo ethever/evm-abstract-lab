@@ -14,6 +14,11 @@ use evm_abstract::{
 };
 use std::sync::Arc;
 
+pub(super) struct Options<'a> {
+    pub publisher: Option<&'a crate::jobs::Publisher>,
+    pub max_work: usize,
+}
+
 struct Published<N: evm_abstract::domain::WordElement> {
     model: ModelHandle<N>,
     report: Arc<api::AnalysisReport>,
@@ -70,14 +75,16 @@ impl<D: EvmNumericAlgebra> StagePublisher<D::Element> for Projection<'_, D> {
         // Projection has its own persistent application allowance. An optional
         // display failure cannot poison execution or revoke model closure.
         // Final projection returns its own error if delivery remains impossible.
-        if let Ok(mut report) = report::hybrid::project_with_budget(
+        if let Ok(mut report) = report::minimum::project(
             model,
-            self.request,
-            self.scope,
             self.algebra,
-            self.numeric_model,
             self.control,
             self.budget,
+            report::ProjectionInput {
+                request: self.request,
+                scope: self.scope,
+                numeric_model: self.numeric_model,
+            },
         ) {
             report.timings = super::timing::project(self.control.observer().timing(), 0);
             if self.budget.charge(2) {

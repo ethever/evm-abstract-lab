@@ -107,7 +107,27 @@ pub async fn serve_with_providers(
     config: crate::jobs::Config,
     providers: crate::rpc_providers::Registry,
 ) -> Result<(), ServerError> {
-    let jobs = crate::jobs::Pool::with_providers(config, providers).map_err(ServerError::Pool)?;
+    serve_with_postprocess_work(
+        listener,
+        assets,
+        config,
+        providers,
+        crate::analyze::DEFAULT_POSTPROCESS_WORK,
+    )
+    .await
+}
+
+/// Serve with one declared postprocessing allowance per job, shared by all
+/// publications. Required minimum is funded before optional rich presentation.
+pub async fn serve_with_postprocess_work(
+    listener: TcpListener,
+    assets: &Path,
+    config: crate::jobs::Config,
+    providers: crate::rpc_providers::Registry,
+    postprocess_work: usize,
+) -> Result<(), ServerError> {
+    let jobs = crate::jobs::Pool::with_postprocess_work(config, providers, postprocess_work)
+        .map_err(ServerError::Pool)?;
     serve_with_shutdown(
         listener,
         router(assets.to_owned(), jobs),

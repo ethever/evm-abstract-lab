@@ -35,8 +35,12 @@ pub(super) fn publication(
     .map_err(|error| failure(&result.report, error))
 }
 fn failure(report: &api::AnalysisReport, error: JsonError) -> api::ApiError {
-    let Some(metadata) = report.selected_graph().map(|graph| &graph.metadata) else {
-        return super::api_error(api::ApiErrorCode::Internal, "report has no selected graph");
+    let (limits, usage) = if let Some(graph) = report.selected_graph() {
+        (graph.metadata.export_limits, graph.metadata.export_usage)
+    } else if let Some(minimum) = &report.minimum {
+        (minimum.export_limits, minimum.export_usage)
+    } else {
+        return super::api_error(api::ApiErrorCode::Internal, "report has no selected model");
     };
     let message = error.to_string();
     let written = match error {
@@ -52,8 +56,8 @@ fn failure(report: &api::AnalysisReport, error: JsonError) -> api::ApiError {
         details: api::ErrorDetails::Export(Box::new(api::ExportFailure {
             kind: api::ExportFailureKind::Cancelled,
             required: written as u64,
-            limits: metadata.export_limits,
-            usage: metadata.export_usage,
+            limits,
+            usage,
             written: Some(written),
         })),
     }

@@ -6,6 +6,10 @@ fn encode(source: &api::AnalysisReport, control: &Control) -> Result<Vec<u8>, ap
             id: api::JobId(1),
             publication: api::JobPublication {
                 version: api::PublicationVersion(api::DecimalU64(1)),
+                minimum_version: source
+                    .minimum
+                    .as_ref()
+                    .map(|_| api::PublicationVersion(api::DecimalU64(1))),
                 global_version: source
                     .global
                     .as_ref()

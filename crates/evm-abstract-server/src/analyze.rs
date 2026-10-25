@@ -59,7 +59,15 @@ pub fn analyze_with_control_and_providers(
     control: &Control,
     providers: &crate::rpc_providers::Registry,
 ) -> Result<api::AnalysisReport, api::ApiError> {
-    analyze_publishing(request, control, providers, None)
+    analyze_publishing(
+        request,
+        control,
+        providers,
+        publication::Options {
+            publisher: None,
+            max_work: DEFAULT_POSTPROCESS_WORK,
+        },
+    )
 }
 
 /// Run with configured providers and commit a closed Global publication before
@@ -70,19 +78,45 @@ pub fn analyze_with_publisher(
     providers: &crate::rpc_providers::Registry,
     publisher: &crate::jobs::Publisher,
 ) -> Result<api::AnalysisReport, api::ApiError> {
-    analyze_publishing(request, control, providers, Some(publisher))
+    analyze_with_publisher_and_limit(
+        request,
+        control,
+        providers,
+        publisher,
+        DEFAULT_POSTPROCESS_WORK,
+    )
+}
+
+/// Set one application allowance shared by minimum and optional rich export.
+/// Execution and fixed-snapshot RPC retain the request's separate original payer.
+pub fn analyze_with_publisher_and_limit(
+    request: api::AnalyzeRequest,
+    control: &Control,
+    providers: &crate::rpc_providers::Registry,
+    publisher: &crate::jobs::Publisher,
+    postprocess_work: usize,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    analyze_publishing(
+        request,
+        control,
+        providers,
+        publication::Options {
+            publisher: Some(publisher),
+            max_work: postprocess_work,
+        },
+    )
 }
 
 fn analyze_publishing(
     request: api::AnalyzeRequest,
     control: &Control,
     providers: &crate::rpc_providers::Registry,
-    publisher: Option<&crate::jobs::Publisher>,
+    publishing: publication::Options<'_>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     let timing = timing::Guard::start(control);
     let mut result = control.scope(|| {
         providers.validate_request(&request)?;
-        run(request, control, providers, publisher)
+        run(request, control, providers, publishing)
     });
     drop(timing);
     if let Ok(report) = &mut result {
@@ -118,7 +152,7 @@ fn run(
     request: api::AnalyzeRequest,
     control: &Control,
     providers: &crate::rpc_providers::Registry,
-    publisher: Option<&crate::jobs::Publisher>,
+    publishing: publication::Options<'_>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     checkpoint(control)?;
     control.observer().phase(Phase::Validating);
@@ -134,7 +168,7 @@ fn run(
             api::NumericModel::Product,
             control,
             providers,
-            publisher,
+            publishing,
         ),
         api::NumericModel::FiniteSet => run_typed(
             request,
@@ -143,7 +177,7 @@ fn run(
             api::NumericModel::FiniteSet,
             control,
             providers,
-            publisher,
+            publishing,
         ),
     }
 }
@@ -155,9 +189,9 @@ fn run_typed<D: EvmNumericAlgebra>(
     numeric_model: api::NumericModel,
     control: &Control,
     providers: &crate::rpc_providers::Registry,
-    publisher: Option<&crate::jobs::Publisher>,
+    publishing: publication::Options<'_>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
-    let mut budget = evm_abstract::resource::WorkBudget::new(DEFAULT_POSTPROCESS_WORK);
+    let mut budget = evm_abstract::resource::WorkBudget::new(publishing.max_work);
     let policies = EnginePolicies::default();
     let mut extension = NoExtension;
     let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
@@ -174,7 +208,7 @@ fn run_typed<D: EvmNumericAlgebra>(
                 &algebra,
                 numeric_model,
                 control,
-                publisher,
+                publishing.publisher,
                 &mut budget,
             );
             let hybrid = engine
@@ -212,7 +246,7 @@ fn run_typed<D: EvmNumericAlgebra>(
                 &algebra,
                 numeric_model,
                 control,
-                publisher,
+                publishing.publisher,
                 &mut budget,
             );
             let hybrid = analysis::analyze_rpc_hybrid_with_publisher(

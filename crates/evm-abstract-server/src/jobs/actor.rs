@@ -482,31 +482,56 @@ fn publish(entry: &mut Entry, report: Arc<AnalysisReport>) {
         .publication
         .as_ref()
         .map_or(1, |previous| previous.version.0.0.saturating_add(1));
-    let native = report.native.is_some();
+    let previous = entry.report.as_ref();
+    let prior = entry.snapshot.publication.as_ref();
+    let next = PublicationVersion(DecimalU64(version));
     entry.snapshot.publication = Some(JobPublication {
-        version: PublicationVersion(DecimalU64(version)),
-        global_version: report.global.as_ref().map(|global| {
-            let retained = entry
-                .report
-                .as_ref()
-                .and_then(|previous| previous.global.as_ref())
-                .is_some_and(|previous| Arc::ptr_eq(previous, global));
-            entry
-                .snapshot
-                .publication
-                .as_ref()
-                .filter(|_| retained)
-                .and_then(|previous| previous.global_version)
-                .unwrap_or(PublicationVersion(DecimalU64(version)))
-        }),
-        native_version: native.then_some(PublicationVersion(DecimalU64(version))),
+        version: next,
+        minimum_version: retained_version(
+            &report.minimum,
+            previous.and_then(|r| r.minimum.as_ref()),
+            prior.and_then(|p| p.minimum_version),
+            next,
+        ),
+        global_version: retained_version(
+            &report.global,
+            previous.and_then(|r| r.global.as_ref()),
+            prior.and_then(|p| p.global_version),
+            next,
+        ),
+        native_version: retained_version(
+            &report.native,
+            previous.and_then(|r| r.native.as_ref()),
+            prior.and_then(|p| p.native_version),
+            next,
+        ),
         model_closed: report.status == AnalysisStatus::Converged
+            && report.minimum.as_ref().is_none_or(|minimum| {
+                minimum.current && minimum.status == AnalysisStatus::Converged
+            })
             && report
                 .hybrid
                 .as_ref()
                 .is_none_or(|hybrid| hybrid.coverage.baseline_current),
     });
     entry.report = Some(report);
+}
+
+// Only immutable object identity preserves a namespace's installed IDs. Equal
+// snapshot labels, revisions or numeric contents are insufficient.
+fn retained_version<T>(
+    next: &Option<Arc<T>>,
+    previous: Option<&Arc<T>>,
+    prior: Option<PublicationVersion>,
+    new: PublicationVersion,
+) -> Option<PublicationVersion> {
+    next.as_ref().map(|next| {
+        if previous.is_some_and(|previous| Arc::ptr_eq(previous, next)) {
+            prior.unwrap_or(new)
+        } else {
+            new
+        }
+    })
 }
 
 fn refresh_timings(entry: &mut Entry) {

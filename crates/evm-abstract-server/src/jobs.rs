@@ -126,6 +126,7 @@ pub struct PublishedResult {
 #[derive(Clone)]
 struct Native {
     providers: Arc<crate::rpc_providers::Registry>,
+    postprocess_work: usize,
 }
 impl Executor for Native {
     fn execute(
@@ -142,7 +143,13 @@ impl Executor for Native {
         control: &Control,
         publisher: &Publisher,
     ) -> Result<AnalysisReport, ApiError> {
-        crate::analyze::analyze_with_publisher(request, control, &self.providers, publisher)
+        crate::analyze::analyze_with_publisher_and_limit(
+            request,
+            control,
+            &self.providers,
+            publisher,
+            self.postprocess_work,
+        )
     }
 }
 
@@ -173,11 +180,22 @@ impl Pool {
         config: Config,
         providers: crate::rpc_providers::Registry,
     ) -> Result<Self, PoolError> {
+        Self::with_postprocess_work(config, providers, crate::analyze::DEFAULT_POSTPROCESS_WORK)
+    }
+
+    /// Bound one persistent per-job allowance for minimum and rich projection.
+    /// The request's EVM/RPC execution limits remain independent.
+    pub fn with_postprocess_work(
+        config: Config,
+        providers: crate::rpc_providers::Registry,
+        postprocess_work: usize,
+    ) -> Result<Self, PoolError> {
         let providers = Arc::new(providers);
         Self::start(
             config,
             Native {
                 providers: Arc::clone(&providers),
+                postprocess_work,
             },
             providers,
         )

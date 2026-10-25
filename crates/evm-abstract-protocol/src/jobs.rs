@@ -33,7 +33,9 @@ record! {
     pub struct JobPublication {
         /// Monotonic overall publication sequence within this job.
         pub version: PublicationVersion,
-        /// Conservative graph identity; absent for a pure Native publication.
+        /// Canonical Global model identity, independent of optional rich graphs.
+        pub minimum_version: Option<PublicationVersion>,
+        /// Rich conservative graph identity; absent until that graph is exported.
         pub global_version: Option<PublicationVersion>,
         /// Version of the Native graph, when one is retained.
         pub native_version: Option<PublicationVersion>,

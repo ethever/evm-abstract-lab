@@ -29,6 +29,7 @@ impl Drop for Release {
 struct FinalGate {
     projected: mpsc::SyncSender<()>,
     release: Arc<AtomicBool>,
+    postprocess_work: usize,
 }
 impl Executor for FinalGate {
     fn execute(
@@ -45,11 +46,12 @@ impl Executor for FinalGate {
         control: &Control,
         publisher: &Publisher,
     ) -> Result<evm_abstract_protocol::AnalysisReport, ApiError> {
-        let report = evm_abstract_server::analyze::analyze_with_publisher(
+        let report = evm_abstract_server::analyze::analyze_with_publisher_and_limit(
             request,
             control,
             &Default::default(),
             publisher,
+            self.postprocess_work,
         )?;
         self.projected.send(()).unwrap();
         // Fence final worker cleanup so the test can retain the genuine early
@@ -189,7 +191,16 @@ async fn high_budget_http_global_is_readable_while_native_runs_and_after_cancell
     assert_eq!(early.id, job.id);
     assert!(early.publication.model_closed);
     assert_eq!(early.publication.version, PublicationVersion(DecimalU64(1)));
-    assert!(early.report.global.is_some());
+    let minimum = early.report.minimum.as_ref().unwrap();
+    minimum.validate().unwrap();
+    assert!(minimum.current);
+    assert!(!minimum.summaries.is_empty());
+    assert_eq!(
+        early.publication.minimum_version,
+        Some(PublicationVersion(DecimalU64(1)))
+    );
+    assert!(early.publication.global_version.is_none());
+    assert!(early.report.global.is_none());
     assert!(early.report.native.is_none());
     assert_eq!(early.report.selected_view, AnalysisNamespace::Baseline);
     assert!(
@@ -259,11 +270,19 @@ async fn high_budget_http_global_is_readable_while_native_runs_and_after_cancell
 }
 
 #[tokio::test]
-async fn final_native_publication_keeps_exact_global_identity_and_frozen_previous_handle() {
+async fn final_native_publication_keeps_exact_minimum_identity_and_frozen_previous_handle() {
     let (projected, ready) = mpsc::sync_channel(1);
     let release = Arc::new(AtomicBool::new(false));
     let released = Release(Arc::clone(&release));
-    let pool = Pool::with_executor(config(), FinalGate { projected, release }).unwrap();
+    let pool = Pool::with_executor(
+        config(),
+        FinalGate {
+            projected,
+            release,
+            postprocess_work: evm_abstract_server::analyze::DEFAULT_POSTPROCESS_WORK,
+        },
+    )
+    .unwrap();
     let (base, stop, task) = server(&pool).await;
     let client = reqwest::Client::new();
     let submitted = client
@@ -292,8 +311,12 @@ async fn final_native_publication_keeps_exact_global_identity_and_frozen_previou
         PublicationVersion(DecimalU64(2))
     );
     assert_eq!(
-        final_report.publication.global_version,
+        final_report.publication.minimum_version,
         Some(PublicationVersion(DecimalU64(1)))
+    );
+    assert_eq!(
+        final_report.publication.global_version,
+        Some(PublicationVersion(DecimalU64(2)))
     );
     assert_eq!(
         final_report.publication.native_version,
@@ -302,9 +325,10 @@ async fn final_native_publication_keeps_exact_global_identity_and_frozen_previou
     assert!(final_report.publication.model_closed);
     let handle = pool.published_result(submitted.id).unwrap();
     assert!(Arc::ptr_eq(
-        early.report.global.as_ref().unwrap(),
-        handle.report.global.as_ref().unwrap()
+        early.report.minimum.as_ref().unwrap(),
+        handle.report.minimum.as_ref().unwrap()
     ));
+    assert!(handle.report.programs.len() >= early.report.programs.len());
     for (before, after) in early.report.programs.iter().zip(&handle.report.programs) {
         assert!(
             Arc::ptr_eq(before, after),
@@ -312,10 +336,7 @@ async fn final_native_publication_keeps_exact_global_identity_and_frozen_previou
         );
         assert_eq!(before.id, after.id);
     }
-    assert_eq!(
-        early.report.global.as_ref().unwrap().cfg,
-        handle.report.global.as_ref().unwrap().cfg
-    );
+    assert!(early.report.global.is_none());
     assert!(
         early.report.native.is_none(),
         "retained publication is immutable after final install"
@@ -385,6 +406,70 @@ async fn generic_executor_replacement_gets_a_new_global_version() {
         Some(PublicationVersion(DecimalU64(2)))
     );
     assert_eq!(replaced.report.global.as_ref().unwrap().byte_len, 3);
+    stop.send(()).unwrap();
+    task.await.unwrap();
+    pool.shutdown().unwrap();
+}
+
+#[derive(Clone)]
+struct RetainedFullGraphs;
+impl Executor for RetainedFullGraphs {
+    fn execute(
+        &self,
+        request: AnalyzeRequest,
+        control: &Control,
+    ) -> Result<evm_abstract_protocol::AnalysisReport, ApiError> {
+        evm_abstract_server::analyze::analyze_with_control(request, control)
+    }
+    fn execute_with_publisher(
+        &self,
+        request: AnalyzeRequest,
+        control: &Control,
+        publisher: &Publisher,
+    ) -> Result<evm_abstract_protocol::AnalysisReport, ApiError> {
+        let report = self.execute(request, control)?;
+        // Only envelope bookkeeping differs; these are the actual same immutable
+        // rich Global/Native objects and source catalog, not equivalent rebuilds.
+        let final_report = report.clone();
+        assert!(publisher.publish(report));
+        Ok(final_report)
+    }
+}
+
+#[tokio::test]
+async fn exact_rich_graph_reuse_preserves_both_namespace_versions() {
+    let pool = Pool::with_executor(config(), RetainedFullGraphs).unwrap();
+    let (base, stop, task) = server(&pool).await;
+    let client = reqwest::Client::new();
+    let job = client
+        .post(format!("{base}/api/tasks"))
+        .json(&AnalyzeRequest::default())
+        .send()
+        .await
+        .unwrap()
+        .json::<JobReply>()
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(
+        terminal(&client, &base, job.id).await.state,
+        JobState::Completed
+    );
+    let retained = result(&client, &base, job.id).await;
+    assert_eq!(
+        retained.publication.version,
+        PublicationVersion(DecimalU64(2))
+    );
+    assert_eq!(
+        retained.publication.global_version,
+        Some(PublicationVersion(DecimalU64(1)))
+    );
+    assert_eq!(
+        retained.publication.native_version,
+        Some(PublicationVersion(DecimalU64(1)))
+    );
+    assert!(retained.publication.minimum_version.is_none());
     stop.send(()).unwrap();
     task.await.unwrap();
     pool.shutdown().unwrap();
@@ -514,6 +599,176 @@ async fn final_export_error_remains_failed_while_the_closed_publication_is_reada
         status(&client, &base, job.id).await.state,
         JobState::Failed(error)
     );
+    stop.send(()).unwrap();
+    task.await.unwrap();
+    pool.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn real_optional_rich_work_refusal_keeps_the_paid_minimum_over_http() {
+    let request = AnalyzeRequest::default();
+    let client = reqwest::Client::new();
+    let (projected, ready) = mpsc::sync_channel(1);
+    let release = Arc::new(AtomicBool::new(false));
+    let released = Release(Arc::clone(&release));
+    let calibration = Pool::with_executor(
+        config(),
+        FinalGate {
+            projected,
+            release,
+            postprocess_work: 1_000_000,
+        },
+    )
+    .unwrap();
+    let (base, stop, task) = server(&calibration).await;
+    let job = client
+        .post(format!("{base}/api/tasks"))
+        .json(&request)
+        .send()
+        .await
+        .unwrap()
+        .json::<JobReply>()
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    let minimum_work = calibration
+        .published_result(job.id)
+        .unwrap()
+        .report
+        .postprocessing_work as usize;
+    drop(released);
+    assert_eq!(
+        terminal(&client, &base, job.id).await.state,
+        JobState::Completed
+    );
+    let complete = result(&client, &base, job.id).await;
+    assert!(matches!(
+        complete.report.rich_export,
+        evm_abstract_protocol::RichExportOutcome::Complete
+    ));
+    assert_eq!(
+        complete
+            .report
+            .minimum
+            .as_ref()
+            .unwrap()
+            .postprocessing_max_work,
+        1_000_000
+    );
+    assert_eq!(
+        complete
+            .report
+            .global
+            .as_ref()
+            .unwrap()
+            .metadata
+            .postprocessing_max_work,
+        1_000_000
+    );
+    let full_work = complete.report.postprocessing_work as usize;
+    assert!(full_work > minimum_work + 1);
+    let limit = minimum_work + (full_work - minimum_work) / 2;
+    stop.send(()).unwrap();
+    task.await.unwrap();
+    calibration.shutdown().unwrap();
+
+    // Same semantic inputs and execution limits. Only the independently declared
+    // application presentation allowance is lower, between minimum and full cost.
+    let (projected, ready) = mpsc::sync_channel(1);
+    let release = Arc::new(AtomicBool::new(false));
+    let released = Release(Arc::clone(&release));
+    let pool = Pool::with_executor(
+        config(),
+        FinalGate {
+            projected,
+            release,
+            postprocess_work: limit,
+        },
+    )
+    .unwrap();
+    let (base, stop, task) = server(&pool).await;
+    let job = client
+        .post(format!("{base}/api/tasks"))
+        .json(&request)
+        .send()
+        .await
+        .unwrap()
+        .json::<JobReply>()
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    let early = pool.published_result(job.id).unwrap();
+    assert!(early.publication.model_closed);
+    assert!(early.report.global.is_none() && early.report.native.is_none());
+    drop(released);
+    assert_eq!(
+        terminal(&client, &base, job.id).await.state,
+        JobState::Completed
+    );
+    let final_report = result(&client, &base, job.id).await;
+    final_report.report.validate().unwrap();
+    assert!(matches!(
+        final_report.report.rich_export,
+        evm_abstract_protocol::RichExportOutcome::Refused(_)
+    ));
+    assert!(final_report.publication.model_closed);
+    assert_eq!(
+        final_report.publication.minimum_version,
+        early.publication.minimum_version
+    );
+    assert!(final_report.report.postprocessing_work <= limit as u64);
+    let final_handle = pool.published_result(job.id).unwrap();
+    assert!(Arc::ptr_eq(
+        early.report.minimum.as_ref().unwrap(),
+        final_handle.report.minimum.as_ref().unwrap()
+    ));
+    assert_eq!(&request, &AnalyzeRequest::default());
+    eprintln!(
+        "minimum work={minimum_work}; full work={full_work}; shared limit={limit}; spent={}",
+        final_report.report.postprocessing_work
+    );
+    stop.send(()).unwrap();
+    task.await.unwrap();
+    pool.shutdown().unwrap();
+
+    // Exercise the same declared policy through the production Native pool
+    // constructor, independently of the cleanup fence used for Arc inspection.
+    let pool = Pool::with_postprocess_work(config(), Default::default(), limit).unwrap();
+    let (base, stop, task) = server(&pool).await;
+    let job = client
+        .post(format!("{base}/api/tasks"))
+        .json(&request)
+        .send()
+        .await
+        .unwrap()
+        .json::<JobReply>()
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(
+        terminal(&client, &base, job.id).await.state,
+        JobState::Completed
+    );
+    let refused = result(&client, &base, job.id).await;
+    assert!(matches!(
+        refused.report.rich_export,
+        evm_abstract_protocol::RichExportOutcome::Refused(_)
+    ));
+    assert_eq!(
+        refused
+            .report
+            .minimum
+            .as_ref()
+            .unwrap()
+            .postprocessing_max_work,
+        limit as u64
+    );
+    assert!(refused.report.postprocessing_work <= limit as u64);
     stop.send(()).unwrap();
     task.await.unwrap();
     pool.shutdown().unwrap();
