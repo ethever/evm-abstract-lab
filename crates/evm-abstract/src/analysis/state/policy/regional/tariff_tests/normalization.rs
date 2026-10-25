@@ -187,3 +187,47 @@ fn direct_normalization_honors_refusal_and_both_cancellation_owners() {
         }
     }
 }
+
+#[test]
+fn independent_location_history_is_paid_by_normalization_and_bound_join() {
+    let algebra = ValueAlgebra::new(Algebra::<64, 64>);
+    let domain = algebra.borrowed();
+    let (_, original, _) = fixture(&algebra);
+    for operation in 0..3 {
+        let mut baseline = None;
+        for history_len in [0, 1, 4096] {
+            let mut input = original.clone();
+            input.location.frames[0].jump_history = (0..history_len).collect();
+            // The executable frame and its cached numerical work stay fixed.
+            assert_eq!(input.measure_work(), original.measure_work());
+            assert_eq!(input.frames, original.frames);
+            let mut budget = WorkBudget::new(100_000_000);
+            let run = |budget: &mut WorkBudget| match operation {
+                0 | 1 => {
+                    input.project_for_bound_with_payment(&input, operation == 1, domain, budget)
+                }
+                _ => input.join_bound_with_payment(&input, domain, budget, false),
+            };
+            let (result, receipt) = measure(|| run(&mut budget));
+            let result = result.unwrap();
+            assert_eq!(result.location, input.location);
+            let (base_work, base_clones, base_queries) =
+                *baseline.get_or_insert((budget.used(), receipt.clones, receipt.singletons));
+            assert_eq!(budget.used() - base_work, history_len * 2);
+            assert_eq!(receipt.clones, base_clones);
+            assert_eq!(receipt.singletons, base_queries);
+            if history_len != 0 {
+                assert!(matches!(
+                    run(&mut WorkBudget::new(base_work)),
+                    Err(MachineError::Work)
+                ));
+            }
+            assert!(matches!(
+                run(&mut WorkBudget::new(budget.used() - 1)),
+                Err(MachineError::Work)
+            ));
+            assert_eq!(input.location.frames[0].jump_history.len(), history_len);
+            assert_eq!(input.frames, original.frames);
+        }
+    }
+}

@@ -11,6 +11,24 @@ use super::super::{
 use crate::domain::{EvmNumericAlgebra, EvmValue, WordElement, summary};
 
 impl<N: WordElement> EvmPayloadSummary<N> {
+    fn copy_bound_location_with_payment(
+        &self,
+        budget: &mut WorkBudget,
+    ) -> Result<crate::analysis::MachineKey, MachineError> {
+        // measure_work covers executable frames, not this independent report
+        // projection. Fund its cached-length census before PolicyKey walks the
+        // frame headers, then pay the complete key copy (including histories).
+        reserve(
+            budget,
+            self.location
+                .frames
+                .len()
+                .saturating_add(1)
+                .saturating_mul(8),
+        )?;
+        crate::analysis::engine::policy::clone_key(&self.location, budget)
+    }
+
     /// Build the normalized bound directly. Every retained native copy,
     /// projection and constructor obtains its own quote; discarded numeric
     /// payloads need no staging copy. The immutable input survives any refusal.
@@ -27,6 +45,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         if self.frames.len() != layout.frames.len() {
             return Err(MachineError::Shape);
         }
+        let location = self.copy_bound_location_with_payment(budget)?;
         let scalar = |value: &EvmValue<N>, budget: &mut WorkBudget| {
             if coarse {
                 let (lower, upper) = value.interval().unsigned_bounds();
@@ -105,7 +124,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
             store: current_store,
             storage_observations: Default::default(),
             work: 0,
-            location: self.location.clone(),
+            location,
         };
         result.work = result.measure_work();
         reserve(budget, result.work_size())?;
@@ -149,6 +168,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
                 return Err(MachineError::Shape);
             }
         }
+        let location = self.copy_bound_location_with_payment(budget)?;
         let store = self
             .store
             .join_with_payment(&incoming.store, domain, widen, budget)?;
@@ -235,7 +255,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
             store,
             storage_observations: Default::default(),
             work: 0,
-            location: self.location.clone(),
+            location,
         };
         result.work = result.measure_work();
         reserve(budget, result.work)?;
