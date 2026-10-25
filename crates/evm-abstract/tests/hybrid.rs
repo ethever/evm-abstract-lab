@@ -467,11 +467,21 @@ fn frozen_region_choice_changes_actual_native_keys_and_retains_owner_static_cont
         }
         assert_accounting(result, 2_000_000_000);
     }
-    assert!(
-        one.local_detail()
-            .filter(|site| site.state.active().code_address == address(U))
-            .all(|site| site.state.active().jump_history.is_empty())
-    );
+    let detail = one.detail().unwrap();
+    let mut unselected_bodies = 0;
+    for record in detail.procedure_summaries() {
+        let source = &detail.states()[record.source_state];
+        assert!(!source.key.frames[0].jump_history.is_empty());
+        for node in &record.regional_cfg.nodes {
+            if node.frame.code_address == address(U) {
+                unselected_bodies += 1;
+                assert_eq!(node.frame.address, address(U));
+                assert!(node.frame.is_static);
+                assert!(node.frame.jump_history.is_empty());
+            }
+        }
+    }
+    assert!(unselected_bodies > 0);
     assert!(
         two.local_detail()
             .any(|site| site.state.active().code_address == address(U)
