@@ -3,6 +3,7 @@
 //! application dispatch, while captured numeric limits come from native results.
 mod environment;
 pub(super) mod hybrid;
+pub(super) mod minimum;
 mod summaries;
 mod terminal;
 use super::{checkpoint, mapping, pools::Pools, ssa, value};

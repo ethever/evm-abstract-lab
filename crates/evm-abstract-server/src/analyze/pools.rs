@@ -91,7 +91,7 @@ impl<'a, N: WordElement> Pools<'a, N> {
             .then_some(address);
         self.program_identity(source, hash, kind, program)
     }
-    fn program_identity(
+    pub(in crate::analyze) fn program_identity(
         &mut self,
         address: Option<Address>,
         hash: B256,
