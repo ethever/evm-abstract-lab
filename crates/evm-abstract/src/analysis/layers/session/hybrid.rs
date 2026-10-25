@@ -79,8 +79,7 @@ where
                 input,
                 self.config.clone(),
                 hybrid,
-                budget,
-                &mut self.counters,
+                (budget, &mut self.counters),
                 storage_reads,
                 publisher,
             )?;

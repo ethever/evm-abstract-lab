@@ -96,8 +96,7 @@ where
                 input,
                 config,
                 hybrid,
-                &mut budget,
-                &mut counters,
+                (&mut budget, &mut counters),
                 StorageReadPolicy::Abstract,
                 publisher,
             )?;
@@ -127,8 +126,7 @@ where
             input,
             config,
             hybrid,
-            budget,
-            counters,
+            (budget, counters),
             detail_reads,
             &mut NoopPublisher,
         )
@@ -139,11 +137,11 @@ where
         input: AnalysisInput<D::Element>,
         config: ExecutionConfig,
         hybrid: HybridConfig,
-        budget: &mut WorkBudget,
-        counters: &mut engine::Counters,
+        payer: (&mut WorkBudget, &mut engine::Counters),
         detail_reads: StorageReadPolicy,
         publisher: &mut T,
     ) -> HybridResult<D::Element, <X as Composition<D::Element>>::Error> {
+        let (budget, counters) = payer;
         crate::resource::clone_payment::checkpoint(budget).map_err(|error| match error {
             CloneError::Cancelled => CooperationError::Cancelled,
             CloneError::Work => CooperationError::Protocol(analysis_kernel::KernelError::Stopped(
