@@ -103,6 +103,8 @@ record! {
 record! {
     /// Effective original environment, without private symbolic roots.
     pub struct MinimumEnvironment {
+        /// Original symbolic input namespace; absence grants no alias identity.
+        pub input_scope: Option<crate::DecimalU64>,
         /// Logical root destination, including its symbolic identity.
         pub to: crate::AddressValue,
         /// Effective caller.

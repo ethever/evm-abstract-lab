@@ -249,7 +249,7 @@ record! {
     /// Report-export policy, independent of execution and logical byte ranges.
     #[derive(std::hash::Hash, Copy)]
     pub struct ExportLimits {
-        /// Maximum actual retained DAG nodes.
+        /// Maximum retained DAG nodes, or scalar rows in the minimum profile.
         pub max_nodes: usize,
         /// Maximum dependency depth.
         pub max_depth: usize,
@@ -258,10 +258,11 @@ record! {
     }
 }
 record! {
-    /// Measured report projection usage; work is diagnostic and has no hard cap.
+    /// Measured projection usage; the minimum profile also pays work from the
+    /// independent persistent application ledger.
     #[derive(std::hash::Hash, Copy)]
     pub struct ExportUsage {
-        /// Actual retained mixed DAG nodes.
+        /// Actual retained DAG nodes, or scalar rows in the minimum profile.
         pub nodes: usize,
         /// Actual exact byte payload.
         pub exact_bytes: usize,

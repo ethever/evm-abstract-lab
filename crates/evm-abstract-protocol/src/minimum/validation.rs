@@ -1,6 +1,9 @@
 //! Validate local numerical/control identities without constructing a graph.
 
-use super::*;
+use super::{
+    MinimumByteArray, MinimumByteCell, MinimumByteContent, MinimumModel, MinimumOwnerValue,
+    MinimumPlane, MinimumStore, MinimumValidationKind,
+};
 use crate::{ReportValidationFailure, TransferSemantics, ValueInfo};
 use std::collections::BTreeSet;
 
@@ -137,6 +140,8 @@ impl MinimumModel {
         }
         if self.export_usage.nodes > self.export_limits.max_nodes
             || self.export_usage.exact_bytes > self.export_limits.max_exact_bytes
+            || self.postprocessing_max_work == 0
+            || self.export_usage.work > self.postprocessing_max_work
         {
             return Err(MinimumValidationKind::Export);
         }
