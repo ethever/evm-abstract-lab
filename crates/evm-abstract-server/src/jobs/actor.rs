@@ -364,7 +364,7 @@ impl<E: Executor> Coordinator<E> {
                             .iter()
                             .map(|account| account.storage.len())
                             .sum();
-                        if let Some(acquisition) = &graph.acquisition {
+                        if let Some(acquisition) = &report.acquisition {
                             entry.snapshot.progress.round = acquisition.rounds;
                             entry.snapshot.progress.requests = acquisition.requests;
                             entry.snapshot.progress.states = entry

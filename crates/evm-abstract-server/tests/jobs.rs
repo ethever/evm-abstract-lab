@@ -308,7 +308,7 @@ fn queued_success_keeps_the_same_frozen_timings_in_status_and_report() {
         let terminal = wait_terminal(&pool, id);
         assert_eq!(terminal.state, JobState::Completed);
         let report = pool.result(id).unwrap();
-        assert_eq!(terminal.timings, report.metadata.timings);
+        assert_eq!(terminal.timings, report.timings);
         assert!(terminal.timings.processing_ns > 0);
         assert!(terminal.timings.building_ssa_ns > 0);
         if id == queued.id {
@@ -396,10 +396,7 @@ fn nested_analysis_calls_never_reset_worker_time_or_freeze_executor_cleanup() {
     assert_eq!(terminal.state, JobState::Completed);
     assert!(terminal.timings.processing_ns >= cleanup.timings.processing_ns);
     assert_eq!(terminal.timings.queue_ns, first.timings.queue_ns);
-    assert_eq!(
-        pool.result(job.id).unwrap().metadata.timings,
-        terminal.timings
-    );
+    assert_eq!(pool.result(job.id).unwrap().timings, terminal.timings);
     assert_eq!(pool.status(job.id).unwrap().timings, terminal.timings);
     pool.shutdown().unwrap();
 }

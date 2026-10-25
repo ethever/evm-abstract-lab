@@ -24,7 +24,7 @@ pub(super) struct Pools<'a, N: WordElement> {
     stores_native: Vec<EvmStore<N>>,
     pub buffers_dto: Vec<api::ByteArraySnapshot>,
     pub stores: Vec<api::StoreSnapshot>,
-    pub programs: Vec<api::ProgramInfo>,
+    pub programs: Vec<std::sync::Arc<api::ProgramInfo>>,
     pub symbolic: symbolic::Pool<'a>,
     pending_native: Vec<std::sync::Arc<EvmMachinePayload<N>>>,
     pub pending: Vec<api::MachineSnapshot>,
@@ -62,7 +62,10 @@ impl<'a, N: WordElement> Pools<'a, N> {
     pub fn new(control: &'a Control) -> Self {
         Self::with_programs(control, Vec::new())
     }
-    pub fn with_programs(control: &'a Control, programs: Vec<api::ProgramInfo>) -> Self {
+    pub fn with_programs(
+        control: &'a Control,
+        programs: Vec<std::sync::Arc<api::ProgramInfo>>,
+    ) -> Self {
         Self {
             control,
             buffers: Vec::new(),
@@ -118,7 +121,7 @@ impl<'a, N: WordElement> Pools<'a, N> {
                 .sum(),
         )?;
         let id = self.programs.len();
-        self.programs.push(api::ProgramInfo {
+        self.programs.push(std::sync::Arc::new(api::ProgramInfo {
             id,
             code_address: address,
             fork: mapping::fork(program.fork()),
@@ -126,7 +129,7 @@ impl<'a, N: WordElement> Pools<'a, N> {
             kind,
             bytecode: hex::encode_prefixed(program.bytes()),
             blocks: blocks(program),
-        });
+        }));
         Ok(id)
     }
     pub(super) fn process_program(

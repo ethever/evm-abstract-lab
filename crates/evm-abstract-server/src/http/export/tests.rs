@@ -10,9 +10,17 @@ fn regional_evidence_survives_the_actual_pooled_reply_encoder() {
         ..api::AnalyzeRequest::default()
     })
     .unwrap();
-    assert!(!source.abstract_summaries.is_empty());
+    assert!(
+        !source
+            .selected_graph()
+            .unwrap()
+            .abstract_summaries
+            .is_empty()
+    );
     assert!(
         source
+            .selected_graph()
+            .unwrap()
             .abstract_summaries
             .iter()
             .any(|summary| !summary.regional_cfg.calls.is_empty())
@@ -40,7 +48,11 @@ fn actual_report_encoding_exceeds_64_mib_and_cancellation_retains_cached_facts()
     let retained = source.clone();
     // Enlarge only a presentation annotation, retaining the analyzed numeric
     // facts, graph, exact payload and their original export limits/usage.
-    source.metadata.environment.call_value.summary = "a".repeat(FORMER_BYTE_LIMIT);
+    std::sync::Arc::make_mut(source.global.as_mut().unwrap())
+        .metadata
+        .environment
+        .call_value
+        .summary = "a".repeat(FORMER_BYTE_LIMIT);
     source.validate().unwrap();
     {
         let bytes = report(&source, &Control::default()).unwrap();
@@ -66,11 +78,28 @@ fn actual_report_encoding_exceeds_64_mib_and_cancellation_retains_cached_facts()
             ..
         }
     ));
-    assert_eq!(detail.limits, source.metadata.export_limits);
-    assert_eq!(detail.usage, source.metadata.export_usage);
+    assert_eq!(
+        detail.limits,
+        source.selected_graph().unwrap().metadata.export_limits
+    );
+    assert_eq!(
+        detail.usage,
+        source.selected_graph().unwrap().metadata.export_usage
+    );
     let annotation = std::mem::replace(
-        &mut source.metadata.environment.call_value.summary,
-        retained.metadata.environment.call_value.summary.clone(),
+        &mut std::sync::Arc::make_mut(source.global.as_mut().unwrap())
+            .metadata
+            .environment
+            .call_value
+            .summary,
+        retained
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .environment
+            .call_value
+            .summary
+            .clone(),
     );
     assert_eq!(annotation.len(), FORMER_BYTE_LIMIT);
     assert!(annotation.bytes().all(|byte| byte == b'a'));

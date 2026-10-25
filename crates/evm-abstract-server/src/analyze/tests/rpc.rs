@@ -119,7 +119,7 @@ fn rpc_report_distinguishes_pinned_header_from_execution_overrides() {
             serde_json::from_slice(&serde_json::to_vec(&report).unwrap()).unwrap();
         assert_eq!(decoded, report);
         assert!(report.hybrid.as_ref().unwrap().rpc.is_some());
-        let timings = &report.metadata.timings;
+        let timings = &report.timings;
         assert_eq!(timings.queue_ns, 0);
         assert!(timings.pinning_ns > 0);
         assert!(timings.acquiring_ns > 0);
@@ -137,24 +137,50 @@ fn rpc_report_distinguishes_pinned_header_from_execution_overrides() {
         assert!(!json.contains("secret-path"));
         assert!(!json.contains("secret-token"));
         assert!(!json.contains(&endpoint));
-        let snapshot = report.metadata.snapshot.unwrap();
+        let snapshot = report
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .snapshot
+            .as_ref()
+            .unwrap();
         assert_eq!(snapshot.chain_id, "0x1");
         assert_eq!(snapshot.number.as_deref(), Some("0x2a"));
         assert_eq!(snapshot.blob_base_fee, None);
         assert_eq!(
-            report.metadata.environment.number.constants,
+            report
+                .selected_graph()
+                .unwrap()
+                .metadata
+                .environment
+                .number
+                .constants,
             Some(vec!["0x63".into()])
         );
         assert_eq!(
-            report.metadata.environment.chain_id.constants,
+            report
+                .selected_graph()
+                .unwrap()
+                .metadata
+                .environment
+                .chain_id
+                .constants,
             Some(vec!["0x21".into()])
         );
         assert_eq!(
-            report.metadata.environment.timestamp.constants,
+            report
+                .selected_graph()
+                .unwrap()
+                .metadata
+                .environment
+                .timestamp
+                .constants,
             Some(vec!["0x1234".into()])
         );
         assert!(
             report
+                .selected_graph()
+                .unwrap()
                 .metadata
                 .environment
                 .blob_base_fee
@@ -162,7 +188,10 @@ fn rpc_report_distinguishes_pinned_header_from_execution_overrides() {
                 .is_none()
         );
         assert_eq!(report.acquisition.as_ref().unwrap().requests, requests);
-        assert!(report.ssa.complete);
-        assert_eq!(report.scope, api::AnalysisScope::RpcWorld);
+        assert!(report.selected_graph().unwrap().ssa.complete);
+        assert_eq!(
+            report.selected_graph().unwrap().scope,
+            api::AnalysisScope::RpcWorld
+        );
     });
 }

@@ -35,6 +35,15 @@ impl AnalysisReport {
             .global
             .as_ref()
             .ok_or_else(|| invalid(Kind::Namespace))?;
+        if baseline.metadata.source_snapshot != coverage.snapshot
+            || baseline.metadata.revision != coverage.baseline_revision
+            || self.native.as_ref().is_some_and(|graph| {
+                graph.metadata.source_snapshot != precision.snapshot
+                    || Some(graph.metadata.revision) != precision.detail_revision
+            })
+        {
+            return Err(invalid(Kind::Source));
+        }
         if self.status
             != if coverage.baseline_current {
                 AnalysisStatus::Converged

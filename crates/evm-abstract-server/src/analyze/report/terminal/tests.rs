@@ -167,28 +167,34 @@ fn canonical_joint(mut tuple: Value, graph: &api::SymbolicGraph) -> Value {
 }
 
 fn report_joint(report: &api::AnalysisReport) -> Value {
-    let coverage = report.root_terminal_coverage.as_ref().unwrap();
+    let coverage = report
+        .selected_graph()
+        .unwrap()
+        .root_terminal_coverage
+        .as_ref()
+        .unwrap();
     let input = &coverage.input;
     let mut environment = serde_json::to_value(&input.environment).unwrap();
-    environment["calldata"] = json!(report.byte_arrays[input.environment.calldata]);
+    environment["calldata"] =
+        json!(report.selected_graph().unwrap().byte_arrays[input.environment.calldata]);
     let outcomes: Vec<_> = coverage
         .outcomes
         .iter()
         .map(|outcome| {
             (
                 outcome.kind,
-                &report.stores[outcome.store],
-                &report.byte_arrays[outcome.data],
+                &report.selected_graph().unwrap().stores[outcome.store],
+                &report.selected_graph().unwrap().byte_arrays[outcome.data],
             )
         })
         .collect();
     json!([
         input.storage_source,
         input.input_scope,
-        report.byte_arrays[input.calldata],
+        report.selected_graph().unwrap().byte_arrays[input.calldata],
         input.call_value,
-        report.stores[input.saved_store],
-        report.stores[input.initial_store],
+        report.selected_graph().unwrap().stores[input.saved_store],
+        report.selected_graph().unwrap().stores[input.initial_store],
         outcomes,
         report.programs,
         input.frame.is_static,
@@ -255,8 +261,21 @@ fn explicit_opt_out_and_default_converged_none_preserve_honest_detail() {
     let (ordinary, request) = fixture(false, false, false);
     let ordinary = project(&ordinary, &request);
     assert_eq!(ordinary.status, api::AnalysisStatus::Incomplete);
-    assert!(!ordinary.metadata.limits.root_terminal_coverage);
-    assert!(ordinary.root_terminal_coverage.is_none());
+    assert!(
+        !ordinary
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .limits
+            .root_terminal_coverage
+    );
+    assert!(
+        ordinary
+            .selected_graph()
+            .unwrap()
+            .root_terminal_coverage
+            .is_none()
+    );
     let encoded = serde_json::to_string(&ordinary).unwrap();
     let missing = encoded.replace("\"root_terminal_coverage\":null,", "");
     assert_ne!(encoded, missing);
@@ -268,6 +287,8 @@ fn explicit_opt_out_and_default_converged_none_preserve_honest_detail() {
     );
     assert!(
         ordinary
+            .selected_graph()
+            .unwrap()
             .frontiers
             .iter()
             .any(|frontier| frontier.kind == api::FrontierKind::Transfers)
@@ -276,7 +297,13 @@ fn explicit_opt_out_and_default_converged_none_preserve_honest_detail() {
     // A converged real program has no triggering refusal and no certificate.
     let complete = crate::analyze::analyze(request).unwrap();
     assert_eq!(complete.status, api::AnalysisStatus::Converged);
-    assert!(complete.root_terminal_coverage.is_none());
+    assert!(
+        complete
+            .selected_graph()
+            .unwrap()
+            .root_terminal_coverage
+            .is_none()
+    );
     complete.validate().unwrap();
 }
 
@@ -286,13 +313,33 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     let report = project(&native, &request);
     assert_eq!(report.schema_version, 20);
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
-    assert!(!report.ssa.complete);
-    assert_eq!(report.cfg.len(), native.states().len());
-    assert_eq!(report.frontiers.len(), native.frontiers().len());
-    assert_eq!(report.outcomes.len(), native.outcomes().len());
-    assert_eq!(report.states[0].state, native.states()[0].id);
-    assert_eq!(report.cfg[0].executed_pcs, native.states()[0].executed_pcs);
-    let coverage = report.root_terminal_coverage.as_ref().unwrap();
+    assert!(!report.selected_graph().unwrap().ssa.complete);
+    assert_eq!(
+        report.selected_graph().unwrap().cfg.len(),
+        native.states().len()
+    );
+    assert_eq!(
+        report.selected_graph().unwrap().frontiers.len(),
+        native.frontiers().len()
+    );
+    assert_eq!(
+        report.selected_graph().unwrap().outcomes.len(),
+        native.outcomes().len()
+    );
+    assert_eq!(
+        report.selected_graph().unwrap().states[0].state,
+        native.states()[0].id
+    );
+    assert_eq!(
+        report.selected_graph().unwrap().cfg[0].executed_pcs,
+        native.states()[0].executed_pcs
+    );
+    let coverage = report
+        .selected_graph()
+        .unwrap()
+        .root_terminal_coverage
+        .as_ref()
+        .unwrap();
     let source = native.root_terminal_coverage().unwrap();
     assert_eq!(coverage.scope, api::RootTerminalScope::AllInputStates);
     assert_eq!(coverage.trigger, api::RootTerminalTrigger::Transfers);
@@ -305,13 +352,19 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
         ]
     );
     let binding = &coverage.input;
-    let frame = &report.states[0].entry.frames[0];
+    let frame = &report.selected_graph().unwrap().states[0].entry.frames[0];
     assert_eq!(binding.program, frame.program.unwrap());
     assert_eq!(Some(binding.calldata), frame.calldata);
     assert_eq!(binding.call_value, frame.call_value);
     assert_eq!(binding.saved_store, frame.rollback_store);
-    assert_eq!(binding.initial_store, report.states[0].entry.store);
-    assert_eq!(binding.environment, report.metadata.environment);
+    assert_eq!(
+        binding.initial_store,
+        report.selected_graph().unwrap().states[0].entry.store
+    );
+    assert_eq!(
+        binding.environment,
+        report.selected_graph().unwrap().metadata.environment
+    );
     assert_eq!(
         binding.frame.address_value,
         api::AddressValue::Symbolic(value::symbol(evm_abstract::domain::identity::Symbol::To))
@@ -332,7 +385,8 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     let identity = binding.call_value.identity.as_ref().unwrap();
     assert_eq!(Some(identity.scope), binding.input_scope);
     assert_eq!(
-        report.symbolic.nodes[binding.call_value.expression.unwrap().node],
+        report.selected_graph().unwrap().symbolic.nodes
+            [binding.call_value.expression.unwrap().node],
         api::Expression::Input(identity.clone())
     );
     let api::RootTerminalSnapshot::Offline(snapshot) = &binding.snapshot else {
@@ -353,10 +407,10 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
         domain.provenance_policy()
     );
     for (outcome, source) in coverage.outcomes.iter().zip(source.outcomes()) {
-        let data = &report.byte_arrays[outcome.data];
+        let data = &report.selected_graph().unwrap().byte_arrays[outcome.data];
         scalar(&data.length, source.data().len());
         scalar(&data.default, source.data().default_byte());
-        let store = &report.stores[outcome.store];
+        let store = &report.selected_graph().unwrap().stores[outcome.store];
         scalar(&store.nonce_default, &source.store().nonce_default());
         scalar(&store.balance_default, source.store().balance_default());
         scalar(
@@ -374,20 +428,23 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
         );
         assert_eq!(store.touched_default, source.store().touched_default());
     }
-    let returned = &report.stores[coverage.outcomes[0].store];
+    let returned = &report.selected_graph().unwrap().stores[coverage.outcomes[0].store];
     assert!(returned.code_default.is_none());
     assert_eq!(returned.existence_default, api::AccountExistence::Unknown);
     assert!(returned.accounts.is_empty());
     assert_ne!(
         returned.storage_root,
-        report.stores[binding.initial_store].storage_root
+        report.selected_graph().unwrap().stores[binding.initial_store].storage_root
     );
     // Rollback alternatives finalize independently: equal sets need not share
     // cleanup selectors. Match each full EvmStore+data to its own native outcome.
     let control = Control::default();
     let mut pools = Pools::<NumericValue>::new(&control);
     let expected = native_joint(source, &mut pools);
-    let actual = canonical_joint(report_joint(&report), &report.symbolic);
+    let actual = canonical_joint(
+        report_joint(&report),
+        &report.selected_graph().unwrap().symbolic,
+    );
     assert_eq!(
         actual,
         canonical_joint(expected.clone(), &pools.symbolic.graph)
@@ -395,7 +452,7 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
 
     let ripemd = Address::from_word(U256::from(3).into()).to_string();
     let account = |store: usize| {
-        report.stores[store]
+        report.selected_graph().unwrap().stores[store]
             .accounts
             .iter()
             .find(|account| account.address == ripemd)
@@ -404,11 +461,12 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     let reverted = account(coverage.outcomes[1].store);
     let failed = account(coverage.outcomes[2].store);
     let api::Expression::SlotsIte(reverted_root) =
-        &report.symbolic.nodes[reverted.storage_root.node]
+        &report.selected_graph().unwrap().symbolic.nodes[reverted.storage_root.node]
     else {
         panic!("observable address-3 rollback cleanup")
     };
-    let api::Expression::SlotsIte(failed_root) = &report.symbolic.nodes[failed.storage_root.node]
+    let api::Expression::SlotsIte(failed_root) =
+        &report.selected_graph().unwrap().symbolic.nodes[failed.storage_root.node]
     else {
         panic!("observable address-3 failure cleanup")
     };
@@ -416,11 +474,13 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     for which in 0..5 {
         let mut wrong = report.clone();
         match which {
-            0 => wrong.stores[coverage.outcomes[2].store]
+            0 => std::sync::Arc::make_mut(wrong.native.as_mut().unwrap()).stores
+                [coverage.outcomes[2].store]
                 .accounts
                 .retain(|account| account.address != ripemd),
             1 => {
-                let owner = wrong.stores[coverage.outcomes[2].store]
+                let owner = std::sync::Arc::make_mut(wrong.native.as_mut().unwrap()).stores
+                    [coverage.outcomes[2].store]
                     .accounts
                     .iter_mut()
                     .find(|account| account.address == ripemd)
@@ -434,7 +494,9 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
             }
             2 => {
                 let api::Expression::SlotsIte(root) =
-                    &mut wrong.symbolic.nodes[failed.storage_root.node]
+                    &mut std::sync::Arc::make_mut(wrong.native.as_mut().unwrap())
+                        .symbolic
+                        .nodes[failed.storage_root.node]
                 else {
                     unreachable!()
                 };
@@ -442,7 +504,9 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
             }
             3 => {
                 let api::Expression::SlotsInput(root) =
-                    &mut wrong.symbolic.nodes[returned.storage_root.node]
+                    &mut std::sync::Arc::make_mut(wrong.native.as_mut().unwrap())
+                        .symbolic
+                        .nodes[returned.storage_root.node]
                 else {
                     unreachable!()
                 };
@@ -450,7 +514,9 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
             }
             _ => {
                 let api::Expression::Input(identity) =
-                    &mut wrong.symbolic.nodes[binding.call_value.expression.unwrap().node]
+                    &mut std::sync::Arc::make_mut(wrong.native.as_mut().unwrap())
+                        .symbolic
+                        .nodes[binding.call_value.expression.unwrap().node]
                 else {
                     unreachable!()
                 };
@@ -458,7 +524,10 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
             }
         }
         assert_ne!(
-            canonical_joint(report_joint(&wrong), &wrong.symbolic),
+            canonical_joint(
+                report_joint(&wrong),
+                &std::sync::Arc::make_mut(wrong.native.as_mut().unwrap()).symbolic
+            ),
             actual
         );
     }
@@ -475,17 +544,19 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     let mut wrong_native = expected;
     wrong_native[5] = serde_json::to_value(&pools.stores[changed]).unwrap();
     assert_ne!(canonical_joint(wrong_native, &pools.symbolic.graph), actual);
-    let failure = &report.byte_arrays[coverage.outcomes[2].data];
+    let failure = &report.selected_graph().unwrap().byte_arrays[coverage.outcomes[2].data];
     assert_eq!(failure.length.unsigned.upper, "0x0");
     for outcome in &coverage.outcomes[..2] {
-        let data = &report.byte_arrays[outcome.data];
+        let data = &report.selected_graph().unwrap().byte_arrays[outcome.data];
         assert_eq!(data.length.unsigned.upper, value::word(U256::MAX));
         assert!(data.cells.is_empty());
-        let api::Expression::View(view) = &report.symbolic.nodes[data.symbolic.node] else {
+        let api::Expression::View(view) =
+            &report.selected_graph().unwrap().symbolic.nodes[data.symbolic.node]
+        else {
             panic!("complete view")
         };
         assert!(matches!(
-            report.symbolic.nodes[view.state.node],
+            report.selected_graph().unwrap().symbolic.nodes[view.state.node],
             api::Expression::BytesInput(_)
         ));
     }
@@ -525,25 +596,37 @@ fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_co
     report.validate().unwrap();
     assert!(report.hybrid.as_ref().unwrap().coverage.baseline_current);
     assert_eq!(
-        report.metadata.environment.to,
+        report.selected_graph().unwrap().metadata.environment.to,
         api::AddressValue::Symbolic(value::symbol(evm_abstract::domain::identity::Symbol::To))
     );
-    let namespace = report.metadata.entry_address.clone();
+    let namespace = report
+        .selected_graph()
+        .unwrap()
+        .metadata
+        .entry_address
+        .clone();
     assert!(
         matches!(&report.hybrid.as_ref().unwrap().coverage.detail_binding,
         api::HybridNativeBinding::SymbolicOwnerNamespace(binding) if binding.namespace == namespace)
     );
     let report = crate::analyze::tests::native_detail(report);
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
-    assert!(!report.ssa.complete);
+    assert!(!report.selected_graph().unwrap().ssa.complete);
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .frontiers
             .iter()
             .any(|frontier| frontier.kind == api::FrontierKind::Transfers)
     );
-    assert_eq!(report.metadata.limits, limits);
-    let coverage = report.root_terminal_coverage.as_ref().unwrap();
+    assert_eq!(report.selected_graph().unwrap().metadata.limits, limits);
+    let coverage = report
+        .selected_graph()
+        .unwrap()
+        .root_terminal_coverage
+        .as_ref()
+        .unwrap();
     assert_eq!(coverage.trigger, api::RootTerminalTrigger::Transfers);
     let input = &coverage.input;
     assert_eq!(input.config.max_work, limits.max_work);
@@ -563,7 +646,7 @@ fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_co
     assert_eq!(program.kind, api::CodeKind::Runtime);
     assert_eq!(program.code_hash, input.frame.code_hash);
     assert_eq!(program.bytecode, format!("0x{TWO_BLOCK_RETURN}"));
-    let returned = &report.stores[coverage.outcomes[0].store];
+    let returned = &report.selected_graph().unwrap().stores[coverage.outcomes[0].store];
     assert!(returned.code_default.is_none());
     assert!(returned.accounts.is_empty());
 }
@@ -572,7 +655,13 @@ fn code_only_input_keeps_symbolic_to_and_captured_code_despite_unknown_return_co
 fn original_root_frame_requires_the_admitted_runtime_entry_shape() {
     let (native, request) = fixture(true, false, false);
     let report = project(&native, &request);
-    let input = &report.root_terminal_coverage.as_ref().unwrap().input;
+    let input = &report
+        .selected_graph()
+        .unwrap()
+        .root_terminal_coverage
+        .as_ref()
+        .unwrap()
+        .input;
     let blocks = report
         .programs
         .iter()
@@ -592,7 +681,12 @@ fn original_root_frame_requires_the_admitted_runtime_entry_shape() {
         (0, 0, vec![0]),
     ] {
         let mut invalid = report.clone();
-        let frame = &mut invalid.root_terminal_coverage.as_mut().unwrap().input.frame;
+        let frame = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+            .root_terminal_coverage
+            .as_mut()
+            .unwrap()
+            .input
+            .frame;
         frame.basic_block_index = basic_block_index;
         frame.stack_height = stack_height;
         frame.jump_history = jump_history;
@@ -623,15 +717,21 @@ fn original_root_frame_requires_the_admitted_runtime_entry_shape() {
         ),
     ] {
         let mut invalid = report.clone();
-        let input = &mut invalid.root_terminal_coverage.as_mut().unwrap().input;
+        let input = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+            .root_terminal_coverage
+            .as_mut()
+            .unwrap()
+            .input;
         input.frame.mode = mode;
         // Matching a non-runtime program kind cannot admit a different root.
-        invalid
-            .programs
-            .iter_mut()
-            .find(|program| program.id == input.program)
-            .unwrap()
-            .kind = kind;
+        std::sync::Arc::make_mut(
+            invalid
+                .programs
+                .iter_mut()
+                .find(|program| program.id == input.program)
+                .unwrap(),
+        )
+        .kind = kind;
         assert_eq!(
             invalid.validate(),
             Err(api::ReportValidationFailure::Process(
@@ -754,10 +854,18 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
         },
     };
     assert_eq!(
-        report.root_terminal_coverage.as_ref().unwrap().trigger,
+        report
+            .selected_graph()
+            .unwrap()
+            .root_terminal_coverage
+            .as_ref()
+            .unwrap()
+            .trigger,
         api::RootTerminalTrigger::MandatoryRetention(expected.clone())
     );
     let other_state = report
+        .selected_graph()
+        .unwrap()
         .states
         .iter()
         .find(|state| state.state != expected.state)
@@ -766,19 +874,25 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
     for which in 0..3 {
         let mut invalid = report.clone();
         let api::RootTerminalTrigger::MandatoryRetention(trigger) =
-            &mut invalid.root_terminal_coverage.as_mut().unwrap().trigger
+            &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+                .root_terminal_coverage
+                .as_mut()
+                .unwrap()
+                .trigger
         else {
             unreachable!()
         };
         match which {
             0 => trigger.pc = usize::MAX,
-            1 => invalid.frontiers.retain(|frontier| {
-                frontier.from != Some(expected.state) || frontier.pc != Some(expected.pc)
-            }),
+            1 => std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+                .frontiers
+                .retain(|frontier| {
+                    frontier.from != Some(expected.state) || frontier.pc != Some(expected.pc)
+                }),
             _ => trigger.state = other_state,
         }
         assert!(
-            invalid
+            std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
                 .states
                 .iter()
                 .any(|state| state.state == expected.state)
@@ -792,7 +906,11 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
     }
     let mut invalid = report;
     let api::RootTerminalTrigger::MandatoryRetention(trigger) =
-        &mut invalid.root_terminal_coverage.as_mut().unwrap().trigger
+        &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+            .root_terminal_coverage
+            .as_mut()
+            .unwrap()
+            .trigger
     else {
         unreachable!()
     };
@@ -813,17 +931,32 @@ fn native_mandatory_retention_site_requires_the_same_exported_frontier() {
 fn chain_identity_and_static_nonselected_account_state_survive_projection() {
     let (native, request) = fixture(true, true, true);
     let report = project(&native, &request);
-    let coverage = report.root_terminal_coverage.as_ref().unwrap();
+    let coverage = report
+        .selected_graph()
+        .unwrap()
+        .root_terminal_coverage
+        .as_ref()
+        .unwrap();
     let source = native.root_terminal_coverage().unwrap();
     assert!(source.input().frame().is_static);
     assert!(coverage.input.frame.is_static);
     assert!(coverage.input.environment.is_static);
-    assert!(report.metadata.environment.is_static);
+    assert!(
+        report
+            .selected_graph()
+            .unwrap()
+            .metadata
+            .environment
+            .is_static
+    );
     let control = Control::default();
     let mut pools = Pools::<NumericValue>::new(&control);
     let expected = native_joint(source, &mut pools);
     assert_eq!(
-        canonical_joint(report_joint(&report), &report.symbolic),
+        canonical_joint(
+            report_joint(&report),
+            &report.selected_graph().unwrap().symbolic
+        ),
         canonical_joint(expected, &pools.symbolic.graph)
     );
     let api::RootTerminalSnapshot::Chain(snapshot) = &coverage.input.snapshot else {
@@ -831,11 +964,11 @@ fn chain_identity_and_static_nonselected_account_state_survive_projection() {
     };
     assert_eq!(snapshot.chain_id, value::word(U256::MAX));
     assert_eq!(snapshot.block_hash, B256::repeat_byte(0x45).to_string());
-    let saved = &report.stores[coverage.input.saved_store];
-    let initial = &report.stores[coverage.input.initial_store];
-    let returned = &report.stores[coverage.outcomes[0].store];
-    let reverted = &report.stores[coverage.outcomes[1].store];
-    let failed = &report.stores[coverage.outcomes[2].store];
+    let saved = &report.selected_graph().unwrap().stores[coverage.input.saved_store];
+    let initial = &report.selected_graph().unwrap().stores[coverage.input.initial_store];
+    let returned = &report.selected_graph().unwrap().stores[coverage.outcomes[0].store];
+    let reverted = &report.selected_graph().unwrap().stores[coverage.outcomes[1].store];
+    let failed = &report.selected_graph().unwrap().stores[coverage.outcomes[2].store];
     for store in [saved, initial, reverted, failed] {
         let other = store
             .accounts
@@ -897,20 +1030,21 @@ fn chain_identity_and_static_nonselected_account_state_survive_projection() {
     assert_ne!(returned.storage_root, initial.storage_root);
     assert_eq!(returned.transient_root, initial.transient_root);
     assert!(matches!(
-        report.symbolic.nodes[returned.storage_root.node],
+        report.selected_graph().unwrap().symbolic.nodes[returned.storage_root.node],
         api::Expression::SlotsInput(_)
     ));
     assert_eq!(
-        report.symbolic.nodes[returned.transient_root.node],
+        report.selected_graph().unwrap().symbolic.nodes[returned.transient_root.node],
         api::Expression::SlotsZero
     );
     let mut invalid = report.clone();
-    let api::RootTerminalSnapshot::Chain(snapshot) = &mut invalid
-        .root_terminal_coverage
-        .as_mut()
-        .unwrap()
-        .input
-        .snapshot
+    let api::RootTerminalSnapshot::Chain(snapshot) =
+        &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+            .root_terminal_coverage
+            .as_mut()
+            .unwrap()
+            .input
+            .snapshot
     else {
         unreachable!()
     };
@@ -982,13 +1116,17 @@ fn ordinary_stores_export_unlisted_defaults_and_actual_unscoped_templates() {
     let (native, request) = fixture(false, false, false);
     let report = project(&native, &request);
     let mut invalid = report.clone();
-    invalid.stores[0].storage_root.node = report.symbolic.nodes.len();
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap()).stores[0]
+        .storage_root
+        .node = report.selected_graph().unwrap().symbolic.nodes.len();
     assert!(matches!(
         invalid.validate(),
         Err(api::ReportValidationFailure::Symbolic(_))
     ));
     invalid = report;
-    invalid.stores[0].transient_root.node = invalid
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap()).stores[0]
+        .transient_root
+        .node = std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
         .metadata
         .environment
         .call_value
@@ -1010,7 +1148,11 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         (2, api::PoolReferenceKind::Program),
     ] {
         let mut invalid = report.clone();
-        let input = &mut invalid.root_terminal_coverage.as_mut().unwrap().input;
+        let input = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+            .root_terminal_coverage
+            .as_mut()
+            .unwrap()
+            .input;
         match which {
             0 => input.calldata = usize::MAX,
             1 => input.saved_store = usize::MAX,
@@ -1021,19 +1163,19 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         );
     }
     let mut invalid = report.clone();
-    invalid
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
         .root_terminal_coverage
         .as_mut()
         .unwrap()
         .input
         .storage_source
-        .node = report.symbolic.nodes.len();
+        .node = report.selected_graph().unwrap().symbolic.nodes.len();
     assert!(matches!(
         invalid.validate(),
         Err(api::ReportValidationFailure::Symbolic(_))
     ));
     let mut invalid = report.clone();
-    invalid
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
         .root_terminal_coverage
         .as_mut()
         .unwrap()
@@ -1050,7 +1192,7 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         ))
     );
     let mut invalid = report.clone();
-    invalid
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
         .root_terminal_coverage
         .as_mut()
         .unwrap()
@@ -1063,7 +1205,11 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         ))
     );
     let mut invalid = report.clone();
-    let outcomes = &mut invalid.root_terminal_coverage.as_mut().unwrap().outcomes;
+    let outcomes = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+        .root_terminal_coverage
+        .as_mut()
+        .unwrap()
+        .outcomes;
     outcomes[2].data = outcomes[0].data;
     assert_eq!(
         invalid.validate(),
@@ -1080,7 +1226,11 @@ fn references_order_empty_failure_and_binding_mismatches_are_rejected() {
         api::RootTerminalValidationFailure::InputIdentity,
     ] {
         let mut invalid = report.clone();
-        let input = &mut invalid.root_terminal_coverage.as_mut().unwrap().input;
+        let input = &mut std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+            .root_terminal_coverage
+            .as_mut()
+            .unwrap()
+            .input;
         match kind {
             api::RootTerminalValidationFailure::Fork => input.fork = api::Fork::Cancun,
             api::RootTerminalValidationFailure::Frame => {
