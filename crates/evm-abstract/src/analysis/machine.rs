@@ -283,7 +283,7 @@ pub enum MachineEdgeKind {
     Revert,
     /// A procedure relation resumes the parent with this termination category.
     Summary(OutcomeKind),
-    /// A coarse region repeats after a local primitive without entering a child.
+    /// A coarse action continues locally without entering a child.
     Process(super::ProcessAction),
 }
 

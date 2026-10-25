@@ -2,11 +2,13 @@
 
 use crate::domain::{EvmNumericAlgebra, WordElement};
 
+#[cfg(test)]
+use super::EvmByteArray;
+
 use super::{
-    AlgebraRef, EvmByteArray, EvmCallStack, EvmChildFrame, EvmContinuation, EvmEntry,
-    EvmFrameSummary, EvmMachinePayload, EvmPayloadSummary, EvmRootFrame, EvmSnapshot, EvmValue,
-    FrameByteKind, FrameCode, FrameMapOrder, MachineError, RelationState, identify,
-    stack_alias::StackAliases,
+    AlgebraRef, EvmCallStack, EvmChildFrame, EvmContinuation, EvmEntry, EvmFrameSummary,
+    EvmMachinePayload, EvmPayloadSummary, EvmRootFrame, EvmSnapshot, EvmValue, FrameByteKind,
+    FrameCode, FrameMapOrder, MachineError, RelationState, identify, stack_alias::StackAliases,
 };
 
 pub(in crate::analysis) mod caller;

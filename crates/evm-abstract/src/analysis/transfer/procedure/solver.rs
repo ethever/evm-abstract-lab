@@ -317,14 +317,7 @@ impl<
         )?;
         let process = match payload.active().semantics {
             crate::analysis::TransferSemantics::KnownProcess => {
-                Some(super::process::Capabilities::scan(
-                    payload
-                        .active()
-                        .program
-                        .as_ref()
-                        .ok_or(MachineError::Shape)?,
-                    self.budget,
-                )?)
+                Some(super::process::Capabilities::empty())
             }
             crate::analysis::TransferSemantics::Environment
                 if self.policies.state.runtime_execution()
@@ -333,9 +326,10 @@ impl<
                 Some(super::process::Capabilities::unknown())
             }
             crate::analysis::TransferSemantics::ConstructorProcess => {
-                Some(match payload.active().program.as_ref() {
-                    Some(program) => super::process::Capabilities::scan(program, self.budget)?,
-                    None => super::process::Capabilities::unknown(),
+                Some(if payload.active().program.is_some() {
+                    super::process::Capabilities::empty()
+                } else {
+                    super::process::Capabilities::unknown()
                 })
             }
             crate::analysis::TransferSemantics::BoundaryProcess => Some(
