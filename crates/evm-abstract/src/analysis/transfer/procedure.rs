@@ -36,8 +36,8 @@ use crate::{
         MachineEdgeKind, MachineError, OutcomeKind,
         engine::Counters,
         machine::{
-            EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord,
-            ProcedureSummaryKind,
+            EvmProcedureModel, EvmProcedureModels, EvmProcedureSummaryRecord, EvmRegionalEvidence,
+            ProcedureEvidenceVersion, ProcedureSummaryKind,
         },
         worklist::{kernel_failure, runtime::Runtime, transfer_stop},
     },
@@ -62,8 +62,8 @@ pub use evidence::{
     EvmRegionalCall, EvmRegionalCfg, EvmRegionalEdge, EvmRegionalNode, EvmRegionalReturn,
     EvmRegionalTransfer,
 };
+mod model;
 mod recursion;
-mod report;
 mod solver;
 #[cfg(test)]
 mod tests;
@@ -198,13 +198,14 @@ fn refused_entry<N: WordElement>(
     (
         result,
         EvmProcedureSummaryRecord {
+            version: ProcedureEvidenceVersion::default(),
             source_state,
             source_current: false,
             kind,
             root_procedure: None,
             closed: false,
-            procedures: Vec::new(),
-            regional_cfg: EvmRegionalCfg::default(),
+            procedures: EvmProcedureModels::default(),
+            regional_cfg: EvmRegionalEvidence::default(),
             state_count: 0,
             transfers: 0,
             propagations: 0,
@@ -284,6 +285,11 @@ pub(in crate::analysis) struct EvmTable<
     precision_losses: BTreeSet<DiagnosticKind>,
     propagations: usize,
     reused: usize,
+    model_rows: Vec<(model::Guard, EvmProcedureModel<N>)>,
+    model_snapshot: Option<EvmProcedureModels<N>>,
+    regional_snapshot: Option<EvmRegionalEvidence>,
+    evidence_generation: usize,
+    evidence_dirty: bool,
     exchange_inputs: BTreeMap<
         (
             u8,
@@ -314,6 +320,11 @@ impl<N: WordElement, Key: PolicyKey> Default for EvmTable<N, Key> {
             precision_losses: BTreeSet::new(),
             propagations: 0,
             reused: 0,
+            model_rows: Vec::new(),
+            model_snapshot: None,
+            regional_snapshot: None,
+            evidence_generation: 0,
+            evidence_dirty: false,
             exchange_inputs: BTreeMap::new(),
         }
     }
@@ -505,9 +516,9 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         if let Err(error) = solver.retain_terminal_frontiers(relative_closed) {
             super::boundary(&mut result, 0, error.frontier_reason());
         }
-        // Execution still uses its original paid equality/copy cache. Once all
-        // deliveries finish, its owned arrays can move into read-only reports.
-        let mut data_sources: Vec<report::Data<N>> = Vec::new();
+        // This paid byte cache belongs to one root delivery pass. It never
+        // supplies another invocation or the immutable numerical model.
+        let mut data_sources: Vec<(EvmByteArraySummary<N>, EvmByteArray<N>)> = Vec::new();
         if let Some(root) = root {
             let procedure = &solver.table.procedures[root];
             let entry_source = solver
@@ -515,7 +526,6 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 .entry_source(root)
                 .expect("retained root procedure");
             debug_assert_eq!(entry_source.namespace, namespace);
-            let entry_revision = *entry_source.revision;
             let output_work = output_clone_work(&procedure.outputs, solver.budget);
             // Reading even an empty output relation retains the outer consumer.
             // A later callee publication then wakes this exact World job.
@@ -579,13 +589,12 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                     // actual native tariffs, independently of the slot read.
                     let mut cached = None;
                     for source in &data_sources {
-                        if source.bound.eq_with_payment(
-                            &output.summary.data,
-                            domain,
-                            solver.budget,
-                        )? {
-                            source.data.pay_clone_with(solver.budget)?;
-                            let copied = source.data.clone();
+                        if source
+                            .0
+                            .eq_with_payment(&output.summary.data, domain, solver.budget)?
+                        {
+                            source.1.pay_clone_with(solver.budget)?;
+                            let copied = source.1.clone();
                             crate::resource::clone_payment::checkpoint(solver.budget)?;
                             cached = Some(copied);
                             break;
@@ -602,18 +611,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                         data.pay_clone_with(solver.budget)?;
                         let copied = data.clone();
                         crate::resource::clone_payment::checkpoint(solver.budget)?;
-                        data_sources.push(report::Data::new(
-                            report::Source {
-                                namespace,
-                                procedure: root,
-                                entry_revision,
-                                kind,
-                                generation: output.generation,
-                            },
-                            bound,
-                            copied,
-                            solver.budget,
-                        )?);
+                        data_sources.push((bound, copied));
                         data
                     };
                     Ok((returned, store, data))
@@ -687,125 +685,26 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 .cloned()
                 .map(|kind| (0, kind)),
         );
-        // Cache insertion and output export both follow OutcomeKind order. A
-        // materialization is consumed only by its exact original producer;
-        // independent executable subscribers never read this iterator.
-        let mut data_sources = data_sources.into_iter().peekable();
-        let evidence_work = solver
-            .table
-            .procedures
-            .iter()
-            .fold(0usize, |work, procedure| {
-                procedure.outputs.values().fold(
-                    work.saturating_add(procedure.entry_payload.store.work_size())
-                        .saturating_add(procedure.covered_blocks.len())
-                        .saturating_add(procedure.dependencies.len())
-                        .saturating_add(1),
-                    |work, output| work.saturating_add(output.work),
-                )
-            });
-        let procedures = solver
-            .reserve(evidence_work.saturating_mul(4))
-            .and_then(|()| {
-                solver
-                    .table
-                    .procedures
-                    .iter()
-                    .enumerate()
-                    .map(|(id, procedure)| {
-                        let input = solver.table.entry_source(id).expect("retained procedure");
-                        Ok(EvmProcedureSummary {
-                            process_input: if input.payload.active().key.process.is_some() {
-                                Some(crate::analysis::EvmProcessInvocation {
-                                    address: crate::domain::summary::clone_value(
-                                        &input.payload.active().address_operand,
-                                        solver.budget,
-                                    )?,
-                                    caller: crate::domain::summary::clone_value(
-                                        &input.payload.active().caller_operand,
-                                        solver.budget,
-                                    )?,
-                                    value: crate::domain::summary::clone_value(
-                                        &input.payload.active().call_value,
-                                        solver.budget,
-                                    )?,
-                                })
-                            } else {
-                                None
-                            },
-                            semantics: input.payload.active().semantics,
-                            frame: crate::analysis::engine::policy::clone_key(
-                                &procedure.frame,
-                                solver.budget,
-                            )?,
-                            input: process::export_store(
-                                &input.payload.store,
-                                solver.table.process_catalogue.as_deref(),
-                                domain,
-                                solver.budget,
-                            )?,
-                            outputs: procedure
-                                .outputs
-                                .iter()
-                                .map(|(kind, output)| {
-                                    Ok(EvmProcedureSummaryOutput {
-                                        kind: *kind,
-                                        data: match report::take_data(
-                                            &mut data_sources,
-                                            report::Source {
-                                                namespace: procedure.namespace,
-                                                procedure: id,
-                                                entry_revision: *input.revision,
-                                                kind: *kind,
-                                                generation: output.generation,
-                                            },
-                                            solver.budget,
-                                        )? {
-                                            Some(data) => data,
-                                            None => output
-                                                .summary
-                                                .data
-                                                .instantiate_with_payment(domain, solver.budget)?,
-                                        },
-                                        store: process::export_store(
-                                            &output.summary.store,
-                                            solver.table.process_catalogue.as_deref(),
-                                            domain,
-                                            solver.budget,
-                                        )?,
-                                    })
-                                })
-                                .collect::<Result<Vec<_>, MachineError>>()?,
-                            dependencies: procedure.dependencies.iter().copied().collect(),
-                            input_updates: procedure.entry_updates,
-                            output_updates: procedure.output_updates,
-                            covered_blocks: procedure.covered_blocks.iter().copied().collect(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, MachineError>>()
-            });
-        let procedures = match procedures {
-            Ok(procedures) => procedures,
+        // Semantic snapshots retain physical numerical bounds and actual native
+        // stamps. Rich Store/array replay is never part of this execution step.
+        let snapshot = solver.semantic_snapshot();
+        let (procedures, regional_cfg, generation) = match snapshot {
+            Ok(snapshot) => snapshot,
             Err(error) => {
                 super::boundary(&mut result, 0, error.frontier_reason());
-                Vec::new()
-            }
-        };
-        // Procedure IDs in the compact graph must index an exported summary.
-        // An earlier evidence refusal already retained an explicit frontier.
-        let regional_cfg = if procedures.len() != solver.table.procedures.len() {
-            EvmRegionalCfg::default()
-        } else {
-            match solver.regional_cfg() {
-                Ok(cfg) => cfg,
-                Err(error) => {
-                    super::boundary(&mut result, 0, error.frontier_reason());
-                    EvmRegionalCfg::default()
-                }
+                (
+                    EvmProcedureModels::default(),
+                    EvmRegionalEvidence::default(),
+                    0,
+                )
             }
         };
         let closed = relative_closed && result.frontiers.is_empty() && !solver.table.incomplete;
         let mut record = EvmProcedureSummaryRecord {
+            version: ProcedureEvidenceVersion {
+                namespace,
+                generation,
+            },
             source_state,
             source_current: false,
             kind,
@@ -821,7 +720,7 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
         if let Err(error) = solver.regional_checkpoint() {
             super::boundary(&mut result, 0, error.frontier_reason());
             record.closed = false;
-            record.regional_cfg = EvmRegionalCfg::default();
+            record.regional_cfg = EvmRegionalEvidence::default();
         }
         (result, record)
     }

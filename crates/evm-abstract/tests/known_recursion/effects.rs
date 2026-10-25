@@ -41,7 +41,14 @@ fn growing_recursive_storage_and_transient_state_close_without_losing_other_fact
             .procedure_summaries()
             .iter()
             .flat_map(|r| &r.procedures)
-            .any(|p| read(&p.input, A, 0).contains(U256::from(2)))
+            .any(|p| read(
+                &p.input
+                    .instantiate(super::native::product().borrowed())
+                    .unwrap(),
+                A,
+                0
+            )
+            .contains(U256::from(2)))
     );
 }
 

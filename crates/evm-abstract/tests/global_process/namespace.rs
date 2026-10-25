@@ -202,12 +202,15 @@ fn reciprocal_named_callback_write_read_and_joint_mutable_planes_are_covered() {
                     .iter()
                     .filter(|o| o.kind == OutcomeKind::Return)
                 {
+                    let store = output
+                        .store
+                        .instantiate(super::native::product().borrowed())
+                        .unwrap();
                     // These facts must coexist in one returned Store, before
                     // transaction finalization clears transient state.
-                    assert!(read(&output.store, U, 0).contains(U256::from(11)));
+                    assert!(read(&store, U, 0).contains(U256::from(11)));
                     assert!(
-                        output
-                            .store
+                        store
                             .read_transient(
                                 address(U),
                                 &word(0),
@@ -215,13 +218,10 @@ fn reciprocal_named_callback_write_read_and_joint_mutable_planes_are_covered() {
                             )
                             .contains(U256::from(11))
                     );
-                    assert!(output.store.nonce(address(U)).contains(U256::ZERO));
-                    assert_eq!(output.store.created_in_transaction(address(U)), Some(false));
-                    assert_eq!(output.store.pending_destruction(address(U)), Some(false));
-                    assert!(matches!(
-                        output.store.code(address(U)),
-                        Some(Code::Runtime(_))
-                    ));
+                    assert!(store.nonce(address(U)).contains(U256::ZERO));
+                    assert_eq!(store.created_in_transaction(address(U)), Some(false));
+                    assert_eq!(store.pending_destruction(address(U)), Some(false));
+                    assert!(matches!(store.code(address(U)), Some(Code::Runtime(_))));
                 }
                 reciprocal_delivery |= call
                     .deliveries

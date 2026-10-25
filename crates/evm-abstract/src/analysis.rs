@@ -67,8 +67,10 @@ use machine::{
 pub use machine::{
     EvmCallStack, EvmChildFrame, EvmContinuation, EvmExecutionEvidence, EvmFrame, EvmFrameState,
     EvmInstructionValue, EvmMachineFrontier, EvmMachineOutcome, EvmMachinePayload, EvmMachineState,
-    EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord, EvmRangeRequest,
-    EvmRangeWitness, EvmRootFrame, EvmWorldAnalysis,
+    EvmProcedureModel, EvmProcedureModelData, EvmProcedureModelOutput, EvmProcedureModels,
+    EvmProcedureReport, EvmProcedureSummary, EvmProcedureSummaryOutput, EvmProcedureSummaryRecord,
+    EvmRangeRequest, EvmRangeWitness, EvmRegionalEvidence, EvmRootFrame, EvmWorldAnalysis,
+    ProcedureEvidenceVersion, ProcedureModelVersion, ProcedureReportOutcome,
 };
 pub use process::{
     CreationContinuation, EvmProcessInvocation, EvmProcessTransfer, ProcessAction, ProcessBoundary,

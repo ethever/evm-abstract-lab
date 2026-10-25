@@ -201,6 +201,8 @@ fn unknown_delegatecall_entering_known_c_keeps_c_address_in_normal_call() {
             only(
                 &output
                     .data
+                    .instantiate(native::product().borrowed())
+                    .unwrap()
                     .read_word(&word(0), native::product().borrowed()),
                 &[C],
             );

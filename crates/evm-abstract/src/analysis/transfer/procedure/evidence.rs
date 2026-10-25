@@ -232,6 +232,7 @@ impl<
         task: &TaskKind<<X as InputTasks>::Task>,
         current: bool,
     ) {
+        self.table.regional_snapshot = None;
         match task {
             TaskKind::Body(id) => {
                 if let Some(receipt) = &mut self.table.nodes[*id].transfer {
@@ -325,6 +326,7 @@ impl<
         if self.active.is_none() {
             return Ok(());
         }
+        self.table.regional_snapshot = None;
         let Some(producer) = self.producer else {
             return Ok(());
         };
@@ -377,6 +379,7 @@ impl<
         if self.active.is_none() {
             return Ok(());
         }
+        self.table.regional_snapshot = None;
         let Some(producer) = self.producer else {
             return Ok(());
         };

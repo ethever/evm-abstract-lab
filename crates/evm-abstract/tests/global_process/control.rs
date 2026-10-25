@@ -234,8 +234,21 @@ fn constructors_callbacks_and_enclosing_rollback_use_installed_native_continuati
                 assert_eq!(ctor_key.owner, target);
                 if named {
                     assert!(matches!(ctor.input.code(destination), Some(Code::Empty)));
-                    assert_eq!(ctor.input.nonce(destination).singleton(), Some(U256::ONE));
-                    assert_eq!(ctor.input.created_in_transaction(destination), Some(true));
+                    assert_eq!(
+                        ctor.input
+                            .instantiate(super::native::product().borrowed())
+                            .unwrap()
+                            .nonce(destination)
+                            .singleton(),
+                        Some(U256::ONE)
+                    );
+                    assert_eq!(
+                        ctor.input
+                            .instantiate(super::native::product().borrowed())
+                            .unwrap()
+                            .created_in_transaction(destination),
+                        Some(true)
+                    );
                 }
                 let returned = allocation
                     .deliveries
@@ -297,7 +310,14 @@ fn constructors_callbacks_and_enclosing_rollback_use_installed_native_continuati
                     {
                         // Relative outputs are before transaction finalization:
                         // rollback retains the genuine may-touch at address 3.
-                        assert_ne!(output.store.touched_in_transaction(address(3)), Some(false));
+                        assert_ne!(
+                            output
+                                .store
+                                .instantiate(super::native::product().borrowed())
+                                .unwrap()
+                                .touched_in_transaction(address(3)),
+                            Some(false)
+                        );
                     }
                     for outcome in analysis
                         .outcomes()

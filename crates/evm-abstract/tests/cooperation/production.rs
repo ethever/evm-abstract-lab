@@ -197,7 +197,12 @@ fn singleton_without_constants_resolves_self_call_and_preserves_custom_recursive
         );
     }
     for record in result.procedure_summaries() {
-        for procedure in &record.procedures {
+        let rich = record.materialize(algebra.borrowed(), &mut crate::native::postprocessing());
+        assert_eq!(
+            rich.outcome,
+            evm_abstract::analysis::ProcedureReportOutcome::Complete
+        );
+        for procedure in &rich.procedures {
             assert_eq!(procedure.frame.address, address(OWNER));
             assert_eq!(procedure.frame.code_address, address(OWNER));
             for output in &procedure.outputs {
