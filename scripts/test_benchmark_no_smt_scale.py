@@ -137,6 +137,8 @@ class DeliveryTests(unittest.TestCase):
             ("native", {"cfg": []}),
             ("schema_version", 15),
             ("status", "Incomplete"),
+            ("work", -1),
+            ("transfers", "18"),
         )
         for field, value in mutations:
             with self.subTest(field=field):
@@ -158,6 +160,30 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse(self.collect()["report_delivered"])
         delivered = self.fixed_hybrid()
         delivered["hybrid"]["coverage"]["baseline_current"] = "false"
+        self.write_stdout(delivered)
+        self.assertFalse(self.collect()["report_delivered"])
+
+    def test_fixed_hybrid_keeps_application_policy_checks_for_the_selected_graph(self):
+        delivered = self.fixed_hybrid()
+        spec = {"capacity": 512, "cost_version": 9}
+        for slot in ("global", "native"):
+            delivered[slot]["analysis"]["domain_spec"] = copy.deepcopy(spec)
+        delivered.update(numeric_model="product", postprocessing_max_work=2_000_000_000,
+                         postprocessing_work=7, selected_view="Native")
+        self.commands.update(interface={"versions": {"native": 16}},
+                             expected_native_numeric_model="product",
+                             expected_native_domain_spec=spec,
+                             expected_native_postprocessing_max_work=2_000_000_000)
+        self.write_stdout(delivered)
+        sample = self.collect()
+        self.assertTrue(sample["policy_matches"], sample["report_error"])
+        self.assertEqual(sample["nativefinal"]["numeric_model"], "product")
+        delivered["native"]["analysis"]["domain_spec"] = {"capacity": 1, "cost_version": 9}
+        self.write_stdout(delivered)
+        sample = self.collect()
+        self.assertTrue(sample["report_delivered"], sample["report_error"])
+        self.assertFalse(sample["policy_matches"])
+        delivered["postprocessing_work"] = 2_000_000_001
         self.write_stdout(delivered)
         self.assertFalse(self.collect()["report_delivered"])
 

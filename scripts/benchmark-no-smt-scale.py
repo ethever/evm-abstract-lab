@@ -282,6 +282,9 @@ def native_graphs(delivered):
     """Read fixed native CLI slots, without crossing graph or format namespaces."""
     if delivered["selected_view"] not in ("Baseline", "Native"):
         raise ValueError("unknown Hybrid selected view")
+    for field in ("work", "transfers"):
+        if type(delivered.get(field)) is not int or delivered[field] < 0:
+            raise ValueError(f"invalid Hybrid application {field}")
     graphs = {}
     for namespace, slot in (("Baseline", "global"), ("Native", "native")):
         wrapper = delivered[slot]
