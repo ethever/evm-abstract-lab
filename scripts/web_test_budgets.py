@@ -42,19 +42,24 @@ def budget_interactions(browser, url: str, output: Path):
         response = route.fetch()
         envelope = response.json()
         report = job_result_report(envelope)
+        rewritten = False
         for namespace in ["Baseline", "Native"]:
             selected = graph(report, namespace)
             if selected is not None:
                 metadata = selected["metadata"]
                 assert "max_work" not in metadata["export_limits"], metadata
                 metadata["export_usage"]["work"] = reported_export_work
+                rewritten = True
+        # Minimum export usage is paid and bounded by its actual application
+        # allowance. This u64 control edits only informational rich counters.
         # The intercepted body was decoded before editing. Do not label the
         # replacement plain JSON with the upstream response's content coding.
         headers = dict(response.headers)
         headers.pop("content-encoding", None)
         headers.pop("content-length", None)
         route.fulfill(status=response.status, headers=headers, body=json.dumps(envelope))
-        decoded_export_work.append(reported_export_work)
+        if rewritten:
+            decoded_export_work.append(reported_export_work)
 
     page.route("**/api/tasks/*/result", large_export_work)
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")

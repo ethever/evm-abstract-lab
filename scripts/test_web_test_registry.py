@@ -288,6 +288,7 @@ class ReportWireTests(unittest.TestCase):
         # IDs are sparse and shared, so array-position lookups cannot pass.
         return {
             "schema_version": 21, "selected_view": "Baseline", "status": "Converged",
+            "minimum": None, "rich_export": "Complete",
             "hybrid": {"coverage": {"baseline_current": True}},
             "programs": [{"id": 91, "blocks": [{"id": 12, "instructions": [{"pc": 40}]}]},
                          {"id": 7, "blocks": [{"id": 3, "instructions": [{"pc": 5}]}]}],
@@ -298,7 +299,7 @@ class ReportWireTests(unittest.TestCase):
         }
 
     def publication(self):
-        return {"version": "9007199254740997", "global_version": "9007199254740993",
+        return {"version": "9007199254740997", "minimum_version": None, "global_version": "9007199254740993",
                 "native_version": "9007199254740997", "model_closed": True}
 
     def test_graph_selection_borrows_sources_without_combining_namespaces(self):
@@ -380,6 +381,120 @@ class ReportWireTests(unittest.TestCase):
         for name, envelope in malformed:
             with self.subTest(name=name), self.assertRaises(AssertionError):
                 job_result_report(envelope)
+
+    def minimum_publication(self):
+        # Only the transport-visible minimum qualification is under test here;
+        # complete numerical/control admission belongs to Rust report validation.
+        report = self.report()
+        report.update({"global": None, "native": None, "rich_export": "NotRequested",
+                       "minimum": {"namespace": "Baseline", "status": "Converged", "current": True,
+                                   "revision": "0"}})
+        publication = {**self.publication(), "version": "9007199254740993",
+                       "minimum_version": "9007199254740993", "global_version": None,
+                       "native_version": None}
+        return {"result": {"Ok": {"id": 42, "publication": publication, "report": report}}}
+
+    def test_minimum_publication_keeps_identity_separate_from_optional_richness(self):
+        from web_test_hybrid import graph, job_result_report, namespace_available, oracle_graph
+        early = self.minimum_publication()
+        minimum = early["result"]["Ok"]["report"]["minimum"]
+        report = job_result_report(early)
+        self.assertIs(report["minimum"], minimum)
+        self.assertEqual(minimum["revision"], "0")
+        self.assertTrue(namespace_available(report, "Baseline"))
+        self.assertFalse(namespace_available(report, "Native"))
+        self.assertIsNone(graph(report, "Baseline"))
+        self.assertIsNone(oracle_graph(report, "Native"))
+        refusal = {"Refused": {"code": "Export", "message": "typed projection depth control",
+            "details": {"Export": {"kind": "Depth", "required": 3,
+                "limits": {"max_nodes": 100, "max_depth": 2, "max_exact_bytes": 100},
+                "usage": {"nodes": 2, "exact_bytes": 0, "work": 10}, "written": None}}}}
+        for outcome in [refusal, "Cancelled"]:
+            final = deepcopy(early)
+            final["result"]["Ok"]["publication"]["version"] = "9007199254740997"
+            final["result"]["Ok"]["report"]["rich_export"] = outcome
+            with self.subTest(outcome=outcome):
+                retained = job_result_report(final)
+                self.assertEqual(retained["minimum"], minimum)
+                self.assertTrue(final["result"]["Ok"]["publication"]["model_closed"])
+                self.assertEqual(final["result"]["Ok"]["publication"]["minimum_version"],
+                                 early["result"]["Ok"]["publication"]["minimum_version"])
+        rich = self.report()
+        rich["minimum"] = minimum
+        final = {"result": {"Ok": {"id": 42, "publication": {
+            **self.publication(), "minimum_version": "9007199254740993",
+            "global_version": "9007199254740997"}, "report": rich}}}
+        self.assertEqual(job_result_report(final)["minimum"], minimum)
+        self.assertEqual(final["result"]["Ok"]["publication"]["global_version"], "9007199254740997")
+
+    def test_minimum_profile_rejects_missing_mixed_and_noncanonical_identity(self):
+        from web_test_hybrid import job_result_report
+        valid = self.minimum_publication()
+        for field, value in [("minimum_version", None), ("minimum_version", 9007199254740993),
+                             ("minimum_version", "09007199254740993"), ("minimum_version", "0"),
+                             ("minimum_version", "9007199254740994"), ("global_version", "1"),
+                             ("native_version", "1")]:
+            invalid = deepcopy(valid)
+            invalid["result"]["Ok"]["publication"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(AssertionError):
+                job_result_report(invalid)
+        for field, value in [("minimum", None), ("selected_view", "Native"), ("selected_view", "Global"),
+                             ("rich_export", "Unknown"), ("rich_export", {"Complete": None}),
+                             ("rich_export", {"Refused": {}, "Cancelled": None}),
+                             ("rich_export", {"Refused": None}), ("rich_export", {"Refused": {}}),
+                             ("rich_export", None), ("rich_export", True), ("rich_export", [])]:
+            invalid = deepcopy(valid)
+            invalid["result"]["Ok"]["report"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(AssertionError):
+                job_result_report(invalid)
+        invalid = deepcopy(valid)
+        invalid["result"]["Ok"]["report"]["minimum"]["namespace"] = "Native"
+        with self.assertRaises(AssertionError):
+            job_result_report(invalid)
+        old_grammar = deepcopy(valid)
+        del old_grammar["result"]["Ok"]["publication"]["minimum_version"]
+        with self.assertRaises(AssertionError):
+            job_result_report(old_grammar)
+
+    def test_pure_native_publication_has_no_minimum_or_global_version(self):
+        from web_test_hybrid import job_result_report
+        report = self.report()
+        report.update({"global": None, "hybrid": None, "selected_view": "Native"})
+        report["native"]["status"] = "Converged"
+        publication = {**self.publication(), "global_version": None}
+        envelope = {"result": {"Ok": {"id": 42, "publication": publication, "report": report}}}
+        self.assertIs(job_result_report(envelope), report)
+
+    def test_model_closed_includes_minimum_currentness_independently_of_rich_export(self):
+        from web_test_hybrid import job_result_report
+        report = self.minimum_publication()
+        result = report["result"]["Ok"]
+        result["report"]["minimum"]["current"] = False
+        with self.assertRaises(AssertionError):
+            job_result_report(report)
+        result["publication"]["model_closed"] = False
+        self.assertIs(job_result_report(report), result["report"])
+
+    def test_minimum_transport_timings_allow_no_ssa_without_relaxing_native_or_phase_totals(self):
+        fake_playwright = ModuleType("playwright.sync_api")
+        fake_playwright.expect = Mock()
+        specification = importlib.util.spec_from_file_location(
+            "minimum_timing_harness", SOURCE_ROOT / "scripts/web_test_harness.py")
+        harness = importlib.util.module_from_spec(specification)
+        with patch.dict(sys.modules, {"playwright.sync_api": fake_playwright}):
+            specification.loader.exec_module(harness)
+        report = self.minimum_publication()["result"]["Ok"]["report"]
+        report["timings"] = {"queue_ns": 7, "processing_ns": 11, "validating_ns": 1,
+                             "pinning_ns": 0, "acquiring_ns": 2, "analyzing_ns": 5,
+                             "building_ssa_ns": 0, "projecting_ns": 3}
+        self.assertIs(harness.measured_backend_timings(report, require_ssa=False), report["timings"])
+        with self.assertRaises(AssertionError):
+            harness.measured_backend_timings(report)
+        with self.assertRaises(AssertionError):
+            harness.measured_backend_timings(report, require_ssa=True)
+        report["timings"]["processing_ns"] = 12
+        with self.assertRaises(AssertionError):
+            harness.measured_backend_timings(report, require_ssa=False)
 
 
 if __name__ == "__main__":

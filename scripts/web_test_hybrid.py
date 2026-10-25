@@ -10,6 +10,12 @@ def graph(report, namespace):
     return report[{"Baseline": "global", "Native": "native"}[namespace]]
 
 
+def namespace_available(report, namespace):
+    if namespace == "Baseline" and report["minimum"] is not None:
+        return report["minimum"]["namespace"] == "Baseline"
+    return graph(report, namespace) is not None
+
+
 def source_program(report, program_id):
     matches = [item for item in report["programs"] if item["id"] == program_id]
     assert len(matches) == 1, (program_id, len(matches))
@@ -66,8 +72,8 @@ def job_result_report(envelope, *, job_id=None, publication=None):
         assert result["id"] == job_id, (result["id"], job_id)
     identity = result["publication"]
     assert type(identity) is dict
-    assert set(identity) == {"version", "global_version", "native_version", "model_closed"}, identity
-    for name in ["version", "global_version", "native_version"]:
+    assert set(identity) == {"version", "minimum_version", "global_version", "native_version", "model_closed"}, identity
+    for name in ["version", "minimum_version", "global_version", "native_version"]:
         value = identity[name]
         if name != "version" and value is None:
             continue
@@ -77,13 +83,30 @@ def job_result_report(envelope, *, job_id=None, publication=None):
     if publication is not None:
         assert identity == publication, (identity, publication)
     report = result["report"]
+    minimum = report["minimum"]
+    assert (identity["minimum_version"] is not None) == (minimum is not None), identity
+    if minimum is not None:
+        assert type(minimum) is dict
+        assert minimum["namespace"] == "Baseline", minimum["namespace"]
+        assert type(minimum["current"]) is bool
+        assert minimum["status"] in {"Converged", "Incomplete"}
     assert (identity["global_version"] is not None) == (report["global"] is not None), identity
     assert (identity["native_version"] is not None) == (report["native"] is not None), identity
+    rich_export = report["rich_export"]
+    if type(rich_export) is str:
+        assert rich_export in {"NotRequested", "Complete", "Cancelled"}, rich_export
+    else:
+        assert type(rich_export) is dict and set(rich_export) == {"Refused"}
+        error = rich_export["Refused"]
+        assert type(error) is dict and set(error) == {"code", "message", "details"}
+        assert type(error["code"]) is str and type(error["message"]) is str
     assert type(identity["model_closed"]) is bool
     closed = report["status"] == "Converged" and (report["hybrid"] is None
                                                  or report["hybrid"]["coverage"]["baseline_current"])
+    closed = closed and (minimum is None or (minimum["current"] and minimum["status"] == "Converged"))
     assert identity["model_closed"] == closed, identity
-    assert graph(report, report["selected_view"]) is not None, report["selected_view"]
+    assert report["selected_view"] in {"Baseline", "Native"}, report["selected_view"]
+    assert namespace_available(report, report["selected_view"]), report["selected_view"]
     return report
 
 

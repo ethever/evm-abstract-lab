@@ -9,7 +9,7 @@ import re
 import selectors
 import subprocess
 import time
-from web_test_hybrid import graph, job_result_report
+from web_test_hybrid import job_result_report, namespace_available
 
 
 _browser_errors = ContextVar("browser_acceptance_errors", default=None)
@@ -55,12 +55,15 @@ def server_url(process: subprocess.Popen[str]) -> str:
     raise RuntimeError("server did not report its bound loopback URL")
 
 @contextmanager
-def analysis_server(args, rpc_config: Path | str | None = None, *, workers: int | None = None):
+def analysis_server(args, rpc_config: Path | str | None = None, *, workers: int | None = None,
+                    postprocess_work: int | None = None):
     command = [args.server, "--assets", args.assets, "--bind", "127.0.0.1:0"]
     if workers is not None:
         command.extend(["--workers", str(workers), "--queue-capacity", str(workers * 2)])
     if rpc_config is not None:
         command.extend(["--rpc-config", str(rpc_config)])
+    if postprocess_work is not None:
+        command.extend(["--postprocess-work", str(postprocess_work)])
     process = subprocess.Popen(command, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, bufsize=1)
     try:
@@ -103,19 +106,21 @@ class AnalysisResponse:
 TIMING_PHASES = ("validating_ns", "pinning_ns", "acquiring_ns", "analyzing_ns",
                  "building_ssa_ns", "projecting_ns")
 
-def measured_backend_timings(report):
+def measured_backend_timings(report, *, require_ssa=True):
     timing = report["timings"]
     assert set(timing) == {"queue_ns", "processing_ns", *TIMING_PHASES}, timing
     assert all(type(value) is int and value >= 0 for value in timing.values()), timing
     assert sum(timing[field] for field in TIMING_PHASES) == timing["processing_ns"], timing
     assert timing["processing_ns"] > 0, timing
-    assert timing["analyzing_ns"] > 0 and timing["building_ssa_ns"] > 0, timing
+    assert timing["analyzing_ns"] > 0, timing
+    if require_ssa:
+        assert timing["building_ssa_ns"] > 0, timing
     assert timing["projecting_ns"] > 0, timing
     return timing
 
 def select_report_namespace(page, report, namespace):
     """Use the real selector before following IDs in a particular graph."""
-    assert graph(report, namespace) is not None, namespace
+    assert namespace_available(report, namespace), namespace
     if report["hybrid"] is not None:
         label, x = {"Baseline": ("Global model", 50), "Native": ("Detailed paths", 148)}[namespace]
         status = page.locator("#analysis-status")
@@ -142,7 +147,7 @@ def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=
             assert result.ok, result.text()
             envelope = json.loads(result.text())
             report = job_result_report(envelope, job_id=job_id, publication=job["publication"])
-            timing = measured_backend_timings(report)
+            timing = measured_backend_timings(report, require_ssa=namespace == "Native")
             assert timing == job["timings"], "report and completed job disagree on measured time"
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=timeout_seconds * 1000)
             expect(page.locator("#analysis-status")).to_contain_text(
