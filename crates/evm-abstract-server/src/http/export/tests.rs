@@ -48,10 +48,7 @@ fn actual_report_encoding_exceeds_64_mib_and_cancellation_retains_cached_facts()
     let retained = source.clone();
     // Enlarge only a presentation annotation, retaining the analyzed numeric
     // facts, graph, exact payload and their original export limits/usage.
-    source
-        .global
-        .as_mut()
-        .unwrap()
+    std::sync::Arc::make_mut(source.global.as_mut().unwrap())
         .metadata
         .environment
         .call_value
@@ -90,10 +87,7 @@ fn actual_report_encoding_exceeds_64_mib_and_cancellation_retains_cached_facts()
         source.selected_graph().unwrap().metadata.export_usage
     );
     let annotation = std::mem::replace(
-        &mut source
-            .global
-            .as_mut()
-            .unwrap()
+        &mut std::sync::Arc::make_mut(source.global.as_mut().unwrap())
             .metadata
             .environment
             .call_value

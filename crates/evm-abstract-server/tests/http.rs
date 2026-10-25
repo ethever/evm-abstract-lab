@@ -175,7 +175,14 @@ fn real_transport_roundtrip_returns_structured_analysis() {
         .graph(evm_abstract_protocol::AnalysisNamespace::Native)
         .unwrap();
     assert!(!hybrid.local_prefixes.is_empty());
-    assert_eq!(detail.disassembly[0].instructions[2].name, "ADD");
+    assert_eq!(
+        report
+            .disassembly(evm_abstract_protocol::AnalysisNamespace::Native)
+            .unwrap()[0]
+            .instructions[2]
+            .name,
+        "ADD"
+    );
     assert_eq!(detail.ssa.blocks[0].instructions[2].operands.len(), 2);
     pool.shutdown().unwrap();
 }

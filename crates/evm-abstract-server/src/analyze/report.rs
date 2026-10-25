@@ -5,7 +5,7 @@ mod environment;
 pub(super) mod hybrid;
 mod summaries;
 mod terminal;
-use super::{checkpoint, mapping, pools::Pools, rpc, ssa, value};
+use super::{checkpoint, mapping, pools::Pools, ssa, value};
 use evm_abstract::{
     analysis::{self, control::Control, progress::Phase},
     domain::{EvmNumericAlgebra, ValueAlgebra, WordElement},
@@ -13,6 +13,57 @@ use evm_abstract::{
     world::{EvmStore, SnapshotIdentity},
 };
 use evm_abstract_protocol as api;
+use std::sync::Arc;
+
+/// Frozen application inputs shared by both namespace projections.
+#[derive(Clone, Copy)]
+pub(in crate::analyze) struct ProjectionInput<'a> {
+    pub request: &'a api::AnalyzeRequest,
+    pub scope: api::AnalysisScope,
+    pub numeric_model: api::NumericModel,
+}
+
+/// Reuse is admitted by the publisher's exact ModelHandle identity. These
+/// structural guards additionally reject a seed from another input or policy.
+/// Cloning catalog handles preserves all assigned IDs without copying instructions.
+fn project_global<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    native: &analysis::EvmWorldAnalysis<N>,
+    algebra: &ValueAlgebra<D>,
+    control: &Control,
+    budget: &mut WorkBudget,
+    input: ProjectionInput<'_>,
+    retained: Option<&api::AnalysisReport>,
+) -> Result<(Arc<api::AnalysisGraph>, Vec<Arc<api::ProgramInfo>>), api::ApiError> {
+    checkpoint(control)?;
+    let Some(retained) = retained else {
+        let (graph, programs) = project_graph(native, algebra, control, budget, input, Vec::new())?;
+        return Ok((Arc::new(graph), programs));
+    };
+    let invalid = || api::ApiError {
+        code: api::ApiErrorCode::Internal,
+        message: "retained Global projection has a different input".into(),
+        details: api::ErrorDetails::Report(api::ReportValidationFailure::Hybrid(
+            api::HybridValidationKind::Source,
+        )),
+    };
+    let graph = retained.global.as_ref().ok_or_else(invalid)?;
+    if retained.schema_version != api::SCHEMA_VERSION
+        || graph.metadata.source_snapshot != hybrid::snapshot(native.snapshot())?
+        || graph.metadata.revision != api::DecimalU64(native.revision().value())
+        || graph.metadata.root_binding != mapping::root_binding(native.root_binding())
+        || graph.metadata.limits != input.request.limits
+        || graph.fork != input.request.fork
+        || graph.scope != input.scope
+    {
+        return Err(invalid());
+    }
+    if !budget.charge(retained.programs.len().saturating_add(1)) {
+        return Err(ssa::errors::convert(evm_abstract::ssa::SsaError::Work));
+    }
+    let programs = retained.programs.iter().map(Arc::clone).collect();
+    checkpoint(control)?;
+    Ok((Arc::clone(graph), programs))
+}
 
 #[cfg(any(test, feature = "capture-replay"))]
 pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
@@ -47,12 +98,14 @@ pub(in crate::analyze) fn with_budget<N: WordElement, D: EvmNumericAlgebra<Eleme
 ) -> Result<api::AnalysisReport, api::ApiError> {
     let (graph, programs) = project_graph(
         native,
-        request,
-        scope,
         algebra,
-        numeric_model,
         control,
         postprocessing,
+        ProjectionInput {
+            request,
+            scope,
+            numeric_model,
+        },
         Vec::new(),
     )?;
     Ok(api::AnalysisReport {
@@ -63,9 +116,10 @@ pub(in crate::analyze) fn with_budget<N: WordElement, D: EvmNumericAlgebra<Eleme
         transfers: graph.transfers,
         postprocessing_work: postprocessing.used() as u64,
         timings: api::AnalysisTimings::default(),
+        acquisition: native.rpc_acquisition().map(super::rpc::acquisition),
         programs,
         global: None,
-        native: Some(Box::new(graph)),
+        native: Some(Arc::new(graph)),
         hybrid: None,
     })
 }
@@ -74,14 +128,17 @@ pub(in crate::analyze) fn with_budget<N: WordElement, D: EvmNumericAlgebra<Eleme
 /// Graph-local numerical pools are deliberately independent.
 fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     native: &analysis::EvmWorldAnalysis<N>,
-    request: &api::AnalyzeRequest,
-    scope: api::AnalysisScope,
     algebra: &ValueAlgebra<D>,
-    numeric_model: api::NumericModel,
     control: &Control,
     postprocessing: &mut WorkBudget,
-    programs: Vec<api::ProgramInfo>,
-) -> Result<(api::AnalysisGraph, Vec<api::ProgramInfo>), api::ApiError> {
+    input: ProjectionInput<'_>,
+    programs: Vec<std::sync::Arc<api::ProgramInfo>>,
+) -> Result<(api::AnalysisGraph, Vec<std::sync::Arc<api::ProgramInfo>>), api::ApiError> {
+    let ProjectionInput {
+        request,
+        scope,
+        numeric_model,
+    } = input;
     let initial_work = postprocessing.used();
     checkpoint(control)?;
     // The request's Control.scope covers this ledger and every native output
@@ -368,7 +425,6 @@ fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         outcomes,
         root_terminal_coverage,
         abstract_summaries,
-        acquisition: native.rpc_acquisition().map(rpc::acquisition),
     };
     checkpoint(control)?;
     Ok((report, pools.programs))

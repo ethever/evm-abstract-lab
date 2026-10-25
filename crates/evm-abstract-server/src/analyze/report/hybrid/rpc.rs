@@ -1,5 +1,5 @@
 //! RPC preserves its original upper bound and the last useful native revision.
-use super::{api, coverage, prefixes, snapshot};
+use super::{ProjectionInput, api, coverage, prefixes, snapshot};
 use crate::analyze::{checkpoint, errors, rpc as evidence};
 use evm_abstract::{
     analysis::{self, control::Control},
@@ -32,6 +32,32 @@ pub(in crate::analyze) fn project_with_budget<N: WordElement, D: EvmNumericAlgeb
     numeric_model: api::NumericModel,
     control: &Control,
     budget: &mut WorkBudget,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    project_with_retained_global(
+        source,
+        algebra,
+        control,
+        budget,
+        ProjectionInput {
+            request,
+            scope: api::AnalysisScope::RpcWorld,
+            numeric_model,
+        },
+        None,
+    )
+}
+
+/// Reuse only a publication admitted by exact immutable producer identity.
+pub(in crate::analyze) fn project_with_retained_global<
+    N: WordElement,
+    D: EvmNumericAlgebra<Element = N>,
+>(
+    source: analysis::RpcHybridAnalysis<N>,
+    algebra: &ValueAlgebra<D>,
+    control: &Control,
+    budget: &mut WorkBudget,
+    input: ProjectionInput<'_>,
+    retained: Option<&api::AnalysisReport>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     // Project borrowed execution evidence before into_parts moves the graphs.
     let local_prefixes = source
@@ -108,34 +134,23 @@ pub(in crate::analyze) fn project_with_budget<N: WordElement, D: EvmNumericAlgeb
     let native = latest
         .and_then(|report| report.into_parts().1)
         .or_else(|| retained_detail.and_then(|report| report.into_parts().1));
-    let (mut global, mut programs) = super::super::project_graph(
-        &baseline,
-        request,
-        api::AnalysisScope::RpcWorld,
-        algebra,
-        numeric_model,
-        control,
-        budget,
-        Vec::new(),
-    )?;
+    let (global, mut programs) =
+        super::super::project_global(&baseline, algebra, control, budget, input, retained)?;
     let detail = native
         .as_ref()
         .map(|native| {
             let (graph, catalog) = super::super::project_graph(
                 native,
-                request,
-                api::AnalysisScope::RpcWorld,
                 algebra,
-                numeric_model,
                 control,
                 budget,
+                input,
                 std::mem::take(&mut programs),
             )?;
             programs = catalog;
             Ok::<_, api::ApiError>(graph)
         })
         .transpose()?;
-    global.acquisition = Some(rpc.acquisition.clone());
     let report = api::AnalysisReport {
         schema_version: api::SCHEMA_VERSION,
         selected_view: api::AnalysisNamespace::Baseline,
@@ -147,9 +162,10 @@ pub(in crate::analyze) fn project_with_budget<N: WordElement, D: EvmNumericAlgeb
         transfers: rpc.transfers,
         postprocessing_work: budget.used() as u64,
         timings: api::AnalysisTimings::default(),
+        acquisition: Some(rpc.acquisition.clone()),
         programs,
-        global: Some(Box::new(global)),
-        native: detail.map(Box::new),
+        global: Some(global),
+        native: detail.map(std::sync::Arc::new),
         hybrid: Some(api::HybridReport {
             coverage: original,
             local_prefixes,

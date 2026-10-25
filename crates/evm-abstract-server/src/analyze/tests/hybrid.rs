@@ -288,7 +288,8 @@ fn failed_baseline_spends_no_precision_and_cancelled_default_publishes_no_report
     );
     report.validate().unwrap();
     let mut forged = report.clone();
-    forged.programs[program.id].code_address = Some(binding.coordinate.clone());
+    std::sync::Arc::make_mut(&mut forged.programs[program.id]).code_address =
+        Some(binding.coordinate.clone());
     assert_eq!(
         forged.validate(),
         Err(api::ReportValidationFailure::Process(
