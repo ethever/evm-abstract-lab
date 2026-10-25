@@ -124,7 +124,7 @@ fn symbolic_word_byte_overlay_keeps_history_and_concrete_guard_witnesses() {
         assert!(!reachable(&exact, ROOT, fixture.labels["bad_history"]));
         return_words(&exact, &[7]);
         let observed = super::oracle::compare(&world, &input, &exact);
-        assert_eq!(observed.output, U256::from(7).to_be_bytes::<32>());
+        assert_eq!(observed.data, U256::from(7).to_be_bytes::<32>());
         super::oracle::compare(&world, &input, &analysis);
     }
 }

@@ -167,10 +167,10 @@ fn borrowed_operand_key_groups_different_histories_without_losing_concrete_tuple
     crossed
         .storage
         .insert((address(ROOT), U256::ZERO), U256::from(22));
-    assert!(!crossed.covered_by(&structural));
+    assert!(!crossed.is_covered(&structural));
     let mut wrong_balance = witnesses[1].clone();
     *wrong_balance.balances.get_mut(&address(ROOT)).unwrap() += U256::ONE;
-    assert!(!wrong_balance.covered_by(&structural));
+    assert!(!wrong_balance.is_covered(&structural));
     let path = |n| {
         structural
             .states()

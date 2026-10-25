@@ -198,7 +198,7 @@ fn summary_reuse_observes_current_storage_without_rewriting_the_previous_return(
         return_words(&analysis, &[0, 9]);
         no_bad_branch(&analysis, &root, ROOT);
         assert_eq!(
-            super::oracle::compare(&world, &entry, &analysis).output,
+            super::oracle::compare(&world, &entry, &analysis).data,
             U256::from(9).to_be_bytes::<32>()
         );
     }

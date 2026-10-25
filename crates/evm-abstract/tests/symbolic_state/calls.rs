@@ -87,7 +87,7 @@ fn all_call_kinds_keep_code_state_caller_value_input_and_private_memory() {
                 .iter()
                 .flat_map(|word| word.to_be_bytes::<32>())
                 .collect();
-            assert_eq!(concrete.output, bytes, "fork={fork}, opcode={op:#x}");
+            assert_eq!(concrete.data, bytes, "fork={fork}, opcode={op:#x}");
             let successes: Vec<_> = analysis
                 .outcomes()
                 .iter()
@@ -215,7 +215,7 @@ fn static_callcode(writes: bool, insufficient: bool) {
             [9, 1]
         };
         assert_eq!(
-            concrete.output,
+            concrete.data,
             expected
                 .into_iter()
                 .flat_map(|n| U256::from(n).to_be_bytes::<32>())
