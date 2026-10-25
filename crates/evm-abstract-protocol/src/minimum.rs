@@ -97,7 +97,7 @@ record! {
         /// Source/owner/static qualifications and real MAY control/call-return.
         pub relation: crate::AbstractSummary,
         /// Same order and length as relation.procedures.
-        pub bounds: Vec<MinimumProcedureBounds>,
+        pub bounds: std::sync::Arc<Vec<MinimumProcedureBounds>>,
     }
 }
 record! {
@@ -145,6 +145,9 @@ record! {
 }
 record! {
     /// Funded minimum, independently usable while rich graphs are unavailable.
+    /// These read-only numerical bounds belong to the qualified library model;
+    /// they do not express every symbolic correlation or form an executable seed
+    /// or a separately solved fixed point. Outcome associations remain joint.
     pub struct MinimumModel {
         /// Graph namespace; MAY control is never Native SSA execution evidence.
         pub namespace: crate::AnalysisNamespace,
@@ -172,10 +175,16 @@ record! {
         pub config: crate::RootTerminalConfig,
         /// Selected numerical carrier.
         pub numeric_model: crate::NumericModel,
+        /// Actual numerical policy captured by the immutable library model.
+        pub domain_spec: crate::RootTerminalDomainSpec,
         /// Effective original root inputs, not a narrowed precision input.
         pub environment: MinimumEnvironment,
+        /// Original World observations, distinct from joined procedure invariants.
+        pub accounts: Vec<MinimumInputAccount>,
         /// Source-qualified relations and canonical numerical input/outputs.
         pub summaries: Vec<MinimumSummary>,
+        /// Actual independent application allowance funding this publication.
+        pub postprocessing_max_work: u64,
         /// Bounds applied to this mandatory projection.
         pub export_limits: crate::ExportLimits,
         /// Actual projection usage charged before publication.

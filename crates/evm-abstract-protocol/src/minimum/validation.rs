@@ -125,6 +125,16 @@ impl MinimumModel {
         if self.current && self.status != crate::AnalysisStatus::Converged {
             return Err(MinimumValidationKind::Closure);
         }
+        if self.current
+            && !self.summaries.iter().any(|summary| {
+                summary.relation.source_current
+                    && summary.relation.closed
+                    && summary.relation.root_procedure.is_some()
+                    && !summary.relation.regional_cfg.nodes.is_empty()
+            })
+        {
+            return Err(MinimumValidationKind::Closure);
+        }
         if self.export_usage.nodes > self.export_limits.max_nodes
             || self.export_usage.exact_bytes > self.export_limits.max_exact_bytes
         {
@@ -146,6 +156,24 @@ impl MinimumModel {
             scalar(value)?;
         }
         bytes(&env.calldata)?;
+        unique(self.accounts.iter().map(|account| &account.address))?;
+        for account in &self.accounts {
+            if account.root_template
+                != matches!(&self.root_binding,
+                crate::RootInputBinding::Namespace(root) if root.coordinate == account.address)
+                || (account.code_kind == crate::CodeKind::Runtime) != account.program.is_some()
+                || (account.code_kind == crate::CodeKind::Delegation)
+                    != account.delegation_target.is_some()
+            {
+                return Err(MinimumValidationKind::Source);
+            }
+            scalar(&account.balance)?;
+            scalar(&account.nonce)?;
+            unique(account.storage.iter().map(|slot| &slot.slot))?;
+            for slot in &account.storage {
+                scalar(&slot.value)?;
+            }
+        }
         for summary in &self.summaries {
             let relation = &summary.relation;
             if relation.procedures.len() != summary.bounds.len()
@@ -160,7 +188,7 @@ impl MinimumModel {
             {
                 return Err(MinimumValidationKind::Closure);
             }
-            for (procedure, bounds) in relation.procedures.iter().zip(&summary.bounds) {
+            for (procedure, bounds) in relation.procedures.iter().zip(summary.bounds.iter()) {
                 if let Some(process) = &procedure.process {
                     if process.source.fork() != self.fork
                         || process.source.semantics() != procedure.semantics

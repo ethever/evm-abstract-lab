@@ -60,6 +60,11 @@ impl WorkBudget {
     pub fn used(&self) -> usize {
         self.consumed
     }
+    /// Active admission ceiling on this existing ledger, without clearing
+    /// refusal, changing cancellation ownership or granting additional work.
+    pub fn limit(&self) -> usize {
+        self.maximum.min(self.ceiling)
+    }
 }
 
 #[cfg(test)]

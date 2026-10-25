@@ -295,6 +295,8 @@ record! {
         pub kind: ExportFailureKind,
         /// Required amount at rejection; cancellation records projection work
         /// or accepted JSON bytes when `written` is present.
+        /// A Work refusal uses zero when its native enclosing operation does
+        /// not expose the rejected quote.
         pub required: u64,
         /// Frozen export policy.
         pub limits: ExportLimits,

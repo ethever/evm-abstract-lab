@@ -1,6 +1,32 @@
 //! Canonical numerical payloads. Omitted coordinates use the declared default.
 
 record! {
+    /// Original World row; namespace root templates are explicitly qualified.
+    pub struct MinimumInputAccount {
+        /// Supplied input coordinate; root_template forbids physical-account use.
+        pub address: String,
+        /// This row supplies the original symbolic-owner root template.
+        pub root_template: bool,
+        /// Original presence observation, qualified by root_template.
+        pub existence: crate::AccountExistence,
+        /// Original balance bound.
+        pub balance: crate::ValueInfo,
+        /// Original nonce bound.
+        pub nonce: crate::ValueInfo,
+        /// Runtime, delegation, empty or unknown code observation.
+        pub code_kind: crate::CodeKind,
+        /// Exact original source in the shared catalog, when runtime is known.
+        pub program: Option<usize>,
+        /// Original implementation pointer, when delegated.
+        pub delegation_target: Option<String>,
+        /// True means unlisted initial slots are unknown; false means zero.
+        pub storage_unknown: bool,
+        /// Explicit original persistent-slot bounds, without private roots.
+        pub storage: Vec<crate::StorageEntry>,
+    }
+}
+
+record! {
     /// Numerical scalar at a physical owner.
     pub struct MinimumOwnerValue {
         /// Physical owner, after library alias projection.
