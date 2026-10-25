@@ -75,7 +75,7 @@ impl AnalysisReport {
             }
         }
         for summary in &minimum.summaries {
-            for row in &summary.bounds {
+            for row in summary.bounds.iter() {
                 self.minimum_store(minimum, &row.input)?;
                 for output in &row.outputs {
                     self.minimum_store(minimum, &output.store)?;

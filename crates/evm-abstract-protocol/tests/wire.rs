@@ -238,6 +238,7 @@ fn errors_and_job_states_roundtrip_without_invalid_optional_combinations() {
     ] {
         roundtrip(JobReply {
             result: Ok(JobSnapshot {
+                publication: None,
                 id: JobId(9_007_199_254_740_993),
                 state,
                 progress: AnalysisProgress::default(),
