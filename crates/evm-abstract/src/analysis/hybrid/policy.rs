@@ -19,6 +19,10 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+mod history;
+
+use history::HistoryRollback;
+
 pub(super) fn selected(regions: &[HybridRegion], frame: &FrameKey) -> bool {
     frame.mode == crate::analysis::FrameCode::Runtime
         && frame.process.is_none()
@@ -131,16 +135,17 @@ impl<P: crate::analysis::PartitionPolicy> crate::analysis::PartitionPolicy for P
 }
 
 impl<S> Selective<'_, S> {
+    fn census_work(&self, frames: usize) -> usize {
+        frames
+            .saturating_mul(self.regions.len().saturating_add(2))
+            .saturating_add(1)
+    }
     fn census<D: EvmNumericAlgebra>(
         &self,
         frames: usize,
         cx: &mut PolicyContext<'_, D>,
     ) -> Result<(), MachineError> {
-        cx.reserve(
-            frames
-                .saturating_mul(self.regions.len().saturating_add(2))
-                .saturating_add(1),
-        )
+        cx.reserve(self.census_work(frames))
     }
     fn erase(&self, frame: &mut FrameKey) {
         if !selected(self.regions, frame) {
@@ -210,7 +215,7 @@ where
     }
     fn prepare_owned(
         &self,
-        input: EvmMachinePayload<D::Element>,
+        mut input: EvmMachinePayload<D::Element>,
         site: PolicySite,
         class: Tag,
         cx: &mut PolicyContext<'_, D>,
@@ -218,43 +223,97 @@ where
         if let Err(error) = self.census(input.call_stack.depth(), cx) {
             return Err(PartitionRefusal { input, error });
         }
-        if !input
-            .call_stack
-            .iter()
-            .any(|frame| self.changes(&frame.key))
-        {
+        let mut rollback = match HistoryRollback::reserve(
+            input.call_stack.iter().map(|frame| &frame.key),
+            |frame| self.changes(frame),
+            self.census_work(input.call_stack.depth()),
+            cx,
+        ) {
+            Ok(rollback) => rollback,
+            Err(error) => return Err(PartitionRefusal { input, error }),
+        };
+        if rollback.is_empty() {
             return self.inner.prepare_owned(input, site, class, cx);
         }
-        self.prepare(&input, site, class, cx)
-            .map_err(|error| PartitionRefusal { input, error })
+        rollback.take(
+            input.call_stack.iter_mut().map(|frame| &mut frame.key),
+            |frame| self.changes(frame),
+        );
+        self.inner
+            .prepare_owned(input, site, class, cx)
+            .map_err(|mut refusal| {
+                // A lawful inner refusal returns precisely the input it was
+                // given. Only our moved histories differ from the obligation.
+                rollback.restore(
+                    refusal
+                        .input
+                        .call_stack
+                        .iter_mut()
+                        .map(|frame| &mut frame.key),
+                );
+                refusal
+            })
     }
     fn prepare_relative_owned(
         &self,
-        input: RelativeState<D::Element>,
+        mut input: RelativeState<D::Element>,
         site: PolicySite,
         class: Tag,
         cx: &mut PolicyContext<'_, D>,
     ) -> RelativePartitionResult<Self::Key, D::Element> {
-        if let Err(error) = self.census(
-            input
-                .frames
-                .len()
-                .saturating_add(input.location.frames.len()),
-            cx,
-        ) {
+        let frames = input
+            .frames
+            .len()
+            .saturating_add(input.location.frames.len());
+        if let Err(error) = self.census(frames, cx) {
             return Err(PartitionRefusal { input, error });
         }
-        if !input.frames.iter().any(|frame| self.changes(&frame.key))
-            && !input
-                .location
+        let mut rollback = match HistoryRollback::reserve(
+            input
                 .frames
                 .iter()
-                .any(|frame| self.changes(frame))
-        {
+                .map(|frame| &frame.key)
+                .chain(&input.location.frames),
+            |frame| self.changes(frame),
+            self.census_work(frames),
+            cx,
+        ) {
+            Ok(rollback) => rollback,
+            Err(error) => return Err(PartitionRefusal { input, error }),
+        };
+        if rollback.is_empty() {
             return self.inner.prepare_relative_owned(input, site, class, cx);
         }
-        self.prepare_relative(&input, site, class, cx)
-            .map_err(|error| PartitionRefusal { input, error })
+        rollback.take(
+            input
+                .frames
+                .iter_mut()
+                .map(|frame| &mut frame.key)
+                .chain(&mut input.location.frames),
+            |frame| self.changes(frame),
+        );
+        let original_work = input.work;
+        // measure_work includes frame histories once, but excludes location.
+        // Preserve a saturated bound: its unsaturated total is not available.
+        if input.work != usize::MAX {
+            input.work = input
+                .work
+                .saturating_sub(rollback.removed_before(input.frames.len()));
+        }
+        self.inner
+            .prepare_relative_owned(input, site, class, cx)
+            .map_err(|mut refusal| {
+                rollback.restore(
+                    refusal
+                        .input
+                        .frames
+                        .iter_mut()
+                        .map(|frame| &mut frame.key)
+                        .chain(&mut refusal.input.location.frames),
+                );
+                refusal.input.work = original_work;
+                refusal
+            })
     }
 }
 
