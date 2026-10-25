@@ -155,24 +155,32 @@ pub(super) fn run(code: &Fixture, config: ExecutionConfig) -> EvmWorldAnalysis<N
     .unwrap()
 }
 
-pub(super) fn callback<'a>(
-    analysis: &'a EvmWorldAnalysis<NumericValue>,
+pub(super) fn callback(
+    analysis: &EvmWorldAnalysis<NumericValue>,
     code: &Fixture,
-) -> &'a EvmProcedureSummary<NumericValue> {
+) -> EvmProcedureSummary<NumericValue> {
     let [record] = analysis.procedure_summaries() else {
         panic!("one unknown root relation required");
     };
     assert_eq!(record.kind, ProcedureSummaryKind::UnknownEnvironment);
     assert_eq!(record.closed, analysis.frontiers().is_empty());
-    let callbacks: Vec<_> = record
+    let report = record.materialize(
+        domain(analysis.config()).borrowed(),
+        &mut native::postprocessing(),
+    );
+    assert_eq!(
+        report.outcome,
+        evm_abstract::analysis::ProcedureReportOutcome::Complete
+    );
+    let mut callbacks: Vec<_> = report
         .procedures
-        .iter()
+        .into_iter()
         .filter(|procedure| {
             procedure.frame.address == address(B) && procedure.frame.code_address == address(B)
         })
         .collect();
     assert_eq!(callbacks.len(), 1);
-    let callback = callbacks[0];
+    let callback = callbacks.pop().unwrap();
     assert_eq!(callback.frame.mode, FrameCode::Runtime);
     assert!(!callback.frame.is_static);
     assert!(!callback.covered_blocks.is_empty());

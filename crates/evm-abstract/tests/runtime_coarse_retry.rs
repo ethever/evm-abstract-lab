@@ -39,7 +39,7 @@ fn runtime_return_retries_the_whole_callback_entry() {
         diagnostic.kind == DiagnosticKind::RelationalPrecisionLost(QueryReason::ExpressionLimit)
     }));
     let procedure = callback(&analysis, &code);
-    let output = only_output(procedure, OutcomeKind::Return);
+    let output = only_output(&procedure, OutcomeKind::Return);
     assert_eq!(
         output
             .store
@@ -105,7 +105,7 @@ fn runtime_revert_retries_with_rollback_and_exact_data() {
             .iter()
             .all(|output| output.kind != OutcomeKind::Return)
     );
-    let output = only_output(procedure, OutcomeKind::Revert);
+    let output = only_output(&procedure, OutcomeKind::Revert);
     let mut assignment = Assignment::default();
     assignment.exact_bytes(
         &output.data,
@@ -157,7 +157,7 @@ fn runtime_body_growth_stays_incomplete_and_preserves_legal_revert() {
             .all(|output| output.kind != OutcomeKind::Return)
     );
     // This is B's own feasible CALLVALUE != 0 exit, not U's arbitrary revert.
-    let output = only_output(procedure, OutcomeKind::Revert);
+    let output = only_output(&procedure, OutcomeKind::Revert);
     let mut joint = Assignment::default();
     joint.exact_bytes(
         &output.data,

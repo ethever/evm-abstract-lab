@@ -125,7 +125,11 @@ fn created_owner_unknown_delegate_selfdestruct_is_covered_or_has_explicit_creati
     {
         for output in &procedure.outputs {
             assert_eq!(
-                output.store.raw_account_code(destination),
+                output
+                    .store
+                    .instantiate(crate::native::product().borrowed())
+                    .unwrap()
+                    .raw_account_code(destination),
                 Some(child.bytes.clone()),
                 "code was deleted before transaction finalization: {}",
                 hex::encode(&child.bytes)

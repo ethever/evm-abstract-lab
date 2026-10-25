@@ -306,6 +306,8 @@ fn true_entries_support_multicaller_growth_and_distinct_body_policy_keys() {
                     |output| output.kind == evm_abstract::analysis::OutcomeKind::Return
                         && output
                             .data
+                            .instantiate(algebra.borrowed())
+                            .unwrap()
                             .read_word(&fixtures::word(0), algebra.borrowed())
                             .contains(U256::ONE)
                 )

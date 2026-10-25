@@ -162,6 +162,11 @@ CALL 返回后的第一个基本块按成功位 0 / 1 分开传播，随后恢�
 
 已知递归与未知交互都导出到 `procedure_summaries`，其中 `kind` 分别为 `KnownRecursion` 和 `UnknownEnvironment`；`root_procedure` 指明本次请求的入口。已知过程保持 Runtime 身份，并记录实际求解过的块。主图上的摘要返回表达调用效果，不生成一份虚构的完整逐层执行轨迹。`--no-summaries` 同样不会关闭已知递归内部的固定点求解。
 
+每次请求留存的是付费的最小语义模型：过程身份与逻辑调用参数、物理账户的输入／输出数值界、返回字节界、真实依赖，以及 regional transfer／return receipts。不可变行按 namespace、entry revision、实际 output-slot revision 和 source epoch 共享；每个输出还保留自己的 generation。未变化的表目录和 regional receipts 可以整体共享。行共享只表示数值载荷相同，不能替代 `source_current` 或 receipt 的 current 资格。`version.generation = 0` 表示没有成功留存模型。
+
+库中 `record.procedures` 的 `input`、`outputs[*].store` 和 `outputs[*].data` 是规范数值摘要，不会为报告自动重放整张表。`storage_bound(owner, slot)` 与 `code(owner)` 可以直接读取已经留存的物理存储界和代码事实。需要独立符号根的富表示时，显式调用 `record.materialize(domain, &mut postprocessing)`，读取其 `Complete`／`Refused(reason)` 与 `postprocess_work`；未请求时可用 `EvmProcedureReport::not_requested(record.version)` 表示。调用方应在各次展开间复用同一份后处理账本。富展开拒付不修改原模型、`closed`、`source_current` 或执行前沿，也不重置执行账本；必要的最小模型无法付费留存时，分析仍保留真实 frontier。
+
+
 ## 6. 怎样从报告读到这些区别
 
 混合入口先求全局过程关系，再按区域保留原生精度。其输入、闭合条件和两份图的关系见[全局模型与详细路径](20-global-and-local.md)。
