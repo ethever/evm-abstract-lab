@@ -49,13 +49,13 @@ Store 的 `finalize_transaction_checked` 路径负责 transient 清理、touch �
 
 代码账户、逻辑 ADDRESS 与物理 storage owner 必须分别读取。仅提交字节码而未提供地址时，逻辑 ADDRESS 仍可为符号 `To`；`RootInputBinding::Namespace` 将内部坐标明确标为输入模板。它不声明物理 owner。条件化 native 视图另记录额外的根地址条件及实际 Concrete To。当前账户的 code 若未知，不能从 original World 补回“已知 runtime”。捕获的正在执行的 program 与后续账户 code 效果是不同信息。
 
-wire 20 的 `input.config` 只保存执行预算，`input.domain_spec` 是实际代数捕获的数值与关系限制；`input.numeric_model` 另记录应用选择的 `Product` / `FiniteSet`。校验分别将预算、限制与模型同请求及报告 metadata 比较。模型标签不参与原生来源身份认证，不能仅凭相同标签认定两个数值策略等价。
+当前 Web 协议的 `input.config` 只保存执行预算，`input.domain_spec` 是实际代数捕获的数值与关系限制；`input.numeric_model` 另记录应用选择的 `Product` / `FiniteSet`。校验分别将预算、限制与模型同请求及报告 metadata 比较。模型标签不参与原生来源身份认证，不能仅凭相同标签认定两个数值策略等价。
 
 补事实会产生新 revision，并从入口建立新的执行与覆盖权威。snapshot、revision、source、输入、fork、环境或策略变化后，旧证书不能冒充新请求的证书；相同 hash、显示摘要或相同 offline label 都不足以授权复用。
 
 ## Store 的缺省字段也是语义
 
-wire 20 的普通 Store 与证书 Store 使用同一 `StoreSnapshot`。原字段继续保留，另有：
+当前 Web 协议的普通 Store 与证书 Store 使用同一 `StoreSnapshot`。原字段继续保留，另有：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -69,11 +69,11 @@ Return 的全效果包络可以没有显式账户：persistent、余额、nonce�
 
 ## wire 15 的身份迁移
 
-当前原生分析 schema 为 **15**，Web wire schema 为 **20**，域 schema 为 **3**，逻辑成本版本为 **8**。此前 native 10 / wire 15 新增可选覆盖记录；wire 15 还引入请求开关和上述 Store 字段，同时把 `InputIdentity.scope` 改为 `DecimalU64`。新 snapshot offline namespace、fact revision、input scope 也采用同一个类型。当前报告新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，与局部 `RoundLimit` 区分；cost 6 更新共享 kernel、规则和独立数值查询的逻辑收费。成本版本属于完整输入绑定与摘要策略，不能只替换版本号复用旧记录；跨成本版本的原始 work 不是同一单位。
+当前[原生分析 schema](../crates/evm-abstract/src/analysis.rs) 为 **16**，[Web wire schema](../crates/evm-abstract-protocol/src/lib.rs) 为 **21**，[域 schema 与逻辑成本版本](../crates/evm-abstract/src/domain/spec.rs)分别为 **3** 与 **9**。此前 native 10 / wire 15 新增可选覆盖记录；wire 15 还引入请求开关和上述 Store 字段，同时把 `InputIdentity.scope` 改为 `DecimalU64`。新 snapshot offline namespace、fact revision、input scope 也采用同一个类型。当前报告新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，与局部 `RoundLimit` 区分；cost 6 更新共享 kernel、规则和独立数值查询的逻辑收费。成本版本属于完整输入绑定与摘要策略，不能只替换版本号复用旧记录；跨成本版本的原始 work 不是同一单位。
 
 这些 opaque 身份只能编码为规范十进制**字符串**：`"0"`、`"9007199254740993"`、`"18446744073709551615"` 均有效。JSON number、空串、符号、空格、小数、指数、前导零（如 `"01"`）和超过 `u64::MAX` 的值必须拒绝。不要先经过 JavaScript `Number`，也不要为身份 alpha-renaming 丢失 namespace 的复用关系。状态/转移/work/耗时等统计计数仍保留原来的整数编码；此次迁移只改变这些 opaque identity 字段。
 
-共享类型严格检查必填字段和未知字段。当前客户端应构造完整 wire 20 请求，普通用户策略显式使用 `root_terminal_coverage: true`；复现旧基准策略时显式使用 `false`。旧 wire 14 报告还缺少 Store 默认项和字符串身份，不能只改版本号后安装。历史捕获报告、原始请求和基准 profile 继续按原版本保存。
+共享类型严格检查必填字段和未知字段。当前客户端应按 [Web 协议](../crates/evm-abstract-protocol/src/lib.rs)构造完整请求，普通用户策略显式使用 `root_terminal_coverage: true`；复现旧基准策略时显式使用 `false`。旧 wire 14 报告还缺少 Store 默认项和字符串身份，不能只改版本号后安装。历史捕获报告、原始请求和基准 profile 继续按原版本保存。
 
 ## 预算与验证范围
 

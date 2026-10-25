@@ -75,9 +75,9 @@ KECCAK 对同一完整内容保持同值。不同来源、不同地址、不同�
 
 ## 原生 JSON 15 与 Web 协议 20
 
-此前 Native 10 新增可选的原始根终止覆盖；wire 15 引入同一真实 data/store 池，并为普通 Store 也导出全局 unscoped `storage_root` / `transient_root`、nonce/code/existence/lifecycle 默认值。当前 Native 15 / wire 20 保留这些字段，新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason。`code_default: null` 是 Unknown；共用 base template 的不同 owner 不因此共享槽值。wire 的 `InputIdentity.scope`、offline namespace、revision 和 input scope 使用严格规范十进制 `DecimalU64` 字符串，完整保留 `u64::MAX`，统计计数不变。字段迁移、绑定与联合语义见[根终止覆盖](19-root-terminal-coverage.md)。
+此前 Native 10 新增可选的原始根终止覆盖；wire 15 引入同一真实 data/store 池，并为普通 Store 也导出全局 unscoped `storage_root` / `transient_root`、nonce/code/existence/lifecycle 默认值。当前原生格式与 Web 协议保留这些字段，新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason。`code_default: null` 是 Unknown；共用 base template 的不同 owner 不因此共享槽值。wire 的 `InputIdentity.scope`、offline namespace、revision 和 input scope 使用严格规范十进制 `DecimalU64` 字符串，完整保留 `u64::MAX`，统计计数不变。字段迁移、绑定与联合语义见[根终止覆盖](19-root-terminal-coverage.md)。
 
-Native analysis schema 为 15；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或局部表达式遍历超限。
+Native analysis schema 见[原生格式常量](../crates/evm-abstract/src/analysis.rs)；域策略自身的版本独立。原生 `expression`（原始 ExprId 序列化）、byte root、slot root 与 path 采用 flat graph：节点按依赖顺序排列，root 指向本图索引。消费者必须迁移，旧递归 JSON 没有隐式兼容。`GraphLimits::default()` 的序列化额度为 65,536 节点工作、深度 256、16 MiB exact payload。payload 单独计量，24 KiB 精确代码来源无需按每个 byte 消耗一个表达式节点。这与分析时库默认的 1024 节点额度不同；扩大导出额度不能修复此前的分析或局部表达式遍历超限。
 
 原生机器值只有 `.numeric` 必填；未知来源、空身份、无表达式与 false 标志可省略，实际非默认元数据仍保留。product 与 finite-set 的默认数值 Top 都写成空对象。product 仅省略 Top/false 组件，每个非默认组件仍完整保留。来源图的 `WordObservation` 使用独立观察编码；Web `ValueInfo` 是展示投影，不能用它替换实际载体的原生数据。
 
@@ -97,7 +97,7 @@ Web/server 的单份 `AnalysisReport.symbolic.nodes` 共享所有 scalar、byte�
 
 未知执行过程的闭合关系、摘要返回边与过程覆盖目录见[第 18 课](18-unknown-world.md)。关系表会显式进行数值投影，保留保守上界；这种投影与原有完整图摘要的身份重命名有不同精度边界。
 
-Native schema 15 与 Web schema 20 的 LOG 来源身份同时包含 emitter、code account、captured code hash、Init/Runtime 和 pc。初始化与部署后代码即使在同一地址和偏移发出 LOG，也保留不同来源；Web 日志面板按完整身份分开，展示捕获的代码 hash。Native `source_kind` 为 `init` / `runtime`，Web 共享枚举为 `Init` / `Runtime`。
+[原生格式](../crates/evm-abstract/src/analysis.rs)与 [Web 协议](../crates/evm-abstract-protocol/src/lib.rs)的 LOG 来源身份同时包含 emitter、code account、captured code hash、Init/Runtime 和 pc。初始化与部署后代码即使在同一地址和偏移发出 LOG，也保留不同来源；Web 日志面板按完整身份分开，展示捕获的代码 hash。Native `source_kind` 为 `init` / `runtime`，Web 共享枚举为 `Init` / `Runtime`。
 
 ## 验证边界与证据
 
