@@ -14,6 +14,7 @@ use crate::domain::{
     },
 };
 use alloy_primitives::U256;
+use serde::{Serialize, Serializer};
 use std::{collections::BTreeMap, sync::Arc};
 #[cfg(test)]
 use {crate::world::test_support::TestAlgebra, crate::world::test_support::TestValue};
@@ -109,11 +110,15 @@ pub(in crate::world) fn scalar_expression_work<N: WordElement>(value: &EvmValue<
     value.numeric().work_size().saturating_add(8)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 enum Content<N: WordElement = crate::domain::NumericValue> {
     Zero,
-    Exact(Arc<[u8]>),
+    Exact(#[serde(serialize_with = "serialize_exact")] Arc<[u8]>),
     Cells(BTreeMap<usize, EvmValue<N>>),
+}
+
+fn serialize_exact<S: Serializer>(bytes: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error> {
+    bytes.as_ref().serialize(serializer)
 }
 
 impl<N: WordElement> Content<N> {
@@ -149,7 +154,7 @@ impl<N: WordElement> Content<N> {
 
 /// Canonical byte/length upper bound used for procedure input and output joins.
 /// It contains no source identities, write history or caller path predicates.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EvmByteArraySummary<N: WordElement> {
     length: EvmValue<N>,
     memory: bool,

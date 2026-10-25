@@ -83,7 +83,12 @@ fn recursive_call_success_keeps_the_copied_output_separate_from_failure_memory()
         StorageReadPolicy::Abstract,
     );
     assert!(record.closed);
-    for procedure in record.procedures {
+    let report = record.materialize(domain, &mut WorkBudget::new(100_000_000));
+    assert_eq!(
+        report.outcome,
+        crate::analysis::ProcedureReportOutcome::Complete
+    );
+    for procedure in report.procedures {
         for output in procedure
             .outputs
             .into_iter()

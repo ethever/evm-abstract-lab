@@ -1,5 +1,7 @@
 //! Known bytecode retains its semantics when a repeated entry becomes relative.
 
+use crate::resource::WorkBudget;
+
 #[cfg(test)]
 use crate::analysis::testing::{Account, Entry, World};
 
@@ -436,7 +438,12 @@ fn recursive_procedure_keeps_private_return_pcs_finite_at_an_acyclic_helper() {
         assert!(!result.procedure_summaries().is_empty());
         for record in result.procedure_summaries() {
             assert!(record.closed);
-            for procedure in &record.procedures {
+            let report = record.materialize(domain, &mut WorkBudget::new(100_000_000));
+            assert_eq!(
+                report.outcome,
+                crate::analysis::ProcedureReportOutcome::Complete
+            );
+            for procedure in &report.procedures {
                 assert!(!procedure.covered_blocks.contains(&marker));
                 let returns = procedure
                     .outputs
@@ -532,7 +539,12 @@ fn check_sequential_helpers(nested: bool) {
         assert!(!result.procedure_summaries().is_empty());
         for record in result.procedure_summaries() {
             assert!(record.closed);
-            for procedure in &record.procedures {
+            let report = record.materialize(domain, &mut WorkBudget::new(100_000_000));
+            assert_eq!(
+                report.outcome,
+                crate::analysis::ProcedureReportOutcome::Complete
+            );
+            for procedure in &report.procedures {
                 assert!(!procedure.covered_blocks.contains(&marker));
                 let returns = procedure
                     .outputs
