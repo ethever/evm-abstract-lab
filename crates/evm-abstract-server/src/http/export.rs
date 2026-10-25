@@ -6,17 +6,33 @@ use evm_abstract::{
 use evm_abstract_protocol as api;
 
 #[derive(serde::Serialize)]
-struct Reply<'a> {
-    result: Result<&'a api::AnalysisReport, &'a api::ApiError>,
+struct PublicationReply<'a> {
+    id: api::JobId,
+    publication: &'a api::JobPublication,
+    report: &'a api::AnalysisReport,
 }
 
-pub(super) fn report(
-    report: &api::AnalysisReport,
+#[derive(serde::Serialize)]
+struct ResultReply<'a> {
+    result: Result<PublicationReply<'a>, &'a api::ApiError>,
+}
+
+pub(super) fn publication(
+    result: &crate::jobs::PublishedResult,
     control: &Control,
 ) -> Result<Vec<u8>, api::ApiError> {
-    json::compact_with_control(&Reply { result: Ok(report) }, control)
-        .map(String::into_bytes)
-        .map_err(|error| failure(report, error))
+    json::compact_with_control(
+        &ResultReply {
+            result: Ok(PublicationReply {
+                id: result.id,
+                publication: &result.publication,
+                report: &result.report,
+            }),
+        },
+        control,
+    )
+    .map(String::into_bytes)
+    .map_err(|error| failure(&result.report, error))
 }
 fn failure(report: &api::AnalysisReport, error: JsonError) -> api::ApiError {
     let Some(metadata) = report.selected_graph().map(|graph| &graph.metadata) else {
