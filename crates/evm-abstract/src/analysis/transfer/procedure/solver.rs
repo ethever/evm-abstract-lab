@@ -1197,6 +1197,21 @@ impl<
         let source = &self.table.nodes[from].payload;
         let source_depth = source.frames.len();
         let local_call = executed_call(source, &execution);
+        // The Native dispatcher, not numeric observations, proves that these
+        // alternatives have one common constrained input. Cooperation can edit
+        // each incoming edge, so its existing per-edge path remains mandatory.
+        let share_common = !X::ENABLED
+            && self.policies.state.runtime_execution() == crate::analysis::RuntimeExecution::Native
+            && source.active().semantics == crate::analysis::TransferSemantics::Native
+            && source.active().code == FrameCode::Runtime;
+        #[cfg(test)]
+        let share_common = share_common && super::fanout::enabled();
+        let common_successors = if share_common {
+            execution.common_successors
+        } else {
+            None
+        };
+        let mut common_input: Option<EvmPayloadSummary<D::Element>> = None;
         let completed_calls = execution.completed_calls;
         let mut process_calls = execution.process_calls.into_iter().peekable();
         self.table
@@ -1266,8 +1281,31 @@ impl<
                 // where bytecode normally tests CALL status. Its successors use
                 // their actual new edge kinds and return to ordinary node keys.
                 let kind = successor.kind;
-                self.enqueue(procedure, successor.payload, resume_status, from)
-                    .and_then(|to| self.observe_body_edge(from, to, kind))
+                let queued = if common_successors
+                    .as_ref()
+                    .is_some_and(|range| range.contains(&ordinal))
+                {
+                    let block = successor.payload.active().key.basic_block_index;
+                    (|| {
+                        if common_input.is_none() {
+                            common_input = Some(self.form(successor.payload)?);
+                            #[cfg(test)]
+                            super::fanout::formed();
+                        }
+                        let payload = common_input
+                            .as_ref()
+                            .expect("formed common Native jump input")
+                            .clone_at_block_with_payment(block, self.budget)?;
+                        #[cfg(test)]
+                        super::fanout::copied();
+                        // Every target still runs the selected partition and
+                        // summary policy and owns its own slot and receipts.
+                        self.enqueue_summary(procedure, payload, resume_status, Some(from))
+                    })()
+                } else {
+                    self.enqueue(procedure, successor.payload, resume_status, from)
+                };
+                queued.and_then(|to| self.observe_body_edge(from, to, kind))
             };
             if let Err(error) = operation {
                 self.frontier(original, error.frontier_reason(), 0);

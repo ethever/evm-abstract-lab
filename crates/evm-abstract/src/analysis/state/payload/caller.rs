@@ -209,6 +209,33 @@ impl<N: WordElement> EvmPayloadSummary<N> {
         Ok(out)
     }
 
+    /// Copy the exact numerical template for another destination of the same
+    /// native jump producer. Callers must establish that only this coordinate
+    /// differs; arbitrary summaries or target-specific predicates cannot use it.
+    pub(in crate::analysis) fn clone_at_block_with_payment(
+        &self,
+        block: usize,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, MachineError> {
+        let mut output = self.clone_with_payment(budget)?;
+        pay(budget, 2)?;
+        output
+            .frames
+            .last_mut()
+            .ok_or(MachineError::Shape)?
+            .frame
+            .key
+            .basic_block_index = block;
+        output
+            .location
+            .frames
+            .last_mut()
+            .ok_or(MachineError::Shape)?
+            .basic_block_index = block;
+        checkpoint(budget)?;
+        Ok(output)
+    }
+
     pub(in crate::analysis) fn eq_with_payment<D: EvmNumericAlgebra<Element = N>>(
         &self,
         other: &Self,

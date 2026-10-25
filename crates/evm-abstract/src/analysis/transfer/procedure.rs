@@ -57,6 +57,8 @@ mod cycles;
 mod effects;
 mod environment;
 mod evidence;
+#[cfg(test)]
+mod fanout;
 pub(in crate::analysis) mod process;
 pub use evidence::{
     EvmRegionalCall, EvmRegionalCfg, EvmRegionalEdge, EvmRegionalNode, EvmRegionalReturn,

@@ -18,6 +18,7 @@ use crate::{
 use serde::Serialize;
 use std::fmt;
 
+mod fanout;
 mod normalization;
 mod output;
 mod process;

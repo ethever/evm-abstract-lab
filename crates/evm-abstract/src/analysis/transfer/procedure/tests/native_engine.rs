@@ -467,3 +467,200 @@ fn refused_frontier_export_moves_native_range_without_copying_or_losing_obligati
         &payload
     ));
 }
+
+#[test]
+fn native_fanout_reuses_one_private_template_and_keeps_every_target_slot() {
+    use crate::analysis::transfer::procedure::fanout::{CONTROL, Counts};
+    let values = ValueAlgebra::new(Algebra { joined_copy: COPY });
+    let policies = EnginePolicies::default().with_state(SemanticPolicies::new(
+        StructuralPartition,
+        CorrelatedJoin,
+        NoAcceleration,
+        RegionalSummaries::with_early_known_admission(),
+    ));
+    let mut world = EvmWorld::new(Fork::Osaka, "opaque native jump fanout");
+    world
+        .insert(
+            address(0x101),
+            EvmAccount::from_hex("5f5f5f5f6102006207a120f45000", world.fork()).unwrap(),
+        )
+        .unwrap();
+    // The three legal targets are odd; CALLVALUE has a private Odd predicate
+    // absent from its public WordObservation. PC2 is an unreachable STOP.
+    world
+        .insert(
+            address(0x200),
+            EvmAccount::from_hex("3456005b005b005b00", world.fork()).unwrap(),
+        )
+        .unwrap();
+    let mut entry = EvmEntry::<Word>::new(address(0x101));
+    entry.environment.value = EvmValue::from_numeric(Word::private(COPY, "fanout"));
+    let input = AnalysisInput::new(world, entry).unwrap();
+    let _control = CONTROL.scope();
+    let _evidence = EVIDENCE.scope();
+    let run = |enabled| {
+        CONTROL.set(Counts {
+            enabled,
+            forms: 0,
+            copies: 0,
+        });
+        EVIDENCE.set(Evidence::default());
+        let mut extension = NoExtension;
+        let result = AnalysisEngine::new(&values, &policies, &mut extension)
+            .run(
+                input.clone(),
+                ExecutionConfig {
+                    root_terminal_coverage: false,
+                    ..ExecutionConfig::default()
+                },
+                &Control::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            result.status(),
+            Status::Converged,
+            "{:?}",
+            result.frontiers()
+        );
+        assert!(result.frontiers().is_empty());
+        let record = result.procedure_summaries().last().unwrap();
+        assert!(record.closed && record.source_current);
+        let child = record
+            .procedures
+            .iter()
+            .find(|p| p.frame.code_address == address(0x200))
+            .unwrap();
+        assert_eq!(child.covered_blocks, [0, 2, 3, 4]);
+        assert!(
+            child
+                .outputs
+                .iter()
+                .any(|o| o.kind == crate::analysis::OutcomeKind::Failure)
+        );
+        assert!(
+            child
+                .outputs
+                .iter()
+                .any(|o| o.kind == crate::analysis::OutcomeKind::Return)
+        );
+        assert_eq!(EVIDENCE.get().child_bodies, 4);
+        (result, CONTROL.get())
+    };
+    let (ordinary, baseline) = run(false);
+    let (shared, actual) = run(true);
+    assert_eq!(baseline.forms, 0);
+    assert_eq!(actual.forms, 1);
+    assert_eq!(actual.copies, 3);
+    assert_eq!(
+        &*ordinary.procedure_summaries().last().unwrap().regional_cfg,
+        &*shared.procedure_summaries().last().unwrap().regional_cfg
+    );
+    assert!(shared.work() < ordinary.work());
+    eprintln!(
+        "native fanout opaque control: ordinary={} shared={} forms={} copies={}",
+        ordinary.work(),
+        shared.work(),
+        actual.forms,
+        actual.copies
+    );
+}
+
+#[test]
+fn native_fanout_taken_predicate_excludes_the_false_continuation() {
+    use crate::analysis::{EdgeKind, MachineEdgeKind};
+    let values = crate::analysis::testing::product(DomainSpec::default());
+    let (world, mut entry) =
+        crate::analysis::machine::fixtures::fixture(&[(0x101, "5f358060203557005b005b00")]);
+    entry.environment.calldata = crate::world::EvmByteArray::unknown();
+    let domain = values.borrowed();
+    let payload = crate::analysis::transfer::initial(&world, &entry, domain).unwrap();
+    let mut budget = crate::resource::WorkBudget::new(20_000_000);
+    let execution = super::super::execute_inner(
+        &world,
+        &entry,
+        payload,
+        &ExecutionConfig::default(),
+        domain,
+        &mut budget,
+        crate::analysis::transfer::StorageReadPolicy::Abstract,
+        true,
+    );
+    assert!(execution.frontiers.is_empty());
+    let common = execution.common_successors.unwrap();
+    assert_eq!(common, 0..2);
+    assert_eq!(execution.successors.len(), 3);
+    assert!(
+        execution
+            .outcomes
+            .iter()
+            .any(|o| o.kind == crate::analysis::OutcomeKind::Failure)
+    );
+    for (ordinal, successor) in execution.successors.iter().enumerate() {
+        let refined = crate::analysis::state::payload::caller::copy_with_scalar_guarantees(
+            &successor.payload,
+            &entry,
+            domain,
+            &mut budget,
+        )
+        .unwrap();
+        let condition = &refined.active().stack[0];
+        if common.contains(&ordinal) {
+            assert_eq!(
+                successor.kind,
+                MachineEdgeKind::Intraprocedural(EdgeKind::BranchTrue)
+            );
+            assert!(!condition.contains(U256::ZERO));
+        } else {
+            assert_eq!(
+                successor.kind,
+                MachineEdgeKind::Intraprocedural(EdgeKind::BranchFalse)
+            );
+            assert_eq!(condition.singleton(), Some(U256::ZERO));
+        }
+    }
+}
+
+#[test]
+fn native_fanout_does_not_group_a_child_failure_resuming_its_parent() {
+    use crate::analysis::{EvmChildFrame, EvmContinuation, MachineEdgeKind};
+    let values = crate::analysis::testing::product(DomainSpec::default());
+    let domain = values.borrowed();
+    let (world, mut entry) =
+        crate::analysis::machine::fixtures::fixture(&[(0x101, "5f358060203557005b005b00")]);
+    entry.environment.calldata = crate::world::EvmByteArray::unknown();
+    let mut payload = crate::analysis::transfer::initial(&world, &entry, domain).unwrap();
+    let mut child = payload.active().clone();
+    child.key.caller = child.key.address.into();
+    child.environment_calldata = false;
+    payload.call_stack.push_child(EvmChildFrame {
+        state: child,
+        continuation: EvmContinuation {
+            return_block: Some(0),
+            output_offset: EvmValue::constant(U256::ZERO),
+            output_size: EvmValue::constant(U256::ZERO),
+            creation: None,
+        },
+    });
+    let mut budget = crate::resource::WorkBudget::new(20_000_000);
+    let execution = super::super::execute_inner(
+        &world,
+        &entry,
+        payload,
+        &ExecutionConfig::default(),
+        domain,
+        &mut budget,
+        crate::analysis::transfer::StorageReadPolicy::Abstract,
+        false,
+    );
+    assert!(execution.frontiers.is_empty());
+    assert!(execution.common_successors.is_none());
+    assert!(execution.successors.iter().any(|successor| {
+        successor.kind == MachineEdgeKind::Failure && successor.payload.call_stack.depth() == 1
+    }));
+    assert!(execution.successors.iter().any(|successor| {
+        matches!(
+            successor.kind,
+            MachineEdgeKind::Intraprocedural(crate::analysis::EdgeKind::BranchTrue)
+        ) && successor.payload.call_stack.depth() == 2
+    }));
+}
