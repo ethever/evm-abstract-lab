@@ -106,9 +106,11 @@ fn real_static_reentry_reads_known_owners_and_handles_a_failed_write() {
     let analysis = run(world, input);
     complete_unknown(&analysis);
     observed.covers(&analysis);
-    for step in observed.steps.iter().filter(|step| {
-        step.is_static && (step.code == address(A) || step.code == address(C))
-    }) {
+    for step in observed
+        .steps
+        .iter()
+        .filter(|step| step.is_static && (step.code == address(A) || step.code == address(C)))
+    {
         let Code::Runtime(program) = &analysis.world().account(step.code).unwrap().code else {
             panic!("captured runtime source");
         };
