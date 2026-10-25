@@ -65,7 +65,9 @@ native 15 的 `entry.binding` 与 wire 20 的 `metadata.root_binding` 在没有�
 
 RPC 保留原始闭合基线的 source guards。新增的同快照精确事实只证明当前初始状态集合是原集合的子集，不能把旧 source-current 标记改写到新 revision。wire 分别保存原始、当前和 detail revision、成功提交的 restriction chain、累计采集及精度失败。后来的重启没有新 native 图时，之前有用的图与前缀仍按自己的 revision 保存。取消仍返回类型化取消错误。
 
-CLI JSON 的外层 `status` / `work` 描述组合结果，未请求 SSA 时保留平铺的原生图字段，选中的 Native 关系带 SSA 时，`.analysis` 保留该关系，`.hybrid.baseline` / `.hybrid.detail` 各保留另一套图一次；`.hybrid.local_detail` 显式导出 native receipt，包含独立 frontier 索引。全局 Process 不生成指令 SSA；请求的 Native 明细 SSA 位于 `.hybrid.detail_ssa`，并携带自身的完成状态。`.hybrid.selected_graph` 单独保留所选图的原始 status、work、transfers，外层组合计数不能覆盖这些测量。原生图格式为 15，wire 为 20，域格式仍为 3、逻辑成本仍为 8。历史捕获与原始 profile 保持原版本。
+CLI JSON 的外层 `status`、`work`、`transfers` 描述组合资格与累计计数。`.global.analysis` 和可选 `.native.analysis` 始终位于固定字段，`selected_view` 只表示初始展示选择。每张图保留自己的 status、work、transfers、snapshot 和 revision；Native 图旁的 `ssa` 或 `partial_ssa` 使用同一 Native 状态 ID。`.hybrid.local_detail` 显式导出 Native receipt 和该图的 frontier 索引；不按选择递归嵌套另一张报告。
+
+Web wire 使用独立的有类型投影。封套保存 `.global`、`.native` 和唯一的 `.programs` 目录；每个 `ProgramInfo` 保留 source account、runtime/initcode 类型、fork、hash、字节码与完整反汇编。CFG 节点通过 `program` 与 `basic_block` 引用目录，根反汇编通过 `metadata.root_program` 查询。相同源码的多个机器状态共享指令，但每个状态的 executed PC、SSA、输入和覆盖仍独立；不同源账户的相同字节码不会只按 hash 合并。每图 `metadata.source_snapshot` / `metadata.revision` 与 Hybrid 声明相互校验，任务 publication version 另行表示交付更新。CLI 原生数值载体和 Web wire 分别保留自己的格式。
 
 `--no-summaries` / `use_summaries=false` 关闭完成调用的缓存复用，仍运行实际的全局 Process 模型。原有终止覆盖选项传给可选 native 阶段；基线始终关闭该辅助包络。可选阶段未开始或预算不足时，可以没有辅助记录。该记录不决定组合闭合、native 替换或前缀完整性。
 

@@ -42,6 +42,7 @@ fn raw(command: &str, code: &str, extra: &[&str]) -> Json {
     let output = run(&args);
     success(&output);
     let result: Json = serde_json::from_slice(&output.stdout).unwrap();
+    let result = crate::native::select(&result);
     if command == "ssa" {
         result["analysis"].clone()
     } else {
@@ -236,6 +237,7 @@ fn raw_and_world_defaults_keep_inputs_symbolic_and_origin_aliases_caller() {
     let output = world.run("analyze", &[]);
     success(&output);
     let analysis: Json = serde_json::from_slice(&output.stdout).unwrap();
+    let analysis = crate::native::select(&analysis);
     let environment = &analysis["entry"]["environment"];
     assert!(
         crate::native::numeric(&environment["value"])
@@ -417,6 +419,7 @@ fn every_supplied_environment_reaches_raw_world_and_delegated_frames() {
     let output = world.run("analyze", &extra);
     success(&output);
     let analysis: Json = serde_json::from_slice(&output.stdout).unwrap();
+    let analysis = crate::native::select(&analysis);
     let states = analysis["states"].as_array().unwrap();
     for depth in [1, 2] {
         let state = states

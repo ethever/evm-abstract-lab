@@ -159,6 +159,7 @@ impl RpcServer {
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).unwrap();
                 let request: Json = serde_json::from_slice(&body).unwrap();
+                let request = crate::native::select(&request);
                 let (status, bytes, allow_peer_abort) = match handler(&request) {
                     Reply::Json(reply) => (200, serde_json::to_vec(&reply).unwrap(), false),
                     Reply::Bytes(bytes) => (200, bytes, false),
@@ -219,6 +220,7 @@ fn execute(server: &RpcServer, extra: &[&str]) -> Output {
 fn result(output: Output, detail_exit: i32) -> Json {
     let report: Json = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+    let report = crate::native::select(&report);
     super::native::assert_exit(&report, &output);
     let result = super::native::select(&report);
     let native = result.get("analysis").unwrap_or(&result);

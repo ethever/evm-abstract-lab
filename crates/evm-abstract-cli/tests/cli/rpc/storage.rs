@@ -193,6 +193,7 @@ fn nested_delegatecall_fetches_proxy_storage_instead_of_implementation_storage()
             };
             let output = execute(&server, &args);
             let report: Json = serde_json::from_slice(&output.stdout).unwrap();
+            let report = crate::native::select(&report);
             crate::native::assert_exit(&report, &output);
             assert_eq!(report["status"], "Converged");
             let export = crate::native::select(&report);

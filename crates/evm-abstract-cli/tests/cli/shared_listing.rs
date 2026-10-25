@@ -33,7 +33,7 @@ fn stdout(args: &[&str], exit_code: i32) -> String {
 }
 
 fn json(args: &[&str]) -> Json {
-    serde_json::from_str(&stdout(args, 0)).unwrap()
+    crate::native::select(&serde_json::from_str(&stdout(args, 0)).unwrap())
 }
 
 fn notation_prefix(prefix: char) -> &'static str {
@@ -266,6 +266,7 @@ fn assert_single_listing(text: &str, report: &Json) {
                 .trim_end_matches(':'),
         )
         .unwrap();
+        let context = crate::native::select(&context);
         assert_eq!(context, key["context"]);
         assert!(
             !lines[0].contains("@ 0x"),
@@ -341,7 +342,9 @@ fn world(command: &str, path: &str, entry: &str, extra: &[&str], exit_code: i32)
 fn world_report(path: &str, entry: &str, extra: &[&str]) -> Json {
     let mut options = vec!["--ssa", "--format", "json"];
     options.extend_from_slice(extra);
-    serde_json::from_str(&world("analyze", path, entry, &options, 0)).unwrap()
+    crate::native::select(
+        &serde_json::from_str(&world("analyze", path, entry, &options, 0)).unwrap(),
+    )
 }
 
 fn active_frame(state: &Json) -> &Json {
@@ -981,6 +984,7 @@ fn incomplete_explanations_keep_aligned_input_and_exit_two_without_partial_ssa()
         2,
     ))
     .unwrap();
+    let report = crate::native::select(&report);
     assert_eq!(report["status"], "Incomplete");
     assert!(report["states"].as_array().unwrap().is_empty());
     assert!(report.get("ssa").is_none());

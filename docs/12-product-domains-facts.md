@@ -279,7 +279,7 @@ nix run . -- analyze \
   --numeric-model product --max-constants 512 --reduction-rounds 16 --max-facts 4096 \
   --max-work 1000000000000 --format json > /tmp/facts-world.json
 
-jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
+jq '(.native // .global).analysis | .schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
 原生报告的 `schema_version` 为 15，独立的 Web 协议为 19；`domain_spec.schema_version` 为 3。CLI 用 `numeric_model: "product"` / `"finite-set"` 记录所选模型，wire 20 对应为 `"Product"` / `"FiniteSet"`，`domain_spec` 则保存实际代数的 word 宽度、常量容量、交换上限、widening、费用版本、来源策略和关系限制，不包含模型选择器。原生 `Config` 只保存上下文、状态和 transfer 限制，`ExecutionConfig` 再保存工作、调用深度、具体物化等执行预算；数值与关系限制只由 `algebra.spec()` 提供。`DomainSpec::validate()` 返回类型化 `DomainSpecError`；表达式与关系上限为零时，即使关闭关系推理也会拒绝。

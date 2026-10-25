@@ -115,7 +115,7 @@ nix run . -- analyze --world examples/storage-basic.json \
   --evm.caller 0x0000000000000000000000000000000000001000 \
   --evm.value 0 --evm.calldata 0x --format json > /tmp/storage-basic.json
 
-jq '{initial: .world.accounts["0x0000000000000000000000000000000000000101"].storage["0x0"].numeric.constants,
+jq '(.native // .global).analysis | {initial: .world.accounts["0x0000000000000000000000000000000000000101"].storage["0x0"].numeric.constants,
      successful: [.outcomes[] | select(.kind == "Return")
                   | .store.persistent.slots[]
                   | {address, slot, constants: .value.numeric.constants}]}' \
@@ -394,7 +394,7 @@ nix run . -- analyze --world examples/worlds/proxy-storage.json \
   --evm.caller 0x0000000000000000000000000000000000001000 \
   --evm.value 0 --evm.calldata 0x --format json > /tmp/storage-proxy.json
 
-jq '[.states[] | .key.frames[]
+jq '(.native // .global).analysis | [.states[] | .key.frames[]
      | select(.code_address == "0x0000000000000000000000000000000000000300")
      | {state_owner: .address, code_address}] | unique' /tmp/storage-proxy.json
 ```
@@ -448,7 +448,7 @@ nix run . -- analyze --world examples/storage-callback-revert.json \
 查询最深层 A 回调的块出口：
 
 ```bash
-jq '[.states[]
+jq '(.native // .global).analysis | [.states[]
      | select((.key.frames | length) == 3)
      | .exit.store.persistent.slots
      | map({address, slot, constants: .value.numeric.constants})] | unique' \
@@ -460,7 +460,7 @@ jq '[.states[]
 再查询根成功结果：
 
 ```bash
-jq '[.outcomes[] | select(.kind == "Return")
+jq '(.native // .global).analysis | [.outcomes[] | select(.kind == "Return")
      | .store.persistent.slots
      | map({address, slot, constants: .value.numeric.constants})] | unique' \
   /tmp/storage-callback.json

@@ -78,7 +78,8 @@ fn work_limit_visiting_pc(
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let mut report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let mut report = crate::native::select(&report);
         if report.get("machine_analysis").is_some() {
             report = report["machine_analysis"].take();
         }
@@ -155,6 +156,7 @@ fn cfg_json_includes_status_contexts_and_unknown_jump_diagnostic() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let json = crate::native::select(&json);
     assert_eq!(json["status"], "Converged");
     assert_eq!(json["config"]["context_depth"], 1);
     let states = json["states"].as_array().unwrap();
@@ -228,6 +230,7 @@ fn cfg_file_preserves_default_128_and_explicit_context_depths() {
             String::from_utf8_lossy(&output.stderr)
         );
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let json = crate::native::select(&json);
         assert_eq!(json["status"], "Converged");
         assert_eq!(json["config"]["context_depth"], explicit.unwrap_or(128));
         let states = json["states"].as_array().unwrap();
@@ -353,6 +356,7 @@ fn cfg_file_preserves_default_128_and_explicit_context_depths() {
                 String::from_utf8_lossy(&output.stderr)
             );
             let cfg: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let cfg = crate::native::select(&cfg);
             assert_eq!(cfg["config"]["context_depth"], depth);
             assert_eq!(cfg["status"], "Converged");
             assert_eq!(cfg["frontiers"], serde_json::json!([]));
@@ -421,6 +425,7 @@ fn cfg_file_preserves_default_128_and_explicit_context_depths() {
                 String::from_utf8_lossy(&output.stderr)
             );
             let ssa: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let ssa = crate::native::select(&ssa);
             assert_eq!(ssa["ssa"]["complete"], true);
             for mapping in ssa["state_mapping"].as_array().unwrap() {
                 let local = mapping["local_state"].as_u64().unwrap() as usize;
@@ -459,6 +464,7 @@ fn ssa_json_carries_cfg_and_value_definitions() {
     let output = run_concrete(&["ssa", "--hex", "600160020100", "--format", "json"]);
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let json = crate::native::select(&json);
     assert_eq!(json["ssa"]["value_count"], 3);
     assert_eq!(json["analysis"]["status"], "Converged");
     assert_eq!(json["analysis"]["config"]["context_depth"], 128);
@@ -477,6 +483,7 @@ fn budgets_exit_two_and_never_return_partial_ssa() {
     ]);
     assert_eq!(cfg.status.code(), Some(2));
     let json: serde_json::Value = serde_json::from_slice(&cfg.stdout).unwrap();
+    let json = crate::native::select(&json);
     assert_eq!(json["status"], "Incomplete");
     assert!(!json["frontiers"].as_array().unwrap().is_empty());
     let ssa = run_concrete(&["ssa", "--hex", "6003565b00", "--max-states", "1"]);
@@ -516,6 +523,7 @@ fn fork_changes_clz_cfg_and_all_exports_report_the_selected_rules() {
     let default = run_concrete(&["cfg", "--hex", code, "--format", "json"]);
     assert!(default.status.success());
     let json: serde_json::Value = serde_json::from_slice(&default.stdout).unwrap();
+    let json = crate::native::select(&json);
     assert_eq!(json["program"]["fork"], "osaka");
     assert_eq!(json["edges"].as_array().unwrap().len(), 1);
     for fork in ["cancun", "prague", "osaka"] {
@@ -526,6 +534,7 @@ fn fork_changes_clz_cfg_and_all_exports_report_the_selected_rules() {
             String::from_utf8_lossy(&output.stderr)
         );
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let json = crate::native::select(&json);
         assert_eq!(json["program"]["fork"], fork);
         assert_eq!(
             json["edges"].as_array().unwrap().len(),
@@ -546,6 +555,7 @@ fn fork_changes_clz_cfg_and_all_exports_report_the_selected_rules() {
         let ssa = run_concrete(&["ssa", "--hex", code, "--fork", fork, "--format", "json"]);
         assert!(ssa.status.success());
         let json: serde_json::Value = serde_json::from_slice(&ssa.stdout).unwrap();
+        let json = crate::native::select(&json);
         assert_eq!(json["analysis"]["program"]["fork"], fork);
     }
     assert_eq!(
@@ -605,6 +615,7 @@ fn world_analyze_preserves_default_128_and_explicit_context_depths() {
             String::from_utf8_lossy(&output.stderr)
         );
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let json = crate::native::select(&json);
         assert_eq!(json["status"], "Converged");
         assert_eq!(
             json["config"]["analysis"]["context_depth"],
@@ -634,6 +645,7 @@ fn primary_analyze_json_has_world_call_frames_returns_and_outcomes() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let json = crate::native::select(&json);
     assert_eq!(json["status"], "Converged");
     assert_eq!(json["world"]["fork"], "osaka");
     assert_eq!(json["world"]["provenance"], "offline:call-return-branch:v1");
@@ -662,6 +674,45 @@ fn primary_analyze_json_has_world_call_frames_returns_and_outcomes() {
 }
 
 #[test]
+fn installed_json_keeps_graph_placement_and_source_qualified_prefixes_with_ssa() {
+    for ssa in [false, true] {
+        let mut arguments = vec!["--format", "json"];
+        if ssa {
+            arguments.push("--ssa");
+        }
+        let output = analyze("identity-precompile", &arguments);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // Deliberately inspect actual installed bytes before any test view selection.
+        let wire: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(wire["selected_view"], "Native");
+        assert_eq!(wire["status"], "Converged");
+        assert!(wire.get("states").is_none() && wire.get("analysis").is_none());
+        assert!(wire["global"]["analysis"]["states"].is_array());
+        assert!(wire["native"]["analysis"]["states"].is_array());
+        assert_eq!(wire["native"].get("ssa").is_some(), ssa);
+        assert!(wire["hybrid"].get("baseline").is_none());
+        assert!(wire["hybrid"].get("detail").is_none());
+        assert!(wire["hybrid"].get("detail_ssa").is_none());
+        for prefix in wire["hybrid"]["local_detail"].as_array().unwrap() {
+            assert_eq!(prefix["namespace"], "Native");
+            assert_eq!(prefix["revision"], wire["native"]["analysis"]["revision"]);
+            let state = prefix["state_id"].as_u64().unwrap();
+            assert!(
+                wire["native"]["analysis"]["states"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["id"] == state)
+            );
+        }
+    }
+}
+
+#[test]
 fn world_ssa_verifies_complete_calls_and_is_not_built_for_frontiers() {
     let output = analyze("proxy-storage", &["--format", "json", "--ssa"]);
     assert!(
@@ -670,6 +721,7 @@ fn world_ssa_verifies_complete_calls_and_is_not_built_for_frontiers() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let json = crate::native::select(&json);
     assert_eq!(json["analysis"]["status"], "Converged");
     assert!(json["ssa"].is_object());
     let incomplete = analyze(
@@ -677,6 +729,7 @@ fn world_ssa_verifies_complete_calls_and_is_not_built_for_frontiers() {
         &["--format", "json", "--ssa", "--max-call-depth", "1"],
     );
     let raw: serde_json::Value = serde_json::from_slice(&incomplete.stdout).unwrap();
+    let raw = crate::native::select(&raw);
     native::assert_exit(&raw, &incomplete);
     let json = native::select(&raw);
     assert_eq!(json["status"], "Incomplete");
@@ -696,6 +749,7 @@ fn shared_budgets_keep_typed_frontiers_and_exit_two() {
         String::from_utf8_lossy(&bounded.stderr)
     );
     let bounded: serde_json::Value = serde_json::from_slice(&bounded.stdout).unwrap();
+    let bounded = crate::native::select(&bounded);
     assert_eq!(bounded["config"]["max_memory_bytes"], 1);
     assert_eq!(bounded["status"], "Converged");
     assert_eq!(bounded["frontiers"], serde_json::json!([]));
@@ -732,6 +786,7 @@ fn shared_budgets_keep_typed_frontiers_and_exit_two() {
         detail.push("--no-root-terminal-coverage");
         let output = analyze(name, &detail);
         let raw: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let raw = crate::native::select(&raw);
         native::assert_exit(&raw, &output);
         let json = native::select(&raw);
         assert_eq!(json["status"], "Incomplete");
@@ -816,6 +871,7 @@ fn requested_world_text_is_readable_and_format_switches_keep_complete_evidence()
     let json = analyze("returndata-copy", &["--format", "json"]);
     assert!(json.status.success());
     let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let json = crate::native::select(&json);
     assert_eq!(json["status"], "Converged");
     let outcomes = json["outcomes"].as_array().unwrap();
     assert!(outcomes.iter().any(|outcome| outcome["kind"] == "Failure"));
@@ -871,6 +927,7 @@ fn unknown_code_world_converges_with_closed_summary_evidence_and_verified_ssa() 
         String::from_utf8_lossy(&output.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let json = crate::native::select(&json);
     let analysis = &json["analysis"];
     assert_eq!(analysis["status"], "Converged");
     assert!(analysis["frontiers"].as_array().unwrap().is_empty());
@@ -914,6 +971,7 @@ fn entry_static_mode_faults_at_write_and_returns_a_completed_failure() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let json = crate::native::select(&json);
     assert_eq!(json["entry"]["environment"]["is_static"], true);
     assert_eq!(json["status"], "Converged");
     assert!(
