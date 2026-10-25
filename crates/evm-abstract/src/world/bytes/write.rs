@@ -39,7 +39,7 @@ fn literal<N: WordElement>(value: &EvmValue<N>, n: U256) -> bool {
 }
 
 // Structural admission is independent of numeric representation. The injected
-// algebra alone certifies equal BYTE results and funds the complete fast path.
+// algebra certifies equal BYTE results and quotes only its numeric work.
 pub(super) fn eligible<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     array: &EvmByteArray<N>,
     offset: &EvmValue<N>,
@@ -90,11 +90,124 @@ impl<N: WordElement> EvmByteArray<N> {
         if !eligible(self, offset, value, 32, domain) {
             return None;
         }
-        Some(domain.numeric_algebra().uniform_word_write_work(
-            value,
-            &self.length,
-            &self.default,
-            self.allocations.len(),
-        ))
+        Some(work(self, value, domain))
     }
+    /// The writer owns arithmetic pass admission: source provenance and host-index
+    /// feasibility are structural properties, independent of numeric transfer.
+    /// Opaque/replacement policies keep both passes unless their existing native
+    /// scalar certificate proves candidate completeness and stable finite copies.
+    pub(crate) fn memory_write_passes<D: EvmNumericAlgebra<Element = N>>(
+        offset: &EvmValue<N>,
+        value: &EvmValue<N>,
+        width: usize,
+        domain: AlgebraRef<'_, D>,
+    ) -> usize {
+        if !domain.numeric_algebra().supports_product_scalar_shortcuts() {
+            return 2;
+        }
+        let numeric = value.numeric();
+        let candidate = numeric.finite_constants().cardinality() == Some(1)
+            || numeric.known_bits().singleton().is_some()
+            || numeric.interval().singleton().is_some()
+            || numeric.congruence().singleton().is_some();
+        let constant_origin = value
+            .provenance()
+            .origins()
+            .sources()
+            .is_some_and(|origins| origins.len() == 1 && origins.contains(&Origin::Constant))
+            && !value.provenance().is_code_address();
+        let source_pass = usize::from(candidate && !constant_origin);
+        // Normalization clones the numeric element without changing its finite
+        // cover. One last-key lookup bounds every conversion and width addition.
+        let cached = offset.constants().is_some_and(|values| {
+            values.last().is_none_or(|last| {
+                usize::try_from(*last)
+                    .ok()
+                    .and_then(|start| start.checked_add(width.saturating_sub(1)))
+                    .is_some()
+            })
+        });
+        source_pass + usize::from(!cached)
+    }
+}
+
+fn work<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    array: &EvmByteArray<N>,
+    value: &EvmValue<N>,
+    domain: AlgebraRef<'_, D>,
+) -> usize {
+    use crate::domain::{provenance::MAX_ORIGINS, symbolic::ExprId};
+
+    let numeric = domain
+        .numeric_algebra()
+        .uniform_word_numeric_work(value.numeric(), array.length.numeric());
+    if numeric == usize::MAX {
+        return usize::MAX;
+    }
+    // Origins are bounded owned copies; expressions/identities share handles.
+    // Input numeric copies use their actual carrier quotes. The policy quote
+    // owns copies of newly projected byte results, unavailable before payment.
+    const METADATA_COPY: usize = MAX_ORIGINS + 4;
+    let copy = [value, &array.length, &array.default]
+        .into_iter()
+        .map(|value| value.numeric().clone_work())
+        .max()
+        .unwrap_or(0)
+        .saturating_add(METADATA_COPY);
+    let nodes = value.expression().map_or(0, ExprId::nodes);
+    // MSIZE/allocation history may change after quotation during touch_memory.
+    // Reserve the original expansion and one additional allocation, without
+    // changing eligibility when touch collapses a nonliteral length to 32.
+    let length = &array.length;
+    let exact_length = length.known_bits().singleton().is_some_and(|n| {
+        length.interval().singleton() == Some(n)
+            && length.congruence().singleton() == Some(n)
+            && length.finite_constants().singleton() == Some(n)
+    });
+    let length_nodes = length.expression().map_or_else(
+        || {
+            if exact_length {
+                1
+            } else {
+                // Observed root, fresh source, binding, key and SlotRead.
+                length.numeric().work_size().saturating_add(5)
+            }
+        },
+        ExprId::nodes,
+    );
+    let candidates = if exact_length {
+        0
+    } else {
+        length
+            .constants()
+            .map_or(0, std::collections::BTreeSet::len)
+    };
+    let length_metadata = candidates.saturating_mul(METADATA_COPY.saturating_mul(6));
+    let allocations = array.allocations.len().saturating_add(1);
+    let height = (usize::BITS - allocations.leading_zeros()) as usize + 1;
+    // Eleven keys per B-tree node. New literal pairs compare a kind tag or
+    // fixed-width constants even on a fingerprint collision with an old key.
+    let probes = allocations.min(height.saturating_mul(12));
+    let staged = copy
+        .saturating_mul(8)
+        .saturating_add(allocations.saturating_mul(copy.saturating_mul(2).saturating_add(3)))
+        .saturating_add(probes.saturating_mul(16).saturating_mul(2));
+    let expansion = nodes
+        .saturating_add(length_nodes.saturating_mul(4))
+        .saturating_add(28)
+        .saturating_mul(256)
+        .saturating_add(length_metadata)
+        .saturating_add(length.work_size())
+        .saturating_add(array.default.work_size());
+    // Per cell: source facts, literal metadata, Context and checked ByteRead.
+    // Numeric result copies belong to the policy's complete numeric quote.
+    let cells = METADATA_COPY
+        .saturating_mul(6)
+        .saturating_add(nodes.saturating_add(5).saturating_mul(256))
+        .saturating_add(32)
+        .saturating_mul(32);
+    staged
+        .saturating_add(expansion)
+        .saturating_add(numeric)
+        .saturating_add(cells)
 }

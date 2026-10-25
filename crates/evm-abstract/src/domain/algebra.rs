@@ -200,37 +200,20 @@ pub trait EvmNumericAlgebra: Debug {
     fn uniform_word_bytes(&self, _word: &Self::Element) -> bool {
         false
     }
-    /// Complete fresh-word writer fee, called only after `uniform_word_bytes`.
-    /// The caller guarantees literal offset zero, a Zero content root, no stored
-    /// bytes/bindings or conditional context, and a nonconstant, non-ITE source
-    /// expression. Cover staging/expansion and all 32 checked byte projections,
-    /// including carrier copies, literals, queries and common metadata. Refresh
-    /// observes BYTE once; a singleton source may also require staging's 32
-    /// provenance-preserving BYTE calls. Reserve the extra allocation transfer
-    /// may install before the write, beyond the current `allocations` count.
-    ///
-    /// Quotation inspects only cached metadata: no literal construction or work
-    /// needing separate payment. MAX honestly refuses metered execution before
-    /// effects; pure library calls remain caller-funded. Ordinary policies that
-    /// decline the semantic certificate retain their per-index quote and work.
-    fn uniform_word_write_work(
-        &self,
-        _value: &EvmValue<Self::Element>,
-        _length: &EvmValue<Self::Element>,
-        _default: &EvmValue<Self::Element>,
-        _allocations: usize,
-    ) -> usize {
+    /// Complete numeric work for the uniform 32-byte projection certified by
+    /// `uniform_word_bytes`, plus finite scalar joins when extending `length`.
+    /// Fund numeric operand/result copies, queries and literal construction.
+    /// Refresh evaluates BYTE once and retains its result for 32 cells. Staging
+    /// may also evaluate all 32 BYTEs when this opaque word is a singleton with
+    /// nonconstant provenance; certification alone does not exclude that case.
+    /// Include copies of newly produced bytes and expanded numeric lengths,
+    /// whose representation can differ from both borrowed inputs.
+    /// The writer separately owns metadata, expressions and allocation staging.
+    /// Quote only cached metadata of these actual opaque elements. No trial
+    /// literals, projections or singleton discovery may execute to quote.
+    /// MAX declines metered execution before effects; pure calls are caller-funded.
+    fn uniform_word_numeric_work(&self, _word: &Self::Element, _length: &Self::Element) -> usize {
         usize::MAX
-    }
-    /// Upper bound on width-sized arithmetic passes in the shared memory writer.
-    /// Opaque elements retain both possible passes without inspecting their state.
-    fn memory_write_passes(
-        &self,
-        _offset: &EvmValue<Self::Element>,
-        _value: &EvmValue<Self::Element>,
-        _width: usize,
-    ) -> usize {
-        2
     }
     /// Upper bound for policy projection beyond ordinary input cloning. Covers
     /// all additional native queries and construction; facade
@@ -295,7 +278,9 @@ pub trait EvmNumericAlgebra: Debug {
         false
     }
     /// Opt into the default product's fixed-width scalar import/singleton cost proofs.
-    /// Custom representations decline unless those representation/work contracts hold.
+    /// The representation also preserves finite views across Clone, and a
+    /// singleton requires a finite/bits/interval/congruence candidate. Custom
+    /// representations decline unless all these representation/work laws hold.
     fn supports_product_scalar_shortcuts(&self) -> bool {
         false
     }
@@ -381,22 +366,8 @@ impl<D: EvmNumericAlgebra + ?Sized> EvmNumericAlgebra for &D {
     fn uniform_word_bytes(&self, word: &Self::Element) -> bool {
         D::uniform_word_bytes(self, word)
     }
-    fn uniform_word_write_work(
-        &self,
-        value: &EvmValue<Self::Element>,
-        length: &EvmValue<Self::Element>,
-        default: &EvmValue<Self::Element>,
-        allocations: usize,
-    ) -> usize {
-        D::uniform_word_write_work(self, value, length, default, allocations)
-    }
-    fn memory_write_passes(
-        &self,
-        offset: &EvmValue<Self::Element>,
-        value: &EvmValue<Self::Element>,
-        width: usize,
-    ) -> usize {
-        D::memory_write_passes(self, offset, value, width)
+    fn uniform_word_numeric_work(&self, word: &Self::Element, length: &Self::Element) -> usize {
+        D::uniform_word_numeric_work(self, word, length)
     }
     fn projection_work(&self, value: &Self::Element) -> usize {
         D::projection_work(self, value)
@@ -784,15 +755,6 @@ impl<D: EvmNumericAlgebra> ValueAlgebra<D> {
     /// Domain-owned guarantee for the fixed-width BYTE batch.
     pub(crate) fn byte_quotes_uniform(&self) -> bool {
         self.numeric.byte_quotes_uniform()
-    }
-    /// Backend-owned bound on the memory writer's existing arithmetic passes.
-    pub(crate) fn memory_write_passes(
-        &self,
-        offset: &EvmValue<D::Element>,
-        value: &EvmValue<D::Element>,
-        width: usize,
-    ) -> usize {
-        self.numeric.memory_write_passes(offset, value, width)
     }
     /// Compose a cached numeric quote without quoting it again when a caller
     /// also uses its output-size guarantee for an independent lifecycle payment.

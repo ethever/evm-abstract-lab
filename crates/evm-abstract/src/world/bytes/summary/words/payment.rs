@@ -3,7 +3,7 @@
 use super::super::super::numeric;
 use super::super::replay::graph_work;
 use super::{
-    EvmByteArray, EvmValue, ExprId, ExprKind, RangeError, U256, WORDS, coordinates, insert, needed,
+    EvmByteArray, EvmValue, ExprId, RangeError, U256, WORDS, candidate_coordinates, needed,
 };
 use crate::{
     domain::{AlgebraRef, EvmNumericAlgebra, WordElement, summary},
@@ -34,25 +34,7 @@ pub(in super::super) fn project_with_payment<N: WordElement, D: EvmNumericAlgebr
         )
         .saturating_mul(WORDS.saturating_add(2)),
     )?;
-    let mut coordinates = coordinates(&array.root);
-    let mut candidate = |expression: &ExprId| {
-        if let ExprKind::WordRead { view, offset } = expression.kind()
-            && let Some(index) = view
-                .offset
-                .as_constant()
-                .zip(offset.as_constant())
-                .and_then(|(base, relative)| base.checked_add(relative))
-                .and_then(|index| usize::try_from(index).ok())
-        {
-            insert(&mut coordinates, index);
-        }
-    };
-    for expression in array.operands.keys() {
-        candidate(expression);
-    }
-    array
-        .conditional
-        .visit(&mut |expression, _| candidate(expression));
+    let coordinates = candidate_coordinates(array);
     let mut out = BTreeMap::new();
     for index in coordinates {
         checkpoint(budget)?;

@@ -141,13 +141,9 @@ fn coordinates(root: &ByteStateId) -> BTreeSet<usize> {
     done.remove(&root.id()).expect("root visited")
 }
 
-pub(super) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
-    array: &EvmByteArray<N>,
-    domain: AlgebraRef<'_, D>,
-) -> Result<BTreeMap<usize, EvmValue<N>>, RangeError> {
-    if !needed(array) {
-        return Ok(BTreeMap::new());
-    }
+// Candidates are pure coordinates, never read facts or scalar guarantees.
+// Metered projection must fund the graph/operand traversal before calling this.
+fn candidate_coordinates<N: WordElement>(array: &EvmByteArray<N>) -> BTreeSet<usize> {
     let mut coordinates = coordinates(&array.root);
     // An instantiated summary has a fresh observed root rather than writes.
     // Its exact read facts provide candidate coordinates for the next summary.
@@ -169,6 +165,17 @@ pub(super) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     array
         .conditional
         .visit(&mut |expression, _| candidate(expression));
+    coordinates
+}
+
+pub(super) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    array: &EvmByteArray<N>,
+    domain: AlgebraRef<'_, D>,
+) -> Result<BTreeMap<usize, EvmValue<N>>, RangeError> {
+    if !needed(array) {
+        return Ok(BTreeMap::new());
+    }
+    let coordinates = candidate_coordinates(array);
     let mut out = BTreeMap::new();
     for index in coordinates {
         if analysis_control::current_cancellation().is_cancelled() {
