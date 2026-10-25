@@ -111,13 +111,16 @@ fn normalized_catalog_rejects_forged_sources_and_coverage_revisions() {
         ))
     );
     let mut invalid = report.clone();
-    invalid.programs[0].fork = api::Fork::Cancun;
+    std::sync::Arc::make_mut(&mut invalid.programs[0]).fork = api::Fork::Cancun;
     assert!(invalid.validate().is_err());
     let mut invalid = report.clone();
-    invalid.native.as_mut().unwrap().cfg[0].basic_block = Some(usize::MAX);
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap()).cfg[0].basic_block =
+        Some(usize::MAX);
     assert!(invalid.validate().is_err());
     let mut invalid = report.clone();
-    invalid.native.as_mut().unwrap().cfg[0].executed_pcs.push(1);
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap()).cfg[0]
+        .executed_pcs
+        .push(1);
     assert_eq!(
         invalid.validate(),
         Err(api::ReportValidationFailure::Source(
@@ -125,7 +128,11 @@ fn normalized_catalog_rejects_forged_sources_and_coverage_revisions() {
         ))
     );
     let mut invalid = report.clone();
-    invalid.native.as_mut().unwrap().ssa.blocks[0].instructions[0].opcode = 0x00;
+    std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+        .ssa
+        .blocks[0]
+        .instructions[0]
+        .opcode = 0x00;
     assert_eq!(
         invalid.validate(),
         Err(api::ReportValidationFailure::Source(
@@ -209,7 +216,7 @@ fn nonroot_identical_instructions_do_not_authorize_a_different_code_source() {
         .unwrap()
         .id;
     let mut invalid = report.clone();
-    let graph = invalid.native.as_mut().unwrap();
+    let graph = std::sync::Arc::make_mut(invalid.native.as_mut().unwrap());
     graph
         .states
         .iter_mut()
@@ -244,12 +251,14 @@ fn nonroot_identical_instructions_do_not_authorize_a_different_code_source() {
         .program
         .unwrap();
     let mut invalid = report.clone();
-    invalid
-        .programs
-        .iter_mut()
-        .find(|program| program.id == callee_program)
-        .unwrap()
-        .fork = api::Fork::Cancun;
+    std::sync::Arc::make_mut(
+        invalid
+            .programs
+            .iter_mut()
+            .find(|program| program.id == callee_program)
+            .unwrap(),
+    )
+    .fork = api::Fork::Cancun;
     assert_eq!(
         invalid.validate(),
         Err(api::ReportValidationFailure::Source(
@@ -257,12 +266,14 @@ fn nonroot_identical_instructions_do_not_authorize_a_different_code_source() {
         ))
     );
     let mut invalid = report;
-    invalid
-        .programs
-        .iter_mut()
-        .find(|program| program.id == callee_program)
-        .unwrap()
-        .code_hash = format!("0x{}", "ab".repeat(32));
+    std::sync::Arc::make_mut(
+        invalid
+            .programs
+            .iter_mut()
+            .find(|program| program.id == callee_program)
+            .unwrap(),
+    )
+    .code_hash = format!("0x{}", "ab".repeat(32));
     assert!(invalid.validate().is_err());
 }
 

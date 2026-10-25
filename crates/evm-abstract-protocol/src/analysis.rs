@@ -334,8 +334,6 @@ record! {
         pub root_terminal_coverage: Option<crate::RootTerminalCoverage>,
         /// Known-call, recursion and environment relations, separate from native CFG/SSA.
         pub abstract_summaries: Vec<crate::AbstractSummary>,
-        /// Fixed-snapshot account/storage acquisition evidence.
-        pub acquisition: Option<crate::AcquisitionReport>,
     }
 }
 
@@ -357,13 +355,15 @@ record! {
         pub postprocessing_work: u64,
         /// Processing and queue durations, separate from semantic graph identity.
         pub timings: crate::AnalysisTimings,
+        /// Cumulative fixed-snapshot acquisition, separate from immutable graph identity.
+        pub acquisition: Option<crate::AcquisitionReport>,
         /// Complete immutable source directory shared by both graph namespaces.
-        pub programs: Vec<crate::ProgramInfo>,
+        pub programs: Vec<std::sync::Arc<crate::ProgramInfo>>,
         /// Conservative global graph, when global analysis was requested.
-        /// Fixed heap slots keep decoding from stacking two full graph values.
-        pub global: Option<Box<AnalysisGraph>>,
+        /// Shared fixed slots retain the exact projected graph across publications.
+        pub global: Option<std::sync::Arc<AnalysisGraph>>,
         /// Native graph, including honest pending detail when available.
-        pub native: Option<Box<AnalysisGraph>>,
+        pub native: Option<std::sync::Arc<AnalysisGraph>>,
         /// Global/native qualifications, receipts and optional RPC revision chain.
         pub hybrid: Option<crate::HybridReport>,
     }

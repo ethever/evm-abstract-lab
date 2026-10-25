@@ -1,6 +1,8 @@
 //! Preserve both graphs once and export receipts before either graph is moved.
 pub(in crate::analyze) mod rpc;
-use super::{api, mapping, value};
+#[cfg(test)]
+mod tests;
+use super::{ProjectionInput, api, mapping, value};
 use crate::analyze::{checkpoint, ssa};
 use evm_abstract::{
     analysis::{self, control::Control, layers::SnapshotId},
@@ -38,31 +40,48 @@ pub(in crate::analyze) fn project_with_budget<N: WordElement, D: EvmNumericAlgeb
     control: &Control,
     budget: &mut WorkBudget,
 ) -> Result<api::AnalysisReport, api::ApiError> {
+    project_with_retained_global(
+        source,
+        algebra,
+        control,
+        budget,
+        ProjectionInput {
+            request,
+            scope,
+            numeric_model,
+        },
+        None,
+    )
+}
+
+/// `retained` is the successful early publication of the exact same producer.
+/// The caller must compare ModelHandle identity before supplying it.
+pub(in crate::analyze) fn project_with_retained_global<
+    N: WordElement,
+    D: EvmNumericAlgebra<Element = N>,
+>(
+    source: &analysis::HybridAnalysis<N>,
+    algebra: &ValueAlgebra<D>,
+    control: &Control,
+    budget: &mut WorkBudget,
+    input: ProjectionInput<'_>,
+    retained: Option<&api::AnalysisReport>,
+) -> Result<api::AnalysisReport, api::ApiError> {
     // EvmWorldAnalysis serde omits execution_evidence. Export the borrowed
     // receipts explicitly, with the native entry IDs and frontier namespace.
     let local_prefixes = prefixes(source, control, budget)?;
     let coverage = coverage(source)?;
-    let (baseline, mut programs) = super::project_graph(
-        source.baseline(),
-        request,
-        scope,
-        algebra,
-        numeric_model,
-        control,
-        budget,
-        Vec::new(),
-    )?;
+    let (baseline, mut programs) =
+        super::project_global(source.baseline(), algebra, control, budget, input, retained)?;
     let detail = source
         .detail()
         .map(|detail| {
             let (graph, catalog) = super::project_graph(
                 detail,
-                request,
-                scope,
                 algebra,
-                numeric_model,
                 control,
                 budget,
+                input,
                 std::mem::take(&mut programs),
             )?;
             programs = catalog;
@@ -93,9 +112,13 @@ pub(in crate::analyze) fn project_with_budget<N: WordElement, D: EvmNumericAlgeb
             as u64,
         postprocessing_work: budget.used() as u64,
         timings: api::AnalysisTimings::default(),
+        acquisition: source
+            .baseline()
+            .rpc_acquisition()
+            .map(crate::analyze::rpc::acquisition),
         programs,
-        global: Some(Box::new(baseline)),
-        native: detail.map(Box::new),
+        global: Some(baseline),
+        native: detail.map(std::sync::Arc::new),
         hybrid: Some(api::HybridReport {
             coverage,
             local_prefixes,

@@ -338,10 +338,7 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
             );
         }
         let mut leaked = report.clone();
-        let node = leaked
-            .native
-            .as_mut()
-            .unwrap()
+        let node = std::sync::Arc::make_mut(leaked.native.as_mut().unwrap())
             .abstract_summaries
             .iter_mut()
             .flat_map(|summary| &mut summary.regional_cfg.nodes)
@@ -358,7 +355,7 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
             ))
         ));
         let mut wrong_fork = report.clone();
-        wrong_fork.native.as_mut().unwrap().fork = api::Fork::Cancun;
+        std::sync::Arc::make_mut(wrong_fork.native.as_mut().unwrap()).fork = api::Fork::Cancun;
         assert_eq!(
             wrong_fork.validate(),
             Err(api::ReportValidationFailure::Process(
@@ -374,10 +371,7 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
         .unwrap();
         assert_eq!(decoded.result.unwrap(), report);
         let mut malformed = report;
-        let summary = malformed
-            .native
-            .as_mut()
-            .unwrap()
+        let summary = std::sync::Arc::make_mut(malformed.native.as_mut().unwrap())
             .abstract_summaries
             .iter_mut()
             .find(|summary| {
@@ -776,7 +770,8 @@ fn regional_invalid_delegation_retains_identity_without_a_program_block() {
             );
 
             let mut fake_block = report.clone();
-            fake_block.native.as_mut().unwrap().abstract_summaries[index]
+            std::sync::Arc::make_mut(fake_block.native.as_mut().unwrap()).abstract_summaries
+                [index]
                 .regional_cfg
                 .nodes[node.id]
                 .frame
@@ -793,7 +788,8 @@ fn regional_invalid_delegation_retains_identity_without_a_program_block() {
                 ))
             );
             let mut fake_visit = report.clone();
-            fake_visit.native.as_mut().unwrap().abstract_summaries[index]
+            std::sync::Arc::make_mut(fake_visit.native.as_mut().unwrap()).abstract_summaries
+                [index]
                 .regional_cfg
                 .nodes[node.id]
                 .transfer
@@ -829,7 +825,8 @@ fn regional_record_local_references_and_revision_claims_are_validated() {
     let (_, report) = calls_fixture();
     for case in 0..16 {
         let mut bad = report.clone();
-        let summary = &mut bad.native.as_mut().unwrap().abstract_summaries[0];
+        let summary =
+            &mut std::sync::Arc::make_mut(bad.native.as_mut().unwrap()).abstract_summaries[0];
         let cfg = &mut summary.regional_cfg;
         let node_count = cfg.nodes.len();
         let call_count = cfg.calls.len();
@@ -910,7 +907,9 @@ fn regional_record_local_references_and_revision_claims_are_validated() {
         );
     }
     let mut historical = report;
-    for summary in &mut historical.native.as_mut().unwrap().abstract_summaries {
+    for summary in
+        &mut std::sync::Arc::make_mut(historical.native.as_mut().unwrap()).abstract_summaries
+    {
         for node in &mut summary.regional_cfg.nodes {
             node.input_revision.0 += 1;
             if let Some(transfer) = &mut node.transfer {

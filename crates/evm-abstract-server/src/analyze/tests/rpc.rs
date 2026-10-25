@@ -187,16 +187,7 @@ fn rpc_report_distinguishes_pinned_header_from_execution_overrides() {
                 .constants
                 .is_none()
         );
-        assert_eq!(
-            report
-                .selected_graph()
-                .unwrap()
-                .acquisition
-                .as_ref()
-                .unwrap()
-                .requests,
-            requests
-        );
+        assert_eq!(report.acquisition.as_ref().unwrap().requests, requests);
         assert!(report.selected_graph().unwrap().ssa.complete);
         assert_eq!(
             report.selected_graph().unwrap().scope,
