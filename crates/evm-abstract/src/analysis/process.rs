@@ -1,6 +1,7 @@
 //! Coarse EVM process semantics, independent of captured executable identity.
 //!
-//! A process receipt describes conservative actions of a whole captured region.
+//! Known code advances between source-qualified MAY basic blocks. Unknown code
+//! retains a repeating action/effect envelope. Both use the same relation table.
 //! It never witnesses execution of an instruction PC. Native Body/Resume slots
 //! retain input, output and continuation currency; these types add no scheduler.
 
@@ -9,7 +10,8 @@ use serde::Serialize;
 
 mod frame;
 pub use frame::{
-    CreationContinuation, EvmProcessInvocation, ProcessCreation, ProcessFrameKey, ProcessSource,
+    CreationContinuation, EvmProcessInvocation, ProcessCreation, ProcessFrameKey, ProcessLocation,
+    ProcessSource,
 };
 
 /// Frozen selection for captured runtime bodies; ordinary execution is default.
@@ -18,7 +20,7 @@ pub enum RuntimeExecution {
     /// Execute captured instructions using the existing precise provider.
     #[default]
     Native,
-    /// Cover a captured runtime with a conservative action/effect process.
+    /// Cover a captured runtime with a conservative MAY control/effect process.
     Process,
 }
 
@@ -87,9 +89,9 @@ pub enum ProcessBoundary {
 /// Actual coarse transfer receipt, not instruction or SSA evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EvmProcessTransfer {
-    /// Local process actions may repeat before any represented exit.
+    /// Unknown-code actions may repeat; known blocks use explicit successors.
     pub repeat: bool,
-    /// Primitive action rules selected by the paid decoded capability scan.
+    /// Primitive action rules selected by this paid MAY control transfer.
     pub actions: Vec<ProcessAction>,
     /// Allocation guards actually applied before entering constructor slots.
     pub creations: Vec<ProcessCreationTransfer>,

@@ -87,7 +87,21 @@ pub enum ProcessSource {
     },
 }
 
-/// A process has no instruction cursor or concrete residual storage address.
+/// A source-qualified MAY location, never evidence of Native PC execution.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum ProcessLocation {
+    /// Arbitrary unobserved code, with a repeating action/effect envelope.
+    #[default]
+    Any,
+    /// Entry to one decoded basic block under erased private values.
+    Block(usize),
+    /// Shared union of all legal decoded JUMPDESTs for unknown taken jumps.
+    JumpTargets,
+    /// Successful fallthrough beyond the captured source's final instruction.
+    End,
+}
+
+/// Process coordinates retain MAY control and no concrete residual address.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct ProcessFrameKey {
     /// Digest of all frozen named owners and captured code versions.
@@ -98,6 +112,8 @@ pub struct ProcessFrameKey {
     pub source: ProcessSource,
     /// Read-only execution propagates through every nested action.
     pub is_static: bool,
+    /// Conservative control coordinate within this exact source and epoch.
+    pub location: ProcessLocation,
 }
 
 /// Constructor continuation coordinates; nonce/endowment stay joined inputs.

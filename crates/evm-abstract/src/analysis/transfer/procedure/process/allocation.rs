@@ -176,6 +176,7 @@ where
                     fork: self.world.fork(),
                 },
                 is_static: false,
+                location: crate::analysis::ProcessLocation::Any,
             });
             // Unknown creation addresses are independent operands within the
             // selected cell; Named root namespaces need not be EVM constants.
@@ -197,7 +198,9 @@ where
                 self.budget,
             )?;
             let endowment = summary::top(self.domain, self.budget)?;
-            self.pay_process_arrays()?;
+            let memory = EvmByteArray::memory_with_payment(self.domain, self.budget)?;
+            let calldata = EvmByteArray::empty_with_payment(self.domain, self.budget)?;
+            let returndata = EvmByteArray::empty_with_payment(self.domain, self.budget)?;
             payload.pay_clone_with(self.budget)?;
             let mut child = payload.clone();
             child.store = store;
@@ -207,10 +210,10 @@ where
                     code: FrameCode::InitCode,
                     program: None,
                     stack: Vec::new(),
-                    memory: EvmByteArray::memory(),
-                    calldata: EvmByteArray::empty(),
+                    memory,
+                    calldata,
                     environment_calldata: false,
-                    returndata: EvmByteArray::empty(),
+                    returndata,
                     call_value: endowment,
                     address_operand: Some(address_operand),
                     caller_operand: Some(caller_operand),

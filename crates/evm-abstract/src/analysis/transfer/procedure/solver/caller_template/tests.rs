@@ -209,6 +209,7 @@ fn caller_move_retains_variable_process_and_creation_fields_and_sticky_refusal()
                         fork: crate::Fork::Osaka,
                     },
                     is_static: true,
+                    location: crate::analysis::ProcessLocation::Any,
                 }));
             }
             owned.location.frames[0] = owned.frames[0].key.clone();
