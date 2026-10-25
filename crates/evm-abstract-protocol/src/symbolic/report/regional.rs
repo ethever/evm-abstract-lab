@@ -75,12 +75,20 @@ fn block_evidence(node: &RegionalNode, semantics: TransferSemantics) -> Result<(
     Ok(())
 }
 
-impl Validation<'_> {
-    pub(super) fn regional(
-        &self,
-        index: usize,
-        summary: &AbstractSummary,
-    ) -> Result<(), ReportValidationFailure> {
+impl AbstractSummary {
+    pub(crate) fn validate_control(&self, index: usize) -> Result<(), ReportValidationFailure> {
+        let summary = self;
+        let pool = |kind, id, length| {
+            if id < length {
+                Ok(())
+            } else {
+                Err(ReportValidationFailure::Pool(crate::PoolReferenceFailure {
+                    kind,
+                    index: id,
+                    length,
+                }))
+            }
+        };
         let cfg = &summary.regional_cfg;
         let failure = |id, call, kind| {
             ReportValidationFailure::Regional(RegionalValidationFailure {
@@ -90,10 +98,10 @@ impl Validation<'_> {
                 kind,
             })
         };
-        let node_ref = |id| self.pool(PoolReferenceKind::RegionalNode, id, cfg.nodes.len());
-        let call_ref = |id| self.pool(PoolReferenceKind::RegionalCall, id, cfg.calls.len());
+        let node_ref = |id| pool(PoolReferenceKind::RegionalNode, id, cfg.nodes.len());
+        let call_ref = |id| pool(PoolReferenceKind::RegionalCall, id, cfg.calls.len());
         let procedure_ref = |id| {
-            self.pool(
+            pool(
                 PoolReferenceKind::AbstractProcedure,
                 id,
                 summary.procedures.len(),
@@ -181,5 +189,15 @@ impl Validation<'_> {
             }
         }
         Ok(())
+    }
+}
+
+impl Validation<'_> {
+    pub(super) fn regional(
+        &self,
+        index: usize,
+        summary: &AbstractSummary,
+    ) -> Result<(), ReportValidationFailure> {
+        summary.validate_control(index)
     }
 }
