@@ -1,39 +1,95 @@
 //! Native scalar work for the frozen-coordinate summary path.
 //!
-//! These operations retain the actual carrier and stage owned results. The
-//! bounded representation erases storage observations before any join, so its
-//! staging copy need not copy observations that would immediately be dropped.
+//! These operations retain the actual carrier and stage owned results. Bound
+//! normalization constructs retained components directly from borrowed inputs;
+//! copying a component before projecting or forgetting it supplies no invariant.
 
 use super::super::{
     AlgebraRef, EvmContinuation, EvmFrame, EvmFrameSummary, EvmPayloadSummary, MachineError,
     WorkBudget, bounded::reserve, stack_alias::StackAliases,
 };
-use crate::domain::{EvmNumericAlgebra, WordElement, summary};
+use crate::domain::{EvmNumericAlgebra, EvmValue, WordElement, summary};
 
 impl<N: WordElement> EvmPayloadSummary<N> {
-    /// Copy the complete bounded payload while separately paying every scalar
-    /// and nested summary copy. Optional observations are not part of a bound.
-    pub(in crate::analysis) fn copy_for_bound_with_payment(
+    fn copy_bound_location_with_payment(
         &self,
         budget: &mut WorkBudget,
+    ) -> Result<crate::analysis::MachineKey, MachineError> {
+        // measure_work covers executable frames, not this independent report
+        // projection. Fund its cached-length census before PolicyKey walks the
+        // frame headers, then pay the complete key copy (including histories).
+        reserve(
+            budget,
+            self.location
+                .frames
+                .len()
+                .saturating_add(1)
+                .saturating_mul(8),
+        )?;
+        crate::analysis::engine::policy::clone_key(&self.location, budget)
+    }
+
+    /// Build the normalized bound directly. Every retained native copy,
+    /// projection and constructor obtains its own quote; discarded numeric
+    /// payloads need no staging copy. The immutable input survives any refusal.
+    pub(in crate::analysis) fn project_for_bound_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        &self,
+        layout: &Self,
+        coarse: bool,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut WorkBudget,
     ) -> Result<Self, MachineError> {
-        reserve(budget, self.work_size())?;
+        reserve(budget, self.work_size().saturating_add(layout.work_size()))?;
         self.check_shape()?;
-        let store = self.store.clone_with_payment(budget)?;
+        layout.check_shape()?;
+        if self.frames.len() != layout.frames.len() {
+            return Err(MachineError::Shape);
+        }
+        let location = self.copy_bound_location_with_payment(budget)?;
+        let scalar = |value: &EvmValue<N>, budget: &mut WorkBudget| {
+            if coarse {
+                let (lower, upper) = value.interval().unsigned_bounds();
+                summary::unsigned_range(lower, upper, domain, budget)
+            } else {
+                summary::clone_value(value, budget)
+            }
+        };
+        let store = |value: &crate::world::EvmStoreSummary<N>,
+                     shape: &crate::world::EvmStoreSummary<N>,
+                     budget: &mut WorkBudget| {
+            if coarse {
+                value.forget_loop_numeric_in_layout_with_payment(shape, domain, budget)
+            } else {
+                value.project_to_layout_with_payment(shape, domain, budget)
+            }
+        };
+        let bytes = |value: &crate::world::EvmByteArraySummary<N>,
+                     shape: &crate::world::EvmByteArraySummary<N>,
+                     budget: &mut WorkBudget| {
+            if coarse {
+                // Projection preserves length/memory interpretation; its cell
+                // and word results would immediately be erased by forgetting.
+                value.forget_loop_content_with_payment(domain, budget)
+            } else {
+                value.project_to_layout_with_payment(shape, domain, budget)
+            }
+        };
+        let current_store = store(&self.store, &layout.store, budget)?;
         let mut frames = Vec::with_capacity(self.frames.len());
-        for frame in &self.frames {
+        for (frame, shape) in self.frames.iter().zip(&layout.frames) {
             let stack = frame
                 .stack
                 .iter()
-                .map(|value| summary::clone_value(value, budget))
+                .map(|value| scalar(value, budget))
                 .collect::<Result<Vec<_>, _>>()?;
-            let call_value = summary::clone_value(&frame.call_value, budget)?;
-            let address_operand = summary::clone_value(&frame.address_operand, budget)?;
-            let caller_operand = summary::clone_value(&frame.caller_operand, budget)?;
-            let memory = frame.memory.clone_with_payment(budget)?;
-            let calldata = frame.calldata.clone_with_payment(budget)?;
-            let returndata = frame.returndata.clone_with_payment(budget)?;
-            let saved_store = frame.saved_store.clone_with_payment(budget)?;
+            let call_value = scalar(&frame.call_value, budget)?;
+            let address_operand = scalar(&frame.address_operand, budget)?;
+            let caller_operand = scalar(&frame.caller_operand, budget)?;
+            let memory = bytes(&frame.memory, &shape.memory, budget)?;
+            let calldata = bytes(&frame.calldata, &shape.calldata, budget)?;
+            let returndata = bytes(&frame.returndata, &shape.returndata, budget)?;
+            let saved_store = store(&frame.saved_store, &shape.saved_store, budget)?;
+            let stack_aliases = StackAliases::form(&stack, false)?;
             frames.push(EvmFrameSummary {
                 semantics: frame.semantics,
                 frame: EvmFrame {
@@ -50,28 +106,28 @@ impl<N: WordElement> EvmPayloadSummary<N> {
                     caller_operand,
                     saved_store,
                 },
-                stack_aliases: frame.stack_aliases.clone(),
+                stack_aliases,
             });
         }
         let mut continuations = Vec::with_capacity(self.continuations.len());
         for continuation in &self.continuations {
             continuations.push(EvmContinuation {
                 return_block: continuation.return_block,
-                output_offset: summary::clone_value(&continuation.output_offset, budget)?,
-                output_size: summary::clone_value(&continuation.output_size, budget)?,
+                output_offset: scalar(&continuation.output_offset, budget)?,
+                output_size: scalar(&continuation.output_size, budget)?,
                 creation: continuation.creation,
             });
         }
         let mut result = Self {
             frames,
             continuations,
-            store,
+            store: current_store,
             storage_observations: Default::default(),
             work: 0,
-            location: self.location.clone(),
+            location,
         };
         result.work = result.measure_work();
-        reserve(budget, 0)?;
+        reserve(budget, result.work_size())?;
         Ok(result)
     }
 
@@ -112,6 +168,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
                 return Err(MachineError::Shape);
             }
         }
+        let location = self.copy_bound_location_with_payment(budget)?;
         let store = self
             .store
             .join_with_payment(&incoming.store, domain, widen, budget)?;
@@ -198,7 +255,7 @@ impl<N: WordElement> EvmPayloadSummary<N> {
             store,
             storage_observations: Default::default(),
             work: 0,
-            location: self.location.clone(),
+            location,
         };
         result.work = result.measure_work();
         reserve(budget, result.work)?;

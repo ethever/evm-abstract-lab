@@ -18,6 +18,8 @@ use crate::{
 use serde::Serialize;
 use std::fmt;
 
+mod normalization;
+
 #[derive(Clone, Default, Debug)]
 struct Receipt {
     clones: usize,
