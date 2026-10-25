@@ -13,6 +13,7 @@ use crate::{
         cooperation::{Composition, CooperationError},
         layers::SessionError,
         progress::Phase,
+        publication::{NoopPublisher, StagePublisher},
         rpc::{Discovery, RpcAnalysisError},
         transfer::StorageReadPolicy,
     },
@@ -47,6 +48,37 @@ where
     P: PartitionPolicy,
     S: StatePolicy<D, P::Class>,
     X: Composition<D::Element>,
+{
+    analyze_rpc_hybrid_with_publisher(
+        engine,
+        input,
+        entry,
+        config,
+        hybrid,
+        control,
+        &mut NoopPublisher,
+    )
+}
+
+/// Publish the authentic closed original model before optional fixed-snapshot
+/// discovery. Every later restriction/restart uses the same cumulative payer.
+/// Retained publications keep their original revision even on cancellation.
+pub fn analyze_rpc_hybrid_with_publisher<'a, D, C, P, S, X, T>(
+    engine: AnalysisEngine<'a, D, C, P, S, X>,
+    input: &RpcInput,
+    entry: EvmEntry<D::Element>,
+    config: ExecutionConfig,
+    hybrid: HybridConfig,
+    control: &Control,
+    publisher: &mut T,
+) -> RpcHybridResult<D::Element, <X as Composition<D::Element>>::Error>
+where
+    D: EvmNumericAlgebra,
+    C: ContextPolicy,
+    P: PartitionPolicy,
+    S: StatePolicy<D, P::Class>,
+    X: Composition<D::Element>,
+    T: StagePublisher<D::Element>,
 {
     control.scope(|| {
         control.checkpoint()?;
@@ -89,7 +121,7 @@ where
         let mut layered = session
             .layered(engine, entry, config, control)
             .map_err(session_error)?;
-        let baseline = layered
+        let mut baseline = layered
             .run_hybrid_uncached(
                 HybridConfig {
                     max_detail_work: 0,
@@ -99,6 +131,13 @@ where
                 control,
             )
             .map_err(session_error)?;
+        // The initial operation deliberately omitted Native execution, while
+        // the outer RPC request may still admit it. Publish the real requested
+        // allowance and Pending state before any precision acquisition/copy.
+        baseline.defer_detail(hybrid);
+        if baseline.coverage().baseline_current {
+            publisher.publish(&baseline);
+        }
         let initial_work = layered.work_used();
         let mut latest = None;
         let mut retained_detail = None;

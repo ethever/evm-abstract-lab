@@ -11,6 +11,7 @@ use crate::analysis::{
         self,
         cooperation::{Borrowed, Cooperation},
     },
+    publication::{ModelHandle, NoopPublisher, StagePublisher},
     transfer::StorageReadPolicy,
 };
 use crate::{
@@ -72,19 +73,33 @@ where
         hybrid: HybridConfig,
         control: &Control,
     ) -> HybridResult<D::Element, <X as Composition<D::Element>>::Error> {
+        self.run_hybrid_with_publisher(input, config, hybrid, control, &mut NoopPublisher)
+    }
+
+    /// Publish the closed global model before starting optional Native precision.
+    /// Cancellation after publication leaves retained immutable handles usable.
+    pub fn run_hybrid_with_publisher<T: StagePublisher<D::Element>>(
+        &mut self,
+        input: AnalysisInput<D::Element>,
+        config: ExecutionConfig,
+        hybrid: HybridConfig,
+        control: &Control,
+        publisher: &mut T,
+    ) -> HybridResult<D::Element, <X as Composition<D::Element>>::Error> {
         control.scope(|| {
             control
                 .checkpoint()
                 .map_err(|_| CooperationError::Cancelled)?;
             let mut budget = WorkBudget::new(config.max_work);
             let mut counters = engine::Counters::with_observer(control.observer());
-            let report = self.run_hybrid_metered(
+            let report = self.run_hybrid_metered_with_publisher(
                 input,
                 config,
                 hybrid,
                 &mut budget,
                 &mut counters,
                 StorageReadPolicy::Abstract,
+                publisher,
             )?;
             control
                 .checkpoint()
@@ -98,6 +113,7 @@ where
     /// supplied read policy applies only to native precision discovery.
     /// Never call public run_hybrid as a rescue
     /// after an earlier run or sticky refusal. No kernel graph is rehydrated.
+    #[cfg(test)]
     pub(in crate::analysis) fn run_hybrid_metered(
         &mut self,
         input: AnalysisInput<D::Element>,
@@ -107,6 +123,27 @@ where
         counters: &mut engine::Counters,
         detail_reads: StorageReadPolicy,
     ) -> HybridResult<D::Element, <X as Composition<D::Element>>::Error> {
+        self.run_hybrid_metered_with_publisher(
+            input,
+            config,
+            hybrid,
+            budget,
+            counters,
+            detail_reads,
+            &mut NoopPublisher,
+        )
+    }
+
+    pub(in crate::analysis) fn run_hybrid_metered_with_publisher<T: StagePublisher<D::Element>>(
+        &mut self,
+        input: AnalysisInput<D::Element>,
+        config: ExecutionConfig,
+        hybrid: HybridConfig,
+        budget: &mut WorkBudget,
+        counters: &mut engine::Counters,
+        detail_reads: StorageReadPolicy,
+        publisher: &mut T,
+    ) -> HybridResult<D::Element, <X as Composition<D::Element>>::Error> {
         crate::resource::clone_payment::checkpoint(budget).map_err(|error| match error {
             CloneError::Cancelled => CooperationError::Cancelled,
             CloneError::Work => CooperationError::Protocol(analysis_kernel::KernelError::Stopped(
@@ -114,6 +151,14 @@ where
             )),
         })?;
         let prior = budget.used();
+        // Reserve the immutable graph handle before execution can exhaust work.
+        // Publication never obtains a fresh ledger after Native refusal.
+        crate::resource::clone_payment::pay(budget, 1).map_err(|error| match error {
+            CloneError::Cancelled => CooperationError::Cancelled,
+            CloneError::Work => CooperationError::Protocol(analysis_kernel::KernelError::Stopped(
+                crate::analysis::MachineError::work_failure(),
+            )),
+        })?;
         let AnalysisInput {
             world,
             entry,
@@ -144,7 +189,7 @@ where
         )?;
         let baseline_current = current(&baseline, budget);
         baseline.work = budget.used();
-        let mut coverage = HybridCoverage {
+        let coverage = HybridCoverage {
             baseline_current,
             detail_current: false,
             detail_binding: match baseline.root_binding() {
@@ -158,7 +203,13 @@ where
             local_detail_sites: 0,
             detail_regions: Vec::new(),
             chosen: HybridInterpretation::Process,
-            detail: DetailState::BaselinePending,
+            detail: if !baseline_current {
+                DetailState::BaselinePending
+            } else if hybrid.max_detail_work == 0 || hybrid.max_detail_regions == 0 {
+                DetailState::Disabled
+            } else {
+                DetailState::Pending
+            },
             requested_detail_work: hybrid.max_detail_work,
             requested_native_terminal_coverage: config.root_terminal_coverage,
             work: HybridWork {
@@ -168,6 +219,20 @@ where
                 ..HybridWork::default()
             },
         };
+        let baseline = ModelHandle::new(baseline);
+        let staged = HybridAnalysis {
+            baseline,
+            detail: None,
+            coverage,
+        };
+        if staged.coverage.baseline_current {
+            publisher.publish(&staged);
+        }
+        let HybridAnalysis {
+            baseline,
+            mut coverage,
+            ..
+        } = staged;
         let mut detail = None;
         if hybrid.max_detail_work == 0 || hybrid.max_detail_regions == 0 {
             coverage.detail = DetailState::Disabled;

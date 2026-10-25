@@ -3,7 +3,7 @@
 mod acquire;
 mod run;
 
-pub use run::analyze_rpc_hybrid;
+pub use run::{analyze_rpc_hybrid, analyze_rpc_hybrid_with_publisher};
 
 use super::{RpcAcquisition, RpcAnalysisError};
 use crate::{

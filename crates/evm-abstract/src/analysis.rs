@@ -16,6 +16,7 @@ pub mod layers;
 mod machine;
 pub mod process;
 pub mod progress;
+pub mod publication;
 mod rpc;
 mod single;
 mod state;
@@ -80,7 +81,7 @@ pub use process::{
 pub use rpc::{
     RpcAccountFailure, RpcAcquisition, RpcAnalysis, RpcAnalysisError, RpcBaselineRelation,
     RpcFactRestriction, RpcHybridAnalysis, RpcHybridCoverage, RpcPrecisionOutcome, RpcStorageSlot,
-    analyze_rpc, analyze_rpc_hybrid,
+    analyze_rpc, analyze_rpc_hybrid, analyze_rpc_hybrid_with_publisher,
 };
 pub use single::ProjectionError;
 pub use summary::{EvmSummaryInput, EvmSummaryOutput, EvmSummaryRecord, SummaryStats};

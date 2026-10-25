@@ -7,7 +7,7 @@
 mod hybrid;
 pub use hybrid::{
     RpcBaselineRelation, RpcFactRestriction, RpcHybridAnalysis, RpcHybridCoverage,
-    RpcPrecisionOutcome, analyze_rpc_hybrid,
+    RpcPrecisionOutcome, analyze_rpc_hybrid, analyze_rpc_hybrid_with_publisher,
 };
 
 use super::{
