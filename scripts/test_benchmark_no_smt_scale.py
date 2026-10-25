@@ -89,6 +89,78 @@ class DeliveryTests(unittest.TestCase):
                 self.assertEqual(sample["nativefinal"]["application"], {"status": "Incomplete", "work": 1000})
                 self.assertEqual(delivered["status"], "Incomplete")
 
+    def fixed_hybrid(self):
+        global_graph = {**report(), "schema_version": 16, "status": "Converged", "work": 100}
+        native_graph = {**report(), "schema_version": 16, "work": 300, "transfers": 11}
+        return {
+            "schema_version": 16, "selected_view": "Baseline",
+            "status": "Converged", "work": 800, "transfers": 18,
+            "global": {"analysis": global_graph},
+            "native": {"analysis": native_graph, "partial_ssa": {"complete": False}},
+            "hybrid": {"coverage": {"baseline_current": True, "chosen": "ProcessWithDetail"}},
+        }
+
+    def test_fixed_hybrid_placement_preserves_both_graphs_and_explicit_selection(self):
+        for selection, work, status in (("Baseline", 100, "Converged"), ("Native", 300, "Incomplete")):
+            with self.subTest(selection=selection):
+                delivered = self.fixed_hybrid()
+                delivered["selected_view"] = selection
+                # A legacy counter override cannot replace the new graph's raw counters.
+                delivered["hybrid"]["selected_graph"] = {"status": "Converged", "work": 9999}
+                before = copy.deepcopy(delivered)
+                self.write_stdout(delivered)
+                sample = self.collect()
+                self.assertTrue(sample["report_delivered"], sample["report_error"])
+                final = sample["nativefinal"]
+                self.assertEqual((final["work"], final["status"]), (work, status))
+                self.assertEqual(final["graph_namespace"], selection)
+                self.assertEqual(final["application"], {"status": "Converged", "work": 800})
+                self.assertEqual(final["graphs"]["Baseline"]["work"], 100)
+                self.assertEqual(final["graphs"]["Native"]["work"], 300)
+                self.assertEqual(final["graphs"]["Native"]["status"], "Incomplete")
+                self.assertEqual(final["graphs"]["Native"]["frontiers"], report()["frontiers"])
+                self.assertEqual(delivered, before)
+                self.assertIn("pending", final["semantic_acceptance"])
+
+    def test_fixed_hybrid_without_native_keeps_only_the_global_graph(self):
+        delivered = self.fixed_hybrid()
+        delivered["native"] = None
+        self.write_stdout(delivered)
+        sample = self.collect()
+        self.assertTrue(sample["report_delivered"], sample["report_error"])
+        self.assertEqual(set(sample["nativefinal"]["graphs"]), {"Baseline"})
+
+    def test_fixed_hybrid_rejects_bad_namespace_schema_and_unselected_payload(self):
+        mutations = (
+            ("selected_view", "Missing"),
+            ("global", None),
+            ("native", {"cfg": []}),
+            ("schema_version", 15),
+            ("status", "Incomplete"),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field):
+                delivered = self.fixed_hybrid()
+                delivered[field] = value
+                self.write_stdout(delivered)
+                sample = self.collect()
+                self.assertFalse(sample["report_delivered"])
+                self.assertIsNone(sample["nativefinal"])
+                self.assertIsNotNone(sample["report_error"])
+        delivered = self.fixed_hybrid()
+        delivered.update(selected_view="Native", native=None)
+        self.write_stdout(delivered)
+        self.assertFalse(self.collect()["report_delivered"])
+        delivered = self.fixed_hybrid()
+        delivered["selected_view"] = "Native"
+        delivered["global"]["analysis"]["frontiers"] = "invalid"
+        self.write_stdout(delivered)
+        self.assertFalse(self.collect()["report_delivered"])
+        delivered = self.fixed_hybrid()
+        delivered["hybrid"]["coverage"]["baseline_current"] = "false"
+        self.write_stdout(delivered)
+        self.assertFalse(self.collect()["report_delivered"])
+
     def test_external_stops_cannot_promote_even_complete_stdout_to_final(self):
         for reason in ("external_timeout", "external_rss_guard", "external_host_memory_guard",
                        "external_keyboard_interrupt", "resource_monitor_error"):
@@ -151,8 +223,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(sample["nativefinal"]["config"], {"synthetic": True})
 
     def test_native_policy_checks_model_and_algebra_limits_beyond_execution_config(self):
-        # Keep native12/cost7 profiles supported alongside native13/cost8 and current native15/cost8.
-        for version, cost_version in ((12, 7), (13, 8), (14, 8), (15, 8)):
+        # Historical captures retain their own numeric policy and work units.
+        for version, cost_version in ((12, 7), (13, 8), (14, 8), (15, 8), (16, 9)):
             with self.subTest(version=version, cost_version=cost_version):
                 self.check_native_policy(version, cost_version)
 
