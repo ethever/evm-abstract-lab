@@ -32,7 +32,7 @@ use evm_abstract_protocol as api;
 
 /// Independent application allowance shared by requested native postprocessing.
 /// It matches the CLI policy and remains available after execution stops.
-pub const DEFAULT_POSTPROCESS_WORK: usize = 2_000_000_000;
+pub const DEFAULT_POSTPROCESS_WORK: usize = api::application_defaults::DEFAULT_POSTPROCESS_WORK;
 
 /// Analyze bytecode without an RPC registry; RPC inputs require `analyze_with_providers`.
 pub fn analyze(request: api::AnalyzeRequest) -> Result<api::AnalysisReport, api::ApiError> {
@@ -65,7 +65,7 @@ pub fn analyze_with_control_and_providers(
     });
     drop(timing);
     if let Ok(report) = &mut result {
-        report.metadata.timings = timing::project(control.observer().timing(), 0);
+        report.timings = timing::project(control.observer().timing(), 0);
     }
     result
 }

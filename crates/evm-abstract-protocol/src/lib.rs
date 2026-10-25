@@ -8,6 +8,7 @@
 #[macro_use]
 mod codec;
 mod analysis;
+pub mod application_defaults;
 mod boundaries;
 mod errors;
 mod hybrid;

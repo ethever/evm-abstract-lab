@@ -1,7 +1,7 @@
 //! Preserve both graphs once and export receipts before either graph is moved.
 pub(in crate::analyze) mod rpc;
 use super::{api, mapping, value};
-use crate::analyze::{checkpoint, pools, ssa};
+use crate::analyze::{checkpoint, ssa};
 use evm_abstract::{
     analysis::{self, control::Control, layers::SnapshotId},
     domain::{EvmNumericAlgebra, ValueAlgebra, WordElement},
@@ -18,63 +18,93 @@ pub(in crate::analyze) fn project<N: WordElement, D: EvmNumericAlgebra<Element =
     control: &Control,
 ) -> Result<api::AnalysisReport, api::ApiError> {
     let mut budget = WorkBudget::new(crate::analyze::DEFAULT_POSTPROCESS_WORK);
-    // EvmWorldAnalysis serde omits execution_evidence. Export the borrowed
-    // receipts explicitly, with the native entry IDs and frontier namespace.
-    let local_prefixes = prefixes(source, control, &mut budget)?;
-    let coverage = coverage(source)?;
-    let baseline = super::with_budget(
-        source.baseline(),
+    project_with_budget(
+        source,
         request,
         scope,
         algebra,
         numeric_model,
         control,
         &mut budget,
+    )
+}
+
+pub(in crate::analyze) fn project_with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    source: &analysis::HybridAnalysis<N>,
+    request: &api::AnalyzeRequest,
+    scope: api::AnalysisScope,
+    algebra: &ValueAlgebra<D>,
+    numeric_model: api::NumericModel,
+    control: &Control,
+    budget: &mut WorkBudget,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    // EvmWorldAnalysis serde omits execution_evidence. Export the borrowed
+    // receipts explicitly, with the native entry IDs and frontier namespace.
+    let local_prefixes = prefixes(source, control, budget)?;
+    let coverage = coverage(source)?;
+    let (baseline, mut programs) = super::project_graph(
+        source.baseline(),
+        request,
+        scope,
+        algebra,
+        numeric_model,
+        control,
+        budget,
+        Vec::new(),
     )?;
     let detail = source
         .detail()
         .map(|detail| {
-            super::with_budget(
+            let (graph, catalog) = super::project_graph(
                 detail,
                 request,
                 scope,
                 algebra,
                 numeric_model,
                 control,
-                &mut budget,
-            )
+                budget,
+                std::mem::take(&mut programs),
+            )?;
+            programs = catalog;
+            Ok::<_, api::ApiError>(graph)
         })
         .transpose()?;
-    let (mut chosen, baseline, detail) = match coverage.chosen {
-        api::HybridInterpretation::Native => (
-            detail.ok_or_else(|| invalid(api::HybridValidationKind::Namespace))?,
-            Some(Box::new(baseline)),
-            None,
-        ),
+    let selected_view = match coverage.chosen {
+        api::HybridInterpretation::Native => api::AnalysisNamespace::Native,
         api::HybridInterpretation::Process | api::HybridInterpretation::ProcessWithDetail => {
-            (baseline, None, detail.map(Box::new))
+            api::AnalysisNamespace::Baseline
         }
     };
-    chosen.status = match source.status() {
-        analysis::Status::Converged => api::AnalysisStatus::Converged,
-        analysis::Status::Incomplete => api::AnalysisStatus::Incomplete,
+    if selected_view == api::AnalysisNamespace::Native && detail.is_none() {
+        return Err(invalid(api::HybridValidationKind::Namespace));
+    }
+    let report = api::AnalysisReport {
+        schema_version: api::SCHEMA_VERSION,
+        selected_view,
+        status: match source.status() {
+            analysis::Status::Converged => api::AnalysisStatus::Converged,
+            analysis::Status::Incomplete => api::AnalysisStatus::Incomplete,
+        },
+        work: source.work() as u64,
+        transfers: source
+            .baseline()
+            .transfers()
+            .saturating_add(source.detail().map_or(0, |detail| detail.transfers()))
+            as u64,
+        postprocessing_work: budget.used() as u64,
+        timings: api::AnalysisTimings::default(),
+        programs,
+        global: Some(baseline),
+        native: detail,
+        hybrid: Some(api::HybridReport {
+            coverage,
+            local_prefixes,
+            precision: None,
+            rpc: None,
+        }),
     };
-    chosen.metadata.work = source.work() as u64;
-    chosen.transfers = source
-        .detail()
-        .unwrap_or_else(|| source.baseline())
-        .transfers() as u64;
-    chosen.metadata.postprocessing_work = budget.used() as u64;
-    chosen.hybrid = Some(Box::new(api::HybridReport {
-        coverage,
-        baseline,
-        detail,
-        local_prefixes,
-        precision: None,
-        rpc: None,
-    }));
     checkpoint(control)?;
-    Ok(chosen)
+    Ok(report)
 }
 
 fn invalid(kind: api::HybridValidationKind) -> api::ApiError {
@@ -201,24 +231,7 @@ fn prefixes<N: WordElement>(
             binding: binding(prefix.binding),
             snapshot: snapshot(prefix.snapshot)?,
             revision: api::DecimalU64(prefix.revision.value()),
-            frame: api::RegionalFrame {
-                process: None,
-                code_address: Some(frame.code_address.to_string()),
-                code_hash: (frame.mode != analysis::FrameCode::Unknown)
-                    .then(|| frame.code_hash.to_string()),
-                storage_address: Some(frame.address.to_string()),
-                address_value: Some(value::address(frame.address_value)),
-                caller: Some(value::address(frame.caller)),
-                kind: pools::mode(frame.mode),
-                is_static: frame.is_static,
-                basic_block: matches!(
-                    frame.mode,
-                    analysis::FrameCode::Runtime | analysis::FrameCode::InitCode
-                )
-                .then_some(frame.basic_block_index),
-                stack_height: Some(frame.stack_height),
-                context: frame.jump_history.clone(),
-            },
+            frame: mapping::regional_frame(frame, true),
             context_selected: prefix.context_selected,
             instructions: prefix
                 .executed_pcs

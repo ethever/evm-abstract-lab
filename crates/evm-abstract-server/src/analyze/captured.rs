@@ -53,7 +53,7 @@ pub fn native_bytecode(
     });
     drop(timing);
     if let Ok(report) = &mut result {
-        report.metadata.timings = super::timing::project(control.observer().timing(), 0);
+        report.timings = super::timing::project(control.observer().timing(), 0);
     }
     result
 }

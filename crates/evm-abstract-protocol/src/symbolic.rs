@@ -451,6 +451,8 @@ record! {
 variant! {
     /// Compatibility failure before consuming a report.
     pub enum ReportValidationFailure {
+        /// Inconsistent immutable catalog or source-qualified reference.
+        Source(crate::SourceValidationKind),
         /// Inconsistent Hybrid namespace, source, receipt or coverage facts.
         Hybrid(crate::HybridValidationKind),
         /// Process identity, private-state or constructor representation failure.
@@ -472,6 +474,7 @@ variant! {
 impl std::fmt::Display for ReportValidationFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Source(kind) => write!(f, "invalid source reference: {kind:?}"),
             Self::Hybrid(kind) => write!(f, "invalid hybrid evidence: {kind:?}"),
             Self::Process(kind) => write!(f, "invalid process evidence: {kind:?}"),
             Self::Schema(version) => write!(

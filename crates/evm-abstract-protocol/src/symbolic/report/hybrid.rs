@@ -10,45 +10,31 @@ fn invalid(kind: Kind) -> ReportValidationFailure {
 }
 
 impl AnalysisReport {
-    /// Resolve IDs only within their recorded graph namespace.
-    pub fn graph(&self, namespace: AnalysisNamespace) -> Option<&Self> {
-        let Some(hybrid) = &self.hybrid else {
-            return (namespace == AnalysisNamespace::Native).then_some(self);
-        };
-        if namespace == hybrid.namespace() {
-            Some(self)
-        } else {
-            match namespace {
-                AnalysisNamespace::Baseline => hybrid.baseline.as_deref(),
-                AnalysisNamespace::Native => hybrid.detail.as_deref(),
-            }
-        }
-    }
-
     pub(super) fn validate_hybrid(&self) -> Result<(), ReportValidationFailure> {
         let Some(hybrid) = &self.hybrid else {
+            let graph = self
+                .native
+                .as_ref()
+                .ok_or_else(|| invalid(Kind::Namespace))?;
+            if self.global.is_some()
+                || self.selected_view != AnalysisNamespace::Native
+                || self.status != graph.status
+                || self.work != graph.metadata.work
+                || self.transfers != graph.transfers
+            {
+                return Err(invalid(Kind::Coverage));
+            }
             return Ok(());
         };
         let coverage = &hybrid.coverage;
         let precision = hybrid.native_coverage();
-        if hybrid
-            .baseline
-            .as_ref()
-            .is_some_and(|report| report.hybrid.is_some())
-            || hybrid
-                .detail
-                .as_ref()
-                .is_some_and(|report| report.hybrid.is_some())
-            || match hybrid.namespace() {
-                AnalysisNamespace::Baseline => hybrid.baseline.is_some(),
-                AnalysisNamespace::Native => hybrid.baseline.is_none() || hybrid.detail.is_some(),
-            }
-        {
+        if self.selected_view != hybrid.namespace() || self.global.is_none() {
             return Err(invalid(Kind::Namespace));
         }
-        for other in [&hybrid.baseline, &hybrid.detail].into_iter().flatten() {
-            other.validate()?;
-        }
+        let baseline = self
+            .global
+            .as_ref()
+            .ok_or_else(|| invalid(Kind::Namespace))?;
         if self.status
             != if coverage.baseline_current {
                 AnalysisStatus::Converged
@@ -76,7 +62,7 @@ impl AnalysisReport {
                     .preparation
                     .checked_add(work.detail)
                     .is_none_or(|sum| sum > work.detail_allowance)
-                || work.total > self.metadata.limits.max_work
+                || work.total > baseline.metadata.limits.max_work
             {
                 return Err(invalid(Kind::Work));
             }
@@ -90,7 +76,7 @@ impl AnalysisReport {
             .graph(AnalysisNamespace::Baseline)
             .ok_or_else(|| invalid(Kind::Namespace))?;
         for region in &precision.detail_regions {
-            let valid = region.source.fork() == self.fork
+            let valid = region.source.fork() == baseline.fork
                 && match &region.source {
                     crate::ProcessSource::Runtime(source) => {
                         region.code_address.as_ref() == Some(&source.source)
@@ -224,10 +210,15 @@ impl AnalysisReport {
                     .map(|instruction| instruction.pc)
                     .ne(block.executed_pcs.iter().copied())
                 || prefix.instructions.iter().any(|instruction| {
-                    !block
-                        .instructions
-                        .iter()
-                        .any(|source| source.pc == instruction.pc)
+                    block
+                        .source_block()
+                        .and_then(|source| self.source_block(source))
+                        .is_none_or(|source| {
+                            !source
+                                .instructions
+                                .iter()
+                                .any(|source| source.pc == instruction.pc)
+                        })
                 })
                 || native
                     .ssa

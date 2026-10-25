@@ -35,7 +35,8 @@ pub(super) fn report<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     )
 }
 
-fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+#[cfg(any(test, feature = "capture-replay"))]
+pub(in crate::analyze) fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     native: &analysis::EvmWorldAnalysis<N>,
     request: &api::AnalyzeRequest,
     scope: api::AnalysisScope,
@@ -44,10 +45,48 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     control: &Control,
     postprocessing: &mut WorkBudget,
 ) -> Result<api::AnalysisReport, api::ApiError> {
+    let (graph, programs) = project_graph(
+        native,
+        request,
+        scope,
+        algebra,
+        numeric_model,
+        control,
+        postprocessing,
+        Vec::new(),
+    )?;
+    Ok(api::AnalysisReport {
+        schema_version: api::SCHEMA_VERSION,
+        selected_view: api::AnalysisNamespace::Native,
+        status: graph.status,
+        work: graph.metadata.work,
+        transfers: graph.transfers,
+        postprocessing_work: postprocessing.used() as u64,
+        timings: api::AnalysisTimings::default(),
+        programs,
+        global: None,
+        native: Some(graph),
+        hybrid: None,
+    })
+}
+
+/// Thread one immutable source directory through both namespace projections.
+/// Graph-local numerical pools are deliberately independent.
+fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
+    native: &analysis::EvmWorldAnalysis<N>,
+    request: &api::AnalyzeRequest,
+    scope: api::AnalysisScope,
+    algebra: &ValueAlgebra<D>,
+    numeric_model: api::NumericModel,
+    control: &Control,
+    postprocessing: &mut WorkBudget,
+    programs: Vec<api::ProgramInfo>,
+) -> Result<(api::AnalysisGraph, Vec<api::ProgramInfo>), api::ApiError> {
+    let initial_work = postprocessing.used();
     checkpoint(control)?;
     // The request's Control.scope covers this ledger and every native output
     // computation. There is no local execution projection on the server path.
-    let mut pools = Pools::<N>::new(control);
+    let mut pools = Pools::<N>::with_programs(control, programs);
     let root_binding = mapping::root_binding(native.root_binding());
     pools.root_namespace = match native.root_binding() {
         evm_abstract::world::RootInputBinding::Namespace { coordinate } => Some(coordinate),
@@ -114,7 +153,6 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                 .len()
                 .saturating_add(state.executed_pcs.len())
                 .saturating_add(state.exit_stack.len())
-                .saturating_add(block.map_or(0, |block| block.instructions.len()))
                 .saturating_add(1),
         )?;
         cfg.push(api::CfgBlock {
@@ -131,11 +169,6 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             code_address: is_native.then(|| state.active().code_address.to_string()),
             storage_address: is_native.then(|| state.active().address.to_string()),
             program,
-            instructions: block
-                .into_iter()
-                .flat_map(|block| &block.instructions)
-                .map(mapping::instruction)
-                .collect(),
             entry_stack: if is_native {
                 state
                     .entry
@@ -207,20 +240,6 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
                 })
                 .map(|program| program.id)
         });
-    let disassembly = root_program
-        .map(|id| {
-            let source = &pools.programs[id];
-            pools.symbolic.charge(
-                source
-                    .blocks
-                    .iter()
-                    .map(|block| block.instructions.len() + 1)
-                    .sum(),
-            )?;
-            Ok(source.blocks.clone())
-        })
-        .transpose()?
-        .unwrap_or_default();
     let byte_len = root_program.map_or(0, |id| {
         pools.programs[id].bytecode.len().saturating_sub(2) / 2
     });
@@ -259,8 +278,7 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         .map(|source| terminal::project(source, numeric_model, &mut pools))
         .transpose()?;
     checkpoint(control)?;
-    let report = api::AnalysisReport {
-        schema_version: api::SCHEMA_VERSION,
+    let report = api::AnalysisGraph {
         scope,
         fork: request.fork,
         byte_len,
@@ -269,7 +287,6 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             analysis::Status::Incomplete => api::AnalysisStatus::Incomplete,
         },
         transfers: native.transfers() as u64,
-        disassembly,
         cfg,
         edges: native
             .edges()
@@ -336,14 +353,12 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             limits: request.limits.clone(),
             work: native.work() as u64,
             postprocessing_max_work: super::DEFAULT_POSTPROCESS_WORK as u64,
-            postprocessing_work: postprocessing.used() as u64,
-            timings: api::AnalysisTimings::default(),
+            postprocessing_work: postprocessing.used().saturating_sub(initial_work) as u64,
             export_limits: pools.symbolic.limits,
             export_usage: pools.symbolic.usage,
         },
         symbolic: pools.symbolic.graph,
         pending_machines: pools.pending,
-        programs: pools.programs,
         accounts,
         states,
         byte_arrays: pools.buffers_dto,
@@ -352,8 +367,7 @@ fn with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
         root_terminal_coverage,
         abstract_summaries,
         acquisition: native.rpc_acquisition().map(rpc::acquisition),
-        hybrid: None,
     };
     checkpoint(control)?;
-    Ok(report)
+    Ok((report, pools.programs))
 }

@@ -350,27 +350,29 @@ impl<E: Executor> Coordinator<E> {
         } else {
             match result {
                 Ok(mut report) => {
-                    report.metadata.timings = entry.snapshot.timings.clone();
+                    report.timings = entry.snapshot.timings.clone();
                     entry.snapshot.progress.phase = AnalysisPhase::Complete;
-                    entry.snapshot.progress.states =
-                        entry.snapshot.progress.states.max(report.cfg.len());
                     entry.snapshot.progress.transfers =
                         entry.snapshot.progress.transfers.max(report.transfers);
-                    entry.snapshot.progress.work = report.metadata.work;
-                    entry.snapshot.progress.accounts = report.accounts.len();
-                    entry.snapshot.progress.slots = report
-                        .accounts
-                        .iter()
-                        .map(|account| account.storage.len())
-                        .sum();
-                    if let Some(acquisition) = &report.acquisition {
-                        entry.snapshot.progress.round = acquisition.rounds;
-                        entry.snapshot.progress.requests = acquisition.requests;
-                        entry.snapshot.progress.states = entry
-                            .snapshot
-                            .progress
-                            .states
-                            .max(acquisition.states_created);
+                    entry.snapshot.progress.work = report.work;
+                    if let Some(graph) = report.selected_graph() {
+                        entry.snapshot.progress.states =
+                            entry.snapshot.progress.states.max(graph.cfg.len());
+                        entry.snapshot.progress.accounts = graph.accounts.len();
+                        entry.snapshot.progress.slots = graph
+                            .accounts
+                            .iter()
+                            .map(|account| account.storage.len())
+                            .sum();
+                        if let Some(acquisition) = &graph.acquisition {
+                            entry.snapshot.progress.round = acquisition.rounds;
+                            entry.snapshot.progress.requests = acquisition.requests;
+                            entry.snapshot.progress.states = entry
+                                .snapshot
+                                .progress
+                                .states
+                                .max(acquisition.states_created);
+                        }
                     }
                     entry.report = Some(Arc::new(report));
                     entry.snapshot.state = JobState::Completed;
