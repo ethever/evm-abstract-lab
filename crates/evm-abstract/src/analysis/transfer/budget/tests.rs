@@ -67,7 +67,7 @@ fn assert_per_byte_quote<D: EvmNumericAlgebra>(
     domain: AlgebraRef<'_, D>,
 ) {
     let frame = execution.payload.active();
-    let passes = domain.memory_write_passes(&offset, &value, 32);
+    let passes = EvmByteArray::memory_write_passes(&offset, &value, 32, domain);
     let expected = byte_work(
         &[&offset, &value],
         32,
