@@ -21,11 +21,12 @@ use revm_bytecode::opcode;
 use serde_json::Value as Json;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "support/assembly.rs"]
+mod bytecode;
+
 #[derive(Default)]
 struct Assembly {
-    bytes: Vec<u8>,
-    labels: BTreeMap<&'static str, usize>,
-    fixups: Vec<(usize, &'static str)>,
+    raw: bytecode::Assembly,
 }
 
 struct Fixture {
@@ -35,30 +36,23 @@ struct Fixture {
 
 impl Assembly {
     fn op(&mut self, op: u8) -> &mut Self {
-        self.bytes.push(op);
+        self.raw.op(op);
         self
     }
 
-    fn push(&mut self, word: u16) -> &mut Self {
-        self.bytes.push(opcode::PUSH2);
-        self.bytes.extend(word.to_be_bytes());
+    fn push(&mut self, value: u16) -> &mut Self {
+        self.raw.push(value);
         self
     }
 
     fn label(&mut self, name: &'static str) -> &mut Self {
-        assert!(self.labels.insert(name, self.bytes.len()).is_none());
-        self.op(opcode::JUMPDEST)
+        self.raw.label(name);
+        self
     }
 
     fn jump(&mut self, name: &'static str, conditional: bool) -> &mut Self {
-        self.bytes.push(opcode::PUSH2);
-        self.fixups.push((self.bytes.len(), name));
-        self.bytes.extend([0, 0]);
-        self.op(if conditional {
-            opcode::JUMPI
-        } else {
-            opcode::JUMP
-        })
+        self.raw.jump(name, conditional);
+        self
     }
 
     fn guard_eq(&mut self, word: u16, target: &'static str) -> &mut Self {
@@ -88,14 +82,11 @@ impl Assembly {
         self.push(target).push(60_000).op(op)
     }
 
-    fn finish(mut self) -> Fixture {
-        for (offset, label) in self.fixups {
-            let pc = u16::try_from(self.labels[&label]).unwrap();
-            self.bytes[offset..offset + 2].copy_from_slice(&pc.to_be_bytes());
-        }
+    fn finish(self) -> Fixture {
+        let assembled = self.raw.finish();
         Fixture {
-            code: hex::encode(self.bytes),
-            labels: self.labels,
+            code: hex::encode(assembled.bytes),
+            labels: assembled.labels,
         }
     }
 }

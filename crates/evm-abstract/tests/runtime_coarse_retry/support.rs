@@ -12,7 +12,6 @@ use evm_abstract::{
     domain::{EvmValue, ValueAlgebra},
     world::{Code, EvmAccount, EvmByteArray, EvmEntry, EvmWorld, Existence},
 };
-use revm_bytecode::opcode;
 use std::collections::BTreeMap;
 
 pub(super) const U: u64 = 0x201;
@@ -49,44 +48,38 @@ pub(super) struct Fixture {
 }
 
 /// Resolve PUSH operands and labels; execution belongs to the two EVMs.
+#[path = "../support/assembly.rs"]
+mod bytecode;
+
 #[derive(Default)]
 pub(super) struct Assembly {
-    bytes: Vec<u8>,
-    labels: BTreeMap<&'static str, usize>,
-    fixups: Vec<(usize, &'static str)>,
+    raw: bytecode::Assembly,
 }
 
 impl Assembly {
     pub(super) fn op(&mut self, op: u8) -> &mut Self {
-        self.bytes.push(op);
+        self.raw.op(op);
         self
     }
 
     pub(super) fn push(&mut self, value: u16) -> &mut Self {
-        self.bytes.push(opcode::PUSH2);
-        self.bytes.extend(value.to_be_bytes());
+        self.raw.push(value);
         self
     }
 
     pub(super) fn label(&mut self, name: &'static str) -> &mut Self {
-        assert!(self.labels.insert(name, self.bytes.len()).is_none());
-        self.op(opcode::JUMPDEST)
+        self.raw.label(name);
+        self
     }
 
     pub(super) fn mark(&mut self, name: &'static str) -> &mut Self {
-        assert!(self.labels.insert(name, self.bytes.len()).is_none());
+        self.raw.data(name, &[]);
         self
     }
 
     pub(super) fn jump(&mut self, name: &'static str, conditional: bool) -> &mut Self {
-        self.bytes.push(opcode::PUSH2);
-        self.fixups.push((self.bytes.len(), name));
-        self.bytes.extend([0, 0]);
-        self.op(if conditional {
-            opcode::JUMPI
-        } else {
-            opcode::JUMP
-        })
+        self.raw.jump(name, conditional);
+        self
     }
 
     pub(super) fn store(&mut self, op: u8, slot: u16, value: u16) -> &mut Self {
@@ -97,14 +90,11 @@ impl Assembly {
         self.push(32).push(offset).op(op)
     }
 
-    pub(super) fn finish(mut self) -> Fixture {
-        for (offset, name) in self.fixups {
-            self.bytes[offset..offset + 2]
-                .copy_from_slice(&u16::try_from(self.labels[&name]).unwrap().to_be_bytes());
-        }
+    pub(super) fn finish(self) -> Fixture {
+        let assembled = self.raw.finish();
         Fixture {
-            bytes: self.bytes,
-            labels: self.labels,
+            bytes: assembled.bytes,
+            labels: assembled.labels,
         }
     }
 }
