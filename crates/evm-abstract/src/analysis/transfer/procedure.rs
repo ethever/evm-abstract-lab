@@ -696,6 +696,18 @@ impl<N: WordElement, Key: PolicyKey> EvmTable<N, Key> {
                 )
             }
         };
+        if let Err(error) = solver.cooperation.observe_regional_sources(
+            &regional_cfg,
+            solver.runtime,
+            solver
+                .caller
+                .as_deref_mut()
+                .expect("outer caller retains regional source basis"),
+            solver.budget,
+        ) {
+            let error = solver.cooperation.stop(error, solver.budget);
+            super::boundary(&mut result, 0, error.frontier_reason());
+        }
         let closed = relative_closed && result.frontiers.is_empty() && !solver.table.incomplete;
         let mut record = EvmProcedureSummaryRecord {
             version: ProcedureEvidenceVersion {

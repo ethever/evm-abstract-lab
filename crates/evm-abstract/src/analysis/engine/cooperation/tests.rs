@@ -255,3 +255,6 @@ mod shared;
 
 #[path = "tests/payment.rs"]
 mod payment;
+
+#[path = "tests/assembled.rs"]
+mod assembled;

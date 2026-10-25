@@ -209,6 +209,8 @@ channel 通常用 [`Ascending<JoinPolicy>` 或 `Descending<RefinePolicy>`](../cr
 
 正向 `current` 证据同时核对实际 Native 输入/输出版本和外部收据：使用过的确切 `Subject`、owner 执行 epoch、当前代际选择、scope 有效性、客户端闭包与待处理 owner。输入增长或前提退役即使没有改变数值载荷，也使旧保证不能再次认证；新一次执行必须取得新的有效收据。该检查适用于区域 Body、Resume 投递和最终 World 来源认证。
 
+World 来源认证还要检查该记录实际保留的 Body/Resume 收据。持久 Native scope 不自动继承可替换客户端 scope 的前提，因此只检查 World 自己的输入不足以发现子过程前提退役。区域 owner 每次重新求值会更新独立的内核版本槽；World 跟踪这些槽，即使数值输出不变，也会醒来保留新的区域证据。数值行仍可共享同一不可变分配，不能用这种共享证明当前性。旧版本模型保留发布时的输入和证据基础；新版本单独表示失效、等待或重新闭合。
+
 ## 数值局部协作与工作报价
 
 [`ProductAlgebra<M,R,W>`](../crates/evm-abstract/src/domain/cooperation/policy.rs)在一次固定数值输入内组合位、区间与标量规约；它与程序层的 `Extension` 可以分别选择。`ProductAlgebra::from_spec(spec)` 装配内置规则和 `BuiltinWork`；`ProductAlgebra::new(spec, masks, bounds)` 选择替换规则并使用 `ComposedWork`。只有确切的内置组合可以使用经过核对的收敛、拼接和均匀字节定律。替换规则必须保持这次输入的共同具体含义，不能沿用另一组规则的收敛或成本证明。

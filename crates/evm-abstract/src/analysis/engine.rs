@@ -1244,6 +1244,13 @@ impl<
                             self.budget,
                         )
                         .unwrap_or(false)
+                        && cooperation
+                            .regional_sources_current(
+                                &self.result.procedure_summaries()[record].regional_cfg,
+                                &self.runtime,
+                                self.budget,
+                            )
+                            .unwrap_or(false)
                 });
                 if valid {
                     eligible.push(record);
