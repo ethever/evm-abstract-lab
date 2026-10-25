@@ -32,6 +32,8 @@ mod payment;
 mod process;
 mod process_allocation;
 mod process_effects;
+mod view;
+pub use view::{EvmPlaneSummaryView, EvmStoreSummaryView};
 #[cfg(test)]
 mod test_support;
 

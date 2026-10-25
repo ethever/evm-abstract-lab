@@ -164,6 +164,9 @@ pub struct EvmByteArraySummary<N: WordElement> {
     words: BTreeMap<usize, EvmValue<N>>,
 }
 
+mod view;
+pub use view::{EvmByteArraySummaryView, EvmByteContentView};
+
 impl<N: WordElement> EvmByteArray<N> {
     pub(super) fn retained_word_projection_work_with<D: EvmNumericAlgebra<Element = N>>(
         &self,
