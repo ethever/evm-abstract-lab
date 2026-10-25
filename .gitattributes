@@ -1,2 +1,3 @@
 # Compiler UI snapshots retain rustc's blank diagnostic separator at EOF.
 lints/no_dyn/ui/*.stderr whitespace=-blank-at-eof
+lints/no_dyn/examples/*.stderr whitespace=-blank-at-eof
