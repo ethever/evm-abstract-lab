@@ -53,12 +53,19 @@ def displayed_graph(report):
 
 def job_result_report(envelope, *, job_id=None, publication=None):
     """Decode JobResultReply from /api/tasks/{id}/result, never AnalyzeReply."""
-    result = envelope["result"]["Ok"]
+    assert type(envelope) is dict
+    assert set(envelope) == {"result"}, envelope.keys()
+    variant = envelope["result"]
+    assert type(variant) is dict
+    assert set(variant) == {"Ok"}, variant.keys()
+    result = variant["Ok"]
+    assert type(result) is dict
     assert set(result) == {"id", "publication", "report"}, result.keys()
     assert type(result["id"]) is int and 0 <= result["id"] < 2**64, result["id"]
     if job_id is not None:
         assert result["id"] == job_id, (result["id"], job_id)
     identity = result["publication"]
+    assert type(identity) is dict
     assert set(identity) == {"version", "global_version", "native_version", "model_closed"}, identity
     for name in ["version", "global_version", "native_version"]:
         value = identity[name]

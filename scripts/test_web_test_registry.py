@@ -360,6 +360,27 @@ class ReportWireTests(unittest.TestCase):
             with self.subTest(field=field, value=value), self.assertRaises(AssertionError):
                 job_result_report(invalid)
 
+    def test_task_report_requires_exact_success_wrapper_and_result_grammar(self):
+        from web_test_hybrid import job_result_report
+        payload = {"id": 42, "publication": self.publication(), "report": self.report()}
+        valid = {"result": {"Ok": payload}}
+        self.assertIs(job_result_report(valid), payload["report"])
+        malformed = [
+            ("unknown-wrapper-field", {**valid, "unknown": None}),
+            ("dual-result-tags", {"result": {"Ok": payload, "Err": {}}}),
+            ("unknown-result-tag", {"result": {"Ok": payload, "Pending": None}}),
+            ("missing-wrapper-field", {}),
+            ("missing-result-tag", {"result": {}}),
+            ("wrong-wrapper-tag", {"Ok": payload}),
+        ]
+        for value in [None, True, 42, "result", []]:
+            malformed.append((f"wrapper-type-{type(value).__name__}", value))
+            malformed.append((f"result-type-{type(value).__name__}", {"result": value}))
+            malformed.append((f"payload-type-{type(value).__name__}", {"result": {"Ok": value}}))
+        for name, envelope in malformed:
+            with self.subTest(name=name), self.assertRaises(AssertionError):
+                job_result_report(envelope)
+
 
 if __name__ == "__main__":
     unittest.main()
