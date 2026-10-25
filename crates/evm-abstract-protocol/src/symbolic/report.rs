@@ -110,6 +110,7 @@ impl Validation<'_> {
         for frame in &machine.frames {
             self.process_frame(frame)?;
             self.program(frame.program)?;
+            self.source_frame(frame)?;
             self.store(frame.rollback_store)?;
             for id in [frame.memory, frame.calldata, frame.returndata]
                 .into_iter()

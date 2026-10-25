@@ -148,8 +148,8 @@ pub(in crate::analyze) fn project_with_budget<N: WordElement, D: EvmNumericAlgeb
         postprocessing_work: budget.used() as u64,
         timings: api::AnalysisTimings::default(),
         programs,
-        global: Some(global),
-        native: detail,
+        global: Some(Box::new(global)),
+        native: detail.map(Box::new),
         hybrid: Some(api::HybridReport {
             coverage: original,
             local_prefixes,

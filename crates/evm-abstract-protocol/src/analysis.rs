@@ -360,9 +360,10 @@ record! {
         /// Complete immutable source directory shared by both graph namespaces.
         pub programs: Vec<crate::ProgramInfo>,
         /// Conservative global graph, when global analysis was requested.
-        pub global: Option<AnalysisGraph>,
+        /// Fixed heap slots keep decoding from stacking two full graph values.
+        pub global: Option<Box<AnalysisGraph>>,
         /// Native graph, including honest pending detail when available.
-        pub native: Option<AnalysisGraph>,
+        pub native: Option<Box<AnalysisGraph>>,
         /// Global/native qualifications, receipts and optional RPC revision chain.
         pub hybrid: Option<crate::HybridReport>,
     }
@@ -390,8 +391,8 @@ impl AnalysisReport {
     /// Follow numeric state/SSA/pool IDs only within this namespace.
     pub fn graph(&self, namespace: crate::AnalysisNamespace) -> Option<&AnalysisGraph> {
         match namespace {
-            crate::AnalysisNamespace::Baseline => self.global.as_ref(),
-            crate::AnalysisNamespace::Native => self.native.as_ref(),
+            crate::AnalysisNamespace::Baseline => self.global.as_deref(),
+            crate::AnalysisNamespace::Native => self.native.as_deref(),
         }
     }
     /// Explicitly selected graph; absent on a structurally invalid publication.

@@ -26,7 +26,7 @@ fn fixture(
         result.1.status,
         api::AnalysisStatus::Converged,
         "{:?}",
-        result.1.frontiers
+        result.1.selected_graph().unwrap().frontiers
     );
     result
 }
@@ -88,7 +88,13 @@ fn fixture_with_policy<S: analysis::ProcedureSummaryPolicy<ProductAlgebra>>(
     )
     .unwrap();
     assert_eq!(report.schema_version, 20);
-    assert!(report.root_terminal_coverage.is_none());
+    assert!(
+        report
+            .selected_graph()
+            .unwrap()
+            .root_terminal_coverage
+            .is_none()
+    );
     report.validate().unwrap();
     (native, report)
 }
@@ -178,12 +184,24 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
         assert_eq!(raw["schema_version"], 15);
         assert_eq!(raw["domain_spec"]["schema_version"], 3);
         assert_eq!(raw["domain_spec"]["cost_version"], 8);
-        assert!(report.root_terminal_coverage.is_none());
-        assert!(!report.abstract_summaries.is_empty());
+        assert!(
+            report
+                .selected_graph()
+                .unwrap()
+                .root_terminal_coverage
+                .is_none()
+        );
+        assert!(
+            !report
+                .selected_graph()
+                .unwrap()
+                .abstract_summaries
+                .is_empty()
+        );
         for (record, mapped) in native
             .procedure_summaries()
             .iter()
-            .zip(&report.abstract_summaries)
+            .zip(&report.selected_graph().unwrap().abstract_summaries)
         {
             assert_eq!(mapped.kind, api::ProcedureSummaryKind::KnownProcess);
             assert_eq!(mapped.source_current, record.source_current);
@@ -266,18 +284,28 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
             }
         }
         if code.contains("fa") {
-            assert!(report.abstract_summaries.iter().any(|summary| {
-                summary.regional_cfg.calls.iter().any(|call| {
-                    call.action == Some(api::ProcessAction::StaticCall)
-                        && call.target == Some(api::ProcessOwner::Named(address(0x102).to_string()))
-                        && call
-                            .entries
-                            .iter()
-                            .any(|id| summary.regional_cfg.nodes[*id].frame.is_static)
-                })
-            }));
             assert!(
                 report
+                    .selected_graph()
+                    .unwrap()
+                    .abstract_summaries
+                    .iter()
+                    .any(|summary| {
+                        summary.regional_cfg.calls.iter().any(|call| {
+                            call.action == Some(api::ProcessAction::StaticCall)
+                                && call.target
+                                    == Some(api::ProcessOwner::Named(address(0x102).to_string()))
+                                && call
+                                    .entries
+                                    .iter()
+                                    .any(|id| summary.regional_cfg.nodes[*id].frame.is_static)
+                        })
+                    })
+            );
+            assert!(
+                report
+                    .selected_graph()
+                    .unwrap()
                     .abstract_summaries
                     .iter()
                     .flat_map(|summary| &summary.regional_cfg.calls)
@@ -290,6 +318,8 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
         if code == "5f5f5ff000" {
             assert!(
                 report
+                    .selected_graph()
+                    .unwrap()
                     .abstract_summaries
                     .iter()
                     .flat_map(|summary| &summary.procedures)
@@ -298,6 +328,8 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
             );
             assert!(
                 report
+                    .selected_graph()
+                    .unwrap()
                     .abstract_summaries
                     .iter()
                     .flat_map(|summary| &summary.regional_cfg.calls)
@@ -307,6 +339,9 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
         }
         let mut leaked = report.clone();
         let node = leaked
+            .native
+            .as_mut()
+            .unwrap()
             .abstract_summaries
             .iter_mut()
             .flat_map(|summary| &mut summary.regional_cfg.nodes)
@@ -323,7 +358,7 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
             ))
         ));
         let mut wrong_fork = report.clone();
-        wrong_fork.fork = api::Fork::Cancun;
+        wrong_fork.native.as_mut().unwrap().fork = api::Fork::Cancun;
         assert_eq!(
             wrong_fork.validate(),
             Err(api::ReportValidationFailure::Process(
@@ -340,6 +375,9 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
         assert_eq!(decoded.result.unwrap(), report);
         let mut malformed = report;
         let summary = malformed
+            .native
+            .as_mut()
+            .unwrap()
             .abstract_summaries
             .iter_mut()
             .find(|summary| {
@@ -392,12 +430,12 @@ fn calls_fixture() -> (
 fn assert_mapping(native: &analysis::EvmWorldAnalysis<NumericValue>, report: &api::AnalysisReport) {
     assert_eq!(
         native.procedure_summaries().len(),
-        report.abstract_summaries.len()
+        report.selected_graph().unwrap().abstract_summaries.len()
     );
     for (source, summary) in native
         .procedure_summaries()
         .iter()
-        .zip(&report.abstract_summaries)
+        .zip(&report.selected_graph().unwrap().abstract_summaries)
     {
         assert_eq!(summary.kind, api::ProcedureSummaryKind::KnownCall);
         assert_eq!(source.kind, analysis::ProcedureSummaryKind::KnownCall);
@@ -524,9 +562,17 @@ fn assert_mapping(native: &analysis::EvmWorldAnalysis<NumericValue>, report: &ap
 #[test]
 fn regional_known_calls_preserve_native_owner_mode_deliveries_and_pooled_roundtrip() {
     let (native, report) = calls_fixture();
-    assert!(!report.abstract_summaries.is_empty());
+    assert!(
+        !report
+            .selected_graph()
+            .unwrap()
+            .abstract_summaries
+            .is_empty()
+    );
     assert_mapping(&native, &report);
     let nodes: Vec<_> = report
+        .selected_graph()
+        .unwrap()
         .abstract_summaries
         .iter()
         .flat_map(|summary| &summary.regional_cfg.nodes)
@@ -545,6 +591,8 @@ fn regional_known_calls_preserve_native_owner_mode_deliveries_and_pooled_roundtr
     }
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .abstract_summaries
             .iter()
             .flat_map(|summary| &summary.regional_cfg.calls)
@@ -588,7 +636,7 @@ fn regional_dynamic_jump_and_both_branch_alternatives_survive_projection() {
     let program = evm_abstract::bytecode::Program::from_hex_with_fork(code, Fork::Osaka).unwrap();
     let mut targets = std::collections::BTreeSet::new();
     let mut branches = std::collections::BTreeSet::new();
-    for summary in &report.abstract_summaries {
+    for summary in &report.selected_graph().unwrap().abstract_summaries {
         let cfg = &summary.regional_cfg;
         for node in &cfg.nodes {
             let Some(transfer) = &node.transfer else {
@@ -631,7 +679,7 @@ fn regional_revert_and_exception_deliveries_keep_their_real_caller_targets() {
         ]);
         assert_mapping(&native, &report);
         let mut delivered = 0;
-        for summary in &report.abstract_summaries {
+        for summary in &report.selected_graph().unwrap().abstract_summaries {
             let cfg = &summary.regional_cfg;
             for call in &cfg.calls {
                 let caller = &cfg.nodes[call.from];
@@ -671,7 +719,13 @@ fn regional_invalid_delegation_retains_identity_without_a_program_block() {
         &ValueAlgebra::new(ProductAlgebra::from_spec(DomainSpec::default())),
     );
     let mut invalid_nodes = 0;
-    for (index, summary) in report.abstract_summaries.iter().enumerate() {
+    for (index, summary) in report
+        .selected_graph()
+        .unwrap()
+        .abstract_summaries
+        .iter()
+        .enumerate()
+    {
         for node in &summary.regional_cfg.nodes {
             if node.frame.kind != api::CodeKind::InvalidDelegation {
                 continue;
@@ -722,7 +776,9 @@ fn regional_invalid_delegation_retains_identity_without_a_program_block() {
             );
 
             let mut fake_block = report.clone();
-            fake_block.abstract_summaries[index].regional_cfg.nodes[node.id]
+            fake_block.native.as_mut().unwrap().abstract_summaries[index]
+                .regional_cfg
+                .nodes[node.id]
                 .frame
                 .basic_block = Some(0);
             assert_eq!(
@@ -737,7 +793,9 @@ fn regional_invalid_delegation_retains_identity_without_a_program_block() {
                 ))
             );
             let mut fake_visit = report.clone();
-            fake_visit.abstract_summaries[index].regional_cfg.nodes[node.id]
+            fake_visit.native.as_mut().unwrap().abstract_summaries[index]
+                .regional_cfg
+                .nodes[node.id]
                 .transfer
                 .as_mut()
                 .unwrap()
@@ -760,7 +818,10 @@ fn regional_invalid_delegation_retains_identity_without_a_program_block() {
     let roundtrip: api::AnalysisReport =
         serde_json::from_slice(&serde_json::to_vec(&report).unwrap()).unwrap();
     roundtrip.validate().unwrap();
-    assert_eq!(roundtrip.abstract_summaries, report.abstract_summaries);
+    assert_eq!(
+        roundtrip.selected_graph().unwrap().abstract_summaries,
+        report.selected_graph().unwrap().abstract_summaries
+    );
 }
 
 #[test]
@@ -768,7 +829,7 @@ fn regional_record_local_references_and_revision_claims_are_validated() {
     let (_, report) = calls_fixture();
     for case in 0..16 {
         let mut bad = report.clone();
-        let summary = &mut bad.abstract_summaries[0];
+        let summary = &mut bad.native.as_mut().unwrap().abstract_summaries[0];
         let cfg = &mut summary.regional_cfg;
         let node_count = cfg.nodes.len();
         let call_count = cfg.calls.len();
@@ -849,7 +910,7 @@ fn regional_record_local_references_and_revision_claims_are_validated() {
         );
     }
     let mut historical = report;
-    for summary in &mut historical.abstract_summaries {
+    for summary in &mut historical.native.as_mut().unwrap().abstract_summaries {
         for node in &mut summary.regional_cfg.nodes {
             node.input_revision.0 += 1;
             if let Some(transfer) = &mut node.transfer {

@@ -48,13 +48,57 @@ impl AnalysisReport {
 }
 
 impl super::Validation<'_> {
+    pub(super) fn source_frame(
+        &self,
+        frame: &crate::FrameSnapshot,
+    ) -> Result<(), ReportValidationFailure> {
+        if frame.process.is_some() {
+            return Ok(());
+        }
+        if frame.program.is_none() && matches!(frame.kind, CodeKind::Runtime | CodeKind::Initcode) {
+            return Err(ReportValidationFailure::Source(SourceValidationKind::Frame));
+        }
+        if let Some(program) = frame
+            .program
+            .and_then(|id| self.programs.iter().find(|program| program.id == id))
+        {
+            let address_matches = program.code_address == frame.code_address
+                || (program.code_address.is_none()
+                    && frame.code_address.as_deref() == self.report.input_namespace());
+            if !address_matches
+                || Some(&program.code_hash) != frame.code_hash.as_ref()
+                || program.kind != frame.kind
+            {
+                return Err(ReportValidationFailure::Source(SourceValidationKind::Frame));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn source_instructions(
         &self,
         block: &crate::CfgBlock,
     ) -> Result<(), ReportValidationFailure> {
         let invalid = |kind| ReportValidationFailure::Source(kind);
+        let frame = self
+            .report
+            .states
+            .iter()
+            .find(|state| state.state == block.id)
+            .and_then(|state| state.entry.frames.last())
+            .ok_or_else(|| invalid(SourceValidationKind::Frame))?;
+        if frame.program != block.program || frame.basic_block != block.basic_block {
+            return Err(invalid(SourceValidationKind::Frame));
+        }
         let Some(source_ref) = block.source_block() else {
-            if !block.executed_pcs.is_empty() {
+            if !block.executed_pcs.is_empty()
+                || self
+                    .report
+                    .ssa
+                    .blocks
+                    .iter()
+                    .any(|ssa| ssa.state == block.id && !ssa.instructions.is_empty())
+            {
                 return Err(invalid(SourceValidationKind::Instruction));
             }
             return Ok(());
@@ -106,6 +150,17 @@ impl AnalysisGraph {
         programs: &[crate::ProgramInfo],
     ) -> Result<(), ReportValidationFailure> {
         let invalid = || ReportValidationFailure::Process(Kind::Source);
+        match (&self.metadata.source_snapshot, &self.metadata.snapshot) {
+            (crate::RootTerminalSnapshot::Offline(_), None) => {}
+            (crate::RootTerminalSnapshot::Chain(source), Some(header))
+                if source.chain_id == header.chain_id && source.block_hash == header.block_hash => {
+            }
+            _ => {
+                return Err(ReportValidationFailure::Source(
+                    SourceValidationKind::Snapshot,
+                ));
+            }
+        }
         if self.metadata.declared_root_source.fork() != self.fork {
             return Err(invalid());
         }
