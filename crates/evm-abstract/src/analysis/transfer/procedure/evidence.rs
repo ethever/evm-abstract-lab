@@ -144,6 +144,9 @@ impl EvmRegionalTransfer {
                             .saturating_add(16)
                     }))
                     .saturating_add(4)
+                    // A control receipt shares immutable paid source/region
+                    // allocations; snapshot cloning copies only their handle.
+                    .saturating_add(usize::from(process.control.is_some()).saturating_mul(8))
             }))
             .saturating_add(self.successors.len().saturating_mul(2))
             .saturating_add(self.calls.len())

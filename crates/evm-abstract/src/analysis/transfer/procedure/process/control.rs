@@ -14,6 +14,11 @@ use crate::{
 use alloy_primitives::U256;
 use revm_bytecode::opcode;
 
+mod region;
+pub(in crate::analysis::transfer::procedure) use region::Cache;
+pub(super) use region::Plan;
+
+#[derive(Clone, Copy)]
 pub(super) struct Step {
     pub capabilities: Capabilities,
     pub successors: [Option<(ProcessLocation, MachineEdgeKind)>; 2],
@@ -21,6 +26,13 @@ pub(super) struct Step {
 }
 
 impl Step {
+    fn boundary(self) -> bool {
+        self.capabilities.effects
+            || self.capabilities.returns
+            || self.capabilities.reverts
+            || self.continuation.is_some()
+    }
+
     pub(super) fn at(
         program: &Program,
         index: usize,

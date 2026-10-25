@@ -108,7 +108,7 @@ fn route_process_probe() {
             calls, 0,
             "unreachable CALL must not enter the semantic relation: {name}"
         );
-        witness.covers(&result);
+        cover(&witness, &result);
     }
 }
 
@@ -179,21 +179,11 @@ fn false_jumpi_ignores_invalid_destination_and_falls_through() {
     assert_eq!(witness.kind, OutcomeKind::Return);
     let result = run(world);
     assert_closed(&result);
-    witness.covers(&result);
-    let cfg = &record(&result).regional_cfg;
-    assert!(cfg.calls.is_empty());
-    assert!(
-        cfg.nodes
-            .iter()
-            .flat_map(|node| &node.transfer.as_ref().unwrap().successors)
-            .any(|edge| edge.kind == MachineEdgeKind::Intraprocedural(EdgeKind::BranchFalse))
-    );
-    assert!(
-        !cfg.nodes
-            .iter()
-            .flat_map(|node| &node.transfer.as_ref().unwrap().successors)
-            .any(|edge| edge.kind == MachineEdgeKind::Intraprocedural(EdgeKind::BranchTrue))
-    );
+    cover(&witness, &result);
+    assert!(record(&result).regional_cfg.calls.is_empty());
+    let kinds = control_kinds(&result);
+    assert!(kinds.contains(&MachineEdgeKind::Intraprocedural(EdgeKind::BranchFalse)));
+    assert!(!kinds.contains(&MachineEdgeKind::Intraprocedural(EdgeKind::BranchTrue)));
 }
 
 #[test]
@@ -224,7 +214,7 @@ fn taken_invalid_jump_and_push_data_jumpdest_only_fail() {
         assert_eq!(witness.kind, OutcomeKind::Failure);
         let result = run(world);
         assert_closed(&result);
-        witness.covers(&result);
+        cover(&witness, &result);
         assert!(
             result
                 .outcomes()
@@ -260,7 +250,7 @@ fn unknown_jump_has_one_shared_union_covering_all_legal_targets_and_failure() {
     assert_closed(&result);
     for destination in [code.labels["left"] as u64, code.labels["right"] as u64, 999] {
         let witness = oracle::execute_with_gas(&world, &entry(calldata(destination)), 60_000);
-        witness.covers(&result);
+        cover(&witness, &result);
     }
     let cfg = &record(&result).regional_cfg;
     assert!(cfg.calls.is_empty());
@@ -298,15 +288,12 @@ fn unknown_jumpi_condition_keeps_taken_and_fallthrough_effects() {
     let result = run_input(world.clone(), EvmByteArray::unknown());
     assert_closed(&result);
     for value in [0, 1] {
-        oracle::execute_with_gas(&world, &entry(calldata(value)), 60_000).covers(&result);
+        cover(
+            &oracle::execute_with_gas(&world, &entry(calldata(value)), 60_000),
+            &result,
+        );
     }
-    let kinds = record(&result)
-        .regional_cfg
-        .nodes
-        .iter()
-        .flat_map(|node| &node.transfer.as_ref().unwrap().successors)
-        .map(|edge| edge.kind)
-        .collect::<BTreeSet<_>>();
+    let kinds = control_kinds(&result);
     assert!(kinds.contains(&MachineEdgeKind::Intraprocedural(EdgeKind::BranchTrue)));
     assert!(kinds.contains(&MachineEdgeKind::Intraprocedural(EdgeKind::BranchFalse)));
 }
@@ -319,7 +306,7 @@ fn pure_loop_closes_with_entered_failure_and_retained_cycle() {
     assert_eq!(witness.kind, OutcomeKind::Failure);
     let result = run(world);
     assert_closed(&result);
-    witness.covers(&result);
+    cover(&witness, &result);
     assert!(
         result
             .outcomes()
@@ -327,11 +314,24 @@ fn pure_loop_closes_with_entered_failure_and_retained_cycle() {
             .all(|outcome| outcome.kind == OutcomeKind::Failure)
     );
     let cfg = &record(&result).regional_cfg;
-    assert!(
-        cfg.nodes
-            .iter()
-            .any(|node| node.successors.contains(&node.id))
-    );
+    assert!(cfg.nodes.iter().any(|node| {
+        node.transfer
+            .as_ref()
+            .unwrap()
+            .process
+            .as_ref()
+            .unwrap()
+            .control
+            .as_ref()
+            .is_some_and(|region| {
+                region.through.contains(&ProcessLocation::Block(0))
+                    && region.relation.blocks[0]
+                        .successors
+                        .into_iter()
+                        .flatten()
+                        .any(|(location, _)| location == ProcessLocation::Block(0))
+            })
+    }));
 }
 
 #[test]
@@ -344,7 +344,7 @@ fn reachable_call_has_real_deliveries_at_the_following_block() {
     let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 100_000);
     let result = run(world);
     assert_closed(&result);
-    witness.covers(&result);
+    cover(&witness, &result);
     let cfg = &record(&result).regional_cfg;
     let calls = cfg.calls.iter().filter(|call| {
         cfg.nodes[call.from].frame.process.as_ref().is_some_and(|frame|
@@ -393,7 +393,7 @@ fn erased_prefix_stack_underflow_and_overflow_remain_entered_failures() {
         assert_eq!(witness.kind, OutcomeKind::Failure);
         let result = run(world);
         assert_closed(&result);
-        witness.covers(&result);
+        cover(&witness, &result);
     }
 }
 
@@ -410,7 +410,7 @@ fn creation_subscriber_delivers_to_the_following_control_block() {
     let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 120_000);
     let result = run(world);
     assert_closed(&result);
-    witness.covers(&result);
+    cover(&witness, &result);
     let cfg = &record(&result).regional_cfg;
     let calls = cfg.calls.iter().filter(|call| call.action == Some(ProcessAction::Create)
         && cfg.nodes[call.from].frame.process.as_ref().is_some_and(|frame|
@@ -460,7 +460,7 @@ fn call_roles_preserve_storage_owner_code_source_and_static_bound() {
         let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 120_000);
         let result = run(world);
         assert_closed(&result);
-        witness.covers(&result);
+        cover(&witness, &result);
         let expected_owner = if matches!(op, opcode::CALL | opcode::STATICCALL) {
             U
         } else {
@@ -522,7 +522,7 @@ fn nested_callback_continuation_and_outer_rollback_have_concrete_inclusion() {
         );
         let result = run(world);
         assert_closed(&result);
-        witness.covers(&result);
+        cover(&witness, &result);
         if revert {
             assert!(
                 result
@@ -560,7 +560,7 @@ fn empty_truncated_push_and_last_call_reach_end_without_fake_pc() {
         let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 60_000);
         let result = run(world);
         assert_closed(&result);
-        witness.covers(&result);
+        cover(&witness, &result);
         assert!(record(&result).regional_cfg.calls.is_empty());
         assert!(
             result
@@ -607,7 +607,7 @@ fn unknown_static_callee_delegates_known_control_under_its_own_owner() {
         && step.opcode == opcode::JUMPI));
     let result = run(abstract_world);
     assert_closed(&result);
-    witness.covers(&result);
+    cover(&witness, &result);
     let cfg = &record(&result).regional_cfg;
     let delegated = cfg.calls.iter().filter(|call|
         call.action == Some(ProcessAction::DelegateCall)
@@ -624,4 +624,131 @@ fn unknown_static_callee_delegates_known_control_under_its_own_owner() {
             .flat_map(|call| &call.deliveries)
             .any(|delivery| delivery.current)
     );
+}
+
+fn control_kinds(
+    result: &evm_abstract::analysis::EvmWorldAnalysis<NumericValue>,
+) -> BTreeSet<MachineEdgeKind> {
+    let mut kinds = BTreeSet::new();
+    for node in &record(result).regional_cfg.nodes {
+        let transfer = node.transfer.as_ref().unwrap();
+        kinds.extend(transfer.successors.iter().map(|edge| edge.kind));
+        if let Some(region) = transfer.process.as_ref().unwrap().control.as_ref() {
+            assert_eq!(region.entry, node.frame.process.as_ref().unwrap().location);
+            assert_eq!(
+                region.relation.source,
+                node.frame.process.as_ref().unwrap().source
+            );
+            assert_eq!(
+                region.relation.epoch,
+                node.frame.process.as_ref().unwrap().epoch
+            );
+            for location in &region.through {
+                if let ProcessLocation::Block(index) = location {
+                    assert!(!region.relation.blocks[*index].boundary);
+                    kinds.extend(
+                        region.relation.blocks[*index]
+                            .successors
+                            .into_iter()
+                            .flatten()
+                            .map(|(_, kind)| kind),
+                    );
+                }
+            }
+        }
+    }
+    kinds
+}
+
+#[test]
+fn pure_region_retains_control_without_a_world_payload_per_block() {
+    let mut code = Assembly::default();
+    for _ in 0..100 {
+        code.op(opcode::JUMPDEST).push(1).op(opcode::POP);
+    }
+    code.op(opcode::STOP).op(opcode::CALL);
+    let world = world(&code.finish());
+    let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 100_000);
+    assert!(witness.steps.len() > 100);
+    let result = run(world);
+    assert_closed(&result);
+    cover(&witness, &result);
+    let cfg = &record(&result).regional_cfg;
+    assert_eq!(cfg.nodes.len(), 2);
+    assert!(cfg.calls.is_empty());
+    let region = cfg
+        .nodes
+        .iter()
+        .find_map(|node| node.transfer.as_ref()?.process.as_ref()?.control.as_ref())
+        .unwrap();
+    assert_eq!(region.through.len(), 99);
+    assert_eq!(region.boundaries, [ProcessLocation::Block(99)]);
+    assert_eq!(region.relation.blocks.len(), 101);
+    assert!(
+        cfg.nodes
+            .iter()
+            .flat_map(|node| &node.transfer.as_ref().unwrap().successors)
+            .any(|edge| edge.kind == MachineEdgeKind::ProcessControl)
+    );
+    assert!(
+        !region.boundaries.contains(&ProcessLocation::Block(100)),
+        "dead CALL never reaches an effect boundary"
+    );
+}
+
+fn cover(
+    witness: &oracle::Observation,
+    result: &evm_abstract::analysis::EvmWorldAnalysis<NumericValue>,
+) {
+    witness.covers(result);
+    // The concrete inspector chooses the code/owner/static/PC independently.
+    // Check MAY control inclusion separately from coherent terminal effects.
+    for step in &witness.steps {
+        if step.is_init {
+            continue;
+        }
+        let Some(account) = result.world().account(step.code) else {
+            continue;
+        };
+        let evm_abstract::world::Code::Runtime(program) = &account.code else {
+            continue;
+        };
+        let location = if step.pc >= program.byte_len() {
+            // revm's padded bytecode emits an implicit STOP beyond the source,
+            // including after a right-zero-padded truncated PUSH immediate.
+            assert_eq!(step.opcode, opcode::STOP);
+            ProcessLocation::End
+        } else {
+            ProcessLocation::Block(
+                program
+                    .blocks()
+                    .iter()
+                    .find(|block| {
+                        block
+                            .instructions
+                            .iter()
+                            .any(|instruction| instruction.pc == step.pc)
+                    })
+                    .unwrap()
+                    .id,
+            )
+        };
+        let covered = record(result).regional_cfg.nodes.iter().any(|node| {
+            let frame = node.frame.process.as_ref().unwrap();
+            let owner = match frame.owner {
+                ProcessOwner::Named(owner) => owner == step.owner,
+                ProcessOwner::RootNamespace => result.entry().environment.to.as_concrete().is_none(),
+                ProcessOwner::Residual => result.world().account(step.owner).is_none() && step.owner != address(3),
+            };
+            owner && frame.is_static == step.is_static
+                && matches!(frame.source, ProcessSource::Runtime { source, .. } if source == step.code)
+                && (frame.location == location || node.transfer.as_ref().unwrap().process.as_ref().unwrap()
+                    .control.as_ref().is_some_and(|region| region.through.contains(&location)))
+        });
+        assert!(
+            covered,
+            "concrete control missing from source-qualified MAY relation: code={} owner={} static={} pc={} location={location:?}",
+            step.code, step.owner, step.is_static, step.pc
+        );
+    }
 }

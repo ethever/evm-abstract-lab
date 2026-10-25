@@ -21,6 +21,7 @@ mod allocation;
 mod calls;
 mod capabilities;
 mod control;
+pub(in crate::analysis::transfer::procedure) use control::Cache as ControlCache;
 pub mod creation;
 pub(super) use admission::export_store;
 pub(super) use capabilities::Capabilities;
@@ -66,22 +67,59 @@ impl<
             .as_ref()
             .ok_or_else(|| MachineError::Shape.frontier_reason())?
             .location;
-        let step = match location {
-            ProcessLocation::Block(index) => Some(
-                control::Step::at(
-                    payload
-                        .active()
-                        .program
-                        .as_ref()
-                        .ok_or_else(|| MachineError::Shape.frontier_reason())?,
-                    index,
-                    self.budget,
-                )
-                .map_err(MachineError::frontier_reason)?,
+        let plan = if !X::ENABLED
+            && matches!(
+                location,
+                ProcessLocation::Block(_) | ProcessLocation::JumpTargets
+            )
+            && payload
+                .active()
+                .program
+                .as_ref()
+                .is_some_and(|program| !program.blocks().is_empty())
+        {
+            Some(
+                self.table
+                    .process_control
+                    .plan(
+                        payload.active().program.as_ref().expect("captured source"),
+                        payload
+                            .active()
+                            .key
+                            .process
+                            .as_ref()
+                            .expect("process source"),
+                        self.budget,
+                    )
+                    .map_err(MachineError::frontier_reason)?,
+            )
+        } else {
+            None
+        };
+        let (step, control) = match plan {
+            Some(control::Plan::Boundary(step)) => (Some(step), None),
+            Some(control::Plan::Region(region)) => (None, Some(region)),
+            None => (
+                match location {
+                    ProcessLocation::Block(index) => Some(
+                        control::Step::at(
+                            payload
+                                .active()
+                                .program
+                                .as_ref()
+                                .ok_or_else(|| MachineError::Shape.frontier_reason())?,
+                            index,
+                            self.budget,
+                        )
+                        .map_err(MachineError::frontier_reason)?,
+                    ),
+                    _ => None,
+                },
+                None,
             ),
-            _ => None,
         };
         let capabilities = match location {
+            _ if control.is_some() => Capabilities::empty(),
             ProcessLocation::Block(_) => step.as_ref().expect("block step").capabilities,
             ProcessLocation::JumpTargets => Capabilities::empty(),
             ProcessLocation::End => Capabilities::boundary(super::FrameCode::Empty),
@@ -91,6 +129,7 @@ impl<
         let mut result = super::super::empty_execution(payload.clone());
         self.reserve(64).map_err(MachineError::frontier_reason)?;
         let mut receipt = EvmProcessTransfer {
+            control: control.as_ref().map(std::sync::Arc::clone),
             repeat: location == ProcessLocation::Any,
             actions: capabilities.actions().collect(),
             creations: Vec::new(),
@@ -198,7 +237,16 @@ impl<
                 &mut result,
             )?;
         }
-        if let Some(step) = &step {
+        if let Some(control) = &control {
+            for location in &control.boundaries {
+                self.process_successor(
+                    payload,
+                    *location,
+                    MachineEdgeKind::ProcessControl,
+                    &mut result,
+                )?;
+            }
+        } else if let Some(step) = &step {
             for (location, kind) in step.successors.into_iter().flatten() {
                 self.process_successor(payload, location, kind, &mut result)?;
             }

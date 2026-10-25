@@ -8,7 +8,9 @@
 use alloy_primitives::{Address, B256};
 use serde::Serialize;
 
+mod control;
 mod frame;
+pub use control::{ProcessControlBlock, ProcessControlRegion, ProcessControlRelation};
 pub use frame::{
     CreationContinuation, EvmProcessInvocation, ProcessCreation, ProcessFrameKey, ProcessLocation,
     ProcessSource,
@@ -89,6 +91,9 @@ pub enum ProcessBoundary {
 /// Actual coarse transfer receipt, not instruction or SSA evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EvmProcessTransfer {
+    /// Effect-free MAY paths actually composed by this semantic transfer.
+    /// The immutable source relation is shared across owners and body updates.
+    pub control: Option<std::sync::Arc<ProcessControlRegion>>,
     /// Unknown-code actions may repeat; known blocks use explicit successors.
     pub repeat: bool,
     /// Primitive action rules selected by this paid MAY control transfer.
