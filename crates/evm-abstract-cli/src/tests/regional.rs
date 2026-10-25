@@ -100,9 +100,9 @@ fn native_process_receipts_survive_plain_and_ssa_cli_envelopes() {
         } else {
             &encoded
         };
-        assert_eq!(analysis["schema_version"], 15);
+        assert_eq!(analysis["schema_version"], 16);
         assert_eq!(analysis["domain_spec"]["schema_version"], 3);
-        assert_eq!(analysis["domain_spec"]["cost_version"], 8);
+        assert_eq!(analysis["domain_spec"]["cost_version"], 9);
         assert_eq!(
             analysis["procedure_summaries"],
             original["procedure_summaries"]
@@ -173,8 +173,8 @@ fn regional_evidence_survives_plain_and_ssa_cli_envelopes_with_native_15() {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(plain["schema_version"], 15);
-        assert_eq!(plain["domain_spec"]["cost_version"], 8);
+        assert_eq!(plain["schema_version"], 16);
+        assert_eq!(plain["domain_spec"]["cost_version"], 9);
         for (record, encoded) in native
             .procedure_summaries()
             .iter()
@@ -209,7 +209,7 @@ fn regional_evidence_survives_plain_and_ssa_cli_envelopes_with_native_15() {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(wrapped["analysis"]["schema_version"], 15);
+        assert_eq!(wrapped["analysis"]["schema_version"], 16);
         assert_eq!(
             wrapped["analysis"]["procedure_summaries"],
             plain["procedure_summaries"]

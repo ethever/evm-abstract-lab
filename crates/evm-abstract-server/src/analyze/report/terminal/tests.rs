@@ -311,7 +311,7 @@ fn explicit_opt_out_and_default_converged_none_preserve_honest_detail() {
 fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input() {
     let (native, request) = fixture(true, false, false);
     let report = project(&native, &request);
-    assert_eq!(report.schema_version, 20);
+    assert_eq!(report.schema_version, 21);
     assert_eq!(report.status, api::AnalysisStatus::Incomplete);
     assert!(!report.selected_graph().unwrap().ssa.complete);
     assert_eq!(
@@ -401,7 +401,7 @@ fn incomplete_detail_and_all_three_joint_tuples_keep_the_actual_original_input()
     assert_eq!(binding.domain_spec.schema_version, 3);
     assert_eq!(binding.domain_spec.word_bits, domain.word_bits());
     assert_eq!(binding.domain_spec.cost_version, domain.cost_version());
-    assert_eq!(binding.domain_spec.cost_version, 8);
+    assert_eq!(binding.domain_spec.cost_version, 9);
     assert_eq!(
         binding.domain_spec.provenance_policy,
         domain.provenance_policy()

@@ -585,7 +585,7 @@ def _schema_control(page, canvas, output, expected_request):
         response = route.fetch()
         native_text = response.text()
         envelope = json.loads(native_text)
-        assert envelope["result"]["Ok"]["schema_version"] == 20
+        assert envelope["result"]["Ok"]["schema_version"] == 21
         envelope["result"]["Ok"]["schema_version"] = 16
         replacement = json.dumps(envelope)
         headers = dict(response.headers)
@@ -659,7 +659,7 @@ def root_terminal_coverage_interactions(context):
     full_ordinary = first.json()["result"]["Ok"]
     assert_hybrid(full_ordinary)
     ordinary = graph(full_ordinary, "Native")
-    assert ordinary["schema_version"] == 20 and ordinary["root_terminal_coverage"] is None
+    assert ordinary["schema_version"] == 21 and ordinary["root_terminal_coverage"] is None
     assert ordinary["status"] == "Converged" and ordinary["ssa"]["complete"] is True
     assert ordinary["frontiers"] == []
     _stores(ordinary)
@@ -784,7 +784,7 @@ def root_terminal_coverage_interactions(context):
                                "root_terminal_coverage": enabled}}
         assert request == expected, (name, request, expected)
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 20 and report["metadata"]["limits"] == expected["limits"]
+        assert report["schema_version"] == 21 and report["metadata"]["limits"] == expected["limits"]
         assert report["fork"] == request["fork"] == "Osaka"
         (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         assert_hybrid(report)

@@ -274,7 +274,7 @@ fn transfers_boundary_binds_the_original_request_without_completing_detail() {
     let binding = &native["root_terminal_coverage"]["input"]["domain_spec"];
     assert_eq!(binding, &native["domain_spec"]);
     assert_eq!(binding["schema_version"], 3);
-    assert_eq!(binding["cost_version"], 8);
+    assert_eq!(binding["cost_version"], 9);
     assert_eq!(
         native["status"],
         serde_json::to_value(Status::Incomplete).unwrap()

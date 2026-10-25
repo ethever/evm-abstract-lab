@@ -40,7 +40,7 @@ def compression_interactions(browser, url: str, output: Path):
             report = envelope["result"]["Ok"]
             assert report == completed.json()["result"]["Ok"]
             assert_hybrid(report)
-            assert report["schema_version"] == 20
+            assert report["schema_version"] == 21
             assert "max_output_bytes" not in report["metadata"]["export_limits"]
             assert displayed_graph(report)["cfg"] and displayed_graph(report)["ssa"]["blocks"]
             expect(page.locator("#analysis-status")).to_contain_text("Ready:")

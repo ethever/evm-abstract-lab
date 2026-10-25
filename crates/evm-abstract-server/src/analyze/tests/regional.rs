@@ -87,7 +87,7 @@ fn fixture_with_policy<S: analysis::ProcedureSummaryPolicy<ProductAlgebra>>(
         &Control::default(),
     )
     .unwrap();
-    assert_eq!(report.schema_version, 20);
+    assert_eq!(report.schema_version, 21);
     assert!(
         report
             .selected_graph()
@@ -181,9 +181,9 @@ fn known_process_identity_actions_exits_and_unexpanded_rules_survive_native_to_w
             analysis::KnownProcessSummaries,
         );
         let raw = serde_json::to_value(render::world::evidence(&native).unwrap()).unwrap();
-        assert_eq!(raw["schema_version"], 15);
+        assert_eq!(raw["schema_version"], 16);
         assert_eq!(raw["domain_spec"]["schema_version"], 3);
-        assert_eq!(raw["domain_spec"]["cost_version"], 8);
+        assert_eq!(raw["domain_spec"]["cost_version"], 9);
         assert!(
             report
                 .selected_graph()
@@ -608,7 +608,7 @@ fn regional_known_calls_preserve_native_owner_mode_deliveries_and_pooled_roundtr
     decoded.validate().unwrap();
     assert_eq!(decoded, report);
     let raw = serde_json::to_value(render::world::evidence(&native).unwrap()).unwrap();
-    assert_eq!(raw["schema_version"], 15);
+    assert_eq!(raw["schema_version"], 16);
     assert_eq!(raw["procedure_summaries"][0]["kind"], "KnownCall");
     assert_eq!(
         raw["procedure_summaries"][0]["regional_cfg"],

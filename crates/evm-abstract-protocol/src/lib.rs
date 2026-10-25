@@ -53,8 +53,10 @@ pub use terminal::*;
 /// Same-origin analysis endpoint.
 pub const API_PATH: &str = "/api/tasks";
 /// Wire schema version, independent of native report JSON.
+/// Version 21 fixes graph placement, shares the source directory and qualifies
+/// graph snapshots/revisions independently of job publication and selection.
 /// Version 20 qualifies root templates, process sources and conditional native detail.
-pub const SCHEMA_VERSION: u16 = 20;
+pub const SCHEMA_VERSION: u16 = 21;
 /// Maximum UTF-8 JSON request body accepted by the server.
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 

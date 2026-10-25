@@ -22,7 +22,7 @@ def displayed_graph(report):
 
 
 def assert_hybrid(report):
-    assert report["schema_version"] == 20
+    assert report["schema_version"] == 21
     hybrid = report["hybrid"]
     assert isinstance(hybrid, dict)
     coverage = hybrid["coverage"]

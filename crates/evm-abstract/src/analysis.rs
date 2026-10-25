@@ -93,7 +93,9 @@ pub use transfer::procedure::{
     EvmRegionalTransfer,
 };
 
-/// Serialized EVM analysis format. Version 15 distinguishes a supplied root
+/// Serialized EVM analysis format. Version 16 reserves the normalized global/native
+/// publication and immutable minimal procedure model used by this migration.
+/// Version 15 distinguishes a supplied root
 /// namespace/input Program from observed physical owners/code accounts.
 /// Version 14 adds explicit process semantics,
 /// coarse action receipts and typed unresolved process obligations.
@@ -103,7 +105,7 @@ pub use transfer::procedure::{
 /// exhaustion, cancellation and kernel failure from the local round limit.
 /// Version 10 introduced optional root terminal coverage with owned original
 /// input binding and finalized tuples. The domain-policy schema is independent.
-pub const SCHEMA_VERSION: u16 = 15;
+pub const SCHEMA_VERSION: u16 = 16;
 
 /// 同一字节码块在不同抽象上下文中的身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

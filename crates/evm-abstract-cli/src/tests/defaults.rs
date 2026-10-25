@@ -119,7 +119,7 @@ fn primary_analyze_default_exports_both_hybrid_graphs_and_typed_native_prefixes(
     let report: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert!(complete);
     assert_eq!(report["status"], "Converged");
-    assert_eq!(report["schema_version"], 15);
+    assert_eq!(report["schema_version"], 16);
     let hybrid = &report["hybrid"];
     assert_eq!(hybrid["coverage"]["chosen"], "Native");
     assert_eq!(hybrid["coverage"]["baseline_current"], true);
@@ -127,7 +127,7 @@ fn primary_analyze_default_exports_both_hybrid_graphs_and_typed_native_prefixes(
         hybrid["coverage"]["requested_native_terminal_coverage"],
         true
     );
-    assert_eq!(hybrid["baseline"]["schema_version"], 15);
+    assert_eq!(hybrid["baseline"]["schema_version"], 16);
     assert!(hybrid["detail"].is_null());
     let prefixes = hybrid["local_detail"].as_array().unwrap();
     assert!(!prefixes.is_empty());

@@ -3,12 +3,12 @@ use crate::domain::relational::RelationLimits;
 use std::num::NonZeroUsize;
 
 #[test]
-fn native_summary_caller_cost_model_is_version_eight() {
+fn owned_history_cost_model_is_version_nine() {
     let one = NonZeroUsize::new(1).unwrap();
     for spec in [DomainSpec::default(), DomainSpec::new(one, one, one)] {
-        assert_eq!(spec.cost_version(), 8);
+        assert_eq!(spec.cost_version(), 9);
         let serialized = serde_json::to_value(spec).unwrap();
-        assert_eq!(serialized["cost_version"], 8);
+        assert_eq!(serialized["cost_version"], 9);
     }
 }
 

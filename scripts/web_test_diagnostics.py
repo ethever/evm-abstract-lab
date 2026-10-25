@@ -49,7 +49,7 @@ def diagnostics_interactions(browser, url: str, args):
         assert request["fork"] == fork and posted_bytecode(reply) == code, request
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
         report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 20 and report["status"] == "Converged", report
+        assert report["schema_version"] == 21 and report["status"] == "Converged", report
         (output / f"diagnostics-{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         assert_hybrid(report)
         return displayed_graph(report)
