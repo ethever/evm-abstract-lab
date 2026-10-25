@@ -20,20 +20,37 @@ fn closed_unknown_interactions_project_as_summaries_without_invented_opcodes() {
     world.insert(root, account).unwrap();
     let report = project_world(world, root);
     assert_eq!(report.status, api::AnalysisStatus::Converged);
-    assert!(report.frontiers.is_empty());
-    assert!(!report.abstract_summaries.is_empty());
-    assert!(report.abstract_summaries.iter().all(|summary| {
-        summary.kind == api::ProcedureSummaryKind::UnknownEnvironment
-            && summary.root_procedure.is_some()
-    }));
+    assert!(report.selected_graph().unwrap().frontiers.is_empty());
+    assert!(
+        !report
+            .selected_graph()
+            .unwrap()
+            .abstract_summaries
+            .is_empty()
+    );
     assert!(
         report
+            .selected_graph()
+            .unwrap()
+            .abstract_summaries
+            .iter()
+            .all(|summary| {
+                summary.kind == api::ProcedureSummaryKind::UnknownEnvironment
+                    && summary.root_procedure.is_some()
+            })
+    );
+    assert!(
+        report
+            .selected_graph()
+            .unwrap()
             .abstract_summaries
             .iter()
             .all(|summary| summary.closed)
     );
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .abstract_summaries
             .iter()
             .all(|summary| summary.procedures.len() == 1
@@ -41,7 +58,7 @@ fn closed_unknown_interactions_project_as_summaries_without_invented_opcodes() {
                 && summary.procedures[0].covered_blocks.is_empty()
                 && summary.procedures[0].dependencies.is_empty())
     );
-    for summary in &report.abstract_summaries {
+    for summary in &report.selected_graph().unwrap().abstract_summaries {
         assert!(!summary.regional_cfg.nodes.is_empty());
         for node in &summary.regional_cfg.nodes {
             assert_eq!(node.frame.kind, api::CodeKind::AbstractEnvironment);
@@ -56,11 +73,15 @@ fn closed_unknown_interactions_project_as_summaries_without_invented_opcodes() {
     }
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .edges
             .iter()
             .any(|edge| edge.kind == api::EdgeKind::SummaryReturn)
     );
     let unknown = report
+        .selected_graph()
+        .unwrap()
         .states
         .iter()
         .find(|state| {
@@ -73,20 +94,25 @@ fn closed_unknown_interactions_project_as_summaries_without_invented_opcodes() {
         .unwrap();
     assert!(unknown.entry.frames.last().unwrap().program.is_none());
     let block = report
+        .selected_graph()
+        .unwrap()
         .cfg
         .iter()
         .find(|block| block.id == unknown.state)
         .unwrap();
-    assert!(block.instructions.is_empty());
+    assert!(block.source_block().is_none());
     assert!(block.executed_pcs.is_empty());
     report.validate().unwrap();
     let encoded = serde_json::to_vec(&report).unwrap();
     let parsed: api::AnalysisReport = serde_json::from_slice(&encoded).unwrap();
     parsed.validate().unwrap();
-    assert_eq!(parsed.abstract_summaries, report.abstract_summaries);
+    assert_eq!(
+        parsed.selected_graph().unwrap().abstract_summaries,
+        report.selected_graph().unwrap().abstract_summaries
+    );
 
     let mut invalid = parsed;
-    let summary = &mut invalid.abstract_summaries[0];
+    let summary = &mut invalid.native.as_mut().unwrap().abstract_summaries[0];
     let invalid_dependency = summary.procedures.len();
     summary.procedures[0].dependencies.push(invalid_dependency);
     assert!(matches!(

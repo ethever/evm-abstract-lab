@@ -54,7 +54,7 @@ fn source_current_projection_preserves_both_flags_and_local_observation_evidence
         let mut symbolic = Pool::new(&control);
         let mapped = project(&observations, &control, &mut symbolic).unwrap();
         let mut report = base.clone();
-        report.abstract_summaries = mapped.clone();
+        report.native.as_mut().unwrap().abstract_summaries = mapped.clone();
         report.validate().unwrap();
         for (record, mapped) in observations.iter().zip(&mapped) {
             assert_eq!(mapped.source_current, source_current);

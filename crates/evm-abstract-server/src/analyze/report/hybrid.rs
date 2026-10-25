@@ -94,8 +94,8 @@ pub(in crate::analyze) fn project_with_budget<N: WordElement, D: EvmNumericAlgeb
         postprocessing_work: budget.used() as u64,
         timings: api::AnalysisTimings::default(),
         programs,
-        global: Some(baseline),
-        native: detail,
+        global: Some(Box::new(baseline)),
+        native: detail.map(Box::new),
         hybrid: Some(api::HybridReport {
             coverage,
             local_prefixes,
@@ -115,7 +115,7 @@ fn invalid(kind: api::HybridValidationKind) -> api::ApiError {
     }
 }
 
-fn snapshot(source: &SnapshotId) -> Result<api::RootTerminalSnapshot, api::ApiError> {
+pub(super) fn snapshot(source: &SnapshotId) -> Result<api::RootTerminalSnapshot, api::ApiError> {
     Ok(match source.identity() {
         SnapshotIdentity::Offline { label } => {
             api::RootTerminalSnapshot::Offline(api::RootTerminalOfflineSnapshot {

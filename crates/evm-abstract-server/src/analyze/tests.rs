@@ -5,16 +5,17 @@ mod hybrid;
 /// Native opcode/SSA assertions inspect their own namespace; default global
 /// Process coverage can be closed while these precise paths remain pending.
 pub(in crate::analyze) fn native_detail(mut report: api::AnalysisReport) -> api::AnalysisReport {
-    let Some(hybrid) = &mut report.hybrid else {
-        return report;
-    };
-    if hybrid.namespace() == api::AnalysisNamespace::Native {
-        return report;
-    }
-    *hybrid
-        .detail
-        .take()
-        .expect("fixture must retain a native precision attempt")
+    let native = report
+        .native
+        .as_ref()
+        .expect("fixture must retain a native precision attempt");
+    report.status = native.status;
+    report.work = native.metadata.work;
+    report.transfers = native.transfers;
+    report.selected_view = api::AnalysisNamespace::Native;
+    report.global = None;
+    report.hybrid = None;
+    report
 }
 use evm_abstract::domain::{NumericValue, ProductAlgebra, ValueAlgebra};
 use evm_abstract::{
@@ -134,16 +135,20 @@ fn invalid_opcodes_at_the_same_pc_use_each_childs_captured_program() {
         .unwrap();
     let report = project_world(world, root);
     assert_eq!(report.status, api::AnalysisStatus::Converged);
-    assert!(report.frontiers.is_empty());
+    assert!(report.selected_graph().unwrap().frontiers.is_empty());
     let mut captured = Vec::new();
-    for diagnostic in &report.diagnostics {
+    for diagnostic in &report.selected_graph().unwrap().diagnostics {
         let Some(api::InvalidOpcodeDiagnostic::Instruction(instruction)) =
             &diagnostic.invalid_opcode
         else {
             continue;
         };
         assert_eq!(diagnostic.pc, 0);
-        let frame = report.states[diagnostic.state].entry.frames.last().unwrap();
+        let frame = report.selected_graph().unwrap().states[diagnostic.state]
+            .entry
+            .frames
+            .last()
+            .unwrap();
         assert_ne!(frame.code_address, Some(root.to_string()));
         let source = &report.programs[frame.program.unwrap()];
         assert_eq!(source.code_address, frame.code_address);
@@ -178,8 +183,10 @@ fn invalid_initcode_opcode_uses_creation_program_at_pc_zero() {
         .unwrap();
     let report = project_world(world, creator);
     assert_eq!(report.status, api::AnalysisStatus::Converged);
-    assert!(report.frontiers.is_empty());
+    assert!(report.selected_graph().unwrap().frontiers.is_empty());
     let diagnostic = report
+        .selected_graph()
+        .unwrap()
         .diagnostics
         .iter()
         .find(|diagnostic| diagnostic.kind == api::DiagnosticKind::InvalidOpcode)
@@ -195,11 +202,18 @@ fn invalid_initcode_opcode_uses_creation_program_at_pc_zero() {
             }
         ))
     );
-    let frame = report.states[diagnostic.state].entry.frames.last().unwrap();
+    let frame = report.selected_graph().unwrap().states[diagnostic.state]
+        .entry
+        .frames
+        .last()
+        .unwrap();
     let source = &report.programs[frame.program.unwrap()];
     assert_eq!(frame.kind, api::CodeKind::Initcode);
     assert_eq!(source.bytecode, "0xfe");
-    assert_ne!(Some(source.id), report.metadata.root_program);
+    assert_ne!(
+        Some(source.id),
+        report.selected_graph().unwrap().metadata.root_program
+    );
 }
 
 #[test]
@@ -222,9 +236,9 @@ fn nested_delegation_has_captured_entry_byte_without_instruction_receipt() {
         .unwrap();
     let report = project_world(world, authority);
     assert_eq!(report.status, api::AnalysisStatus::Converged);
-    assert!(report.frontiers.is_empty());
-    assert_eq!(report.diagnostics.len(), 1);
-    let diagnostic = &report.diagnostics[0];
+    assert!(report.selected_graph().unwrap().frontiers.is_empty());
+    assert_eq!(report.selected_graph().unwrap().diagnostics.len(), 1);
+    let diagnostic = &report.selected_graph().unwrap().diagnostics[0];
     assert_eq!(diagnostic.kind, api::DiagnosticKind::InvalidOpcode);
     let Some(api::InvalidOpcodeDiagnostic::DelegationEntry(entry)) = &diagnostic.invalid_opcode
     else {
@@ -233,12 +247,16 @@ fn nested_delegation_has_captured_entry_byte_without_instruction_receipt() {
     assert_eq!(entry.opcode, Some(0xef));
     assert_eq!(entry.byte_unavailable, None);
     assert!(entry.detail.contains("nested delegation"));
-    let state = &report.states[diagnostic.state];
+    let state = &report.selected_graph().unwrap().states[diagnostic.state];
     assert!(state.entry.frames.last().unwrap().program.is_none());
-    let cfg = &report.cfg[diagnostic.state];
-    assert!(cfg.instructions.is_empty());
+    let cfg = &report.selected_graph().unwrap().cfg[diagnostic.state];
+    assert!(cfg.source_block().is_none());
     assert!(cfg.executed_pcs.is_empty());
-    assert!(report.ssa.blocks[diagnostic.state].instructions.is_empty());
+    assert!(
+        report.selected_graph().unwrap().ssa.blocks[diagnostic.state]
+            .instructions
+            .is_empty()
+    );
     assert_eq!(
         serde_json::from_slice::<api::AnalysisReport>(&serde_json::to_vec(&report).unwrap())
             .unwrap(),
@@ -296,17 +314,27 @@ fn delegated_root_source_uses_code_program_and_retains_authority_storage() {
         &Control::default(),
     )
     .unwrap();
-    let source = &report.programs[report.metadata.root_program.unwrap()];
+    let source = &report.programs[report
+        .selected_graph()
+        .unwrap()
+        .metadata
+        .root_program
+        .unwrap()];
     assert_eq!(source.code_address, Some(target.to_string()));
     assert_eq!(source.bytecode, "0x602a00");
-    assert_eq!(report.disassembly, source.blocks);
-    let frame = &report.states[0].entry.frames[0];
+    assert_eq!(
+        report.disassembly(report.selected_view).unwrap(),
+        source.blocks
+    );
+    let frame = &report.selected_graph().unwrap().states[0].entry.frames[0];
     assert_eq!(frame.code_address, Some(target.to_string()));
     assert_eq!(frame.storage_address, Some(authority.to_string()));
     assert!(
         matches!(&frame.address_value,Some(api::AddressValue::Concrete(value)) if value==&authority.to_string())
     );
     let authority = report
+        .selected_graph()
+        .unwrap()
         .accounts
         .iter()
         .find(|item| item.address == authority.to_string())
@@ -356,6 +384,8 @@ fn child_frames_reference_complete_programs_private_memory_and_parent_continuati
     )
     .unwrap();
     let state = report
+        .selected_graph()
+        .unwrap()
         .states
         .iter()
         .find(|state| state.entry.frames.len() == 2)
@@ -369,6 +399,8 @@ fn child_frames_reference_complete_programs_private_memory_and_parent_continuati
     assert_eq!(source.blocks[0].instructions.last().unwrap().name, "RETURN");
     assert_eq!(
         report
+            .selected_graph()
+            .unwrap()
             .cfg
             .iter()
             .find(|cfg| cfg.id == state.state)
@@ -378,18 +410,22 @@ fn child_frames_reference_complete_programs_private_memory_and_parent_continuati
     );
     assert!(
         report
+            .selected_graph()
+            .unwrap()
             .ssa
             .blocks
             .iter()
             .any(|block| block.state == state.state)
     );
     let returned = report
+        .selected_graph()
+        .unwrap()
         .states
         .iter()
         .filter_map(|state| state.exit.as_ref())
         .flat_map(|machine| &machine.frames)
         .any(|frame| {
-            report.byte_arrays[frame.returndata.unwrap()]
+            report.selected_graph().unwrap().byte_arrays[frame.returndata.unwrap()]
                 .length
                 .constants
                 .as_ref()

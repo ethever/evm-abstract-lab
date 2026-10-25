@@ -569,6 +569,10 @@ record! {
         pub declared_root_source: crate::ProcessSource,
         /// Resolved root executable program, including root delegation.
         pub root_program: Option<usize>,
+        /// Exact immutable input snapshot, including offline equality namespace.
+        pub source_snapshot: crate::RootTerminalSnapshot,
+        /// Fact revision consumed by this graph, independent of publication version.
+        pub revision: crate::DecimalU64,
         /// Pinned chain identity and observed header, absent for bytecode input.
         pub snapshot: Option<ChainSnapshot>,
         /// Native immutable world fingerprint.

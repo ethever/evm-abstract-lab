@@ -14,6 +14,10 @@ choice! {
         Instruction,
         /// A frame's code provenance disagrees with its program reference.
         Frame,
+        /// Exact graph snapshot and observed chain header disagree.
+        Snapshot,
+        /// A qualified receipt refers to a different graph fact revision.
+        Revision,
     }
 }
 record! {

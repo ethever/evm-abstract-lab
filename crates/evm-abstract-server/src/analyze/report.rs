@@ -65,7 +65,7 @@ pub(in crate::analyze) fn with_budget<N: WordElement, D: EvmNumericAlgebra<Eleme
         timings: api::AnalysisTimings::default(),
         programs,
         global: None,
-        native: Some(graph),
+        native: Some(Box::new(graph)),
         hybrid: None,
     })
 }
@@ -344,6 +344,8 @@ fn project_graph<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             root_binding,
             declared_root_source,
             root_program,
+            source_snapshot: hybrid::snapshot(native.snapshot())?,
+            revision: api::DecimalU64(native.revision().value()),
             snapshot,
             fingerprint: world
                 .fingerprint()
