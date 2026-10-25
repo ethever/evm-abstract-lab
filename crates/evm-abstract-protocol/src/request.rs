@@ -212,29 +212,31 @@ record! {
         pub rpc_timeout_ms: u64,
     }
 }
+use crate::application_defaults as defaults;
+
 impl Default for AnalysisLimits {
     fn default() -> Self {
         Self {
-            max_states: 100_000,
-            max_transfers: 10_000_000,
-            context_depth: 128,
-            max_constants: 512,
-            max_work: 2_000_000_000,
-            max_call_depth: 1025,
-            max_memory_bytes: 64 * 1024 * 1024,
+            max_states: defaults::MAX_STATES as u64,
+            max_transfers: defaults::MAX_TRANSFERS as u64,
+            context_depth: defaults::CONTEXT_DEPTH as u64,
+            max_constants: defaults::MAX_CONSTANTS as u64,
+            max_work: defaults::MAX_WORK as u64,
+            max_call_depth: defaults::MAX_CALL_DEPTH as u64,
+            max_memory_bytes: defaults::MAX_MEMORY_BYTES as u64,
             use_summaries: true,
             root_terminal_coverage: true,
             numeric_model: NumericModel::Product,
-            reduction_rounds: 16,
-            max_facts: 4096,
+            reduction_rounds: defaults::REDUCTION_ROUNDS as u64,
+            max_facts: defaults::MAX_FACTS as u64,
             relations_enabled: true,
-            max_constraints: 2048,
-            max_expression_nodes: 16_384,
-            max_expression_depth: 256,
-            rpc_max_accounts: 4096,
-            rpc_max_requests: 1_000_000,
-            rpc_max_response_bytes: 64 * 1024 * 1024,
-            rpc_timeout_ms: 120_000,
+            max_constraints: defaults::MAX_CONSTRAINTS as u64,
+            max_expression_nodes: defaults::MAX_EXPRESSION_NODES as u64,
+            max_expression_depth: defaults::MAX_EXPRESSION_DEPTH as u64,
+            rpc_max_accounts: defaults::MAX_RPC_ACCOUNTS as u64,
+            rpc_max_requests: defaults::MAX_RPC_REQUESTS as u64,
+            rpc_max_response_bytes: defaults::MAX_RPC_RESPONSE_BYTES as u64,
+            rpc_timeout_ms: defaults::RPC_TIMEOUT_MS,
         }
     }
 }

@@ -19,6 +19,9 @@ pub(super) fn report(
         .map_err(|error| failure(report, error))
 }
 fn failure(report: &api::AnalysisReport, error: JsonError) -> api::ApiError {
+    let Some(metadata) = report.selected_graph().map(|graph| &graph.metadata) else {
+        return super::api_error(api::ApiErrorCode::Internal, "report has no selected graph");
+    };
     let message = error.to_string();
     let written = match error {
         JsonError::Cancelled { written } => written,
@@ -33,8 +36,8 @@ fn failure(report: &api::AnalysisReport, error: JsonError) -> api::ApiError {
         details: api::ErrorDetails::Export(Box::new(api::ExportFailure {
             kind: api::ExportFailureKind::Cancelled,
             required: written as u64,
-            limits: report.metadata.export_limits,
-            usage: report.metadata.export_usage,
+            limits: metadata.export_limits,
+            usage: metadata.export_usage,
             written: Some(written),
         })),
     }

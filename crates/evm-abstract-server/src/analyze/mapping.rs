@@ -2,6 +2,14 @@ use evm_abstract::{analysis, bytecode};
 use evm_abstract_protocol as api;
 use evm_abstract_protocol::{DiagnosticKind, DisasmInstruction, EdgeKind, FrontierKind};
 
+pub(super) fn fork(source: evm_abstract::Fork) -> api::Fork {
+    match source {
+        evm_abstract::Fork::Cancun => api::Fork::Cancun,
+        evm_abstract::Fork::Prague => api::Fork::Prague,
+        evm_abstract::Fork::Osaka => api::Fork::Osaka,
+    }
+}
+
 pub(super) fn root_binding(source: evm_abstract::world::RootInputBinding) -> api::RootInputBinding {
     match source {
         evm_abstract::world::RootInputBinding::Physical { address } => {
@@ -330,5 +338,43 @@ pub(super) fn instruction_progress(
         analysis::InstructionProgress::Completed => api::InstructionProgress::Completed,
         analysis::InstructionProgress::Dispatched => api::InstructionProgress::Dispatched,
         analysis::InstructionProgress::Faulted => api::InstructionProgress::Faulted,
+    }
+}
+
+/// Public frame identity shared by local prefixes and regional control evidence.
+/// Process frames expose only their authoritative key; Native anchor fields are masked.
+pub(super) fn regional_frame(
+    frame: &analysis::FrameKey,
+    native_semantics: bool,
+) -> api::RegionalFrame {
+    let process = frame.process.as_deref().map(super::process::key);
+    let is_native = process.is_none();
+    let bytecode = is_native
+        && native_semantics
+        && matches!(
+            frame.mode,
+            analysis::FrameCode::Runtime | analysis::FrameCode::InitCode
+        );
+    api::RegionalFrame {
+        code_address: is_native.then(|| frame.code_address.to_string()),
+        code_hash: (is_native && frame.mode != analysis::FrameCode::Unknown)
+            .then(|| frame.code_hash.to_string()),
+        storage_address: is_native.then(|| frame.address.to_string()),
+        address_value: is_native.then(|| super::value::address(frame.address_value)),
+        caller: is_native.then(|| super::value::address(frame.caller)),
+        kind: process
+            .as_ref()
+            .map_or_else(|| super::pools::mode(frame.mode), |key| key.source.kind()),
+        is_static: process
+            .as_ref()
+            .map_or(frame.is_static, |key| key.is_static),
+        basic_block: bytecode.then_some(frame.basic_block_index),
+        stack_height: is_native.then_some(frame.stack_height),
+        context: if is_native {
+            frame.jump_history.clone()
+        } else {
+            Vec::new()
+        },
+        process,
     }
 }

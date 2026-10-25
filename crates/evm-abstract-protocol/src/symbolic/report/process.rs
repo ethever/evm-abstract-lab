@@ -54,7 +54,7 @@ impl Validation<'_> {
         }
         self.program(program)?;
         let Some(id) = program else { return Ok(()) };
-        let Some(program) = self.report.programs.iter().find(|program| program.id == id) else {
+        let Some(program) = self.programs.iter().find(|program| program.id == id) else {
             unreachable!("program reference checked")
         };
         let valid = match &key.source {

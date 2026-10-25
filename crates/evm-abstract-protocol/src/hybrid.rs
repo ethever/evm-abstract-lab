@@ -173,14 +173,10 @@ record! {
     }
 }
 record! {
-    /// The main graph is chosen; the other graph is retained once, separately.
+    /// Qualifications and receipts; graphs have fixed envelope positions.
     pub struct HybridReport {
     /// Authoritative combined coverage and accounting.
     pub coverage: HybridCoverage,
-    /// Baseline when the main graph is Native; otherwise absent.
-    pub baseline: Option<Box<crate::AnalysisReport>>,
-    /// Native graph when the main graph is Baseline; otherwise absent.
-    pub detail: Option<Box<crate::AnalysisReport>>,
     /// Current conditioned observations, including honest pending control.
     pub local_prefixes: Vec<HybridLocalPrefix>,
     /// Qualification of separately retained RPC native detail, if any.
@@ -194,7 +190,7 @@ impl HybridReport {
     pub fn native_coverage(&self) -> &HybridCoverage {
         self.precision.as_ref().unwrap_or(&self.coverage)
     }
-    /// Namespace of the enclosing report's state/edge/SSA IDs.
+    /// Initial display namespace declared by the semantic interpretation.
     pub fn namespace(&self) -> AnalysisNamespace {
         match self.coverage.chosen {
             HybridInterpretation::Native => AnalysisNamespace::Native,
