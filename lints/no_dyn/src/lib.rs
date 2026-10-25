@@ -11,8 +11,10 @@ extern crate rustc_span;
 
 use rustc_errors::DiagDecorator;
 use rustc_hir::def::DefKind;
-use rustc_hir::def_id::{CRATE_DEF_ID, LOCAL_CRATE, LocalDefId};
-use rustc_hir::{AmbigArg, Body, Expr, FnDecl, Pat, Ty as HirTy, TyKind, intravisit::FnKind};
+use rustc_hir::def_id::{CRATE_DEF_ID, CRATE_DEF_INDEX, DefId, LOCAL_CRATE, LocalDefId};
+use rustc_hir::{
+    AmbigArg, Body, Expr, ExprKind, FnDecl, Node, Pat, Ty as HirTy, TyKind, intravisit::FnKind,
+};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::ty::{self, Ty, TypeVisitableExt, Unnormalized};
 use rustc_span::{ExpnKind, MacroKind, Span, hygiene::AstPass, sym};
@@ -129,6 +131,71 @@ fn compiler_support(cx: &LateContext<'_>, span: Span) -> bool {
     }
 }
 
+// Compare resolved definitions and their real parents. Expansion display names
+// and re-export paths do not identify the dependency that generated a node.
+fn external_definition(
+    cx: &LateContext<'_>,
+    mut id: DefId,
+    crate_name: &str,
+    path: &[&str],
+) -> bool {
+    if id.is_local() || cx.tcx.crate_name(id.krate).as_str() != crate_name {
+        return false;
+    }
+    for name in path.iter().rev() {
+        if id.index == CRATE_DEF_INDEX || cx.tcx.item_name(id).as_str() != *name {
+            return false;
+        }
+        let Some(parent) = cx.tcx.opt_parent(id) else {
+            return false;
+        };
+        id = parent;
+    }
+    id.index == CRATE_DEF_INDEX
+}
+
+fn serde_expected_error(cx: &LateContext<'_>, expr: &Expr<'_>, target: Ty<'_>) -> bool {
+    let expansion = expr.span.ctxt().outer_expn_data();
+    if !matches!(expansion.kind, ExpnKind::Macro(MacroKind::Derive, _))
+        || !expansion.macro_def_id.is_some_and(|id| {
+            matches!(cx.tcx.def_kind(id), DefKind::Macro(_))
+                && external_definition(cx, id, "serde_derive", &["Deserialize"])
+        })
+    {
+        return false;
+    }
+    // Only the implicit shared-reference coercion is permitted. A dynamic field,
+    // alias, signature or already-erased expression still goes through `check`.
+    let ty::Ref(_, pointee, rustc_hir::Mutability::Not) = target.kind() else {
+        return false;
+    };
+    let ty::Dynamic(predicates, _) = pointee.kind() else {
+        return false;
+    };
+    if predicates.len() != 1
+        || !predicates.principal().is_some_and(|principal| {
+            external_definition(cx, principal.def_id(), "serde_core", &["de", "Expected"])
+        })
+    {
+        return false;
+    }
+    let Some((_, Node::Expr(parent))) = cx.tcx.hir_parent_iter(expr.hir_id).next() else {
+        return false;
+    };
+    let ExprKind::Call(callee, args) = parent.kind else {
+        return false;
+    };
+    if args.len() != 2 || args[1].hir_id != expr.hir_id {
+        return false;
+    }
+    let ty::FnDef(id, _) = cx.typeck_results().expr_ty(callee).kind() else {
+        return false;
+    };
+    ["invalid_type", "invalid_value", "invalid_length"]
+        .into_iter()
+        .any(|method| external_definition(cx, *id, "serde_core", &["de", "Error", method]))
+}
+
 fn report(cx: &LateContext<'_>, span: Span) {
     if compiler_support(cx, span) || framework_boundary(cx) {
         return;
@@ -230,16 +297,18 @@ impl<'tcx> LateLintPass<'tcx> for NoDyn {
 
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
         let typeck = cx.typeck_results();
-        let candidate = std::iter::once(typeck.expr_ty(expr))
-            .chain(
-                typeck
-                    .expr_adjustments(expr)
-                    .iter()
-                    .map(|adjustment| adjustment.target),
-            )
-            .find(|ty| has_dynamic_dispatch(cx, *ty));
-        if let Some(ty) = candidate {
-            check(cx, expr.span, ty);
+        let unadjusted = typeck.expr_ty(expr);
+        if has_dynamic_dispatch(cx, unadjusted) {
+            check(cx, expr.span, unadjusted);
+            return;
+        }
+        for adjustment in typeck.expr_adjustments(expr) {
+            if has_dynamic_dispatch(cx, adjustment.target)
+                && !serde_expected_error(cx, expr, adjustment.target)
+            {
+                check(cx, expr.span, adjustment.target);
+                break;
+            }
         }
     }
 }
@@ -247,4 +316,9 @@ impl<'tcx> LateLintPass<'tcx> for NoDyn {
 #[test]
 fn ui() {
     dylint_testing::ui_test(env!("CARGO_PKG_NAME"), "ui");
+}
+
+#[test]
+fn serde_ui() {
+    dylint_testing::ui_test_examples(env!("CARGO_PKG_NAME"));
 }

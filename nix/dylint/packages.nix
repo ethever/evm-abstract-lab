@@ -64,7 +64,7 @@ let
     filter = path: type: lintCrane.filterCargoSources path type || pkgs.lib.hasSuffix ".stderr" path;
   };
   # Compiler-plugin production builds and dummy dependency preparation never
-  # read UI cases or their expected diagnostics. Only the UI execution owns them.
+  # read UI cases/examples or expected diagnostics. Only UI execution owns them.
   productionSource = pkgs.lib.cleanSourceWith {
     src = uiSource;
     filter =
@@ -72,7 +72,13 @@ let
       let
         relative = pkgs.lib.removePrefix "${toString lintRoot}/" (toString path);
       in
-      relative != "ui" && !(pkgs.lib.hasPrefix "ui/" relative) && !(pkgs.lib.hasSuffix ".stderr" path);
+      !(builtins.elem relative [
+        "ui"
+        "examples"
+      ])
+      && !(pkgs.lib.hasPrefix "ui/" relative)
+      && !(pkgs.lib.hasPrefix "examples/" relative)
+      && !(pkgs.lib.hasSuffix ".stderr" path);
   };
   formattingSource = pkgs.lib.cleanSourceWith {
     src = uiSource;

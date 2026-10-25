@@ -314,6 +314,33 @@
       ]
     },
     {
+      "name": "dylint-serde-example-source-isolation",
+      "description": "Serde UI example edits reach UI and formatting only, retaining production plugin and dependency caches.",
+      "mutations": [
+        {
+          "path": "lints/no_dyn/examples/serde_accepted.rs",
+          "append": "\n// Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-dyn-ui",
+        "no-dyn-fmt"
+      ]
+    },
+    {
+      "name": "dylint-serde-example-diagnostic-isolation",
+      "description": "Serde UI diagnostics reach only the UI check.",
+      "mutations": [
+        {
+          "path": "lints/no_dyn/examples/serde_rejected.stderr",
+          "append": "\n# Cache boundary probe.\n"
+        }
+      ],
+      "only_changed": [
+        "no-dyn-ui"
+      ]
+    },
+    {
       "name": "lean-proof-source-isolation",
       "description": "A proof source content edit rebuilds only the standalone Lean checker; documentation reads proof target names, not Lean contents.",
       "mutations": [

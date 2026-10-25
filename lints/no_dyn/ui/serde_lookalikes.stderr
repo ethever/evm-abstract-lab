@@ -1,0 +1,44 @@
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_lookalikes.rs:8:10
+   |
+LL | #[derive(serde_lookalike::Deserialize)]
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+   = note: `#[forbid(no_dyn)]` on by default
+   = note: this error originates in the derive macro `serde_lookalike::Deserialize` (in Nightly b$DIRlds, run with -Z macro-backtrace for more info)
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_lookalikes.rs:17:48
+   |
+LL |             pub fn invalid_length(_: usize, _: &dyn Expected) {}
+   |                                                ^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_lookalikes.rs:17:49
+   |
+LL |             pub fn invalid_length(_: usize, _: &dyn Expected) {}
+   |                                                 ^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_lookalikes.rs:17:45
+   |
+LL |             pub fn invalid_length(_: usize, _: &dyn Expected) {}
+   |                                             ^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: dynamic dispatch is forbidden
+  --> $DIR/serde_lookalikes.rs:24:46
+   |
+LL |     serde_core::de::Error::invalid_length(1, &"two elements");
+   |                                              ^^^^^^^^^^^^^^^
+   |
+   = help: use a concrete type, a generic parameter / impl Trait, or an enum
+
+error: aborting due to 5 previous errors
+
