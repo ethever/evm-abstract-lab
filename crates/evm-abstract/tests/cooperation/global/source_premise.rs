@@ -196,6 +196,8 @@ fn parent_only_assumption_expands_the_same_child_snapshot_and_actual_return() {
                     .filter(|output| output.kind == OutcomeKind::Return)
                     .any(|output| output
                         .data
+                        .instantiate(algebra.borrowed())
+                        .unwrap()
                         .read_word(&fixtures::word(0), algebra.borrowed())
                         .contains(U256::from(2))),
                 widen

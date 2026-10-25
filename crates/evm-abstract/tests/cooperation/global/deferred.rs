@@ -313,6 +313,8 @@ fn later_world_fact_reenters_body_changes_native_output_and_preserves_failure_ca
                 .any(|output| {
                     output
                         .data
+                        .instantiate(algebra.borrowed())
+                        .unwrap()
                         .read_word(&fixtures::word(0), algebra.borrowed())
                         .contains(U256::from(42))
                 });

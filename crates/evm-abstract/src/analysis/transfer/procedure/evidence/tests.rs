@@ -79,7 +79,7 @@ fn same_version_body_preparation_refusal_does_not_recertify_the_previous_transfe
         .with_run(&mut token, solver.budget, |run| Ok(run.job()))
         .unwrap();
     assert!(solver.run_admitted(Arc::clone(&task), token));
-    let before = solver.regional_cfg().unwrap();
+    let (old_rows, before, old_generation) = solver.semantic_snapshot().unwrap();
     let old = before.nodes[body].transfer.as_ref().unwrap();
     assert!(old.current && old.complete && old.visited_block);
     let input_version = solver.track_input(body).unwrap();
@@ -108,7 +108,16 @@ fn same_version_body_preparation_refusal_does_not_recertify_the_previous_transfe
         solver.table.frontiers.last().unwrap().reason,
         FrontierReason::StateJoin(JoinBoundary::IdentityExhausted)
     );
-    let after = solver.regional_cfg().unwrap();
+    let (new_rows, after, new_generation) = solver.semantic_snapshot().unwrap();
+    assert!(
+        old_rows.shares_storage_with(&new_rows),
+        "unchanged numeric bounds remain shared"
+    );
+    assert!(
+        !before.shares_storage_with(&after),
+        "same native revision does not preserve an execution receipt"
+    );
+    assert!(new_generation > old_generation);
     let receipt = after.nodes[body].transfer.as_ref().unwrap();
     assert_eq!(receipt.input_revision, old.input_revision);
     assert_eq!(receipt.outcomes, old.outcomes);
