@@ -120,7 +120,7 @@ fn real_evm_depth_failure_is_covered_without_an_analysis_depth_frontier() {
     );
     insert(&mut world, A, &fixtures::no_base_success(), &[(0, 5)]);
     let entry = entry(EvmByteArray::<NumericValue>::empty());
-    let observed = oracle::execute_gas(&world, &entry, 1_000_000_000_000);
+    let observed = oracle::observation::execute_gas(&world, &entry, 1_000_000_000_000);
     assert_eq!(observed.kind, OutcomeKind::Revert);
     assert_eq!(observed.output_word(0), U256::from(99));
     assert_eq!(
