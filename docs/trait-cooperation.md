@@ -130,7 +130,8 @@ channel 通常用 [`Ascending<JoinPolicy>` 或 `Descending<RefinePolicy>`](../cr
 | 路由 | 查询/存储 | 键的作用域与寿命 |
 | --- | --- | --- |
 | `InputRoute = Here` | `Inputs<N>` | `Subject.scope` 下的只读、单次初始化输入 |
-| `RefinementRoute = There<Here>` | `Refinements` | 可执行 World/Body 的同一 scope 下合取 `StackFacts`；只读入口不提供可消费反馈 |
+| `RefinementRoute = There<Here>` | `Refinements` | 同一 scope 的 Native 活动栈保证；Process 拒绝非空栈反馈 |
+| `ProcessRefinementRoute` | `ProcessRefinements` | 同一代际、可执行 Process Body 的类型化动作/效果保证 |
 | `There<There<P>>` | 客户端 `ExtraStores` 的第 `P` 个提供者 | 每个输入代际重建的本地 tail |
 | `SharedRoute<P>` | 客户端 `SharedStores` 的第 `P` 个提供者 | 整次分析只创建一次；跨点上升事实使用 `Input::universe()` |
 | `PointsRoute`、`GenerationRoute`、`TopologyRoute` | 内建点目录、当前代际与控制流关系 | 分析级 universe 下的共享观察 |
@@ -192,9 +193,21 @@ channel 通常用 [`Ascending<JoinPolicy>` 或 `Descending<RefinePolicy>`](../cr
 | `StackFacts::Unreachable` | 登记规则证明本代没有到达执行 | 证明满足本代全部前提时可以 |
 | 配置、scope、组件或资源错误 | 所需求值未正常完成 | 不能 |
 
-[`StackFacts`](../crates/evm-abstract/src/analysis/cooperation/facts.rs)是当前解释器消费的反馈词汇：活动栈槽的 [`WordObservation`](../crates/evm-abstract/src/domain/observation.rs) 或显式不可达。自定义事实若要影响 EVM，需要一个遵守契约的组件将结论送到这个端口；槽越界、无效事实与失效 scope 有类型化失败路径。
+[`StackFacts`](../crates/evm-abstract/src/analysis/cooperation/facts.rs)是 Native 解释器消费的反馈词汇：活动栈槽的 [`WordObservation`](../crates/evm-abstract/src/domain/observation.rs) 或显式不可达。自定义事实若要影响 EVM，需要一个遵守契约的组件将结论送到这个端口；槽越界、无效事实与失效 scope 有类型化失败路径。
 
 将同一代的合法数值保证合取后，明确数值矛盾可以排除该执行视图。但 [`ReductionStatus::Empty`](../crates/evm-abstract/src/domain/reduce.rs) 本身不会自动变成 EVM 路径不可达；来源冲突也不证明数值矛盾。具体处理见[反馈应用](../crates/evm-abstract/src/analysis/cooperation/refinement.rs)：区分已证明矛盾、保守精度损失和错误。
+
+## Process 视图与 Hybrid 注册阶段
+
+默认 `Extension::new(rule)` 声明 `InputViews::Native`。需要参与 Process 基线的组装显式调用 `.with_process_view()`，并通过 `Input::view()` 区分 `Native` 与 `Process`。Process 视图借用来源、owner、static 所限定的 `ProcessFrameKey` 控制身份、实际 logical ADDRESS/CALLER/CALLVALUE、Store 与可用的 Program。缺失的调用操作数保留 `None`，不能用适配器键中的地址替代。Program 是捕获代码目录，不证明所有块可达；Process 私有栈与内存不属于 Native 栈反馈的范围。
+
+`ProcessRefinementRoute` 合取本代的 `ProcessFacts`：`excluded_actions` 排除已证明不可能的原始动作，`local_readonly` 保证这次控制输入没有本地状态写入。当前效果包络也承担动作相关的转账和生命周期效果，所以 `local_readonly` 只在所有剩余动作均被排除时接受；仍有动作时返回 `RefinementError::ProcessActionEffects`。把 Process 事实用于 Native 输入或非可执行 Body，或者把非空 `StackFacts` 用于 Process，都会明确失败。反馈只改变付费构造的局部转换能力，不收缩权威输入或 Store。
+
+[独立生产者/消费者测试](../crates/evm-abstract/tests/process_cooperation.rs)包含一个有 `SSTORE` 的程序：`CALLVALUE=0` 时跳过写入。生产者核对确切来源与这次调用值，消费者读取其自定义 channel 后发布 `local_readonly`；实际 Process 输出因此保留原始存储值。关闭任一组件会失去这一保证。独立 revm 执行检查零值与非零值对照，属性测试改变原始存储值。这个结论覆盖该来源、控制输入和调用条件，不能从当前开放 CFG 的缺项推出。
+
+只接受 Native 视图的组件可显式选择 `.native_only()`：Hybrid 基线使用自己的无扩展 kernel，Native detail 使用原来的可变分析器及重新创建的本地/共享 stores。两阶段仍使用同一个累计 work 账本；禁用 detail 或在注册前拒付所需准备工作时不会调用该扩展。默认 `PhaseScope::All` 会在每个阶段注册扩展，不支持 Process 的组装返回 `CooperationError::UnsupportedView`，不会自动跳过。直接 Process 运行仍要求 Process 视图声明。组件错误保留具体类型传出阶段边界。[阶段测试](../crates/evm-abstract/tests/process_cooperation/phases.rs)覆盖实际工厂次数、释放、错误与额度拒绝。
+
+正向 `current` 证据同时核对实际 Native 输入/输出版本和外部收据：使用过的确切 `Subject`、owner 执行 epoch、当前代际选择、scope 有效性、客户端闭包与待处理 owner。输入增长或前提退役即使没有改变数值载荷，也使旧保证不能再次认证；新一次执行必须取得新的有效收据。该检查适用于区域 Body、Resume 投递和最终 World 来源认证。
 
 ## 数值局部协作与工作报价
 

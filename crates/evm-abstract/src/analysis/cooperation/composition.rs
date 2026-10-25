@@ -1,4 +1,4 @@
-use super::{EvmContext, Subject};
+use super::{EvmContext, InputViews, PhaseScope, Subject};
 use crate::domain::WordElement;
 use analysis_kernel::{Analyzer, Either, Kernel, KernelError, LocalClosure, Meter, Nil, Pair};
 use std::{convert::Infallible, iter};
@@ -57,6 +57,14 @@ pub trait InputTasks {
     type Task;
     /// Whether this assembly has any external obligations.
     const ENABLED: bool;
+    /// Immutable semantic views accepted by every registered component.
+    fn input_views(&self) -> InputViews {
+        InputViews::Native
+    }
+    /// Explicit registration phase; defaults to participating in every phase.
+    fn phase_scope(&self) -> PhaseScope {
+        PhaseScope::All
+    }
     /// Conservative construction/iteration and eventual task-disposal charge,
     /// reserved before tasks(). Include native payload destruction, not just
     /// the kernel handle; the kernel cannot infer arbitrary Task Drop work.
@@ -89,6 +97,24 @@ pub type PairedTasks<L, R> = Pair<L, R>;
 impl<L: InputTasks, R: InputTasks> InputTasks for Pair<L, R> {
     type Task = Either<L::Task, R::Task>;
     const ENABLED: bool = L::ENABLED || R::ENABLED;
+    fn input_views(&self) -> InputViews {
+        if (!L::ENABLED || self.left.input_views() == InputViews::NativeAndProcess)
+            && (!R::ENABLED || self.right.input_views() == InputViews::NativeAndProcess)
+        {
+            InputViews::NativeAndProcess
+        } else {
+            InputViews::Native
+        }
+    }
+    fn phase_scope(&self) -> PhaseScope {
+        if self.left.phase_scope() == PhaseScope::NativeOnly
+            && self.right.phase_scope() == PhaseScope::NativeOnly
+        {
+            PhaseScope::NativeOnly
+        } else {
+            PhaseScope::All
+        }
+    }
 
     fn registration_work(&self) -> usize {
         self.left
@@ -116,6 +142,8 @@ pub struct Extension<A, P = PerInput, F = NoStores, G = NoStores> {
     pub stores: F,
     /// Once-per-run factory for independently defined global capability stores.
     pub shared: G,
+    views: InputViews,
+    phase: PhaseScope,
 }
 
 impl<A> Extension<A> {
@@ -126,6 +154,8 @@ impl<A> Extension<A> {
             tasks: PerInput,
             stores: NoStores,
             shared: NoStores,
+            views: InputViews::Native,
+            phase: PhaseScope::All,
         }
     }
 }
@@ -138,11 +168,30 @@ impl<A, P> Extension<A, P> {
             tasks,
             stores: NoStores,
             shared: NoStores,
+            views: InputViews::Native,
+            phase: PhaseScope::All,
         }
     }
 }
 
 impl<A, P, F, G> Extension<A, P, F, G> {
+    /// Register this assembly for typed Process control/invocation/Store inputs
+    /// as well as Native inputs. Each rule must accept this semantic contract;
+    /// stack feedback still refers only to actual Native operands.
+    pub fn with_process_view(mut self) -> Self {
+        self.views = InputViews::NativeAndProcess;
+        self
+    }
+
+    /// Deliberately register only in Hybrid's optional Native detail phase.
+    /// The baseline owns a separate unextended kernel; direct Process execution
+    /// still rejects an assembly without Process support. The analyzer is never
+    /// cloned and factories are called only for phases in which it is registered.
+    pub fn native_only(mut self) -> Self {
+        self.phase = PhaseScope::NativeOnly;
+        self
+    }
+
     /// Add client-defined typed channels on the same kernel and root ledger.
     /// Their contents are recreated for each immutable input generation.
     pub fn with_stores<H>(self, stores: H) -> Extension<A, P, H, G> {
@@ -151,6 +200,8 @@ impl<A, P, F, G> Extension<A, P, F, G> {
             tasks: self.tasks,
             stores,
             shared: self.shared,
+            views: self.views,
+            phase: self.phase,
         }
     }
 
@@ -163,6 +214,8 @@ impl<A, P, F, G> Extension<A, P, F, G> {
             tasks: self.tasks,
             stores: self.stores,
             shared,
+            views: self.views,
+            phase: self.phase,
         }
     }
 }
@@ -170,6 +223,12 @@ impl<A, P, F, G> Extension<A, P, F, G> {
 impl<A, P: InputTasks, F, G> InputTasks for Extension<A, P, F, G> {
     type Task = P::Task;
     const ENABLED: bool = P::ENABLED;
+    fn input_views(&self) -> InputViews {
+        self.views
+    }
+    fn phase_scope(&self) -> PhaseScope {
+        self.phase
+    }
 
     fn registration_work(&self) -> usize {
         self.tasks.registration_work()

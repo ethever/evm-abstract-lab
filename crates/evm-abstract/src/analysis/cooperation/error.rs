@@ -10,6 +10,14 @@ pub enum CooperationError<E> {
     /// Invalid execution configuration or environment.
     #[error("{0}")]
     Config(ConfigError),
+    /// The caller did not register support for the selected semantic view.
+    #[error("extension accepts {supported:?} inputs; requested {requested:?} execution")]
+    UnsupportedView {
+        /// Explicit immutable input view contract of the assembly.
+        supported: super::InputViews,
+        /// Requested execution interpretation.
+        requested: crate::analysis::RuntimeExecution,
+    },
     /// Failure of the independently authored analyzer/reduction bundle.
     #[error("external analyzer failed: {0}")]
     Extension(E),
@@ -52,5 +60,27 @@ impl<E> From<InitializationError<MachineError>> for CooperationError<E> {
 impl<E> From<RefinementError> for CooperationError<E> {
     fn from(error: RefinementError) -> Self {
         Self::Refinement(error)
+    }
+}
+
+impl<E> CooperationError<E> {
+    /// Change only the concrete extension error at an explicit phase boundary.
+    pub(crate) fn map_extension<F>(self, map: impl FnOnce(E) -> F) -> CooperationError<F> {
+        match self {
+            Self::Config(v) => CooperationError::Config(v),
+            Self::UnsupportedView {
+                supported,
+                requested,
+            } => CooperationError::UnsupportedView {
+                supported,
+                requested,
+            },
+            Self::Extension(v) => CooperationError::Extension(map(v)),
+            Self::Protocol(v) => CooperationError::Protocol(v),
+            Self::Initialization(v) => CooperationError::Initialization(v),
+            Self::Refinement(v) => CooperationError::Refinement(v),
+            Self::Unfinished(v) => CooperationError::Unfinished(v),
+            Self::Cancelled => CooperationError::Cancelled,
+        }
     }
 }

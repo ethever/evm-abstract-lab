@@ -604,3 +604,109 @@ fn stop_between_client_readiness_and_retry_keeps_the_native_deferred_obligation(
 
 #[path = "seed.rs"]
 mod seed;
+
+#[test]
+fn foreign_source_receipt_retires_without_a_numeric_payload_change() {
+    use crate::analysis::worklist::{MachineMeter, kernel_failure, runtime::TaskKind};
+    let mut h = Inventory::new();
+    let token = h.begin();
+    let receipt = h.cooperation.subject(Inventory::point(1)).unwrap();
+    let version = h.cooperation.bindings[&Inventory::point(1)].stamp.anchor;
+    h.finish(token);
+    assert!(
+        h.cooperation
+            .source_current(&TaskKind::Body(0), &h.runtime, &mut h.budget)
+            .unwrap()
+    );
+    // A different native owner grows the adopted assumption only. Neither the
+    // original payload nor its native version changes, but its proof retires.
+    let other = h
+        .runtime
+        .register_relative(TaskKind::Body(1), &mut h.budget)
+        .unwrap();
+    let mut meter = MachineMeter(&mut h.budget);
+    let mut run = h.runtime.kernel().begin(other, &mut meter).unwrap();
+    run.publish_prepared_with(&h.assumption, analysis_kernel::Change::Changed, 1, || {})
+        .map_err(kernel_failure)
+        .unwrap();
+    run.finish(analysis_kernel::LocalClosure::Stable).unwrap();
+    assert_eq!(
+        h.cooperation.bindings[&Inventory::point(1)].stamp.anchor,
+        version
+    );
+    assert_eq!(h.cooperation.subject(Inventory::point(1)), Some(receipt));
+    assert!(
+        !h.cooperation
+            .source_current(&TaskKind::Body(0), &h.runtime, &mut h.budget)
+            .unwrap()
+    );
+    assert!(
+        h.runtime
+            .view()
+            .generation_stale(
+                &h.cooperation.bindings[&Inventory::point(1)].entry,
+                &mut MachineMeter(&mut h.budget)
+            )
+            .unwrap()
+    );
+    // Remove the pending owner wake without installing a new cooperation
+    // receipt. The retained stale premise itself must still defeat currency.
+    let (_, token) = h.runtime.next(true, &mut h.budget).unwrap().unwrap();
+    h.runtime.finish(token, &mut h.budget).unwrap();
+    assert!(!h.runtime.view().worklist().contains(&h.owner));
+    assert!(
+        !h.cooperation
+            .source_current(&TaskKind::Body(0), &h.runtime, &mut h.budget)
+            .unwrap()
+    );
+}
+
+#[test]
+fn owner_retry_replaces_the_receipt_even_when_its_input_and_scope_are_identical() {
+    use crate::analysis::worklist::runtime::TaskKind;
+    let mut h = Inventory::new();
+    let token = h.begin();
+    h.finish(token);
+    let subject = h.cooperation.subject(Inventory::point(1));
+    assert!(
+        h.cooperation
+            .source_current(&TaskKind::Body(0), &h.runtime, &mut h.budget)
+            .unwrap()
+    );
+    let token = h.begin();
+    assert_eq!(h.cooperation.subject(Inventory::point(1)), subject);
+    assert!(
+        !h.cooperation
+            .source_current(&TaskKind::Body(0), &h.runtime, &mut h.budget)
+            .unwrap()
+    );
+    h.finish(token);
+    assert!(
+        h.cooperation
+            .source_current(&TaskKind::Body(0), &h.runtime, &mut h.budget)
+            .unwrap()
+    );
+}
+
+#[test]
+fn unfunded_foreign_currency_withholds_the_certificate_without_poisoning_the_completed_ledger() {
+    use crate::analysis::worklist::runtime::TaskKind;
+    let mut h = Inventory::new();
+    let token = h.begin();
+    h.finish(token);
+    assert!(
+        h.cooperation
+            .source_current(&TaskKind::Body(0), &h.runtime, &mut h.budget)
+            .unwrap()
+    );
+    assert!(h.budget.charge(1_000_000_000 - h.budget.used() - 1));
+    let before = h.budget.used();
+    assert!(
+        h.cooperation
+            .source_current(&TaskKind::Body(0), &h.runtime, &mut h.budget)
+            .is_err()
+    );
+    assert_eq!(h.budget.used(), before);
+    assert!(!h.budget.exhausted());
+    assert!(h.budget.can_afford(0));
+}

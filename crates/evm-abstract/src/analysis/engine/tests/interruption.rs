@@ -93,7 +93,7 @@ fn precise_gap_keeps_distinct_queued_inputs_and_self_dirty_evaluations() {
                     &algebra,
                     &policies,
                 );
-                let WorldWork { id, payload } = admit_child(&mut engine, child);
+                let WorldWork { id, payload, .. } = admit_child(&mut engine, child);
                 let original_value = payload.active().call_value.clone();
                 let mut output = 0usize;
                 let scope = engine.runtime.world;
@@ -233,7 +233,7 @@ fn a_prior_precise_frontier_does_not_cover_a_later_completed_evaluation() {
         &algebra,
         &policies,
     );
-    let WorldWork { id, payload } = admit_child(&mut engine, child);
+    let WorldWork { id, payload, .. } = admit_child(&mut engine, child);
     engine
         .result
         .frontiers

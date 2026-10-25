@@ -134,6 +134,7 @@ pub(super) fn run_reusing<
     identity: (&super::layers::SnapshotId, super::layers::FactRevision),
     cooperation: Cooperation<D::Element, X, E>,
 ) -> Result<EvmWorldAnalysis<D::Element>, CooperationError<E>> {
+    cooperation.validate_view(policies.state.runtime_execution())?;
     if let Some(reuse) = &mut reuse {
         reuse.begin();
         reuse
@@ -628,6 +629,8 @@ struct EvmEngine<
 struct WorldWork<N: WordElement> {
     id: usize,
     payload: EvmMachinePayload<N>,
+    /// Exact immutable foreign universe consumed before any nested execution.
+    consumed: Option<super::cooperation::Subject>,
 }
 
 /// 当前节点尝试使用摘要后的调度决定，而非子调用的 Return/Revert/Failure。
@@ -833,6 +836,16 @@ impl<
             // older region record nor an older execution receipt can certify it.
             self.source_records[id] = None;
             self.result.states[id].invalidate_execution();
+            if X::ENABLED {
+                let cooperation = self.cooperation.as_mut().ok_or(MachineError::Shape)?;
+                cooperation
+                    .begin_owner(
+                        &mut self.runtime,
+                        self.active.as_mut().ok_or(MachineError::Shape)?,
+                        self.budget,
+                    )
+                    .map_err(|error| cooperation.stop(error, self.budget))?;
+            }
             #[cfg(test)]
             {
                 tests::source_current::world_read_probe(id)?;
@@ -873,7 +886,11 @@ impl<
                 if !self.budget.charge(0) {
                     return Err(MachineError::work_failure());
                 }
-                return Ok(Some(WorldWork { id, payload: input }));
+                return Ok(Some(WorldWork {
+                    id,
+                    payload: input,
+                    consumed: None,
+                }));
             }
             let view = cooperation
                 .input(
@@ -921,6 +938,11 @@ impl<
                     return Ok(Some(WorldWork {
                         id,
                         payload: *payload,
+                        consumed: cooperation.subject(Point {
+                            namespace: 0,
+                            kind: PointKind::World,
+                            index: id,
+                        }),
                     }));
                 }
                 LocalInput::Unreachable => {
@@ -959,7 +981,11 @@ impl<
             let _ = self.runtime.finish(token, self.budget);
         }
         loop {
-            let WorldWork { id, payload: input } = match self.next_input() {
+            let WorldWork {
+                id,
+                payload: input,
+                consumed,
+            } = match self.next_input() {
                 Ok(Some(work)) => work,
                 Ok(None) => break,
                 Err(error) => {
@@ -1080,11 +1106,25 @@ impl<
             self.cache = cache;
             if X::ENABLED && self.result.frontiers.len() == frontiers_before {
                 let cooperation = self.cooperation.as_mut().expect("composition owner");
-                if let Err(error) = cooperation.complete_native(
-                    &mut self.runtime,
-                    self.active.as_mut().expect("complete world evaluation"),
-                    self.budget,
-                ) {
+                let completion = cooperation
+                    .complete_native(
+                        &mut self.runtime,
+                        self.active.as_mut().expect("complete world evaluation"),
+                        self.budget,
+                    )
+                    .and_then(|ready| {
+                        if ready {
+                            cooperation.record_source(
+                                &mut self.runtime,
+                                self.active.as_mut().expect("complete world evaluation"),
+                                self.budget,
+                                consumed,
+                            )
+                        } else {
+                            Ok(())
+                        }
+                    });
+                if let Err(error) = completion {
                     let error = cooperation.stop(error, self.budget);
                     self.stop_pending(id, error.frontier_reason());
                     break;
@@ -1156,8 +1196,7 @@ impl<
             return;
         }
         let records = self.result.procedure_summaries.len();
-        if X::ENABLED
-            || records == 0
+        if records == 0
             || !self.result.procedure_summaries.is_unique()
             || MachineError::check_cancelled().is_err()
         {
@@ -1194,9 +1233,23 @@ impl<
             // An unidentified in-flight owner cannot supply a World certificate.
             return;
         }
-        let eligible = (0..self.source_records.len())
-            .filter_map(|id| self.current_source_record(id, &pending))
-            .collect::<Vec<_>>();
+        let mut eligible = Vec::new();
+        for id in 0..self.source_records.len() {
+            if let Some(record) = self.current_source_record(id, &pending) {
+                let valid = self.cooperation.as_ref().is_some_and(|cooperation| {
+                    cooperation
+                        .source_current(
+                            &TaskKind::World { node: id, depth: 0 },
+                            &self.runtime,
+                            self.budget,
+                        )
+                        .unwrap_or(false)
+                });
+                if valid {
+                    eligible.push(record);
+                }
+            }
+        }
         if !permit.publish_allowed() || MachineError::check_cancelled().is_err() {
             return;
         }

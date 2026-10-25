@@ -6,7 +6,7 @@ use crate::analysis::{
     MergeResumeStatus, PartitionPolicy, ProjectionError, RuntimeExecution, SemanticPolicies,
     StatePolicy, Status, StructuralPartition,
     control::Control,
-    cooperation::{Composition, CooperationError},
+    cooperation::{Composition, CooperationError, NoExtension, PhaseScope},
     engine::{
         self,
         cooperation::{Borrowed, Cooperation},
@@ -129,19 +129,36 @@ where
         );
         let mut baseline_config = config.clone();
         baseline_config.root_terminal_coverage = false;
-        let mut baseline = engine::run_reusing(
-            world,
-            entry,
-            baseline_config,
-            self.algebra.borrowed(),
-            &coarse,
-            budget,
-            counters,
-            StorageReadPolicy::Abstract,
-            None,
-            (facts.snapshot(), facts.revision()),
-            Cooperation::new(Borrowed(&mut *self.extension)),
-        )?;
+        let mut baseline = if self.extension.phase_scope() == PhaseScope::NativeOnly {
+            engine::run_reusing(
+                world,
+                entry,
+                baseline_config,
+                self.algebra.borrowed(),
+                &coarse,
+                budget,
+                counters,
+                StorageReadPolicy::Abstract,
+                None,
+                (facts.snapshot(), facts.revision()),
+                Cooperation::new(NoExtension),
+            )
+            .map_err(|error| error.map_extension(|never| match never {}))?
+        } else {
+            engine::run_reusing(
+                world,
+                entry,
+                baseline_config,
+                self.algebra.borrowed(),
+                &coarse,
+                budget,
+                counters,
+                StorageReadPolicy::Abstract,
+                None,
+                (facts.snapshot(), facts.revision()),
+                Cooperation::new(Borrowed(&mut *self.extension)),
+            )?
+        };
         let baseline_current = current(&baseline, budget);
         baseline.work = budget.used();
         let mut coverage = HybridCoverage {

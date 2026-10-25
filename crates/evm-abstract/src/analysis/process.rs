@@ -76,7 +76,8 @@ pub enum ProcessBoundary {
     ResidualOwner(ProcessAction),
     /// Constructor/deployment semantics require the allocation implementation.
     Creation(ProcessAction),
-    /// Foreign analyzers cannot yet consume the process input representation.
+    /// Legacy Process cooperation boundary. New assemblies declare their typed
+    /// view explicitly and unsupported views fail before execution.
     CooperativeInputs,
     /// A symbolic logical owner needs a covering owner/alias representation.
     SymbolicOwner,
