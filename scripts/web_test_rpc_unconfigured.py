@@ -34,7 +34,7 @@ def unconfigured_rpc_interactions(browser, url: str, output: Path):
     expect(status).to_contain_text("No RPC providers are configured on the server.")
     canvas = page.locator("#evm-canvas")
     bytecode = submit_bytecode(page, canvas, "600160020100", output / "rpc-empty-bytecode.png")
-    assert bytecode.status == 200 and bytecode.json()["result"]["Ok"]["status"] == "Converged"
+    assert bytecode.status == 200 and bytecode.report["status"] == "Converged"
     open_rpc_input(page, canvas, from_bytecode=True)
     assert_rpc_disabled(page, canvas, output, "rpc-empty-disabled", analyze_y=669)
     with page.expect_response(lambda response: response.url.endswith("/api/rpc-providers")) as retry:

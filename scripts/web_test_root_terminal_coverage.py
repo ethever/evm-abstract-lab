@@ -17,7 +17,7 @@ from web_test_harness import (complete_submission, observe_webgpu, open_input,
 from web_test_inspector_helpers import (inspector_painted_controls, inspector_selected_tab, inspector_title_action,
                                         select_inspector_tab)
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_modal
-from web_test_hybrid import assert_hybrid, graph
+from web_test_hybrid import assert_hybrid, graph, job_result_report, oracle_graph
 from web_test_pixels import assert_translation, node_snapshot, text_pixels, workspace_content_bottom
 
 
@@ -174,7 +174,7 @@ def _binding(report, request, *, is_static):
     assert config["root_terminal_coverage"] is True
     assert binding["domain_spec"] == {
         "schema_version": 3, "word_bits": 256, "capacity": 512,
-        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 8,
+        "reduction_rounds": 16, "fact_limit": 4096, "cost_version": 9,
         "widening_after_updates": 2, "provenance_policy": "scoped-expressions-and-value-identities-v3",
         "relations": {key: limits[source] for key, source in relation_fields.items()}}
     original = next(state for state in report["states"] if state["state"] == 0)["entry"]
@@ -543,9 +543,9 @@ def _static_control(page, url, request, output):
         job = polled.json()["result"]["Ok"]
     response = page.request.get(task + "/result")
     assert response.ok, response.text()
-    full_report = response.json()["result"]["Ok"]
+    full_report = job_result_report(response.json(), job_id=job["id"], publication=job["publication"])
     assert_hybrid(full_report)
-    report = graph(full_report, "Native")
+    report = oracle_graph(full_report, "Native")
     _detail(report)
     binding = _binding(report, request, is_static=True)
     _tuples(report, binding)
@@ -579,8 +579,9 @@ def _schema_control(page, canvas, output, expected_request):
         response = route.fetch()
         native_text = response.text()
         envelope = json.loads(native_text)
-        assert envelope["result"]["Ok"]["schema_version"] == 21
-        envelope["result"]["Ok"]["schema_version"] = 16
+        report = job_result_report(envelope)
+        assert report["schema_version"] == 21
+        report["schema_version"] = 16
         replacement = json.dumps(envelope)
         headers = dict(response.headers)
         headers.pop("content-encoding", None)
@@ -603,7 +604,7 @@ def _schema_control(page, canvas, output, expected_request):
         assert json.loads(submitted.value.request.post_data) == expected_request
         current_id = _decimal_identity(str(submitted.value.json()["result"]["Ok"]["id"]))
         try:
-            expect(status).to_contain_text("Unsupported response schema 16; expected 20", timeout=60000)
+            expect(status).to_contain_text("Unsupported response schema 16; expected 21", timeout=60000)
         finally:
             canvas.screenshot(path=str(output / "coverage-schema-rejected.png"))
         after_status = status.text_content()
@@ -615,7 +616,7 @@ def _schema_control(page, canvas, output, expected_request):
         evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
         assert intercepted == [True], intercepted
         assert len(posts) == 1 and json.loads(posts[0]) == expected_request, posts
-        assert after_status.startswith("Error: Unsupported response schema 16; expected 20; "), after_status
+        assert after_status.startswith("Error: Unsupported response schema 16; expected 21; "), after_status
         current_ids = re.findall(r"(?:^|; )Current Job ID: ([^;]+)(?=;|$)", after_status)
         retained_ids = re.findall(r"(?:^|; )Result Job ID: ([^;]+)(?=;|$)", after_status)
         assert len(current_ids) == len(retained_ids) == 1, after_status
@@ -645,14 +646,14 @@ def root_terminal_coverage_interactions(context):
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                               and response.request.method == "POST") as initial:
         page.goto(context.url, wait_until="networkidle")
-    first = complete_submission(page, initial.value)
+    first = complete_submission(page, initial.value, namespace="Native")
     assert first.status == 200
     defaults = json.loads(first.request.post_data)
     assert defaults["limits"] == LAYOUT_DEFAULT_LIMITS
     assert defaults["limits"]["root_terminal_coverage"] is True
-    full_ordinary = first.json()["result"]["Ok"]
+    full_ordinary = first.report
     assert_hybrid(full_ordinary)
-    ordinary = graph(full_ordinary, "Native")
+    ordinary = oracle_graph(full_ordinary, "Native")
     assert ordinary["schema_version"] == 21 and ordinary["root_terminal_coverage"] is None
     assert ordinary["status"] == "Converged" and ordinary["ssa"]["complete"] is True
     assert ordinary["frontiers"] == []
@@ -770,21 +771,22 @@ def root_terminal_coverage_interactions(context):
             page.keyboard.press("Control+Enter")
         # Preserve the actual form POST even if completion or exact decoding fails.
         (output / f"{name}-request.json").write_text(posted.value.request.post_data + "\n")
-        reply = complete_submission(page, posted.value)
+        reply = complete_submission(page, posted.value, namespace="Native")
         assert reply.admission_status == 202 and reply.status == 200, reply.json()
         request = json.loads(reply.request.post_data)
         expected = {**defaults, "input": {"Bytecode": {"bytecode": RUNTIME, "address": None}},
                     "limits": {**LAYOUT_DEFAULT_LIMITS, "max_transfers": transfers,
                                "root_terminal_coverage": enabled}}
         assert request == expected, (name, request, expected)
-        report = reply.json()["result"]["Ok"]
-        assert report["schema_version"] == 21 and report["metadata"]["limits"] == expected["limits"]
-        assert report["fork"] == request["fork"] == "Osaka"
+        report = reply.report
+        native = oracle_graph(report, "Native")
+        assert report["schema_version"] == 21 and native["metadata"]["limits"] == expected["limits"]
+        assert native["fork"] == request["fork"] == "Osaka"
         (output / f"{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         assert_hybrid(report)
         assert report["status"] == "Converged"
         assert graph(report, "Baseline")["root_terminal_coverage"] is None
-        return graph(report, "Native"), request
+        return native, request
 
     disabled, _ = submit("coverage-disabled-cap", enabled=False, invalid_numeric=True)
     assert disabled["root_terminal_coverage"] is None
@@ -811,22 +813,33 @@ def root_terminal_coverage_interactions(context):
         response = route.fetch()
         native_text = response.text()
         envelope = json.loads(native_text)
-        native = graph(envelope["result"]["Ok"], "Native")
+        full_report = job_result_report(envelope, job_id=int(job_id))
+        # The initial closed Global has no Native certificate to edit. It
+        # remains an authentic publication while this final-Native control runs.
+        if graph(full_report, "Native") is None:
+            assert full_report["status"] == "Converged"
+            assert full_report["hybrid"]["coverage"]["baseline_current"]
+            headers = dict(response.headers)
+            headers.pop("content-encoding", None)
+            headers.pop("content-length", None)
+            route.fulfill(status=response.status, headers=headers, body=native_text)
+            return
+        native = oracle_graph(full_report, "Native")
         assert native["metadata"]["limits"]["root_terminal_coverage"] is True
         assert native["root_terminal_coverage"] is not None and _detail(native) == prior_detail
         (output / "coverage-missing-certificate-client-control-native.json").write_text(native_text + "\n")
         # Explicit client presentation control: preserve real Incomplete detail
         # and remove only its certificate. This is not a native producer claim.
         ui_envelope = deepcopy(envelope)
-        graph(ui_envelope["result"]["Ok"], "Native")["root_terminal_coverage"] = None
+        graph(job_result_report(ui_envelope), "Native")["root_terminal_coverage"] = None
         replacement = json.dumps(ui_envelope)
-        ui_report = json.loads(replacement)["result"]["Ok"]
-        ui = graph(ui_report, "Native")
+        ui_report = job_result_report(json.loads(replacement), job_id=int(job_id))
+        ui = oracle_graph(ui_report, "Native")
         assert ui == {**native, "root_terminal_coverage": None}, "client control changed other report fields"
-        # The primary graph's object also carries the companion sidecar. Compare
-        # every global graph field independently of that deliberately edited sidecar.
-        assert {key: value for key, value in graph(ui_report, "Baseline").items() if key != "hybrid"} == {
-            key: value for key, value in graph(envelope["result"]["Ok"], "Baseline").items() if key != "hybrid"}
+        assert graph(ui_report, "Baseline") == graph(full_report, "Baseline")
+        assert ui_report["programs"] == full_report["programs"]
+        assert {**ui_report, "native": full_report["native"]} == full_report
+        assert ui_envelope["result"]["Ok"]["publication"] == envelope["result"]["Ok"]["publication"]
         (output / "coverage-missing-certificate-client-control-ui.json").write_text(replacement + "\n")
         headers = dict(response.headers)
         headers.pop("content-encoding", None)
@@ -842,8 +855,8 @@ def root_terminal_coverage_interactions(context):
         assert missing["root_terminal_coverage"] is not None and _detail(missing) == prior_detail
         assert len(missing_certificates) == 1, missing_certificates
         intercepted, = missing_certificates
-        assert missing == graph(json.loads(intercepted["native_text"])["result"]["Ok"], "Native"), "same-job native report changed"
-        assert graph(json.loads(intercepted["ui_text"])["result"]["Ok"], "Native") == {**missing, "root_terminal_coverage": None}
+        assert missing == oracle_graph(job_result_report(json.loads(intercepted["native_text"])), "Native"), "same-job native report changed"
+        assert oracle_graph(job_result_report(json.loads(intercepted["ui_text"])), "Native") == {**missing, "root_terminal_coverage": None}
         expect(status).to_contain_text(NOT_ATTACHED)
         expect(status).to_contain_text("Global model converged")
         assert COVERED not in status.text_content()

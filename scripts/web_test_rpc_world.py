@@ -1,5 +1,6 @@
 """Rpc world browser acceptance cases."""
 
+from web_test_hybrid import oracle_graph, source_instructions
 from pathlib import Path
 from playwright.sync_api import expect
 import hashlib
@@ -49,16 +50,16 @@ def _world_call_contract(report, rpc, child, child_state):
     assert parent["start_pc"] == child_state["start_pc"] == 0
     assert failure_resume["basic_block"] == success_resume["basic_block"] == 1
     assert failure_resume["start_pc"] == success_resume["start_pc"] == rpc.expected["root_call_pc"] + 1
-    assert parent["instructions"][-1]["name"] == "CALL"
+    assert source_instructions(report, parent)[-1]["name"] == "CALL"
     assert parent["executed_pcs"][-1] == rpc.expected["root_call_pc"]
-    assert child_state["instructions"][-1]["name"] == "RETURN"
+    assert source_instructions(report, child_state)[-1]["name"] == "RETURN"
     assert child_state["executed_pcs"][-1] == len(bytes.fromhex(rpc.child_code[2:])) - 1
     snapshots = {snapshot["state"]: snapshot for snapshot in report["states"]}
     assert len(snapshots) == len(report["states"]) == 4 and snapshots.keys() == by_id.keys()
     for state in states:
         program = programs[state["program"]]
         block = program["blocks"][state["basic_block"]]
-        assert state["instructions"] == block["instructions"] and state["start_pc"] == block["start_pc"]
+        assert source_instructions(report, state) == block["instructions"] and state["start_pc"] == block["start_pc"]
         assert state["code_address"] == state["storage_address"] == program["code_address"]
         for phase in ("entry", "exit"):
             frames = snapshots[state["id"]][phase]["frames"]
@@ -238,15 +239,15 @@ def world_interactions(browser, url: str, output: Path, rpc, pending_rpc, provid
     expect(status).to_contain_text("Ready:", timeout=60000)
     canvas = page.locator("#evm-canvas")
     admitted = submit_rpc(page, canvas, rpc, output, "world", provider_index=1, providers=providers)
-    reply = complete_submission(page, admitted)
+    reply = complete_submission(page, admitted, namespace="Native")
     envelope = reply.json()
     (output / "world-task-reply.json").write_text(json.dumps({"admission_http_status": reply.admission_status, "observed_http_status": reply.status, "reply": envelope}, indent=2) + "\n")
     assert reply.status == 200 and "Ok" in envelope["result"], f"RPC world task failed: {json.dumps(envelope, sort_keys=True)}"
-    global_report = envelope["result"]["Ok"]
+    global_report = reply.report
     assert global_report["status"] == "Converged"
     assert global_report["hybrid"]["coverage"]["baseline_current"] is True
     assert global_report["hybrid"]["rpc"]["detail_at_current_revision"] is True
-    report = global_report["hybrid"]["detail"]
+    report = oracle_graph(global_report, "Native")
     assert len(report["programs"]) >= 2, "RPC call failed to capture the child program"
     assert {program["code_address"] for program in report["programs"]} == {rpc.root_address, rpc.child_address}
     assert max(block["frame_depth"] for block in report["cfg"]) == 2

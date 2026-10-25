@@ -1,5 +1,6 @@
 """Ssa details browser acceptance cases."""
 
+from web_test_hybrid import source_program
 from pathlib import Path
 from playwright.sync_api import expect
 import json
@@ -85,7 +86,7 @@ def ssa_details_interactions(browser, url: str, output: Path):
     source_png=canvas.screenshot(path=str(output/"ssa-details-disassembly-before.png"))
     source=screenshot_metrics(page,source_png,(4,75,1436,970))
     assert source["bounds"],source
-    source_order=report["programs"][0]["blocks"][0]["instructions"]
+    source_order=source_program(report,report["metadata"]["root_program"])["blocks"][0]["instructions"]
     index=next(index for index,item in enumerate(source_order) if item["pc"]==4)
     clicked_y=source["bounds"][3]+22*(index+0.5)
     canvas.click(position={"x":80,"y":clicked_y});page.mouse.move(2,2);settle_gesture(page)

@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import time
 from web_test_harness import complete_submission, measured_backend_timings, observe_webgpu, webgpu_evidence
+from web_test_hybrid import job_result_report
 
 
 def http_transport_interactions(browser, url: str, output: Path):
@@ -33,7 +34,7 @@ def http_transport_interactions(browser, url: str, output: Path):
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                               and response.request.method == "POST") as initial:
         page.goto(url, wait_until="networkidle")
-    complete_submission(page, initial.value)
+    complete_submission(page, initial.value, namespace="Native")
     request = initial.value.request.post_data_json
 
     def fetch(path, *, method="GET", body=None, content_type=None, tag=None):
@@ -82,7 +83,8 @@ def http_transport_interactions(browser, url: str, output: Path):
         raise AssertionError(f"browser fetch task did not complete: {snapshot}")
     result = fetch(f"/api/tasks/{job_id}/result")
     assert result["status"] == 200, result
-    timing = measured_backend_timings(result["reply"]["result"]["Ok"])
+    report = job_result_report(result["reply"], job_id=job_id, publication=snapshot["publication"])
+    timing = measured_backend_timings(report)
     assert timing == snapshot["timings"]
 
     errors = {}
@@ -102,7 +104,7 @@ def http_transport_interactions(browser, url: str, output: Path):
                         "details": error["details"]}
 
     evidence = {"browser_connections": connections, "typed_errors": errors,
-                "task_id": job_id, "backend_timings": timing,
+                "task_id": job_id, "publication": snapshot["publication"], "backend_timings": timing,
                 "static_headers": shell["headers"], "renderer": webgpu_evidence(page)}
     (output / "http-transport-report.json").write_text(json.dumps(evidence, indent=2) + "\n")
     page.close()

@@ -9,6 +9,7 @@ import time
 from web_test_harness import analysis_server, measured_backend_timings, observe_webgpu, open_input, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
 from web_test_inspector_helpers import INSPECTOR_TAB_POSITIONS, inspector_painted_controls, inspector_selected_tab, inspector_title_action
 from web_test_rpc_helpers import EntryRpcFixture, automatic_rpc_entry, submit_rpc, visible_seconds, wait_for_job
+from web_test_hybrid import job_result_report
 
 
 def wait_for_elapsed_advance(page, before):
@@ -103,7 +104,8 @@ def timing_interactions(browser, args):
             held_results[0].continue_()
             expect(status).to_contain_text("Ready:", timeout=60000)
             expect(status).to_contain_text("Frontend preparation:")
-            report = page.request.get(f"{url}/api/tasks/{job_id}/result").json()["result"]["Ok"]
+            report = job_result_report(page.request.get(f"{url}/api/tasks/{job_id}/result").json(),
+                                       job_id=job_id, publication=completed["publication"])
             backend = measured_backend_timings(report)
             assert backend == completed["timings"]
             assert backend["queue_ns"] > 0 and backend["acquiring_ns"] > 0 and backend["pinning_ns"] > 0
@@ -171,12 +173,14 @@ def timing_interactions(browser, args):
             failure_wait = visible_seconds(page, "Total wait")
             page.wait_for_timeout(300)
             assert visible_seconds(page, "Total wait") == failure_wait
-            frozen_report = page.request.get(f"{url}/api/tasks/{job_id}/result").json()["result"]["Ok"]
-            assert frozen_report["metadata"]["timings"] == backend
+            frozen_report = job_result_report(page.request.get(f"{url}/api/tasks/{job_id}/result").json(),
+                                              job_id=job_id, publication=completed["publication"])
+            assert frozen_report["timings"] == backend
             canvas.screenshot(path=str(args.output / "timing-failed.png"))
             result = {"queue_samples": [queued["timings"], queued_later["timings"]],
                       "running_samples": [running["timings"], running_later["timings"]],
-                      "completed": backend, "rpc_rounds": report["acquisition"]["rounds"],
+                      "completed": backend, "completed_publication": completed["publication"],
+                      "rpc_rounds": report["acquisition"]["rounds"],
                       "user_total_s": total, "frontend_preparation_s": preparation,
                       "cancellation_wait_s": cancellation_wait, "cancelled_backend": cancelled_backend["timings"],
                       "failure_wait_s": failure_wait, "renderer": webgpu_evidence(page)}

@@ -10,6 +10,6 @@ def example_page(browser, url):
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                               and response.request.method == "POST") as admitted:
         page.goto(url, wait_until="networkidle")
-    reply = complete_submission(page, admitted.value)
+    reply = complete_submission(page, admitted.value, namespace="Native")
     assert reply.status == 200, f"initial analysis failed: {reply.status}"
     return page, page.locator("#evm-canvas"), reply

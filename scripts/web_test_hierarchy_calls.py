@@ -1,5 +1,6 @@
 """Hierarchy calls browser acceptance cases."""
 
+from web_test_hybrid import oracle_graph
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
@@ -35,12 +36,12 @@ def hierarchy_call_interactions(browser,args):
             automatic_rpc_entry(page,url,providers[0],args.output,"hierarchy-call-startup")
             canvas=page.locator("#evm-canvas")
             admitted=submit_rpc(page,canvas,rpc,args.output,"hierarchy-calls",0,providers)
-            reply=complete_submission(page,admitted)
+            reply=complete_submission(page,admitted, namespace="Native")
             assert reply.status==200 and "Ok" in reply.json()["result"],reply.json()
-            full_report=reply.json()["result"]["Ok"]
+            full_report=reply.report
             (args.output/"hierarchy-nested-calls-full-analysis.json").write_text(json.dumps(full_report,indent=2)+"\n")
             assert full_report["hybrid"]["coverage"]["baseline_current"]
-            report=full_report["hybrid"]["detail"]
+            report=oracle_graph(full_report, "Native")
             assert len(report["programs"])>=3
             assert max(state["frame_depth"] for state in report["cfg"])==3
             assert sum(edge["kind"]=="Call" for edge in report["edges"])>=2

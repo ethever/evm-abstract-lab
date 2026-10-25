@@ -280,5 +280,86 @@ class BrowserRegistryTests(unittest.TestCase):
         self.assertEqual(acceptance - visited, set())
 
 
+class ReportWireTests(unittest.TestCase):
+    """Namespace/source adapters cannot reinterpret lifecycle or remap wire IDs."""
+
+    def report(self):
+        # Equal local IDs deliberately name different Native/Global data. Source
+        # IDs are sparse and shared, so array-position lookups cannot pass.
+        return {
+            "schema_version": 21, "selected_view": "Baseline", "status": "Converged",
+            "hybrid": {"coverage": {"baseline_current": True}},
+            "programs": [{"id": 91, "blocks": [{"id": 12, "instructions": [{"pc": 40}]}]},
+                         {"id": 7, "blocks": [{"id": 3, "instructions": [{"pc": 5}]}]}],
+            "global": {"status": "Converged", "metadata": {"root_program": 91},
+                       "states": [{"state": 4, "entry": "global"}]},
+            "native": {"status": "Incomplete", "metadata": {"root_program": 7},
+                       "states": [{"state": 4, "entry": "native"}]},
+        }
+
+    def publication(self):
+        return {"version": "9007199254740997", "global_version": "9007199254740993",
+                "native_version": "9007199254740997", "model_closed": True}
+
+    def test_graph_selection_borrows_sources_without_combining_namespaces(self):
+        from web_test_hybrid import displayed_graph, graph, oracle_graph, source_block
+        report = self.report()
+        self.assertIs(graph(report, "Baseline"), report["global"])
+        self.assertIs(graph(report, "Native"), report["native"])
+        native = oracle_graph(report, "Native")
+        self.assertIs(native["states"], report["native"]["states"])
+        self.assertIs(native["programs"], report["programs"])
+        self.assertIs(native["disassembly"], report["programs"][1]["blocks"])
+        self.assertEqual(displayed_graph(report)["states"][0]["entry"], "global")
+        report["selected_view"] = "Native"
+        self.assertEqual(displayed_graph(report)["states"][0]["entry"], "native")
+        self.assertIs(source_block(report, {"program": 7, "basic_block": 3}),
+                      report["programs"][1]["blocks"][0])
+        self.assertIsNone(source_block(report, {"program": None, "basic_block": None}))
+        with self.assertRaises(AssertionError):
+            source_block(report, {"program": 0, "basic_block": 3})
+        report["programs"].append(deepcopy(report["programs"][1]))
+        with self.assertRaises(AssertionError):
+            source_block(report, {"program": 7, "basic_block": 3})
+
+    def test_task_reply_keeps_exact_id_publication_and_global_closure(self):
+        from web_test_hybrid import job_result_report
+        report, publication = self.report(), self.publication()
+        job_id = 18_446_744_073_709_551_614
+        envelope = {"result": {"Ok": {"id": job_id, "publication": publication, "report": report}}}
+        self.assertIs(job_result_report(envelope, job_id=job_id, publication=publication), report)
+        parsed = json.loads(json.dumps(envelope))
+        self.assertEqual(job_result_report(parsed, job_id=job_id, publication=publication), report)
+        self.assertEqual(report["native"]["status"], "Incomplete")
+        # First Global publication has its own version and no Native graph.
+        early = deepcopy(envelope)
+        early["result"]["Ok"]["report"]["native"] = None
+        early["result"]["Ok"]["publication"].update(version="9007199254740993", native_version=None)
+        self.assertIsNone(job_result_report(early)["native"])
+        self.assertEqual(early["result"]["Ok"]["publication"]["global_version"], publication["global_version"])
+
+    def test_wrong_endpoint_job_and_graph_publications_are_rejected(self):
+        from web_test_hybrid import job_result_report
+        envelope = {"result": {"Ok": {"id": 42, "publication": self.publication(), "report": self.report()}}}
+        with self.assertRaises(AssertionError):
+            job_result_report({"result": {"Ok": self.report()}})  # AnalyzeReply
+        with self.assertRaises(AssertionError):
+            job_result_report(envelope, job_id=43)
+        with self.assertRaises(AssertionError):
+            job_result_report(envelope, publication={**self.publication(), "version": "1"})
+        for job_id in [True, "42", -1, 1 << 64]:
+            invalid = deepcopy(envelope)
+            invalid["result"]["Ok"]["id"] = job_id
+            with self.subTest(job_id=job_id), self.assertRaises(AssertionError):
+                job_result_report(invalid)
+        for field, value in [("native_version", None), ("global_version", None),
+                             ("model_closed", False), ("version", 9007199254740997),
+                             ("version", "09007199254740997"), ("native_version", "9007199254740998")]:
+            invalid = deepcopy(envelope)
+            invalid["result"]["Ok"]["publication"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(AssertionError):
+                job_result_report(invalid)
+
+
 if __name__ == "__main__":
     unittest.main()

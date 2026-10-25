@@ -1,5 +1,7 @@
 """Inspector browser acceptance cases."""
 
+from web_test_graph_helpers import symbol
+from web_test_hybrid import oracle_graph, source_program
 from pathlib import Path
 from playwright.sync_api import expect
 import hashlib
@@ -33,9 +35,9 @@ def synthetic_inspect_key(page, **changes):
 def model_namespace_controls(page, canvas, report, output):
     """Use the real selectors; equal numeric IDs never retain another graph's selection."""
     status = page.locator("#analysis-status")
-    baseline, native = report, report["hybrid"]["detail"]
+    baseline, native = oracle_graph(report, "Baseline"), oracle_graph(report, "Native")
     (output / "namespace-original-report.json").write_text(json.dumps(report, indent=2) + "\n")
-    assert baseline["hybrid"]["coverage"]["baseline_current"]
+    assert report["hybrid"]["coverage"]["baseline_current"]
     assert native is not None and native["ssa"]["values"] and not baseline["ssa"]["values"]
     coordinate = baseline["metadata"]["root_binding"]["Namespace"]["coordinate"]
     assert all(program["code_address"] != coordinate for program in baseline["programs"])
@@ -46,17 +48,18 @@ def model_namespace_controls(page, canvas, report, output):
     settle_gesture(page)
     # Existing default program: the first instruction of its second source
     # block follows the first block's four actual instructions and two headers.
-    second = native["programs"][0]["blocks"][1]
-    target = next(block for block in native["cfg"] if block["basic_block"] == second["id"])
+    root = source_program(report, native["metadata"]["root_program"])
+    second = root["blocks"][1]
+    target = next(block for block in native["cfg"] if block["program"] == root["id"] and block["basic_block"] == second["id"])
     assert target["id"] != baseline["cfg"][0]["id"]
-    canvas.click(position={"x": 80, "y": 134 + 22 * (len(native["programs"][0]["blocks"][0]["instructions"]) + 2)})
-    expect(status).to_contain_text("Selected σ" + str(target["id"]).translate(str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")) + "; source P₀")
+    canvas.click(position={"x": 80, "y": 134 + 22 * (len(root["blocks"][0]["instructions"]) + 2)})
+    expect(status).to_contain_text(f"Selected {symbol('σ', target['id'])}; source {symbol('P', root['id'])}")
     select_inspector_tab(page, canvas, "SSA value")
     expect(status).to_contain_text("Inspector: SSA value %0")
     canvas.screenshot(path=str(output / "namespace-native-selected.png"))
     canvas.click(position={"x": 50, "y": 38})
     expect(status).to_contain_text("View: Global model")
-    expect(status).to_contain_text("Selected σ₀; source P₀")
+    expect(status).to_contain_text(f"Selected σ₀; source {symbol('P', baseline['metadata']['root_program'])}")
     expect(status).to_contain_text("0 SSA values")
     expect(status).to_contain_text("Inspector: SSA value · no value selected")
     assert "Additional condition:" not in status.text_content()
@@ -82,7 +85,7 @@ def model_namespace_controls(page, canvas, report, output):
             assert frame["context"] == [] and not node["transfer"]["visited_block"]
     canvas.click(position={"x": 148, "y": 38})
     expect(status).to_contain_text("View: Detailed paths")
-    expect(status).to_contain_text("Selected σ₀; source P₀")
+    expect(status).to_contain_text(f"Selected σ₀; source {symbol('P', root['id'])}")
     expect(status).to_contain_text(f"Additional condition: root ADDRESS = {coordinate}")
     expect(status).to_contain_text(f"{len(native['cfg'])} CFG states")
     expect(status).to_contain_text("Block entry · Frame f₀")
@@ -96,11 +99,11 @@ def model_namespace_controls(page, canvas, report, output):
 def coarse_process_controls(page, canvas, output):
     """Open the actual global routes retained beside an unfinished CREATE prefix."""
     reply=submit_bytecode(page,canvas,"5a5f5ff0",output/"process-input.png")
-    report=reply.json()["result"]["Ok"]
+    report=reply.report
     (output/"process-original-report.json").write_text(json.dumps(report,indent=2)+"\n")
     assert report["hybrid"]["coverage"]["baseline_current"]
-    assert report["hybrid"]["detail"]["status"] == "Incomplete"
-    summary=report["abstract_summaries"][-1]
+    assert oracle_graph(report, "Native")["status"] == "Incomplete"
+    summary=oracle_graph(report, "Baseline")["abstract_summaries"][-1]
     assert summary["source_current"] and summary["closed"]
     procedures=summary["procedures"]
     constructor=next(i for i,p in enumerate(procedures)
@@ -155,7 +158,7 @@ def coarse_process_controls(page, canvas, output):
     expect(page.locator("#analysis-status")).to_contain_text("View: Detailed paths")
     expect(page.locator("#analysis-status")).to_contain_text("SSA partial")
     select_inspector_tab(page,canvas,"Diagnostics")
-    native=report["hybrid"]["detail"]
+    native=oracle_graph(report, "Native")
     assert any(frontier["kind"]=="Creation" and "UnknownInitCode" in frontier["detail"]
                for frontier in native["frontiers"])
     expect(page.locator("#analysis-status")).to_contain_text(f"{len(native['frontiers'])} unexpanded frontiers")
@@ -196,13 +199,13 @@ def inspector_controls_interactions(browser, url: str, output: Path):
         with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                                   and response.request.method == "POST") as initial_post:
             page.goto(url, wait_until="networkidle")
-        initial_reply = complete_submission(page, initial_post.value)
+        initial_reply = complete_submission(page, initial_post.value, namespace="Native")
         status = page.locator("#analysis-status")
         expect(status).to_contain_text("Ready:", timeout=60000)
         canvas = page.locator("#evm-canvas")
         namespace_checks = None
         if platform == "linux":
-            namespace_checks = model_namespace_controls(page, canvas, initial_reply.json()["result"]["Ok"], output)
+            namespace_checks = model_namespace_controls(page, canvas, initial_reply.report, output)
         canvas.click(position={"x": 720, "y": 12})
         page.keyboard.press("3")
         settle_gesture(page)

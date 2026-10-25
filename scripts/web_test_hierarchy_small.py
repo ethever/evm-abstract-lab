@@ -83,7 +83,7 @@ def hierarchy_small_interactions(browser, url: str, output: Path):
         page=browser.new_page(viewport={"width":width,"height":height});observe_webgpu(page)
         with page.expect_response(lambda response:response.url.endswith("/api/tasks") and response.request.method=="POST") as initial:
             page.goto(url,wait_until="networkidle")
-        complete_submission(page,initial.value)
+        complete_submission(page,initial.value, namespace="Native")
         canvas=page.locator("#evm-canvas")
         # Inspector is right-aligned and omitted from the graph comparison.
         if width>=800: hide_inspector(page,canvas)

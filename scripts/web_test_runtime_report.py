@@ -7,6 +7,7 @@ execution evidence. Negative mutations are always restored before returning.
 import hashlib
 import json
 from collections import Counter
+from web_test_hybrid import oracle_graph, source_block as resolve_source_block
 
 
 def _runtime_numeric_contains(value, actual):
@@ -53,13 +54,14 @@ def layout_runtime_programs(report, code, metadata):
     assert report["scope"] == "SingleProgram" and report["metadata"]["snapshot"] is None
     programs = {program["id"]: program for program in report["programs"]}
     assert len(programs) == len(report["programs"]) and programs
-    assert list(programs) == list(range(len(programs)))
+    assert all(type(program_id) is int and program_id >= 0 for program_id in programs)
     root = programs[report["metadata"]["root_program"]]
     assert root["kind"] == "Runtime" and root["code_hash"] == metadata["code_hash"]
     assert root["bytecode"].removeprefix("0x") == code
     assert report["byte_len"] == metadata["byte_length"] == len(bytes.fromhex(code))
     assert report["disassembly"] == root["blocks"]
     for program in programs.values():
+        assert program["fork"] == report["fork"]
         raw = bytes.fromhex(program["bytecode"].removeprefix("0x"))
         expected = []; starts = []; pc = 0; new_block = True
         while pc < len(raw):
@@ -172,8 +174,7 @@ def _runtime_boundary_profile(report, entry, nodes, expected_limits):
 def _runtime_current_prefix(report, source, state, block):
     """Cross-check current SSA IDs, phases and numeric/source facts against native frames."""
     sid = source["id"]
-    program = report["programs"][source["program"]]
-    decoded = program["blocks"][source["basic_block"]]["instructions"]
+    decoded = resolve_source_block(report, source)["instructions"]
     instructions = block["instructions"]
     assert [item["pc"] for item in instructions] == source["executed_pcs"]
     assert source["executed_pcs"] == [item["pc"] for item in decoded[:len(instructions)]]
@@ -275,7 +276,7 @@ def _runtime_current_prefix(report, source, state, block):
 
 def layout_pending_machines(report, entry, expected_limits):
     # Schema 14 is used only by unchanged saved-report offline controls;
-    # layout_runtime_request requires schema 20 for every browser submission.
+    # layout_runtime_request requires schema 21 for every browser submission.
     assert report["schema_version"] in {14,17,18,19,20,21}
     policy = entry["product_oracle"]
     assert report["status"] == entry["expected_status"] == "Incomplete" and report["frontiers"]
@@ -371,8 +372,8 @@ def layout_pending_machines(report, entry, expected_limits):
             assert (active["program"],active["basic_block"],len(state[name]["frames"])) == (
                 source["program"],source["basic_block"],source["frame_depth"])
         instruction = block["instructions"][-1]
-        source_block = programs[source["program"]]["blocks"][source["basic_block"]]
-        assert source["start_pc"] == source_block["start_pc"] and source["instructions"] == source_block["instructions"]
+        source_block = resolve_source_block(report, source)
+        assert source["start_pc"] == source_block["start_pc"] and "instructions" not in source
         decoded = next(item for item in source_block["instructions"] if item["pc"] == instruction["pc"])
         assert all(instruction[key] == decoded[key] for key in ["opcode","name","immediate"])
         assert instruction["pc"] == source["executed_pcs"][-1]
@@ -592,7 +593,7 @@ def _runtime_boundary_negative_controls(report, entry, expected_limits):
     return rejected
 
 
-def layout_runtime_coverage(report, metadata):
+def layout_runtime_coverage(report, metadata, timings):
     """Keep exploration and cost deltas visible even when the product oracle fails."""
     nodes = {node["id"]: node for node in report["cfg"]}
     blocks = {block["state"]: block for block in report["ssa"]["blocks"]}
@@ -618,7 +619,7 @@ def layout_runtime_coverage(report, metadata):
                "current_ssa_states": sorted(state for state, block in blocks.items() if block["coverage"] == "Current"),
                "current_ssa_entry_reachable_ids": sorted(reached),
                "work": report["metadata"]["work"], "transfers": report["transfers"],
-               "timings": report["metadata"]["timings"], "export_usage": report["metadata"]["export_usage"]}
+               "timings": timings, "export_usage": report["metadata"]["export_usage"]}
     assert type(current["work"]) is int and type(current["transfers"]) is int
     assert all(type(value) is int for value in [*current["timings"].values(), *current["export_usage"].values()])
     historical = metadata.get("historical_observations")
@@ -638,11 +639,13 @@ def main():
     for name in ("report", "request", "metadata", "bytecode", "limits"):
         parser.add_argument("--" + name, required=True, type=Path)
     args = parser.parse_args()
-    report, request, metadata, limits = (json.loads(getattr(args, name).read_text())
+    envelope, request, metadata, limits = (json.loads(getattr(args, name).read_text())
         for name in ("report", "request", "metadata", "limits"))
     code = args.bytecode.read_text().strip().removeprefix("0x")
     entry = metadata["browser_entry"]
-    layout_runtime_request(request, report, code, metadata, limits)
+    report = oracle_graph(envelope, "Native")
+    original = oracle_graph(envelope, "Baseline")
+    layout_runtime_request(request, original, code, metadata, limits)
     layout_runtime_programs(report, code, metadata)
     if "product_oracle" in entry:
         layout_pending_machines(report, entry, limits)

@@ -1,5 +1,6 @@
 """Submissions browser acceptance cases."""
 
+from web_test_hybrid import oracle_graph
 from playwright.sync_api import expect
 import json
 from web_test_example_helpers import example_page
@@ -20,7 +21,7 @@ def run_submissions(context):
 
     arithmetic = submit_bytecode(page, canvas, "600160020100", context.output / "arithmetic-input.png")
     assert arithmetic.status == 200
-    assert arithmetic.json()["result"]["Ok"]["status"] == "Converged"
+    assert arithmetic.report["status"] == "Converged"
     expect(status).to_contain_text("Ready:")
     expect(status).to_contain_text("Converged")
 
@@ -28,11 +29,11 @@ def run_submissions(context):
     assert partial.status == 200
     partial_reply = partial.json()
     (context.output / "incomplete.json").write_text(json.dumps(partial_reply, indent=2) + "\n")
-    global_report = partial_reply["result"]["Ok"]
+    global_report = partial.report
     assert global_report["status"] == "Converged"
     assert global_report["hybrid"]["coverage"]["baseline_current"] is True
     assert global_report["hybrid"]["coverage"]["chosen"] == "ProcessWithDetail"
-    incomplete = global_report["hybrid"]["detail"]
+    incomplete = oracle_graph(global_report, "Native")
     assert incomplete["status"] == "Incomplete"
     assert any(frontier["kind"] == "Creation" and "UnknownInitCode" in frontier["detail"] for frontier in incomplete["frontiers"])
     assert not incomplete["ssa"]["complete"]
@@ -42,7 +43,7 @@ def run_submissions(context):
     expect(status).to_contain_text("View: Detailed paths")
     canvas.screenshot(path=str(context.output / "incomplete.png"))
     result = {"invalid_bytecode": invalid.json()["result"]["Err"]["code"],
-              "arithmetic": arithmetic.json()["result"]["Ok"]["status"],
+              "arithmetic": arithmetic.report["status"],
               "uncovered_creation": incomplete["status"],
               "renderer": webgpu_evidence(page)}
     page.close()

@@ -9,6 +9,7 @@ import json
 import re
 import time
 from web_test_harness import analysis_server, complete_submission, open_input, rendered_frame, settle_gesture
+from web_test_hybrid import oracle_graph, source_program
 
 
 RPC_PROVIDERS = [
@@ -51,13 +52,13 @@ class EntryRpcFixture(RpcFixture):
 def automatic_rpc_entry(page, url: str, provider, output: Path, name: str):
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as initial:
         page.goto(url, wait_until="networkidle")
-    reply = complete_submission(page, initial.value)
+    reply = complete_submission(page, initial.value, namespace="Native")
     request = reply.request.post_data_json
     assert request["input"] == {"Rpc": {"provider_id": provider["id"], "address": USDC_ENTRY, "block": "Latest", "accounts": []}}, request
     assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
-    report = reply.json()["result"]["Ok"]
+    report = oracle_graph(reply.report, "Native")
     assert report["metadata"]["entry_address"].lower() == USDC_ENTRY.lower()
-    assert len(report["cfg"]) == 1 and report["programs"][0]["bytecode"] in ("00", "0x00"), "preset fixture unexpectedly analyzed live code"
+    assert len(report["cfg"]) == 1 and source_program(report, report["metadata"]["root_program"])["bytecode"] in ("00", "0x00"), "preset fixture unexpectedly analyzed live code"
     (output / f"{name}-automatic-usdc.json").write_text(json.dumps({"request": request, "entry_address": report["metadata"]["entry_address"], "status": report["status"]}, indent=2) + "\n")
     return request
 

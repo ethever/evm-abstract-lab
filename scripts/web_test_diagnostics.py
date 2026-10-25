@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from playwright.sync_api import expect
 import json
-from web_test_hybrid import assert_hybrid, displayed_graph
+from web_test_hybrid import assert_hybrid, oracle_graph
 from web_test_graph_helpers import symbol
 from web_test_harness import analysis_server, complete_submission, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import inspector_diagnostics_region, select_inspector_tab
@@ -25,7 +25,7 @@ def diagnostics_interactions(browser, url: str, args):
     with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                               and response.request.method == "POST") as initial:
         page.goto(url, wait_until="networkidle")
-    complete_submission(page, initial.value)
+    complete_submission(page, initial.value, namespace="Native")
     canvas, status = page.locator("#evm-canvas"), page.locator("#analysis-status")
     select_inspector_tab(page, canvas, "Diagnostics")
 
@@ -44,15 +44,15 @@ def diagnostics_interactions(browser, url: str, args):
         with page.expect_response(lambda response: response.url.endswith("/api/tasks")
                                   and response.request.method == "POST") as submitted:
             page.keyboard.press("Control+Enter")
-        reply = complete_submission(page, submitted.value)
+        reply = complete_submission(page, submitted.value, namespace="Native")
         request = reply.request.post_data_json
         assert request["fork"] == fork and posted_bytecode(reply) == code, request
         assert reply.status == 200 and "Ok" in reply.json()["result"], reply.json()
-        report = reply.json()["result"]["Ok"]
+        report = reply.report
         assert report["schema_version"] == 21 and report["status"] == "Converged", report
         (output / f"diagnostics-{name}-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
         assert_hybrid(report)
-        return displayed_graph(report)
+        return oracle_graph(report, "Native")
 
     def snapshot(name, minimum_rows):
         page.mouse.move(2, 2)
@@ -132,11 +132,11 @@ def diagnostics_interactions(browser, url: str, args):
             automatic_rpc_entry(child_page, rpc_url, provider, output, "diagnostics-child-startup")
             child_canvas = child_page.locator("#evm-canvas")
             admitted = submit_rpc(child_page, child_canvas, rpc, output, "diagnostics-child", 0, [provider])
-            reply = complete_submission(child_page, admitted)
-            full_report = reply.json()["result"]["Ok"]
+            reply = complete_submission(child_page, admitted, namespace="Native")
+            full_report = reply.report
             assert_hybrid(full_report)
             (output / "diagnostics-child-global-analysis.json").write_text(json.dumps(full_report, indent=2) + "\n")
-            report = displayed_graph(full_report)
+            report = oracle_graph(full_report, "Native")
             diagnostic = next(item for item in report["diagnostics"] if item["kind"] == "InvalidOpcode")
             node = next(item for item in report["cfg"] if item["id"] == diagnostic["state"])
             source = next(item for item in report["programs"] if item["id"] == node["program"])

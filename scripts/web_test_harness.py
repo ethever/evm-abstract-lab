@@ -9,6 +9,7 @@ import re
 import selectors
 import subprocess
 import time
+from web_test_hybrid import graph, job_result_report
 
 
 _browser_errors = ContextVar("browser_acceptance_errors", default=None)
@@ -83,21 +84,27 @@ def rendered_frame(page) -> None:
     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
 
 class AnalysisResponse:
-    """Final typed envelope plus the actual originating form submission."""
-    def __init__(self, response, envelope, status):
+    """Task result wire reply or terminal typed error, plus its form submission."""
+    def __init__(self, response, envelope, status, job=None):
         self.request = response.request
         self.status = status
         self.admission_status = response.status
         self.envelope = envelope
+        self.job = job
 
     def json(self):
         return self.envelope
+
+    @property
+    def report(self):
+        return job_result_report(self.envelope, job_id=self.job["id"],
+                                 publication=self.job["publication"])
 
 TIMING_PHASES = ("validating_ns", "pinning_ns", "acquiring_ns", "analyzing_ns",
                  "building_ssa_ns", "projecting_ns")
 
 def measured_backend_timings(report):
-    timing = report["metadata"]["timings"]
+    timing = report["timings"]
     assert set(timing) == {"queue_ns", "processing_ns", *TIMING_PHASES}, timing
     assert all(type(value) is int and value >= 0 for value in timing.values()), timing
     assert sum(timing[field] for field in TIMING_PHASES) == timing["processing_ns"], timing
@@ -106,7 +113,19 @@ def measured_backend_timings(report):
     assert timing["projecting_ns"] > 0, timing
     return timing
 
-def complete_submission(page, admitted, timeout_seconds: int = 60):
+def select_report_namespace(page, report, namespace):
+    """Use the real selector before following IDs in a particular graph."""
+    assert graph(report, namespace) is not None, namespace
+    if report["hybrid"] is not None:
+        label, x = {"Baseline": ("Global model", 50), "Native": ("Detailed paths", 148)}[namespace]
+        status = page.locator("#analysis-status")
+        if f"View: {label}" not in status.text_content():
+            page.locator("#evm-canvas").click(position={"x": x, "y": 38})
+        expect(status).to_contain_text(f"View: {label}")
+        settle_gesture(page)
+
+
+def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=None):
     # Parse raw HTTP text in Python so u64 Job IDs never pass through JS Number.
     reply = json.loads(admitted.text())["result"]
     if "Err" in reply:
@@ -120,17 +139,21 @@ def complete_submission(page, admitted, timeout_seconds: int = 60):
         state = job["state"]
         if state == "Completed":
             result = page.request.get(task_url + "/result")
-            envelope = result.json()
-            timing = measured_backend_timings(envelope["result"]["Ok"])
+            assert result.ok, result.text()
+            envelope = json.loads(result.text())
+            report = job_result_report(envelope, job_id=job_id, publication=job["publication"])
+            timing = measured_backend_timings(report)
             assert timing == job["timings"], "report and completed job disagree on measured time"
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=timeout_seconds * 1000)
             expect(page.locator("#analysis-status")).to_contain_text(
                 re.compile(rf"(?:^|; )Job ID: {job_id}(?=;|$)"), timeout=timeout_seconds * 1000)
-            return AnalysisResponse(admitted, envelope, result.status)
+            if namespace is not None:
+                select_report_namespace(page, report, namespace)
+            return AnalysisResponse(admitted, envelope, result.status, job)
         if isinstance(state, dict) and "Failed" in state:
             error = state["Failed"]
             expect(page.locator("#analysis-status")).to_contain_text("Error:", timeout=60000)
-            return AnalysisResponse(admitted, {"result": {"Err": error}}, observed_status)
+            return AnalysisResponse(admitted, {"result": {"Err": error}}, observed_status, job)
         assert state not in ["Cancelling", "Cancelled"], f"unexpected cancellation: {job}"
         page.wait_for_timeout(100)
         result = page.request.get(task_url)
@@ -171,7 +194,7 @@ def submit_bytecode(page, canvas, bytecode: str, evidence: Path):
     admitted = response.value
     posted = posted_bytecode(admitted)
     assert posted == bytecode, f"editor input did not reach the typed request: expected {bytecode!r}, got {posted!r}"
-    return complete_submission(page, admitted)
+    return complete_submission(page, admitted, namespace="Native")
 
 def settle_gesture(page) -> None:
     """Wait for consumed input, including the tail of an actual smooth wheel.

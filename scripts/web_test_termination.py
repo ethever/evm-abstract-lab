@@ -1,5 +1,6 @@
 """Termination browser acceptance cases."""
 
+from web_test_hybrid import source_instructions, source_program
 from playwright.sync_api import expect
 import json
 from web_test_ending_helpers import selected_ending, warning_pixels
@@ -12,13 +13,14 @@ from web_test_pixels import node_snapshot
 def _assert_root_block(report, node, code, instructions):
     root=report['metadata']['root_program']
     address=report['metadata']['entry_address']
-    source=report['programs'][root]
+    source=source_program(report,root)
     assert source['id']==root and source['code_address']==address and source['kind']=='Runtime'
     assert source['bytecode'].removeprefix('0x')==code
     assert node['frame_depth']==1 and node['program']==root
     assert node['code_address']==node['storage_address']==address
-    assert [(item['pc'],item['opcode']) for item in node['instructions'][:len(instructions)]]==[(pc,op) for pc,op,_ in instructions]
-    assert len(node['instructions'])==len(instructions) or instructions[-1][2]=='Faulted'
+    decoded=source_instructions(report,node)
+    assert [(item['pc'],item['opcode']) for item in decoded[:len(instructions)]]==[(pc,op) for pc,op,_ in instructions]
+    assert len(decoded)==len(instructions) or instructions[-1][2]=='Faulted'
     assert node['start_pc']==instructions[0][0] and node['executed_pcs']==[pc for pc,_,_ in instructions]
     details=next(item for item in report['states'] if item['state']==node['id'])
     frames=details['entry']['frames']

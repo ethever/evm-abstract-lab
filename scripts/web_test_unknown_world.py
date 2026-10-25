@@ -8,6 +8,7 @@ from web_test_inspector_helpers import hide_inspector, inspector_frame_tab, insp
 from web_test_layout_helpers import layout_page, layout_submission
 from web_test_pixels import node_snapshot, text_pixels, workspace_content_bottom
 from web_test_wire_bytes import assert_return_word42
+from web_test_hybrid import source_instructions
 
 
 def unknown_world_interactions(browser, url, output):
@@ -34,7 +35,7 @@ def unknown_world_interactions(browser, url, output):
         frame = state["entry"]["frames"][-1]
         block = next(block for block in report["cfg"] if block["id"] == state["state"])
         assert frame["program"] is None
-        assert block["instructions"] == [] and block["executed_pcs"] == []
+        assert source_instructions(report, block) == [] and block["executed_pcs"] == []
     returns = [outcome for outcome in report["outcomes"] if outcome["kind"] == "Return"]
     assert returns
     for outcome in returns:

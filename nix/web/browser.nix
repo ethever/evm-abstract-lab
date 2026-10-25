@@ -72,6 +72,7 @@ let
   # Pure report mutations require neither Chromium nor a built server/Wasm.
   # Browser cases still apply this same checker to their current transport data.
   reportSource = inputs.files [
+    "scripts/web_test_hybrid.py"
     "scripts/web_test_runtime_report.py"
     "scripts/test_web_test_runtime_report.py"
   ];

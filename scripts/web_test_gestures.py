@@ -27,7 +27,10 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             page.on("pageerror", lambda error: failures.append(str(error)))
             page.on("console", lambda message: failures.append(message.text)
                     if message.type == "error" else None)
-            page.goto(url, wait_until="networkidle")
+            with page.expect_response(lambda response: response.url.endswith("/api/tasks")
+                                      and response.request.method == "POST") as initial:
+                page.goto(url, wait_until="networkidle")
+            complete_submission(page, initial.value, namespace="Native")
             status = page.locator("#analysis-status")
             expect(status).to_contain_text("Ready:", timeout=60000)
             expect(status).to_contain_text("CFG nodes: SSA")
@@ -262,7 +265,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             open_input(page)
             with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
                 page.keyboard.press("Control+Enter")
-            reply = complete_submission(page, response.value)
+            reply = complete_submission(page, response.value, namespace="Native")
             assert reply.status == 200
             assert posted_bytecode(reply) == bytecode + "fF", "focused f/F keys did not reach the bytecode request"
             expect(status).to_contain_text("Ready:")

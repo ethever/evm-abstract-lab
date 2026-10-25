@@ -8,6 +8,7 @@ from web_test_graph_helpers import graph_mode, symbol
 from web_test_harness import settle_gesture, webgpu_evidence
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_counts, layout_fixture, layout_page, layout_submission
 from web_test_pixels import layout_camera_intervals, layout_card_extent, layout_ink, node_snapshot
+from web_test_hybrid import source_instructions
 
 
 def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-linear-chain", native_projection=False):
@@ -36,7 +37,7 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
         assert {(pcs[edge["from"]],pcs[edge["to"]]) for edge in report["edges"]} == {
             (pc,pc+stride) for pc in range(0,metadata["last_block_start_pc"],stride)}
         assert any(instruction["pc"] == metadata["stop_pc"] and instruction["opcode"] == 0
-                   for node in report["cfg"] for instruction in node["instructions"])
+                   for node in report["cfg"] for instruction in source_instructions(report, node))
         assert scene["nodes"] >= 600 and scene["hidden_states"] == scene["boundary_edges"] == 0
     status = page.locator("#analysis-status").text_content()
     fit_zoom = float(re.search(r"; CFG zoom: ([0-9.]+)%", status)[1])

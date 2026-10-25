@@ -7,6 +7,7 @@ from web_test_graph_helpers import graph_mode, symbol
 from web_test_harness import settle_gesture, webgpu_evidence
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_counts, layout_fixture, layout_page, layout_submission
 from web_test_pixels import layout_ink, node_snapshot
+from web_test_hybrid import oracle_graph
 from web_test_runtime_report import (layout_runtime_programs, layout_runtime_request,
     layout_runtime_coverage, layout_pending_machines, _runtime_boundary_negative_controls)
 
@@ -44,15 +45,15 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
         print(f"real-runtime analysis start: {name}",flush=True)
         report=layout_submission(page,canvas,code,args.output,name,timeout_seconds=1800,entry=entry,
                                  execution_limits=RUNTIME_DETAIL_LIMITS)
-        coverage=layout_runtime_coverage(report,metadata)
+        original_report=json.loads((args.output/f"{name}-analysis.json").read_text())
+        coverage=layout_runtime_coverage(report,metadata,original_report["timings"])
         (args.output/f"{name}-coverage-comparison.json").write_text(json.dumps(coverage,indent=2)+"\n")
         print(f"real-runtime analysis done: {name} status={report['status']} states={len(report['cfg'])} "
               f"frontiers={[(frontier['kind'],frontier['detail']) for frontier in report['frontiers']]} "
               f"unknown_closed={[summary['closed'] for summary in report['abstract_summaries']]} "
-              f"analyzing_ns={report['metadata']['timings']['analyzing_ns']}",flush=True)
+              f"analyzing_ns={original_report['timings']['analyzing_ns']}",flush=True)
         request=json.loads((args.output/f"{name}-request.json").read_text())
-        original_report=json.loads((args.output/f"{name}-analysis.json").read_text())
-        request_evidence=layout_runtime_request(request,original_report,code,metadata,RUNTIME_DETAIL_LIMITS)
+        request_evidence=layout_runtime_request(request,oracle_graph(original_report, "Baseline"),code,metadata,RUNTIME_DETAIL_LIMITS)
         layout_runtime_programs(report,code,metadata)
         assert {block["state"] for block in report["ssa"]["blocks"]} == {node["id"] for node in report["cfg"]}
         assert report["status"] == entry["expected_status"]

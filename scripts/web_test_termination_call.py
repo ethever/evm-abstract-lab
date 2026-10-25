@@ -1,5 +1,6 @@
 """Termination call browser acceptance cases."""
 
+from web_test_hybrid import oracle_graph, source_instructions, source_program
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
@@ -14,7 +15,7 @@ from web_test_rpc_helpers import EntryRpcFixture, automatic_rpc_entry, submit_rp
 def _termination_call_oracle(report, root_code, root_address, child_address):
     root=report['metadata']['root_program']
     assert report['metadata']['entry_address'].lower()==root_address.lower()
-    assert report['programs'][root]['bytecode'].removeprefix('0x')==root_code.removeprefix('0x')
+    assert source_program(report,root)['bytecode'].removeprefix('0x')==root_code.removeprefix('0x')
     entry,=[node for node in report['cfg'] if node['frame_depth']==1 and node['start_pc']==0]
     caller,=[node for node in report['cfg'] if node['frame_depth']==1 and node['start_pc']==3]
     child,=[node for node in report['cfg'] if node['frame_depth']==2]
@@ -39,12 +40,12 @@ def _termination_call_oracle(report, root_code, root_address, child_address):
         assert node['frame_depth']==(2 if is_child else 1)
         assert node['code_address'].lower()==node['storage_address'].lower()==address.lower()
         assert node['program']==(child['program'] if is_child else root)
-        source=report['programs'][node['program']]
+        source=source_program(report,node['program'])
         assert source['id']==node['program'] and source['code_address'].lower()==address.lower() and source['kind']=='Runtime'
         assert source['bytecode'].removeprefix('0x')==('00' if is_child else root_code.removeprefix('0x'))
         expected=instructions[node['id']]
         assert node['start_pc']==expected[0][0] and node['executed_pcs']==[pc for pc,_,_ in expected]
-        assert [(item['pc'],item['opcode']) for item in node['instructions']]==[(pc,op) for pc,op,_ in expected]
+        assert [(item['pc'],item['opcode']) for item in source_instructions(report,node)]==[(pc,op) for pc,op,_ in expected]
         block=ssa[node['id']]
         assert block['coverage']=='Current'
         assert [(item['pc'],item['opcode'],item['progress']) for item in block['instructions']]==expected
@@ -53,7 +54,7 @@ def _termination_call_oracle(report, root_code, root_address, child_address):
         assert len(frames)==node['frame_depth'] and frames[0]['program']==root
         assert [frame['index'] for frame in frames]==list(range(node['frame_depth']))
         assert frames[0]['code_address'].lower()==frames[0]['storage_address'].lower()==root_address.lower()
-        assert frames[0]['code_hash']==report['programs'][root]['code_hash'] and frames[-1]['code_hash']==source['code_hash']
+        assert frames[0]['code_hash']==source_program(report,root)['code_hash'] and frames[-1]['code_hash']==source['code_hash']
         assert frames[-1]['program']==node['program'] and frames[-1]['basic_block']==node['basic_block']
         assert frames[-1]['code_address']==node['code_address'] and frames[-1]['storage_address']==node['storage_address']
     child_frames=details[child['id']]['entry']['frames']
@@ -103,12 +104,12 @@ def termination_call_interactions(browser,args):
             automatic_rpc_entry(page,url,providers[0],args.output,'termination-call-startup')
             canvas=page.locator('#evm-canvas')
             admitted=submit_rpc(page,canvas,rpc,args.output,'termination-child-call',0,providers)
-            reply=complete_submission(page,admitted)
+            reply=complete_submission(page,admitted, namespace="Native")
             assert reply.status==200 and 'Ok' in reply.json()['result'],reply.json()
-            report=reply.json()['result']['Ok']
+            report=reply.report
             (args.output/'termination-child-call-analysis.json').write_text(json.dumps(report,indent=2)+'\n')
             assert report["hybrid"]["coverage"]["baseline_current"]
-            report=report["hybrid"]["detail"]
+            report=oracle_graph(report, "Native")
             failure,returning=_termination_call_oracle(report,rpc.root_code,rpc.root_address,rpc.child_address)
             caller=failure['from']
             sources={node['id']:node['program'] for node in report['cfg']}

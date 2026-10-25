@@ -312,7 +312,7 @@ def edge_flow_interactions(browser, url: str, output: Path):
         selected=next(node for node in loop["cfg"] if f"Selected {symbol('σ',node['id'])};" in status.text_content())
         rendered[selected["start_pc"]]=bounds
         if selected["start_pc"] in [2,12]:
-            pick_graph_instance(page,canvas,selected["id"])
+            pick_graph_instance(page,canvas,selected["id"],program=selected["program"])
     assert set(rendered)=={0,2,12,17}
     cycle=sorted(((pc,rendered[pc]) for pc in [2,12]),key=lambda item:item[1][1])
     (upper_pc,_),(lower_pc,_)=cycle
@@ -320,7 +320,8 @@ def edge_flow_interactions(browser, url: str, output: Path):
     bounds=rendered[2]
     canvas.click(position={"x":(bounds[0]+bounds[2])/2,"y":(bounds[1]+bounds[3])/2})
     settle_gesture(page)
-    pick_graph_instance(page,canvas,127,"sigma_127")
+    selected=next(node for node in loop["cfg"] if node["id"]==127)
+    pick_graph_instance(page,canvas,127,"sigma_127",program=selected["program"])
     assert next(node for node in loop["cfg"] if node["id"]==127)["start_pc"]==2
     page.mouse.move(2,2);settle_gesture(page)
     assert any(pcs[edge["from"]]==lower_pc and pcs[edge["to"]]==upper_pc for edge in loop["edges"])
