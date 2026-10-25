@@ -1,5 +1,8 @@
 //! Actual TCP tests cover framing, typed API responses and the static asset host.
 
+#[path = "http/requests.rs"]
+mod requests;
+
 use evm_abstract_protocol::{
     AnalysisInput, AnalyzeReply, AnalyzeRequest, ApiErrorCode, BlockSelector, BytecodeInput,
     ErrorDetails, JobReply, JobState, RpcInput, RpcProvidersReply,
