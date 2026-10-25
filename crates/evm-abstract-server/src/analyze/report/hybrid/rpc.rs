@@ -7,46 +7,6 @@ use evm_abstract::{
     resource::WorkBudget,
 };
 
-pub(in crate::analyze) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
-    source: analysis::RpcHybridAnalysis<N>,
-    request: &api::AnalyzeRequest,
-    algebra: &ValueAlgebra<D>,
-    numeric_model: api::NumericModel,
-    control: &Control,
-) -> Result<api::AnalysisReport, api::ApiError> {
-    let mut budget = WorkBudget::new(crate::analyze::DEFAULT_POSTPROCESS_WORK);
-    project_with_budget(
-        source,
-        request,
-        algebra,
-        numeric_model,
-        control,
-        &mut budget,
-    )
-}
-
-pub(in crate::analyze) fn project_with_budget<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
-    source: analysis::RpcHybridAnalysis<N>,
-    request: &api::AnalyzeRequest,
-    algebra: &ValueAlgebra<D>,
-    numeric_model: api::NumericModel,
-    control: &Control,
-    budget: &mut WorkBudget,
-) -> Result<api::AnalysisReport, api::ApiError> {
-    project_with_retained_global(
-        source,
-        algebra,
-        control,
-        budget,
-        ProjectionInput {
-            request,
-            scope: api::AnalysisScope::RpcWorld,
-            numeric_model,
-        },
-        None,
-    )
-}
-
 /// Reuse only a publication admitted by exact immutable producer identity.
 pub(in crate::analyze) fn project_with_retained_global<
     N: WordElement,
