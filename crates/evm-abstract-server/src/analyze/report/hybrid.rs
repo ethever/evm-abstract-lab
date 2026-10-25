@@ -10,6 +10,84 @@ use evm_abstract::{
     resource::WorkBudget,
     world::SnapshotIdentity,
 };
+use std::sync::Arc;
+
+struct RetainedPublication {
+    minimum: Option<Arc<api::MinimumModel>>,
+    programs: Vec<Arc<api::ProgramInfo>>,
+}
+
+/// Fund the final qualification and fallback directory before optional rich
+/// work. Refusal can then retain the exact minimum without a replacement ledger.
+fn retained_publication<N: WordElement>(
+    source: &analysis::EvmWorldAnalysis<N>,
+    input: ProjectionInput<'_>,
+    retained: Option<&api::AnalysisReport>,
+    budget: &mut WorkBudget,
+    metadata_work: usize,
+) -> Result<RetainedPublication, api::ApiError> {
+    let Some(retained) = retained.filter(|report| report.minimum.is_some()) else {
+        return Ok(RetainedPublication {
+            minimum: None,
+            programs: Vec::new(),
+        });
+    };
+    let minimum = retained.minimum.as_ref().expect("minimum seed selected");
+    if retained.schema_version != api::SCHEMA_VERSION
+        || minimum.source_snapshot != snapshot(source.snapshot())?
+        || minimum.revision != api::DecimalU64(source.revision().value())
+        || minimum.root_binding != mapping::root_binding(source.root_binding())
+        || minimum.config != mapping::execution_config(source.config())
+        || minimum.fork != input.request.fork
+        || minimum.scope != input.scope
+        || minimum.numeric_model != input.numeric_model
+        || minimum.environment.is_static != source.entry().environment.is_static
+    {
+        return Err(invalid(api::HybridValidationKind::Source));
+    }
+    let required = metadata_work
+        .saturating_add(retained.programs.len())
+        .saturating_add(1);
+    if (budget.used() as u64) < retained.postprocessing_work || !budget.charge(required) {
+        return Err(api::ApiError {
+            code: api::ApiErrorCode::Export,
+            message: "final publication metadata requires the original postprocessing allowance"
+                .into(),
+            details: api::ErrorDetails::Export(Box::new(api::ExportFailure {
+                kind: api::ExportFailureKind::Work,
+                required: required as u64,
+                limits: minimum.export_limits,
+                usage: minimum.export_usage,
+                written: None,
+            })),
+        });
+    }
+    Ok(RetainedPublication {
+        minimum: Some(Arc::clone(minimum)),
+        programs: retained.programs.iter().map(Arc::clone).collect(),
+    })
+}
+
+fn finish_publication(
+    mut report: api::AnalysisReport,
+    rich: Result<(), api::ApiError>,
+    budget: &WorkBudget,
+) -> Result<api::AnalysisReport, api::ApiError> {
+    report.postprocessing_work = budget.used() as u64;
+    match rich {
+        Ok(()) => report.rich_export = api::RichExportOutcome::Complete,
+        Err(error) if report.minimum.is_some() => {
+            report.selected_view = api::AnalysisNamespace::Baseline;
+            report.rich_export = if error.code == api::ApiErrorCode::Cancelled {
+                api::RichExportOutcome::Cancelled
+            } else {
+                api::RichExportOutcome::Refused(error)
+            };
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(report)
+}
 
 pub(in crate::analyze) fn project<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     source: &analysis::HybridAnalysis<N>,
@@ -67,39 +145,14 @@ pub(in crate::analyze) fn project_with_retained_global<
     input: ProjectionInput<'_>,
     retained: Option<&api::AnalysisReport>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
-    // EvmWorldAnalysis serde omits execution_evidence. Export the borrowed
-    // receipts explicitly, with the native entry IDs and frontier namespace.
-    let local_prefixes = prefixes(source, control, budget)?;
-    let coverage = coverage(source)?;
-    let (baseline, mut programs) =
-        super::project_global(source.baseline(), algebra, control, budget, input, retained)?;
-    let detail = source
-        .detail()
-        .map(|detail| {
-            let (graph, catalog) = super::project_graph(
-                detail,
-                algebra,
-                control,
-                budget,
-                input,
-                std::mem::take(&mut programs),
-            )?;
-            programs = catalog;
-            Ok::<_, api::ApiError>(graph)
-        })
-        .transpose()?;
-    let selected_view = match coverage.chosen {
-        api::HybridInterpretation::Native => api::AnalysisNamespace::Native,
-        api::HybridInterpretation::Process | api::HybridInterpretation::ProcessWithDetail => {
-            api::AnalysisNamespace::Baseline
-        }
-    };
-    if selected_view == api::AnalysisNamespace::Native && detail.is_none() {
-        return Err(invalid(api::HybridValidationKind::Namespace));
-    }
-    let report = api::AnalysisReport {
+    let metadata_work = source.coverage().detail_regions.len().saturating_add(1);
+    let RetainedPublication { minimum, programs } =
+        retained_publication(source.baseline(), input, retained, budget, metadata_work)?;
+    let mut report = api::AnalysisReport {
         schema_version: api::SCHEMA_VERSION,
-        selected_view,
+        selected_view: api::AnalysisNamespace::Baseline,
+        minimum,
+        rich_export: api::RichExportOutcome::NotRequested,
         status: match source.status() {
             analysis::Status::Converged => api::AnalysisStatus::Converged,
             analysis::Status::Incomplete => api::AnalysisStatus::Incomplete,
@@ -117,17 +170,57 @@ pub(in crate::analyze) fn project_with_retained_global<
             .rpc_acquisition()
             .map(crate::analyze::rpc::acquisition),
         programs,
-        global: Some(baseline),
-        native: detail.map(std::sync::Arc::new),
+        global: None,
+        native: None,
         hybrid: Some(api::HybridReport {
-            coverage,
-            local_prefixes,
+            coverage: coverage(source)?,
+            local_prefixes: Vec::new(),
             precision: None,
             rpc: None,
         }),
     };
-    checkpoint(control)?;
-    Ok(report)
+    let rich = (|| {
+        // Commit rich references only after both namespace projections succeed.
+        // A failed Native export cannot leave receipts pointing into absent pools.
+        let local_prefixes = prefixes(source, control, budget)?;
+        let (global, mut programs) =
+            super::project_global(source.baseline(), algebra, control, budget, input, retained)?;
+        let native = source
+            .detail()
+            .map(|detail| {
+                let (graph, catalog) = super::project_graph(
+                    detail,
+                    algebra,
+                    control,
+                    budget,
+                    input,
+                    std::mem::take(&mut programs),
+                )?;
+                programs = catalog;
+                Ok::<_, api::ApiError>(Arc::new(graph))
+            })
+            .transpose()?;
+        let selected_view = match source.coverage().chosen {
+            analysis::HybridInterpretation::Native => api::AnalysisNamespace::Native,
+            analysis::HybridInterpretation::Process
+            | analysis::HybridInterpretation::ProcessWithDetail => api::AnalysisNamespace::Baseline,
+        };
+        if selected_view == api::AnalysisNamespace::Native && native.is_none() {
+            return Err(invalid(api::HybridValidationKind::Namespace));
+        }
+        checkpoint(control)?;
+        report.selected_view = selected_view;
+        report.global = Some(global);
+        report.native = native;
+        report.programs = programs;
+        report
+            .hybrid
+            .as_mut()
+            .expect("hybrid envelope constructed")
+            .local_prefixes = local_prefixes;
+        Ok(())
+    })();
+    finish_publication(report, rich, budget)
 }
 
 fn invalid(kind: api::HybridValidationKind) -> api::ApiError {

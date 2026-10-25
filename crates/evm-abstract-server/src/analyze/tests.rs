@@ -15,6 +15,7 @@ pub(in crate::analyze) fn native_detail(mut report: api::AnalysisReport) -> api:
     report.selected_view = api::AnalysisNamespace::Native;
     report.global = None;
     report.hybrid = None;
+    report.minimum = None;
     report
 }
 use evm_abstract::domain::{NumericValue, ProductAlgebra, ValueAlgebra};

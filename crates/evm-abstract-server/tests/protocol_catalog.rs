@@ -96,6 +96,17 @@ fn immutable_catalog_is_shared_without_merging_source_accounts_or_graph_ids() {
         serde_json::from_slice(&serde_json::to_vec(&report).unwrap()).unwrap();
     decoded.validate().unwrap();
     assert_eq!(decoded, report);
+    let mut selected = report.clone();
+    selected.selected_view = api::AnalysisNamespace::Baseline;
+    selected.validate().unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        selected.global.as_ref().unwrap(),
+        report.global.as_ref().unwrap()
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        selected.native.as_ref().unwrap(),
+        report.native.as_ref().unwrap()
+    ));
 }
 
 #[test]

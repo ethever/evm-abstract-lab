@@ -5,6 +5,8 @@ impl AnalysisReport {
     pub(in super::super) fn validate_rpc_hybrid(
         &self,
         hybrid: &HybridReport,
+        max_work: u64,
+        complete_export: bool,
     ) -> Result<(), ReportValidationFailure> {
         let Some(rpc) = &hybrid.rpc else {
             if hybrid.precision.is_some() || hybrid.coverage.work.total != self.work {
@@ -17,7 +19,7 @@ impl AnalysisReport {
             || original.chosen != HybridInterpretation::Process
             || original.snapshot != rpc.snapshot
             || original.baseline_revision != rpc.baseline_revision
-            || hybrid.precision.is_some() != self.native.is_some()
+            || (complete_export && hybrid.precision.is_some() != self.native.is_some())
         {
             return Err(invalid(Kind::Source));
         }
@@ -32,14 +34,7 @@ impl AnalysisReport {
             return Err(invalid(Kind::Source));
         }
         if rpc.work != self.work
-            || rpc.work
-                > self
-                    .global
-                    .as_ref()
-                    .ok_or_else(|| invalid(Kind::Namespace))?
-                    .metadata
-                    .limits
-                    .max_work
+            || rpc.work > max_work
             || original.work.total > rpc.work
             || rpc.precision_work > rpc.max_precision_work.0
             || rpc.precision_work > rpc.work

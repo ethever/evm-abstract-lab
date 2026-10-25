@@ -46,7 +46,24 @@ fn project_global<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
             api::HybridValidationKind::Source,
         )),
     };
-    let graph = retained.global.as_ref().ok_or_else(invalid)?;
+    let Some(graph) = retained.global.as_ref() else {
+        let minimum = retained.minimum.as_ref().ok_or_else(invalid)?;
+        if retained.schema_version != api::SCHEMA_VERSION
+            || minimum.source_snapshot != hybrid::snapshot(native.snapshot())?
+            || minimum.revision != api::DecimalU64(native.revision().value())
+            || minimum.root_binding != mapping::root_binding(native.root_binding())
+            || minimum.fork != input.request.fork
+            || minimum.scope != input.scope
+        {
+            return Err(invalid());
+        }
+        if !budget.charge(retained.programs.len().saturating_add(1)) {
+            return Err(ssa::errors::convert(evm_abstract::ssa::SsaError::Work));
+        }
+        let programs = retained.programs.iter().map(Arc::clone).collect();
+        let (graph, programs) = project_graph(native, algebra, control, budget, input, programs)?;
+        return Ok((Arc::new(graph), programs));
+    };
     if retained.schema_version != api::SCHEMA_VERSION
         || graph.metadata.source_snapshot != hybrid::snapshot(native.snapshot())?
         || graph.metadata.revision != api::DecimalU64(native.revision().value())
@@ -111,6 +128,8 @@ pub(in crate::analyze) fn with_budget<N: WordElement, D: EvmNumericAlgebra<Eleme
     Ok(api::AnalysisReport {
         schema_version: api::SCHEMA_VERSION,
         selected_view: api::AnalysisNamespace::Native,
+        minimum: None,
+        rich_export: api::RichExportOutcome::Complete,
         status: graph.status,
         work: graph.metadata.work,
         transfers: graph.transfers,

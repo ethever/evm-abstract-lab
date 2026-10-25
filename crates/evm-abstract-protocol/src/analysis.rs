@@ -345,6 +345,11 @@ record! {
         pub schema_version: u16,
         /// Explicit initial display choice; selecting a view never moves graphs.
         pub selected_view: crate::AnalysisNamespace,
+        /// Paid numerical/control projection of the existing qualified Global model.
+        /// It remains usable when optional machine/history/SSA export is unavailable.
+        pub minimum: Option<std::sync::Arc<crate::MinimumModel>>,
+        /// Optional rich export outcome, independent of semantic closure.
+        pub rich_export: crate::RichExportOutcome,
         /// Global model closure, independent of optional detail and display choice.
         pub status: AnalysisStatus,
         /// Cumulative execution work across all phases and fact revisions.

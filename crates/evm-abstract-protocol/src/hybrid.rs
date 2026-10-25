@@ -115,11 +115,12 @@ record! {
         pub detail_binding: HybridNativeBinding,
         /// Actual requested auxiliary option; baseline always keeps it disabled.
         pub requested_native_terminal_coverage: bool,
-        /// Number of exported current retained-input receipts.
+        /// Current retained-input sites in the source analysis. Rich export
+        /// may withhold their receipts under an explicit non-Complete outcome.
         pub local_detail_sites: usize,
         /// Frozen selected sources; other regions erase optional jump history.
         pub detail_regions: Vec<HybridRegion>,
-        /// Relation supplying the main graph and effects.
+        /// Qualified semantic interpretation, independent of selected_view.
         pub chosen: HybridInterpretation,
         /// Independent optional precision state.
         pub detail: HybridDetailState,
@@ -192,7 +193,8 @@ impl HybridReport {
     pub fn native_coverage(&self) -> &HybridCoverage {
         self.precision.as_ref().unwrap_or(&self.coverage)
     }
-    /// Initial display namespace declared by the semantic interpretation.
+    /// Preferred rich namespace of the semantic interpretation. The envelope
+    /// may select an available minimum or another retained rich view instead.
     pub fn namespace(&self) -> AnalysisNamespace {
         match self.coverage.chosen {
             HybridInterpretation::Native => AnalysisNamespace::Native,

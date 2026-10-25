@@ -1,5 +1,8 @@
 //! RPC preserves its original upper bound and the last useful native revision.
-use super::{ProjectionInput, api, coverage, prefixes, snapshot};
+use super::{
+    ProjectionInput, RetainedPublication, api, coverage, finish_publication, prefixes,
+    retained_publication, snapshot,
+};
 use crate::analyze::{checkpoint, errors, rpc as evidence};
 use evm_abstract::{
     analysis::{self, control::Control},
@@ -19,12 +22,28 @@ pub(in crate::analyze) fn project_with_retained_global<
     input: ProjectionInput<'_>,
     retained: Option<&api::AnalysisReport>,
 ) -> Result<api::AnalysisReport, api::ApiError> {
-    // Project borrowed execution evidence before into_parts moves the graphs.
-    let local_prefixes = source
-        .detail_report()
-        .map(|detail| prefixes(detail, control, budget))
-        .transpose()?
-        .unwrap_or_default();
+    // Reserve final RPC qualification before optional pools/SSA. The source is
+    // consumed only after its actual revision chain has been retained here.
+    let rpc_metadata = source.coverage();
+    let acquisition = &rpc_metadata.acquisition;
+    let metadata_work = rpc_metadata
+        .restrictions
+        .len()
+        .saturating_add(source.failures().len())
+        .saturating_add(acquisition.fetched_accounts.len())
+        .saturating_add(acquisition.failed_accounts.len())
+        .saturating_add(acquisition.fetched_storage.len())
+        .saturating_add(acquisition.failed_storage.len())
+        .saturating_add(acquisition.failures.len())
+        .saturating_mul(2)
+        .saturating_add(1);
+    let RetainedPublication { minimum, programs } = retained_publication(
+        source.baseline().baseline(),
+        input,
+        retained,
+        budget,
+        metadata_work,
+    )?;
     let original = coverage(source.baseline())?;
     let precision = source.detail_report().map(coverage).transpose()?;
     let status = source.status();
@@ -90,30 +109,15 @@ pub(in crate::analyze) fn project_with_retained_global<
             .collect(),
         preparation_failure: preparation_failure.map(errors::session_error).map(Box::new),
     };
-    let (baseline, _, _) = baseline.into_parts();
-    let native = latest
-        .and_then(|report| report.into_parts().1)
-        .or_else(|| retained_detail.and_then(|report| report.into_parts().1));
-    let (global, mut programs) =
-        super::super::project_global(&baseline, algebra, control, budget, input, retained)?;
-    let detail = native
+    let native_report = latest
         .as_ref()
-        .map(|native| {
-            let (graph, catalog) = super::super::project_graph(
-                native,
-                algebra,
-                control,
-                budget,
-                input,
-                std::mem::take(&mut programs),
-            )?;
-            programs = catalog;
-            Ok::<_, api::ApiError>(graph)
-        })
-        .transpose()?;
-    let report = api::AnalysisReport {
+        .filter(|report| report.detail().is_some())
+        .or(retained_detail.as_ref());
+    let mut report = api::AnalysisReport {
         schema_version: api::SCHEMA_VERSION,
         selected_view: api::AnalysisNamespace::Baseline,
+        minimum,
+        rich_export: api::RichExportOutcome::NotRequested,
         status: match status {
             analysis::Status::Converged => api::AnalysisStatus::Converged,
             analysis::Status::Incomplete => api::AnalysisStatus::Incomplete,
@@ -124,15 +128,53 @@ pub(in crate::analyze) fn project_with_retained_global<
         timings: api::AnalysisTimings::default(),
         acquisition: Some(rpc.acquisition.clone()),
         programs,
-        global: Some(global),
-        native: detail.map(std::sync::Arc::new),
+        global: None,
+        native: None,
         hybrid: Some(api::HybridReport {
             coverage: original,
-            local_prefixes,
+            local_prefixes: Vec::new(),
             precision,
             rpc: Some(rpc),
         }),
     };
-    checkpoint(control)?;
-    Ok(report)
+    let rich = (|| {
+        let local_prefixes = native_report
+            .map(|detail| prefixes(detail, control, budget))
+            .transpose()?
+            .unwrap_or_default();
+        let (global, mut programs) = super::super::project_global(
+            baseline.baseline(),
+            algebra,
+            control,
+            budget,
+            input,
+            retained,
+        )?;
+        let native = native_report
+            .and_then(|report| report.detail())
+            .map(|native| {
+                let (graph, catalog) = super::super::project_graph(
+                    native,
+                    algebra,
+                    control,
+                    budget,
+                    input,
+                    std::mem::take(&mut programs),
+                )?;
+                programs = catalog;
+                Ok::<_, api::ApiError>(std::sync::Arc::new(graph))
+            })
+            .transpose()?;
+        checkpoint(control)?;
+        report.global = Some(global);
+        report.native = native;
+        report.programs = programs;
+        report
+            .hybrid
+            .as_mut()
+            .expect("RPC hybrid envelope constructed")
+            .local_prefixes = local_prefixes;
+        Ok(())
+    })();
+    finish_publication(report, rich, budget)
 }

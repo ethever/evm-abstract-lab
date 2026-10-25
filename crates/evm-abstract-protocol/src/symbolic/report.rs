@@ -1,5 +1,6 @@
 //! Every graph and pool reference is checked before a consumer follows it.
 mod hybrid;
+mod minimum;
 mod process;
 mod regional;
 mod source;
@@ -357,12 +358,18 @@ impl AnalysisReport {
         if self.schema_version != crate::SCHEMA_VERSION {
             return Err(ReportValidationFailure::Schema(self.schema_version));
         }
-        if self.selected_graph().is_none() || (self.global.is_none() && self.native.is_none()) {
+        if self.selected_graph().is_none()
+            && self
+                .minimum
+                .as_ref()
+                .is_none_or(|minimum| minimum.namespace != self.selected_view)
+        {
             return Err(ReportValidationFailure::Hybrid(
                 crate::HybridValidationKind::Namespace,
             ));
         }
         self.validate_catalog()?;
+        self.validate_minimum()?;
         for graph in [&self.global, &self.native].into_iter().flatten() {
             graph.validate(&self.programs)?;
             if self.postprocessing_work > graph.metadata.postprocessing_max_work {
