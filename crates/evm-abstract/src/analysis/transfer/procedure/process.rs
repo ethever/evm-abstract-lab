@@ -58,6 +58,29 @@ impl<
         let capabilities = self.table.procedures[self.table.nodes[id].procedure]
             .process
             .expect("process admission retains capabilities");
+        let capabilities = if let Some(subject) = self.consumed {
+            let facts = self
+                .cooperation
+                .process_facts(
+                    subject,
+                    self.runtime,
+                    self.active
+                        .as_mut()
+                        .ok_or_else(|| MachineError::Shape.frontier_reason())?,
+                    self.budget,
+                )
+                .map_err(|error| self.cooperation.stop(error, self.budget).frontier_reason())?;
+            capabilities.refine(&facts).map_err(|error| {
+                self.cooperation
+                    .stop(
+                        crate::analysis::cooperation::CooperationError::Refinement(error),
+                        self.budget,
+                    )
+                    .frontier_reason()
+            })?
+        } else {
+            capabilities
+        };
         payload.pay_clone_with(self.budget)?;
         let mut result = super::super::empty_execution(payload.clone());
         self.reserve(64).map_err(MachineError::frontier_reason)?;

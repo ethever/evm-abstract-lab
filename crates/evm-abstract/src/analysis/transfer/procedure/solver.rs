@@ -39,11 +39,6 @@ impl<
     ) -> Result<EvmPayloadSummary<D::Element>, MachineError> {
         let runtime_process =
             self.policies.state.runtime_execution() == crate::analysis::RuntimeExecution::Process;
-        if runtime_process && X::ENABLED {
-            return Err(MachineError::Process(
-                crate::analysis::ProcessBoundary::CooperativeInputs,
-            ));
-        }
         if runtime_process {
             self.freeze_process_catalogue(&payload)?;
         }

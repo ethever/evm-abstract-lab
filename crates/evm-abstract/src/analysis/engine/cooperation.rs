@@ -36,6 +36,12 @@ pub(in crate::analysis) struct Borrowed<'a, X>(pub &'a mut X);
 impl<X: InputTasks> InputTasks for Borrowed<'_, X> {
     type Task = X::Task;
     const ENABLED: bool = X::ENABLED;
+    fn input_views(&self) -> public::InputViews {
+        self.0.input_views()
+    }
+    fn phase_scope(&self) -> public::PhaseScope {
+        self.0.phase_scope()
+    }
     fn registration_work(&self) -> usize {
         self.0.registration_work()
     }
@@ -113,6 +119,7 @@ pub(in crate::analysis) struct Cooperation<
     structure: Option<(analysis_kernel::SlotMeta<usize>, usize)>,
     dormant: BTreeMap<Point, Dormant>,
     owner_epochs: BTreeMap<JobId, usize>,
+    sources: BTreeMap<source::Owner, source::Source>,
     scope_owners: BTreeMap<analysis_kernel::Scope, JobId>,
     owner_points: BTreeMap<JobId, BTreeSet<Point>>,
     deferred: BTreeMap<JobId, analysis_kernel::ObligationId>,
@@ -125,6 +132,22 @@ pub(in crate::analysis) struct Cooperation<
 pub(in crate::analysis) type Empty = public::NoExtension;
 
 impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
+    pub fn validate_view(
+        &self,
+        requested: crate::analysis::RuntimeExecution,
+    ) -> Result<(), CooperationError<E>> {
+        if X::ENABLED
+            && requested == crate::analysis::RuntimeExecution::Process
+            && self.assembly.input_views() != public::InputViews::NativeAndProcess
+        {
+            return Err(CooperationError::UnsupportedView {
+                supported: self.assembly.input_views(),
+                requested,
+            });
+        }
+        Ok(())
+    }
+
     pub fn new(assembly: X) -> Self {
         Self {
             assembly,
@@ -137,6 +160,7 @@ impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
             structure: None,
             dormant: BTreeMap::new(),
             owner_epochs: BTreeMap::new(),
+            sources: BTreeMap::new(),
             scope_owners: BTreeMap::new(),
             owner_points: BTreeMap::new(),
             deferred: BTreeMap::new(),
@@ -603,7 +627,26 @@ impl<N: WordElement, X: Composition<N, Error = E>, E> Cooperation<N, X, E> {
             self.shared.as_mut().ok_or(KernelError::InvalidHandle)?,
             Subject { point, scope },
         )?;
+        let process = run.query(
+            &mut self
+                .shared
+                .as_mut()
+                .ok_or(KernelError::InvalidHandle)?
+                .process_refinements,
+            analysis_kernel::Scoped::new(scope, ()),
+        )?;
         *consumer = run.suspend();
+        let Availability::Value(process) = process.state else {
+            self.defer_owner(consumer_job, runtime, budget)?;
+            return Ok(LocalInput::Deferred);
+        };
+        if !process.is_empty()
+            && (point.namespace != 1
+                || point.kind != PointKind::Body
+                || binding.input.payload().active().key.process.is_none())
+        {
+            return Err(public::RefinementError::ProcessScope.into());
+        }
         let Availability::Value(facts) = answer.state else {
             self.defer_owner(consumer_job, runtime, budget)?;
             return Ok(LocalInput::Deferred);
@@ -653,6 +696,7 @@ mod observations;
 mod proof;
 mod readonly;
 mod seed;
+mod source;
 
 #[cfg(test)]
 mod tests;
