@@ -349,6 +349,7 @@ impl<
             _ => None,
         };
         let stored_payload = payload.clone_with_payment(self.budget)?;
+        self.table.regional_snapshot = None;
         PolicyContext::new(self.domain, self.entry, self.budget).reserve(0)?;
         let mut index = std::mem::take(&mut self.table.procedures_by_key);
         let created = index.insert_with((self.namespace, key), self.budget, |budget| {
@@ -476,6 +477,7 @@ impl<
                     .saturating_add(usize::from(from.is_some()))
                     .saturating_add(entry.as_ref().map_or(0, |_| 1)),
             )?;
+            self.table.regional_snapshot = None;
             let is_entry = entry.is_some();
             if let Some(entry) = entry {
                 self.publish_entry(procedure, entry)?;
@@ -585,6 +587,9 @@ impl<
         if let Some(entry) = entry {
             self.publish_entry(procedure, entry)?;
         }
+        if prepared.change == Change::Changed {
+            self.table.regional_snapshot = None;
+        }
         let node = &mut self.table.nodes[id];
         let procedure = &mut self.table.procedures[procedure];
         self.runtime.with_run(
@@ -648,6 +653,7 @@ impl<
             },
         )?;
         if changed {
+            self.table.regional_snapshot = None;
             // Losing an old entry universe invalidates its completion proof
             // even when this publication leaves the native output bound equal.
             self.observe_summary(procedure, false)?;
@@ -1484,6 +1490,7 @@ impl<
                 .map_err(kernel_failure)
             },
         )?;
+        self.table.regional_snapshot = None;
         self.observe_summary(procedure, false)?;
         Ok(())
     }
