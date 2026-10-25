@@ -6,8 +6,8 @@
 //! plan allocation/traversal is paid before work; no graph mutation precedes the
 //! last reservation and cancellation checkpoint. Identity tombstones are inert.
 
-use super::{FactId, JobState, Kernel, Meter, reserve, tree_work};
-use crate::{KernelError, Scope};
+use super::{FactId, JobState, Kernel, Meter, reserve};
+use crate::{KernelError, Scope, cost};
 use std::collections::BTreeSet;
 
 pub(super) struct Changes {
@@ -27,15 +27,9 @@ impl<J> Kernel<J> {
         let assumptions = &self.facts[id.index].assumptions;
         // Each scope can enter both sets at most once. The epoch's scope count
         // bounds lookup/insert/pop cost without scanning those scope records.
-        let edge_work = tree_work(self.scopes.len())
-            .saturating_mul(4)
-            .saturating_add(9); // includes the local directory-feedback filter
         reserve(
             meter,
-            assumptions
-                .len()
-                .saturating_mul(edge_work)
-                .saturating_add(4), // semantic seed / feedback classification
+            cost::semantic_seed_work(assumptions.len(), self.scopes.len()),
         )?;
         for scope in assumptions {
             meter.checkpoint().map_err(KernelError::Stopped)?;
@@ -82,12 +76,7 @@ impl<J> Kernel<J> {
             )?;
         }
         let maximum = stale.len().saturating_mul(2).saturating_add(ids.len());
-        reserve(
-            meter,
-            maximum
-                .saturating_mul(tree_work(maximum).saturating_add(3))
-                .saturating_add(1),
-        )?;
+        reserve(meter, cost::change_plan_work(maximum))?;
         let mut facts: BTreeSet<_> = ids.iter().copied().collect();
         let mut cost = extra;
         for scope in &stale {
@@ -110,13 +99,15 @@ impl<J> Kernel<J> {
                 return Err(KernelError::VersionExhausted);
             }
             wakes = wakes.saturating_add(self.facts[id.index].readers.len());
-            cost = cost.saturating_add(2);
         }
         // Duplicate readers and stale readers are deliberately over-reserved.
         // Batch enqueue pays geometric vector copying before the first wake.
-        cost = cost
-            .saturating_add(self.worklist.enqueue_work_for(wakes))
-            .saturating_add(wakes.saturating_mul(3));
+        cost = cost::change_install_work(
+            facts.len(),
+            wakes,
+            self.worklist.enqueue_work_for(wakes),
+            cost,
+        );
         reserve(meter, cost)?;
         meter.checkpoint().map_err(KernelError::Stopped)?;
         Ok(Changes { facts, stale })

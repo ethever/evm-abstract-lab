@@ -1,8 +1,8 @@
 //! Wake edges retain a monotone required subset for closure. Discovery never
 //! downgrades an earlier demand, and producer/validity subscriptions use the same
 //! mode as the originating observation. Semantic premises live separately.
-use super::{FactId, JobId, Kernel, Meter, ReadMode, reserve, tree_work};
-use crate::{KernelError, Scope};
+use super::{FactId, JobId, Kernel, Meter, ReadMode, reserve};
+use crate::{KernelError, Scope, cost};
 
 impl<J> Kernel<J> {
     pub(super) fn observe<M: Meter>(
@@ -22,15 +22,15 @@ impl<J> Kernel<J> {
     ) -> Result<(), KernelError<M::Stop>> {
         self.check_job(job)?;
         self.check_fact(id)?;
-        let mut cost = tree_work(self.jobs[job.index].reads.len())
-            .saturating_mul(2)
-            .saturating_add(tree_work(self.facts[id.index].readers.len()))
-            .saturating_add(2);
+        let mut cost = cost::observation_work(
+            self.jobs[job.index].reads.len(),
+            self.facts[id.index].readers.len(),
+        );
         if mode == ReadMode::Required {
-            cost = cost
-                .saturating_add(tree_work(self.jobs[job.index].required.len()))
-                .saturating_add(tree_work(self.facts[id.index].demands.len()))
-                .saturating_add(2);
+            cost = cost.saturating_add(cost::requirement_work(
+                self.jobs[job.index].required.len(),
+                self.facts[id.index].demands.len(),
+            ));
         }
         reserve(meter, cost)?;
         let new = self.jobs[job.index].reads.insert(id);

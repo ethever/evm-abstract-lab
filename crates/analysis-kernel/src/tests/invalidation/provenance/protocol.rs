@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn report_quote_includes_pending_jobs_readers_and_producer_family_coverage() {
+    use crate::cost::{self, ReportCounts};
+
+    let mut s = Scenario::new();
+    s.f.kernel
+        .register(s.f.unrelated, (), &mut s.f.meter)
+        .unwrap();
+    let stats = s.f.kernel.statistics();
+    let counts = ReportCounts {
+        pending: s.f.kernel.worklist().len(),
+        jobs: stats.jobs,
+        facts: stats.facts,
+        scopes: stats.scopes,
+        readers: stats.dependencies,
+        // Only A's world-scoped X has an external producer family. Both the
+        // retained numeric value and its family guard participate in reporting.
+        coverage: 1,
+    };
+    assert!(counts.pending > 0 && counts.readers > 0);
+    let before = s.f.meter.used;
+    let report = solve(&mut s.f.kernel, &mut Noop, &mut Nil, &mut s.f.meter, 0).unwrap();
+    assert_eq!(report.steps, 0);
+    assert_eq!(report.closure, s.f.kernel.closure());
+    assert_eq!(
+        s.f.meter.used - before,
+        cost::report_metadata_work(stats.facts) + cost::report_work(counts),
+        "public report quotes must cover the real nested producer/read traversal"
+    );
+}
+
+#[test]
 fn declared_producer_invalidation_and_replacement_withhold_x_until_equivalent_republication() {
     for producer_first in [false, true] {
         let mut s = Scenario::new();
