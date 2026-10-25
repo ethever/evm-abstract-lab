@@ -33,6 +33,7 @@ pub(super) struct Projection<'a, D: EvmNumericAlgebra> {
     publisher: Option<&'a crate::jobs::Publisher>,
     budget: &'a mut WorkBudget,
     published: Option<Published<D::Element>>,
+    failure: Option<api::ApiError>,
 }
 
 impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
@@ -54,50 +55,95 @@ impl<'a, D: EvmNumericAlgebra> Projection<'a, D> {
             publisher,
             budget,
             published: None,
+            failure: None,
         }
     }
 
     pub(super) fn finish(
         self,
         final_global: &HybridAnalysis<D::Element>,
-    ) -> Option<Arc<api::AnalysisReport>> {
-        self.published
-            .filter(|published| published.model.same_model(&final_global.baseline_handle()))
-            .map(|published| published.report)
+    ) -> Result<Option<Arc<api::AnalysisReport>>, api::ApiError> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        match self.published {
+            Some(published) if published.model.same_model(&final_global.baseline_handle()) => {
+                Ok(Some(published.report))
+            }
+            None if !final_global.coverage().baseline_current => Ok(None),
+            _ => Err(identity_error()),
+        }
+    }
+}
+
+fn identity_error() -> api::ApiError {
+    api::ApiError {
+        code: api::ApiErrorCode::Internal,
+        message: "required minimum does not retain the final Global producer".into(),
+        details: api::ErrorDetails::Report(api::ReportValidationFailure::Minimum(
+            api::MinimumValidationKind::Identity,
+        )),
     }
 }
 
 impl<D: EvmNumericAlgebra> StagePublisher<D::Element> for Projection<'_, D> {
     fn publish(&mut self, model: &HybridAnalysis<D::Element>) {
-        let Some(publisher) = self.publisher else {
+        if self.published.is_some() || self.failure.is_some() {
             return;
-        };
-        // Projection has its own persistent application allowance. An optional
-        // display failure cannot poison execution or revoke model closure.
-        // Final projection returns its own error if delivery remains impossible.
-        if let Ok(mut report) = report::minimum::project(
-            model,
-            self.algebra,
-            self.control,
-            self.budget,
-            report::ProjectionInput {
-                request: self.request,
-                scope: self.scope,
-                numeric_model: self.numeric_model,
-            },
-        ) {
+        }
+        // The minimum is mandatory even for synchronous callers. Remember its
+        // first refusal: a smaller later charge or a rich-only export cannot
+        // bypass a failed required stage on this same payer.
+        let prepared = (|| {
+            let mut report = report::minimum::project(
+                model,
+                self.algebra,
+                self.control,
+                self.budget,
+                report::ProjectionInput {
+                    request: self.request,
+                    scope: self.scope,
+                    numeric_model: self.numeric_model,
+                },
+            )?;
             report.timings = super::timing::project(self.control.observer().timing(), 0);
-            if self.budget.charge(2) {
-                report.postprocessing_work = self.budget.used() as u64;
-                let report = Arc::new(report);
-                if publisher.publish_shared(Arc::clone(&report)) {
-                    self.published = Some(Published {
-                        model: model.baseline_handle(),
-                        report,
-                    });
-                }
+            if !self.budget.charge(2) {
+                let minimum = report.minimum.as_ref().ok_or_else(identity_error)?;
+                return Err(api::ApiError {
+                    code: api::ApiErrorCode::Export,
+                    message: "required minimum retention exceeds the postprocessing allowance"
+                        .into(),
+                    details: api::ErrorDetails::Export(Box::new(api::ExportFailure {
+                        kind: api::ExportFailureKind::Work,
+                        required: 2,
+                        limits: minimum.export_limits,
+                        usage: minimum.export_usage,
+                        written: None,
+                    })),
+                });
             }
+            report.postprocessing_work = self.budget.used() as u64;
+            let report = Arc::new(report);
+            if let Some(publisher) = self.publisher
+                && !publisher.publish_shared(Arc::clone(&report))
+            {
+                return Err(crate::jobs::worker_error(
+                    api::WorkerErrorKind::Channel,
+                    "required minimum publication was not retained",
+                ));
+            }
+            Ok(Published {
+                model: model.baseline_handle(),
+                report,
+            })
+        })();
+        match prepared {
+            Ok(published) => self.published = Some(published),
+            Err(error) => self.failure = Some(error),
         }
         self.control.observer().phase(Phase::Analyzing);
     }
 }
+
+#[cfg(test)]
+mod tests;

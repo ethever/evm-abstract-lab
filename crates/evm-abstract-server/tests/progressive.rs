@@ -469,7 +469,10 @@ async fn exact_rich_graph_reuse_preserves_both_namespace_versions() {
         retained.publication.native_version,
         Some(PublicationVersion(DecimalU64(1)))
     );
-    assert!(retained.publication.minimum_version.is_none());
+    assert_eq!(
+        retained.publication.minimum_version,
+        Some(PublicationVersion(DecimalU64(1)))
+    );
     stop.send(()).unwrap();
     task.await.unwrap();
     pool.shutdown().unwrap();
@@ -485,6 +488,7 @@ impl Executor for PureNative {
     ) -> Result<evm_abstract_protocol::AnalysisReport, ApiError> {
         let mut report = evm_abstract_server::analyze::analyze_with_control(request, control)?;
         report.global = None;
+        report.minimum = None;
         report.hybrid = None;
         report.selected_view = AnalysisNamespace::Native;
         report.status = report.native.as_ref().unwrap().status;
@@ -769,6 +773,40 @@ async fn real_optional_rich_work_refusal_keeps_the_paid_minimum_over_http() {
         limit as u64
     );
     assert!(refused.report.postprocessing_work <= limit as u64);
+    stop.send(()).unwrap();
+    task.await.unwrap();
+    pool.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn required_minimum_payment_failure_never_returns_a_rich_only_success() {
+    let pool = Pool::with_postprocess_work(config(), Default::default(), 1).unwrap();
+    let (base, stop, task) = server(&pool).await;
+    let client = reqwest::Client::new();
+    let job = client
+        .post(format!("{base}/api/tasks"))
+        .json(&AnalyzeRequest::default())
+        .send()
+        .await
+        .unwrap()
+        .json::<JobReply>()
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    let failed = terminal(&client, &base, job.id).await;
+    let JobState::Failed(error) = failed.state else {
+        panic!("mandatory payment refusal was bypassed")
+    };
+    assert_eq!(error.code, evm_abstract_protocol::ApiErrorCode::Export);
+    assert!(failed.publication.is_none());
+    let response = client
+        .get(format!("{base}/api/tasks/{}/result", job.id))
+        .send()
+        .await
+        .unwrap();
+    let reply = response.json::<JobResultReply>().await.unwrap();
+    assert_eq!(reply.result.unwrap_err(), error);
     stop.send(()).unwrap();
     task.await.unwrap();
     pool.shutdown().unwrap();

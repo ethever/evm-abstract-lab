@@ -220,7 +220,7 @@ fn run_typed<D: EvmNumericAlgebra>(
                     &mut staged,
                 )
                 .map_err(errors::execution)?;
-            let retained = staged.finish(&hybrid);
+            let retained = staged.finish(&hybrid)?;
             report::hybrid::project_with_retained_global(
                 &hybrid,
                 &algebra,
@@ -262,7 +262,7 @@ fn run_typed<D: EvmNumericAlgebra>(
                 &mut staged,
             )
             .map_err(rpc_error)?;
-            let retained = staged.finish(hybrid.baseline());
+            let retained = staged.finish(hybrid.baseline())?;
             report::hybrid::rpc::project_with_retained_global(
                 hybrid,
                 &algebra,
