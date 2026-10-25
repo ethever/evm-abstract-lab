@@ -607,12 +607,14 @@ impl Workspace {
             return;
         }
         if let Err(failure) = report.validate() {
-            self.task
-                .fail(TaskError::Api(evm_abstract_protocol::ApiError {
+            self.task.reject_result(
+                publication.as_ref().map(|publication| publication.version),
+                TaskError::Api(evm_abstract_protocol::ApiError {
                     code: evm_abstract_protocol::ApiErrorCode::WorkerFailed,
                     message: failure.to_string(),
                     details: evm_abstract_protocol::ErrorDetails::Report(failure),
-                }));
+                }),
+            );
             return;
         }
         let replacement =

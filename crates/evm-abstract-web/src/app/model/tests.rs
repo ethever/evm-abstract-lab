@@ -432,70 +432,86 @@ fn a_reused_server_job_id_and_version_in_a_new_submission_still_replace_the_scen
 
 #[test]
 fn invalid_staged_contents_keep_native_cancellable_and_recover_only_on_a_new_version() {
-    let mut workspace = Workspace::default();
-    workspace.receive(Ok(AnalyzeReply {
-        result: Ok(crate::tests::report().into()),
-    }));
-    let old = workspace.report.clone();
-    workspace.initial_command();
-    let version = publication(1, None, Some(1));
-    status(
-        &mut workspace,
-        evm_abstract_protocol::JobState::Running,
-        version.clone(),
-    );
-    let (generation, id) = fetch(&mut workspace, 0.0);
-    let mut invalid: AnalysisReport = crate::tests::report().into();
-    invalid.schema_version = 0;
-    result(&mut workspace, generation, id, version, invalid);
-    assert_eq!(workspace.report, old);
-    assert!(workspace.previous_report);
-    assert!(workspace.task.cancellable());
-    assert!(workspace.task.needs_refresh());
-    assert!(workspace.task.next_command(0.0).is_none());
-    assert!(matches!(
-        workspace.task.next_command(1.1),
-        Some(super::super::Command::Poll { .. })
-    ));
-    let version = publication(2, None, Some(2));
-    status(
-        &mut workspace,
-        evm_abstract_protocol::JobState::Completed,
-        version.clone(),
-    );
-    let (generation, id) = fetch(&mut workspace, 2.0);
-    result(
-        &mut workspace,
-        generation,
-        id,
-        version,
-        crate::tests::report().into(),
-    );
-    assert_eq!(workspace.task.phase, super::super::TaskPhase::Ready);
-    assert!(!workspace.previous_report);
-    assert!(workspace.task.error.is_none());
+    for structural in [false, true] {
+        let mut workspace = Workspace::default();
+        workspace.receive(Ok(AnalyzeReply {
+            result: Ok(crate::tests::report().into()),
+        }));
+        let old = workspace.report.clone();
+        workspace.initial_command();
+        let version = publication(1, None, Some(1));
+        status(
+            &mut workspace,
+            evm_abstract_protocol::JobState::Running,
+            version.clone(),
+        );
+        let (generation, id) = fetch(&mut workspace, 0.0);
+        let mut invalid: AnalysisReport = crate::tests::report().into();
+        if structural {
+            std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+                .metadata
+                .postprocessing_max_work = 0;
+        } else {
+            invalid.schema_version = 0;
+        }
+        result(&mut workspace, generation, id, version, invalid);
+        assert_eq!(workspace.report, old);
+        assert!(workspace.previous_report);
+        assert!(workspace.task.cancellable());
+        assert!(workspace.task.needs_refresh());
+        assert!(workspace.task.next_command(0.0).is_none());
+        assert!(matches!(
+            workspace.task.next_command(1.1),
+            Some(super::super::Command::Poll { .. })
+        ));
+        let version = publication(2, None, Some(2));
+        status(
+            &mut workspace,
+            evm_abstract_protocol::JobState::Completed,
+            version.clone(),
+        );
+        let (generation, id) = fetch(&mut workspace, 2.0);
+        result(
+            &mut workspace,
+            generation,
+            id,
+            version,
+            crate::tests::report().into(),
+        );
+        assert_eq!(workspace.task.phase, super::super::TaskPhase::Ready);
+        assert!(!workspace.previous_report);
+        assert!(workspace.task.error.is_none());
+    }
 }
 
 #[test]
 fn invalid_final_publication_stops_download_retries_without_erasing_the_previous_report() {
-    let mut workspace = Workspace::default();
-    workspace.receive(Ok(AnalyzeReply {
-        result: Ok(crate::tests::report().into()),
-    }));
-    let old = workspace.report.clone();
-    workspace.initial_command();
-    let version = publication(1, None, Some(1));
-    status(
-        &mut workspace,
-        evm_abstract_protocol::JobState::Completed,
-        version.clone(),
-    );
-    let (generation, id) = fetch(&mut workspace, 0.0);
-    let mut invalid: AnalysisReport = crate::tests::report().into();
-    invalid.schema_version = 0;
-    result(&mut workspace, generation, id, version, invalid);
-    assert_eq!(workspace.report, old);
-    assert_eq!(workspace.task.phase, super::super::TaskPhase::Failed);
-    assert!(!workspace.task.needs_refresh());
-    assert!(workspace.task.next_command(10.0).is_none());
+    for structural in [false, true] {
+        let mut workspace = Workspace::default();
+        workspace.receive(Ok(AnalyzeReply {
+            result: Ok(crate::tests::report().into()),
+        }));
+        let old = workspace.report.clone();
+        workspace.initial_command();
+        let version = publication(1, None, Some(1));
+        status(
+            &mut workspace,
+            evm_abstract_protocol::JobState::Completed,
+            version.clone(),
+        );
+        let (generation, id) = fetch(&mut workspace, 0.0);
+        let mut invalid: AnalysisReport = crate::tests::report().into();
+        if structural {
+            std::sync::Arc::make_mut(invalid.native.as_mut().unwrap())
+                .metadata
+                .postprocessing_max_work = 0;
+        } else {
+            invalid.schema_version = 0;
+        }
+        result(&mut workspace, generation, id, version, invalid);
+        assert_eq!(workspace.report, old);
+        assert_eq!(workspace.task.phase, super::super::TaskPhase::Failed);
+        assert!(!workspace.task.needs_refresh());
+        assert!(workspace.task.next_command(10.0).is_none());
+    }
 }
