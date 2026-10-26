@@ -6,9 +6,9 @@ mod original;
 mod stores;
 
 #[cfg(test)]
-use super::{InspectionAction, InspectionTarget};
+use super::{InspectionAction, InspectionTarget, OriginalAccount};
 
-use super::{Inspector, OriginalAccount, Tab, process, scroll, summaries, value};
+use super::{Inspector, Tab, process, scroll, summaries, value};
 use crate::{
     app::minimum::{self, Selection},
     controls::{self, Density},

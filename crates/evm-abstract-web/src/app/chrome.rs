@@ -3,7 +3,7 @@
 use super::{View, Workspace};
 use crate::{
     controls::{self, Density},
-    notation, palette,
+    palette,
 };
 use egui::{RichText, Ui};
 
