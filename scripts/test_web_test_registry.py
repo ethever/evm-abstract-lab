@@ -845,5 +845,64 @@ class ReportWireTests(unittest.TestCase):
             harness.measured_backend_timings(report, require_ssa=False)
 
 
+class NativeContextAdmissionTests(unittest.TestCase):
+    @staticmethod
+    def report():
+        # A source-derived wire fragment: the real entry ID is deliberately
+        # nonzero, and state0 is a different suspended invocation.
+        address, digest = "0x" + "11" * 20, "0x" + "ab" * 32
+        frame = dict(process=None, index=0, program=7, continuation=None, context=[], stack=[],
+                     basic_block=3, storage_address=address, code_address=address, code_hash=digest,
+                     is_static=False, kind="Runtime", caller={"Concrete": "0x" + "22" * 20},
+                     address_value={"Concrete": address})
+        node = dict(process=None, id=47, program=7, frame_depth=1, context=[], entry_stack=[],
+                    basic_block=3, start_pc=0, storage_address=address, code_address=address)
+        return dict(programs=[dict(id=7, code_address=address, code_hash=digest, kind="Runtime",
+                                   blocks=[dict(id=3, start_pc=0)])], native=dict(
+            metadata=dict(root_program=7, entry_address=address, environment=dict(
+                is_static=False, caller=frame["caller"], to=frame["address_value"])),
+            cfg=[dict(node, id=0, frame_depth=2), node],
+            states=[dict(state=0, entry=dict(frames=[frame, frame])),
+                    dict(state=47, entry=dict(frames=[frame]))]))
+
+    def test_native_entry_is_an_actual_qualified_invocation_not_state_zero(self):
+        from web_test_hybrid import native_entry_context
+        report = self.report()
+        self.assertIs(native_entry_context(report), report["native"]["cfg"][1])
+        self.assertEqual(native_entry_context(report)["id"], 47)
+
+    def test_missing_ambiguous_or_wrong_root_evidence_cannot_supply_a_context(self):
+        from web_test_hybrid import native_entry_context
+        for field in ["missing-frame", "duplicate-frame", "duplicate-root", "caller", "owner", "static",
+                      "code-hash", "source", "address-condition", "bool-state", "no-native"]:
+            report = self.report()
+            native = report["native"]
+            frame = native["states"][1]["entry"]["frames"][0]
+            if field == "missing-frame":
+                native["states"].pop()
+            elif field == "duplicate-frame":
+                native["states"].append(deepcopy(native["states"][1]))
+            elif field == "duplicate-root":
+                native["cfg"].append(dict(native["cfg"][1], id=48))
+                native["states"].append(dict(state=48, entry=dict(frames=[deepcopy(frame)])))
+            elif field == "source":
+                frame["program"] = 91
+            elif field == "bool-state":
+                native["cfg"][1]["id"] = True
+            elif field == "no-native":
+                report["native"] = None
+            else:
+                key, value = {
+                    "caller": ("caller", {"Concrete": "0x" + "33" * 20}),
+                    "owner": ("storage_address", "0x" + "33" * 20),
+                    "static": ("is_static", True),
+                    "code-hash": ("code_hash", "0x" + "cd" * 32),
+                    "address-condition": ("address_value", {"Symbolic": {"kind": "Address"}}),
+                }[field]
+                frame[key] = value
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                native_entry_context(report)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,53 @@ def source_program(report, program_id):
     return matches[0]
 
 
+def native_entry_context(report):
+    """Resolve the actual root invocation for an explicit Native-context pick.
+
+    This is a test consumer of retained frame evidence. A source row, a MAY
+    receipt or an arbitrary state ordinal cannot supply the missing context.
+    """
+    native = graph(report, "Native")
+    assert native is not None, "no Native publication"
+    metadata = native["metadata"]
+    root = metadata["root_program"]
+    program = None if root is None else source_program(report, root)
+    first = None if program is None or not program["blocks"] else program["blocks"][0]
+    assert all(type(state["state"]) is int and state["state"] >= 0 for state in native["states"])
+    snapshots = {state["state"]: state for state in native["states"]}
+    assert len(snapshots) == len(native["states"]), "duplicate Native snapshots"
+    candidates = []
+    for node in native["cfg"]:
+        assert type(node["id"]) is int and node["id"] >= 0, node
+        if (node["process"] is not None or node["program"] != root
+                or node["frame_depth"] != 1 or node["context"] != [] or node["entry_stack"] != []
+                or node["basic_block"] != (None if first is None else first["id"])
+                or node["start_pc"] != (None if first is None else first["start_pc"])):
+            continue
+        snapshot = snapshots.get(node["id"])
+        assert snapshot is not None, ("Native root has no retained frame", node)
+        frames = snapshot["entry"]["frames"]
+        if len(frames) != 1:
+            continue
+        frame = frames[0]
+        if (frame["process"] is not None or frame["index"] != 0 or frame["program"] != root
+                or frame["continuation"] is not None or frame["context"] != [] or frame["stack"] != []):
+            continue
+        assert frame["basic_block"] == node["basic_block"], (node, frame)
+        assert frame["storage_address"] == node["storage_address"] == metadata["entry_address"], (node, frame)
+        assert frame["code_address"] == node["code_address"], (node, frame)
+        assert type(frame["is_static"]) is bool and type(metadata["environment"]["is_static"]) is bool, frame
+        assert frame["is_static"] == metadata["environment"]["is_static"], frame
+        assert frame["caller"] == metadata["environment"]["caller"], frame
+        assert frame["address_value"] == metadata["environment"]["to"], frame
+        if program is not None:
+            assert frame["code_hash"] == program["code_hash"] and frame["kind"] == program["kind"], frame
+            assert frame["code_address"] == program["code_address"], frame
+        candidates.append(node)
+    assert len(candidates) == 1, f"expected one qualified Native root invocation: {candidates}"
+    return candidates[0]
+
+
 def _assert_program_source(program, source):
     (kind, identity), = source.items()
     assert kind in {"InputProgram", "Runtime", "InitCode"}, kind

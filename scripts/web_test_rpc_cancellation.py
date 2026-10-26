@@ -3,7 +3,7 @@
 from pathlib import Path
 from playwright.sync_api import expect
 import re
-from web_test_harness import observe_webgpu
+from web_test_harness import click_control, observe_webgpu
 from web_test_rpc_helpers import automatic_rpc_entry, configured_rpc_server, submit_rpc, visible_seconds, wait_for_job
 
 
@@ -41,7 +41,7 @@ def cancellation_interactions(browser, url: str, output: Path, rpc, providers):
     assert held_polls, "fixture did not hold an actual browser status fetch"
     canvas.screenshot(path=str(output / "cancel-pending.png"))
     with page.expect_response(lambda response: response.request.method == "DELETE" and "/api/tasks/" in response.url) as cancelled:
-        canvas.click(position={"x": 30, "y": 988})
+        click_control(page, canvas, "Cancel", role="action")
     assert cancelled.value.ok
     assert cancelled.value.json()["result"]["Ok"]["state"] == "Cancelling"
     assert rpc.disconnected.wait(5), "cooperative cancellation did not close pending acquisition"
