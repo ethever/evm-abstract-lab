@@ -246,7 +246,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             bytecode = "\n".join(f"60{index:02x}" for index in range(70)) + "\n00"
             editor_region = (4, 123, 1436, 970)
             before_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-before-f", editor_region)
-            open_input(page)
+            open_input(page, mode="Bytecode")
             page.keyboard.press("Control+A")
             page.keyboard.type(bytecode, delay=5)
             settle_gesture(page)
@@ -263,7 +263,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             settle_gesture(page)
             after_typing = node_snapshot(page, canvas, output, f"{prefix}-editor-after-f", editor_region)
             assert_translation(before_typing, after_typing, 0, 0)
-            open_input(page)
+            open_input(page, mode="Bytecode")
             with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
                 page.keyboard.press("Control+Enter")
             reply = complete_submission(page, response.value, namespace="Native")
