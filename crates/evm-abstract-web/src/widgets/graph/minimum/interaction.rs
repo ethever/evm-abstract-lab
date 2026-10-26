@@ -50,6 +50,13 @@ impl Graph {
                     &text.title,
                 )
             });
+            crate::controls::observe(
+                ui,
+                &hit,
+                &text.title,
+                "graph-node",
+                Some(super::card_selected(card, selection)),
+            );
             paint_card(
                 painter,
                 rect,
@@ -82,6 +89,7 @@ impl Graph {
                 hit.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
                 });
+                crate::controls::observe(ui, &hit, &label, "graph-receipts", None);
                 if footer.intersects(canvas) {
                     painter.with_clip_rect(rect.intersect(canvas)).text(
                         footer.center(),
@@ -108,6 +116,7 @@ impl Graph {
                         "Open targets",
                     )
                 });
+                crate::controls::observe(ui, &hit, "Targets →", "graph-targets", None);
                 if footer.intersects(canvas) {
                     painter.with_clip_rect(rect.intersect(canvas)).text(
                         footer.center(),

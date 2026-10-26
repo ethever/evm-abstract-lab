@@ -51,6 +51,7 @@ impl Graph {
             Sense::click_and_drag(),
         );
         let canvas = response.rect;
+        crate::controls::observe(ui, &response, "CFG canvas", "graph-canvas", None);
         painter.rect_filled(canvas, 3.0, palette::BACKGROUND);
         if self.scene.nodes.is_empty()
             && let Some(index) = &self.scene.index
@@ -236,6 +237,13 @@ impl Graph {
                     &content.title,
                 )
             });
+            crate::controls::observe(
+                ui,
+                &hit,
+                &content.title,
+                "graph-node",
+                Some(selected_node == Some(id)),
+            );
             paint::node(
                 &painter,
                 rect,

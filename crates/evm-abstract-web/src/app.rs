@@ -611,6 +611,25 @@ impl Workspace {
                 return self.minimum_status(report, minimum);
             }
             let report = &self.report_view.shown(report);
+            let inspection = if self
+                .original_inspection
+                .as_ref()
+                .is_some_and(|subject| subject.view == self.report_view.identity())
+            {
+                format!(
+                    "Inspector: {} · Original observations",
+                    self.inspector.tab.label()
+                )
+            } else if self
+                .report_view
+                .navigator()
+                .current()
+                .is_some_and(|location| location.focus.context.is_none())
+            {
+                format!("Inspector: {} · Source only", self.inspector.tab.label())
+            } else {
+                self.inspector.accessible_summary(report, self.selection)
+            };
             return format!(
                 "{}: {} instructions, {} CFG states, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}; {}; SSA details: {:?}",
                 self.task_label(),
@@ -638,7 +657,7 @@ impl Workspace {
                 self.program
                     .map_or("none".into(), |program| Symbol::Program(program)
                         .to_string()),
-                self.inspector.accessible_summary(report, self.selection),
+                inspection,
                 self.graph.accessible_summary(),
                 self.ssa_display
             );
