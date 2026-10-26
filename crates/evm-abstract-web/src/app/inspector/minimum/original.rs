@@ -11,6 +11,33 @@ pub(super) fn show(
     model: &MinimumModel,
     selected: &mut Selection,
 ) {
+    environment(ui, model);
+    ui.collapsing("Original accounts and root template", |ui| {
+        accounts(ui, model, selected);
+    });
+    ui.collapsing("Model qualification and policy", |ui| {
+        if let Some(policy) = crate::app::hybrid::source_policy(report) {
+            ui.label(policy);
+        }
+        ui.monospace(format!(
+            "Source: {:?} · facts {}",
+            model.source_snapshot, model.revision
+        ));
+        ui.monospace(&model.fingerprint);
+        ui.label(format!(
+            "{:?} · {:?} · current: {}",
+            model.fork, model.numeric_model, model.current
+        ));
+        ui.monospace(format!("{:?}", model.domain_spec));
+        ui.monospace(format!("{:?}", model.config));
+        ui.label(format!(
+            "Minimum projection work {} · application allowance {}",
+            model.export_usage.work, model.postprocessing_max_work
+        ));
+    });
+}
+
+pub(in crate::app::inspector) fn environment(ui: &mut Ui, model: &MinimumModel) {
     ui.label("Original input observations");
     ui.label("These rows precede analysis effects; procedure inputs may join additional invocation states.");
     egui::Grid::new("minimum_original_environment")
@@ -58,29 +85,6 @@ pub(super) fn show(
     ui.collapsing("Original calldata", |ui| {
         bytes(ui, &model.environment.calldata)
     });
-    ui.collapsing("Original accounts and root template", |ui| {
-        accounts(ui, model, selected);
-    });
-    ui.collapsing("Model qualification and policy", |ui| {
-        if let Some(policy) = crate::app::hybrid::source_policy(report) {
-            ui.label(policy);
-        }
-        ui.monospace(format!(
-            "Source: {:?} · facts {}",
-            model.source_snapshot, model.revision
-        ));
-        ui.monospace(&model.fingerprint);
-        ui.label(format!(
-            "{:?} · {:?} · current: {}",
-            model.fork, model.numeric_model, model.current
-        ));
-        ui.monospace(format!("{:?}", model.domain_spec));
-        ui.monospace(format!("{:?}", model.config));
-        ui.label(format!(
-            "Minimum projection work {} · application allowance {}",
-            model.export_usage.work, model.postprocessing_max_work
-        ));
-    });
 }
 
 fn accounts(ui: &mut Ui, model: &MinimumModel, selected: &mut Selection) {
@@ -111,7 +115,10 @@ fn accounts(ui: &mut Ui, model: &MinimumModel, selected: &mut Selection) {
                 }
             });
         });
-    let account = &model.accounts[chosen];
+    account(ui, &model.accounts[chosen]);
+}
+
+pub(in crate::app::inspector) fn account(ui: &mut Ui, account: &api::MinimumInputAccount) {
     ui.push_id(&account.address, |ui| {
         egui::CollapsingHeader::new(format!(
             "{} · {}", account.address,

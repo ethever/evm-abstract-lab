@@ -5,6 +5,8 @@ use super::*;
 use crate::app::minimum;
 use std::sync::OnceLock;
 
+mod original;
+
 fn report() -> &'static api::AnalysisReport {
     static REPORT: OnceLock<api::AnalysisReport> = OnceLock::new();
     REPORT.get_or_init(|| {

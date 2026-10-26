@@ -4,7 +4,7 @@ use super::value;
 use egui::Ui;
 use evm_abstract_protocol::{self as api, MinimumByteArray, MinimumByteContent};
 
-pub(super) fn show(ui: &mut Ui, data: &MinimumByteArray) {
+pub(in crate::app::inspector) fn show(ui: &mut Ui, data: &MinimumByteArray) {
     egui::Grid::new("minimum_bytes_length")
         .num_columns(2)
         .show(ui, |ui| {

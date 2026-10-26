@@ -11,10 +11,22 @@ pub(in crate::app) enum InspectionSource<'a> {
     Process(&'a ProcessSource),
 }
 
+/// Original input identity, independent of any execution or procedure context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum OriginalAccount<'a> {
+    Root,
+    Minimum(usize),
+    Address(&'a str),
+}
+
 pub(in crate::app) enum InspectionTarget<'a, 'report> {
     Source {
         report: &'a AnalysisReport,
         source: InspectionSource<'a>,
+    },
+    Original {
+        report: &'a AnalysisReport,
+        account: OriginalAccount<'a>,
     },
     Native {
         report: &'a ReportView<'report>,
@@ -53,6 +65,10 @@ impl Inspector {
         let action = match target {
             InspectionTarget::Source { report, source } => {
                 self.source_contents(&mut contents, report, source);
+                None
+            }
+            InspectionTarget::Original { report, account } => {
+                self.original_contents(&mut contents, report, account);
                 None
             }
             InspectionTarget::Native {
