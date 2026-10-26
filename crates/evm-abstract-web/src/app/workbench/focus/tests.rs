@@ -2,6 +2,62 @@ use crate::app::model::navigation::{Focus, Intent, NavigationError};
 use crate::app::{Selection, View};
 
 #[test]
+fn selecting_a_native_state_keeps_the_explicit_all_programs_scene() {
+    let mut workspace = crate::tests::ready();
+    workspace.view = View::Graph;
+    let context = egui::Context::default();
+    crate::palette::configure(&context);
+    let draw = |workspace: &mut crate::Workspace| {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                workspace.show(ui);
+            },
+        );
+        output.textures_delta.clear();
+    };
+    draw(&mut workspace);
+    workspace.graph.set_program_scope(None);
+    draw(&mut workspace);
+    assert!(
+        workspace
+            .graph
+            .accessible_summary()
+            .contains("All programs")
+    );
+    let camera = workspace.graph.camera();
+    let selected = Selection {
+        state: Some(2),
+        pc: None,
+        value: None,
+    };
+    workspace.accept_native_selection(selected);
+    assert_eq!(workspace.selection, selected);
+    assert!(
+        workspace
+            .graph
+            .accessible_summary()
+            .contains("All programs"),
+        "Select must not invalidate the scene and close its instance picker"
+    );
+    assert_eq!(workspace.graph.camera(), camera);
+    draw(&mut workspace);
+    assert!(
+        workspace
+            .graph
+            .accessible_summary()
+            .contains("All programs")
+    );
+    assert_eq!(workspace.graph.camera(), camera);
+}
+
+#[test]
 fn invalid_legacy_selection_restores_the_canonical_context_without_history() {
     let mut workspace = crate::tests::ready();
     let current = workspace.report_view.navigator().current().unwrap().clone();

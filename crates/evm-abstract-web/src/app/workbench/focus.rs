@@ -47,6 +47,9 @@ impl Workspace {
 
     fn apply_location(&mut self, location: Location) {
         self.apply_focus(&location.focus);
+        // Opening a location follows its source. Selecting within the current
+        // scene keeps the user's filter and any open Native instance picker.
+        self.graph.set_program_scope(self.program);
         if let Some(camera) = location.camera {
             self.graph
                 .restore_camera(camera.zoom, egui::vec2(camera.pan[0], camera.pan[1]));
@@ -59,7 +62,6 @@ impl Workspace {
         self.graph.activate(focus.view);
         self.ssa_cache.activate(focus.view);
         self.program = focus.source.as_ref().and_then(|source| source.program());
-        self.graph.set_program_scope(self.program);
         self.account = None;
         self.original_inspection = None;
         self.restore_adapters(focus);
