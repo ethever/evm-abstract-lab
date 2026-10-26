@@ -299,16 +299,16 @@ nix run . -- analyze --world /tmp/storage-experiment.json --evm.to 0x00000000000
 
 ## 13. 判断部分 SSA 究竟记录到了哪里
 
-打开 [partial-ssa-memory.json](../examples/partial-ssa-memory.json)，先手写五条指令的正常栈变化，再按 [04 的实验命令](04-ssa.md#从块中途停下的实际输出开始)分别使用 1 和 32 字节内存上限。不要先看答案，预测四件事：MLOAD 是否有结果名字；ADD 是否出现于 SSA 正文；记录处的栈还剩什么；分析状态与退出码是什么。
+打开 [partial-ssa-memory.json](../examples/partial-ssa-memory.json)，先手写五条指令的正常栈变化，再按 [04 的实验命令](04-ssa.md#从块中途停下的实际输出开始)分别使用 2,000,000 work 与应用默认 work，保持具体字节提取上限为 1。不要先看答案，预测四件事：MLOAD 是否有结果名字；ADD 是否出现于 SSA 正文；记录处的栈还剩什么；分析状态与退出码是什么。
 
 接着运行 [partial φ 示例](04-ssa.md#部分-φ-的输入覆盖哪些边)，找到一条 `Tᵢ` 边及接收它的入口 φ，回答：输入列表只有一项，能否证明以后不会再发现别的入边？整张图 Incomplete，是否意味着每个块都只执行到中间？
 
 <details><summary>提示与验收</summary>
 
-| 内存上限 | MLOAD 和后续指令的证据 | 栈与完成状态 |
+| 执行 work 上限 | MLOAD 和后续指令的证据 | 栈与完成状态 |
 | --- | --- | --- |
-| 1 | MLOAD 为 OperandsConsumed，消费偏移名字 `%1`，没有结果；ADD、STOP 未分析到 | `recorded prefix stack: f₀: [%0]`，其中 `%0` 是之前的常量 1；Incomplete、退出 2 |
-| 32 | MLOAD 定义 `%2`，ADD 定义 `%3`，STOP 已记录 | 块末栈为 `[%3]`；Converged、退出 0 |
+| 2,000,000 | Native 的 MLOAD 为 OperandsConsumed，消费偏移名字 `%1`，没有结果；ADD、STOP 未分析到 | `recorded prefix stack: f₀: [%0]`；Native Incomplete、全局 Converged、退出 0 |
+| 默认 2,000,000,000 | Native 的 MLOAD 定义 `%2`，ADD 定义 `%3`，STOP 已记录 | 块末栈为 `[%3]`；Native 与全局均 Converged、退出 0 |
 
 `recorded prefix stack` 是当前记录阶段的栈，不承诺最后一条指令已经正常完成。φ 的 `T: %value` 项只说明沿该条已支持边传入哪个名字；当前实现未为 Incomplete 图中的每个块分别证明入边完整。单输入 φ 也可能只是未简化的入口命名。已记录到块末尾的路径可以与其他路径的前沿同时存在。
 

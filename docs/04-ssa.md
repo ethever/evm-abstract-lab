@@ -138,7 +138,7 @@ nix run . -- ssa --file examples/copy-identity.hex --context-depth 0
 | 固定输入符号 | 同一环境为根帧 calldata、caller/origin 等固定输入保留身份 | 身份一致时可跨块保留；不同环境、不同偏移或不相关子帧输入不能混同 |
 | Provenance 来源标签 | 读取建立观察位置的类别，纯运算合并输入来源 | 描述可能来源；两个值同属 Calldata 或 Storage 不证明相等 |
 
-临时复制身份不等于 `%n`，不会序列化进 JSON；传统 `ValueIdentity` 的固定输入名称展示省略环境 scope。Native schema 15 的符号图另行保留 `Input.scope` 与 producer `identity_scope`：同一报告内用它们和输入名称一起辨认固定输入，不能据此推断不同报告中的输入相等，见[符号状态导出](17-symbolic-state.md)。临时身份也不使两个相同抽象摘要自动成为同一个运行时值。当前完整 SSA 在 CFG 完成后生成，不能再将 φ 的来源关系反馈给前面的工作表，替它恢复任意槽位配对、分支约束或内存别名。组件交换的完整边界见[第 12 课](12-product-domains-facts.md)。
+临时复制身份不等于 `%n`，不会序列化进 JSON；传统 `ValueIdentity` 的固定输入名称展示省略环境 scope。当前[原生格式](../crates/evm-abstract/src/analysis.rs)的符号图另行保留 `Input.scope` 与 producer `identity_scope`：同一报告内用它们和输入名称一起辨认固定输入，不能据此推断不同报告中的输入相等，见[符号状态导出](17-symbolic-state.md)。临时身份也不使两个相同抽象摘要自动成为同一个运行时值。当前完整 SSA 在 CFG 完成后生成，不能再将 φ 的来源关系反馈给前面的工作表，替它恢复任意槽位配对、分支约束或内存别名。组件交换的完整边界见[第 12 课](12-product-domains-facts.md)。
 
 ## 4. 循环为什么不需要无限多个名字
 
@@ -214,25 +214,25 @@ B₀ @ 0x0000:
        0005: STOP
 ```
 
-五条指令都属于静态基本块 B₀。正常执行时，它把 1 压栈，读取偏移 0 处的 32 字节 memory，再相加。新调用帧的 memory 初始为零。先把分析器允许的 memory 范围限制为 1 字节；账户余额和 nonce 在文件中明确为零，调用 value 与 calldata 也在命令里明确给出：
+五条指令都属于静态基本块 B₀。正常执行时，它把 1 压栈，读取偏移 0 处的 32 字节 memory，再相加。新调用帧的 memory 初始为零。先把共享执行 work 限制为 2,000,000；账户余额和 nonce 在文件中明确为零，调用 value 与 calldata 也在命令里明确给出。两次都保持 `--max-memory-bytes 1`，它限制具体字节提取，不禁止抽象的 32 字节 MLOAD：
 
 ```bash
 PARTIAL_MEMORY_STATUS=0
 nix run . -- explain --world examples/partial-ssa-memory.json \
   --evm.to 0x0000000000000000000000000000000000000101 \
   --evm.value 0 --evm.calldata 0x \
-  --max-memory-bytes 1 --allow-partial-ssa \
+  --max-memory-bytes 1 --max-work 2000000 --allow-partial-ssa \
   || PARTIAL_MEMORY_STATUS=$?
 printf 'exit=%s\n' "$PARTIAL_MEMORY_STATUS"
 ```
 
-退出码为 `2`，表示分析 `Incomplete`。反汇编仍显示五条指令；CFG 的 `pcs` 只有 `[0x0000, 0x0002, 0x0003]`；部分 SSA 的指令正文是：
+退出码为 `0`：全局 Process 模型已经 `Converged`，可选 Native 图仍是 `Incomplete`。输出先显示全局模型，再保留 Native 的执行前缀；两张图的状态不能混读。Native CFG 的 `pcs` 只有 `[0x0000, 0x0002, 0x0003]`，它的部分 SSA 正文是：
 
 ```text
 B₀ @ 0x0000:
        0000: %0 = CONST 0x1 ; origin=PUSH1
        0002: %1 = CONST 0x0 ; origin=PUSH0
-       0003: MLOAD 0x0 ; progress=OperandsConsumed; pending operation, no normal result; state may be partially updated ; frontier U₀: Memory
+       0003: MLOAD 0x0 ; progress=OperandsConsumed; pending operation, no normal result; state may be partially updated ; frontier U₀: Work
     recorded prefix stack: f₀: [%0]
 ```
 
@@ -243,23 +243,23 @@ B₀ @ 0x0000:
 | 进入 B₀ | `[]` | `[]` | 根帧没有入口栈参数 |
 | PUSH1 完成 | `[%0]` | `[1]` | `%0` 是这个 PUSH 的结果名字 |
 | PUSH0 完成 | `[%0, %1]` | `[1, 0]` | `%1` 是 MLOAD 将使用的偏移 |
-| MLOAD 已消费参数 | `[%0]` | `[1]` | `%1` 已弹出；32 字节访问超过分析上限，尚未压入读取结果 |
+| MLOAD 已消费参数 | `[%0]` | `[1]` | `%1` 已弹出；后续抽象读取准备的 work 不能付清，尚未压入读取结果 |
 | ADD、STOP | 没有执行证据 | 没有执行证据 | 它们在捕获代码中存在，但本次块转换没有走到这里 |
 
 **recorded prefix stack 是“按已记录阶段走到这里时的栈”**。这里的 prefix 是这个状态最近一次抽象块转换的指令前缀，最后一条还可能只执行到一半；它不是某笔具体交易的调试轨迹。`MLOAD 0x0` 展示已经消费的 `%1` 所携带的确定偏移，左边没有 `%2 =`，因为本次尝试没有正常结果可命名。若按操作码的通常栈效果硬补一个 MLOAD 结果，就会伪造证据。
 
 `f₀` 是当前机器状态调用栈里的第 0 帧，按最早调用者在前编号；嵌套调用可能还有 f₁、f₂，它们各有自己的操作数栈。`[%0]` 是 f₀ 当前留下的一个 SSA 引用，并不表示栈上数值是 0。JSON 对应 `exit_frames: [[0]]`：外层按帧编号，内层按栈底到栈顶排列；数字 0 是 `%0` 的值 ID。虽然字段叫 `exit_frames`，在部分 SSA 中它保存的是当前前缀留下的栈，不能一概读成“整个基本块完成后的 stack out”。Stale/Unexecuted 时还有进一步限制，见[下文 coverage](#每个状态的证据是否仍适用)。
 
-再把同一命令的 `--max-memory-bytes 1` 改为 `--max-memory-bytes 32`：
+再删除同一命令的 `--max-work 2000000`，恢复应用默认的 2,000,000,000 work；程序、输入和具体字节提取上限都不变：
 
 ```bash
 nix run . -- explain --world examples/partial-ssa-memory.json \
   --evm.to 0x0000000000000000000000000000000000000101 \
   --evm.value 0 --evm.calldata 0x \
-  --max-memory-bytes 32 --allow-partial-ssa
+  --max-memory-bytes 1 --allow-partial-ssa
 ```
 
-这次退出 `0`，状态为 `Converged`，开关自动保留完整 SSA 输出：
+这次仍退出 `0`，Native 图也已 `Converged`，开关自动保留完整 SSA 输出：
 
 ```text
 B₀ @ 0x0000:
@@ -271,7 +271,7 @@ B₀ @ 0x0000:
        stack out (before dispatch) f₀: [%3]
 ```
 
-现在 MLOAD 的读取结果 0 有了名字 `%2`，ADD 的结果 1 有了名字 `%3`。前后 CFG 的数值栈都可能显示 `[{0x1}]`，但前一次是尚未参与 ADD 的 `%0`，后一次是 ADD 产生的 `%3`；只看最后的数值看不出执行到了哪里。这个上限是**分析资源限制**，不能把 `Memory` 前沿解释成具体 EVM 必然发生内存异常。`Converged` 也只说明这次分析按当前模型完成；报告仍可能含 `Failure` outcome，退出 `0` 不是“某笔具体交易一定成功”的断言。
+现在 MLOAD 的读取结果 0 有了名字 `%2`，ADD 的结果 1 有了名字 `%3`。前后 CFG 的数值栈都可能显示 `[{0x1}]`，但前一次是尚未参与 ADD 的 `%0`，后一次是 ADD 产生的 `%3`；只看最后的数值看不出执行到了哪里。这里的 `Work` 是**分析资源限制**，不能解释成具体 EVM 必然耗尽 gas 或发生内存异常。`Converged` 也只说明这次分析按当前模型完成；报告仍可能含 `Failure` outcome，退出 `0` 不是“某笔具体交易一定成功”的断言。
 
 ### 为什么基本块可以只执行一个前缀
 
@@ -279,7 +279,7 @@ B₀ @ 0x0000:
 
 1. 到达指令，把 pc 记入 `executed_pcs`，阶段先记为 `Started`。
 2. 检查栈并弹出参数，把阶段改为 `OperandsConsumed`。
-3. MLOAD 调用 `touch_memory` 准备 32 字节访问；超过上限时记录 `Memory` 前沿并返回。
+3. MLOAD 在参数消费后的抽象读取与 memory 准备中继续预付 work；本次额度不足，记录 `Work` 前沿并返回。具体字节提取上限 1 不会单独排除逻辑上的 32 字节访问。
 4. 只有走完普通结果计算、压栈和相关效果，才记录 `Completed`。本例没有走到这一步，更没有继续到 ADD。
 
 工作预算也可能在进入下一条指令前、或消费参数后的处理中用尽。RPC 发现模式的 SLOAD 可能在消费槽键后发现 `MissingStorage`；[`analysis/rpc.rs`](../crates/evm-abstract/src/analysis/rpc.rs) 可以在固定快照补齐事实，再从入口重跑，所以某一轮的前沿不一定出现在最终报告中。
@@ -336,7 +336,7 @@ CALL/CREATE 的结果在已记录的 Return、Revert 或 Failure 继续转移上
 
 ### 进度和效果链怎样一起读
 
-在[内存上限实验](#从块中途停下的实际输出开始)的第一条命令中，为 `explain` 加上 `--verbose` 参数，可以看到：
+在[工作额度实验](#从块中途停下的实际输出开始)的第一条命令中，为 `explain` 加上 `--verbose` 参数，可以看到：
 
 ```text
 σ₀ | coverage=Current | incoming complete=false | open incoming=[]
@@ -346,7 +346,7 @@ B₀ @ 0x0000:
   effect μ₀ → μ₁
        0002: %1 = CONST 0x0 ; origin=PUSH0 ; progress=Completed
   effect μ₁ → μ₂
-       0003: MLOAD 0x0 ; progress=OperandsConsumed; pending operation, no normal result; state may be partially updated ; frontier U₀: Memory
+       0003: MLOAD 0x0 ; progress=OperandsConsumed; pending operation, no normal result; state may be partially updated ; frontier U₀: Work
   observed partial effect μ₂ → μ₃
     recorded prefix stack: f₀: [%0]
     recorded prefix effect: μ₃
@@ -424,16 +424,16 @@ Known transitions
 PARTIAL_MEMORY_STATUS=0
 nix run . -- analyze --world examples/partial-ssa-memory.json \
   --evm.to 0x0000000000000000000000000000000000000101 \
-  --evm.value 0 --evm.calldata 0x --max-memory-bytes 1 \
+  --evm.value 0 --evm.calldata 0x --max-memory-bytes 1 --max-work 2000000 \
   --ssa --allow-partial-ssa --format json > /tmp/partial-memory.json \
   || PARTIAL_MEMORY_STATUS=$?
 printf 'exit=%s\n' "$PARTIAL_MEMORY_STATUS"
 nix develop -c jq \
-  '.partial_ssa.blocks[0] | {coverage, incoming_complete, open_incoming, exit_frames, last_instruction: .instructions[-1]}' \
+  '.native.partial_ssa.blocks[0] | {coverage, incoming_complete, open_incoming, exit_frames, last_instruction: .instructions[-1]}' \
   /tmp/partial-memory.json
 ```
 
-退出 `2`，读取到 `coverage="Current"`、`incoming_complete=false`、`open_incoming=[]`、`exit_frames=[[0]]`。最后一条指令的 `pc=3`、`operands=[1]`、`results=[]`、`progress="OperandsConsumed"`，效果字段为 `effect_input=2`、`effect_result=3`。这正对应文本中的 `MLOAD %1`、没有普通结果和 `observed partial effect μ₂ → μ₃`；JSON 的 pc 为十进制数。
+退出 `0`，根状态与 `.global.analysis.status` 是 `Converged`，`.native.analysis.status` 是 `Incomplete`，并有 pc=3 的 `Work` 前沿。Native 部分 SSA 中读取到 `coverage="Current"`、`incoming_complete=false`、`open_incoming=[]`、`exit_frames=[[0]]`。最后一条指令的 `pc=3`、`operands=[1]`、`results=[]`、`progress="OperandsConsumed"`，效果字段为 `effect_input=2`、`effect_result=3`。这正对应文本中的 `MLOAD 0x0`（JSON 的 `operands=[1]` 连接 `%1`）、没有普通结果和 `observed partial effect μ₂ → μ₃`；JSON 的 pc 为十进制数。
 
 单程序入口则用 `ssa --format json`。下面保留最初的未知目标例子，观察它另外提供的局部状态映射：
 
@@ -453,6 +453,6 @@ nix develop -c jq \
 
 `state_mapping` 中的 `local_state` 是局部 `analysis.states` 的 σᵖᵢ 编号，`machine_state` 是 `machine_analysis.states` 的原生机器 σᵢ 编号；部分 SSA 的 `blocks[].state` 也使用后者。两个编号不能直接互换；文本中的 `Single-program state mapping` 给出同一对应关系。部分 SSA 的 Tᵢ 编号是 `machine_analysis.edges` 中的原始边编号，可能不连续：T₃ 可以在 `machine_analysis.edges[3]` 查原边，却不能直接索引部分 SSA 的 `transitions[3]`。
 
-世界/RPC 的部分 SSA 与 `analysis.states` 共用原生机器状态编号，不需要这组局部映射。[第 09 课](09-cross-contract.md)解释帧与继续边；[第 10 课的 RPC 阅读](10-snapshots-summaries-creation.md#按原符号输入查看-weth-的部分-ssa)给出保持符号输入的链上例子。
+世界/RPC 的 `.native.partial_ssa` 与 `.native.analysis.states` 共用 Native 机器状态编号，不需要这组局部映射。[第 09 课](09-cross-contract.md)解释帧与继续边；[第 10 课的 RPC 阅读](10-snapshots-summaries-creation.md#按原符号输入查看-weth-的部分-ssa)给出保持符号输入的链上例子。
 
 相关主题：[第 05 课：敏感性](05-sensitivity.md)解释入口如何分开或合并；继续学习时可使用页首的理论与实现路线。

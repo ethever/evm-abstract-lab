@@ -7,7 +7,7 @@ nix run . -- explain --hex 366000803700
 nix run . -- cfg --hex 366000803700 --format json
 ```
 
-输入长度未知时，COPY 仍保留符号来源和完整范围；超过字节物化上限不排除合法的成功执行。内存访问另检查逻辑可表示范围，并保守覆盖 gas 不足的 Failure，不能把未实际展开的字节当成零或空输入。`cfg --format json` 的输入路径是 `.environment`，世界分析的对应路径是 `.entry.environment`。
+输入长度未知时，COPY 仍保留符号来源和完整范围；超过字节物化上限不排除合法的成功执行。内存访问另检查逻辑可表示范围，并保守覆盖 gas 不足的 Failure，不能把未实际展开的字节当成零或空输入。`cfg --format json` 的输入路径是 `.environment`，世界分析的原始输入路径是 `.global.analysis.entry.environment`，Native 条件位于 `.native.analysis.entry.environment`。
 
 ## 一次写入产生新状态，旧读取仍绑定旧状态
 

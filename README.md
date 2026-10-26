@@ -53,7 +53,7 @@ nix run . -- cfg --file examples/diamond.hex --context-depth 0
 
 [路线总览](docs/learning-routes.md)按同一组模块连接理论与实现入口。每课顶部也有所属模块和两条路线的链接；[例子索引](examples/README.md)用于选实验，[第 07 课](docs/07-exercises.md)用于核对理解，[参考资料](docs/references.md)用于继续读规范和论文。
 
-如果你正在读 `recorded prefix stack`、`partial φ` 或 `OperandsConsumed`，直接进入 [04：部分 SSA 的逐步实验](docs/04-ssa.md#7-未完成时按需查看部分-ssa)，观察同一程序在内存上限不足与足够时的栈、指令结果和覆盖差异，再回到所选路线。
+如果你正在读 `recorded prefix stack`、`partial φ` 或 `OperandsConsumed`，直接进入 [04：部分 SSA 的逐步实验](docs/04-ssa.md#7-未完成时按需查看部分-ssa)，观察同一程序在执行 work 不足与足够时的栈、指令结果和覆盖差异，再回到所选路线。
 
 未知目标、重复回调与共享状态的完整例子见 [18：世界未知部分的抽象执行](docs/18-unknown-world.md)。它连接符号状态、已知代码执行、交互摘要和可见的覆盖报告；[已知代码自身递归](docs/18-unknown-world.md#已知代码自身递归也进入同一过程表)也使用共同更新的过程关系。
 
@@ -164,7 +164,7 @@ nix develop -c jq '.status, (.native.ssa | type)' /tmp/proxy.json
 | `Incomplete` | 缺少事实、遇到模型无法处理的输入或耗尽预算；输出保留原因与停止位置 | `2` |
 | 输入错误 | JSON、参数或初始 RPC 采集失败，未得到有效分析结果 | `1`；参数语法错误由 clap 报告并退出 `2` |
 
-`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的路径是 `.entry.environment`。原生分析 JSON 的 `schema_version` 是 15，独立 Web 协议是 20，`domain_spec.schema_version` 是 3。原生机器值始终是对象：实际载体在 `.numeric`，来源、身份和表达式分别保存；product 与 finite-set 的完整候选都在 `.numeric.constants`，省略该键表示没有有限集合约束。raw CFG 的 `.states[].entry_relations` 和世界状态的 `.states[].entry.relations` 保存关系信息。
+`⊤`（Top）表示单值数值摘要没有排除任何 256 bit 数；状态级关系仍可能限制它。Top 属于精度下降；它与 `Incomplete` 的“还有工作未完成”不同。完整 SSA 构建要求完整图；显式选择部分 SSA 只展示有执行证据支持的前缀与覆盖缺口。`Converged` 只描述声明输入范围内的抽象传播完成，不表示某地址的所有调用都已精确恢复，也不构成合约安全证明。先读输出的 `EVM inputs` 或 JSON 中的环境：raw CFG 的路径是 `.environment`，世界分析的原始输入位于 `.global.analysis.entry.environment`，Native 条件位于 `.native.analysis.entry.environment`。当前[原生 schema](crates/evm-abstract/src/analysis.rs) 为 16，[Web wire schema](crates/evm-abstract-protocol/src/lib.rs) 为 21，[域 schema 与成本版本](crates/evm-abstract/src/domain/spec.rs)为 3 与 9。原生机器值始终是对象：实际载体在 `.numeric`，来源、身份和表达式分别保存；product 与 finite-set 的完整候选都在 `.numeric.constants`，省略该键表示没有有限集合约束。raw CFG 的 `.states[].entry_relations` 和世界 Native 图的 `.native.analysis.states[].entry.relations` 保存关系信息。
 
 RPC 混合分析保留原始全局关系，并用同一固定快照和累计账本扩展可选精度。后续补查失败或额度耗尽时，已经独立闭合的基线继续有效，采集失败、Native frontiers 与各自 revision 显式保留；基线本身未获认证时仍是 `Incomplete`。初始入口采集失败属于输入错误，取消返回类型化错误。原生 RPC 库入口继续用 `RpcAcquisition` 表示尚需补查的详细义务。
 
@@ -284,4 +284,4 @@ nix develop --command lychee --offline=false --scheme http --scheme https --incl
 
 [MIT license](LICENSE)。
 
-符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。Native schema 15 与 Web schema 20 使用 flat typed graphs；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，导出池的累计 work 仅作诊断统计；原生局部投影、SSA 构建与验证使用显式后处理账本预付费。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
+符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。原生与 Web 的符号状态使用 flat typed graphs，当前格式版本见[版本与成本说明](docs/19-root-terminal-coverage.md)；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，导出池的累计 work 仅作诊断统计；原生局部投影、SSA 构建与验证使用显式后处理账本预付费。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
