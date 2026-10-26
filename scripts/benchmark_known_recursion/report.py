@@ -200,6 +200,7 @@ def _source_directory(report):
     for slot in ("minimum", "global", "native"):
         references(report[slot])
     references(report["hybrid"])
+    references(report["process_controls"])
 
 
 def _qualification(model):
@@ -228,6 +229,9 @@ def wire_report(envelope, *, job_id, advertised=None):
     assert error is None
     report = job_result_report(envelope, job_id=job_id)
     assert type(report["schema_version"]) is int and report["schema_version"] == WIRE_VERSION
+    # Final D4 uses this required shared directory, including an explicit empty
+    # list for primitive bodies. The shared helper owns its typed control laws.
+    assert type(report["process_controls"]) is list
     identity = publication_identity(result["publication"])
     if advertised is not None:
         publication_identity(advertised)

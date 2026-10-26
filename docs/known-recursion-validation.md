@@ -38,6 +38,8 @@ nix develop --no-update-lock-file -c \
 
 HTTP 在 Running 的状态轮询首次公布模型时立即 GET `/result`。`first_closed_model` 记录首个通过版本、当前性、源目录、snapshot / revision / root、执行与数值策略以及原始 Unknown 输入检查的闭合模型；其 `artifact` 指向捕获的完整回复，保留数值输入和同一结果的 data/store 关联。`metrics.graphs.Baseline` / `Native` 为 `null` 表示没有富图，不能解释为零状态、零前沿或完成 SSA。`task_state` 始终描述任务；后续 Failed/Cancelled 不会抹掉已经收到的模型。
 
+最终 D4 的共享 `process_controls` 目录必须显式存在；primitive body 可以使用空列表。benchmark 通过现有 `web_test_hybrid.job_result_report` 共享严格入口接入目录的类型与来源资格检查，拒绝缺失目录的中间版本 wire21 输出，不能把它们重标为最终架构结果。
+
 `submit_to_usable_model_seconds` 是外部观测时间，包含轮询、捕获与解析校验开销。触发 GET 的任务状态和广告版本单独保留，结果可能在请求期间前进到更新版本。`terminal_observed_seconds`、`final_result`、`final_detail`、`final_export` 分别记录最终任务观测、结果 GET、Native 资格及富导出 outcome/backend timings；`first_model_to_terminal_seconds` 包含后续工作与观测等待，不能充当纯 Native 执行时间。`cached-result` 是终态后的同一保留模型 GET，`cached-result-gzip` 另记实际 Content-Encoding、传输字节、解压和解析时间；重复 GET 不代表 HTTP 缓存命中。
 
 原始 request 文件和 POST body 保持完全相同；最小报告没有回显 RPC transport policy，记录会明确区分已核对的执行/数值策略和原样提交的完整请求策略。私有 RPC 配置与回复/日志中的 endpoint 脱敏，HTTP 原始字节长度和哈希保留。离线 World 的耗时与 RPC acquisition 的耗时分组统计，不据此生成性能或等价性结论。源级假 HTTP/严格解析回归不启动引擎或连接 RPC：
