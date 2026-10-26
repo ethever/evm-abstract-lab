@@ -25,11 +25,14 @@ pub use environment::{
 };
 mod store;
 
-pub use bytes::{EvmByteArray, EvmByteArraySummary, GuardRefinementError, RangeError};
+pub use bytes::{
+    EvmByteArray, EvmByteArraySummary, EvmByteArraySummaryView, EvmByteContentView,
+    GuardRefinementError, RangeError,
+};
 pub use snapshot::{FingerprintError, SnapshotEnvironment, SnapshotIdentity};
 pub use store::{
-    EvmLog, EvmSnapshot, EvmStore, EvmStoreSummary, LogError, LogKey, LogSourceKind, OrderedMap,
-    StoreError,
+    EvmLog, EvmPlaneSummaryView, EvmSnapshot, EvmStore, EvmStoreSummary, EvmStoreSummaryView,
+    LogError, LogKey, LogSourceKind, OrderedMap, StoreError,
 };
 
 use crate::{Fork, bytecode::DecodeError, bytecode::Program, domain::EvmValue};

@@ -277,7 +277,7 @@ fn export_payload_keeps_strict_typed_field_validation() {
             "\"max_nodes\":64",
             "\"max_nodes\":64,\"max_output_bytes\":67108864",
         ),
-        json.replace("\"ExactBytes\"", "\"Work\""),
+        json.replace("\"ExactBytes\"", "\"Unpaid\""),
         json.replace("\"ExactBytes\"", "\"OutputBytes\""),
         json.replace("\"ExactBytes\"", "\"UnknownBoundary\""),
     ] {
@@ -289,6 +289,17 @@ fn export_payload_keeps_strict_typed_field_validation() {
         assert!(
             serde_json::from_str::<AnalyzeReply>(&reply).is_err(),
             "{reply}"
+        );
+    }
+    for kind in [ExportFailureKind::Work, ExportFailureKind::Numeric] {
+        let mut error: ApiError = serde_json::from_str(json).unwrap();
+        let ErrorDetails::Export(failure) = &mut error.details else {
+            unreachable!()
+        };
+        failure.kind = kind;
+        assert_eq!(
+            serde_json::from_slice::<ApiError>(&serde_json::to_vec(&error).unwrap()).unwrap(),
+            error
         );
     }
 }

@@ -35,7 +35,7 @@ use thiserror::Error;
 
 #[cfg(test)]
 use crate::world::test_support::{TestLog, TestStore};
-pub use summary::EvmStoreSummary;
+pub use summary::{EvmPlaneSummaryView, EvmStoreSummary, EvmStoreSummaryView};
 
 /// Ordered state observations with the selected snapshot storage backend.
 pub use snapshot_state::OrderedMap;
