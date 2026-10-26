@@ -302,6 +302,7 @@ pub(in crate::analyze) fn coverage<N: WordElement>(
         detail_current: coverage.detail_current,
         detail_binding: binding(coverage.detail_binding),
         requested_native_terminal_coverage: coverage.requested_native_terminal_coverage,
+        requested_detail_regions: coverage.requested_detail_regions as u64,
         local_detail_sites: coverage.local_detail_sites,
         detail_regions: coverage
             .detail_regions

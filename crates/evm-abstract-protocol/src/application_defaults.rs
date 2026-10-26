@@ -12,6 +12,8 @@ pub const CONTEXT_DEPTH: usize = 128;
 pub const MAX_CONSTANTS: usize = 512;
 /// Maximum cumulative execution work.
 pub const MAX_WORK: usize = 2_000_000_000;
+/// Captured source regions retaining optional Native context; zero disables detail.
+pub const MAX_DETAIL_REGIONS: usize = 1;
 /// Independent allowance shared by local projection, SSA and requested rendering.
 pub const DEFAULT_POSTPROCESS_WORK: usize = 2_000_000_000;
 /// Maximum simultaneously retained frames.

@@ -226,6 +226,7 @@ where
                 DetailState::Pending
             },
             requested_detail_work: hybrid.max_detail_work,
+            requested_detail_regions: hybrid.max_detail_regions,
             requested_native_terminal_coverage: config.root_terminal_coverage,
             work: HybridWork {
                 prior,

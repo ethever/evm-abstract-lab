@@ -37,6 +37,8 @@ mod normalized;
 mod numbers;
 #[path = "cli/partial_ssa.rs"]
 mod partial_ssa;
+#[path = "cli/precision_policy.rs"]
+mod precision_policy;
 #[path = "cli/relations.rs"]
 mod relations;
 #[path = "cli/root_terminal_coverage.rs"]

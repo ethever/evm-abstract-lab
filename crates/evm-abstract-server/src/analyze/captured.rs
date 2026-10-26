@@ -4,8 +4,8 @@
 use super::{errors, input, mapping, report};
 use evm_abstract::{
     analysis::{
-        AnalysisEngine, AnalysisInput, EnginePolicies, HybridAnalysis, HybridConfig,
-        control::Control, cooperation::NoExtension,
+        AnalysisEngine, AnalysisInput, EnginePolicies, HybridAnalysis, control::Control,
+        cooperation::NoExtension,
     },
     domain::{EvmNumericAlgebra, FiniteSetAlgebra, NumericValue, ProductAlgebra, ValueAlgebra},
 };
@@ -112,7 +112,12 @@ pub fn analyze(
         let mut extension = NoExtension;
         let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
         let hybrid = engine
-            .run_hybrid(input, config, HybridConfig::default(), control)
+            .run_hybrid(
+                input,
+                config,
+                input::hybrid_config(&request.limits)?,
+                control,
+            )
             .map_err(errors::execution)?;
         report::hybrid::project(
             &hybrid,

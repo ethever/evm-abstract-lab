@@ -154,6 +154,9 @@ struct WorldArgs {
     /// Disable completed call-summary reuse for oracle comparisons.
     #[arg(long)]
     no_summaries: bool,
+    /// Captured source regions retaining Native context; 0 returns only Global.
+    #[arg(long, default_value_t = defaults::MAX_DETAIL_REGIONS)]
+    max_detail_regions: usize,
     #[command(flatten)]
     execution: ExecutionArgs,
     #[command(flatten)]

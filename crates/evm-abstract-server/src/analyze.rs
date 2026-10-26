@@ -197,6 +197,7 @@ fn run_typed<D: EvmNumericAlgebra>(
     let mut engine = AnalysisEngine::new(&algebra, &policies, &mut extension);
     let mut environment = input::environment::<D::Element>(&request.environment)?;
     let fork = input::fork(request.fork);
+    let hybrid_config = input::hybrid_config(&request.limits)?;
     match &request.input {
         api::AnalysisInput::Bytecode(source) => {
             let input = input::bytecode(source, fork, environment)?;
@@ -212,13 +213,7 @@ fn run_typed<D: EvmNumericAlgebra>(
                 &mut budget,
             );
             let hybrid = engine
-                .run_hybrid_with_publisher(
-                    input,
-                    config,
-                    analysis::HybridConfig::default(),
-                    control,
-                    &mut staged,
-                )
+                .run_hybrid_with_publisher(input, config, hybrid_config, control, &mut staged)
                 .map_err(errors::execution);
             let hybrid = staged.resolve(hybrid)?;
             let retained = staged.finish(&hybrid)?;
@@ -258,7 +253,7 @@ fn run_typed<D: EvmNumericAlgebra>(
                     environment,
                 },
                 config,
-                analysis::HybridConfig::default(),
+                hybrid_config,
                 control,
                 &mut staged,
             )

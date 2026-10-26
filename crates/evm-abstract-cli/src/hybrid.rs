@@ -54,12 +54,14 @@ impl<N: WordElement> WorldAnalysis<N> {
 pub(crate) fn text<N: WordElement>(source: &HybridAnalysis<N>) -> String {
     let coverage = source.coverage();
     let mut text = format!(
-        "Global coverage: {:?} · {:?}\nDetailed paths: {:?} · {:?} · {} current input prefixes\nNative terminal auxiliary requested: {}\nWork: {} total · {} global · {} preparation · {} detail\n",
+        "Global coverage: {:?} · {:?}\nDetailed paths: {:?} · {:?} · {} current input prefixes\nDetail regions: {} requested · {} selected\nNative terminal auxiliary requested: {}\nWork: {} total · {} global · {} preparation · {} detail\n",
         source.status(),
         coverage.chosen,
         coverage.detail,
         coverage.detail_binding,
         coverage.local_detail_sites,
+        coverage.requested_detail_regions,
+        coverage.detail_regions.len(),
         coverage.requested_native_terminal_coverage,
         source.work(),
         coverage.work.baseline,
@@ -74,6 +76,10 @@ pub(crate) fn text<N: WordElement>(source: &HybridAnalysis<N>) -> String {
 
 pub(crate) fn rpc_text<N: WordElement>(source: &RpcHybridAnalysis<N>) -> String {
     let rpc = source.coverage();
+    let precision = source
+        .detail_report()
+        .unwrap_or(source.baseline())
+        .coverage();
     let mut text = format!(
         "Global coverage: {:?} · {:?}\nOriginal facts {} · current facts {} · detailed facts {:?}\nOptional precision: {:?} · {} work / {} allowance · {} total work\n",
         source.status(),
@@ -86,6 +92,11 @@ pub(crate) fn rpc_text<N: WordElement>(source: &RpcHybridAnalysis<N>) -> String 
         rpc.max_precision_work,
         rpc.work
     );
+    text.push_str(&format!(
+        "Detail regions: {} requested · {} selected\n",
+        precision.requested_detail_regions,
+        precision.detail_regions.len()
+    ));
     text.push_str(&format!(
         "RPC acquisition: rounds={} | requests={} | fetched accounts={:?} | fetched storage={:?}\n",
         rpc.acquisition.rounds,

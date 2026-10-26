@@ -84,6 +84,18 @@ jq '(.native // .global).analysis | .status, .edges,
 
 ### 默认文本怎样读
 
+world/RPC 的 `analyze` 与 `explain` 接受 `--max-detail-regions N`，HTTP 对应 `limits.max_detail_regions`。默认值是 1；旧 HTTP 请求省略这一字段时，有效值也是 1，原始请求字节无需改写。0 只运行 Global 并把可选 Native 标为 `Disabled`。正数按现有顺序为最多 N 个已捕获代码来源保留 Native 上下文：入口来源优先，其余按世界中的稳定账户顺序选择。它不是调用深度或状态数量上限。
+
+例如，同一份三合约输入可以分别以 1、2、3 个来源观察 root、child 和第三层的私有指令与帧：
+
+```bash
+nix run . -- analyze --world examples/worlds/nested-detail-regions.json \
+  --evm.to 0x1111111111111111111111111111111111111111 \
+  --max-detail-regions 3 --format json --ssa
+```
+
+这里保持 caller、value、calldata 未指定及默认累计执行预算 2,000,000,000。更多来源仍与 Global 共用同一个执行 payer，可能留下未完成的 Native 前沿。独立报告 allowance 仍为 2,000,000,000。`hybrid.coverage.requested_detail_regions` 记录实际请求的上限，`detail_regions` 列出实际选择的来源；RPC 的 `hybrid.precision` 若存在，则给出其独立资格。选择多个来源不代表未知代码被捕获，也不保证任意程序的全部 Native 状态完成。未选择来源仍可有保守调用／返回与相对摘要；不要把摘要的 block receipt 当成该 callee 的私有指令或 SSA 清单。
+
 先运行同一例子的 `explain` 文本输出：
 
 ```bash

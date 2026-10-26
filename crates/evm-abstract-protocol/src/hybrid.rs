@@ -126,6 +126,8 @@ record! {
         pub detail: HybridDetailState,
         /// Original requested precision allowance, losslessly encoded.
         pub requested_detail_work: crate::DecimalU64,
+        /// Original source-region bound; detail_regions records actual admission.
+        pub requested_detail_regions: u64,
         /// Actual cumulative accounting.
         pub work: HybridWork,
     }
