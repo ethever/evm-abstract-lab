@@ -16,6 +16,20 @@ impl Control {
         scope: GraphScope,
     ) -> Result<Self, ProjectionError> {
         let projection = GraphProjection::build(report, scope)?;
+        Ok(Self::from_projection(report, projection))
+    }
+
+    pub(crate) fn scoped_with_limit(
+        report: &AnalysisReport,
+        scope: GraphScope,
+        point_limit: usize,
+    ) -> Result<Self, ProjectionError> {
+        let projection = GraphProjection::with_limit(report, scope, point_limit)?;
+        Ok(Self::from_projection(report, projection))
+    }
+
+    fn from_projection(report: &AnalysisReport, projection: GraphProjection) -> Self {
+        let scope = projection.scope;
         let cfg = &report.minimum.as_ref().unwrap().summaries[scope.summary()]
             .relation
             .regional_cfg;
@@ -125,6 +139,7 @@ impl Control {
                     from: edge.from,
                     to: edge.to,
                     kind: edge.kind,
+                    level: edge.level,
                     label: match edge.kind {
                         EdgeKind::Fallthrough | EdgeKind::ProcessControl => String::new(),
                         EdgeKind::BranchTrue => "true".into(),
@@ -144,7 +159,7 @@ impl Control {
                 }
             })
             .collect();
-        Ok(Self {
+        Self {
             cards,
             edges,
             source_edges: projection
@@ -171,6 +186,9 @@ impl Control {
             target_sets: projection.target_sets,
             anchor: projection.anchor,
             hidden_set: projection.hidden_set,
-        })
+            level: projection.level,
+            model_relations: projection.model_relations,
+            model_set: projection.model_set,
+        }
     }
 }

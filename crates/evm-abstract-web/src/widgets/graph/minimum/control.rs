@@ -37,6 +37,7 @@ pub(super) struct Edge {
     pub from: usize,
     pub to: usize,
     pub kind: EdgeKind,
+    pub level: EdgeLevel,
     pub label: String,
     pub color: Color32,
     pub origins: Vec<FlowOrigin>,
@@ -53,6 +54,9 @@ pub(super) struct Control {
     pub target_sets: Vec<TargetSet>,
     pub anchor: Option<usize>,
     pub hidden_set: Option<usize>,
+    pub level: GraphLevel,
+    pub model_relations: Vec<ModelRelation>,
+    pub model_set: Option<usize>,
 }
 
 impl Control {
@@ -145,6 +149,7 @@ impl Control {
                                         from,
                                         to,
                                         kind: edge.kind,
+                                        level: EdgeLevel::Model,
                                         label: format!("MAY {:?}", edge.kind),
                                         color: palette::MUTED,
                                         origins: Vec::new(),
@@ -167,6 +172,7 @@ impl Control {
                                     from,
                                     to,
                                     kind: EdgeKind::Jump,
+                                    level: EdgeLevel::Model,
                                     label: "MAY legal JUMPDEST".into(),
                                     color: palette::WARNING,
                                     origins: Vec::new(),
@@ -191,6 +197,7 @@ impl Control {
                         from,
                         to,
                         kind,
+                        level: EdgeLevel::Model,
                         label: format!("r{} → r{target} · {kind:?}", node.id),
                         color: palette::BLUE,
                         origins: Vec::new(),
@@ -205,6 +212,7 @@ impl Control {
                         from,
                         to,
                         kind: EdgeKind::Call,
+                        level: EdgeLevel::Model,
                         label: format!("call c{} · r{} → r{target}", call.id, call.from),
                         color: palette::PURPLE,
                         origins: Vec::new(),
@@ -220,6 +228,7 @@ impl Control {
                             from,
                             to,
                             kind: target.kind,
+                            level: EdgeLevel::Model,
                             label: format!(
                                 "c{} {:?} · input {} · generation {}",
                                 call.id,

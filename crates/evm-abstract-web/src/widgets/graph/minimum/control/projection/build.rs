@@ -1,4 +1,6 @@
+mod adjacency;
 mod context;
+mod model;
 mod portals;
 mod sources;
 
@@ -6,9 +8,9 @@ use std::collections::BTreeMap;
 
 use super::{
     super::scope::{
-        CardKind, ControlOrigin, Destination, FlowOrigin, GraphProjection, GraphScope,
-        OriginEvidence, ProjectionCard, ProjectionError, ProjectionTarget, ScopeCounts,
-        TargetEntry, TargetSet, TargetSetKind,
+        CardKind, ControlOrigin, Destination, EdgeLevel, FlowOrigin, GraphLevel, GraphProjection,
+        GraphScope, ModelRelation, OriginEvidence, ProjectionCard, ProjectionError,
+        ProjectionTarget, ScopeCounts, TargetEntry, TargetSet, TargetSetKind,
     },
     edge,
 };
@@ -56,6 +58,18 @@ pub(super) fn build(
     );
     let overview = matches!(scope, GraphScope::Overview { .. });
     let (members, anchor) = context::resolve(relation, scope)?;
+    let level = if overview {
+        GraphLevel::Model
+    } else if members
+        .first()
+        .and_then(|node| node.frame.process.as_ref())
+        .and_then(|frame| report.process_program(&frame.source))
+        .is_some()
+    {
+        GraphLevel::Source
+    } else {
+        GraphLevel::AbstractBoundary
+    };
     let mut builder = Builder {
         report,
         summary,
@@ -75,6 +89,7 @@ pub(super) fn build(
         groups: BTreeMap::new(),
         projection: GraphProjection {
             scope,
+            level,
             source_status: status,
             cards: Vec::new(),
             edges: Vec::new(),
@@ -82,6 +97,8 @@ pub(super) fn build(
             counts: ScopeCounts::default(),
             anchor: None,
             hidden_set: None,
+            model_relations: Vec::new(),
+            model_set: None,
         },
         overview,
     };
@@ -90,6 +107,7 @@ pub(super) fn build(
     builder.unexpanded_jumps();
     builder.regional_edges();
     builder.calls();
+    builder.finish_model();
     builder.projection.anchor = anchor.and_then(|origin| builder.points.get(&origin).copied());
     let cfg = &relation.relation.regional_cfg;
     let counts = &mut builder.projection.counts;
