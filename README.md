@@ -284,4 +284,4 @@ nix develop --command lychee --offline=false --scheme http --scheme https --incl
 
 [MIT license](LICENSE)。
 
-符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。原生与 Web 的符号状态使用 flat typed graphs，当前格式版本见[版本与成本说明](docs/19-root-terminal-coverage.md)；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限，导出池的累计 work 仅作诊断统计；原生局部投影、SSA 构建与验证使用显式后处理账本预付费。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
+符号 memory/storage 使用不可变来源、长度、写序和 captured copy/view 根，并保留地址与路径关系。大 logical COPY 保持一个 DAG 更新；`max_memory_bytes` 限制具体提取，不限制逻辑长度。原生与 Web 的符号状态使用 flat typed graphs，当前格式版本见[版本与成本说明](docs/19-root-terminal-coverage.md)；报告导出保留节点、深度、exact payload 和取消检查，整份 JSON 输出不设置字节上限。应用的有限共享后处理账本先支付最小模型，再尝试可选丰富投影与 SSA；导出池的 work 统计不替代该账本。丰富导出拒绝或取消时仍保留已发布模型，见[渐进结果](docs/progressive-results.md)。模型、guarded join、账户/plane 和 hash 的支持范围见[符号 EVM 状态](docs/17-symbolic-state.md)。
