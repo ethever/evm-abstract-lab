@@ -245,10 +245,13 @@ def edit_control(page, canvas, label, text, **query):
 
 def select_input_mode(page, canvas, mode):
     assert mode in {"Address", "Bytecode"}, mode
-    control = ui_control(page, mode, role="tab")
+    group = ui_control(page, "input_source", role="group")
+    control = ui_control(page, mode, role="tab", within=group)
     if not control["selected"]:
-        click_control(page, canvas, mode, role="tab")
-    ui_control(page, mode, role="tab", selected=True)
+        click_control(page, canvas, mode, role="tab", id=control["id"])
+    # Switching mode can resize and recenter the modal. Bind the response ID
+    # qualified above, rather than reusing the previous row's screen rectangle.
+    ui_control(page, mode, role="tab", selected=True, id=control["id"])
     expect(page.locator("#analysis-status")).to_contain_text(f"Input editor: {mode}")
 
 
