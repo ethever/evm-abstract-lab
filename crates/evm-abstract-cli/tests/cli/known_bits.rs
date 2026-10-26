@@ -285,6 +285,7 @@ fn json_retains_product_components_and_finite_carriers_in_native_envelopes() {
             "8",
         ]));
         let json: Json = serde_json::from_str(&rendered).unwrap();
+        let json = crate::native::select(&json);
         let report = if command == "ssa" {
             &json["analysis"]
         } else {
@@ -298,6 +299,7 @@ fn json_retains_product_components_and_finite_carriers_in_native_envelopes() {
     for extra in [vec!["--format", "json"], vec!["--format", "json", "--ssa"]] {
         let rendered = text(world.run_concrete("analyze", &extra));
         let json: Json = serde_json::from_str(&rendered).unwrap();
+        let json = crate::native::select(&json);
         let report = if extra.contains(&"--ssa") {
             &json["analysis"]
         } else {
@@ -317,6 +319,7 @@ fn json_retains_product_components_and_finite_carriers_in_native_envelopes() {
         "json",
     ]));
     let top: Json = serde_json::from_str(&top).unwrap();
+    let top = crate::native::select(&top);
     let value = &top["states"][0]["exit_stack"][0];
     assert_eq!(value["numeric"], json!({}));
     let graph = &value["expression"];
@@ -343,6 +346,7 @@ fn json_retains_product_components_and_finite_carriers_in_native_envelopes() {
         "json",
     ]));
     let uncorrelated: Json = serde_json::from_str(&uncorrelated).unwrap();
+    let uncorrelated = crate::native::select(&uncorrelated);
     let value = &uncorrelated["states"][0]["exit_stack"][0];
     assert_eq!(value["numeric"], json!({}));
     assert!(

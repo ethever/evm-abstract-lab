@@ -65,7 +65,7 @@ CALL 从栈顶开始取参数。这里输入为空，转账金额为零。
 **第三步，把这条执行对应到图。**
 
 ```bash
-jq '.status, .edges,
+jq '(.native // .global).analysis | .status, .edges,
     [.states[] | {state: .id, depth: (.key.frames | length),
                   code_address: .key.frames[-1].code_address}],
     [.outcomes[] | {kind, slots: .store.persistent.slots}]' \
@@ -142,7 +142,7 @@ nix run . -- explain \
   --verbose
 ```
 
-完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 使用 `schema_version=15`；初始调用环境在 `.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
+完整报告包含 `Analysis`、`EVM inputs`、`Snapshot`、`References`、`States`、`State details`、`Transitions`、`Outcomes`、`Call summaries`、`Diagnostics` 和 `Frontiers`；RPC 发现模式还保留 `RPC acquisition`。这里的 `EVM inputs` 展开所有环境字段，包括未指定的符号字段、calldata 字节事实和索引 hash 观察。`analyze` 默认显示完整报告，`analyze --ssa` 追加完整 SSA。JSON 的 `schema_version` 见[原生格式常量](../crates/evm-abstract/src/analysis.rs)；原始调用环境在 `.global.analysis.entry.environment`，执行帧中的 caller 和逻辑 ADDRESS 使用有类型的地址字段，见[下文代理实验](#4-代理实验读谁的代码写谁的-storage)。`--verbose` 仅适用于 `explain --world` / `--rpc`；单程序 `--hex` / `--file` 继续显示反汇编、CFG 与栈 SSA。
 
 完整 SSA 继续逐帧列出 active/suspended、代码地址、storage owner、代码 hash、mode、caller、static、跳转历史和栈高，不会因为活动帧采用共用指令布局而省略暂停帧。`bytecode instructions` 与 `instruction effects` 共享当前 Bᵢ 标题和不带 `0x` 的 pc 列，效果行不重复打印 Bᵢ 标题；指令正文显示归一化计算，并保留逐指令效果编号与故障注释。JSON 的 `opcode`、`immediate`、`operands`、`results`、`fault` 继续记录原始指令证据，`operation` 记录最终计算，`facts` 与 `mappings` 分别记录事实和来源、等价、依赖。教学视图与完整视图使用同一份归一化 SSA，完整视图展开帧和效果链。
 
@@ -152,7 +152,7 @@ nix run . -- explain \
 
 如果缺少代码或预算耗尽，默认 `explain` 保留代码观察、部分 CFG、各 outcome、全部诊断和前沿，显示 `Incomplete` / `Frontiers` 和 `SSA unavailable`，退出码为 `2`；不会输出 `Verified cross-contract SSA:`。`--verbose` 可查看同一部分分析的完整报告。初始工作预算太小、尚未捕获执行代码时，`Input code observations (not execution evidence)` 展示输入快照中的代码并明确其观察来源。输入或初始 RPC 获取失败退出 `1`，没有分析结果；开始分析后的 callee 补查失败或预算限制保留 `RpcAcquisition` 部分图，退出 `2` 并省略 SSA。参数语法错误也退出 `2`，但没有分析结果。
 
-需要阅读已到达指令的值流时，可以加 `--allow-partial-ssa`，或在 `analyze` 中同时加 `--ssa --allow-partial-ssa`。未完成报告增加 `Partial SSA (machine state IDs)`，继续保留原有采集、状态、预算等全部前沿与退出码 2；JSON 此时为 `{"analysis":...,"partial_ssa":...}`。部分 SSA 默认突出指令与值流，仍标出 Started/OperandsConsumed/Faulted、Stale/Unexecuted、未覆盖边和全部前沿；Completed/Dispatched 的常见注释与效果链在 world/RPC 的 `explain --verbose` 或 JSON 中展开。块的覆盖状态、指令阶段、部分 φ 和延后的历史边有各自含义，见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。有已知候选继续边，不代表未知调用也已完成；不能据此给它编造成功位、空返回数据或无副作用的结果。已收敛分析输出经过验证的完整归一化 SSA，`--verbose` 只改变报告详略。
+需要阅读已到达指令的值流时，可以加 `--allow-partial-ssa`，或在 `analyze` 中同时加 `--ssa --allow-partial-ssa`。未完成报告增加 `Partial SSA (machine state IDs)`，继续保留原有采集、状态、预算等全部前沿与退出码 2；JSON 的 Native 图保留 `.native.analysis`，部分 SSA 位于 `.native.partial_ssa`。部分 SSA 默认突出指令与值流，仍标出 Started/OperandsConsumed/Faulted、Stale/Unexecuted、未覆盖边和全部前沿；Completed/Dispatched 的常见注释与效果链在 world/RPC 的 `explain --verbose` 或 JSON 中展开。块的覆盖状态、指令阶段、部分 φ 和延后的历史边有各自含义，见[第 04 课](04-ssa.md#7-未完成时按需查看部分-ssa)。有已知候选继续边，不代表未知调用也已完成；不能据此给它编造成功位、空返回数据或无副作用的结果。已收敛分析输出经过验证的完整归一化 SSA，`--verbose` 只改变报告详略。
 
 `Aᵢ` 是具体地址引用，完整地址在 `Addresses` 中列出；未知地址直接显示为 `symbolic(Caller)` 等名字，不用具体地址占位。`Cᵢ` 是代码目录编号，`Bᵢ` 是某段代码内的基本块编号，`fᵢ` 是帧编号，`σᵢ` 是分析状态，`Oᵢ` 是入口结果，`Uᵢ` 是尚未展开的前沿。默认代码目录每个代码身份保留一次完整 hash；完整报告另用 `H₀` 等引用 hash，并在图例中保留其完整值，完整报告的前沿也使用 `Uᵢ` 编号。这些引用与符号名字用于连接同一份报告；跨报告出现同名符号不证明数值相等。编号不是链上身份；教程中的 A、B 是合约名字。
 
@@ -237,7 +237,7 @@ nix run . -- analyze \
   --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/proxy.json
 
-jq '[.states[] | .entry.call_stack
+jq '(.native // .global).analysis | [.states[] | .entry.call_stack
      | (.children[-1].state // .root.state)
      | select(.key.code_address == "0x0000000000000000000000000000000000000300")
      | {code_address: .key.code_address, address: .key.address,
@@ -289,7 +289,7 @@ nix run . -- analyze \
   --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/rollback.json
 
-jq '[.outcomes[] | select(.kind == "Return")
+jq '(.native // .global).analysis | [.outcomes[] | select(.kind == "Return")
      | .store.persistent.slots] | unique' /tmp/rollback.json
 ```
 
@@ -326,7 +326,7 @@ nix run . -- analyze \
   --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/reentry.json
 
-jq '[.outcomes[] | select(.kind == "Return")
+jq '(.native // .global).analysis | [.outcomes[] | select(.kind == "Return")
      | .store.persistent.slots] | unique' /tmp/reentry.json
 ```
 
@@ -344,7 +344,7 @@ nix run . -- analyze \
   --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/missing-code.json
 
-jq '.status, [.frontiers[] | {from, pc, reason}]' /tmp/missing-code.json
+jq '(.native // .global).analysis | .status, [.frontiers[] | {from, pc, reason}]' /tmp/missing-code.json
 
 nix run . -- analyze \
   --world examples/worlds/reentry.json \
@@ -413,6 +413,6 @@ nix run . -- analyze \
 
 这也是引擎保持结构约束的原因：活跃帧始终存在，每个子帧有返回契约，不同栈高不能逐槽合并，代码与基本块必须属于该帧。数值 join 扩大对应位置的候选；整机 guarded join 另以同一个 selector 配对帧、byte/slot 根、continuation、rollback store 与路径公式。未知 slot 写入保存有序符号更新，数值表可弱更新；同址读取能利用根，其他别名须检查条件，不能用一个旧常量或来源标签代替这项判断。
 
-对应源码是 [`world.rs`](../crates/evm-abstract/src/world.rs) 的初始事实、[`store.rs`](../crates/evm-abstract/src/world/store.rs) 的共享状态、[`machine.rs`](../crates/evm-abstract/src/analysis/machine.rs) 的帧和图。加 `--ssa` 可构建跨合约 SSA：调用和返回显式传递帧与状态效果；验证器先要求分析完整，再核对状态、指令和边。JSON 此时变成 `{"analysis":...,"ssa":...}`，以上查询需要加 `.analysis` 前缀。
+对应源码是 [`world.rs`](../crates/evm-abstract/src/world.rs) 的初始事实、[`store.rs`](../crates/evm-abstract/src/world/store.rs) 的共享状态、[`machine.rs`](../crates/evm-abstract/src/analysis/machine.rs) 的帧和图。加 `--ssa` 可构建跨合约 SSA：调用和返回显式传递帧与状态效果；验证器先要求分析完整，再核对状态、指令和边。JSON 的图位置保持固定，完整 SSA 位于 `.native.ssa`；以上查询已明确选择 Native 图，缺少 Native 时选择 Global 图。
 
 [`cross_concrete.rs`](../crates/evm-abstract/tests/cross_concrete.rs) 用独立 revm 执行器核对三个支持 fork 下的具体帧、指令、返回字节、storage、余额和日志，并验证完整图的 SSA。它要求 oracle 实际进入入口和子帧，避免在预编译地址上用空轨迹误通过。有限样例能发现反例，不能证明任意合约安全；这一边界仍适用[第 6 课](06-boundaries.md)。

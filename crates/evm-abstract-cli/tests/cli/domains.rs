@@ -118,6 +118,7 @@ fn initial_world_budget_is_incomplete_with_an_explicit_source_free_frontier() {
     );
     assert_eq!(output.status.code(), Some(2));
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let json = crate::native::select(&json);
     assert_eq!(json["status"], "Incomplete");
     assert!(json["states"].as_array().unwrap().is_empty());
     assert!(json["outcomes"].as_array().unwrap().is_empty());

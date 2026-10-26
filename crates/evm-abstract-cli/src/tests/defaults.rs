@@ -127,8 +127,12 @@ fn primary_analyze_default_exports_both_hybrid_graphs_and_typed_native_prefixes(
         hybrid["coverage"]["requested_native_terminal_coverage"],
         true
     );
-    assert_eq!(hybrid["baseline"]["schema_version"], 16);
-    assert!(hybrid["detail"].is_null());
+    assert_eq!(report["selected_view"], "Native");
+    assert_eq!(report["global"]["analysis"]["schema_version"], 16);
+    assert_eq!(report["native"]["analysis"]["schema_version"], 16);
+    assert!(hybrid.get("baseline").is_none());
+    assert!(hybrid.get("detail").is_none());
+    assert!(report.get("analysis").is_none());
     let prefixes = hybrid["local_detail"].as_array().unwrap();
     assert!(!prefixes.is_empty());
     for prefix in prefixes {

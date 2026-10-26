@@ -269,7 +269,7 @@ nix run . -- cfg --hex 3480600114600957005b80600214601257005b00 \
   --max-symbolic-depth 256 --max-relations 2048
 ```
 
-CLI 不再接受 `--smt.provider`、`--smt.rlimit`，Web 不再提供 solver 下拉框或资源额度输入；当前协议 16 的旧字段会在请求解码时拒绝。JSON 中，单段字节码的策略仍位于 `.domain_spec.relations`，world/RPC 位于 `.config.analysis.relations`；带 SSA 的 JSON 外层再包一层 `.analysis`。策略只包含 `enabled`、`max_nodes`、`max_depth`、`max_constraints`。
+CLI 不再接受 `--smt.provider`、`--smt.rlimit`，Web 不再提供 solver 下拉框或资源额度输入；当前协议 16 的旧字段会在请求解码时拒绝。JSON 中，单段字节码的策略仍位于 `.domain_spec.relations`，world/RPC 的每张图分别在 `.global.analysis.domain_spec.relations` 与 `.native.analysis.domain_spec.relations` 保存策略；请求 SSA 不改变图的位置。策略只包含 `enabled`、`max_nodes`、`max_depth`、`max_constraints`。
 
 | 参数 | CLI / Web 默认值 | 限制什么 |
 | --- | --- | --- |

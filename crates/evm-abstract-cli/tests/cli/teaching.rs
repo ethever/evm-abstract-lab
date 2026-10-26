@@ -45,7 +45,7 @@ fn success(output: &Output) {
 
 fn json(output: &Output) -> Json {
     success(output);
-    serde_json::from_slice(&output.stdout).unwrap()
+    crate::native::select(&serde_json::from_slice(&output.stdout).unwrap())
 }
 
 fn variant(value: &Json) -> &str {
@@ -313,6 +313,7 @@ fn incomplete_teaching_keeps_every_frontier_and_diagnostic() {
         query.extend(["--format", "json"]);
         let report = world("analyze", name, &query);
         let raw: Json = serde_json::from_slice(&report.stdout).unwrap();
+        let raw = crate::native::select(&raw);
         super::native::assert_exit(&raw, &report);
         let report = super::native::select(&raw);
         assert!(!report["frontiers"].as_array().unwrap().is_empty());

@@ -113,7 +113,7 @@ flowchart TD
 
 CLI 默认选择 `--numeric-model product`：`ProductAlgebra` 的实际载体 `NumericValue` 组合常量集合、KnownBits（固定位）、Interval（区间）、Congruence（同余）和非零保证。`--numeric-model finite-set` 选择独立的 `FiniteSetAlgebra`，实际载体为 `FiniteConstantSet`。两者共用 `ValueAlgebra<D>` 的来源、角色、值身份和表达式处理，执行状态始终保留 `EvmValue<D::Element>`。
 
-应用构造数值策略后，将 `AnalysisInput`、借用的代数、`EnginePolicies` 和组件交给 `AnalysisEngine::run`。单程序 CFG 是原生结果的显式 `EvmAnalysis::from_execution` 投影，保留底层图和状态 ID 映射。该投影、SSA 和所需计算共用独立的有限后处理账本，应用默认 `DEFAULT_POSTPROCESS_WORK=2_000_000_000`；它与执行预算分别计量。CLI 与 Web 的 `--max-constants` 默认 512，接受平台能表示的任意正 `usize`，不会按配置预分配集合；`--reduction-rounds` 默认 16，`--max-facts` 默认 4096。数值与关系限制冻结在代数的 `DomainSpec` 中。
+应用构造数值策略后，将 `AnalysisInput`、借用的代数、`EnginePolicies` 和组件交给 `AnalysisEngine::run`。单程序 CFG 是原生结果的显式 `EvmAnalysis::from_execution` 投影，保留底层图和状态 ID 映射。该投影、SSA 和所需计算共用独立的有限后处理账本，应用默认 `DEFAULT_POSTPROCESS_WORK=2_000_000_000`；它与执行预算分别计量。CLI 与 Web 的 `--max-constants` 默认 512，接受平台能表示的任意正 `usize`，不会按配置预分配集合；`--reduction-rounds` 默认 16，`--max-facts` 默认 4096。数值与关系限制冻结在代数的 `DomainSpec` 中。CLI、HTTP 和 Web 的应用默认策略统一声明在 [`application_defaults`](crates/evm-abstract-protocol/src/application_defaults.rs)；库默认策略保持独立。
 
 机器状态另外保存关系约束。JUMPI 的后继应用分支条件，通过局部表达式与数值事实推理排除已证明矛盾的路径，并将已证明的数值上界投影回执行值。未证明矛盾的路径继续保留。两种数值模型 默认都启用这层能力；`--no-relations` 用于关闭它的对照。表达式节点、深度和关系数量有独立上限，真实的取消、配置与精度边界仍保留类型化原因。`cfg`、`ssa`、`analyze`、`explain` 与 Web 的 `max_work` 默认 2000000000，覆盖执行、数值与符号工作，并默认启用保守根终止覆盖；仍可显式设置预算。详见[第 12 课](docs/12-product-domains-facts.md)和[第 15 课](docs/15-symbolic-relations.md)。
 
@@ -149,10 +149,10 @@ nix run . -- analyze \
   --evm.caller 0x0000000000000000000000000000000000001000 \
   --evm.value 0 --evm.calldata 0x \
   --format json --ssa > /tmp/proxy.json
-nix develop -c jq '.analysis.status, (.ssa | type)' /tmp/proxy.json
+nix develop -c jq '.status, (.native.ssa | type)' /tmp/proxy.json
 ```
 
-这里应得到 `"Converged"` 和 `"object"`。本例选中的 Native 关系已完成，因此 `--ssa` 输出包含 `analysis` 和 `ssa`；无主图 SSA 时仍使用平铺图字段。组合 status/work 位于外层，所选图的原始计数保存在 `.hybrid.selected_graph`。其他 Native 图与请求的明细 SSA 分别位于 `.hybrid.detail`、`.hybrid.detail_ssa`，并使用 Native 命名空间和相应输入条件。更详细的字段解读见[跨合约报告](docs/09-cross-contract.md#默认文本怎样读)和[输入与帧的 JSON 查询](docs/10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
+这里应得到 `"Converged"` 和 `"object"`。CLI 的组合报告固定保留 `.global.analysis` 和可选 `.native.analysis`，`selected_view` 表示默认展示选择。外层 `status`、`work`、`transfers` 是组合资格与累计计数；每张图保留自己的原始统计。Native 的 `ssa` 或 `partial_ssa` 与该图相邻；请求 SSA 不会改变图的位置。`.hybrid.local_detail` 中的指令阶段和 frontier 索引始终属于 Native 命名空间。更详细的字段解读见[跨合约报告](docs/09-cross-contract.md#默认文本怎样读)和[输入与帧的 JSON 查询](docs/10-snapshots-summaries-creation.md#当前-json-怎样记录输入与帧)。
 
 ## 怎样判断结果是否完整
 

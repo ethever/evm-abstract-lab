@@ -258,6 +258,7 @@ fn world_initial_budget_fallback_aligns_observed_code_in_both_views() {
         2,
     );
     let report: Json = serde_json::from_str(&report).unwrap();
+    let report = crate::native::select(&report);
     assert!(report["states"].as_array().unwrap().is_empty());
     for verbose in [false, true] {
         let output = text(&world_explain(verbose, &["--max-work", "1"]), 2);

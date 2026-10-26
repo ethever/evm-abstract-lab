@@ -64,6 +64,7 @@ fn invalid_bytes_and_fork_rules_survive_json_and_text_output() {
             "json",
         ])))
         .unwrap();
+        let report = crate::native::select(&report);
         assert_eq!(report["schema_version"], 16);
         assert_eq!(report["status"], "Converged");
         assert_eq!(report["frontiers"], json!([]));
@@ -110,6 +111,7 @@ fn invalid_bytes_and_fork_rules_survive_json_and_text_output() {
             "cfg", "--hex", code, "--fork", fork, "--format", "json",
         ])))
         .unwrap();
+        let report = crate::native::select(&report);
         assert_eq!(report["status"], "Converged");
         assert_eq!(report["diagnostics"], json!([]));
     }
@@ -166,6 +168,7 @@ fn callee_diagnostic_uses_its_opcode_in_all_world_views() {
     // The root has PUSH0 at PC 0; the called program has undefined 0xef there.
     let world = WorldFile::new("5f5f5f5f5f6102006207a120f100", "ef", &[]);
     let report: Value = serde_json::from_str(&world.run("analyze", &["--format", "json"])).unwrap();
+    let report = crate::native::select(&report);
     assert_eq!(report["status"], "Converged");
     let diagnostics = report["diagnostics"].as_array().unwrap();
     assert_eq!(diagnostics.len(), 1);

@@ -396,6 +396,7 @@ fn default_world_analysis_and_explain_share_final_operations_and_facts() {
         String::from_utf8_lossy(&output.stderr)
     );
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let report = crate::native::select(&report);
     let ir = &report["ssa"];
     assert_eq!(ir["complete"], true);
     assert_eq!(
@@ -658,6 +659,7 @@ fn single_program_native_precompile_does_not_acquire_a_bytecode_block_pc() {
         String::from_utf8_lossy(&machine.stderr)
     );
     let report: Value = serde_json::from_slice(&machine.stdout).unwrap();
+    let report = crate::native::select(&report);
     assert_eq!(
         report["analysis"]["world"]["accounts"][ENTRY]["code"]["Runtime"]["bytecode"],
         format!("0x{CODE}")

@@ -435,7 +435,7 @@ nix run . -- explain --world examples/worlds/returndata-copy.json \
 nix run . -- analyze --world examples/memory-word-bound.json \
   --evm.to 0x0000000000000000000000000000000000000101 \
   --evm.value 0 --evm.calldata 0x --format json > /tmp/evm-memory.json
-nix develop -c jq '.states[0].exit.call_stack.root.state.memory | {length, root, memory}' /tmp/evm-memory.json
+nix develop -c jq '(.native // .global).analysis | .states[0].exit.call_stack.root.state.memory | {length, root, memory}' /tmp/evm-memory.json
 ```
 
 本例从偏移 1 写 32 字节，再读取同一窗口；逻辑长度为 64，读取结果为 0x1234。其他程序的 root 可能只有一条大范围 Copy 而没有逐字节表项。Web 协议通过 `byte_arrays[].symbolic` 引用共享 `symbolic.nodes`；scalar refs、来源、范围和数值事实均可观察。

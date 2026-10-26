@@ -15,7 +15,7 @@ fn report(output: &Output, exit: i32) -> Json {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    native::select(&serde_json::from_slice(&output.stdout).unwrap())
 }
 
 fn assert_certificate(analysis: &Json) {
@@ -47,7 +47,7 @@ fn assert_baseline_pending(report: &Json, requested: bool) {
         report["hybrid"]["coverage"]["requested_native_terminal_coverage"],
         requested
     );
-    assert!(report["hybrid"]["detail"].is_null());
+    assert!(report["hybrid"].get("detail").is_none());
     assert_eq!(report["config"]["root_terminal_coverage"], false);
     assert!(report.get("root_terminal_coverage").is_none());
     assert!(!report["frontiers"].as_array().unwrap().is_empty());

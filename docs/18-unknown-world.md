@@ -65,7 +65,7 @@ nix run . -- analyze \
   --evm.value 0 --evm.calldata 0x \
   --format json > /tmp/unknown-busy.json
 
-jq '.status, .procedure_summaries[] |
+jq '(.native // .global).analysis | .status, .procedure_summaries[] |
     if type == "object" then
       {closed, state_count, transfers, propagations, reused}
     else . end' /tmp/unknown-busy.json

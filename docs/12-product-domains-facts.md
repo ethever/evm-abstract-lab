@@ -279,7 +279,7 @@ nix run . -- analyze \
   --numeric-model product --max-constants 512 --reduction-rounds 16 --max-facts 4096 \
   --max-work 1000000000000 --format json > /tmp/facts-world.json
 
-jq '.schema_version, .domain_spec, .status' /tmp/facts-world.json
+jq '(.native // .global).analysis | .schema_version, .domain_spec, .status' /tmp/facts-world.json
 ```
 
 原生报告的 `schema_version`、独立的 Web 协议版本与 `domain_spec.schema_version` 分别由[原生分析格式](../crates/evm-abstract/src/analysis.rs)、[Web 协议](../crates/evm-abstract-protocol/src/lib.rs)和[域策略](../crates/evm-abstract/src/domain/spec.rs)定义。CLI 用 `numeric_model: "product"` / `"finite-set"` 记录所选模型，Web 协议对应为 `"Product"` / `"FiniteSet"`，`domain_spec` 则保存实际代数的 word 宽度、常量容量、交换上限、widening、费用版本、来源策略和关系限制，不包含模型选择器。原生 `Config` 只保存上下文、状态和 transfer 限制，`ExecutionConfig` 再保存工作、调用深度、具体物化等执行预算；数值与关系限制只由 `algebra.spec()` 提供。`DomainSpec::validate()` 返回类型化 `DomainSpecError`；表达式与关系上限为零时，即使关闭关系推理也会拒绝。

@@ -52,6 +52,7 @@ fn text(output: &Output, exit: i32) -> String {
 
 fn report(output: &Output) -> Json {
     let json: Json = serde_json::from_slice(&output.stdout).unwrap();
+    let json = crate::native::select(&json);
     super::native::assert_exit(&json, output);
     let json = super::native::select(&json);
     assert_eq!(json["analysis"]["status"], "Incomplete");
@@ -369,6 +370,7 @@ fn world_and_both_explain_views_keep_partial_frontiers_and_default_contracts() {
     let strict = world.run_unknown("analyze", &["--ssa", "--format", "json"]);
     text(&strict, 2);
     let raw: Json = serde_json::from_slice(&strict.stdout).unwrap();
+    let raw = crate::native::select(&raw);
     super::native::assert_exit(&raw, &strict);
     let strict_json = super::native::select(&raw);
     assert_eq!(strict_json["status"], "Incomplete");
@@ -573,6 +575,7 @@ fn work_prefix_unprocessed_nodes_and_empty_analysis_have_distinct_coverage() {
         ],
     );
     let empty: Json = serde_json::from_slice(&empty_output.stdout).unwrap();
+    let empty = crate::native::select(&empty);
     super::native::assert_exit(&empty, &empty_output);
     assert_eq!(empty["config"]["max_work"], 1);
     let frontiers = empty["frontiers"].as_array().unwrap();
@@ -717,7 +720,9 @@ fn complete_outputs_are_identical_with_and_without_partial_opt_in() {
         text(&actual, 0);
         if json {
             let actual: Json = serde_json::from_slice(&actual.stdout).unwrap();
+            let actual = crate::native::select(&actual);
             let expected: Json = serde_json::from_slice(&expected.stdout).unwrap();
+            let expected = crate::native::select(&expected);
             assert_eq!(
                 super::native::canonical(&actual),
                 super::native::canonical(&expected)
@@ -743,7 +748,9 @@ fn complete_outputs_are_identical_with_and_without_partial_opt_in() {
         text(&actual, 0);
         if json {
             let actual: Json = serde_json::from_slice(&actual.stdout).unwrap();
+            let actual = crate::native::select(&actual);
             let expected: Json = serde_json::from_slice(&expected.stdout).unwrap();
+            let expected = crate::native::select(&expected);
             assert_eq!(
                 super::native::canonical(&actual),
                 super::native::canonical(&expected)

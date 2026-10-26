@@ -12,7 +12,7 @@ fn report(output: Output) -> Value {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    crate::native::select(&serde_json::from_slice(&output.stdout).unwrap())
 }
 
 #[test]

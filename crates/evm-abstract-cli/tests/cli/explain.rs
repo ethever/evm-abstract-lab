@@ -197,6 +197,7 @@ fn incomplete_world_explain_keeps_disassembly_and_every_report_section() {
             let report = world_command("analyze", name, &query);
             assert_eq!(report.status.code(), Some(2));
             let report: Json = serde_json::from_slice(&report.stdout).unwrap();
+            let report = crate::native::select(&report);
             assert_eq!(report["domain_spec"]["relations"]["max_nodes"], 2);
             assert!(
                 report["frontiers"]
@@ -529,6 +530,7 @@ fn world_explain_uses_entry_environment_domain_and_every_execution_budget_flag()
     let analyzed = world.run_concrete("analyze", &json_extra);
     success(&analyzed);
     let analyzed: Json = serde_json::from_slice(&analyzed.stdout).unwrap();
+    let analyzed = crate::native::select(&analyzed);
     assert_eq!(analyzed["entry"]["environment"]["is_static"], true);
     assert_eq!(
         analyzed["entry"]["environment"]["caller"]["Concrete"],
@@ -571,6 +573,7 @@ fn world_explain_static_entry_restriction_is_visible_in_the_result() {
     let analyzed = world.run_concrete("analyze", &["--evm.static", "--format", "json"]);
     success(&analyzed);
     let analyzed: Json = serde_json::from_slice(&analyzed.stdout).unwrap();
+    let analyzed = crate::native::select(&analyzed);
     assert_eq!(analyzed["entry"]["environment"]["is_static"], true);
     assert!(
         analyzed["outcomes"]
@@ -928,6 +931,7 @@ impl RpcServer {
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).unwrap();
                 let request: Json = serde_json::from_slice(&body).unwrap();
+                let request = crate::native::select(&request);
                 let response = serde_json::to_vec(&json!({
                     "jsonrpc":"2.0","id":request["id"],"result":rpc_result(&request, fixture)
                 })).unwrap();
