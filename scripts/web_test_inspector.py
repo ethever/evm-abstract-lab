@@ -1,13 +1,13 @@
 """Inspector browser acceptance cases."""
 
-from web_test_graph_helpers import symbol
+from web_test_graph_helpers import assert_availability, symbol
 from web_test_hybrid import assert_root_source, native_entry_context, oracle_graph, process_control_relation, source_program
 from pathlib import Path
 from playwright.sync_api import expect
 import hashlib
 import json
 import re
-from web_test_harness import complete_submission, focus_text_control, hide_world_directory, observe_webgpu, open_input, resize_view, select_report_context, select_report_namespace, set_control, settle_gesture, submit_bytecode, ui_control, webgpu_evidence
+from web_test_harness import complete_submission, edit_control, focus_text_control, hide_world_directory, observe_webgpu, open_input, resize_view, select_report_context, select_report_namespace, set_control, settle_gesture, submit_bytecode, ui_control, ui_controls, webgpu_evidence
 from web_test_inspector_helpers import inspector_frame_tab, inspector_selected_tab, inspector_title_action, select_inspector_scope, select_inspector_tab
 
 
@@ -65,6 +65,16 @@ def select_inspector_value(page, canvas, value):
     expect(page.locator("#analysis-status")).to_contain_text(f"Inspector: SSA value %{value}")
 
 
+def selected_minimum_context(page, canvas, summary, procedure):
+    """Observe canonical context selection without activating a replacement."""
+    set_control(page, canvas, "Sources", True)
+    edit_control(page, canvas, "source_context_filter", f"Minimum {{ summary: {summary}, procedure: {procedure} }}")
+    contexts = [control for control in ui_controls(page) if control["role"] == "context" and control["enabled"]]
+    assert len(contexts) == 1 and contexts[0]["selected"] is True, contexts
+    set_control(page, canvas, "Sources", False)
+    return contexts[0]
+
+
 def model_namespace_controls(page, canvas, report, output):
     """Use the real selectors; equal numeric IDs never retain another graph's selection."""
     status = page.locator("#analysis-status")
@@ -114,6 +124,18 @@ def model_namespace_controls(page, canvas, report, output):
     root_node = next(node for node in relation["regional_cfg"]["nodes"]
                      if node["procedure"] == relation["root_procedure"])
     point = root_node["frame"]["process"]["location"]
+    # The live status does not print CFG receipt IDs on the SSA route. Bind
+    # the retained r-ID through its unique admitted point plus the actually
+    # selected summary/procedure, instead of expecting an inactive CFG string.
+    admitted = []
+    for node in relation["regional_cfg"]["nodes"]:
+        if node["procedure"] != relation["root_procedure"]:
+            continue
+        region = ((node["transfer"] or {}).get("process") or {}).get("control")
+        if (node["frame"]["process"]["location"] == point
+                or region is not None and point in [region["entry"], *region["through"], *region["boundaries"]]):
+            admitted.append(node["id"])
+    assert admitted == [root_node["id"]], admitted
     point_label = (f"block index {point['Block']}" if type(point) is dict else {
         "Any": "unobserved code · arbitrary actions", "End": "end of source · no instruction",
         "JumpTargets": "unknown-jump hub · all legal JUMPDEST targets"}[point])
@@ -127,12 +149,14 @@ def model_namespace_controls(page, canvas, report, output):
     page.keyboard.press("3")
     settle_gesture(page)
     canvas.screenshot(path=str(output / "namespace-global-ssa.png"))
-    expect(status).to_contain_text(f"Selected regional r{root_node['id']};")
+    global_ssa_context = selected_minimum_context(page, canvas, summary_index, relation["root_procedure"])
+    assert_availability(page, "MAY control has no Native instruction or SSA receipt")
     expect(status).to_contain_text(f"Selected MAY source: {point_label}")
     page.keyboard.press("2")
     settle_gesture(page)
     canvas.screenshot(path=str(output / "namespace-global-control.png"))
-    expect(status).to_contain_text(f"Selected regional r{root_node['id']};")
+    global_cfg_context = selected_minimum_context(page, canvas, summary_index, relation["root_procedure"])
+    expect(status).to_contain_text(f"Selected MAY source: {point_label}")
     # Decoded original-input blocks are legal source provenance. Actual process
     # bodies live in a separate regional namespace and have no instruction cursor.
     assert all(not block["executed_pcs"] for block in baseline["cfg"])
@@ -174,6 +198,8 @@ def model_namespace_controls(page, canvas, report, output):
     canvas.screenshot(path=str(output / "namespace-native-reset.png"))
     return {"native_selected_state": target["id"], "global_regional_node": root_node["id"],
             "native_selected_value": target_value["id"], "native_value_definition": target_definition,
+            "global_selected_contexts": {"SSA": global_ssa_context, "CFG": global_cfg_context},
+            "global_admitted_regional_nodes": admitted,
             "global_may_location": point, "returned_native_state": entry["id"],
             "root_condition": coordinate, "global_has_no_ssa_selection": True,
             "native_selection_reset": True, "graph_ids_separate": True}

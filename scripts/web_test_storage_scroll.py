@@ -12,7 +12,7 @@ from web_test_storage_helpers import assert_storage_literal_pixels, drag_storage
 
 
 def storage_scroll_interactions(browser, url: str, output: Path):
-    page = browser.new_page(viewport={"width": 1440, "height": 1000})
+    page = browser.new_page(viewport={"width": 1440, "height": 1000}, has_touch=True)
     observe_webgpu(page)
     errors, posts = [], []
     page.on("pageerror", lambda error: errors.append(str(error)))
@@ -201,6 +201,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
             page.mouse.move(2, 2)
             touched = canvas.screenshot(path=str(output / f"{kind}-touch-swipe-{attempt}.png"))
             touch_table = storage_table_pixels(page, touched, region)
+            assert touch_table["rows"], "touch drag selected text or hid every painted slot row"
             touch_cells = touch_table["rows"][-1]
             touch_attempts.append(storage_pixel_report(touch_cells))
             if touch_cells["slot"] and touch_cells["slot"]["mask_sha256"] == last_cell_hashes["slot"]:
