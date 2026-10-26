@@ -40,26 +40,69 @@ def storage_copy_full_slot(page, canvas, cell, expected):
     return copied
 
 
-def touch_scroll_storage(page, region):
+def touch_scroll_storage(page, region, *, swipes=3, trace_path=None):
     """Swipe the real storage viewport; text selection must yield to scrolling."""
     left, top, right, bottom = region
     x, start, end = min(left + 80, right - 8), bottom - 25, top + 25
     assert start - end > 100, region
+    assert type(swipes) is int and swipes > 0, swipes
     session = page.context.new_cdp_session(page)
-    try:
-        for _ in range(3):
-            session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [
-                {"id": 1, "x": x, "y": start, "radiusX": 3, "radiusY": 3}]})
+    paints = []
+
+    def persist():
+        if trace_path is not None:
+            Path(trace_path).write_text(json.dumps({"region":region,"swipes":swipes,
+                "moves_per_swipe":16,"events":paints},indent=2)+"\n")
+
+    def dispatch_painted(phase, points, step):
+        # Move events do not update the shared key/down/up marker. Bind each
+        # real touch dispatch to two NEW native submissions: eframe may first
+        # present an already prepared frame before consuming this input.
+        before = page.evaluate("window.__webgpuEvidence.submissions")
+        event={"swipe":swipe+1,"phase":phase,"step":step,"points":points,
+               "gpu_submissions_before":before,"gpu_submissions_after":None,"status":"dispatching"}
+        paints.append(event)
+        persist()
+        try:
+            session.send("Input.dispatchTouchEvent", {"type": phase, "touchPoints": points})
+            event["status"]="dispatched"
+            persist()
+            page.wait_for_function("before => window.__webgpuEvidence.submissions >= before + 2",
+                                   arg=before, polling=25, timeout=5000)
             rendered_frame(page)
+            event.update(gpu_submissions_after=page.evaluate("window.__webgpuEvidence.submissions"),status="painted")
+            persist()
+            if trace_path is not None and phase == "touchStart":
+                start_png=Path(trace_path).with_name(Path(trace_path).stem+"-start.png")
+                canvas_screenshot(page,path=str(start_png))
+                event["phase_png"]=str(start_png)
+                persist()
+        except Exception as error:
+            event.update(status="failed",error=str(error))
+            try:
+                event["gpu_submissions_after"]=page.evaluate("window.__webgpuEvidence.submissions")
+                event["analysis_status"]=page.locator("#analysis-status").text_content()
+                persist()
+                if trace_path is not None:
+                    canvas_screenshot(page,path=str(Path(trace_path).with_suffix(".png")))
+            except Exception as capture_error:
+                event["capture_error"]=str(capture_error)
+            persist()
+            raise
+
+    try:
+        for swipe in range(swipes):
+            dispatch_painted("touchStart", [
+                {"id": 1, "x": x, "y": start, "radiusX": 3, "radiusY": 3}], 0)
             for step in range(1, 17):
-                session.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [
+                dispatch_painted("touchMove", [
                     {"id": 1, "x": x, "y": start + (end - start) * step / 16,
-                     "radiusX": 3, "radiusY": 3}]})
-                rendered_frame(page)
-            session.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+                     "radiusX": 3, "radiusY": 3}], step)
+            dispatch_painted("touchEnd", [], 17)
             settle_gesture(page)
     finally:
         session.detach()
+    return paints
 
 
 def storage_table_pixels(page, screenshot: bytes, region):

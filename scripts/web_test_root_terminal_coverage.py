@@ -447,7 +447,7 @@ def _unexecuted_availability(page, canvas, full_report, output):
     return {"state": entry["id"], "source_program": program["id"], "receipt": receipt, "reason": reason}
 
 
-def _panel_snapshot(page, canvas, output, name):
+def _panel_snapshot(page, canvas, output, name, *, section=None):
     page.mouse.move(2, 2)
     settle_gesture(page)
     # CollapsingHeader's real animation must finish before row targeting.
@@ -459,6 +459,19 @@ def _panel_snapshot(page, canvas, output, name):
     region = (8, toolbar[3] + 3, 400, workspace_content_bottom(page, png))
     pixels = text_pixels(page, png, region)
     assert pixels["white_pixels"] > 100 and len(pixels["rows"]) >= 8, pixels
+    if section is not None:
+        header = ui_control(page, section, role="section")
+        following = [control["rect"][1] for control in ui_controls(page)
+                     if control["enabled"] and control["rect"][1] >= header["rect"][3]
+                     and ((control["role"] == "section" and control["label"] in {
+                         "Return alternative", "Revert alternative", "Failure alternative"})
+                         or (control["role"] == "combobox" and control["label"] == "outcome_selection"))]
+        scoped_region = (region[0], header["rect"][1], region[2], min([region[3], *following]))
+        # Keep the complete-panel readiness proof above. Compare this tuple's
+        # rows separately: expanding it legitimately scrolls unrelated observed
+        # outcomes below the viewport and cannot subtract its newly shown facts.
+        scoped = text_pixels(page, png, scoped_region)
+        return {**scoped, "section": section, "region": scoped_region, "panel": pixels}
     return pixels
 
 
@@ -483,15 +496,16 @@ def _inspect(page, canvas, report, output, posts):
     result = {}
     for outcome in report["root_terminal_coverage"]["outcomes"]:
         name = outcome["kind"].lower()
-        before = _panel_snapshot(page, canvas, output, f"coverage-{name}-closed")
+        section = f"{outcome['kind']} alternative"
+        before = _panel_snapshot(page, canvas, output, f"coverage-{name}-closed", section=section)
         set_control(page, canvas, f"{outcome['kind']} alternative", True, role="section")
-        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-alternative")
+        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-alternative", section=section)
         assert len(opened["rows"]) >= len(before["rows"]) + 3
         set_control(page, canvas, "Terminal bytes", True, role="section")
-        data = _panel_snapshot(page, canvas, output, f"coverage-{name}-bytes")
+        data = _panel_snapshot(page, canvas, output, f"coverage-{name}-bytes", section=section)
         assert data["hash"] != opened["hash"] and len(data["rows"]) > len(opened["rows"])
         set_control(page, canvas, "Terminal bytes", False, role="section")
-        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-bytes-closed")
+        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-bytes-closed", section=section)
         stores = [control for control in ui_controls(page)
                   if control["role"] == "section" and control["label"].startswith("Finalized store ")]
         assert len(stores) == 1, stores
@@ -499,21 +513,33 @@ def _inspect(page, canvas, report, output, posts):
         expected_store = str(outcome["store"]).translate(str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉"))
         assert store_label == f"Finalized store store{expected_store}", (store_label, outcome)
         set_control(page, canvas, store_label, True, role="section")
-        store = _panel_snapshot(page, canvas, output, f"coverage-{name}-store")
+        store = _panel_snapshot(page, canvas, output, f"coverage-{name}-store", section=section)
         assert len(store["rows"]) > len(opened["rows"])
-        set_control(page, canvas, "Unlisted accounts and storage bases", True, role="section")
-        defaults = _panel_snapshot(page, canvas, output, f"coverage-{name}-store-defaults")
+        parent = ui_control(page, store_label, role="section", selected=True)
+        following = [control["rect"][1] for control in ui_controls(page)
+                     if control["enabled"] and control["rect"][1] > parent["rect"][3]
+                     and ((control["role"] == "section" and control["label"] in {
+                         "Return alternative", "Revert alternative", "Failure alternative"})
+                         or (control["role"] == "combobox" and control["label"] == "outcome_selection"))]
+        # The observed Native outcome below the auxiliary tuples has its own
+        # defaults section. Bind this header to the expanded tuple's actual
+        # indentation and following sibling, never a first matching label.
+        scope = (parent["rect"][0] + 1, parent["rect"][3], page.viewport_size["width"],
+                 min(following, default=page.viewport_size["height"] - 30))
+        defaults_control = ui_control(page, "Unlisted accounts and storage bases", role="section", within=scope)
+        set_control(page, canvas, "Unlisted accounts and storage bases", True, role="section", id=defaults_control["id"])
+        defaults = _panel_snapshot(page, canvas, output, f"coverage-{name}-store-defaults", section=section)
         assert len(defaults["rows"]) >= len(store["rows"]) + 9
-        set_control(page, canvas, "Unlisted accounts and storage bases", False, role="section")
-        store = _panel_snapshot(page, canvas, output, f"coverage-{name}-defaults-closed")
+        set_control(page, canvas, "Unlisted accounts and storage bases", False, role="section", id=defaults_control["id"])
+        store = _panel_snapshot(page, canvas, output, f"coverage-{name}-defaults-closed", section=section)
         set_control(page, canvas, store_label, False, role="section")
-        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-store-closed")
+        opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-store-closed", section=section)
         set_control(page, canvas, f"{outcome['kind']} alternative", False, role="section")
         assert _selection(status.text_content()) == selected and len(posts) == count
         result[name] = {"tuple": outcome, "bytes": data, "store": defaults}
-    closed = _panel_snapshot(page, canvas, output, "coverage-before-binding")
+    closed = _panel_snapshot(page, canvas, output, "coverage-before-binding", section="Original input binding")
     set_control(page, canvas, "Original input binding", True, role="section")
-    binding = _panel_snapshot(page, canvas, output, "coverage-original-input-binding")
+    binding = _panel_snapshot(page, canvas, output, "coverage-original-input-binding", section="Original input binding")
     assert len(binding["rows"]) >= len(closed["rows"]) + 21
     assert _selection(status.text_content()) == selected and len(posts) == count
     result["binding"] = binding
@@ -647,7 +673,7 @@ def _schema_control(page, canvas, output, expected_request):
         assert_translation(before_card, after_card, 0, 0, tolerance=1.0)
         assert after_card["selected_kind"] == before_card["selected_kind"]
         assert after_ink == before_ink, (before_ink, after_ink)
-        return {"received": 16, "expected": 20, "retained_selection": selected,
+        return {"received": 16, "expected": 21, "retained_selection": selected,
                 "retained_result_job_id": result_id, "current_job_id": current_id,
                 "evidence": evidence, "status": after_status, "control_only": True}
     finally:
