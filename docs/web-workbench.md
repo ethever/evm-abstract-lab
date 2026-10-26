@@ -123,7 +123,7 @@ V2 Pair 选用具体的 USDC/WETH 池子，Router02 与 Factory 则分别是路�
 
 Web 协议的数值仍受类型可表示范围约束：表中字段均为 `u64`，最大 18,446,744,073,709,551,615。后端还检查需要转换为原生 `usize` 的字段是否能在运行平台表示。超出类型范围的输入不会被夹紧或近似接受。CLI 使用相同的默认配置，显式参数仍可覆盖；对应选项见[CLI 精度与预算表](05-sensitivity.md#7-实验时分别调整精度与预算)。直接使用 Rust 库的 `Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 和 `RpcInput::new()` 时，仍保留各类型原有的较小默认值；它们不会隐式采用 CLI/Web 配置。
 
-wire 20 请求必须提供 `limits.numeric_model: "Product"` 或 `"FiniteSet"`。后端只在应用入口选择一次实际数值代数，报告的 `metadata.limits` 保留这个选择；终止覆盖输入还携带独立的模型标签和实际 `domain_spec`。数值限制与执行预算分别检查，标签不代替来源或策略资格。
+当前 wire 请求必须提供 `limits.numeric_model: "Product"` 或 `"FiniteSet"`。后端只在应用入口选择一次实际数值代数，报告的 `metadata.limits` 保留这个选择；终止覆盖输入还携带独立的模型标签和实际 `domain_spec`。数值限制与执行预算分别检查，标签不代替来源或策略资格。
 
 新任务运行期间保留上一份结果，并显示任务状态与离散进度。收到当前任务通过校验的最小 Global 模型后即可原子切换，详细路径和富报告可以随后到达；这些补充不会重置未变化的 Global 相机、选择和源码缓存。输入草稿的编辑不会改变报告，迟到的旧任务或旧发布版本也不能替换当前结果。
 

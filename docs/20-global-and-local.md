@@ -75,7 +75,7 @@ Return 提交子帧共享效果；Revert／Failure 使用对应的保存点。co
 
 RPC 保留原始闭合基线的 source guards。新增的同快照精确事实只证明当前初始状态集合是原集合的子集，不能把旧 source-current 标记改写到新 revision。wire 分别保存原始、当前和 detail revision、成功提交的 restriction chain、累计采集及精度失败。后来的重启没有新 native 图时，之前有用的图与前缀仍按自己的 revision 保存。取消仍返回类型化取消错误。
 
-CLI JSON 的外层 `status`、`work`、`transfers` 描述组合资格与累计计数。`.global.analysis` 和可选 `.native.analysis` 始终位于固定字段，`selected_view` 只表示初始展示选择。每张图保留自己的 status、work、transfers、snapshot 和 revision；Native 图旁的 `ssa` 或 `partial_ssa` 使用同一 Native 状态 ID。`.hybrid.local_detail` 显式导出 Native receipt 和该图的 frontier 索引；不按选择递归嵌套另一张报告。
+CLI JSON 的外层 `status`、`work`、`transfers` 描述组合资格与累计计数。Native 图的 `transfers` 已包含此前 Global 阶段和共享账本上的实际计数；非 RPC 组合的外层取最新保留图的累计值，两张图的计数不能相加。RPC 的外层保留补读、限制与重跑全流程的累计计数。`.global.analysis` 和可选 `.native.analysis` 始终位于固定字段，`selected_view` 只表示初始展示选择。每张图保留自己的 status、work、transfers、snapshot 和 revision；Native 图旁的 `ssa` 或 `partial_ssa` 使用同一 Native 状态 ID。`.hybrid.local_detail` 显式导出 Native receipt 和该图的 frontier 索引；不按选择递归嵌套另一张报告。
 
 Web wire 使用独立的有类型投影。封套的 `.minimum` 保存原始输入、限定关系和同一出口的数据／Store 联合界限，首份发布可以还没有 `.global` 或 `.native` 丰富图。`.rich_export` 独立记录未请求、完成、拒绝或取消；丰富导出失败不撤销已经发布的最小模型。每个任务先用同一应用后处理账本支付最小模型，再尝试可选丰富导出，详见[渐进结果](progressive-results.md)。
 
