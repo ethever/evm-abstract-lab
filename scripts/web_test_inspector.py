@@ -48,8 +48,11 @@ def focus_inspector_value(page, canvas):
     left, top, right, bottom = control["rect"]
     bounds = canvas.bounding_box()
     assert bounds is not None, "application canvas is not visible"
-    canvas.dblclick(position={"x": (left + right) / 2 - bounds["x"],
-                              "y": (top + bottom) / 2 - bounds["y"]})
+    assert bounds["x"] <= left < right <= bounds["x"] + bounds["width"], control
+    assert bounds["y"] <= top < bottom <= bounds["y"] + bounds["height"], control
+    # An already active editor's real DOM input can cover the canvas here.
+    # Dispatch to the observed field location so browser hit-testing owns it.
+    page.mouse.dblclick((left + right) / 2, (top + bottom) / 2)
     settle_gesture(page)
     return focus_text_control(page, canvas, "inspector_ssa_value")
 

@@ -115,7 +115,10 @@ def ssa_values_interactions(browser, url, output):
             bounds=canvas.bounding_box()
             assert bounds is not None and 0<=left<right<=page.viewport_size['width'],field
             assert 0<=top<bottom<=page.viewport_size['height'],field
-            canvas.dblclick(position={'x':(left+right)/2-bounds['x'],'y':(top+bottom)/2-bounds['y']})
+            assert bounds['x']<=left<right<=bounds['x']+bounds['width'],field
+            assert bounds['y']<=top<bottom<=bounds['y']+bounds['height'],field
+            # The real eframe text agent may already own this native field.
+            page.mouse.dblclick((left+right)/2,(top+bottom)/2)
             edit_control(page,canvas,'inspector_ssa_value','0')
             page.keyboard.press('Enter')
             page.mouse.move(2,2);settle_gesture(page)
