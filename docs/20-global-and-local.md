@@ -40,6 +40,10 @@ Return 提交子帧共享效果；Revert／Failure 使用对应的保存点。co
 
 未选中 callee 的相对准入合并可选的调用者跳转历史；caller continuation 和回滚检查点仍由各自 subscriber 保留。原始环境 calldata 与子帧独立 calldata 的来源标志仍区分私有过程身份，不能因为公开 FrameKey 相同而强行做不兼容的形状 join。细节阶段仍执行未选中的 Native 代码并支付其费用，全局过程的闭合不依赖这些详细路径全部完成。
 
+应用通过 `--max-detail-regions N` 或 HTTP `limits.max_detail_regions` 选择最多 N 个已捕获来源保留私有 Native 上下文，默认值在[应用策略](../crates/evm-abstract-protocol/src/application_defaults.rs)中声明为 1。0 跳过 Native 准备和执行；正数沿用入口优先及现有稳定来源顺序。这个数限制选中的来源，不限制调用深度，也不会捕获原本未知的代码。未选中来源可以通过当前的相对摘要交付效果，而没有外层子帧的逐指令记录。三层实际输入与 1／2／3 个来源的例子见[跨合约调用](09-cross-contract.md#默认文本怎样读)。
+
+`hybrid.coverage.requested_detail_regions` 保存实际请求上限，`detail_regions` 保存实际选择的来源列表。RPC 补读后的 Native 资格可以在独立的 `hybrid.precision` 中；读取最新 Native 选择时使用 [`native_coverage()`](../crates/evm-abstract-protocol/src/hybrid.rs)，并保留原始 Global 的闭合与来源资格。更多来源仍消耗原来的累计执行预算，不保证 Native 完成。默认的 1 个来源及原始输入不因这个控件改变。
+
 ## 输入、物理账户与来源
 
 当前[原生格式](../crates/evm-abstract/src/analysis.rs)的 `entry.binding` 与 [Web wire](../crates/evm-abstract-protocol/src/lib.rs) 的 `metadata.root_binding` 在没有接纳任何状态时也存在。库的 `root_binding()` 不依赖已执行帧；`declared_root_source(...)` 单独支付原始声明来源的读取，不构成 PC 访问证据。

@@ -192,6 +192,8 @@ nix run .#web
 
 CLI 与 Web 保留全部预算和精度控件，共用同一套默认值，并允许显式覆盖；实际分析仍遵循指定的有限预算。完整默认值和 Web 类型范围见 [Web 控件说明](docs/web-workbench.md#使用控件)，CLI 参数见[精度与预算表](docs/05-sensitivity.md#7-实验时分别调整精度与预算)。直接调用 Rust 库时，`Config::default()`、`ExecutionConfig::default()`、`RelationLimits::default()` 与 `RpcInput::new()` 仍使用库自身的配置；`ExecutionConfig::default()` 的 work 预算仍为 20000000，根终止覆盖默认开启。
 
+world/RPC 的 `analyze` 与 `explain` 可用 `--max-detail-regions N` 调整保留私有 Native 上下文的已捕获来源数，HTTP 对应 `limits.max_detail_regions`。默认 1，0 只运行 Global；更多来源继续使用原累计执行预算。请求上限与实际选中来源分别记录，RPC 的最新精度资格也与原始 Global 分开，见[全局模型与详细路径](docs/20-global-and-local.md#当前前缀的范围)。
+
 ## 开发环境与实现入口
 
 应用 workspace 的 Rust 使用静态派发，egui/Web 适配模块有局部例外；[动态派发检查](docs/no-dynamic-dispatch.md)说明 Dylint 命令、检查范围和具体错误类型约定。

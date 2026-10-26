@@ -37,6 +37,18 @@ Native。正常返回时再输出 `lifecycle: "Final"` 的结果。每行都有�
 预算。执行及 RPC 重启继续共享原始累计执行预算，各阶段都不会通过新建预算补救
 拒绝。最小模型本身无法付费时仍返回明确失败。
 
+可选细节的来源上限由 CLI `--max-detail-regions` 或 HTTP
+`limits.max_detail_regions` 设置，默认 1。只有旧请求省略这个新字段时使用默认值；
+显式的 0 关闭细节，null、负数、分数等无效值仍被拒绝。记录历史请求时保留原始字节，
+另记省略字段的有效值，不能把补上字段后的对象称为原始请求。
+
+`requested_detail_regions` 在早期、延后及最终 coverage 中保存实际请求上限，
+`detail_regions` 是实际选择列表，二者分别检查。0 不支付 Native 准备或执行；
+Global 已闭合时细节为 `Disabled`，Global 尚未闭合时仍保留其 pending 资格。
+正数沿用同一累计执行账本与剩余额度。RPC 的最新 Native 选择可能属于独立的
+`hybrid.precision`，而原始 `hybrid.coverage` 继续限定不可变 Global 模型；读取
+详细选择时使用 `native_coverage()`，不以原始列表代替后来的实际选择。
+
 Global 的 Process 控制坐标保留实际的已知代码关系。`ProcessFrameKey.location`
 区分解码块 `Block(i)`、未知跳转的共享合法目标节点 `JumpTargets`、代码末尾 `End`
 和未观测代码的 `Any`。这些都是源代码的 MAY 坐标；不会生成 Native 的
