@@ -99,6 +99,33 @@ fn identity_error() -> api::ApiError {
     }
 }
 
+fn retain_minimum(
+    report: &mut api::AnalysisReport,
+    control: &Control,
+    budget: &mut WorkBudget,
+) -> Result<(), api::ApiError> {
+    super::checkpoint(control)?;
+    if !budget.charge(2) {
+        if !budget.charge(0) {
+            return Err(super::cancelled());
+        }
+        let minimum = report.minimum.as_ref().ok_or_else(identity_error)?;
+        return Err(api::ApiError {
+            code: api::ApiErrorCode::Export,
+            message: "required minimum retention exceeds the postprocessing allowance".into(),
+            details: api::ErrorDetails::Export(Box::new(api::ExportFailure {
+                kind: api::ExportFailureKind::Work,
+                required: 2,
+                limits: minimum.export_limits,
+                usage: minimum.export_usage,
+                written: None,
+            })),
+        });
+    }
+    report.postprocessing_work = budget.used() as u64;
+    Ok(())
+}
+
 impl<D: EvmNumericAlgebra> StagePublisher<D::Element> for Projection<'_, D> {
     fn checkpoint(&self) -> Result<(), Cancelled> {
         if self.failure.is_some() {
@@ -128,22 +155,7 @@ impl<D: EvmNumericAlgebra> StagePublisher<D::Element> for Projection<'_, D> {
                 },
             )?;
             report.timings = super::timing::project(self.control.observer().timing(), 0);
-            if !self.budget.charge(2) {
-                let minimum = report.minimum.as_ref().ok_or_else(identity_error)?;
-                return Err(api::ApiError {
-                    code: api::ApiErrorCode::Export,
-                    message: "required minimum retention exceeds the postprocessing allowance"
-                        .into(),
-                    details: api::ErrorDetails::Export(Box::new(api::ExportFailure {
-                        kind: api::ExportFailureKind::Work,
-                        required: 2,
-                        limits: minimum.export_limits,
-                        usage: minimum.export_usage,
-                        written: None,
-                    })),
-                });
-            }
-            report.postprocessing_work = self.budget.used() as u64;
+            retain_minimum(&mut report, self.control, self.budget)?;
             let report = Arc::new(report);
             if let Some(publisher) = self.publisher
                 && !publisher.publish_shared(Arc::clone(&report))

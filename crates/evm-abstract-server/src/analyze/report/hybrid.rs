@@ -57,6 +57,9 @@ fn retained_publication<N: WordElement>(
         .saturating_add(retained.process_controls.len())
         .saturating_add(1);
     if (budget.used() as u64) < retained.postprocessing_work || !budget.charge(required) {
+        if !budget.charge(0) {
+            return Err(crate::analyze::cancelled());
+        }
         return Err(api::ApiError {
             code: api::ApiErrorCode::Export,
             message: "final publication metadata requires the original postprocessing allowance"
