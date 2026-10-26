@@ -5,11 +5,12 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from playwright.sync_api import expect
 import json
+import math
 import re
 import selectors
 import subprocess
 import time
-from web_test_hybrid import assert_detail_policy, job_result_report, namespace_available
+from web_test_hybrid import assert_detail_policy, job_result_report, namespace_available, native_entry_context, source_program
 
 
 _browser_errors = ContextVar("browser_acceptance_errors", default=None)
@@ -134,29 +135,49 @@ def ui_controls(page):
     """Read opt-in geometry from actual egui responses in the accepted UI pass."""
     status = page.locator("#analysis-status")
     expect(status).to_have_attribute("data-controls", re.compile(r"^\["))
-    return json.loads(status.get_attribute("data-controls"))
+    controls = json.loads(status.get_attribute("data-controls"))
+    assert type(controls) is list, controls
+    for control in controls:
+        assert type(control) is dict and set(control) == {
+            "id", "label", "role", "selected", "enabled", "rect"}, control
+        assert type(control["id"]) is str and control["id"].isascii() and control["id"].isdecimal(), control
+        assert str(int(control["id"])) == control["id"] and int(control["id"]) < 2**64, control
+        assert type(control["label"]) is str and type(control["role"]) is str, control
+        assert control["selected"] is None or type(control["selected"]) is bool, control
+        assert type(control["enabled"]) is bool, control
+        rect = control["rect"]
+        assert type(rect) is list and len(rect) == 4, control
+        assert all(type(value) in (int, float) and math.isfinite(value) for value in rect), control
+        assert rect[0] < rect[2] and rect[1] < rect[3], control
+    return controls
 
 
-def ui_control(page, label, *, role=None, selected=None, enabled=True):
+def ui_control(page, label=None, *, role=None, selected=None, enabled=True, id=None, within=None):
     # A disabled background control behind a modal cannot satisfy an enabled
     # target. All interaction still enters through the real canvas.
-    fields = dict(label=label)
+    assert label is not None or id is not None, "a control requires a rendered label or exact response ID"
+    fields = {} if label is None else dict(label=label)
     fields.update((key, value) for key, value in
-                  [("role", role), ("selected", selected), ("enabled", enabled)]
+                  [("role", role), ("selected", selected), ("enabled", enabled), ("id", id)]
                   if value is not None)
-    # Poll the real DOM attribute, so an idle WebGPU page need not schedule an
-    # animation frame merely to run the acceptance predicate.
-    terms = [re.escape(json.dumps(key) + ":" + json.dumps(value, ensure_ascii=False))
-             for key, value in fields.items()]
-    pattern = re.compile(r"\{" + "".join(r"(?=[^{}]*" + term + ")" for term in terms) + r"[^{}]*\}")
-    expect(page.locator("#analysis-status")).to_have_attribute("data-controls", pattern)
-    candidates = [control for control in ui_controls(page)
-                  if control["label"] == label
-                  and (role is None or control["role"] == role)
-                  and (selected is None or control["selected"] == selected)
-                  and (enabled is None or control["enabled"] == enabled)]
-    assert len(candidates) == 1, f"expected one rendered {label!r} control: {candidates}"
-    return candidates[0]
+    # Parse the real attribute structurally: rendered values can contain JSON
+    # braces or quotes. Polling this DOM state also works on idle WebGPU pages
+    # without requiring a rAF callback merely to evaluate the predicate.
+    # Repeated Exact/Unknown tabs are qualified by their real enclosing row,
+    # never by an ordinal or an unrelated first matching response.
+    bounds = within["rect"] if isinstance(within, dict) else within
+    deadline = time.monotonic() + 5
+    while True:
+        candidates = [control for control in ui_controls(page)
+                      if all(control[key] == value for key, value in fields.items())
+                      and (bounds is None or (
+                          bounds[0] - 0.5 <= control["rect"][0] < control["rect"][2] <= bounds[2] + 0.5
+                          and bounds[1] - 0.5 <= control["rect"][1] < control["rect"][3] <= bounds[3] + 0.5))]
+        assert len(candidates) <= 1, f"ambiguous rendered control {fields}: {candidates}"
+        if candidates:
+            return candidates[0]
+        assert time.monotonic() < deadline, f"no rendered control {fields} within {bounds}"
+        page.wait_for_timeout(25)  # Poll actual response geometry, including idle WebGPU pages.
 
 
 def click_control(page, canvas, label, **query):
@@ -164,9 +185,71 @@ def click_control(page, canvas, label, **query):
     left, top, right, bottom = control["rect"]
     assert 0 <= left < right <= page.viewport_size["width"], control
     assert 0 <= top < bottom <= page.viewport_size["height"], control
-    canvas.click(position=dict(x=(left + right) / 2, y=(top + bottom) / 2))
+    bounds = canvas.bounding_box()
+    assert bounds is not None, "application canvas is not visible"
+    assert bounds["x"] <= left < right <= bounds["x"] + bounds["width"], control
+    assert bounds["y"] <= top < bottom <= bounds["y"] + bounds["height"], control
+    canvas.click(position=dict(x=(left + right) / 2 - bounds["x"],
+                              y=(top + bottom) / 2 - bounds["y"]))
     settle_gesture(page)
     return control
+
+
+def set_control(page, canvas, label, selected, *, role="toggle", **query):
+    """Set one real toggle, checkbox or section without accidentally reopening it."""
+    assert type(selected) is bool
+    control = ui_control(page, label, role=role, **query)
+    assert type(control["selected"]) is bool, control
+    if control["selected"] != selected:
+        click_control(page, canvas, label, role=role, **query)
+    return ui_control(page, label, role=role, selected=selected, **query)
+
+
+def focus_text_control(page, canvas, label, *, touch=False, **query):
+    """Focus one observed editor through an actual pointer or Chromium touch."""
+    if touch:
+        control = ui_control(page, label, role="text", **query)
+        left, top, right, bottom = control["rect"]
+        assert 0 <= left < right <= page.viewport_size["width"], control
+        assert 0 <= top < bottom <= page.viewport_size["height"], control
+        session = page.context.new_cdp_session(page)
+        try:
+            session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [
+                {"x": (left + right) / 2, "y": (top + bottom) / 2, "radiusX": 3, "radiusY": 3}]})
+            session.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+        finally:
+            session.detach()
+        settle_gesture(page)
+    else:
+        control = click_control(page, canvas, label, role="text", **query)
+    page.wait_for_function("""rect => {
+        const canvas = document.querySelector('#evm-canvas');
+        const agent = canvas?.nextElementSibling;
+        if (!(agent instanceof HTMLInputElement) || document.activeElement !== agent) return false;
+        const x = parseFloat(agent.style.left), y = parseFloat(agent.style.top);
+        return Number.isFinite(x) && Number.isFinite(y) &&
+            rect[0] - 4 <= x && x <= rect[2] + 4 && rect[1] - 4 <= y && y <= rect[3] + 4;
+    }""", arg=control["rect"], polling=25)
+    return control
+
+
+def edit_control(page, canvas, label, text, **query):
+    """Replace a real egui text field after its DOM text agent takes focus."""
+    control = focus_text_control(page, canvas, label, **query)
+    page.keyboard.press("Control+A")
+    rendered_frame(page)
+    page.keyboard.insert_text(str(text))
+    rendered_frame(page)
+    return control
+
+
+def select_input_mode(page, canvas, mode):
+    assert mode in {"Address", "Bytecode"}, mode
+    control = ui_control(page, mode, role="tab")
+    if not control["selected"]:
+        click_control(page, canvas, mode, role="tab")
+    ui_control(page, mode, role="tab", selected=True)
+    expect(page.locator("#analysis-status")).to_contain_text(f"Input editor: {mode}")
 
 
 def hide_world_directory(page, canvas):
@@ -177,18 +260,88 @@ def hide_world_directory(page, canvas):
         ui_control(page, "Sources", role="toggle", selected=False)
 
 
+def select_report_context(page, report, namespace, *, state=None, summary=None, procedure=None,
+                          close_directory=True):
+    """Open one original context through Sources, never by a display ordinal."""
+    assert namespace_available(report, namespace), namespace
+    canvas = page.locator("#evm-canvas")
+    label = {"Baseline": "Global model", "Native": "Detailed paths"}[namespace]
+    if namespace == "Native" or report["minimum"] is None:
+        assert summary is None and procedure is None
+        assert type(state) is int and state >= 0, state
+        selected = report[{"Baseline": "global", "Native": "native"}[namespace]]
+        nodes = [node for node in selected["cfg"] if type(node["id"]) is int and node["id"] == state]
+        assert len(nodes) == 1, (namespace, state, nodes)
+        program = None if nodes[0]["program"] is None else source_program(report, nodes[0]["program"])
+        query = f"Graph {{ state: {state} }}"
+    else:
+        assert state is None
+        minimum = report["minimum"]
+        assert type(summary) is int and 0 <= summary < len(minimum["summaries"]), summary
+        relation = minimum["summaries"][summary]["relation"]
+        assert type(procedure) is int and 0 <= procedure < len(relation["procedures"]), procedure
+        target = relation["procedures"][procedure]
+        key = target["process"]
+        if key is not None:
+            captures = [item for item in report["process_controls"]
+                        if item["source"] == key["source"] and item["epoch"] == key["epoch"]]
+            programs = {item["program"] for item in captures if item["program"] is not None}
+            assert len(programs) <= 1, programs
+            program = source_program(report, programs.pop()) if programs else None
+        else:
+            captures = [item for item in report["programs"]
+                        if (item["code_address"], item["code_hash"], item["kind"], item["fork"]) ==
+                        (target["code_address"], target["code_hash"], target["kind"], minimum["fork"])]
+            assert len(captures) <= 1, captures
+            program = captures[0] if captures else None
+        query = f"Minimum {{ summary: {summary}, procedure: {procedure} }}"
+    click_control(page, canvas, label, role="tab")
+    if program is not None:
+        # The original template and its conditional Native alias may have the
+        # same bytes. Choose the actual alias before enumerating its contexts.
+        source = program["code_address"] or (
+            "Constructor code" if program["kind"] == "Initcode" else "Supplied input program")
+        # An address can retain old and new code in the same publication.
+        # Hash search plus the actual alias caption keeps those sources apart.
+        edit_control(page, canvas, "source_context_filter", program["code_hash"])
+        caption = source if len(source) <= 22 else source[:10] + "…" + source[-8:]
+        click_control(page, canvas, caption, role="source")
+        set_control(page, canvas, "Sources", True)
+    edit_control(page, canvas, "source_context_filter", query)
+    contexts = [control for control in ui_controls(page) if control["role"] == "context" and control["enabled"]]
+    assert len(contexts) == 1, (namespace, query, contexts)
+    click_control(page, canvas, contexts[0]["label"], role="context", id=contexts[0]["id"])
+    expect(page.locator("#analysis-status")).to_contain_text(f"View: {label}")
+    # Namespace text alone could accept a different row in the same graph.
+    # Reopen a narrow sheet and verify the canonical selection through the
+    # actual selected context and source responses after navigation completes.
+    set_control(page, canvas, "Sources", True)
+    chosen = ui_control(page, contexts[0]["label"], role="context", selected=True)
+    if program is not None:
+        edit_control(page, canvas, "source_context_filter", program["code_hash"])
+        ui_control(page, caption, role="source", selected=True)
+        edit_control(page, canvas, "source_context_filter", query)
+        chosen = ui_control(page, contexts[0]["label"], role="context", selected=True)
+    if close_directory:
+        hide_world_directory(page, canvas)
+    return chosen
+
+
 def select_report_namespace(page, report, namespace):
-    """Use the real selector before following IDs in a particular graph."""
+    """Preserve an active namespace; switching requires a qualified root context."""
     assert namespace_available(report, namespace), namespace
     if report["hybrid"] is not None:
         label = {"Baseline": "Global model", "Native": "Detailed paths"}[namespace]
-        if namespace == "Baseline" and report["minimum"] is not None:
-            expected = f"Global model {report['minimum']['status']}"
-        else:
-            expected = f"View: {label}"
+        expected = f"View: {label}"
         status = page.locator("#analysis-status")
         if expected not in status.text_content():
-            click_control(page, page.locator("#evm-canvas"), label, role="tab")
+            if namespace == "Native":
+                select_report_context(page, report, namespace, state=native_entry_context(report)["id"])
+            else:
+                minimum = report["minimum"]
+                assert minimum is not None and len(minimum["summaries"]) == 1, "choose an explicit Global relation"
+                relation = minimum["summaries"][0]["relation"]
+                select_report_context(page, report, namespace, summary=0, procedure=relation["root_procedure"])
         expect(status).to_contain_text(expected)
         settle_gesture(page)
 
@@ -221,10 +374,10 @@ def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=
             assert timing == job["timings"], "report and completed job disagree on measured time"
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=timeout_seconds * 1000)
             wait_for_report_publication(page, job_id, job["publication"], timeout_seconds * 1000)
-            if close_directory:
-                hide_world_directory(page, page.locator("#evm-canvas"))
             if namespace is not None:
                 select_report_namespace(page, report, namespace)
+            if close_directory:
+                hide_world_directory(page, page.locator("#evm-canvas"))
             return AnalysisResponse(admitted, envelope, result.status, job)
         if isinstance(state, dict) and "Failed" in state:
             error = state["Failed"]
@@ -238,32 +391,30 @@ def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=
         job = result.json()["result"]["Ok"]
     raise AssertionError(f"task did not reach a terminal state: {job}")
 
-def open_input(page):
-    # The product shortcut opens the modal and focuses its initial source field.
+def open_input(page, *, mode=None):
+    """Open the modal and explicitly focus its real source field."""
     page.keyboard.press("Control+Enter")
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text(re.compile(r"(?:^|; )Input editor: (Address|Bytecode)(?=;|$)"))
     settle_gesture(page)
-    # The modal requests its TextEdit focus after painting the controls. Wait
-    # until eframe has applied that request to its real DOM text agent before
-    # sending selection/paste events, which a focused canvas would discard.
-    page.wait_for_function("""() => {
-        const canvas = document.querySelector('#evm-canvas');
-        const agent = canvas?.nextElementSibling;
-        if (!(agent instanceof HTMLInputElement) || document.activeElement !== agent) return false;
-        const x = parseFloat(agent.style.left), y = parseFloat(agent.style.top);
-        return x > canvas.offsetLeft && y > canvas.offsetTop &&
-               x <= canvas.offsetLeft + canvas.clientWidth &&
-               y <= canvas.offsetTop + canvas.clientHeight;
-    }""")
+    canvas = page.locator("#evm-canvas")
+    if mode is not None:
+        select_input_mode(page, canvas, mode)
+    else:
+        match = re.search(r"(?:^|; )Input editor: (Address|Bytecode)(?=;|$)", status.text_content())
+        assert match, status.text_content()
+        mode = match[1]
+    # Mobile mode buttons may keep canvas focus. A real editor tap is the
+    # meaningful focus transition before callers send selection or paste keys.
+    focus_text_control(page, canvas, "Runtime bytecode" if mode == "Bytecode" else "rpc_address")
+
 
 def posted_bytecode(reply):
     return reply.request.post_data_json["input"]["Bytecode"]["bytecode"]
 
 def submit_bytecode(page, canvas, bytecode: str, evidence: Path, *, close_directory=False):
-    open_input(page)
-    page.keyboard.press("Control+A")
-    rendered_frame(page)
-    page.keyboard.type(bytecode, delay=5)
-    rendered_frame(page)
+    open_input(page, mode="Bytecode")
+    edit_control(page, canvas, "Runtime bytecode", bytecode)
     canvas.screenshot(path=str(evidence))
     with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as response:
         page.keyboard.press("Control+Enter")
@@ -329,6 +480,14 @@ def observe_webgpu(page, unavailable: str | None = None) -> None:
             if (event.target instanceof HTMLInputElement && event.target === canvas?.nextElementSibling)
                 window.__webTestInputFrame = evidence.submissions;
         }, {capture: true});
+        for (const kind of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'compositionstart', 'compositionend']) {
+            addEventListener(kind, event => {
+                const canvas = document.querySelector('#evm-canvas');
+                if (canvas && (event.target === canvas || event.target === canvas.nextElementSibling ||
+                               (kind.startsWith('key') && event.target === document.body)))
+                    window.__webTestInputFrame = evidence.submissions;
+            }, {capture: true});
+        }
         const getContext = HTMLCanvasElement.prototype.getContext;
         HTMLCanvasElement.prototype.getContext = function(kind, ...args) {
             const result = getContext.call(this, kind, ...args);

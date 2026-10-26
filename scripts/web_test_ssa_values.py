@@ -3,9 +3,8 @@
 import base64
 from playwright.sync_api import expect
 import json
-from web_test_graph_helpers import symbol
-from web_test_harness import settle_gesture, webgpu_evidence
-from web_test_inspector_helpers import hide_inspector
+from web_test_graph_helpers import symbol, workspace_route
+from web_test_harness import select_report_context, set_control, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import layout_page, layout_submission
 from web_test_pixels import screenshot_metrics
 from web_test_ssa_helpers import ssa_details_toggle
@@ -50,7 +49,7 @@ def ssa_values_interactions(browser, url, output):
            ('copy','345f0100','Converged'),
            ('partial','60026003015a5f5ff0','Incomplete')]
     for name,code,completion in cases:
-        if 'Inspector hidden' not in status.text_content():hide_inspector(page,canvas)
+        set_control(page,canvas,'Inspect',False)
         report=layout_submission(page,canvas,code,output,f'ssa-values-{name}')
         assert report['schema_version']==21 and report['status']==completion
         ssa=report['ssa']
@@ -70,9 +69,15 @@ def ssa_values_interactions(browser, url, output):
             assert value['equivalent'] is None
             assert any(fact['scope']=='Definition' and fact['constant']=='0x5' for fact in value['facts'])
         if name=='partial':
+            assert not ssa['complete']
             assert any(fact['scope']=={'State':block['state']} for fact in value['facts'])
             assert any(frontier['kind']=='Creation' and 'UnknownInitCode' in frontier['detail'] for frontier in report['frontiers'])
-        page.keyboard.press('3');settle_gesture(page);page.mouse.move(2,2)
+        # Browse the actual retained instruction receipt, including incomplete
+        # SSA. Neither a MAY source nor a whole-report completeness flag picks
+        # this original Native state and its source/owner context for us.
+        full_report=json.loads((output/f'ssa-values-{name}-analysis.json').read_text())
+        select_report_context(page,full_report,'Native',state=block['state'])
+        workspace_route(page,'SSA');page.mouse.move(2,2)
         png=canvas.screenshot(path=str(output/f'ssa-values-{name}-table.png'))
         selected=screenshot_metrics(page,png,(4,75,1436,970))
         assert selected['bounds'],selected

@@ -2,11 +2,11 @@
 
 from pathlib import Path
 from playwright.sync_api import expect
-from web_test_harness import observe_webgpu, settle_gesture, submit_bytecode
+from web_test_harness import click_control, observe_webgpu, settle_gesture, submit_bytecode, ui_control
 from web_test_rpc_helpers import open_rpc_input
 
 
-def assert_rpc_disabled(page, canvas, output: Path, name: str, analyze_y: int):
+def assert_rpc_disabled(page, canvas, output: Path, name: str):
     submissions = []
     def observe_submission(request):
         if request.method == "POST" and request.url.endswith("/api/tasks"):
@@ -15,8 +15,8 @@ def assert_rpc_disabled(page, canvas, output: Path, name: str, analyze_y: int):
     try:
         page.keyboard.press("Control+Enter")
         settle_gesture(page)
-        canvas.click(position={"x": 382, "y": analyze_y})
-        settle_gesture(page)
+        ui_control(page, "Analyze", role="action", enabled=False)
+        click_control(page, canvas, "Analyze", role="action", enabled=False)
         assert not submissions, f"{name} allowed an RPC task without an available provider: {submissions}"
         canvas.screenshot(path=str(output / f"{name}.png"))
     finally:
@@ -36,9 +36,9 @@ def unconfigured_rpc_interactions(browser, url: str, output: Path):
     bytecode = submit_bytecode(page, canvas, "600160020100", output / "rpc-empty-bytecode.png")
     assert bytecode.status == 200 and bytecode.report["status"] == "Converged"
     open_rpc_input(page, canvas, from_bytecode=True)
-    assert_rpc_disabled(page, canvas, output, "rpc-empty-disabled", analyze_y=669)
+    assert_rpc_disabled(page, canvas, output, "rpc-empty-disabled")
     with page.expect_response(lambda response: response.url.endswith("/api/rpc-providers")) as retry:
-        canvas.click(position={"x": 372, "y": 410.5})
+        click_control(page, canvas, "Retry", role="action")
     assert retry.value.json() == {"result": {"Ok": []}}
     expect(status).to_contain_text("No RPC providers are configured on the server.")
     page.close()
@@ -66,17 +66,17 @@ def unconfigured_rpc_interactions(browser, url: str, output: Path):
     bytecode = submit_bytecode(page, canvas, "600160020100", output / "rpc-failed-bytecode.png")
     assert bytecode.status == 200
     open_rpc_input(page, canvas, from_bytecode=True)
-    assert_rpc_disabled(page, canvas, output, "rpc-failed-disabled", analyze_y=669)
-    canvas.click(position={"x": 372, "y": 410.5})
+    assert_rpc_disabled(page, canvas, output, "rpc-failed-disabled")
+    click_control(page, canvas, "Retry", role="action")
     expect(status).to_contain_text("Loading RPC providers")
     assert len(held_catalogues) == 1
-    assert_rpc_disabled(page, canvas, output, "rpc-loading-disabled", analyze_y=663)
+    assert_rpc_disabled(page, canvas, output, "rpc-loading-disabled")
     expect(status).to_contain_text("Loading RPC providers")
     held_catalogues[0].fulfill(status=503, content_type="application/json", body='{"result":{"Ok":[]}}')
     expect(status).to_contain_text("Could not load RPC providers:")
     page.unroute("**/api/rpc-providers", delay_catalogue)
     with page.expect_response(lambda response: response.url.endswith("/api/rpc-providers")) as retry:
-        canvas.click(position={"x": 372, "y": 410.5})
+        click_control(page, canvas, "Retry", role="action")
     assert retry.value.ok and retry.value.json() == {"result": {"Ok": []}}
     expect(status).to_contain_text("No RPC providers are configured on the server.")
     canvas.screenshot(path=str(output / "rpc-retry-recovered.png"))

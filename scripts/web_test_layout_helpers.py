@@ -4,9 +4,9 @@ from pathlib import Path
 import json
 import re
 from web_test_graph_helpers import graph_scope
-from web_test_harness import complete_submission, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture
+from web_test_harness import click_control, complete_submission, edit_control, observe_webgpu, open_input, posted_bytecode, rendered_frame, set_control, settle_gesture, ui_control
 from web_test_inspector_helpers import hide_inspector
-from web_test_pixels import screenshot_metrics, text_pixels
+from web_test_pixels import screenshot_metrics
 from web_test_hybrid import assert_hybrid, oracle_graph
 
 
@@ -39,185 +39,58 @@ def layout_modal(page, canvas):
 
 
 def layout_detail_regions(page, canvas, output, name, requested):
-    """Edit D5's real Precision row in an already open, collapsed input form."""
+    """Edit the actual Precision field; its caller checks the complete applied policy."""
     assert type(requested) is int and 0 <= requested <= (1 << 64) - 1
-    assert page.viewport_size == {"width": 1440, "height": 1000}
-    geometry = {}
-    header_offset = 10
-
-    def capture(stage):
-        page.mouse.move(2, 2)
-        settle_gesture(page)
-        page.wait_for_timeout(200)
-        png = canvas.screenshot(path=str(output / f"{name}-precision-{stage}.png"))
-        bounds = layout_modal(page, canvas)
-        assert (0 < bounds[0] < bounds[2] < 1440 and 0 < bounds[1] < bounds[3] < 1000
-                and 750 <= bounds[2] - bounds[0] <= 780), bounds
-        region = (bounds[0] + 29, bounds[1] + header_offset, bounds[0] + 95, bounds[3] - 40)
-        measured = {"modal": bounds, "region": region, **text_pixels(page, png, region)}
-        geometry[stage] = measured
-        (output / f"{name}-precision-geometry.json").write_text(json.dumps(geometry, indent=2) + "\n")
-        return measured
-
-    before = capture("closed")
-    headers = before["rows"][-6:]
-    assert len(headers) == 6 and all(20 <= b[0] - a[0] <= 26
-                                   for a, b in zip(headers, headers[1:])), before
-    header_offset = headers[0][0] - before["modal"][1] - 2
-    canvas.click(position={"x": before["modal"][0] + 70, "y": sum(headers[-2]) / 2})
-    opened = capture("open")
-    # Three environment headers, Execution, Precision, Numeric model, then
-    # Detailed code sources. The POST caller checks the complete applied policy.
-    assert len(opened["rows"]) >= 15, opened
-    assert all(abs(a[0] - opened["modal"][1] - (b[0] - before["modal"][1])) <= 2
-               for a, b in zip(opened["rows"][:5], headers[:5])), opened
-    assert all(20 <= b[0] - a[0] <= 26
-               for a, b in zip(opened["rows"][5:13], opened["rows"][6:14])), opened
-    canvas.click(position={"x": opened["modal"][0] + 250, "y": sum(opened["rows"][6]) / 2})
-    page.keyboard.press("Control+A")
-    page.keyboard.insert_text(str(requested))
-    rendered_frame(page)
-    edited = capture("edited")
-    canvas.click(position={"x": edited["modal"][0] + 70, "y": sum(edited["rows"][4]) / 2})
-    closed = capture("restored")
-    assert len(closed["rows"]) == 6, closed
+    section = set_control(page, canvas, "Precision", True, role="section")
+    field = edit_control(page, canvas, "Detailed code sources", requested)
+    canvas.screenshot(path=str(output / f"{name}-precision-edited.png"))
+    set_control(page, canvas, "Precision", False, role="section")
+    (output / f"{name}-precision-geometry.json").write_text(
+        json.dumps(dict(section=section, field=field, requested=requested), indent=2) + "\n")
 
 
 def layout_entry_form(page, canvas, entry, source_height_offset=0):
-    """Edit actual egui controls; the typed POST below verifies every choice."""
-    root_offset = source_height_offset + (10 if "address" in entry else 0)
+    """Choose each declared input through its qualified, real native form row."""
     if "address" in entry:
-        modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+18, "y": modal[1]+173+source_height_offset})
-        settle_gesture(page)
-        modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+250, "y": modal[1]+198+source_height_offset})
-        page.keyboard.insert_text(entry["address"])
-        rendered_frame(page)
-    modal = layout_modal(page, canvas)
-    canvas.click(position={"x": modal[0]+100, "y": modal[1]+209+root_offset})
-    settle_gesture(page)
-    extra_rows = 0
-    if "caller" in entry:
-        modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+175, "y": modal[1]+237+root_offset})
-        settle_gesture(page)
-        modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+250, "y": modal[1]+258+root_offset})
-        page.keyboard.insert_text(entry["caller"])
-        rendered_frame(page)
-        extra_rows += 24
-    if "call_value" in entry:
-        modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+175, "y": modal[1]+293+root_offset+extra_rows})
-        settle_gesture(page)
-        modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+250, "y": modal[1]+314+root_offset+extra_rows})
-        page.keyboard.insert_text(entry["call_value"])
-        rendered_frame(page)
-        extra_rows += 24
-    modal = layout_modal(page, canvas)
-    canvas.click(position={"x": modal[0]+175, "y": modal[1]+337+root_offset+extra_rows})
-    settle_gesture(page)
-    modal = layout_modal(page, canvas)
-    canvas.click(position={"x": modal[0]+250, "y": modal[1]+358+root_offset+extra_rows})
-    page.keyboard.insert_text(entry["calldata"])
-    rendered_frame(page)
+        set_control(page, canvas, "Root address", True, role="checkbox")
+        edit_control(page, canvas, "bytecode_address", entry["address"])
+    set_control(page, canvas, "Transaction environment", True, role="section")
+    for field, row, choice in [("caller", "environment_caller", "Address"),
+                               ("call_value", "environment_value", "Exact"),
+                               ("calldata", "environment_calldata", "Exact")]:
+        if field not in entry:
+            continue
+        group = ui_control(page, row, role="group")
+        click_control(page, canvas, choice, role="tab", within=group)
+        edit_control(page, canvas, row, entry[field])
+    set_control(page, canvas, "Transaction environment", False, role="section")
     if "chain_id" in entry:
-        # Original 20-point native rows, measured before and after modal scroll.
-        modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+100, "y": modal[1]+439+root_offset})
-        settle_gesture(page)
-        page.mouse.move(800, 660)
-        page.mouse.wheel(0, 240)
-        settle_gesture(page)
-        modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+36, "y": modal[1]+466})
-        settle_gesture(page)
-        modal = layout_modal(page, canvas)
-        canvas.click(position={"x": modal[0]+250, "y": modal[1]+489})
-        page.keyboard.insert_text(entry["chain_id"])
-        rendered_frame(page)
+        set_control(page, canvas, "Block environment overrides", True, role="section")
+        set_control(page, canvas, "Execution chain ID", True, role="checkbox")
+        edit_control(page, canvas, "environment_chain_id", entry["chain_id"])
+        set_control(page, canvas, "Block environment overrides", False, role="section")
+
 
 def _layout_execution_limits(page, canvas, output, name, limits):
-    """Select the legacy runtime policy before opening any environment header."""
+    """Retain the original explicit runtime policy without changing any defaults."""
     assert limits == {**LAYOUT_DEFAULT_LIMITS, "max_work": limits["max_work"],
                       "root_terminal_coverage": limits["root_terminal_coverage"]}
-    geometry = {"captures": {}, "targets": []}
-    header_offset = 10
-
-    def save():
-        (output / f"{name}-execution-policy-geometry.json").write_text(json.dumps(geometry, indent=2) + "\n")
-
-    def capture(stage):
-        page.mouse.move(2, 2)
-        settle_gesture(page)
-        page.wait_for_timeout(200)
-        png = canvas.screenshot(path=str(output / f"{name}-execution-policy-{stage}.png"))
-        bounds = layout_modal(page, canvas)
-        assert page.viewport_size == {"width": 1440, "height": 1000}
-        assert (0 < bounds[0] < bounds[2] < 1440 and 0 < bounds[1] < bounds[3] < 1000
-                and 750 <= bounds[2] - bounds[0] <= 780), (stage, bounds)
-        region = (bounds[0] + 29, bounds[1] + header_offset, bounds[0] + 95, bounds[3] - 40)
-        captured = {"stage": stage, "modal": bounds, "region": region,
-                    **text_pixels(page, png, region)}
-        geometry["captures"][stage] = captured
-        save()
-        return captured
-
-    def click(captured, row, x, label):
-        top, bottom = captured["rows"][row]
-        bounds = captured["modal"]
-        target = {"stage": captured["stage"], "label": label, "row": [top, bottom],
-                  "x": x, "y": (top + bottom) / 2}
-        geometry["targets"].append(target)
-        save()
-        assert bounds[0] < x < bounds[2] and bounds[1] < top < bottom < bounds[3], target
-        canvas.click(position={"x": x, "y": target["y"]})
-        settle_gesture(page)
-
-    before = capture("before")
-    headers = before["rows"][-6:]
-    assert len(headers) == 6 and all(20 <= second[0] - first[0] <= 26
-                                   for first, second in zip(headers, headers[1:])), before
-    header_offset = headers[0][0] - before["modal"][1] - 2
-    header_positions = [row[0] - before["modal"][1] for row in headers]
-    click(before, len(before["rows"]) - 3, before["modal"][0] + 70, "Execution budget")
-    opened = capture("open")
-    # Same painted-row contract as the root-coverage case: three environment
-    # headers, Execution, five numeric labels, two checkboxes, note, Precision, RPC.
-    assert len(opened["rows"]) == 14, opened
-    assert all(abs(row[0] - opened["modal"][1] - expected) <= 2
-               for row, expected in zip(opened["rows"][:4], header_positions[:4])), opened
-    assert all(20 <= second[0] - first[0] <= 26
-               for first, second in zip(opened["rows"][4:8], opened["rows"][5:9])), opened
-    assert opened["rows"][-2][0] - opened["rows"][3][1] > 150, opened
-    click(opened, 6, opened["modal"][0] + 180, "Logical work")
-    page.keyboard.press("Control+A")
-    page.keyboard.insert_text(str(limits["max_work"]))
-    rendered_frame(page)
-    if limits["root_terminal_coverage"] != LAYOUT_DEFAULT_LIMITS["root_terminal_coverage"]:
-        click(opened, 10, opened["modal"][0] + 70, "Prepare conservative root terminal coverage")
-    applied = capture("applied")
-    assert len(applied["rows"]) == 14, applied
-    assert all(abs(sum(after) / 2 - sum(before) / 2) <= 2
-               for before, after in zip(opened["rows"], applied["rows"])), applied
-    click(applied, 3, applied["modal"][0] + 70, "Execution budget")
-    closed = capture("closed")
-    # Restore the original collapsed layout before the existing entry editor.
-    assert len(closed["rows"]) == 6, closed
-    assert all(abs(row[0] - closed["modal"][1] - expected) <= 2
-               for row, expected in zip(closed["rows"], header_positions)), closed
+    section = set_control(page, canvas, "Execution budget", True, role="section")
+    field = edit_control(page, canvas, "Logical work", limits["max_work"])
+    coverage = set_control(page, canvas, "Prepare conservative root terminal coverage",
+                           limits["root_terminal_coverage"], role="checkbox")
+    canvas.screenshot(path=str(output / f"{name}-execution-policy-applied.png"))
+    set_control(page, canvas, "Execution budget", False, role="section")
+    (output / f"{name}-execution-policy-geometry.json").write_text(
+        json.dumps(dict(section=section, field=field, coverage=coverage), indent=2) + "\n")
 
 
 def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_seconds=60, entry=None,
                       source_height_offset=0, execution_limits=None):
     # Exercise the real multiline editor as a paste. Typing every byte with a
     # delay would add minutes unrelated to analysis or layout for real runtimes.
-    open_input(page)
-    page.keyboard.press("Control+A")
-    page.keyboard.insert_text(code)
-    rendered_frame(page)
+    open_input(page, mode="Bytecode")
+    edit_control(page, canvas, "Runtime bytecode", code)
     expected_limits = LAYOUT_DEFAULT_LIMITS if execution_limits is None else execution_limits
     if execution_limits is not None:
         _layout_execution_limits(page, canvas, output, name, execution_limits)

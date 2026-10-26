@@ -5,10 +5,10 @@ from pathlib import Path
 from playwright.sync_api import expect
 import json
 import re
-from web_test_harness import observe_webgpu, settle_gesture, submit_bytecode, webgpu_evidence
-from web_test_inspector_helpers import inspector_frame_tab, inspector_title_action, select_inspector_tab
+from web_test_harness import observe_webgpu, set_control, settle_gesture, submit_bytecode, webgpu_evidence
+from web_test_inspector_helpers import inspector_frame_tab, inspector_title_action, select_inspector_boundary, select_inspector_tab
 from web_test_pixels import save_png_crop, text_pixels
-from web_test_storage_helpers import assert_storage_literal_pixels, drag_storage_separator, storage_pixel_report, storage_table_pixels
+from web_test_storage_helpers import assert_storage_literal_pixels, drag_storage_separator, storage_content_region, storage_pixel_report, storage_table_pixels, touch_scroll_storage
 
 
 def storage_scroll_interactions(browser, url: str, output: Path):
@@ -25,7 +25,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     count = 96
     code = "".join(f"61{0x1000+i:04x}61{i:04x}5561{0x2000+i:04x}61{i:04x}5d"
                    for i in range(count)) + "00"
-    reply = submit_bytecode(page, canvas, code, output / "storage-scroll-input.png")
+    reply = submit_bytecode(page, canvas, code, output / "storage-scroll-input.png", close_directory=True)
     report = reply.report
     (output / "storage-scroll-full-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
     assert report["hybrid"]["coverage"]["baseline_current"]
@@ -82,8 +82,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         assert store[kind+"_facts"]==[],store[kind+"_facts"]
         ordered_roots[kind]={"root":account[kind+"_root"],"writes":count,"base_node":node,"base":base,"default":default}
     (output / "storage-scroll-analysis.json").write_text(json.dumps(report, indent=2) + "\n")
-    canvas.click(position={"x": 720, "y": 600})
-    page.keyboard.press("3")
+    select_inspector_tab(page, canvas, "Frame")
     tab = inspector_frame_tab(page, canvas)
     inspector_title_action(page, canvas, "Maximize", tab)
     expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
@@ -100,13 +99,13 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     }
     for title, kind in [("Storage", "storage"), ("Transient", "transient")]:
         select_inspector_tab(page, canvas, title, toolbar_y)
-        canvas.click(position={"x": 145, "y": tab[3] + 14})
+        select_inspector_boundary(page, canvas, "after")
         expect(status).to_contain_text("Observed exit")
         page.mouse.move(2, 2)
         settle_gesture(page)
         default_png = canvas.screenshot(path=str(output / f"{kind}-facts-default-width.png"))
-        default_table = storage_table_pixels(page, default_png,
-            (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
+        region = storage_content_region(page)
+        default_table = storage_table_pixels(page, default_png, region)
         assert default_table["header"]["slot"] and default_table["header"]["value"],storage_pixel_report(default_table)
         # Preserve the reviewed final-row glyph placement at original Value x=138.
         # The larger default moves Value to x=531, where one unchanged glyph
@@ -116,26 +115,24 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         page.mouse.move(2,2)
         settle_gesture(page)
         collapsed = canvas.screenshot(path=str(output / f"{kind}-facts-collapsed.png"))
-        table = storage_table_pixels(page, collapsed,
-            (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
+        table = storage_table_pixels(page, collapsed, region)
         assert abs(table["separator"]-134.5)<=1,storage_pixel_report(table)
         assert table["header"]["slot"] and table["header"]["value"],storage_pixel_report(table)
         # Address, touch default, ordered-state root, closed account header and
         # base default precede the table, in the order painted by stores.rs.
-        collapsed_prefix_region=(4,tab[3]+55,600,table["table_bounds"][1])
+        collapsed_prefix_region=(4,region[1],600,table["table_bounds"][1])
         collapsed_prefix=text_pixels(page,collapsed,collapsed_prefix_region)
         assert len(collapsed_prefix["rows"])==5,"account facts were already expanded or the touch/ordered-state prefix is missing"
         address_band,touch_band,root_band,account_band,default_band=collapsed_prefix["rows"]
         collapsed_facts_region=(145,account_band[1]+1,650,default_band[0])
         collapsed_facts = text_pixels(page, collapsed, collapsed_facts_region)
         assert not collapsed_facts["rows"], "account facts were already expanded before the header click"
-        canvas.click(position={"x":120,"y":sum(account_band)/2})
+        set_control(page, canvas, "Account facts in this store", True, role="section")
         page.mouse.move(2, 2)
         settle_gesture(page)
         expanded = canvas.screenshot(path=str(output / f"{kind}-facts-expanded.png"))
-        expanded_table=storage_table_pixels(page,expanded,
-            (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
-        expanded_prefix=text_pixels(page,expanded,(4,tab[3]+55,600,expanded_table["table_bounds"][1]))
+        expanded_table=storage_table_pixels(page,expanded,region)
+        expanded_prefix=text_pixels(page,expanded,(4,region[1],600,expanded_table["table_bounds"][1]))
         assert len(expanded_prefix["rows"])==5+9,"header click did not preserve the prefix and reveal all nine account facts"
         assert expanded_prefix["rows"][:4]==collapsed_prefix["rows"][:4],(collapsed_prefix,expanded_prefix)
         facts_region=(145,account_band[1]+1,650,expanded_prefix["rows"][-1][0])
@@ -156,8 +153,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         scrolled_prefix = text_pixels(page, settled, prefix_region)
         assert prefix["hash"] != scrolled_prefix["hash"], "wheel remained trapped inside facts; account prefix did not move"
         save_png_crop(page, settled, prefix_region, output / f"{kind}-prefix-scrolled.png")
-        scrolled_table = storage_table_pixels(page, settled,
-            (4,tab[3]+52,page.viewport_size["width"]-24,page.viewport_size["height"]-30))
+        scrolled_table = storage_table_pixels(page, settled, region)
         assert abs(scrolled_table["separator"]-table["separator"])<=1,"scrolling reset the Slot width"
         final_cells=scrolled_table["rows"][-1]
         last_row_region = (4,final_cells["band"][0]-3,
@@ -185,18 +181,29 @@ def storage_scroll_interactions(browser, url: str, output: Path):
         save_png_crop(page, returned, prefix_region, output / f"{kind}-prefix-returned.png")
         returned_facts = text_pixels(page, returned, facts_region)
         assert returned_facts["hash"] == expanded_facts["hash"], "returning to the top changed the expanded account facts"
-        canvas.click(position={"x":120,"y":sum(account_band)/2})
+        set_control(page, canvas, "Account facts in this store", False, role="section")
         page.mouse.move(2, 2)
         settle_gesture(page)
         reclosed = canvas.screenshot(path=str(output / f"{kind}-facts-reclosed.png"))
         reclosed_prefix = text_pixels(page, reclosed, collapsed_prefix_region)
         assert reclosed_prefix["hash"] == collapsed_prefix["hash"], "closing account facts did not restore the complete collapsed prefix"
-        canvas.click(position={"x":120,"y":sum(account_band)/2})
+        set_control(page, canvas, "Account facts in this store", True, role="section")
         page.mouse.move(2, 2)
         settle_gesture(page)
         reopened = canvas.screenshot(path=str(output / f"{kind}-facts-reopened.png"))
         reopened_facts = text_pixels(page, reopened, facts_region)
         assert reopened_facts["hash"] == expanded_facts["hash"], "reopening account facts changed the nine rendered facts"
+        selected = re.search(r"Selected [^;]+; source [^;]+;", status.text_content())
+        assert selected is not None, status.text_content()
+        touch_scroll_storage(page, region)
+        page.mouse.move(2, 2)
+        touched = canvas.screenshot(path=str(output / f"{kind}-touch-last-slots.png"))
+        touch_table = storage_table_pixels(page, touched, region)
+        touch_cells = touch_table["rows"][-1]
+        assert touch_cells["slot"] and touch_cells["slot"]["mask_sha256"] == last_cell_hashes["slot"], storage_pixel_report(touch_cells)
+        touch_value = assert_storage_literal_pixels(touch_cells["value"], "{0x105f}" if kind == "storage" else "{0x205f}")
+        assert selected[0] in status.text_content(), "touch scroll selected an unrelated state/source"
+        assert abs(touch_table["separator"] - table["separator"]) <= 1, "touch scroll reset the Slot width"
         evidence[kind] = {"entries": count, "expected_last_slot": hex(count - 1),
             "expected_last_value": account[kind][-1]["value"]["constants"],
             "expected_last_cell_mask_sha256": {"slot":last_cell_hashes["slot"],"value":last_cell_hashes[kind]},
@@ -210,6 +217,7 @@ def storage_scroll_interactions(browser, url: str, output: Path):
             "prefix_region": prefix_region, "prefix": prefix,
             "scrolled_prefix": scrolled_prefix, "returned_prefix": returned_prefix,
             "returned_facts":returned_facts,"reclosed_prefix":reclosed_prefix,"reopened_facts":reopened_facts,
+            "touch_table":touch_table,"touch_last_value":touch_value,"touch_selection":selected[0],
             "expanded_screenshot": f"{kind}-facts-expanded.png",
             "scrolled_screenshot": f"{kind}-last-slots.png"}
     assert len(posts) == 2, "storage inspection reran analysis"
