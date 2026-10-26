@@ -36,12 +36,9 @@ impl Workspace {
                 .show(ui, |ui| self.navigation_bar(ui));
         }
         let maximized = self.report.is_some() && self.inspector.maximized() && !self.form.open;
-        let source_sheet = self.report.is_some()
-            && self.directory.open
-            && self.panels.compact()
-            && !self.form.open;
+        let source_sheet = self.report.is_some() && self.sources_visible() && self.panels.compact();
         if self.report.is_some()
-            && self.directory.open
+            && self.sources_visible()
             && !source_sheet
             && !maximized
             && !self.form.open

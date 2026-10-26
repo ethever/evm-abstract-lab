@@ -521,6 +521,8 @@ impl Workspace {
                 "suspended during input"
             } else if self.directory.open && self.inspector.maximized() {
                 "suspended during maximized inspection"
+            } else if self.directory.open && self.panels.compact() && self.inspector.expanded {
+                "suspended during compact inspection"
             } else if self.directory.open {
                 "open"
             } else {

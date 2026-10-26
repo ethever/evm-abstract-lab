@@ -47,6 +47,7 @@ fn panel(report: &crate::tests::AnalysisReport) -> Panel<'_> {
     }
 }
 
+#[track_caller]
 fn near(actual: f32, expected: f32) {
     assert!((actual - expected).abs() < 1.0, "{actual} != {expected}");
 }

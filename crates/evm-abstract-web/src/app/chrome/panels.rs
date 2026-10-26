@@ -34,8 +34,6 @@ impl PanelLayout {
             // and Inspect remain explicit, anchored choices in the header.
             *sources = false;
             *inspector = false;
-        } else if compact && *sources && *inspector {
-            *sources = false;
         }
         self.compact = compact;
         self.report = Some(report);
