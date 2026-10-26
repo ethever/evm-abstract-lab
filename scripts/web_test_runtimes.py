@@ -26,13 +26,16 @@ def _runtime_zoom_percent(status):
 
 
 def _runtime_ssa_detail(zoom_percent, previous_detail):
-    # paint.rs::detail_level retains its prior level strictly between 55% and 65%.
-    # scene.rs labels Preview as SSA preview while NodeView::Ssa is selected.
-    assert previous_detail in {"identities", "SSA preview"}
-    if zoom_percent <= 55:
-        return "identities"
-    if zoom_percent >= 65:
+    # Independent expectation for paint.rs::detail_level: silhouettes below
+    # 45%, readable identities through 78%, previews from 88%; the band between
+    # 78% and 88% retains Identity/Preview, while leaving Silhouette adds labels.
+    assert previous_detail in {"overview shapes", "identities", "SSA preview"}
+    if zoom_percent < 45:
+        return "overview shapes"
+    if zoom_percent >= 88:
         return "SSA preview"
+    if zoom_percent <= 78 or previous_detail == "overview shapes":
+        return "identities"
     return previous_detail
 
 
@@ -137,7 +140,9 @@ def hierarchy_real_runtime_interactions(browser,url,args,fixture_names=("ethereu
             diagnostic=f"{name} {action}: {diff}; zoom {before_zoom}% -> {actual_zoom}%; see {scene_path} and {screenshot_path}"
             assert actual_scene == expected_scene, diagnostic
             if action == "fit" and name in {"ethereum-uniswap-v2-router02","ethereum-multicall3"}:
-                assert actual_zoom <= 55 and actual_scene["detail"] == "identities", diagnostic
+                assert actual_zoom <= 55, diagnostic
+                fitted_detail = "overview shapes" if actual_zoom < 45 else "identities"
+                assert actual_scene["detail"] == fitted_detail, diagnostic
             elif action == "zoom":
                 assert actual_zoom > before_zoom, diagnostic
             elif action == "focus":
