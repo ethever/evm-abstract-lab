@@ -66,7 +66,14 @@ pub(super) fn relative_procedure<'a>(
                                 && covered.contains(&node["frame"]["basic_block_index"])
                                 && transfer["semantics"] == "Native"
                                 && transfer["process"].is_null()
-                                && transfer["input_revision"] == node["input_revision"]
+                                && matches!(
+                                    (
+                                        transfer["input_revision"].as_u64(),
+                                        node["input_revision"].as_u64()
+                                    ),
+                                    (Some(transfer_revision), Some(node_revision))
+                                        if transfer_revision == node_revision
+                                )
                                 && transfer["current"] == true
                                 && transfer["complete"] == true
                                 && transfer["visited_block"] == true
@@ -115,6 +122,45 @@ fn relative_evidence_rejects_foreign_stale_and_unexecuted_receipts() {
         assert!(relative_procedure(&analysis, CALLEE, CALLEE, &hash).is_some());
         assert!(relative_procedure(&analysis, CALLEE, ENTRY, &hash).is_none());
         assert!(relative_procedure(&analysis, CALLEE, CALLEE, &json!(keccak256([]))).is_none());
+        // Regional input slots and procedure entries have independent clocks.
+        let mut changed = analysis.clone();
+        for record in changed["procedure_summaries"].as_array_mut().unwrap() {
+            for node in record["regional_cfg"]["nodes"].as_array_mut().unwrap() {
+                node["input_revision"] = json!(99);
+                node["transfer"]["input_revision"] = json!(99);
+            }
+        }
+        assert!(relative_procedure(&changed, CALLEE, CALLEE, &hash).is_some());
+        for revision in [
+            None,
+            Some(json!(null)),
+            Some(json!("0")),
+            Some(json!(-1)),
+            Some(json!(0.5)),
+            Some(json!(true)),
+            Some(json!({})),
+            Some(json!([])),
+        ] {
+            let mut changed = analysis.clone();
+            for record in changed["procedure_summaries"].as_array_mut().unwrap() {
+                for node in record["regional_cfg"]["nodes"].as_array_mut().unwrap() {
+                    if let Some(revision) = &revision {
+                        node["input_revision"] = revision.clone();
+                        node["transfer"]["input_revision"] = revision.clone();
+                    } else {
+                        node.as_object_mut().unwrap().remove("input_revision");
+                        node["transfer"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("input_revision");
+                    }
+                }
+            }
+            assert!(
+                relative_procedure(&changed, CALLEE, CALLEE, &hash).is_none(),
+                "{revision:?}"
+            );
+        }
         for (path, value) in [
             ("/source_current", json!(false)),
             ("/closed", json!(false)),
