@@ -3,7 +3,7 @@
 from playwright.sync_api import expect
 import re
 import time
-from web_test_harness import click_control, set_control, ui_control, ui_controls
+from web_test_harness import click_control, set_control, settle_gesture, ui_control, ui_controls
 
 
 INSPECTOR_GROUPS = {
@@ -12,6 +12,13 @@ INSPECTOR_GROUPS = {
     "Storage": "Effects", "Transient": "Effects", "Outcomes": "Effects",
     "Coverage": "Evidence", "Acquisition": "Evidence", "Environment": "Evidence",
     "Diagnostics": "Evidence", "Timing": "Timing",
+}
+
+INSPECTOR_OPTION_ROLES = {
+    "inspection_group": "tab", "inspector_tab": "tab",
+    "inspector_observation_scope": "tab", "inspector_boundary": "tab",
+    "inspector_frame": "tab", "outcome_selection": "tab",
+    "minimum_procedure": "option", "minimum_joint_output": "option",
 }
 
 
@@ -25,20 +32,57 @@ def hide_inspector(page, canvas):
     return set_control(page, canvas, "Inspect", False)
 
 
-def inspector_choice(page, canvas, menu, label, *, role="tab"):
-    """Pick an actual popup response, disambiguated from the underlying tabs."""
-    before = {control["id"] for control in ui_controls(page)}
-    click_control(page, canvas, menu, role="combobox")
-    deadline = time.monotonic() + 5
-    while True:
-        choices = [control for control in ui_controls(page)
-                   if control["id"] not in before and control["label"] == label
-                   and control["role"] == role and control["enabled"]]
-        if choices or time.monotonic() >= deadline:
-            break
-        page.wait_for_timeout(25)
-    assert len(choices) == 1, (menu, label, choices)
-    return click_control(page, canvas, label, role=role, id=choices[0]["id"])
+def inspector_choice(page, canvas, menu, label):
+    """Pick the exact native/custom option and observe its selected paint."""
+    assert menu in INSPECTOR_OPTION_ROLES, menu
+    role = INSPECTOR_OPTION_ROLES[menu]
+
+    def opened_choice(*, selected=None):
+        before = {control["id"] for control in ui_controls(page)}
+        click_control(page, canvas, menu, role="combobox")
+        deadline = time.monotonic() + 5
+        while True:
+            choices = [control for control in ui_controls(page)
+                       if control["id"] not in before and control["label"] == label
+                       and control["role"] == role and control["enabled"]
+                       and (selected is None or control["selected"] is selected)]
+            if choices or time.monotonic() >= deadline:
+                break
+            page.wait_for_timeout(25)
+        assert len(choices) == 1, (menu, label, role, selected, choices)
+        return choices[0]
+
+    choice = opened_choice()
+    assert type(choice["selected"]) is bool, choice
+    click_control(page, canvas, label, role=role, id=choice["id"])
+    # The click response contains the pre-click paint. Reopen the real popup
+    # to verify the chosen value, then close it without selecting another row.
+    selected = opened_choice(selected=True)
+    page.keyboard.press("Escape")
+    settle_gesture(page)
+    return selected
+
+
+def select_inspector_joint_output(page, canvas, output, kind):
+    """Select one actual procedure-relative Data/Store alternative together."""
+    assert type(output) is int and output >= 0, output
+    assert kind in {"Return", "Revert", "Failure"}, kind
+    select_inspector_scope(page, canvas, "Joint outcome")
+    return inspector_choice(page, canvas, "minimum_joint_output", f"{kind} · alternative {output + 1}")
+
+
+def select_inspector_outcome(page, canvas, index, outcome):
+    """Use the actual Native outcome tuple, qualified by its original state."""
+    assert type(index) is int and index >= 0, index
+    assert type(outcome["state"]) is int and outcome["state"] >= 0, outcome
+    kind = outcome["kind"]
+    assert kind in {"Return", "Revert", "Failure"}, outcome
+    select_inspector_tab(page, canvas, "Outcomes")
+    subscript = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+    label = f"Outcome O{str(index).translate(subscript)} · σ{str(outcome['state']).translate(subscript)} · {kind}"
+    choice = inspector_choice(page, canvas, "outcome_selection", label)
+    expect(page.locator("#analysis-status")).to_contain_text(f"Selected σ{str(outcome['state']).translate(subscript)};")
+    return choice
 
 
 def select_inspector_scope(page, canvas, scope):
