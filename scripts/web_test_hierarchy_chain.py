@@ -25,7 +25,7 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
     assert len(report["edges"]) == metadata["expected_original_edges"]
     scene = layout_counts(page, report, metadata["expected_spatial_groups"])
     assert scene["nodes"] == metadata["expected_source_blocks"]
-    assert scene["detail"] == "identities"
+    assert scene["detail"] == "overview shapes"
     if native_projection:
         assert hashlib.sha256(bytes.fromhex(code)).hexdigest() == metadata["code_sha256"]
         request = json.loads((output/f"{fixture_name}-request.json").read_text())

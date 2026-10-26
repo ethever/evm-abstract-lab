@@ -40,7 +40,11 @@ def hierarchy_small_interactions(browser, url: str, output: Path):
                     if request.method=="POST" and request.url.endswith("/api/tasks") else None)
             pointer = ((pixels["bounds"][0]+pixels["bounds"][2])/2,(pixels["bounds"][1]+pixels["bounds"][3])/2)
             for _ in range(12):
-                if "CFG detail: identities" in page.locator("#analysis-status").text_content(): break
+                status = page.locator("#analysis-status").text_content()
+                # D5 enters identity LOD earlier. Keep the original <=55%
+                # pixel oracle by continuing real wheel input until that scale.
+                if ("CFG detail: identities" in status
+                        and float(re.search(r"; CFG zoom: ([0-9.]+)%",status)[1]) <= 55): break
                 page.mouse.move(*pointer); page.keyboard.down("Control"); page.mouse.wheel(0,160); page.keyboard.up("Control"); settle_gesture(page)
             expect(page.locator("#analysis-status")).to_contain_text("CFG detail: identities")
             low_zoom=float(re.search(r"; CFG zoom: ([0-9.]+)%",page.locator("#analysis-status").text_content())[1])
