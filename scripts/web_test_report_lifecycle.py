@@ -322,7 +322,9 @@ def cancellation(context,url,rpc):
     replacement_result = page.request.get(url + "/api/tasks/" + str(replacement_id) + "/result").json()["result"]["Ok"]
     assert_detail_policy(replacement_result["report"], 1)
     replacement_controls = process_model(replacement_result["report"], require_hub=True)
-    expect(status).to_contain_text("1 expanded unknown-jump hubs")
+    # Through/admission was checked above against the actual Process receipt;
+    # the scoped display reports its hub count without calling it Native expansion.
+    expect(status).to_contain_text("; 1 unknown-jump hubs;")
     cards = select_may_source(page, canvas, replacement_result["report"], context.output)
     canvas.screenshot(path=str(context.output / "selected-may-hub-source.png"))
     page.keyboard.press("2")
