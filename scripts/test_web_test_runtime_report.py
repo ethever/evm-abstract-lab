@@ -3,7 +3,7 @@ from copy import deepcopy
 import unittest
 
 from web_test_hybrid import oracle_graph
-from web_test_runtime_report import _runtime_numeric_contains, layout_runtime_programs
+from web_test_runtime_report import _runtime_account_code, _runtime_numeric_contains, layout_runtime_programs
 
 
 def instruction(pc, opcode, name, immediate, size=1, valid=True):
@@ -30,6 +30,18 @@ def source_fixture():
 
 
 class RuntimeReportTests(unittest.TestCase):
+    def test_visited_store_account_code_uses_exact_wire_variants(self):
+        for code in [None, "Empty", "Unknown", {"Runtime": "0x00"}, {"Runtime": "0x"},
+                     {"Runtime": "0xA0ff"}, {"Delegation": "0x" + "12" * 20}]:
+            with self.subTest(code=code):
+                self.assertTrue(_runtime_account_code(code))
+        for code in [False, "Runtime", [], {}, {"Runtime": "0x0"}, {"Runtime": "0xgg"},
+                     {"Runtime": False}, {"Delegation": "0x" + "12" * 19},
+                     {"Delegation": "0x" + "12" * 21}, {"Code": "0x00"},
+                     {"Runtime": "0x00", "Delegation": "0x" + "12" * 20}]:
+            with self.subTest(code=code):
+                self.assertFalse(_runtime_account_code(code))
+
     def test_complete_catalog_and_independent_corruption_controls(self):
         report, code, metadata = source_fixture()
         layout_runtime_programs(oracle_graph(report, "Native"), code, metadata)

@@ -6,8 +6,22 @@ execution evidence. Negative mutations are always restored before returning.
 """
 import hashlib
 import json
+import re
 from collections import Counter
 from web_test_hybrid import oracle_graph, source_block as resolve_source_block
+
+
+def _runtime_account_code(code):
+    """The AccountCode variants consumed by visited StoreSnapshot rows."""
+    if code is None or code in ("Empty", "Unknown"):
+        return True
+    if type(code) is not dict or len(code) != 1:
+        return False
+    kind, payload = next(iter(code.items()))
+    if type(payload) is not str:
+        return False
+    pattern = {"Runtime": r"0x(?:[0-9a-fA-F]{2})*", "Delegation": r"0x[0-9a-fA-F]{40}"}.get(kind)
+    return pattern is not None and re.fullmatch(pattern, payload) is not None
 
 
 def _runtime_numeric_contains(value, actual):
@@ -493,9 +507,7 @@ def layout_pending_machines(report, entry, expected_limits):
             assert store["existence_default"] in {"Unknown","Present","Absent"}
             assert all(store[name] is None or type(store[name]) is bool for name in ["created_default","pending_destruction_default"])
             code = store["code_default"]
-            assert code is None or code in ("Empty","Unknown") or (isinstance(code,dict) and len(code) == 1 and (
-                ("Runtime" in code and re.fullmatch(r"0x(?:[0-9a-fA-F]{2})*",code["Runtime"])) or
-                ("Delegation" in code and re.fullmatch(r"0x[0-9a-fA-F]{40}",code["Delegation"]))))
+            assert _runtime_account_code(code)
         assert set(store) == fields
         assert store["touched_default"] is None or isinstance(store["touched_default"],bool)
         for name in ["storage_default","transient_default","balance_default"]:facts(store[name])
