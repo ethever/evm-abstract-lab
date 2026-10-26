@@ -1,12 +1,14 @@
 """Real staged HTTP results, GPU interaction and retained Global after cancellation."""
 
 import hashlib
-import base64
 import json
 from pathlib import Path
 import re
+import time
 from playwright.sync_api import expect
 from web_test_harness import click_control, edit_control, observe_webgpu, open_input, rendered_frame, select_report_namespace, settle_gesture, ui_control, webgpu_evidence
+from web_test_graph_helpers import pick_may_point, workspace_route
+from web_test_hybrid import process_control_relation, source_program
 
 
 def process_model(report, require_hub=False):
@@ -41,70 +43,58 @@ def process_model(report, require_hub=False):
     return {"directory_rows": len(directory), "regions": regions, "hubs": hubs}
 
 
-def select_may_source(page, canvas, output):
-    """Click a real painted card, then check source-only navigation."""
-    page.keyboard.press("2")
-    page.keyboard.press("f")
-    page.mouse.move(2, 2)
-    settle_gesture(page)
-    png = canvas.screenshot()
-    cards = page.evaluate("""async png => {
-        const image=new Image(); image.src=`data:image/png;base64,${png}`;
-        await image.decode();
-        const c=document.createElement('canvas'); c.width=image.width;c.height=image.height;
-        const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
-        const p=ctx.getImageData(0,0,c.width,c.height).data;
-        const seen=new Uint8Array(c.width*c.height), scale=c.width/innerWidth, cards=[];
-        const fill=i=>(p[i*4]===29&&p[i*4+1]===40&&p[i*4+2]===56)||
-            (p[i*4]===33&&p[i*4+1]===65&&p[i*4+2]===75);
-        for(let y=Math.ceil(160*scale);y<c.height-200*scale;y++)for(let x=0;x<c.width;x++){
-            const start=y*c.width+x;if(seen[start]||!fill(start))continue;
-            const q=[start];seen[start]=1;let l=x,r=x,t=y,b=y;
-            for(let a=0;a<q.length;a++){
-                const i=q[a],px=i%c.width,py=Math.floor(i/c.width);
-                l=Math.min(l,px);r=Math.max(r,px);t=Math.min(t,py);b=Math.max(b,py);
-                for(const n of [px?i-1:-1,px+1<c.width?i+1:-1,py?i-c.width:-1,py+1<c.height?i+c.width:-1]){
-                    if(n>=0&&!seen[n]&&fill(n)){seen[n]=1;q.push(n);}
-                }
-            }
-            const w=(r-l+1)/scale,h=(b-t+1)/scale;
-            if(w/h>3.4&&w/h<4.3&&w>80&&h>20)cards.push({x:(l+r)/2/scale,y:(t+b)/2/scale});
-        }
-        return cards;
-    }""", base64.b64encode(png).decode())
-    assert cards, "the real Global MAY scene did not paint selectable cards"
+def select_may_source(page, canvas, report, output):
+    """Keep the actual qualified MAY hub while navigating its decoded Code."""
+    model = report["minimum"]
+    assert len(model["summaries"]) == 1, "choose an explicit entry relation"
+    relation = model["summaries"][0]["relation"]
+    procedure = relation["root_procedure"]
+    root = relation["procedures"][procedure]["process"]
+    assert root is not None and root["source"] == model["declared_root_source"]
+    candidates = []
+    for node in relation["regional_cfg"]["nodes"]:
+        if node["procedure"] != procedure or node["transfer"] is None:
+            continue
+        key = node["frame"]["process"]
+        process = node["transfer"]["process"]
+        if key is None or process is None or process["control"] is None:
+            continue
+        if (key["epoch"], key["owner"], key["source"], key["is_static"]) != (
+                root["epoch"], root["owner"], root["source"], root["is_static"]):
+            continue
+        control = process["control"]
+        if "JumpTargets" in control["through"]:
+            candidates.append((node, process_control_relation(report, key, control)))
+    assert candidates, "the actual root context has no retained unknown-jump through receipt"
+    # Pick a particular retained receipt deterministically; do not join its
+    # state facts with other origins sharing the same displayed source hub.
+    node, certificate = min(candidates, key=lambda item: item[0]["id"])
+    card = pick_may_point(page, canvas, report, summary=0, procedure=procedure,
+                          region=node["id"], location="JumpTargets")
+    workspace_route(page, "Code")
     status = page.locator("#analysis-status")
-    for card in cards:
-        canvas.click(position=card)
-        rendered_frame(page)
-        if "Selected MAY source: unknown-jump hub" in status.text_content():
-            break
     expect(status).to_contain_text("Selected MAY source: unknown-jump hub")
-    page.keyboard.press("1")
-    rendered_frame(page)
-    source_png = canvas.screenshot(path=str(output / "may-source-navigation.png"))
-    selected_tab = page.evaluate("""async png => {
-        const image=new Image();image.src=`data:image/png;base64,${png}`;
-        await image.decode();const c=document.createElement('canvas');
-        c.width=image.width;c.height=image.height;
-        const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
-        const p=ctx.getImageData(0,0,c.width,c.height).data,scale=c.width/innerWidth;
-        let left=c.width,right=-1,count=0;
-        for(let y=0;y<25*scale;y++)for(let x=125*scale;x<400*scale;x++){
-            const i=(y*c.width+x)*4;
-            if(p[i]===33&&p[i+1]===65&&p[i+2]===75){left=Math.min(left,x);right=Math.max(right,x);count++;}
-        }
-        return {left:left/scale,right:right/scale,pixels:count/scale/scale};
-    }""", base64.b64encode(source_png).decode())
-    # Source navigation must reach the actual Code tab. Status retains the
-    # model namespace in every view, so that text alone cannot distinguish SSA.
-    center = (selected_tab["left"] + selected_tab["right"]) / 2
-    width = selected_tab["right"] - selected_tab["left"]
-    assert selected_tab["pixels"] > 100 and 210 <= center <= 250 and 30 <= width <= 55, selected_tab
-    # The virtual hub keeps its qualifier; Code navigation must not turn it
-    # into block zero or a Native instruction selection.
+    ui_control(page, "Copy code", role="action")
+    program = source_program(report, certificate["program"])
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    def copied(expected):
+        deadline = time.monotonic() + 5
+        while True:
+            value = page.evaluate("navigator.clipboard.readText()")
+            if expected(value):
+                return value
+            assert time.monotonic() < deadline, ("decoded source clipboard did not match", value)
+            page.wait_for_timeout(25)
+    # Two distinct real copy actions prevent an old clipboard value passing
+    # the exact source-byte oracle. These buttons belong to the painted Code route.
+    click_control(page, canvas, "Copy code", role="action")
+    copied(lambda text: "CALLDATASIZE" in text)
+    click_control(page, canvas, "Copy bytecode", role="action")
+    copied(lambda text: text == program["bytecode"])
+    canvas.screenshot(path=str(output / "may-source-navigation.png"))
     expect(status).to_contain_text("Selected MAY source: unknown-jump hub")
-    return cards
+    assert "Selected σ" not in status.text_content(), status.text_content()
+    return [card]
 
 
 def detail_policy_form(page, canvas, reference_request, reference_report, output):
@@ -332,8 +322,10 @@ def cancellation(context,url,rpc):
     replacement_result = page.request.get(url + "/api/tasks/" + str(replacement_id) + "/result").json()["result"]["Ok"]
     assert_detail_policy(replacement_result["report"], 1)
     replacement_controls = process_model(replacement_result["report"], require_hub=True)
-    expect(status).to_contain_text("1 expanded unknown-jump hubs")
-    cards = select_may_source(page, canvas, context.output)
+    # Through/admission was checked above against the actual Process receipt;
+    # the scoped display reports its hub count without calling it Native expansion.
+    expect(status).to_contain_text("; 1 unknown-jump hubs;")
+    cards = select_may_source(page, canvas, replacement_result["report"], context.output)
     canvas.screenshot(path=str(context.output / "selected-may-hub-source.png"))
     page.keyboard.press("2")
     rendered_frame(page)

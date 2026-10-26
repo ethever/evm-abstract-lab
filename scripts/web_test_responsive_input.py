@@ -27,13 +27,19 @@ def run_responsive_input(context):
     page.on("request", lambda request: submissions.append(request.post_data_json)
             if request.method == "POST" and request.url.endswith("/api/tasks") else None)
     open_input(page, mode="Bytecode")
-    edit_control(page, canvas, "Runtime bytecode", "")
-    editor = focus_text_control(page, canvas, "Runtime bytecode", touch=True)
-    session = page.context.new_cdp_session(page)
     code = "600160020100"
+    edit_control(page, canvas, "Runtime bytecode", code)
+    editor = focus_text_control(page, canvas, "Runtime bytecode", touch=True)
+    page.keyboard.press("Control+A")
+    rendered_frame(page)
+    session = page.context.new_cdp_session(page)
     session.send("Input.imeSetComposition", {"text": code, "selectionStart": len(code),
                                             "selectionEnd": len(code)})
     rendered_frame(page)
+    # The draft is valid and the actual Analyze action is enabled. An invalid
+    # empty draft would not establish that IME ownership blocked the shortcut.
+    expect(status).to_contain_text("Input validation: Ready")
+    ui_control(page, "Analyze", role="action", enabled=True)
     page.keyboard.press("Control+Enter")
     rendered_frame(page)
     expect(status).to_contain_text("Input editor: Bytecode")

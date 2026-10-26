@@ -160,12 +160,9 @@ def ui_control(page, label=None, *, role=None, selected=None, enabled=True, id=N
     fields.update((key, value) for key, value in
                   [("role", role), ("selected", selected), ("enabled", enabled), ("id", id)]
                   if value is not None)
-    # Poll the real DOM attribute, so an idle WebGPU page need not schedule an
-    # animation frame merely to run the acceptance predicate.
-    terms = [re.escape(json.dumps(key) + ":" + json.dumps(value, ensure_ascii=False))
-             for key, value in fields.items()]
-    pattern = re.compile(r"\{" + "".join(r"(?=[^{}]*" + term + ")" for term in terms) + r"[^{}]*\}")
-    expect(page.locator("#analysis-status")).to_have_attribute("data-controls", pattern)
+    # Parse the real attribute structurally: rendered values can contain JSON
+    # braces or quotes. Polling this DOM state also works on idle WebGPU pages
+    # without requiring a rAF callback merely to evaluate the predicate.
     # Repeated Exact/Unknown tabs are qualified by their real enclosing row,
     # never by an ordinal or an unrelated first matching response.
     bounds = within["rect"] if isinstance(within, dict) else within
@@ -205,7 +202,33 @@ def set_control(page, canvas, label, selected, *, role="toggle", **query):
     assert type(control["selected"]) is bool, control
     if control["selected"] != selected:
         click_control(page, canvas, label, role=role, **query)
+        if role == "section":
+            settle_control_geometry(page)
     return ui_control(page, label, role=role, selected=selected, **query)
+
+
+def settle_control_geometry(page):
+    """Wait for actual accepted geometry after a native collapsing section.
+
+    Its open bit precedes animated body sizing and modal recentering. Compare
+    real responses across painted frames; harmless pointer movement supplies
+    those frames even after the application would otherwise become idle.
+    """
+    def geometry():
+        return [(control["id"], control["role"], control["rect"])
+                for control in ui_controls(page) if control["enabled"]]
+    previous, stable, step = geometry(), 0, 0
+    deadline = time.monotonic() + 5
+    while stable < 2:
+        assert time.monotonic() < deadline, "native section response geometry did not settle"
+        before = page.evaluate("window.__webgpuEvidence.submissions")
+        page.mouse.move(1 + step % 2, 1)
+        step += 1
+        page.wait_for_function("before => window.__webgpuEvidence.submissions > before",
+                               arg=before, polling=25, timeout=5000)
+        current = geometry()
+        stable = stable + 1 if current == previous else 0
+        previous = current
 
 
 def focus_text_control(page, canvas, label, *, touch=False, **query):
@@ -241,17 +264,24 @@ def edit_control(page, canvas, label, text, **query):
     control = focus_text_control(page, canvas, label, **query)
     page.keyboard.press("Control+A")
     rendered_frame(page)
-    page.keyboard.insert_text(str(text))
+    replacement = str(text)
+    if replacement:
+        page.keyboard.insert_text(replacement)
+    else:
+        page.keyboard.press("Backspace")
     rendered_frame(page)
     return control
 
 
 def select_input_mode(page, canvas, mode):
     assert mode in {"Address", "Bytecode"}, mode
-    control = ui_control(page, mode, role="tab")
+    group = ui_control(page, "input_source", role="group")
+    control = ui_control(page, mode, role="tab", within=group)
     if not control["selected"]:
-        click_control(page, canvas, mode, role="tab")
-    ui_control(page, mode, role="tab", selected=True)
+        click_control(page, canvas, mode, role="tab", id=control["id"])
+    # Switching mode can resize and recenter the modal. Bind the response ID
+    # qualified above, rather than reusing the previous row's screen rectangle.
+    ui_control(page, mode, role="tab", selected=True, id=control["id"])
     expect(page.locator("#analysis-status")).to_contain_text(f"Input editor: {mode}")
 
 
@@ -299,20 +329,36 @@ def select_report_context(page, report, namespace, *, state=None, summary=None, 
             program = captures[0] if captures else None
         query = f"Minimum {{ summary: {summary}, procedure: {procedure} }}"
     click_control(page, canvas, label, role="tab")
+    # An opaque/program=None context has no captured source row to choose.
+    # Listing every context is an explicit presentation action; it does not
+    # change the canonical focus until the exact context below is picked.
+    set_control(page, canvas, "All contexts", program is None)
     if program is not None:
         # The original template and its conditional Native alias may have the
         # same bytes. Choose the actual alias before enumerating its contexts.
         source = program["code_address"] or (
             "Constructor code" if program["kind"] == "Initcode" else "Supplied input program")
-        edit_control(page, canvas, "source_context_filter", program["code_address"] or program["code_hash"])
+        # An address can retain old and new code in the same publication.
+        # Hash search plus the actual alias caption keeps those sources apart.
+        edit_control(page, canvas, "source_context_filter", program["code_hash"])
         caption = source if len(source) <= 22 else source[:10] + "…" + source[-8:]
         click_control(page, canvas, caption, role="source")
         set_control(page, canvas, "Sources", True)
     edit_control(page, canvas, "source_context_filter", query)
     contexts = [control for control in ui_controls(page) if control["role"] == "context" and control["enabled"]]
     assert len(contexts) == 1, (namespace, query, contexts)
-    chosen = click_control(page, canvas, contexts[0]["label"], role="context", id=contexts[0]["id"])
+    click_control(page, canvas, contexts[0]["label"], role="context", id=contexts[0]["id"])
     expect(page.locator("#analysis-status")).to_contain_text(f"View: {label}")
+    # Namespace text alone could accept a different row in the same graph.
+    # Reopen a narrow sheet and verify the canonical selection through the
+    # actual selected context and source responses after navigation completes.
+    set_control(page, canvas, "Sources", True)
+    chosen = ui_control(page, contexts[0]["label"], role="context", selected=True)
+    if program is not None:
+        edit_control(page, canvas, "source_context_filter", program["code_hash"])
+        ui_control(page, caption, role="source", selected=True)
+        edit_control(page, canvas, "source_context_filter", query)
+        chosen = ui_control(page, contexts[0]["label"], role="context", selected=True)
     if close_directory:
         hide_world_directory(page, canvas)
     return chosen
@@ -383,23 +429,22 @@ def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=
     raise AssertionError(f"task did not reach a terminal state: {job}")
 
 def open_input(page, *, mode=None):
-    # The product shortcut opens the modal and focuses its initial source field.
+    """Open the modal and explicitly focus its real source field."""
     page.keyboard.press("Control+Enter")
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text(re.compile(r"(?:^|; )Input editor: (Address|Bytecode)(?=;|$)"))
     settle_gesture(page)
-    # The modal requests its TextEdit focus after painting the controls. Wait
-    # until eframe has applied that request to its real DOM text agent before
-    # sending selection/paste events, which a focused canvas would discard.
-    page.wait_for_function("""() => {
-        const canvas = document.querySelector('#evm-canvas');
-        const agent = canvas?.nextElementSibling;
-        if (!(agent instanceof HTMLInputElement) || document.activeElement !== agent) return false;
-        const x = parseFloat(agent.style.left), y = parseFloat(agent.style.top);
-        return x > canvas.offsetLeft && y > canvas.offsetTop &&
-               x <= canvas.offsetLeft + canvas.clientWidth &&
-               y <= canvas.offsetTop + canvas.clientHeight;
-    }""", polling=25)
+    canvas = page.locator("#evm-canvas")
     if mode is not None:
-        select_input_mode(page, page.locator("#evm-canvas"), mode)
+        select_input_mode(page, canvas, mode)
+    else:
+        match = re.search(r"(?:^|; )Input editor: (Address|Bytecode)(?=;|$)", status.text_content())
+        assert match, status.text_content()
+        mode = match[1]
+    # Mobile mode buttons may keep canvas focus. A real editor tap is the
+    # meaningful focus transition before callers send selection or paste keys.
+    focus_text_control(page, canvas, "Runtime bytecode" if mode == "Bytecode" else "rpc_address")
+
 
 def posted_bytecode(reply):
     return reply.request.post_data_json["input"]["Bytecode"]["bytecode"]

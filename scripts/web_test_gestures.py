@@ -100,26 +100,29 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             pinch_ratio = assert_anchored_zoom(ctrl_zoom, pinched, anchor)
             assert abs(pinch_ratio - math.exp(0.18)) < 0.06, f"eframe pinch conversion changed: {pinch_ratio}"
             bounds = pinched["bounds"]
-            safari_anchor = ((bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2)
-            page.mouse.move(*safari_anchor)
+            touch_anchor = ((bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2)
+            page.mouse.move(*touch_anchor)
             rendered_frame(page)
-            # Safari sends non-standard gesture events instead of relying solely on
-            # Ctrl+wheel. Exercise eframe's generic Event/Reflect adapter in Chromium;
-            # this is not a claim of testing Safari or a physical Mac trackpad.
-            page.evaluate("""() => {
-                const canvas = document.querySelector('#evm-canvas');
-                for (const [kind, scale] of [['gesturestart', 1], ['gesturechange', 1.12], ['gestureend', 1.12]]) {
-                    const event = new Event(kind, {bubbles: true, cancelable: true});
-                    Object.assign(event, {scale, rotation: 0});
-                    canvas.dispatchEvent(event);
-                }
-            }""")
+            # Exercise a real two-contact touchscreen pinch. The quantitative
+            # anchor/scale contract remains independent of Ctrl+wheel; no app
+            # events or clock are synthesized through JavaScript.
+            def touch_points(scale):
+                return [{"x":touch_anchor[0]+sign*60*scale,"y":touch_anchor[1],
+                         "id":index,"radiusX":2,"radiusY":2,"force":1}
+                        for index,sign in [(1,-1),(2,1)]]
+            cdp.send("Input.dispatchTouchEvent",{"type":"touchStart","touchPoints":touch_points(1)[:1]})
+            cdp.send("Input.dispatchTouchEvent",{"type":"touchStart","touchPoints":touch_points(1)})
+            rendered_frame(page)
+            for step in range(1,7):
+                cdp.send("Input.dispatchTouchEvent",{"type":"touchMove","touchPoints":touch_points(1+0.12*step/6)})
+                rendered_frame(page)
+            cdp.send("Input.dispatchTouchEvent",{"type":"touchEnd","touchPoints":[]})
             settle_gesture(page)
             page.mouse.move(30, 700)
             rendered_frame(page)
-            safari_zoom = node_snapshot(page, canvas, output, f"{prefix}-safari-format-gesture")
-            safari_ratio = assert_anchored_zoom(pinched, safari_zoom, safari_anchor)
-            assert abs(safari_ratio - 1.12) < 0.04, f"Safari-format gesture scale was not applied: {safari_ratio}"
+            touch_zoom = node_snapshot(page, canvas, output, f"{prefix}-touch-pinch")
+            touch_ratio = assert_anchored_zoom(pinched, touch_zoom, touch_anchor)
+            assert abs(touch_ratio - 1.12) < 0.04, f"touchscreen pinch scale was not applied: {touch_ratio}"
             assert page.evaluate("devicePixelRatio") == dpr, "graph gesture changed browser page zoom"
             assert page.evaluate("visualViewport.scale") == 1, "graph gesture changed visual viewport zoom"
 
@@ -132,10 +135,10 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             graph_content(page, canvas, "Disasm")
             expect(status).to_contain_text("CFG nodes: Disasm")
             disasm = node_snapshot(page, canvas, output, f"{prefix}-nodes-disasm")
-            require_selected_complete(disasm);require_selected_complete(safari_zoom)
+            require_selected_complete(disasm);require_selected_complete(touch_zoom)
             disasm_width = disasm["bounds"][2] - disasm["bounds"][0]
-            assert disasm["hash"] != safari_zoom["hash"], "Disasm mode retained SSA pixels"
-            assert safari_zoom["bounds"][2] - safari_zoom["bounds"][0] > disasm_width + 10, "Disasm mode did not replace the fixture's SSA definitions/effects"
+            assert disasm["hash"] != touch_zoom["hash"], "Disasm mode retained SSA pixels"
+            assert touch_zoom["bounds"][2] - touch_zoom["bounds"][0] > disasm_width + 10, "Disasm mode did not replace the fixture's SSA definitions/effects"
             graph_content(page, canvas, "SSA")
             expect(status).to_contain_text("CFG nodes: SSA")
             ssa = node_snapshot(page, canvas, output, f"{prefix}-nodes-ssa")
@@ -192,8 +195,7 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
 
             # Compare shortcut behavior with the actual Fit button at the same
             # viewport, without assuming where any individual node should end up.
-            canvas.click(position={"x": 143, "y": 110})
-            settle_gesture(page)
+            click_control(page, canvas, "Fit graph", role="action")
             fit_keys = {"button": fitted["bounds"]}
             fresh_wheel_after_fit = None
             for key, name in [("f", "f"), ("Shift+f", "shift-f")]:
@@ -313,8 +315,8 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             results[f"dpr{dpr}"] = {
                 "renderer": webgpu_evidence(page), "display": display, "initial": initial, "pan_background": panned, "pan_over_node": over_node,
                 "ctrl_wheel_ratio": ctrl_ratio, "pinch_ratio": pinch_ratio,
-                "safari_format_gesture": {"ratio": safari_ratio, "requested_scale": 1.12,
-                                          "platform": "synthetic gesturestart/change/end events in Chromium"},
+                "touch_pinch": {"ratio": touch_ratio, "requested_scale": 1.12,
+                                "platform": "actual Chromium CDP touchStart/move/end"},
                 "initial_frozen": initial_frozen, "manual_frozen": manual_frozen,
                 "initial_node_view": "SSA", "disasm_mode": disasm,
                 "ssa_mode": ssa, "ssa_fit": ssa_fit, "edge_zoom_screenshots": zoom_screenshots,

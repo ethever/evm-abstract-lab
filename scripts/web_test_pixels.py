@@ -2,9 +2,25 @@
 
 from pathlib import Path
 import base64
+import json
 import math
 from statistics import median
 import re
+
+
+def graph_viewport_region(page, requested=None):
+    """Clip pixel measurements to the actual painter, excluding native chrome."""
+    controls = json.loads(page.locator("#analysis-status").get_attribute("data-controls") or "[]")
+    plots = [control["rect"] for control in controls
+             if control["role"] == "graph-canvas" and control["label"] == "CFG canvas"
+             and control["enabled"]]
+    assert len(plots) == 1, ("expected one visible CFG painter", plots)
+    left, top, right, bottom = plots[0]
+    if requested is not None:
+        left, top, right, bottom = (max(left, requested[0]), max(top, requested[1]),
+                                    min(right, requested[2]), min(bottom, requested[3]))
+    assert left < right and top < bottom, (plots, requested)
+    return (left, top, right, bottom)
 
 
 def canvas_screenshot(page, **options):
@@ -55,9 +71,9 @@ def screenshot_metrics(page, screenshot: bytes, region: tuple[float, float, floa
                 for (let x = 0; x < width; x++) {
                     const i = (y * width + x) * 4;
                     if (Math.abs(pixels[i] - 145) <= 50 && Math.abs(pixels[i + 1] - 164) <= 50 && Math.abs(pixels[i + 2] - 186) <= 50) dividerCounts[x]++;
-                    if (mask && ((pixels[i] === 21 && pixels[i + 1] === 29 && pixels[i + 2] === 42) ||
+                    if (mask && ((pixels[i] === 20 && pixels[i + 1] === 25 && pixels[i + 2] === 33) ||
                                  (pixels[i] === 33 && pixels[i + 1] === 65 && pixels[i + 2] === 75) ||
-                                 (pixels[i] === 47 && pixels[i + 1] === 62 && pixels[i + 2] === 80))) mask[y * width + x] = 1;
+                                 (pixels[i] === 48 && pixels[i + 1] === 58 && pixels[i + 2] === 72))) mask[y * width + x] = 1;
                     // The selected node's solid fill from the semantic palette.
                     if (pixels[i] === 33 && pixels[i + 1] === 65 && pixels[i + 2] === 75) {
                         minX = Math.min(minX, x); minY = Math.min(minY, y);
@@ -121,6 +137,7 @@ def graph_screenshot_metrics(page, screenshot: bytes, region, measure_nodes=Fals
     A long continuous accent border distinguishes the selected card from its
     accent-colored title, endpoint arrows and highlighted incident edges.
     """
+    region = graph_viewport_region(page, region)
     return page.evaluate("""async ({png,region,measureNodes}) => {
         const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();
         const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;
@@ -129,14 +146,14 @@ def graph_screenshot_metrics(page, screenshot: bytes, region, measure_nodes=Fals
         const [left,top,right,bottom]=region.map(value=>Math.round(value*scale));
         const width=right-left,height=bottom-top;
         const pixels=context.getImageData(left,top,width,height).data;
-        const fills=[[21,29,42],[20,52,42],[48,30,62],[62,27,34]];
+        const fills=[[20,25,33],[20,52,42],[48,30,62],[62,27,34]];
         const kinds=['ordinary','normal','revert','failure'];
         const mask=new Uint8Array(width*height),fillAt=new Int8Array(width*height);fillAt.fill(-1);
         for(let at=0;at<mask.length;at++) {
             const i=at*4;
             const fill=fills.findIndex(color=>pixels[i]===color[0] && pixels[i+1]===color[1] && pixels[i+2]===color[2]);
             fillAt[at]=fill;
-            if(fill>=0 || (pixels[i]===47 && pixels[i+1]===62 && pixels[i+2]===80)) mask[at]=1;
+            if(fill>=0 || (pixels[i]===48 && pixels[i+1]===58 && pixels[i+2]===72)) mask[at]=1;
         }
         const accent=(x,y)=>{
             if(x<0 || x>=width || y<0 || y>=height) return false;
@@ -305,7 +322,7 @@ def workspace_content_bottom(page, screenshot: bytes, *, above_inspector=False):
         const ctx=c.getContext('2d');ctx.drawImage(image,0,0);
         const data=ctx.getImageData(0,0,c.width,c.height).data,scale=c.width/innerWidth;
         const border=(x,y)=>{const i=(y*c.width+x)*4;
-            return data[i]===47 && data[i+1]===62 && data[i+2]===80;};
+            return data[i]===48 && data[i+1]===58 && data[i+2]===72;};
         // Native bottom Panels paint full-width separators. Interior rules,
         // cards and text do not reach both canvas edges. Collapse HiDPI bands.
         const lines=[];
@@ -429,23 +446,24 @@ def layout_card_extent(page, png):
     # Solid fills become subpixel at this scale. Measure the brighter real card
     # outlines/edges instead; the background grid and dim group dashes remain
     # below this palette threshold. Exclude status separators, which also match.
-    return page.evaluate("""async ({png,contentBottom}) => {
+    region = graph_viewport_region(page)
+    return page.evaluate("""async ({png,region}) => {
         const image = new Image(); image.src = `data:image/png;base64,${png}`; await image.decode();
         const canvas = document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height;
         const context=canvas.getContext('2d'); context.drawImage(image,0,0);
         const scale=image.width/innerWidth;
-        const top=Math.round(147*scale), bottom=Math.round(contentBottom*scale);
+        const [clipLeft,clipTop,clipRight,clipBottom]=region.map(v=>Math.round(v*scale));
+        const top=clipTop, bottom=clipBottom;
         const data=context.getImageData(0,top,image.width,bottom-top).data;
         let left=image.width,right=-1,first=bottom,last=-1,count=0;
-        for(let y=0;y<bottom-top;y++) for(let x=4*scale;x<image.width-4*scale;x++) {
+        for(let y=0;y<bottom-top;y++) for(let x=clipLeft;x<clipRight;x++) {
             const i=(y*image.width+x)*4, r=data[i],g=data[i+1],b=data[i+2];
             if(g>=48 && g-r>=10 && b>=g-25) {
                 left=Math.min(left,x);right=Math.max(right,x);first=Math.min(first,y+top);last=Math.max(last,y+top);count++;
             }
         }
         return {bounds:count?[left/scale,first/scale,(right+1)/scale,(last+1)/scale]:null,pixels:count};
-    }""", {"png":base64.b64encode(png).decode(),
-           "contentBottom":workspace_content_bottom(page, png, above_inspector=True)})
+    }""", {"png":base64.b64encode(png).decode(), "region":region})
 
 def assert_layout_camera_interval(actual, predicted):
     assert predicted[0] <= predicted[1], predicted
