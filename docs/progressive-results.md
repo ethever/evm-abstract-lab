@@ -44,7 +44,9 @@ Native。正常返回时再输出 `lifecycle: "Final"` 的结果。每行都有�
 
 `requested_detail_regions` 在早期、延后及最终 coverage 中保存实际请求上限，
 `detail_regions` 是实际选择列表，二者分别检查。0 不支付 Native 准备或执行；
-Global 已闭合时细节为 `Disabled`，Global 尚未闭合时仍保留其 pending 资格。
+普通运行的最终 detail 为 `Disabled`，Global 的 status 和 baseline_current
+仍可分别为 `Incomplete` 和 false。RPC 的精度状态还可单独保留
+`BaselinePending`；不能从关闭细节推导 Global 已闭合。
 正数沿用同一累计执行账本与剩余额度。RPC 的最新 Native 选择可能属于独立的
 `hybrid.precision`，而原始 `hybrid.coverage` 继续限定不可变 Global 模型；读取
 详细选择时使用 `native_coverage()`，不以原始列表代替后来的实际选择。
