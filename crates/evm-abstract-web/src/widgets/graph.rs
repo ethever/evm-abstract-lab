@@ -14,6 +14,7 @@ mod paint;
 mod projection;
 mod render;
 mod scene;
+mod source;
 mod termination;
 #[cfg(test)]
 mod tests;
@@ -62,6 +63,7 @@ pub(crate) struct Graph {
     cancel_wheel: bool,
     viewport: Option<Vec2>,
     scene: Scene,
+    minimum_layouts: Vec<minimum::LayoutMemory>,
 }
 
 struct Scene {
@@ -79,6 +81,7 @@ struct Scene {
     display_dirty: bool,
     shown_states: usize,
     native_edges: usize,
+    deferred_edges: usize,
     node_positions: BTreeMap<usize, usize>,
     edge_positions: BTreeMap<usize, usize>,
     edge_labels: BTreeMap<usize, String>,
@@ -115,6 +118,7 @@ impl Default for Scene {
             display_dirty: true,
             shown_states: 0,
             native_edges: 0,
+            deferred_edges: 0,
             node_positions: BTreeMap::new(),
             edge_positions: BTreeMap::new(),
             edge_labels: BTreeMap::new(),
@@ -154,6 +158,7 @@ impl Default for Graph {
             cancel_wheel: false,
             viewport: None,
             scene: Scene::default(),
+            minimum_layouts: Vec::new(),
         }
     }
 }
@@ -206,6 +211,8 @@ impl Graph {
         if self.scene.identity == identity {
             return;
         }
+        self.minimum_layouts
+            .retain(|layout| layout.same_report(identity));
         let initial_fit = self.fit_pending
             && self.scene.index.is_none()
             && self.scene.minimum.is_none()
@@ -289,9 +296,13 @@ impl Graph {
         self.scene.instance_group = None;
         self.scene.layout_error = None;
         self.scene.layout_pending = true;
-        self.fit_pending = false;
-        self.entry_pending = true;
-        self.fitted = false;
+        // Same-source context changes are discovered during scene preparation,
+        // after the shell has already restored its validated history camera.
+        if !self.camera_restored {
+            self.fit_pending = false;
+            self.entry_pending = true;
+            self.fitted = false;
+        }
     }
 
     fn set_content(&mut self, content: NodeView, selected: Option<usize>) {

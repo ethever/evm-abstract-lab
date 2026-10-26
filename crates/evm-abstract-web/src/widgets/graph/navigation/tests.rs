@@ -305,3 +305,5 @@ fn default_entry_keeps_readable_scale_while_explicit_fit_can_show_the_overview()
     graph.fit_bounds(size, whole);
     assert!(graph.zoom < 0.1);
 }
+
+mod history;

@@ -3,10 +3,26 @@ use super::{
     GraphScope, Selection,
     control::{Control, ProjectionError},
 };
+use crate::app::model::ReportViewId;
 use crate::widgets::graph::{Visibility, layout};
 use egui::{FontId, Ui};
 use evm_abstract_layout as geometry;
 use evm_abstract_protocol::AnalysisReport;
+
+/// Geometry preferences belong to an exact immutable view/scope. Resizing or
+/// returning through Navigator must not change the layout under a saved camera.
+#[derive(Clone, Copy)]
+pub(in crate::widgets::graph) struct LayoutMemory {
+    identity: ReportViewId,
+    scope: GraphScope,
+    point_limit: Option<usize>,
+    child_width: f32,
+}
+impl LayoutMemory {
+    pub(in crate::widgets::graph) fn same_report(&self, identity: ReportViewId) -> bool {
+        self.identity.same_report(identity)
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum SceneError {
@@ -25,6 +41,8 @@ pub(super) enum Picker {
 pub(in crate::widgets::graph) struct Scene {
     pub(super) scope: GraphScope,
     pub(super) control: Control,
+    pub(super) text: Vec<super::text::CardText>,
+    pub(super) context_caption: String,
     pub(super) placement: super::super::Placement,
     pub(super) selected: Option<usize>,
     pub(super) error: Option<SceneError>,
@@ -34,10 +52,17 @@ pub(in crate::widgets::graph) struct Scene {
 }
 
 impl Scene {
-    pub(super) fn new(report: &AnalysisReport, scope: GraphScope, ui: &Ui) -> Self {
+    pub(super) fn new(
+        report: &AnalysisReport,
+        scope: GraphScope,
+        ui: &Ui,
+        layout: LayoutMemory,
+    ) -> Self {
         let mut scene = Self {
             scope,
             control: Control::default(),
+            text: Vec::new(),
+            context_caption: String::new(),
             placement: Default::default(),
             selected: None,
             error: None,
@@ -45,7 +70,12 @@ impl Scene {
             edges_visible: Default::default(),
             picker: None,
         };
-        match Control::scoped(report, scope) {
+        let projected = if let Some(limit) = layout.point_limit {
+            Control::scoped_with_limit(report, scope, limit)
+        } else {
+            Control::scoped(report, scope)
+        };
+        match projected {
             Ok(control) => {
                 debug_assert_eq!(control.scope, Some(scope));
                 scene.control = control;
@@ -55,6 +85,18 @@ impl Scene {
                 return scene;
             }
         }
+        scene.text = scene
+            .control
+            .cards
+            .iter()
+            .map(|card| super::text::CardText::new(report, card))
+            .collect();
+        for (id, text) in scene.text.iter_mut().enumerate() {
+            if Some(id) != scene.control.anchor {
+                text.size.x = layout.child_width;
+            }
+        }
+        scene.context_caption = super::text::context_caption(report, scope, &scene.control);
         let input = geometry::Input {
             nodes: scene
                 .control
@@ -63,7 +105,10 @@ impl Scene {
                 .enumerate()
                 .map(|(id, card)| geometry::Node {
                     id,
-                    size: geometry::Size::new(300.0, 88.0),
+                    size: geometry::Size::new(
+                        f64::from(scene.text[id].size.x),
+                        f64::from(scene.text[id].size.y),
+                    ),
                     program: None,
                     block: id,
                     frame_depth: None,
@@ -136,5 +181,47 @@ impl Scene {
                             && origin.target.origin.location == selection.control
                     })
             })
+    }
+}
+
+impl super::Graph {
+    pub(super) fn ensure_minimum_scope(
+        &mut self,
+        report: &AnalysisReport,
+        scope: GraphScope,
+        ui: &Ui,
+    ) {
+        if self
+            .scene
+            .minimum
+            .as_ref()
+            .is_none_or(|scene| scene.scope != scope)
+        {
+            let identity = self.scene.identity;
+            let layout = self
+                .minimum_layouts
+                .iter()
+                .find(|layout| layout.identity == identity && layout.scope == scope)
+                .copied()
+                .unwrap_or_else(|| {
+                    let narrow = ui.available_width() < 600.0;
+                    let layout = LayoutMemory {
+                        identity,
+                        scope,
+                        point_limit: narrow.then_some(3),
+                        child_width: if narrow {
+                            ((ui.available_width() - 48.0) * 0.5).clamp(120.0, 200.0)
+                        } else {
+                            300.0
+                        },
+                    };
+                    self.minimum_layouts.push(layout);
+                    layout
+                });
+            self.scene.minimum = Some(Scene::new(report, scope, ui, layout));
+            if !self.fit_pending && !self.camera_restored {
+                self.entry_pending = true;
+            }
+        }
     }
 }

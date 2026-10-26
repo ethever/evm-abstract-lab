@@ -2,6 +2,8 @@
 
 mod flow;
 mod geometry;
+mod viewport;
+pub(super) use viewport::has_visible_geometry;
 #[cfg(test)]
 mod tests;
 

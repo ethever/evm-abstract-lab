@@ -1,6 +1,6 @@
 //! Virtualized choices preserve each call/receipt association independently.
 use super::{Graph, GraphIntent, control::Destination, scene::Picker};
-use egui::Ui;
+use egui::{Rect, Ui};
 use evm_abstract_protocol::{AnalysisReport, ProcessLocation};
 
 impl Graph {
@@ -8,6 +8,7 @@ impl Graph {
         &mut self,
         ui: &Ui,
         report: &AnalysisReport,
+        canvas: Rect,
     ) -> Option<GraphIntent> {
         let scene = self.scene.minimum.as_mut()?;
         let picker = scene.picker?;
@@ -17,10 +18,11 @@ impl Graph {
         };
         let mut open = true;
         let mut picked = None;
-        egui::Window::new("Control destinations").id(ui.id().with("control_destinations"))
+        egui::Window::new(match picker { Picker::Origins(_) => "Control receipts", Picker::Targets(_) => "Control destinations" }).id(ui.id().with("control_destinations"))
+            .constrain_to(canvas).default_pos(canvas.left_top() + egui::Vec2::splat(8.0))
             .open(&mut open).default_width(460.0).max_width((ui.ctx().content_rect().width() - 24.0).max(180.0))
             .show(ui.ctx(), |ui| {
-                ui.label("Choose one retained receipt or decoded source candidate. Each row has independent evidence.");
+                ui.label(match picker { Picker::Origins(_) => "Select a retained receipt. Each row keeps its own currentness and state evidence.", Picker::Targets(_) => "Open a retained destination or decoded source candidate. Source candidates carry no receipt or Native state." });
                 egui::ScrollArea::vertical().max_height((ui.ctx().content_rect().height() * 0.5).min(360.0))
                     .show_rows(ui, 24.0, rows, |ui, range| {
                         for row in range {
@@ -29,7 +31,8 @@ impl Graph {
                                     (Destination::Control(origin.target), format!("Current {} · complete {} · excluded {} · boundary {} · Body transferred {} · input {}", origin.current, origin.complete, origin.excluded, origin.boundary, origin.transferred, origin.input_revision)) },
                                 Picker::Targets(id) => { let entry = &scene.control.target_sets[id].entries[row]; (entry.destination, entry.via.detail(report, scene.scope.summary())) },
                             };
-                            let label = destination_label(report, scene.scope.summary(), destination);
+                            let mut label = destination_label(report, scene.scope.summary(), destination);
+                            if let (Picker::Origins(_), Destination::Control(target)) = (picker, destination) { label = format!("r{} {} · {label}", target.origin.node, if target.origin.location.is_none() { "Body" } else { "MAY point" }); }
                             if ui.add(egui::Button::new(label).truncate()).on_hover_text(details).clicked() {
                                 picked = Some(match (picker, destination) { (Picker::Origins(_), Destination::Control(target)) => GraphIntent::Select(target), _ => destination_intent(scene.scope.summary(), destination) });
                             }
@@ -57,7 +60,10 @@ pub(super) fn destination_intent(summary: usize, destination: Destination) -> Gr
 fn destination_label(report: &AnalysisReport, summary: usize, destination: Destination) -> String {
     match destination {
         Destination::Source { program, location } => {
-            source_label(report, Some(program), Some(location))
+            format!(
+                "Decoded source · {}",
+                source_label(report, Some(program), Some(location))
+            )
         }
         Destination::Control(target) => {
             let node = report
@@ -101,12 +107,9 @@ fn source_label(
                 || "Uncaptured source block".into(),
                 |block| {
                     format!(
-                        "0x{:04x} · {}",
-                        block.start_pc,
-                        block
-                            .instructions
-                            .last()
-                            .map_or("empty", |instruction| instruction.name.as_str())
+                        "{} · {}",
+                        crate::widgets::graph::source::title(block.start_pc, &block.instructions),
+                        crate::widgets::graph::source::ending(&block.instructions)
                     )
                 },
             ),

@@ -1,17 +1,30 @@
-//! Conservative cards use the same clipped semantic zoom as Native cards.
-use super::control::{Card, CardKind};
+//! Conservative cards use clipped code previews and independent receipt/target
+//! hit regions. Painting never decides the semantic level of a control edge.
+use super::{
+    control::Card,
+    text::{ACTION_HEIGHT, CardText},
+};
 use crate::{palette, widgets::graph::paint};
 use egui::{Align2, FontId, Rect, Stroke, StrokeKind, Vec2};
 
-pub(super) fn paint_card(
-    painter: &egui::Painter,
-    rect: Rect,
-    card: &Card,
-    selected: bool,
-    hovered: bool,
-    zoom: f32,
-    level: paint::DetailLevel,
-) {
+pub(super) struct CardPaint<'a> {
+    pub card: &'a Card,
+    pub text: &'a CardText,
+    pub selected: bool,
+    pub hovered: bool,
+    pub zoom: f32,
+    pub level: paint::DetailLevel,
+}
+
+pub(super) fn paint_card(painter: &egui::Painter, rect: Rect, style: CardPaint<'_>) {
+    let CardPaint {
+        card,
+        text,
+        selected,
+        hovered,
+        zoom,
+        level,
+    } = style;
     let current = !card.origins.is_empty()
         && card
             .origins
@@ -45,11 +58,16 @@ pub(super) fn paint_card(
     let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
     let inset = (6.0 * zoom).max(2.0);
     let at = rect.min + Vec2::splat(inset);
+    let title = if text.size.x < 220.0 {
+        &text.compact_title
+    } else {
+        &text.title
+    };
     if level == paint::DetailLevel::Identity {
         painter.text(
             at,
             Align2::LEFT_TOP,
-            &card.title,
+            title,
             FontId::monospace(10.0),
             palette::TEXT,
         );
@@ -58,31 +76,68 @@ pub(super) fn paint_card(
     painter.text(
         at,
         Align2::LEFT_TOP,
-        &card.title,
+        title,
         FontId::monospace(12.0 * zoom),
         palette::TEXT,
     );
     painter.text(
-        at + egui::vec2(0.0, 24.0 * zoom),
+        at + egui::vec2(0.0, 20.0 * zoom),
         Align2::LEFT_TOP,
-        &card.caption,
-        FontId::proportional(11.0 * zoom),
+        &text.detail,
+        FontId::monospace(10.5 * zoom),
         color,
     );
-    painter.text(
-        at + egui::vec2(0.0, 46.0 * zoom),
-        Align2::LEFT_TOP,
-        &card.qualifier,
-        FontId::monospace(10.5 * zoom),
-        palette::MUTED,
-    );
-    if matches!(card.kind, CardKind::Calls { .. } | CardKind::Folded) && rect.height() >= 76.0 {
+    for (row, (line, color)) in text.rows.iter().enumerate() {
         painter.text(
-            rect.right_bottom() - Vec2::splat(inset),
-            Align2::RIGHT_BOTTOM,
-            "Open →",
-            FontId::proportional(10.0 * zoom),
-            palette::BLUE,
+            at + egui::vec2(0.0, (38.0 + row as f32 * 14.0) * zoom),
+            Align2::LEFT_TOP,
+            line,
+            FontId::monospace(11.0 * zoom),
+            *color,
         );
     }
+}
+
+/// Footer actions remain separate at readable scale. A source jump hub can
+/// select its own receipt without opening any of its possible destinations.
+pub(super) fn actions(rect: Rect, card: &Card, zoom: f32, level: paint::DetailLevel) -> Actions {
+    if level != paint::DetailLevel::Preview
+        || (card.origins.is_empty() && card.target_set.is_none())
+    {
+        return Actions {
+            body: rect,
+            receipts: None,
+            targets: None,
+        };
+    }
+    let height = (ACTION_HEIGHT * zoom).max(20.0).min(rect.height());
+    let footer = Rect::from_min_max(
+        egui::pos2(rect.left(), rect.bottom() - height),
+        rect.right_bottom(),
+    );
+    let receipts = (!card.origins.is_empty()).then(|| {
+        if card.target_set.is_some() {
+            Rect::from_min_max(footer.min, footer.center_bottom())
+        } else {
+            footer
+        }
+    });
+    let targets = card.target_set.map(|_| {
+        if receipts.is_some() {
+            Rect::from_min_max(footer.center_top(), footer.max)
+        } else {
+            footer
+        }
+    });
+    Actions {
+        body: Rect::from_min_max(rect.min, footer.right_top()),
+        receipts,
+        targets,
+    }
+}
+
+pub(super) struct Actions {
+    pub body: Rect,
+    pub receipts: Option<Rect>,
+    pub targets: Option<Rect>,
 }

@@ -11,15 +11,16 @@ use egui::{Align2, FontId, Pos2, Rect, Sense, Ui, Vec2};
 use evm_abstract_protocol::AnalysisReport;
 
 pub(super) mod control;
-use control::Card;
+use control::{Card, GraphLevel};
 mod paint;
 mod picker;
 mod scene;
+mod text;
 use super::{ControlOrigin, GraphIntent, GraphScope, ProjectionTarget};
-use paint::paint_card;
-use picker::destination_intent;
+mod interaction;
+use interaction::CardAction;
 use scene::Picker;
-pub(super) use scene::Scene;
+pub(super) use scene::{LayoutMemory, Scene};
 
 impl Graph {
     /// Legacy selection adapter. The canonical shell consumes the same render's
@@ -77,10 +78,16 @@ impl Graph {
                     |scene| scene.scope,
                 )
         };
+        self.ensure_minimum_scope(report, scope, ui);
+        let context_caption = &self.scene.minimum.as_ref().unwrap().context_caption;
         heading(
             ui,
-            "CONTROL FLOW",
-            "Source-qualified MAY control · separate regional receipts",
+            match self.scene.minimum.as_ref().unwrap().control.level {
+                GraphLevel::Source => "SOURCE CFG",
+                GraphLevel::AbstractBoundary => "ABSTRACT CONTROL",
+                GraphLevel::Model => "MODEL OVERVIEW",
+            },
+            context_caption,
         );
         let mut entry_requested = false;
         Density::Compact.scope(ui, |ui| {
@@ -90,7 +97,7 @@ impl Graph {
                 }
                 if controls::action(ui, "Fit graph", Density::Compact).clicked() { self.request_fit(ui, true); }
                 if controls::action_enabled(ui, selection.node.is_some(), "Focus selected", Density::Compact).clicked() { self.focus_selection(); }
-                if ui.checkbox(&mut self.whole_scope, "Overview").changed() {
+                if ui.checkbox(&mut self.whole_scope, "Model overview").changed() {
                     scope = if self.whole_scope { GraphScope::Overview { summary: selection.summary } }
                         else { GraphScope::Context { summary: selection.summary, procedure: selection.procedure,
                             anchor: selection.node.map(|node| ControlOrigin { node, location: selection.control }) } };
@@ -101,23 +108,66 @@ impl Graph {
                     .on_hover_text("Drag or scroll to pan; pinch or Ctrl/Cmd+scroll to zoom. F fits this scope; Entry restores readable scale.");
             });
         });
-        if self
-            .scene
-            .minimum
-            .as_ref()
-            .is_none_or(|scene| scene.scope != scope)
-        {
-            self.scene.minimum = Some(Scene::new(report, scope, ui));
-            if !self.fit_pending && !self.camera_restored {
-                self.entry_pending = true;
+        self.ensure_minimum_scope(report, scope, ui);
+        let scene = self.scene.minimum.as_ref().unwrap();
+        let counts = scene.control.counts;
+        let mut model_requested = false;
+        let model_set = scene.control.model_set;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} / {} source points in scope",
+                    counts.displayed_points, counts.total_points
+                ))
+                .small()
+                .color(palette::MUTED),
+            );
+            if counts.unexpanded_points > 0 {
+                ui.label(
+                    egui::RichText::new(format!("{} unexpanded", counts.unexpanded_points))
+                        .small()
+                        .color(palette::WARNING),
+                );
             }
+            ui.menu_button("Advanced", |ui| {
+                ui.label(format!(
+                    "{} / {} context receipts · {} other-context receipts",
+                    counts.displayed_receipts,
+                    counts.context_receipts,
+                    counts.other_context_receipts
+                ));
+                ui.label(format!(
+                    "{} folded flows · {} calls · {} deliveries",
+                    counts.hidden_flows, counts.calls, counts.deliveries
+                ));
+                ui.label(format!(
+                    "{} source edges · {} unknown-jump hubs",
+                    scene.control.source_edges, scene.control.hubs
+                ));
+                ui.label(format!(
+                    "{} offscreen routes deferred; pan or Fit to reveal",
+                    self.scene.deferred_edges
+                ));
+                ui.label(format!(
+                    "{} model relations summarized · {} untyped topology memberships",
+                    counts.summarized_model_relations, counts.retained_topology
+                ));
+                if controls::action_enabled(
+                    ui,
+                    model_set.is_some(),
+                    "Inspect model relations",
+                    Density::Compact,
+                )
+                .clicked()
+                {
+                    model_requested = true;
+                }
+                ui.monospace(format!("{:?}", scene.scope));
+            });
+        });
+        if model_requested && let Some(set) = model_set {
+            self.scene.minimum.as_mut().unwrap().picker = Some(Picker::Targets(set));
         }
-        let counts = self.scene.minimum.as_ref().unwrap().control.counts;
-        ui.add(egui::Label::new(egui::RichText::new(format!(
-            "{} / {} source points · {} / {} context receipts · {} other-context receipts · {} / {} unexpanded · {} folded flows",
-            counts.displayed_points, counts.total_points, counts.displayed_receipts, counts.context_receipts,
-            counts.other_context_receipts, counts.displayed_unexpanded_points, counts.unexpanded_points, counts.hidden_flows,
-        )).small().color(palette::MUTED)).truncate());
         let (response, painter) = ui.allocate_painter(
             ui.available_size().max(Vec2::splat(1.0)),
             Sense::click_and_drag(),
@@ -173,23 +223,36 @@ impl Graph {
             );
             return None;
         }
-        let visible = Rect::from_min_max(
+        let world_view = Rect::from_min_max(
             Pos2::ZERO - self.pan / self.zoom,
             Pos2::ZERO + (canvas.size() - self.pan) / self.zoom,
-        )
-        .expand(16.0 / self.zoom);
+        );
+        let visible = world_view.expand(16.0 / self.zoom);
         let mut animated = false;
+        let mut deferred_edges = 0;
         for id in scene.edges_visible.query(visible) {
             let edge = &scene.control.edges[id];
             let Some(route) = scene.placement.edges.get(&id) else {
                 continue;
             };
+            if !edges::has_visible_geometry(
+                route,
+                visible,
+                self.zoom >= 0.9 && !edge.label.is_empty(),
+            ) {
+                deferred_edges += 1;
+                continue;
+            }
             let highlighted = Some(edge.from) == selected || Some(edge.to) == selected;
             let label = self.screen_rect(canvas, route.label).intersect(canvas);
             if self.zoom >= 0.9 && label.is_positive() {
                 ui.interact(label, ui.id().with(("control_edge", id)), Sense::hover())
                     .on_hover_ui(|ui| {
-                        ui.label(format!("{} independent flow origins", edge.origins.len()));
+                        ui.label(format!(
+                            "{:?} · {} independent flow origins",
+                            edge.level,
+                            edge.origins.len()
+                        ));
                         for origin in edge.origins.iter().take(12) {
                             ui.label(origin.detail(report, scope.summary()));
                         }
@@ -212,70 +275,28 @@ impl Graph {
             ui.ctx().request_repaint_after(edges::FLOW_FRAME_INTERVAL);
         }
         let level = lod::detail_level(ui, self.zoom);
-        let mut clicked = None;
-        for id in scene.nodes_visible.query(visible) {
-            let card = &scene.control.cards[id];
-            let Some(world) = scene.placement.nodes.get(&id) else {
-                continue;
-            };
-            let rect = self.screen_rect(canvas, *world);
-            let hit = ui.interact(
-                rect.intersect(canvas),
-                ui.id().with(("minimum_control", scope.summary(), id)),
-                Sense::click(),
-            );
-            hit.widget_info(|| {
-                egui::WidgetInfo::selected(
-                    egui::WidgetType::Button,
-                    ui.is_enabled(),
-                    card_selected(card, selection),
-                    &card.title,
-                )
-            });
-            paint_card(
-                &painter,
-                rect,
-                card,
-                card_selected(card, selection),
-                hit.hovered() || hit.has_focus(),
-                self.zoom,
-                level,
-            );
-            if hit.clicked() {
-                clicked = Some(id);
-            }
-            hit.on_hover_ui(|ui| {
-                ui.label(format!(
-                    "{}\n{}\n{}\n{}",
-                    card.title, card.caption, card.qualifier, card.hover
-                ));
-                ui.collapsing("Renderer provenance", |ui| {
-                    for origin in card.origins.iter().take(12) {
-                        ui.monospace(format!("{:?}", origin.target));
-                        ui.label(format!("Current {} · complete {} · through {} · Body transferred {} · excluded {}", origin.current, origin.complete, origin.through, origin.transferred, origin.excluded));
-                    }
-                });
-            });
-        }
+        let clicked = self.minimum_cards(ui, &painter, canvas, visible, level, selection);
+        self.scene.deferred_edges = deferred_edges;
         let mut intent = None;
-        if let Some(id) = clicked {
+        if let Some(action) = clicked {
             let scene = self.scene.minimum.as_mut().unwrap();
+            let (id, targets) = match action {
+                CardAction::Receipts(id) => (id, false),
+                CardAction::Targets(id) => (id, true),
+            };
             let card = &scene.control.cards[id];
-            if let Some(set) = card.target_set {
-                let entries = &scene.control.target_sets[set].entries;
-                if entries.len() == 1 {
-                    intent = Some(destination_intent(scope.summary(), entries[0].destination));
-                } else {
+            if targets || card.origins.is_empty() {
+                if let Some(set) = card.target_set {
                     scene.picker = Some(Picker::Targets(set));
                 }
             } else if card.origins.len() == 1 {
                 intent = Some(GraphIntent::Select(card.origins[0].target));
-            } else if !card.origins.is_empty() {
+            } else {
                 scene.picker = Some(Picker::Origins(id));
             }
         }
         if ui.is_enabled() {
-            intent = self.minimum_picker(ui, report).or(intent);
+            intent = self.minimum_picker(ui, report, canvas).or(intent);
         }
         if entry_requested {
             intent = report
@@ -321,10 +342,10 @@ impl Graph {
     pub(super) fn minimum_summary(&self) -> String {
         self.scene.minimum.as_ref().map_or_else(|| "Scoped control: awaiting display".into(), |scene| {
             let counts = scene.control.counts;
-            format!("Scoped control: {:?}; {} / {} MAY source points; {} / {} context receipts; {} other-context receipts; {} portals; {} folded flows; {} / {} unexpanded points; {} calls; {} output deliveries; {} source edges; {} unknown-jump hubs; Selected regional {}; Global zoom: {:.3}%",
+            format!("Scoped control: {:?}; {} / {} MAY source points; {} / {} context receipts; {} other-context receipts; {} portals; {} folded flows; {} / {} unexpanded points; {} calls; {} output deliveries; {} source edges; {} unknown-jump hubs; Selected regional {}; {:?} level; {} summarized model relations; {} retained topology memberships; {} retained model rows; Global zoom: {:.3}%",
                 scene.scope, counts.displayed_points, counts.total_points, counts.displayed_receipts, counts.context_receipts, counts.other_context_receipts,
                 scene.control.target_sets.len(), counts.hidden_flows, counts.displayed_unexpanded_points, counts.unexpanded_points, counts.calls, counts.deliveries, scene.control.source_edges, scene.control.hubs,
-                scene.selected.map_or("none".into(), |id| format!("r{id}")), self.zoom * 100.0)
+                scene.selected.map_or("none".into(), |id| format!("r{id}")), scene.control.level, counts.summarized_model_relations, counts.retained_topology, scene.control.model_relations.len(), self.zoom * 100.0)
         })
     }
 }

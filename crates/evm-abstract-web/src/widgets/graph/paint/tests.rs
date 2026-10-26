@@ -147,7 +147,7 @@ fn semantic_zoom_paints_source_identity_then_exact_ssa_without_changing_geometry
         let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
         let labels = card_text(&output, &graph, canvas);
         if preview {
-            assert!(labels.contains(&"0x000a · ADD"));
+            assert!(labels.contains(&"Block 0x000a"));
             assert!(labels.iter().any(|line| line.contains("%5 = ADD %1, %2")));
         } else {
             if zoom < 0.45 {
@@ -157,7 +157,7 @@ fn semantic_zoom_paints_source_identity_then_exact_ssa_without_changing_geometry
                 );
             } else {
                 assert!(
-                    labels.contains(&"0x000a · ADD"),
+                    labels.contains(&"Block 0x000a"),
                     "missing source identity at {zoom}"
                 );
             }
@@ -293,7 +293,7 @@ fn compact_source_groups_show_members_without_presenting_one_state_as_the_group(
     graph.pan = Vec2::splat(20.0) - graph.scene.placement.bounds.min.to_vec2() * graph.zoom;
     let (output, canvas) = frame(&ctx, &mut graph, &report, &mut selection, vec![]);
     let labels = card_text(&output, &graph, canvas);
-    assert!(labels.contains(&"0x000a · ADD · 2 states"));
+    assert!(labels.contains(&"Block 0x000a · 2 states"));
     assert!(labels.iter().all(|label| !label.contains('σ')));
     assert!(labels.iter().all(|line| !line.contains('%')));
     let measured = geometry(&graph);
