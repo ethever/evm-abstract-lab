@@ -4,6 +4,8 @@ CLI 的 `analyze`、world/RPC `explain` 与 Web 默认先运行全局保守过�
 
 全局模型保存可能的调用、静态回调、委托调用、构造过程、部署、回滚和出口。详细部分可以仍有 pending 路径。组合结果的 `status` 来自全局模型的闭合与来源资格；详细部分的 `Incomplete`、frontiers 和部分 SSA 独立保留。三个终止备选项只属于可选 native 辅助记录，不会闭合过程关系或清除这些义务。
 
+选择 Native 还要求它保持原始根绑定、`detail_current`，并通过付费的完整已知控制资格检查。如果记录或其中的过程使用 `Environment`（包括 `KnownCall` 内部的嵌套过程），组合解释继续选择 `Process` 或 `ProcessWithDetail`；未知账户借已捕获代码执行时需要的 owner／来源控制仍由 Global 关系覆盖。Native 图、frontiers 和局部前缀继续保留自己的实际资格。替换检查沿用原执行账本；无法支付这项可选检查时，已经成立的 `detail_current` 不因此失效。
+
 Web 的 **Global model** 与 **Detailed paths** 分别查看两套图。渐进任务先安装可读的全局发布；后续 Native 到达时保留当前命名空间、相机和有效选择，可以手动切换。切换时状态、程序和 SSA 的本地 ID 按所属图重新解释，数字相同不能跨图引用；用户显示偏好保留。符号根的详细视图会明确列出额外的 `root ADDRESS = …` 条件，全局模型仍覆盖其他允许的根地址。
 
 ## 控制关系怎样闭合
