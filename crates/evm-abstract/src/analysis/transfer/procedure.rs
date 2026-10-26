@@ -269,6 +269,8 @@ pub(in crate::analysis) struct EvmTable<
         Option<crate::bytecode::Program>,
         crate::analysis::ProcessSource,
     )>,
+    /// Immutable source control only; dynamic extension inputs never enter it.
+    process_control: process::ControlCache,
     procedures_by_key: KeyIndex<(usize, Key)>,
     nodes: Vec<EvmNode<N>>,
     subscribers: Vec<EvmSubscriber<N>>,
@@ -310,6 +312,7 @@ impl<N: WordElement, Key: PolicyKey> Default for EvmTable<N, Key> {
             process_catalogue: None,
             process_root_address: None,
             process_root_code: None,
+            process_control: process::ControlCache::default(),
             procedures_by_key: KeyIndex::new(),
             nodes: Vec::new(),
             subscribers: Vec::new(),

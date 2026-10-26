@@ -144,6 +144,9 @@ impl EvmRegionalTransfer {
                             .saturating_add(16)
                     }))
                     .saturating_add(4)
+                    // A control receipt shares immutable paid source/region
+                    // allocations; snapshot cloning copies only their handle.
+                    .saturating_add(usize::from(process.control.is_some()).saturating_mul(8))
             }))
             .saturating_add(self.successors.len().saturating_mul(2))
             .saturating_add(self.calls.len())
@@ -310,6 +313,35 @@ impl<
         if let Some(receipt) = &mut self.table.nodes[id].transfer {
             receipt.complete &= complete;
         }
+    }
+
+    /// The same Body receipt for a numerical Process transfer. No executable
+    /// private carrier was constructed, so this cannot claim a visited PC.
+    pub(super) fn regional_compact_transfer(
+        &mut self,
+        id: usize,
+        input: Version,
+        process: crate::analysis::EvmProcessTransfer,
+        outcomes: Vec<OutcomeKind>,
+    ) -> Result<(), MachineError> {
+        let old = self.table.nodes[id]
+            .transfer
+            .as_ref()
+            .map_or(0, EvmRegionalTransfer::work_size);
+        self.reserve(old.saturating_add(outcomes.len()).saturating_add(32))?;
+        self.table.regional_snapshot = None;
+        self.table.nodes[id].transfer = Some(EvmRegionalTransfer {
+            semantics: self.table.nodes[id].payload.active().semantics,
+            process: Some(process),
+            input_revision: input.get(),
+            current: false,
+            complete: true,
+            visited_block: false,
+            successors: Vec::new(),
+            calls: Vec::new(),
+            outcomes,
+        });
+        Ok(())
     }
 
     /// observe_body_edge is reached after native node admission, for both

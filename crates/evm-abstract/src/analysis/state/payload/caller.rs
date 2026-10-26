@@ -1,11 +1,12 @@
 //! Complete caller operations preserve observations, aliases and native values.
 
 use super::{
-    AlgebraRef, EvmByteArray, EvmCallStack, EvmChildFrame, EvmContinuation, EvmEntry,
-    EvmFrameSummary, EvmMachinePayload, EvmPayloadSummary, EvmRootFrame, EvmSnapshot, EvmValue,
-    FrameByteKind, FrameCode, FrameMapOrder, MachineError, RelationState, StackAliases, identify,
+    AlgebraRef, EvmCallStack, EvmChildFrame, EvmContinuation, EvmEntry, EvmFrameSummary,
+    EvmMachinePayload, EvmPayloadSummary, EvmRootFrame, EvmSnapshot, EvmValue, FrameByteKind,
+    FrameCode, FrameMapOrder, MachineError, RelationState, StackAliases, identify,
 };
 use crate::domain::{EvmNumericAlgebra, WordElement};
+use crate::world::EvmByteArray;
 use crate::{
     domain::{SummaryConstruction, summary},
     resource::{
@@ -363,20 +364,11 @@ pub(in crate::analysis) fn form_with_runtime<N: WordElement, D: EvmNumericAlgebr
             |value, _, address| implicit(value, address, entry, domain, &mut ledger.borrow_mut()),
             |bytes, _, kind| {
                 if process {
-                    let mut budget = ledger.borrow_mut();
-                    // Empty/memory constructs exactly a length and default literal.
-                    pay(
-                        &mut budget,
-                        domain
-                            .literal_quote_work(alloy_primitives::U256::ZERO)
-                            .saturating_mul(2)
-                            .saturating_add(32),
-                    )?;
-                    let empty = match kind {
-                        FrameByteKind::Memory => EvmByteArray::memory(),
-                        _ => EvmByteArray::empty(),
-                    };
-                    Ok(empty.summary_projection_with_payment(domain, &mut budget)?)
+                    Ok(crate::world::EvmByteArraySummary::empty_with_payment(
+                        matches!(kind, FrameByteKind::Memory),
+                        domain,
+                        &mut ledger.borrow_mut(),
+                    )?)
                 } else {
                     Ok(bytes.summary_projection_with_payment(domain, &mut ledger.borrow_mut())?)
                 }
@@ -389,7 +381,8 @@ pub(in crate::analysis) fn form_with_runtime<N: WordElement, D: EvmNumericAlgebr
         )?;
         if process {
             summary.key.jump_history.clear();
-            summary.key.basic_block_index = 0;
+            // Process admission moves this cursor to a typed MAY coordinate
+            // before canonicalizing the Native adapter anchor.
             // Its private calldata has been quotiented out. Retaining a root
             // origin flag would give equal process keys incompatible shapes.
             summary.environment_calldata = false;
@@ -471,7 +464,22 @@ pub(in crate::analysis) fn instantiate_with_payment<
                     enabled,
                 )))
             },
-            |bytes, _, _| Ok(bytes.instantiate_with_payment(domain, &mut ledger.borrow_mut())?),
+            |bytes, _, kind| {
+                if frame.key.process.is_some() {
+                    // These private arrays carry no Process facts. Replaying
+                    // their numerical templates would allocate fresh Native
+                    // sources that the next form operation immediately erases.
+                    let mut budget = ledger.borrow_mut();
+                    Ok(match kind {
+                        FrameByteKind::Memory => {
+                            EvmByteArray::memory_with_payment(domain, &mut budget)?
+                        }
+                        _ => EvmByteArray::empty_with_payment(domain, &mut budget)?,
+                    })
+                } else {
+                    Ok(bytes.instantiate_with_payment(domain, &mut ledger.borrow_mut())?)
+                }
+            },
             |saved, _| {
                 Ok(EvmSnapshot::from_state(saved.instantiate_with_payment(
                     domain,

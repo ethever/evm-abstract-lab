@@ -2,11 +2,13 @@
 
 use crate::domain::{EvmNumericAlgebra, WordElement};
 
+#[cfg(test)]
+use super::EvmByteArray;
+
 use super::{
-    AlgebraRef, EvmByteArray, EvmCallStack, EvmChildFrame, EvmContinuation, EvmEntry,
-    EvmFrameSummary, EvmMachinePayload, EvmPayloadSummary, EvmRootFrame, EvmSnapshot, EvmValue,
-    FrameByteKind, FrameCode, FrameMapOrder, MachineError, RelationState, identify,
-    stack_alias::StackAliases,
+    AlgebraRef, EvmCallStack, EvmChildFrame, EvmContinuation, EvmEntry, EvmFrameSummary,
+    EvmMachinePayload, EvmPayloadSummary, EvmRootFrame, EvmSnapshot, EvmValue, FrameByteKind,
+    FrameCode, FrameMapOrder, MachineError, RelationState, identify, stack_alias::StackAliases,
 };
 
 pub(in crate::analysis) mod caller;
@@ -31,7 +33,7 @@ fn join_scalar<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
 }
 
 impl<N: WordElement> EvmPayloadSummary<N> {
-    fn check_shape(&self) -> Result<(), MachineError> {
+    pub(in crate::analysis) fn check_shape(&self) -> Result<(), MachineError> {
         if self.frames.len().checked_sub(1) != Some(self.continuations.len()) {
             return Err(MachineError::Shape);
         }

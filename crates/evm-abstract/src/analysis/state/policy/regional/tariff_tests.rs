@@ -19,6 +19,8 @@ use serde::Serialize;
 use std::fmt;
 
 mod normalization;
+mod output;
+mod process;
 
 #[derive(Clone, Default, Debug)]
 struct Receipt {

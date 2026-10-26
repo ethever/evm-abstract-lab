@@ -259,6 +259,38 @@ impl<N: WordElement> EvmByteArray<N> {
 }
 
 impl<N: WordElement> EvmByteArraySummary<N> {
+    /// Arbitrary finite bytes without allocating an executable source root.
+    pub(crate) fn unknown_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        domain: AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<Self, crate::resource::CloneError> {
+        crate::resource::clone_payment::pay(budget, 16)?;
+        Ok(Self {
+            length: crate::domain::summary::top(domain, budget)?,
+            memory: false,
+            content: Content::Cells(BTreeMap::new()),
+            words: BTreeMap::new(),
+        })
+    }
+
+    /// Canonical empty summary, built without allocating an executable byte root.
+    /// Process adapters erase private arrays before numerical admission, so a
+    /// Native array followed by projection would construct discarded identities.
+    pub(crate) fn empty_with_payment<D: EvmNumericAlgebra<Element = N>>(
+        memory: bool,
+        domain: AlgebraRef<'_, D>,
+        budget: &mut crate::resource::WorkBudget,
+    ) -> Result<Self, crate::resource::CloneError> {
+        crate::resource::clone_payment::pay(budget, 16)?;
+        let length = crate::domain::summary::constant(U256::ZERO, domain, budget)?;
+        Ok(Self {
+            length,
+            memory,
+            content: Content::Zero,
+            words: BTreeMap::new(),
+        })
+    }
+
     /// Logical input length or MSIZE projection, without an equality identity.
     pub fn len(&self) -> &EvmValue<N> {
         &self.length

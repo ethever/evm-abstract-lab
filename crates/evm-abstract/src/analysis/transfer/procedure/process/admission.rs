@@ -196,6 +196,11 @@ where
                     },
                     source,
                     is_static: frame.key.is_static,
+                    location: if frame.program.is_some() {
+                        crate::analysis::ProcessLocation::Block(frame.key.basic_block_index)
+                    } else {
+                        crate::analysis::ProcessLocation::Any
+                    },
                 }
             };
             if matches!(process.source, ProcessSource::InitCode { .. }) {

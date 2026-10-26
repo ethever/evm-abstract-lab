@@ -75,7 +75,8 @@ pub use machine::{
 };
 pub use process::{
     CreationContinuation, EvmProcessInvocation, EvmProcessTransfer, ProcessAction, ProcessBoundary,
-    ProcessControlScope, ProcessCreation, ProcessCreationTransfer, ProcessFrameKey, ProcessOwner,
+    ProcessControlBlock, ProcessControlRegion, ProcessControlRelation, ProcessControlScope,
+    ProcessCreation, ProcessCreationTransfer, ProcessFrameKey, ProcessLocation, ProcessOwner,
     ProcessSource, RuntimeExecution, TransferSemantics,
 };
 pub use rpc::{
