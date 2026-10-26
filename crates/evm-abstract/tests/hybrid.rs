@@ -1,6 +1,8 @@
 //! Baseline-first native execution, without changing the original Unknown input.
 #![allow(dead_code)]
 
+#[path = "hybrid/control_coverage.rs"]
+mod control_coverage;
 #[path = "hybrid/namespace.rs"]
 mod namespace;
 #[path = "support/native.rs"]

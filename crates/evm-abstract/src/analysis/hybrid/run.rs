@@ -3,8 +3,8 @@
 use crate::analysis::{
     AnalysisEngine, AnalysisInput, BoundedJoin, ContextInsensitive, ContextPolicy, EnginePolicies,
     EvmWorldAnalysis, ExecutionConfig, FeedbackAcceleration, KnownProcessSummaries,
-    MergeResumeStatus, PartitionPolicy, ProjectionError, RuntimeExecution, SemanticPolicies,
-    StatePolicy, Status, StructuralPartition,
+    MergeResumeStatus, PartitionPolicy, ProcedureSummaryKind, ProjectionError, RuntimeExecution,
+    SemanticPolicies, StatePolicy, Status, StructuralPartition, TransferSemantics,
     control::Control,
     cooperation::{Composition, CooperationError, NoExtension, PhaseScope},
     engine::{
@@ -51,6 +51,38 @@ fn current<N: WordElement>(report: &EvmWorldAnalysis<N>, budget: &mut WorkBudget
     let mut sources = std::collections::BTreeSet::new();
     report.procedure_summaries().iter().rev().all(|record| {
         !sources.insert(record.source_state) || (record.closed && record.source_current)
+    })
+}
+
+/// A sufficient positive qualification, separate from fixed-point currency and
+/// the root binding. Native Environment covers numeric effects but omits known
+/// code control under an unknown delegated/CALLCODE owner. Such a closed table
+/// cannot replace Process for complete control consumers. A KnownCall record
+/// can contain Environment procedures, so its outer kind alone is insufficient.
+fn complete_native_control<N: WordElement>(
+    report: &EvmWorldAnalysis<N>,
+    budget: &mut WorkBudget,
+) -> bool {
+    let records = report.procedure_summaries();
+    // Fund both record walks before reading their row counts. This optional
+    // qualification uses the original payer; unavailable work withholds only
+    // substitution, without a sticky refusal or loss of useful Native data.
+    let work = records.len().saturating_mul(2).saturating_add(1);
+    if !budget.can_afford(work) || !budget.charge(work) {
+        return false;
+    }
+    let rows = records.iter().fold(0usize, |work, record| {
+        work.saturating_add(record.procedures.len())
+    });
+    if !budget.can_afford(rows) || !budget.charge(rows) {
+        return false;
+    }
+    records.iter().all(|record| {
+        record.kind != ProcedureSummaryKind::UnknownEnvironment
+            && record
+                .procedures
+                .iter()
+                .all(|procedure| procedure.semantics != TransferSemantics::Environment)
     })
 }
 
@@ -360,7 +392,6 @@ where
                                 None,
                             )?;
                     coverage.detail_current = current(&native, budget);
-                    native.work = budget.used();
                     coverage.detail = if coverage.detail_current {
                         DetailState::Current
                     } else {
@@ -368,9 +399,11 @@ where
                     };
                     if coverage.detail_current
                         && coverage.detail_binding == HybridNativeBinding::OriginalOwner
+                        && complete_native_control(&native, budget)
                     {
                         coverage.chosen = HybridInterpretation::Native;
                     }
+                    native.work = budget.used();
                     if metadata.publish_allowed() {
                         coverage.local_detail_sites =
                             native.states().iter().filter(|state| local(state)).count();

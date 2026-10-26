@@ -1,6 +1,7 @@
 //! Default application dispatch and qualified prefix delivery over real graphs.
 use super::super::*;
 use evm_abstract::{
+    Fork,
     domain::{EvmValue, NumericValue},
     world::AddressInput,
 };
@@ -83,6 +84,61 @@ fn default_bytecode_uses_hybrid_and_concrete_small_input_selects_native() {
         serde_json::from_slice(&serde_json::to_vec(&report).unwrap()).unwrap();
     decoded.validate().unwrap();
     assert_eq!(decoded, report);
+}
+
+#[test]
+fn current_environment_native_remains_inspectable_while_server_selects_global() {
+    for unknown in [false, true] {
+        let address = |id: u64| Address::from_word(evm_abstract::U256::from(id).into());
+        let mut world = EvmWorld::new(Fork::Osaka, "current F1 server selection");
+        let target = if unknown { 0x201 } else { 0x301 };
+        let root = format!("60205f5f5f5f61{target:04x}5af15060205ff3");
+        for (id, code) in [(0x101, root.as_str()), (0x301, "305f5260205ff3")] {
+            let mut account = EvmAccount::from_hex(code, Fork::Osaka).unwrap();
+            account.balance = EvmValue::constant(evm_abstract::U256::from(1_000_000));
+            world.insert(address(id), account).unwrap();
+        }
+        let entry = EvmEntry::concrete(
+            address(0x101),
+            address(0x900),
+            EvmValue::constant(evm_abstract::U256::ZERO),
+            evm_abstract::world::EvmByteArray::empty(),
+        );
+        let request = api::AnalyzeRequest::default();
+        let report = captured::analyze(
+            AnalysisInput::new(world, entry).unwrap(),
+            &request,
+            &Control::default(),
+        )
+        .unwrap();
+        report.validate().unwrap();
+        let coverage = &report.hybrid.as_ref().unwrap().coverage;
+        assert!(coverage.baseline_current && coverage.detail_current);
+        assert_eq!(coverage.detail, api::HybridDetailState::Current);
+        assert_eq!(
+            coverage.detail_binding,
+            api::HybridNativeBinding::OriginalOwner
+        );
+        assert!(report.global.is_some() && report.native.is_some());
+        assert!(report.native.as_ref().unwrap().frontiers.is_empty());
+        assert!(!report.hybrid.as_ref().unwrap().local_prefixes.is_empty());
+        assert_eq!(
+            report.selected_view,
+            if unknown {
+                api::AnalysisNamespace::Baseline
+            } else {
+                api::AnalysisNamespace::Native
+            }
+        );
+        assert_eq!(
+            coverage.chosen,
+            if unknown {
+                api::HybridInterpretation::ProcessWithDetail
+            } else {
+                api::HybridInterpretation::Native
+            }
+        );
+    }
 }
 
 #[test]
