@@ -2,6 +2,34 @@ use crate::app::model::navigation::{Focus, Intent, NavigationError};
 use crate::app::{Selection, View};
 
 #[test]
+fn inspector_state_destinations_keep_history_while_pc_selection_stays_in_place() {
+    let mut workspace = crate::tests::ready();
+    workspace.view = View::Ssa;
+    let root = Selection {
+        pc: Some(0),
+        ..workspace.selection
+    };
+    workspace.inspection_action(crate::app::inspector::InspectionAction::Native(root));
+    assert_eq!(workspace.selection, root);
+    assert!(!workspace.report_view.navigator().can_back());
+    let camera = (1.25, egui::vec2(123.0, 44.0));
+    workspace.graph.restore_camera(camera.0, camera.1);
+    let target = Selection {
+        state: Some(2),
+        pc: None,
+        value: None,
+    };
+    workspace.inspection_action(crate::app::inspector::InspectionAction::Native(target));
+    assert_eq!(workspace.selection, target);
+    assert_eq!(workspace.view, View::Ssa);
+    assert!(workspace.report_view.navigator().can_back());
+    workspace.navigate(Intent::Back, None);
+    assert_eq!(workspace.selection, root);
+    assert_eq!(workspace.view, View::Ssa);
+    assert_eq!(workspace.graph.camera(), camera);
+}
+
+#[test]
 fn selecting_a_native_state_keeps_the_explicit_all_programs_scene() {
     let mut workspace = crate::tests::ready();
     workspace.view = View::Graph;

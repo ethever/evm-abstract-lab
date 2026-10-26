@@ -7,6 +7,18 @@ use crate::app::model::navigation::{
 use crate::app::{Selection, View, Workspace, minimum};
 
 impl Workspace {
+    pub(in crate::app) fn open_native_selection(&mut self, selection: Selection, route: View) {
+        let Some(report) = &self.report else { return };
+        match self.report_view.presentation(report).graph_focus(
+            self.report_view.identity(),
+            selection,
+            None,
+        ) {
+            Ok(focus) => self.navigate(Intent::Open(focus), Some(route)),
+            Err(error) => self.navigation_error = Some(error),
+        }
+    }
+
     pub(in crate::app) fn remember_location(&mut self) {
         let (zoom, pan) = self.graph.camera();
         if let Some(camera) = CameraBookmark::new(zoom, [pan.x, pan.y]) {

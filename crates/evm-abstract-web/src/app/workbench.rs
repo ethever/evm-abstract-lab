@@ -204,14 +204,26 @@ impl Workspace {
                 }
             },
         };
+        if let Some(action) = action {
+            self.inspection_action(action);
+        }
+    }
+
+    pub(in crate::app) fn inspection_action(&mut self, action: inspector::InspectionAction) {
         match action {
-            Some(inspector::InspectionAction::Native(selection)) => {
-                self.accept_native_selection(selection)
+            inspector::InspectionAction::Native(selection)
+                if selection.state != self.selection.state =>
+            {
+                // A definition or diagnostic in another machine is an explicit
+                // destination. Ordinary value/PC selection keeps display filters.
+                self.open_native_selection(selection, self.view);
             }
-            Some(inspector::InspectionAction::Global(selection)) => {
+            inspector::InspectionAction::Native(selection) => {
+                self.accept_native_selection(selection);
+            }
+            inspector::InspectionAction::Global(selection) => {
                 self.accept_minimum_selection(selection)
             }
-            None => {}
         }
     }
 

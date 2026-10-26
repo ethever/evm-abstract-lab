@@ -251,15 +251,7 @@ impl Workspace {
         match intent {
             widgets::NativeIntent::Select(selection) => self.accept_native_selection(selection),
             widgets::NativeIntent::Open(selection) => {
-                let Some(report) = &self.report else { return };
-                match self.report_view.presentation(report).graph_focus(
-                    self.report_view.identity(),
-                    selection,
-                    None,
-                ) {
-                    Ok(focus) => self.navigate(Intent::Open(focus), Some(View::Graph)),
-                    Err(error) => self.navigation_error = Some(error),
-                }
+                self.open_native_selection(selection, View::Graph);
             }
         }
     }
