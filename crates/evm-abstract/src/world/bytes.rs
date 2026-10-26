@@ -23,7 +23,9 @@ mod slice;
 pub(in crate::world) mod summary;
 #[cfg(test)]
 use crate::world::test_support::TestBytes;
-pub use summary::{EvmByteArraySummary, EvmByteArraySummaryView, EvmByteContentView};
+pub use summary::{
+    ByteSummaryProjectionError, EvmByteArraySummary, EvmByteArraySummaryView, EvmByteContentView,
+};
 #[cfg(test)]
 mod carrier_tests;
 #[cfg(test)]

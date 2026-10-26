@@ -303,18 +303,9 @@ fn environment<N: WordElement, D: EvmNumericAlgebra<Element = N>>(
     pools
         .symbolic
         .charge(source.calldata.metadata_len().saturating_mul(4))?;
-    pools
+    let calldata = pools
         .symbolic
-        .charge(source.calldata.summary_projection_work(algebra.borrowed()))?;
-    let calldata = source
-        .calldata
-        .summary_projection(algebra.borrowed())
-        .map_err(|error| {
-            let mut failure = pools.symbolic.failure(api::ExportFailureKind::StateRoot, 0);
-            failure.message = format!("minimum input data projection failed: {error}");
-            failure
-        })?;
-    pools.symbolic.charge(0)?;
+        .minimum_byte_summary(&source.calldata, algebra.borrowed())?;
     let mut hashes =
         |table: &std::collections::BTreeMap<evm_abstract::U256, alloy_primitives::B256>| {
             pools.symbolic.charge(table.len().saturating_mul(128))?;

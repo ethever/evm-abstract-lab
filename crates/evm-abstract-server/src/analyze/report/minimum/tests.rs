@@ -15,6 +15,8 @@ use evm_abstract::{
     world::{EvmAccount, EvmEntry, EvmWorld},
 };
 
+mod environment_payment;
+
 fn request() -> api::AnalyzeRequest {
     let mut request = api::AnalyzeRequest::default();
     request.limits.root_terminal_coverage = false;

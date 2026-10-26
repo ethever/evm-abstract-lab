@@ -1,5 +1,6 @@
 //! Report-local interning of immutable state and path graphs. Native keys stay
 //! alive during projection; only typed local references cross the wire.
+mod minimum;
 mod nodes;
 mod paths;
 

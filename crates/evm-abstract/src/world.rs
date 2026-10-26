@@ -26,8 +26,8 @@ pub use environment::{
 mod store;
 
 pub use bytes::{
-    EvmByteArray, EvmByteArraySummary, EvmByteArraySummaryView, EvmByteContentView,
-    GuardRefinementError, RangeError,
+    ByteSummaryProjectionError, EvmByteArray, EvmByteArraySummary, EvmByteArraySummaryView,
+    EvmByteContentView, GuardRefinementError, RangeError,
 };
 pub use snapshot::{FingerprintError, SnapshotEnvironment, SnapshotIdentity};
 pub use store::{

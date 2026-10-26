@@ -165,7 +165,7 @@ pub struct EvmByteArraySummary<N: WordElement> {
 }
 
 mod view;
-pub use view::{EvmByteArraySummaryView, EvmByteContentView};
+pub use view::{ByteSummaryProjectionError, EvmByteArraySummaryView, EvmByteContentView};
 
 impl<N: WordElement> EvmByteArray<N> {
     pub(super) fn retained_word_projection_work_with<D: EvmNumericAlgebra<Element = N>>(

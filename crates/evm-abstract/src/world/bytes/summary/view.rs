@@ -1,7 +1,10 @@
-//! Borrowed numerical content, independent of executable byte-state roots.
+//! Borrowed numerical content and paid projection of original byte-state roots.
 
-use super::{Content, EvmByteArray, EvmByteArraySummary, EvmValue, WordElement};
-use crate::domain::{AlgebraRef, EvmNumericAlgebra};
+use super::{Content, EvmByteArray, EvmByteArraySummary, EvmValue, RangeError, WordElement};
+use crate::{
+    domain::{AlgebraRef, EvmNumericAlgebra},
+    resource::{CloneError, SummaryError, WorkBudget},
+};
 use std::collections::BTreeMap;
 
 /// Complete content representation, borrowed without a carrier clone.
@@ -42,14 +45,37 @@ impl<N: WordElement> EvmByteArraySummary<N> {
     }
 }
 
+/// Refusal of a paid numerical projection of an original byte array.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ByteSummaryProjectionError {
+    /// A required operation could not be quoted or funded on the supplied ledger.
+    #[error("byte summary projection work exhausted or unquotable")]
+    Work,
+    /// Either the ledger owner or the current controlled operation cancelled.
+    #[error("byte summary projection cancelled")]
+    Cancelled,
+    /// The original array has a typed range or retained-state failure.
+    #[error(transparent)]
+    Source(#[from] RangeError),
+}
+
 impl<N: WordElement> EvmByteArray<N> {
-    /// Existing complete projection quote, before querying an original input.
-    /// This grants no credit until the caller reserves it on its persistent
-    /// ledger and checks cancellation before and after summary_projection.
-    pub fn summary_projection_work<D: EvmNumericAlgebra<Element = N>>(
+    /// Project the authoritative root using the existing per-operation payer.
+    /// Each query, copy, policy projection and canonicalization is funded on
+    /// this ledger before its hook runs, including hooks on intermediate values.
+    /// Refusal retains all earlier payments and leaves the borrowed input intact.
+    pub fn summary_projection_with_budget<D: EvmNumericAlgebra<Element = N>>(
         &self,
         domain: AlgebraRef<'_, D>,
-    ) -> usize {
-        self.projection_work(domain)
+        budget: &mut WorkBudget,
+    ) -> Result<EvmByteArraySummary<N>, ByteSummaryProjectionError> {
+        self.summary_projection_with_payment(domain, budget)
+            .map_err(|error| match error {
+                SummaryError::Budget(CloneError::Work) => ByteSummaryProjectionError::Work,
+                SummaryError::Budget(CloneError::Cancelled) => {
+                    ByteSummaryProjectionError::Cancelled
+                }
+                SummaryError::Source(error) => ByteSummaryProjectionError::Source(error),
+            })
     }
 }
