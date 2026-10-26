@@ -119,11 +119,15 @@ def _call_navigation(page, canvas, full_report, report, rpc, output):
     page.mouse.move(2,2);rendered_frame(page)
     plot=ui_control(page,"CFG canvas",role="graph-canvas")
     fitted=node_snapshot(page,canvas,output,"call-parent-fit",plot["rect"],True)
+    cards=[item for item in ui_controls(page) if item["role"]=="graph-node" and item["enabled"]]
+    dx=min(17,(plot["rect"][2]-max(item["rect"][2] for item in cards))/2)
+    dy=min(11,(plot["rect"][3]-max(item["rect"][3] for item in cards))/2)
+    assert dx>=2 and dy>=2,(plot,cards)
     page.mouse.move(plot["rect"][0]+8,plot["rect"][3]-12)
-    page.mouse.wheel(-17,-11)
-    page.mouse.move(2,2);settle_gesture(page)
+    page.mouse.wheel(-dx,-dy)
+    settle_gesture(page);page.mouse.move(2,2);rendered_frame(page)
     before=node_snapshot(page,canvas,output,"call-parent-before-open",plot["rect"],True)
-    assert_translation(fitted,before,17,11,tolerance=1.0)
+    assert_translation(fitted,before,dx,dy,tolerance=1.0)
     assert_same_scene(fitted,before)
     status=page.locator("#analysis-status")
     zoom=float(re.search(r"; CFG zoom: ([0-9.]+)%",status.text_content())[1])
@@ -147,7 +151,7 @@ def _call_navigation(page, canvas, full_report, report, rpc, output):
     assert float(re.search(r"; CFG zoom: ([0-9.]+)%",status.text_content())[1])==zoom
     assert not posts,"call navigation, source qualification or Back reran analysis"
     return {"call":call,"call_pc":instructions[0]["pc"],"caller":caller["id"],"callee":callee["id"],
-            "context":context,"child_frame":child,"before":before,"restored":restored,"zoom_percent":zoom}
+            "context":context,"child_frame":child,"before":before,"restored":restored,"pan_delta":[dx,dy],"zoom_percent":zoom}
 
 
 def _hierarchy_page(browser,url,args,rpc,providers,regions):
