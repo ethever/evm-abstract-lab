@@ -8,30 +8,39 @@ mod groups;
 mod index;
 mod layout;
 mod minimum;
+pub(crate) use minimum::control::{ControlOrigin, GraphIntent, GraphScope, ProjectionTarget};
 mod navigation;
 mod paint;
 mod projection;
+mod render;
 mod scene;
 mod termination;
 #[cfg(test)]
 mod tests;
 mod visibility;
 
-use super::heading;
 use crate::app::model::ReportViewId;
 use crate::report::ReportView;
 use crate::{app::Selection, palette, ssa_display::SsaDisplay};
 #[cfg(test)]
 use content::node_text;
-use content::{NodeText, NodeView, node_preview_with_display, node_tooltip};
-use edges::{edge_label, paint_edge_text};
-use egui::{Align2, FontId, Painter, Pos2, Rect, Sense, Ui, Vec2};
+use content::{NodeText, NodeView};
+use edges::edge_label;
+use egui::{Painter, Pos2, Rect, Vec2};
 use index::ReportIndex;
 use layout::Placement;
 use projection::DisplayGraph;
 pub(crate) use projection::GraphMode;
 use std::collections::{BTreeMap, BTreeSet};
 use visibility::Visibility;
+
+/// Renderer events carry original Native coordinates; the shell validates them
+/// against its Presentation before updating canonical focus/history.
+#[derive(Clone, Copy)]
+pub(crate) enum NativeIntent {
+    Select(Selection),
+    Open(Selection),
+}
 
 const PAD: f32 = 6.0;
 const HEADER_HEIGHT: f32 = 33.0;
@@ -42,10 +51,13 @@ pub(crate) struct Graph {
     content: NodeView,
     ssa_display: SsaDisplay,
     mode: GraphMode,
+    whole_scope: bool,
     neighborhood_hops: usize,
     pan: Vec2,
     fitted: bool,
     fit_pending: bool,
+    entry_pending: bool,
+    camera_restored: bool,
     focus_pending: bool,
     cancel_wheel: bool,
     viewport: Option<Vec2>,
@@ -58,6 +70,8 @@ struct Scene {
     ssa_selection: Selection,
     preview_dirty: BTreeSet<usize>,
     program_scope: Option<usize>,
+    scope_initialized: bool,
+    native_context: Option<usize>,
     local_center: Option<usize>,
     index: Option<ReportIndex>,
     display: DisplayGraph,
@@ -92,6 +106,8 @@ impl Default for Scene {
             ssa_selection: Selection::default(),
             preview_dirty: BTreeSet::new(),
             program_scope: None,
+            scope_initialized: false,
+            native_context: None,
             local_center: None,
             index: None,
             display: DisplayGraph::default(),
@@ -124,13 +140,16 @@ impl Default for Graph {
     fn default() -> Self {
         Self {
             zoom: 1.0,
-            content: NodeView::default(),
+            content: NodeView::Disassembly,
             ssa_display: SsaDisplay::default(),
             mode: GraphMode::default(),
+            whole_scope: false,
             neighborhood_hops: 2,
             pan: Vec2::ZERO,
-            fitted: true,
-            fit_pending: true,
+            fitted: false,
+            fit_pending: false,
+            entry_pending: true,
+            camera_restored: false,
             focus_pending: false,
             cancel_wheel: false,
             viewport: None,
@@ -140,9 +159,38 @@ impl Default for Graph {
 }
 
 impl Graph {
-    #[cfg(test)]
     pub(crate) fn camera(&self) -> (f32, Vec2) {
         (self.zoom, self.pan)
+    }
+
+    /// A history location owns its camera. Restore only validated screen-space
+    /// coordinates; report activation and scope selection must happen first.
+    pub(crate) fn restore_camera(&mut self, zoom: f32, pan: Vec2) -> bool {
+        if !zoom.is_finite() || zoom <= 0.0 || !pan.is_finite() {
+            return false;
+        }
+        self.zoom = zoom;
+        self.pan = pan;
+        self.fitted = false;
+        self.fit_pending = false;
+        self.entry_pending = false;
+        self.focus_pending = false;
+        self.cancel_wheel = true;
+        self.camera_restored = true;
+        true
+    }
+
+    pub(crate) fn set_program_scope(&mut self, program: Option<usize>) {
+        if self.scene.program_scope != program {
+            self.scene.program_scope = program;
+            self.scene.scope_initialized = true;
+            self.scene.native_context = None;
+            self.invalidate_scene();
+        }
+    }
+
+    pub(crate) fn focus_selection(&mut self) {
+        self.focus_pending = true;
     }
 
     /// The visible scene has actually been measured and laid out. Hidden graph
@@ -152,260 +200,42 @@ impl Graph {
             && self.viewport.is_some()
     }
 
-    pub(crate) fn show(&mut self, ui: &mut Ui, report: &ReportView<'_>, selection: &mut Selection) {
-        if ui.is_sizing_pass() {
-            return;
-        }
-        self.activate(report.identity());
-        self.set_ssa_display(self.ssa_display, *selection);
-        self.ensure_scene(report, selection.state);
-        let fit_requested = self.fit_shortcut(ui);
-        heading(
-            ui,
-            "CONTROL FLOW",
-            &format!(
-                "{} nodes · {} / {} states · {} edges",
-                self.scene.display.nodes.len(),
-                self.scene.shown_states,
-                report.cfg.len(),
-                self.scene.display.edges.len()
-            ),
-        );
-        self.controls(ui, report, selection);
-        self.ensure_scene(report, selection.state);
-        self.set_ssa_display(self.ssa_display, *selection);
-        self.view_legend(ui);
-        let (response, painter) = ui.allocate_painter(
-            ui.available_size().max(Vec2::splat(1.0)),
-            Sense::click_and_drag(),
-        );
-        let canvas = response.rect;
-        painter.rect_filled(canvas, 3.0, palette::BACKGROUND);
-        if self.scene.nodes.is_empty()
-            && let Some(index) = &self.scene.index
-        {
-            self.scene.nodes = self
-                .scene
-                .display
-                .nodes
-                .iter()
-                .map(|node| {
-                    (
-                        node.id,
-                        node_preview_with_display(
-                            &painter,
-                            report,
-                            index,
-                            node,
-                            self.content,
-                            self.ssa_display,
-                            self.scene.ssa_selection,
-                        ),
-                    )
-                })
-                .collect();
-            self.scene.preview_dirty.clear();
-        } else if let Some(index) = &self.scene.index {
-            for id in std::mem::take(&mut self.scene.preview_dirty) {
-                let Some(node) = self
-                    .scene
-                    .node_positions
-                    .get(&id)
-                    .and_then(|position| self.scene.display.nodes.get(*position))
-                else {
-                    continue;
-                };
-                self.scene.nodes.insert(
-                    id,
-                    node_preview_with_display(
-                        &painter,
-                        report,
-                        index,
-                        node,
-                        self.content,
-                        self.ssa_display,
-                        self.scene.ssa_selection,
-                    ),
-                );
-            }
-        }
-        if ui.ctx().will_discard() || !self.update_viewport(report, canvas.size(), &painter) {
-            return;
-        }
-        let selected_node = selection
-            .state
-            .and_then(|state| self.scene.display.state_to_node.get(&state).copied());
-        if self.focus_pending {
-            if let Some(rect) = selected_node
-                .and_then(|id| self.scene.placement.nodes.get(&id))
-                .copied()
-            {
-                self.fitted = false;
-                self.zoom = ((canvas.width() - 12.0).max(1.0) / rect.width())
-                    .min((canvas.height() - 12.0).max(1.0) / rect.height())
-                    .min(1.0);
-                self.pan = canvas.size() * 0.5 - rect.center().to_vec2() * self.zoom;
-            }
-            self.focus_pending = false;
-        }
-        if !fit_requested {
-            self.navigate(ui, &response);
-        }
-        self.grid(&painter, canvas);
-        if let Some(error) = &self.scene.layout_error {
-            crate::notation::paint(
-                &painter,
-                canvas.center(),
-                Align2::CENTER_CENTER,
-                &format!("Unable to arrange this graph: {error}"),
-                FontId::monospace(12.0),
-                palette::WARNING,
-            );
-            return;
-        }
-        self.update_highlight(report, selection.state);
-        let visible = Rect::from_min_max(
-            Pos2::ZERO - self.pan / self.zoom,
-            Pos2::ZERO + (canvas.size() - self.pan) / self.zoom,
-        )
-        .expand(16.0 / self.zoom);
-        groups::paint(
-            ui,
-            &painter,
-            &self.scene.placement.groups,
-            canvas,
-            self.pan,
-            self.zoom,
-            visible,
-        );
-        let mut animating_edges = false;
-        for id in self.scene.edge_visibility.query(visible) {
-            let Some(route) = self.scene.placement.edges.get(&id) else {
-                continue;
-            };
-            let Some(edge) = self
-                .scene
-                .edge_positions
-                .get(&id)
-                .and_then(|position| self.scene.display.edges.get(*position))
-            else {
-                continue;
-            };
-            let label = self.scene.edge_labels.get(&id).map_or("", String::as_str);
-            animating_edges |= paint_edge_text(
-                &painter,
-                route,
-                canvas.min + self.pan,
-                edge.kind,
-                label,
-                self.zoom,
-                self.scene.highlighted_edges.contains(&id),
-            );
-            let label_rect = self.screen_rect(canvas, route.label);
-            if canvas.intersects(label_rect) {
-                let hover = ui.interact(
-                    label_rect.intersect(canvas),
-                    ui.id().with(("cfg_edge", id)),
-                    Sense::hover(),
-                );
-                hover.on_hover_ui(|ui| self.edge_detail(ui, report, id));
-            }
-        }
-        if animating_edges {
-            ui.ctx().request_repaint_after(edges::FLOW_FRAME_INTERVAL);
-        }
-        let detail_level = paint::detail_level(ui, self.zoom);
-        self.scene.detail_level = detail_level;
-        for id in self.scene.node_visibility.query(visible) {
-            let (Some(world), Some(content)) = (
-                self.scene.placement.nodes.get(&id),
-                self.scene.nodes.get(&id),
-            ) else {
-                continue;
-            };
-            let Some(node) = self
-                .scene
-                .node_positions
-                .get(&id)
-                .and_then(|position| self.scene.display.nodes.get(*position))
-            else {
-                continue;
-            };
-            let rect = self.screen_rect(canvas, *world);
-            if !canvas.intersects(rect) {
-                continue;
-            }
-            let hit = ui.interact(
-                rect.intersect(canvas),
-                ui.id().with(("cfg_node", id)),
-                Sense::click(),
-            );
-            paint::node(
-                &painter,
-                rect,
-                content,
-                selected_node == Some(id),
-                hit.hovered(),
-                self.zoom,
-                detail_level,
-            );
-            if hit.clicked() {
-                let state = selection
-                    .state
-                    .filter(|state| self.scene.display.state_to_node.get(state) == Some(&id))
-                    .or_else(|| node.members.first().copied());
-                *selection = Selection {
-                    value: None,
-                    state,
-                    pc: None,
-                };
-                if node.members.len() > 1 {
-                    self.scene.instance_group = Some(id);
-                    self.scene.instance_filter.clear();
-                }
-                ui.ctx().request_repaint();
-            }
-            hit.on_hover_ui(|ui| {
-                if let Some(index) = &self.scene.index {
-                    ui.label(crate::notation::widget(
-                        ui,
-                        egui::RichText::new(node_tooltip(report, index, node, self.content))
-                            .monospace(),
-                    ));
-                }
-            });
-        }
-        if self.scene.display.nodes.is_empty() {
-            painter.text(
-                canvas.center(),
-                Align2::CENTER_CENTER,
-                "No reachable states in this view",
-                FontId::proportional(13.0),
-                palette::MUTED,
-            );
-        }
-        if ui.is_enabled() {
-            self.instances(ui.ctx(), report, selection);
-        }
-    }
-
     /// Bind an immutable graph namespace. Refreshes replace only derived data;
     /// unrelated reports additionally request their initial fit.
     pub(crate) fn activate(&mut self, identity: ReportViewId) {
         if self.scene.identity == identity {
             return;
         }
+        let initial_fit = self.fit_pending
+            && self.scene.index.is_none()
+            && self.scene.minimum.is_none()
+            && self.viewport.is_none();
         let replacement = !self.scene.identity.same_report(identity);
+        let same_model = self.scene.identity.namespace() == identity.namespace()
+            && self.scene.identity.is_minimum() == identity.is_minimum();
+        let program_scope = (!replacement && same_model)
+            .then_some(self.scene.program_scope)
+            .flatten();
+        let scope_initialized = !replacement && same_model && self.scene.scope_initialized;
+        let native_context = (!replacement && same_model)
+            .then_some(self.scene.native_context)
+            .flatten();
         self.focus_pending = false;
         self.scene = Scene {
             identity,
+            program_scope,
+            scope_initialized,
+            native_context,
             ..Scene::default()
         };
         if replacement {
+            self.camera_restored = false;
             self.zoom = 1.0;
             self.pan = Vec2::ZERO;
             self.viewport = None;
-            self.queue_fit();
+            self.entry_pending = !initial_fit;
+            self.fit_pending = initial_fit;
+            self.fitted = initial_fit;
         }
     }
 
@@ -459,8 +289,9 @@ impl Graph {
         self.scene.instance_group = None;
         self.scene.layout_error = None;
         self.scene.layout_pending = true;
-        self.fit_pending = true;
-        self.fitted = true;
+        self.fit_pending = false;
+        self.entry_pending = true;
+        self.fitted = false;
     }
 
     fn set_content(&mut self, content: NodeView, selected: Option<usize>) {
@@ -501,6 +332,7 @@ impl Graph {
     fn queue_fit(&mut self) {
         self.fitted = true;
         self.fit_pending = true;
+        self.entry_pending = false;
         self.focus_pending = false;
     }
 
@@ -593,6 +425,50 @@ impl Graph {
             self.zoom = layout::fit_scale(bounds.size(), size).min(1.0);
             self.pan = size * 0.5 - bounds.center().to_vec2() * self.zoom;
         }
+    }
+
+    /// Fit a small scope when it stays readable, otherwise start at its entry.
+    /// Whole-graph Fit remains explicit and may intentionally hide text at LOD.
+    fn readable_entry(&mut self, size: Vec2, bounds: Rect, anchor: Option<Rect>) {
+        let Some(anchor) = anchor.filter(|rect| rect.is_finite()) else {
+            return;
+        };
+        const READABLE_SCALE: f32 = 0.9;
+        self.fitted = false;
+        if bounds.is_finite() && layout::fit_scale(bounds.size(), size) >= READABLE_SCALE {
+            self.fit_bounds(size, bounds);
+            return;
+        }
+        self.zoom = ((size.x - 24.0).max(1.0) / anchor.width()).clamp(READABLE_SCALE, 1.0);
+        let width = anchor.width() * self.zoom;
+        let x = if width > size.x - 24.0 {
+            12.0 - anchor.min.x * self.zoom
+        } else {
+            size.x * 0.5 - anchor.center().x * self.zoom
+        };
+        self.restore_camera(self.zoom, Vec2::new(x, 16.0 - anchor.min.y * self.zoom));
+    }
+
+    fn open_native_state(
+        &mut self,
+        report: &ReportView<'_>,
+        selection: &mut Selection,
+        state: usize,
+    ) {
+        *selection = Selection {
+            state: Some(state),
+            pc: None,
+            value: None,
+        };
+        self.scene.program_scope = self
+            .scene
+            .index
+            .as_ref()
+            .and_then(|index| index.cfg(report, state))
+            .and_then(|state| state.program);
+        self.scene.scope_initialized = true;
+        self.scene.native_context = Some(state);
+        self.invalidate_scene();
     }
 
     fn grid(&self, painter: &Painter, canvas: Rect) {

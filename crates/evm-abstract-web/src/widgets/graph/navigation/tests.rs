@@ -136,7 +136,7 @@ fn scrolling_a_neighbor_pane_leaves_the_graph_camera_untouched() {
     assert!(offset > 0.0, "source pane must still receive its scroll");
     assert_eq!(graph.pan, pan);
     assert_eq!(graph.zoom, zoom);
-    assert!(graph.fitted);
+    assert!(!graph.fitted);
 }
 
 #[test]
@@ -270,4 +270,38 @@ fn fit_shortcut_takes_priority_over_wheel_and_zoom_smoothing() {
             }
         }
     }
+}
+
+#[test]
+fn history_camera_restore_is_atomic_and_rejects_invalid_coordinates() {
+    let mut graph = Graph::default();
+    assert!(graph.restore_camera(1.25, Vec2::new(-105.0, 38.0)));
+    let camera = graph.camera();
+    for (zoom, pan) in [
+        (0.0, Vec2::ZERO),
+        (-1.0, Vec2::ZERO),
+        (f32::NAN, Vec2::ZERO),
+        (1.0, Vec2::splat(f32::INFINITY)),
+    ] {
+        assert!(!graph.restore_camera(zoom, pan));
+        assert_eq!(graph.camera(), camera);
+    }
+    assert!(!graph.fit_pending && !graph.entry_pending && !graph.focus_pending);
+    assert!(graph.cancel_wheel);
+}
+
+#[test]
+fn default_entry_keeps_readable_scale_while_explicit_fit_can_show_the_overview() {
+    let mut graph = Graph::default();
+    let size = Vec2::new(300.0, 160.0);
+    let entry = egui::Rect::from_min_size(egui::pos2(1100.0, 300.0), Vec2::new(300.0, 88.0));
+    let whole = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(6000.0, 3000.0));
+    graph.readable_entry(size, whole, Some(entry));
+    assert!(graph.zoom >= 0.9);
+    let screen_entry = graph.screen_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, size), entry);
+    assert!(screen_entry.left() >= 0.0 && screen_entry.top() >= 0.0);
+    assert!(screen_entry.right() <= size.x);
+    assert_eq!(graph.content_label(), "Disasm");
+    graph.fit_bounds(size, whole);
+    assert!(graph.zoom < 0.1);
 }
