@@ -62,6 +62,8 @@ pub(crate) struct Graph {
     focus_pending: bool,
     cancel_wheel: bool,
     viewport: Option<Vec2>,
+    #[cfg(test)]
+    painted_canvas: Option<Rect>,
     scene: Scene,
     minimum_layouts: Vec<minimum::LayoutMemory>,
 }
@@ -157,6 +159,8 @@ impl Default for Graph {
             focus_pending: false,
             cancel_wheel: false,
             viewport: None,
+            #[cfg(test)]
+            painted_canvas: None,
             scene: Scene::default(),
             minimum_layouts: Vec::new(),
         }
@@ -279,6 +283,23 @@ impl Graph {
             }
         }
         self.scene.ssa_selection = selection;
+    }
+
+    /// Exact layout-backed titles for matching actual painted text in GUI
+    /// tests, independent of the labels used by unrelated source panes.
+    #[cfg(test)]
+    pub(crate) fn painted_nodes(&self) -> Vec<(String, Rect)> {
+        let Some(canvas) = self.painted_canvas else {
+            return Vec::new();
+        };
+        self.scene
+            .nodes
+            .iter()
+            .filter_map(|(&id, text)| {
+                let world = self.scene.placement.nodes.get(&id)?;
+                Some((text.title.clone(), self.screen_rect(canvas, *world)))
+            })
+            .collect()
     }
 
     /// Structural Native oracles explicitly choose the former SSA content

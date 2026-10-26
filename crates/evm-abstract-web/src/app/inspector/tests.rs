@@ -1076,7 +1076,7 @@ fn task_progress_and_typed_task_error_keep_the_full_u64_handle() {
             workspace.status(ui);
         },
     );
-    let prefix = format!("task{} ·", u64::MAX);
+    let prefix = format!("Job ID: {}", u64::MAX);
     assert!(
         visible.iter().any(|(text, _)| text.starts_with(&prefix)),
         "missing {prefix}: {visible:?}"

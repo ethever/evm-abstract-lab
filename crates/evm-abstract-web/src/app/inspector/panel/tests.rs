@@ -153,9 +153,15 @@ fn dragging_inspect_can_use_most_of_the_result_workspace() {
 fn short_viewports_use_a_moderate_default_but_allow_a_larger_user_height() {
     let mut workbench = Workbench::new(egui::vec2(390.0, 300.0));
     workbench.frame(vec![]);
-    assert!(workbench.rect("world_inspector").height() <= 300.0 * 0.38 + 1.0);
+    let initial = workbench.rect("world_inspector").height();
+    assert!(initial <= 300.0 * 0.38 + 1.0);
     workbench.drag_to_height(175.0);
-    assert!(workbench.rect("world_inspector").height() > 300.0 * 0.38 + 20.0);
+    let available = workbench.rect("workspace_status").top()
+        - workbench.rect("result_context").bottom()
+        - super::PANE_REMAINDER;
+    let chosen = workbench.rect("world_inspector").height();
+    assert!(chosen > initial + 1.0);
+    assert!((chosen - 175.0_f32.min(available)).abs() < 2.0);
 }
 
 #[test]
@@ -329,7 +335,7 @@ fn maximizing_and_restoring_keep_the_existing_cfg_camera() {
         .unwrap();
     let source = report.source_block(state.source_block().unwrap()).unwrap();
     let instruction = &source.instructions[0];
-    let title = format!("0x{:04x} · {}", source.start_pc, instruction.name);
+    let title = format!("Block 0x{:04x}", source.start_pc);
     let source_row = format!("{:04x}  {}", instruction.pc, instruction.name);
     let (node_title, node) = labels(&before)
         .into_iter()
@@ -396,8 +402,10 @@ fn maximizing_and_restoring_keep_the_source_reading_position() {
     fn rows(output: &FullOutput) -> Vec<(String, Pos2)> {
         labels(output)
             .into_iter()
-            .filter(|(text, _)| text.starts_with("ROW_"))
-            .map(|(text, rect)| (text, rect.min))
+            .filter_map(|(text, rect)| {
+                text.find("ROW_")
+                    .map(|start| (text[start..].to_owned(), rect.min))
+            })
             .collect()
     }
     let before = rows(&workbench.frame(vec![]));

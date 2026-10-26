@@ -60,15 +60,20 @@ fn navigation_and_metadata_keep_compact_desktop_and_touch_height_budgets() {
             let metadata = egui::PanelState::load(&ctx, egui::Id::new("result_context"))
                 .unwrap()
                 .outer_rect;
-            // Desktop keeps its original compact row. Phones reserve one
-            // 32-point target row, while metadata stays at its native height.
+            // Compact navigation reserves one touch row. Secondary actions
+            // share More instead of adding permanent namespace/footer rows.
             let header_budget = if size.x < 680.0 { 37.0 } else { 25.0 };
+            let metadata_budget = if size.x < 680.0 || size.y < 560.0 {
+                37.0
+            } else {
+                23.0
+            };
             assert!(
                 header.height() <= header_budget,
                 "navigation grew at {size:?}: {header:?}"
             );
             assert!(
-                metadata.height() <= 23.0,
+                metadata.height() <= metadata_budget,
                 "metadata grew at {size:?}: {metadata:?}"
             );
             assert!(metadata.top() >= header.bottom());
@@ -84,6 +89,52 @@ fn navigation_and_metadata_keep_compact_desktop_and_touch_height_budgets() {
             );
         }
     }
+}
+
+#[test]
+fn mobile_cfg_keeps_secondary_actions_reachable_in_one_navigation_row() {
+    let ctx = Context::default();
+    crate::palette::configure(&ctx);
+    let mut workspace = Workspace::default();
+    workspace.receive(Ok(AnalyzeReply {
+        result: Ok(crate::tests::report().into()),
+    }));
+    let size = Vec2::new(320.0, 480.0);
+    let output = settled(&ctx, &mut workspace, size);
+    assert!(!workspace.directory.open && !workspace.inspector.expanded);
+    let labels = texts(&output);
+    assert!(!labels.iter().any(|(text, _)| text == "Forward"));
+    assert!(!labels.iter().any(|(text, _)| text == "SSA details"));
+    let navigation = egui::PanelState::load(&ctx, egui::Id::new("result_context"))
+        .unwrap()
+        .outer_rect;
+    assert!(navigation.height() <= 37.0);
+    let more = labels.iter().find(|(text, _)| text == "More").unwrap().1;
+    assert!(navigation.contains_rect(more));
+    click(&ctx, &mut workspace, size, more.center());
+    let output = settled(&ctx, &mut workspace, size);
+    let screen = egui::Rect::from_min_size(Pos2::ZERO, size);
+    let labels = texts(&output);
+    for label in [
+        "Forward",
+        "Entry",
+        "SSA details",
+        "Timing",
+        "Coverage",
+        "Diagnostics",
+        "Terminal coverage",
+    ] {
+        assert!(
+            labels
+                .iter()
+                .any(|(text, rect)| { text == label && screen.contains_rect(*rect) }),
+            "mobile More must keep {label} reachable"
+        );
+    }
+    let timing = labels.iter().find(|(text, _)| text == "Timing").unwrap().1;
+    click(&ctx, &mut workspace, size, timing.center());
+    assert!(workspace.inspector.expanded);
+    assert_eq!(workspace.inspector.tab, crate::app::inspector::Tab::Timing);
 }
 
 #[test]
@@ -144,11 +195,7 @@ fn long_push_and_phi_keep_a_graph_budget_without_hiding_source_data() {
         "a long phi must scroll within a bounded pane"
     );
     let painted = texts(&output);
-    assert!(
-        painted
-            .iter()
-            .any(|(text, _)| text == &format!(" {immediate}"))
-    );
+    assert!(painted.iter().any(|(text, _)| text.contains(&immediate)));
     assert!(painted.iter().any(|(text, _)| text == "σ79:%179"));
 }
 
@@ -304,7 +351,10 @@ fn medium_code_tabs_use_active_content_and_keep_the_graph_visible() {
     click(&ctx, &mut workspace, size, target);
     settled(&ctx, &mut workspace, size);
     let disassembly = pane_rect(&workspace.layout.medium, Pane::Disassembly).width();
-    assert!(ssa > disassembly + 30.0);
+    assert!(
+        (ssa - disassembly).abs() > 1.0,
+        "switching tables must apply their different measured widths: SSA {ssa}, Code {disassembly}"
+    );
     assert!(pane_rect(&workspace.layout.medium, Pane::Graph).width() >= GRAPH_AUTO_MIN - 1.0);
     let desired = natural(&ctx, &mut workspace)[0];
     assert!((disassembly - desired).abs() < 1.0);

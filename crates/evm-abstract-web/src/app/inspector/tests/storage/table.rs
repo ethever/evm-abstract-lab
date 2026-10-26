@@ -527,24 +527,13 @@ impl Workbench {
     }
 
     fn graph_titles(&mut self) -> Vec<(String, Rect)> {
-        let source_titles: std::collections::BTreeSet<_> =
-            self.workspace
-                .report
-                .as_ref()
-                .unwrap()
-                .programs
-                .iter()
-                .flat_map(|program| &program.blocks)
-                .filter_map(|block| {
-                    block.instructions.first().map(|instruction| {
-                        format!("0x{:04x} · {}", block.start_pc, instruction.name)
-                    })
-                })
-                .collect();
-        self.draw(vec![])
-            .into_iter()
-            .filter(|(text, _)| {
-                source_titles.contains(text) || text.starts_with('σ') && text.contains("  ·  B")
+        let text = self.draw(vec![]);
+        let nodes = self.workspace.graph.painted_nodes();
+        text.into_iter()
+            .filter(|(label, rect)| {
+                nodes
+                    .iter()
+                    .any(|(title, bounds)| label == title && bounds.contains(rect.center()))
             })
             .collect()
     }

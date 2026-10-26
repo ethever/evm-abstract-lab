@@ -223,7 +223,7 @@ fn compact_source_tab_choices_survive_resizing_and_reanalysis() {
             .1;
         click(&ctx, &mut workspace, size, target.center());
         let output = settled(&ctx, &mut workspace, size);
-        assert!(texts(&output).iter().any(|(text, _)| text == "DISASSEMBLY"));
+        assert!(texts(&output).iter().any(|(text, _)| text == "CODE"));
         assert_eq!(workspace.selection, selection);
 
         settled(&ctx, &mut workspace, Vec2::new(1440.0, 900.0));
@@ -247,7 +247,7 @@ fn compact_source_tab_choices_survive_resizing_and_reanalysis() {
             result: Ok((crate::tests::report()).into()),
         }));
         let output = settled(&ctx, &mut workspace, size);
-        assert!(texts(&output).iter().any(|(text, _)| text == "DISASSEMBLY"));
+        assert!(texts(&output).iter().any(|(text, _)| text == "CODE"));
         assert!(
             pane_rects(active_tree(&workspace, size.x))
                 .iter()
@@ -528,10 +528,15 @@ fn press_f(
     settled(ctx, workspace, size)
 }
 
-fn graph_titles(output: &FullOutput) -> Vec<(String, Rect)> {
+fn graph_titles(output: &FullOutput, workspace: &Workspace) -> Vec<(String, Rect)> {
+    let nodes = workspace.graph.painted_nodes();
     texts(output)
         .into_iter()
-        .filter(|(label, _)| label.starts_with('σ') && label.contains("  ·  B"))
+        .filter(|(label, text)| {
+            nodes
+                .iter()
+                .any(|(title, node)| title == label && node.contains(text.center()))
+        })
         .collect()
 }
 
@@ -549,23 +554,24 @@ fn f_and_shift_f_restore_the_visible_graph_fit_and_node_positions() {
             crate::palette::configure(&ctx);
             let mut workspace = ready();
             workspace.view = view;
-            let fitted = settled(&ctx, &mut workspace, size);
+            settled(&ctx, &mut workspace, size);
+            let fitted = press_f(&ctx, &mut workspace, size, Modifiers::NONE, Some("f"));
             let fitted_zoom = workspace.graph.zoom;
             assert!(has_camera_label(&fitted, fitted_zoom, "Fit"));
-            let fitted_titles = graph_titles(&fitted);
+            let fitted_titles = graph_titles(&fitted, &workspace);
             assert_eq!(fitted_titles.len(), 3);
             workspace.graph.zoom_at(Vec2::new(37.0, 89.0), 0.5);
             let manual = settled(&ctx, &mut workspace, size);
             let manual_zoom = workspace.graph.zoom;
             assert!(manual_zoom < fitted_zoom);
             assert!(has_camera_label(&manual, manual_zoom, "Manual"));
-            assert_ne!(graph_titles(&manual), fitted_titles);
+            assert_ne!(graph_titles(&manual, &workspace), fitted_titles);
 
             let restored = press_f(&ctx, &mut workspace, size, modifiers, Some(character));
             assert_eq!(workspace.graph.zoom, fitted_zoom, "{view:?}, {character}");
             assert!(has_camera_label(&restored, fitted_zoom, "Fit"));
             assert_eq!(
-                graph_titles(&restored),
+                graph_titles(&restored, &workspace),
                 fitted_titles,
                 "shortcut must restore the rendered camera, not only its mode label"
             );
@@ -599,7 +605,7 @@ fn typing_f_and_shift_f_in_the_focused_editor_keeps_the_manual_camera() {
         ctx.text_edit_focused(),
         "exercise the actual TextEdit focus path"
     );
-    let original_camera = graph_titles(&settled(&ctx, &mut workspace, size));
+    let original_camera = graph_titles(&settled(&ctx, &mut workspace, size), &workspace);
     for (modifiers, character, expected) in
         [(Modifiers::NONE, "f", "f"), (Modifiers::SHIFT, "F", "fF")]
     {
@@ -611,7 +617,7 @@ fn typing_f_and_shift_f_in_the_focused_editor_keeps_the_manual_camera() {
         assert!(ctx.text_edit_focused());
         assert_eq!(workspace.graph.zoom, manual_zoom);
         assert!(has_camera_label(&output, manual_zoom, "Manual"));
-        assert_eq!(graph_titles(&output), original_camera);
+        assert_eq!(graph_titles(&output, &workspace), original_camera);
     }
 }
 
@@ -623,7 +629,7 @@ fn modified_find_shortcuts_do_not_reset_the_graph_camera() {
     let size = Vec2::new(1440.0, 900.0);
     settled(&ctx, &mut workspace, size);
     workspace.graph.zoom_at(Vec2::new(37.0, 89.0), 0.5);
-    let original_camera = graph_titles(&settled(&ctx, &mut workspace, size));
+    let original_camera = graph_titles(&settled(&ctx, &mut workspace, size), &workspace);
     let manual_zoom = workspace.graph.zoom;
     for modifiers in [
         Modifiers::CTRL,
@@ -646,7 +652,7 @@ fn modified_find_shortcuts_do_not_reset_the_graph_camera() {
         let output = press_f(&ctx, &mut workspace, size, modifiers, None);
         assert_eq!(workspace.graph.zoom, manual_zoom, "{modifiers:?}");
         assert!(has_camera_label(&output, manual_zoom, "Manual"));
-        assert_eq!(graph_titles(&output), original_camera);
+        assert_eq!(graph_titles(&output, &workspace), original_camera);
     }
 }
 
@@ -666,7 +672,7 @@ fn fit_shortcut_does_not_reach_a_hidden_graph_pane() {
     ] {
         workspace.view = view;
         let before = settled(&ctx, &mut workspace, size);
-        assert!(graph_titles(&before).is_empty());
+        assert!(graph_titles(&before, &workspace).is_empty());
         press_f(&ctx, &mut workspace, size, Modifiers::NONE, Some("f"));
         assert_eq!(
             workspace.graph.zoom, manual_zoom,
@@ -686,7 +692,7 @@ fn scrolling_the_modal_editor_does_not_navigate_the_background_graph() {
     workspace.form.bytecode.bytecode = "6001\n".repeat(300);
     workspace.form.open = true;
     let before = settled(&ctx, &mut workspace, size);
-    let titles = graph_titles(&before);
+    let titles = graph_titles(&before, &workspace);
     let zoom = workspace.graph.zoom;
     let editor = ctx
         .read_response(egui::Id::new("runtime_bytecode"))
@@ -718,12 +724,12 @@ fn scrolling_the_modal_editor_does_not_navigate_the_background_graph() {
             < top - 50.0,
         "wheel must reach the modal's scrollable editor"
     );
-    assert_eq!(graph_titles(&after), titles);
+    assert_eq!(graph_titles(&after, &workspace), titles);
     assert_eq!(workspace.graph.zoom, zoom);
 }
 
 #[test]
-fn accepted_server_result_keeps_first_fit_after_fast_completion_and_rerun() {
+fn accepted_server_result_settles_entry_view_and_keeps_explicit_fit_after_rerun() {
     use crate::app::{Command, JobOperation, Message};
     use evm_abstract_protocol::{
         AnalysisProgress, AnalysisTimings, JobId, JobReply, JobSnapshot, JobState,
@@ -819,24 +825,27 @@ fn accepted_server_result_keeps_first_fit_after_fast_completion_and_rerun() {
             // Accepting this report collapses two metadata rows to one.
             complete(&mut workspace, generation, current);
         }
-        let fitted = settled(&ctx, &mut workspace, size);
+        let entry = settled(&ctx, &mut workspace, size);
+        assert_eq!(entry.platform_output.num_completed_passes, 1);
+        assert!(!graph_titles(&entry, &workspace).is_empty());
+        let fitted = press_f(&ctx, &mut workspace, size, Modifiers::NONE, Some("f"));
         assert_eq!(
             fitted.platform_output.num_completed_passes, 1,
             "settled status geometry must not keep requesting another pass; rerun={rerun}"
         );
         let fitted_zoom = workspace.graph.zoom;
-        let fitted_titles = graph_titles(&fitted);
+        let fitted_titles = graph_titles(&fitted, &workspace);
         assert_eq!(fitted_titles.len(), 3, "rerun={rerun}");
         assert!(has_camera_label(&fitted, fitted_zoom, "Fit"));
         workspace.graph.zoom_at(Vec2::new(37.0, 89.0), 0.5);
         let manual = settled(&ctx, &mut workspace, size);
         assert!(workspace.graph.zoom < fitted_zoom);
-        assert_ne!(graph_titles(&manual), fitted_titles);
+        assert_ne!(graph_titles(&manual, &workspace), fitted_titles);
         let restored = press_f(&ctx, &mut workspace, size, Modifiers::NONE, Some("f"));
         assert_eq!(workspace.graph.zoom, fitted_zoom, "rerun={rerun}");
         assert!(has_camera_label(&restored, fitted_zoom, "Fit"));
         assert_eq!(
-            graph_titles(&restored),
+            graph_titles(&restored, &workspace),
             fitted_titles,
             "accepted server result first-fit changed after F; rerun={rerun}"
         );

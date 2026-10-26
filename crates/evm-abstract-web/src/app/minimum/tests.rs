@@ -124,12 +124,7 @@ fn clicking_an_interior_after_an_original_account_keeps_its_actual_source() {
     let program = workspace.program.unwrap();
     workspace.minimum_selection.account = Some(0);
     workspace.view = View::Graph;
-    click(
-        &ctx,
-        &mut workspace,
-        size,
-        &format!("MAY B1 · program {program} · source 0x0003"),
-    );
+    click(&ctx, &mut workspace, size, "Block 0x0003–0x0006");
     assert_eq!(
         workspace.minimum_selection.control,
         Some(api::ProcessLocation::Block(1))

@@ -51,6 +51,10 @@ impl Graph {
             Sense::click_and_drag(),
         );
         let canvas = response.rect;
+        #[cfg(test)]
+        {
+            self.painted_canvas = Some(canvas);
+        }
         crate::controls::observe(ui, &response, "CFG canvas", "graph-canvas", None);
         painter.rect_filled(canvas, 3.0, palette::BACKGROUND);
         if self.scene.nodes.is_empty()

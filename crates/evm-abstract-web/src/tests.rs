@@ -538,7 +538,7 @@ fn all_three_custom_views_paint_structural_content() {
         "CONTROL FLOW",
         "SSA",
         "CALLDATALOAD",
-        "σ2  ·  B2",
+        "Block 0x000a",
         "%5",
         "σ0:%1",
         "σ1:%2",
@@ -593,7 +593,7 @@ fn clicking_cfg_node_selects_same_native_state() {
     let output = frame(&ctx, &mut workspace, vec![]);
     let pos = painted_text(&output)
         .into_iter()
-        .find(|(text, _)| text == "σ2  ·  B2")
+        .find(|(text, _)| text == "Block 0x000a")
         .unwrap()
         .1
         + Vec2::splat(4.0);
@@ -948,11 +948,18 @@ fn stale_and_unexecuted_blocks_never_claim_current_exit_evidence() {
         frame(&ctx, &mut workspace, vec![]);
         let output = frame(&ctx, &mut workspace, vec![]);
         let labels = painted_text(&output);
-        assert!(
-            labels
-                .iter()
-                .any(|(text, _)| text.starts_with("entry only μ"))
-        );
+        match coverage {
+            BlockCoverage::Stale => assert!(
+                labels
+                    .iter()
+                    .any(|(text, _)| text.starts_with("entry only μ")),
+                "a retained stale receipt must remain browseable"
+            ),
+            BlockCoverage::Unexecuted => assert!(labels.iter().any(|(text, _)| {
+                text == crate::app::model::presentation::UnavailableReason::Unexecuted.label()
+            })),
+            BlockCoverage::Current => unreachable!(),
+        }
         assert!(!labels.iter().any(|(text, _)| text.starts_with("exit μ")));
         workspace.view = View::Disassembly;
         let output = frame(&ctx, &mut workspace, vec![]);
