@@ -208,9 +208,23 @@ def set_control(page, canvas, label, selected, *, role="toggle", **query):
     return ui_control(page, label, role=role, selected=selected, **query)
 
 
-def edit_control(page, canvas, label, text, **query):
-    """Replace a real egui text field after its DOM text agent takes focus."""
-    control = click_control(page, canvas, label, role="text", **query)
+def focus_text_control(page, canvas, label, *, touch=False, **query):
+    """Focus one observed editor through an actual pointer or Chromium touch."""
+    if touch:
+        control = ui_control(page, label, role="text", **query)
+        left, top, right, bottom = control["rect"]
+        assert 0 <= left < right <= page.viewport_size["width"], control
+        assert 0 <= top < bottom <= page.viewport_size["height"], control
+        session = page.context.new_cdp_session(page)
+        try:
+            session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [
+                {"x": (left + right) / 2, "y": (top + bottom) / 2, "radiusX": 3, "radiusY": 3}]})
+            session.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+        finally:
+            session.detach()
+        settle_gesture(page)
+    else:
+        control = click_control(page, canvas, label, role="text", **query)
     page.wait_for_function("""rect => {
         const canvas = document.querySelector('#evm-canvas');
         const agent = canvas?.nextElementSibling;
@@ -219,6 +233,12 @@ def edit_control(page, canvas, label, text, **query):
         return Number.isFinite(x) && Number.isFinite(y) &&
             rect[0] - 4 <= x && x <= rect[2] + 4 && rect[1] - 4 <= y && y <= rect[3] + 4;
     }""", arg=control["rect"], polling=25)
+    return control
+
+
+def edit_control(page, canvas, label, text, **query):
+    """Replace a real egui text field after its DOM text agent takes focus."""
+    control = focus_text_control(page, canvas, label, **query)
     page.keyboard.press("Control+A")
     rendered_frame(page)
     page.keyboard.insert_text(str(text))
@@ -243,48 +263,76 @@ def hide_world_directory(page, canvas):
         ui_control(page, "Sources", role="toggle", selected=False)
 
 
+def select_report_context(page, report, namespace, *, state=None, summary=None, procedure=None,
+                          close_directory=True):
+    """Open one original context through Sources, never by a display ordinal."""
+    assert namespace_available(report, namespace), namespace
+    canvas = page.locator("#evm-canvas")
+    label = {"Baseline": "Global model", "Native": "Detailed paths"}[namespace]
+    if namespace == "Native" or report["minimum"] is None:
+        assert summary is None and procedure is None
+        assert type(state) is int and state >= 0, state
+        selected = report[{"Baseline": "global", "Native": "native"}[namespace]]
+        nodes = [node for node in selected["cfg"] if type(node["id"]) is int and node["id"] == state]
+        assert len(nodes) == 1, (namespace, state, nodes)
+        program = None if nodes[0]["program"] is None else source_program(report, nodes[0]["program"])
+        query = f"Graph {{ state: {state} }}"
+    else:
+        assert state is None
+        minimum = report["minimum"]
+        assert type(summary) is int and 0 <= summary < len(minimum["summaries"]), summary
+        relation = minimum["summaries"][summary]["relation"]
+        assert type(procedure) is int and 0 <= procedure < len(relation["procedures"]), procedure
+        target = relation["procedures"][procedure]
+        key = target["process"]
+        if key is not None:
+            captures = [item for item in report["process_controls"]
+                        if item["source"] == key["source"] and item["epoch"] == key["epoch"]]
+            programs = {item["program"] for item in captures if item["program"] is not None}
+            assert len(programs) <= 1, programs
+            program = source_program(report, programs.pop()) if programs else None
+        else:
+            captures = [item for item in report["programs"]
+                        if (item["code_address"], item["code_hash"], item["kind"], item["fork"]) ==
+                        (target["code_address"], target["code_hash"], target["kind"], minimum["fork"])]
+            assert len(captures) <= 1, captures
+            program = captures[0] if captures else None
+        query = f"Minimum {{ summary: {summary}, procedure: {procedure} }}"
+    click_control(page, canvas, label, role="tab")
+    if program is not None:
+        # The original template and its conditional Native alias may have the
+        # same bytes. Choose the actual alias before enumerating its contexts.
+        source = program["code_address"] or (
+            "Constructor code" if program["kind"] == "Initcode" else "Supplied input program")
+        edit_control(page, canvas, "source_context_filter", program["code_address"] or program["code_hash"])
+        caption = source if len(source) <= 22 else source[:10] + "…" + source[-8:]
+        click_control(page, canvas, caption, role="source")
+        set_control(page, canvas, "Sources", True)
+    edit_control(page, canvas, "source_context_filter", query)
+    contexts = [control for control in ui_controls(page) if control["role"] == "context" and control["enabled"]]
+    assert len(contexts) == 1, (namespace, query, contexts)
+    chosen = click_control(page, canvas, contexts[0]["label"], role="context", id=contexts[0]["id"])
+    expect(page.locator("#analysis-status")).to_contain_text(f"View: {label}")
+    if close_directory:
+        hide_world_directory(page, canvas)
+    return chosen
+
+
 def select_report_namespace(page, report, namespace):
-    """Choose a qualified root context before following namespace-local IDs."""
+    """Preserve an active namespace; switching requires a qualified root context."""
     assert namespace_available(report, namespace), namespace
     if report["hybrid"] is not None:
         label = {"Baseline": "Global model", "Native": "Detailed paths"}[namespace]
-        if namespace == "Baseline" and report["minimum"] is not None:
-            expected = f"Global model {report['minimum']['status']}"
-        else:
-            expected = f"View: {label}"
+        expected = f"View: {label}"
         status = page.locator("#analysis-status")
         if expected not in status.text_content():
-            canvas = page.locator("#evm-canvas")
-            click_control(page, canvas, label, role="tab")
             if namespace == "Native":
-                node = native_entry_context(report)
-                program = None if node["program"] is None else source_program(report, node["program"])
-                query = f"Graph {{ state: {node['id']} }}"
+                select_report_context(page, report, namespace, state=native_entry_context(report)["id"])
             else:
                 minimum = report["minimum"]
                 assert minimum is not None and len(minimum["summaries"]) == 1, "choose an explicit Global relation"
                 relation = minimum["summaries"][0]["relation"]
-                procedure = relation["root_procedure"]
-                root = relation["procedures"][procedure]
-                key = root["process"]
-                assert key is not None and key["source"] == minimum["declared_root_source"], root
-                captures = [item for item in report["process_controls"] if item["source"] == key["source"]]
-                programs = {item["program"] for item in captures if item["program"] is not None}
-                assert len(programs) <= 1, programs
-                program = source_program(report, programs.pop()) if programs else None
-                query = f"Minimum {{ summary: 0, procedure: {procedure} }}"
-            if program is not None:
-                # Source aliases stay separate, even when their bytes match.
-                source = program["code_address"] or (
-                    "Constructor code" if program["kind"] == "Initcode" else "Supplied input program")
-                edit_control(page, canvas, "source_context_filter", program["code_address"] or program["code_hash"])
-                caption = source if len(source) <= 22 else source[:10] + "…" + source[-8:]
-                click_control(page, canvas, caption, role="source")
-                set_control(page, canvas, "Sources", True)
-            edit_control(page, canvas, "source_context_filter", query)
-            contexts = [control for control in ui_controls(page) if control["role"] == "context" and control["enabled"]]
-            assert len(contexts) == 1, (query, contexts)
-            click_control(page, canvas, contexts[0]["label"], role="context", id=contexts[0]["id"])
+                select_report_context(page, report, namespace, summary=0, procedure=relation["root_procedure"])
         expect(status).to_contain_text(expected)
         settle_gesture(page)
 
@@ -424,6 +472,14 @@ def observe_webgpu(page, unavailable: str | None = None) -> None:
             if (event.target instanceof HTMLInputElement && event.target === canvas?.nextElementSibling)
                 window.__webTestInputFrame = evidence.submissions;
         }, {capture: true});
+        for (const kind of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'compositionstart', 'compositionend']) {
+            addEventListener(kind, event => {
+                const canvas = document.querySelector('#evm-canvas');
+                if (canvas && (event.target === canvas || event.target === canvas.nextElementSibling ||
+                               (kind.startsWith('key') && event.target === document.body)))
+                    window.__webTestInputFrame = evidence.submissions;
+            }, {capture: true});
+        }
         const getContext = HTMLCanvasElement.prototype.getContext;
         HTMLCanvasElement.prototype.getContext = function(kind, ...args) {
             const result = getContext.call(this, kind, ...args);

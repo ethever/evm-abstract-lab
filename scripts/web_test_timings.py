@@ -6,8 +6,8 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, expect
 import json
 import re
 import time
-from web_test_harness import analysis_server, measured_backend_timings, observe_webgpu, open_input, rendered_frame, select_report_namespace, settle_gesture, submit_bytecode, wait_for_report_publication, webgpu_evidence
-from web_test_inspector_helpers import INSPECTOR_TAB_POSITIONS, inspector_painted_controls, inspector_selected_tab, inspector_title_action
+from web_test_harness import analysis_server, click_control, measured_backend_timings, observe_webgpu, rendered_frame, select_report_namespace, submit_bytecode, wait_for_report_publication, webgpu_evidence
+from web_test_inspector_helpers import inspector_selected_tab, inspector_title_action, select_inspector_tab
 from web_test_rpc_helpers import EntryRpcFixture, automatic_rpc_entry, submit_rpc, visible_seconds, wait_for_job
 from web_test_hybrid import job_result_report
 
@@ -124,7 +124,7 @@ def timing_interactions(browser, args):
             rendered_frame(page)
             assert visible_seconds(page, "Total wait") == total, "completed user wait kept advancing"
             assert visible_seconds(page, "Frontend preparation") == preparation
-            canvas.click(position={"x": 75, "y": 978})
+            select_inspector_tab(page, canvas, "Timing")
             expect(status).to_contain_text("Inspector: Timing")
             inspector_title_action(page, canvas, "Maximize", inspector_selected_tab(page, canvas, "Timing"))
             expect(status).to_contain_text(re.compile("maximized", re.IGNORECASE))
@@ -143,7 +143,7 @@ def timing_interactions(browser, args):
                 re.compile(rf"(?:^|; )Result Job ID: {job_id}(?=;|$)"))
             with page.expect_response(lambda response: response.request.method == "DELETE"
                                       and response.url.endswith(f"/api/tasks/{cancelled_id}")):
-                canvas.click(position={"x": 30, "y": 988})
+                click_control(page, canvas, "Cancel", role="action")
             expect(status).to_contain_text("Cancelled", timeout=22000)
             cancellation_wait = visible_seconds(page, "Total wait")
             cancelled_backend = wait_for_job(page, url, cancelled_id, lambda job: job["state"] == "Cancelled")
@@ -154,23 +154,9 @@ def timing_interactions(browser, args):
             canvas.screenshot(path=str(args.output / "timing-cancelled.png"))
             # A typed worker failure freezes the new task, while the successful
             # report still retains its original backend timing evidence.
-            open_input(page)
-            canvas.click(position={"x": 380, "y": 361})  # Bytecode in the taller RPC modal
-            page.keyboard.press("Escape")
-            settle_gesture(page)
-            # Closing can leave one prepared modal frame ahead of the logic
-            # that releases its TextEdit. Observe the uncovered inspector before
-            # reopening, rather than sending the next shortcut into that frame.
-            deadline = time.monotonic() + 30
-            while True:
-                controls = inspector_painted_controls(page, canvas)
-                if any(abs((rect[0] + rect[2]) / 2 - INSPECTOR_TAB_POSITIONS["Timing"]) <= 8
-                       and rect[1] < 100 for rect in controls["selected"]):
-                    break
-                assert time.monotonic() < deadline, f"closed modal did not reveal the Timing inspector: {controls}"
-                rendered_frame(page)
-            page.wait_for_function("document.activeElement === document.querySelector('#evm-canvas')")
-            failed = submit_bytecode(page, canvas, "not-bytecode", args.output / "timing-error-input.png")
+            # Valid hexadecimal EOF reaches the worker's typed admission;
+            # a locally malformed draft correctly never starts a timed task.
+            failed = submit_bytecode(page, canvas, "ef00", args.output / "timing-error-input.png")
             assert failed.json()["result"]["Err"]["code"] == "InvalidBytecode"
             failure_wait = visible_seconds(page, "Total wait")
             page.wait_for_timeout(300)
