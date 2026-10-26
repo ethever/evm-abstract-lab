@@ -26,7 +26,12 @@ impl NumberInputs {
 
     // DragValue converts integer edits through f64, losing values above 2^53.
     // Keep decimal text until the concrete integer type accepts it exactly.
-    fn number<T: FromStr + ToString>(&mut self, ui: &mut Ui, label: &'static str, value: &mut T) {
+    pub(super) fn number<T: FromStr + ToString>(
+        &mut self,
+        ui: &mut Ui,
+        label: &'static str,
+        value: &mut T,
+    ) {
         ui.label(label);
         let draft = self.drafts.entry(label).or_insert_with(|| NumberDraft {
             text: value.to_string(),

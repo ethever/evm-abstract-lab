@@ -2,11 +2,13 @@
 //! callbacks from replacing a newer immutable report.
 
 use super::{TransportError, timing};
+pub(super) mod presentation;
 use evm_abstract_notation::WideSymbol;
 use evm_abstract_protocol::{
     AnalyzeRequest, ApiError, JobId, JobPublication, JobReply, JobResultReply, JobSnapshot,
     JobState, PublicationVersion, RpcProvidersReply,
 };
+use presentation::TaskIntent;
 
 /// The HTTP status operation that produced a task snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,6 +189,11 @@ impl Task {
     }
 
     pub(super) fn cancel(&mut self) -> Option<Command> {
+        self.apply_intent(TaskIntent::Cancel)
+    }
+
+    pub(super) fn apply_intent(&mut self, intent: TaskIntent) -> Option<Command> {
+        let TaskIntent::Cancel = intent;
         if !self.cancellable() {
             return None;
         }
