@@ -8,6 +8,8 @@ from web_test_hybrid import job_result_report, source_block, source_program
 
 WIRE_VERSION = 21
 NATIVE_VERSION = 16
+# D5 application default; only omission in a request/CLI profile applies it.
+DEFAULT_DETAIL_REGIONS = 1
 
 
 def strict_json(raw):
@@ -108,6 +110,58 @@ def graph_metrics(report, mode):
 def counter(value):
     assert type(value) is int and 0 <= value < 2**64
     return value
+
+
+def effective_request_limits(limits):
+    """Preserve the raw map; D5 defaults exactly one omitted input field."""
+    assert type(limits) is dict
+    effective, applied = dict(limits), {}
+    if "max_detail_regions" not in limits:
+        effective["max_detail_regions"] = DEFAULT_DETAIL_REGIONS
+        applied["max_detail_regions"] = DEFAULT_DETAIL_REGIONS
+    counter(effective["max_detail_regions"])
+    return effective, applied
+
+
+def cli_detail_region_request(arguments):
+    values = []
+    for index, argument in enumerate(arguments):
+        if argument == "--max-detail-regions":
+            if index + 1 == len(arguments):
+                raise ValueError("--max-detail-regions requires an unsigned integer")
+            values.append(arguments[index + 1])
+        elif argument.startswith("--max-detail-regions="):
+            values.append(argument.split("=", 1)[1])
+    if not values:
+        return {"max_detail_regions": DEFAULT_DETAIL_REGIONS, "default_applied": True}
+    if len(values) != 1:
+        raise ValueError("expected at most one --max-detail-regions option")
+    decimal(values[0])
+    return {"max_detail_regions": int(values[0]), "default_applied": False}
+
+
+def detail_region_policy(hybrid, *, native_present):
+    """Requested cap and actual selected sources are separate observations."""
+    policies = {}
+    for name in ("coverage", "precision"):
+        coverage = hybrid[name]
+        if coverage is None:
+            policies[name] = None
+            continue
+        requested = counter(coverage["requested_detail_regions"])
+        selected = coverage["detail_regions"]
+        assert type(selected) is list and all(type(region) is dict for region in selected)
+        assert len(selected) <= requested
+        if requested == 0:
+            assert not native_present and selected == []
+            assert coverage["detail"] == "Disabled" or (
+                coverage["baseline_current"] is False and coverage["detail"] == "BaselinePending")
+        policies[name] = {"requested_detail_regions": requested, "selected_detail_regions": selected,
+                          "selected_detail_region_count": len(selected), "detail_state": coverage["detail"]}
+    assert policies["coverage"] is not None
+    if policies["precision"] is not None:
+        assert policies["precision"]["requested_detail_regions"] == policies["coverage"]["requested_detail_regions"]
+    return policies
 
 
 def decimal(value, *, positive=False):
@@ -243,6 +297,8 @@ def wire_report(envelope, *, job_id, advertised=None):
     _source_directory(report)
     minimum, hybrid = report["minimum"], report["hybrid"]
     coverage = None if hybrid is None else hybrid["coverage"]
+    if hybrid is not None:
+        detail_region_policy(hybrid, native_present=report["native"] is not None)
     if coverage is not None:
         assert type(coverage["baseline_current"]) is bool
         assert report["status"] == ("Converged" if coverage["baseline_current"] else "Incomplete")
@@ -325,6 +381,8 @@ def wire_metrics(report):
         "selected_view": report["selected_view"], "rich_export": report["rich_export"],
         "postprocessing_work": report["postprocessing_work"], "timings": report["timings"],
         "acquisition": report["acquisition"], "hybrid": report["hybrid"],
+        "precision_policy": None if report["hybrid"] is None else detail_region_policy(
+            report["hybrid"], native_present=report["native"] is not None),
         "minimum": None if minimum is None else {
             **_qualification(minimum), "namespace": minimum["namespace"], "scope": minimum["scope"],
             "fork": minimum["fork"], "status": minimum["status"], "current": minimum["current"],
@@ -345,6 +403,7 @@ def native_metrics(report):
     assert report["schema_version"] == NATIVE_VERSION
     assert report["selected_view"] in {"Baseline", "Native"}
     hybrid = report["hybrid"]
+    precision_policy = detail_region_policy(hybrid, native_present=report["native"] is not None)
     assert type(hybrid["coverage"]["baseline_current"]) is bool
     assert report["status"] == ("Converged" if hybrid["coverage"]["baseline_current"] else "Incomplete")
     graphs = {}
@@ -372,7 +431,8 @@ def native_metrics(report):
     return {"format": "native-hybrid-report", "schema_version": NATIVE_VERSION,
             "status": report["status"], "work": counter(report["work"]),
             "transfers": counter(report["transfers"]), "selected_view": report["selected_view"],
-            "graphs": graphs, "hybrid": hybrid, "numeric_model": report["numeric_model"],
+            "graphs": graphs, "hybrid": hybrid, "precision_policy": precision_policy,
+            "numeric_model": report["numeric_model"],
             "postprocessing_max_work": report["postprocessing_max_work"],
             "postprocessing_work": report["postprocessing_work"]}
 
@@ -412,7 +472,10 @@ def request_qualification(report, request):
     limits. Preserve the full exact request alongside those observable checks.
     """
     assert set(request["input"]) == {"Rpc"}
-    rpc, limits, supplied = request["input"]["Rpc"], request["limits"], request["environment"]
+    rpc, supplied = request["input"]["Rpc"], request["environment"]
+    limits, applied_defaults = effective_request_limits(request["limits"])
+    policies = detail_region_policy(report["hybrid"], native_present=report["native"] is not None)
+    assert policies["coverage"]["requested_detail_regions"] == limits["max_detail_regions"]
     assert set(rpc["block"]) == {"Hash"}
     minimum = report["minimum"]
     sources = []
@@ -430,7 +493,9 @@ def request_qualification(report, request):
     for slot in ("global", "native"):
         graph = report[slot]
         if graph is not None:
-            assert graph["metadata"]["limits"] == limits
+            echoed = graph["metadata"]["limits"]
+            assert type(echoed) is dict and set(echoed) == set(limits)
+            assert all(type(echoed[key]) is type(value) and echoed[key] == value for key, value in limits.items())
             env = graph["metadata"]["environment"]
             calldata = graph["byte_arrays"][counter(env["calldata"])]
             sources.append(({**graph["metadata"], "fork": graph["fork"], "scope": graph["scope"]}, calldata))
@@ -468,6 +533,8 @@ def request_qualification(report, request):
         else:
             exact = supplied["calldata"]["Exact"].removeprefix("0x")
             _word(calldata["length"], {"Concrete": hex(len(bytes.fromhex(exact)))})
-    return {"execution_policy_checked": True, "original_environment_checked": True,
+    return {"effective_limits": limits, "applied_defaults": applied_defaults,
+            "precision_policy": policies,
+            "execution_policy_checked": True, "original_environment_checked": True,
             "rich_request_policy_checked": any(report[slot] is not None for slot in ("global", "native")),
             "rpc_transport_policy": "Exact submitted bytes; minimum has no echoed transport policy"}
