@@ -401,7 +401,17 @@ fn call_portals_preserve_target_delivery_and_rollback_associations() {
 
 #[test]
 fn a_retained_delivery_needs_its_own_current_input_and_output_generation() {
-    let mut report = report("6000600060006000600061020161fffff100");
+    // A physically bound root calling a known precompile has a stable source;
+    // the unknown-callee fixture above deliberately includes other observations.
+    let request = api::AnalyzeRequest {
+        input: api::AnalysisInput::Bytecode(api::BytecodeInput {
+            bytecode: "60006000600060006000600161fffff100".into(),
+            address: Some(format!("0x{}0101", "00".repeat(18))),
+        }),
+        ..Default::default()
+    };
+    let mut report = evm_abstract_server::analyze::analyze(request).unwrap();
+    report.validate().unwrap();
     let scope = scope(&report);
     let projection = GraphProjection::with_limit(&report, scope, usize::MAX).unwrap();
     let via = projection
@@ -413,7 +423,11 @@ fn a_retained_delivery_needs_its_own_current_input_and_output_generation() {
             matches!(via, FlowOrigin::Delivery { .. })
                 && via.qualified_current(&report, scope.summary())
         })
-        .expect("an actual source-qualified current delivery");
+        .unwrap_or_else(|| {
+            let observation = &report.minimum.as_ref().unwrap().summaries[scope.summary()];
+            panic!("an actual source-qualified current delivery: source {:?}; calls {:#?}; nodes {:#?}; bounds {:#?}",
+                projection.source_status, observation.relation.regional_cfg.calls, observation.relation.regional_cfg.nodes, observation.bounds)
+        });
     let details = via.detail(&report, scope.summary());
     assert!(details.contains("output generation"));
     assert!(details.contains("qualified current true"));
