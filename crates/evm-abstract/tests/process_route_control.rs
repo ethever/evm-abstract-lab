@@ -3,7 +3,7 @@
 
 #[path = "support/native.rs"]
 mod native;
-#[path = "unknown_world/oracle.rs"]
+#[path = "support/revm.rs"]
 mod oracle;
 #[path = "unknown_world/support.rs"]
 mod support;
@@ -88,7 +88,7 @@ fn route_process_probe() {
     ];
     for (name, code) in cases {
         let world = world(&code);
-        let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 60_000);
+        let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 60_000);
         let start = std::time::Instant::now();
         let result = run(world);
         let calls: usize = result
@@ -175,7 +175,7 @@ fn false_jumpi_ignores_invalid_destination_and_falls_through() {
         opcode::CALL,
     ]);
     let world = world(&code);
-    let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 60_000);
+    let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 60_000);
     assert_eq!(witness.kind, OutcomeKind::Return);
     let result = run(world);
     assert_closed(&result);
@@ -210,7 +210,7 @@ fn taken_invalid_jump_and_push_data_jumpdest_only_fail() {
     ];
     for code in cases {
         let world = world(&code);
-        let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 60_000);
+        let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 60_000);
         assert_eq!(witness.kind, OutcomeKind::Failure);
         let result = run(world);
         assert_closed(&result);
@@ -249,7 +249,7 @@ fn unknown_jump_has_one_shared_union_covering_all_legal_targets_and_failure() {
     let result = run_input(world.clone(), EvmByteArray::unknown());
     assert_closed(&result);
     for destination in [code.labels["left"] as u64, code.labels["right"] as u64, 999] {
-        let witness = oracle::execute_with_gas(&world, &entry(calldata(destination)), 60_000);
+        let witness = oracle::execute_gas(&world, &entry(calldata(destination)), 60_000);
         cover(&witness, &result);
     }
     let cfg = &record(&result).regional_cfg;
@@ -289,7 +289,7 @@ fn unknown_jumpi_condition_keeps_taken_and_fallthrough_effects() {
     assert_closed(&result);
     for value in [0, 1] {
         cover(
-            &oracle::execute_with_gas(&world, &entry(calldata(value)), 60_000),
+            &oracle::execute_gas(&world, &entry(calldata(value)), 60_000),
             &result,
         );
     }
@@ -302,7 +302,7 @@ fn unknown_jumpi_condition_keeps_taken_and_fallthrough_effects() {
 fn pure_loop_closes_with_entered_failure_and_retained_cycle() {
     let code = bytes(&[opcode::JUMPDEST, opcode::PUSH0, opcode::JUMP]);
     let world = world(&code);
-    let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 30_000);
+    let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 30_000);
     assert_eq!(witness.kind, OutcomeKind::Failure);
     let result = run(world);
     assert_closed(&result);
@@ -341,7 +341,7 @@ fn reachable_call_has_real_deliveries_at_the_following_block() {
     code.store(0, 9).op(opcode::STOP).op(opcode::CALL);
     let code = code.finish();
     let world = world(&code);
-    let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 100_000);
+    let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 100_000);
     let result = run(world);
     assert_closed(&result);
     cover(&witness, &result);
@@ -389,7 +389,7 @@ fn erased_prefix_stack_underflow_and_overflow_remain_entered_failures() {
     overflow.push(opcode::STOP);
     for code in [underflow, bytes(&overflow)] {
         let world = world(&code);
-        let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 100_000);
+        let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 100_000);
         assert_eq!(witness.kind, OutcomeKind::Failure);
         let result = run(world);
         assert_closed(&result);
@@ -407,7 +407,7 @@ fn creation_subscriber_delivers_to_the_following_control_block() {
         .op(opcode::STOP)
         .op(opcode::CALL);
     let world = world(&code.finish());
-    let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 120_000);
+    let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 120_000);
     let result = run(world);
     assert_closed(&result);
     cover(&witness, &result);
@@ -457,7 +457,7 @@ fn call_roles_preserve_storage_owner_code_source_and_static_bound() {
         callee.store(0, 11).op(opcode::STOP);
         let mut world = world(&caller.finish());
         insert(&mut world, U, &callee.finish(), &[(0, 5)]);
-        let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 120_000);
+        let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 120_000);
         let result = run(world);
         assert_closed(&result);
         cover(&witness, &result);
@@ -507,7 +507,7 @@ fn nested_callback_continuation_and_outer_rollback_have_concrete_inclusion() {
             .op(opcode::STOP);
         let mut world = world(&caller.finish());
         insert(&mut world, U, &callee.finish(), &[]);
-        let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 180_000);
+        let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 180_000);
         assert!(
             witness
                 .steps
@@ -557,7 +557,7 @@ fn empty_truncated_push_and_last_call_reach_end_without_fake_pc() {
         bytes(&[opcode::PUSH1, opcode::CALL]),
     ] {
         let world = world(&code);
-        let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 60_000);
+        let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 60_000);
         let result = run(world);
         assert_closed(&result);
         cover(&witness, &result);
@@ -600,7 +600,7 @@ fn unknown_static_callee_delegates_known_control_under_its_own_owner() {
         .call(opcode::DELEGATECALL, A as u16, 0, (0, 32), (0, 0))
         .op(opcode::STOP);
     insert(&mut concrete, U, &opaque.finish(), &[]);
-    let witness = oracle::execute_with_gas(&concrete, &entry(EvmByteArray::empty()), 180_000);
+    let witness = oracle::execute_gas(&concrete, &entry(EvmByteArray::empty()), 180_000);
     assert!(witness.steps.iter().any(|step| step.code == address(A)
         && step.owner == address(U)
         && step.is_static
@@ -668,7 +668,7 @@ fn pure_region_retains_control_without_a_world_payload_per_block() {
     }
     code.op(opcode::STOP).op(opcode::CALL);
     let world = world(&code.finish());
-    let witness = oracle::execute_with_gas(&world, &entry(EvmByteArray::empty()), 100_000);
+    let witness = oracle::execute_gas(&world, &entry(EvmByteArray::empty()), 100_000);
     assert!(witness.steps.len() > 100);
     let result = run(world);
     assert_closed(&result);
