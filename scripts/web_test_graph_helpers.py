@@ -217,7 +217,10 @@ def source_content_snapshot(page, canvas, program, output: Path, name: str, *, s
         assert ssa["coverage"] in {"Current", "Stale"}, ssa
         header = (f"{symbol('σ', ssa['state'])}  {ssa['coverage']} · "
                   f"{'complete' if ssa['incoming_complete'] else 'open'} incoming")
-        prefix = f"{ssa['instructions'][0]['pc']:04x}  "
+        # A retained Current/Stale boundary can have real SSA effects without
+        # decoded source or an executed opcode. Its effect row is still data.
+        prefix = (f"{ssa['instructions'][0]['pc']:04x}  " if ssa["instructions"]
+                  else symbol("μ", ssa["effect"]) + " = effect φ(")
         ui_control(page, "Selected state", role="tab", selected=True)
     previous = None
     page.mouse.move(2, 2)
@@ -315,6 +318,9 @@ def pick_graph_instance(page, canvas, state: int, query: str | None = None, *, p
     # Preserve its accepted sigma aliases and original namespace-local state ID.
     assert type(state) is int and state >= 0, state
     expect(page.locator("#analysis-status")).to_contain_text("View: Detailed paths")
+    if not any(control["label"] == "cfg_instance_search" and control["role"] == "text"
+               and control["enabled"] for control in ui_controls(page)):
+        click_control(page, canvas, "Instances", role="action")
     edit_control(page, canvas, "cfg_instance_search", query if query is not None else symbol("σ", state))
     rows = [control for control in ui_controls(page)
             if control["role"] == "graph-instance" and control["enabled"]
