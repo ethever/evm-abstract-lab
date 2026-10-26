@@ -315,6 +315,9 @@ def pick_graph_instance(page, canvas, state: int, query: str | None = None, *, p
     # Preserve its accepted sigma aliases and original namespace-local state ID.
     assert type(state) is int and state >= 0, state
     expect(page.locator("#analysis-status")).to_contain_text("View: Detailed paths")
+    if not any(control["label"] == "cfg_instance_search" and control["role"] == "text"
+               and control["enabled"] for control in ui_controls(page)):
+        click_control(page, canvas, "Instances", role="action")
     edit_control(page, canvas, "cfg_instance_search", query if query is not None else symbol("σ", state))
     rows = [control for control in ui_controls(page)
             if control["role"] == "graph-instance" and control["enabled"]

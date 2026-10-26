@@ -10,7 +10,7 @@ from web_test_graph_helpers import assert_availability, graph_content, graph_mod
 from web_test_harness import analysis_server, click_control, complete_submission, edit_control, hide_world_directory, observe_webgpu, rendered_frame, select_report_context, set_control, settle_gesture, ui_control, ui_controls, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_layout_helpers import LAYOUT_FIXTURES, layout_counts, layout_detail_regions
-from web_test_pixels import assert_same_scene, assert_translation, node_snapshot
+from web_test_pixels import assert_layout_same_geometry, assert_translation, node_snapshot
 from web_test_rpc_helpers import EntryRpcFixture, automatic_rpc_entry, native_call_summary, submit_rpc
 
 
@@ -153,7 +153,7 @@ def _call_navigation(page, canvas, full_report, report, rpc, output):
     settle_gesture(page);page.mouse.move(2,2);rendered_frame(page)
     before=node_snapshot(page,canvas,output,"call-parent-before-open",plot["rect"],True)
     assert_translation(fitted,before,dx,dy,tolerance=1.0)
-    assert_same_scene(fitted,before)
+    assert abs(assert_layout_same_geometry(fitted,before)["camera_scale"]-1)<0.01
     status=page.locator("#analysis-status")
     zoom=float(re.search(r"; CFG zoom: ([0-9.]+)%",status.text_content())[1])
     portal=ui_control(page,"call · 1 destination",role="graph-node",within=plot)
@@ -172,7 +172,7 @@ def _call_navigation(page, canvas, full_report, report, rpc, output):
     assert all(abs(a-b)<=0.5 for a,b in zip(plot["rect"],restored_plot["rect"],strict=True)),(plot,restored_plot)
     restored=node_snapshot(page,canvas,output,"call-parent-back-restored",restored_plot["rect"],True)
     assert_translation(before,restored,0,0,tolerance=1.0)
-    assert_same_scene(before,restored)
+    assert abs(assert_layout_same_geometry(before,restored)["camera_scale"]-1)<0.01
     assert float(re.search(r"; CFG zoom: ([0-9.]+)%",status.text_content())[1])==zoom
     assert not posts,"call navigation, source qualification or Back reran analysis"
     return {"entry":entry["id"],"entry_edge":entry_edge,"call":call,"call_pc":instructions[0]["pc"],"caller":caller["id"],"callee":callee["id"],
