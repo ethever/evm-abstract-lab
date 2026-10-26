@@ -1,10 +1,13 @@
 use super::super::scope::{
-    CardKind, ControlOrigin, DEFAULT_POINT_LIMIT, Destination, FlowOrigin, GraphProjection,
-    GraphScope, ProjectionCard, ProjectionError, TargetSetKind,
+    CardKind, ControlOrigin, Destination, FlowOrigin, GraphProjection, GraphScope, GraphWindow,
+    ProjectionCard, ProjectionError, TargetSetKind,
 };
 use evm_abstract_protocol as api;
 
 mod levels;
+mod windows;
+
+const DEFAULT_POINT_LIMIT: usize = 12;
 
 fn report(code: &str) -> api::AnalysisReport {
     // Keep the real UI defaults, including the original work/region policy.
@@ -36,7 +39,7 @@ fn source(projection: &GraphProjection, location: api::ProcessLocation) -> Optio
 fn grouped_source_keeps_boundary_obligations_separate_from_body_receipts() {
     let report = report("6003565b6007565b00");
     let scope = scope(&report);
-    let projection = GraphProjection::build(&report, scope).unwrap();
+    let projection = GraphProjection::with_window(&report, scope, GraphWindow::FullSource).unwrap();
     let boundary = source(&projection, api::ProcessLocation::Block(2)).unwrap();
     assert!(
         boundary
@@ -150,8 +153,15 @@ fn six_hundred_block_source_is_bounded_and_every_frontier_is_navigable() {
         .trim(),
     );
     let scope = scope(&report);
-    let full = GraphProjection::with_limit(&report, scope, usize::MAX).unwrap();
-    let projected = GraphProjection::build(&report, scope).unwrap();
+    let full = GraphProjection::with_window(&report, scope, GraphWindow::FullSource).unwrap();
+    let projected = GraphProjection::with_window(
+        &report,
+        scope,
+        GraphWindow::Nearby {
+            point_limit: DEFAULT_POINT_LIMIT,
+        },
+    )
+    .unwrap();
     assert_eq!(full.counts.total_points, 600);
     assert_eq!(projected.counts.displayed_points, DEFAULT_POINT_LIMIT);
     assert_eq!(projected.counts.hidden_points, 600 - DEFAULT_POINT_LIMIT);

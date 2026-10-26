@@ -5,7 +5,7 @@ mod build;
 mod window;
 
 use super::scope::{
-    DEFAULT_POINT_LIMIT, EdgeLevel, FlowOrigin, GraphProjection, GraphScope, ProjectionEdge,
+    EdgeLevel, FlowOrigin, GraphProjection, GraphScope, GraphWindow, ProjectionEdge,
     ProjectionError,
 };
 use evm_abstract_protocol::AnalysisReport;
@@ -15,7 +15,7 @@ impl GraphProjection {
         report: &AnalysisReport,
         scope: GraphScope,
     ) -> Result<Self, ProjectionError> {
-        Self::with_limit(report, scope, DEFAULT_POINT_LIMIT)
+        Self::with_window(report, scope, GraphWindow::Entry)
     }
 
     pub(crate) fn with_limit(
@@ -23,12 +23,16 @@ impl GraphProjection {
         scope: GraphScope,
         point_limit: usize,
     ) -> Result<Self, ProjectionError> {
+        Self::with_window(report, scope, GraphWindow::Nearby { point_limit })
+    }
+
+    pub(crate) fn with_window(
+        report: &AnalysisReport,
+        scope: GraphScope,
+        choice: GraphWindow,
+    ) -> Result<Self, ProjectionError> {
         let projection = build::build(report, scope)?;
-        if matches!(scope, GraphScope::Overview { .. }) {
-            Ok(projection)
-        } else {
-            Ok(window::project(report, projection, point_limit.max(1)))
-        }
+        window::project(report, projection, choice)
     }
 }
 
