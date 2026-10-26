@@ -35,24 +35,33 @@
 
 ### 第一步：分别开启和关闭摘要
 
+默认一个来源使用当前的 `KnownCall` 相对摘要；它不要求保存 B 的完整私有子图。先保留这组默认请求，再用显式的两个来源演示完整调用缓存。两组都沿用同一代码、调用环境和默认执行预算。
+
 ```bash
 nix run . -- analyze \
   --world examples/worlds/summary-reuse.json \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
-  --format json > /tmp/summary-on.json
+  --format json > /tmp/summary-relative.json
+jq '.native.analysis | .summary_stats,
+    [.procedure_summaries[] | {kind, closed, source_current}]' /tmp/summary-relative.json
 
 nix run . -- analyze \
   --world examples/worlds/summary-reuse.json \
   --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
-  --format json --no-summaries > /tmp/summary-off.json
+  --max-detail-regions 2 --format json > /tmp/summary-on.json
 
-jq '(.native // .global).analysis | .status, .summary_stats,
+nix run . -- analyze \
+  --world examples/worlds/summary-reuse.json \
+  --evm.to 0x0000000000000000000000000000000000000101 --evm.caller 0x0000000000000000000000000000000000001000 --evm.value 0 --evm.calldata 0x \
+  --max-detail-regions 2 --format json --no-summaries > /tmp/summary-off.json
+
+jq '.native.analysis | .status, .summary_stats,
     [.summaries[] | {source_state, state_count, edge_count, reused_at}]' \
   /tmp/summary-on.json
-jq '(.native // .global).analysis | .status, .summary_stats.hits, .summaries' /tmp/summary-off.json
+jq '.native.analysis | .status, .summary_stats.hits, .summaries' /tmp/summary-off.json
 ```
 
-两次都应为 `Converged`。开启摘要时 `hits > 0`、`imported_states > 0`；关闭时 `hits=0`，证书列表为空。
+默认请求的完整缓存统计为 `hits=0`、`published=0`，当前相对摘要仍在 `procedure_summaries` 中。后两次显式选择两个来源，都应为 `Converged`：开启完整缓存时 `hits > 0`、`imported_states > 0`；关闭时 `hits=0`，证书列表为空。
 
 | 字段 | 怎样读 |
 | --- | --- |
@@ -70,13 +79,15 @@ jq '(.native // .global).analysis | .status, .summary_stats.hits, .summaries' /t
 
 ### 第二步：确认复用没有改变最终关系
 
-图编号可能不同，比较时只取入口结果的种类、返回字节和 Store：
+图编号和独立生产者的私有作用域可能不同。先对完整 Native 图一致地重命名作用域，再比较入口结果的种类、返回字节和 Store，保留同一输出中的联合关系：
 
 ```bash
-jq -S '(.native // .global).analysis | [.outcomes[] | {kind, data, store}] | unique' \
-  /tmp/summary-on.json > /tmp/summary-on-relations.json
-jq -S '(.native // .global).analysis | [.outcomes[] | {kind, data, store}] | unique' \
-  /tmp/summary-off.json > /tmp/summary-off-relations.json
+jq '.native.analysis' /tmp/summary-on.json | \
+  python3 scripts/normalize_identity_scopes.py | \
+  jq -S '[.outcomes[] | {kind, data, store}] | unique' > /tmp/summary-on-relations.json
+jq '.native.analysis' /tmp/summary-off.json | \
+  python3 scripts/normalize_identity_scopes.py | \
+  jq -S '[.outcomes[] | {kind, data, store}] | unique' > /tmp/summary-off-relations.json
 cmp /tmp/summary-on-relations.json /tmp/summary-off-relations.json
 ```
 
@@ -107,7 +118,7 @@ A 的暂停帧和 A 所拥有的输出复制继续信息不属于 callee 输入�
 ### 当前 JSON 怎样记录输入与帧
 
 ```bash
-jq '(.native // .global).analysis | {schema_version,
+jq '.native.analysis | {schema_version,
      root: {state_owner: .entry.address, to: .entry.environment.to,
             caller: .entry.environment.caller, origin: .entry.environment.origin},
      root_frame: (.states[0].key.frames[0] | {address, address_value, caller}),
@@ -115,7 +126,7 @@ jq '(.native // .global).analysis | {schema_version,
                | {environment, relations, frame: .frame.state.key})}' /tmp/summary-on.json
 ```
 
-CLI `analyze` JSON 在 `.global.analysis` 与可选 `.native.analysis` 分别保存原生图；`--ssa` 只增加 `.native.ssa` 或 `.native.partial_ssa`。本页查询通过 `(.native // .global).analysis` 选择可用 Native 图，缺少时读取 Global 图。根输入位于所选图的 `.entry.environment`；`.entry.binding` 区分物理根地址与符号根模板坐标。帧 `.address` 按该来源资格解释，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`，两者不能都按裸地址字符串读取。
+CLI `analyze` JSON 在 `.global.analysis` 与可选 `.native.analysis` 分别保存原生图；`--ssa` 只增加 `.native.ssa` 或 `.native.partial_ssa`。本节的缓存、帧和 SSA 查询显式读取 `.native.analysis`。缺少 Native 时，应先查看 Global 的实际模型与资格；Global 关系不能代替这些私有执行证据。根输入位于所选图的 `.entry.environment`；`.entry.binding` 区分物理根地址与符号根模板坐标。帧 `.address` 按该来源资格解释，`.address_value` 是逻辑 ADDRESS，`.caller` 是带类型的地址输入。已知地址写成 `{"Concrete":"0x..."}`，默认根 caller 写成 `{"Symbolic":"Caller"}`，两者不能都按裸地址字符串读取。
 
 本实验 `.entry.environment.origin` 为 `null`，表示使用 caller 的默认别名，不表示未知而独立的 origin；显式 `--evm.origin` 会记录地址输入。`.summaries[].input.environment` 仍是全局根调用、交易和区块环境，callee 自己的 caller/value/calldata 在 `.summaries[].input.frame.state` 中，入口关系在 `.summaries[].input.relations`。上面的环境 caller 是外部地址 `0x...1000`，而 B 帧 caller 是 A=`0x...0101`。
 
