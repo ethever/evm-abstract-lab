@@ -1,0 +1,217 @@
+"""Real staged HTTP results, GPU interaction and retained Global after cancellation."""
+
+import hashlib
+import json
+from pathlib import Path
+import re
+from playwright.sync_api import expect
+from web_test_harness import observe_webgpu, open_input, rendered_frame, settle_gesture, webgpu_evidence
+
+
+def run(context, mode="cancel"):
+    if mode=="refusal": return refusal(context)
+    from tempfile import TemporaryDirectory
+    from web_test_rpc import RpcFixture
+    from web_test_harness import analysis_server
+    class PrecisionRpc(RpcFixture):
+        def _result(self,method,params):
+            # Initial pinned root admission remains live. The next code request
+            # is optional callee precision, after the real closed minimum.
+            if method=="eth_getCode" and params[0].lower()==self.root_address:
+                self.block_method="eth_getCode"
+            return super()._result(method,params)
+    with PrecisionRpc() as rpc, TemporaryDirectory(prefix="minimum-rpc-") as directory:
+        config=Path(directory)/"providers.json"
+        config.write_text(json.dumps({"providers":[{"id":"minimum-precision","name":"Minimum precision","endpoint":rpc.endpoint}]}))
+        with analysis_server(context.args,config) as url:
+            return cancellation(context,url,rpc)
+
+
+def cancellation(context,url,rpc):
+    page = context.browser.new_page(viewport={"width": 1440, "height": 1000})
+    observe_webgpu(page)
+    results, submissions = [], []
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+
+    def fixed_stress_input(route):
+        if route.request.method != "POST" or submissions:
+            route.continue_()
+            return
+        # A real pinned provider blocks only optional callee precision. The
+        # source/model, body transfer, renderer and cancellation remain real.
+        request = route.request.post_data_json
+        request["input"] = {"Rpc":{"provider_id":"minimum-precision","address":rpc.root_address,"block":"Latest","accounts":[]}}
+        request["limits"]["max_work"] = 4_000_000_000
+        request["limits"]["root_terminal_coverage"] = False
+        submissions.append(request)
+        route.continue_(post_data=json.dumps(request))
+
+    def actual_result(response):
+        if response.url.endswith("/result") and response.request.method == "GET" and response.ok:
+            results.append(json.loads(response.text())["result"]["Ok"])
+
+    page.route("**/api/tasks", fixed_stress_input)
+    page.on("response", actual_result)
+    with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as admitted:
+        page.goto(url, wait_until="domcontentloaded")
+    job = json.loads(admitted.value.text())["result"]["Ok"]
+    job_id = job["id"]
+    task_url = url + "/api/tasks/" + str(job_id)
+    status = page.locator("#analysis-status")
+    expect(status).to_contain_text("Publication: 1", timeout=60000)
+    expect(status).to_contain_text("Running")
+    expect(status).to_contain_text("View: Global model")
+    assert len(submissions) == 1 and results
+    assert rpc.started.wait(5),"optional precision never reached the real pending callee code request"
+    first = results[0]
+    assert str(first["id"]) == str(job_id)
+    assert first["publication"]["model_closed"] is True
+    assert first["publication"]["minimum_version"] is not None
+    assert first["publication"]["global_version"] is None
+    assert first["publication"]["native_version"] is None
+    (context.output / "first-publication.json").write_text(json.dumps(first,indent=2)+"\n")
+    report = first["report"]
+    assert report["selected_view"] == "Baseline" and report["minimum"] is not None and report["global"] is None and report["native"] is None
+    assert report["hybrid"]["coverage"]["baseline_current"] is True
+    assert report["minimum"]["environment"]["caller"].get("Symbolic")
+    supplied = next(account for account in report["minimum"]["accounts"] if account["address"].lower() == rpc.root_address)
+    root = next(program for program in report["programs"] if program["id"] == supplied["program"])
+    assert root["bytecode"].removeprefix("0x") == rpc.root_code.removeprefix("0x")
+    canvas = page.locator("#evm-canvas")
+    views = {}
+    for key in ["1", "3", "2"]:
+        page.keyboard.press(key)
+        rendered_frame(page)
+        png = canvas.screenshot(path=str(context.output / f"running-view-{key}.png"))
+        assert len(png) > 10000, "the real result view did not paint"
+        views[key] = hashlib.sha256(png).hexdigest()
+        current = page.request.get(task_url).json()["result"]["Ok"]
+        assert current["state"] == "Running", "the stress control did not leave Native running for interaction"
+    assert len(set(views.values())) == 3
+    # A real Ctrl+wheel pinch changes the graph camera; cancel must retain it.
+    cdp = page.context.new_cdp_session(page)
+    page.mouse.move(720, 300)
+    cdp.send("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": 720, "y": 300, "deltaX": 0, "deltaY": -150, "modifiers": 2})
+    settle_gesture(page)
+    page.mouse.move(2, 2)
+    rendered_frame(page)
+    region = {"x": 10, "y": 180, "width": 1420, "height": 240}
+    before = page.screenshot(path=str(context.output / "global-camera-before-cancel.png"), clip=region)
+    assert len(before) > 1000
+    # Use the actual canvas Cancel control and observe its real DELETE request.
+    with page.expect_response(lambda response: response.request.method == "DELETE" and response.url == task_url) as cancellation:
+        canvas.click(position={"x": 30, "y": 988})
+    assert cancellation.value.ok
+    expect(status).to_contain_text("Cancelled", timeout=30000)
+    assert rpc.disconnected.wait(5),"cancellation did not close the actual optional RPC operation"
+    expect(status).to_contain_text("Publication: 1")
+    expect(status).to_contain_text("View: Global model")
+    page.mouse.move(2, 2)
+    settle_gesture(page)
+    after = page.screenshot(path=str(context.output / "global-camera-after-cancel.png"), clip=region)
+    assert before == after, "cancellation moved or repacked the retained Global scene"
+    retained = page.request.get(task_url + "/result").json()["result"]["Ok"]
+    assert retained["publication"]["minimum_version"] == first["publication"]["minimum_version"]
+    assert retained["report"]["minimum"] == first["report"]["minimum"], "cancellation changed the retained qualified minimum"
+    # A subsequent real form submission replaces the cancelled report; namespace
+    # buttons must use the new report even when its numeric state IDs repeat.
+    from web_test_layout_helpers import layout_modal
+    open_input(page)
+    modal=layout_modal(page,canvas)
+    canvas.click(position={"x":modal[0]+50,"y":modal[1]+44})
+    settle_gesture(page)
+    # Reopening applies the form's real source-specific focus request before
+    # paste; a tab button itself retains keyboard focus until then.
+    page.keyboard.press("Escape")
+    rendered_frame(page)
+    open_input(page)
+    page.keyboard.press("Control+A")
+    rendered_frame(page)
+    page.keyboard.type("600160020100")
+    rendered_frame(page)
+    with page.expect_response(lambda response: response.url.endswith("/api/tasks") and response.request.method == "POST") as replacement:
+        page.keyboard.press("Control+Enter")
+    replacement_request=replacement.value.request.post_data_json
+    assert replacement_request["input"]=={"Bytecode":{"bytecode":"600160020100","address":None}},replacement_request
+    replacement_id = json.loads(replacement.value.text())["result"]["Ok"]["id"]
+    assert str(replacement_id) != str(job_id)
+    expect(status).to_contain_text("Ready:", timeout=60000)
+    expect(status).to_contain_text(re.compile(rf"(?:^|; )Job ID: {replacement_id}(?=;|$)"))
+    assert "Publication: 2" in status.text_content()
+    page.keyboard.press("2")
+    rendered_frame(page)
+    # Product model-scope tabs lie immediately below the main header.
+    canvas.click(position={"x": 148, "y": 38})
+    expect(status).to_contain_text("View: Detailed paths")
+    canvas.click(position={"x": 50, "y": 38})
+    expect(status).to_contain_text("View: Global model")
+    assert not errors, errors
+    renderer = webgpu_evidence(page)
+    (context.output / "request.json").write_text(json.dumps(submissions[0], indent=2) + "\n")
+    (context.output / "publications.json").write_text(json.dumps(results, indent=2) + "\n")
+    result = {"pending_optional_rpc_closed":rpc.disconnected.is_set(),"requests":rpc.requests,"first_job": str(job_id), "replacement_job": str(replacement_id), "first_publication": first["publication"], "renderer": renderer, "running_views": views, "camera_sha256": hashlib.sha256(before).hexdigest(), "status": status.text_content()}
+    page.close()
+    return result
+
+
+def refusal(context):
+    from web_test_harness import analysis_server
+    from web_test_inspector_helpers import inspector_painted_controls, inspector_title_action
+    def page_for(url,request=None):
+        page=context.browser.new_page(viewport={"width":1440,"height":1000})
+        observe_webgpu(page)
+        requests,results=[],[]
+        def submit(route):
+            if route.request.method!="POST": route.continue_();return
+            body=request or route.request.post_data_json
+            if request is None: body["input"]={"Bytecode":{"bytecode":"600160020100","address":None}}
+            requests.append(body)
+            route.continue_(post_data=json.dumps(body))
+        def received(response):
+            if response.ok and response.request.method=="GET" and response.url.endswith("/result"):
+                results.append(json.loads(response.text())["result"]["Ok"])
+        page.route("**/api/tasks",submit);page.on("response",received)
+        page.goto(url,wait_until="domcontentloaded")
+        expect(page.locator("#analysis-status")).to_contain_text("Ready:",timeout=60000)
+        assert results and len(requests)==1
+        return page,requests[0],results[-1]
+    baseline,request,complete=page_for(context.url)
+    assert complete["report"]["rich_export"]=="Complete"
+    minimum_work=complete["report"]["minimum"]["export_usage"]["work"]
+    full_work=complete["report"]["postprocessing_work"]
+    cap=(minimum_work+full_work)//2
+    assert minimum_work<cap<full_work,(minimum_work,cap,full_work)
+    baseline.close()
+    with analysis_server(context.args,postprocess_work=cap) as url:
+        page,replayed,actual=page_for(url,request)
+        assert replayed==request,"the refusal control changed execution input/policy"
+        report=actual["report"];minimum=report["minimum"]
+        assert actual["publication"]["model_closed"] and minimum["current"] and minimum["status"]=="Converged"
+        assert actual["publication"]["minimum_version"] is not None
+        assert actual["publication"]["global_version"] is None and actual["publication"]["native_version"] is None
+        assert report["global"] is None and report["native"] is None
+        assert report["rich_export"]["Refused"]["code"]=="Export"
+        assert minimum["postprocessing_max_work"]==cap and report["postprocessing_work"]<=cap
+        status=page.locator("#analysis-status")
+        expect(status).to_contain_text("presentation refused")
+        expect(status).to_contain_text("View: Global model")
+        canvas=page.locator("#evm-canvas")
+        views={}
+        for key in ["1","3","2"]:
+            page.keyboard.press(key);rendered_frame(page)
+            png=canvas.screenshot(path=str(context.output/f"refused-view-{key}.png"))
+            assert len(png)>10000
+            views[key]=hashlib.sha256(png).hexdigest()
+        assert len(set(views.values()))==3
+        controls=inspector_painted_controls(page,canvas)
+        hide=[rect for rect in controls["actions"] if 2<=1440-rect[2]<=10 and 30<=rect[2]-rect[0]<=45]
+        assert len(hide)==1,controls
+        inspector_title_action(page,canvas,"Maximize",hide[0])
+        rendered_frame(page)
+        canvas.screenshot(path=str(context.output/"refused-minimum-inputs.png"))
+        renderer=webgpu_evidence(page)
+        (context.output/"refusal-request.json").write_text(json.dumps(request,indent=2)+"\n")
+        (context.output/"refusal-result.json").write_text(json.dumps(actual,indent=2)+"\n")
+        value={"minimum_work":minimum_work,"cap":cap,"full_work":full_work,"spent":report["postprocessing_work"],"publication":actual["publication"],"renderer":renderer,"views":views,"status":status.text_content()}
+        page.close();return value
