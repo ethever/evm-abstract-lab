@@ -191,7 +191,7 @@ Native 终止背景按实际证据区分正常结束（深绿）、REVERT（深�
 | Original／**Original observations** | 原始环境及账户观察，独立于过程或 Native 状态；从 Sources 的根输入／Accounts 也可打开 |
 | **Procedure input** | 当前限定过程的合并输入边界，不是某次 Native 指令前状态 |
 | **Joint outcome** | 同一相对出口配对的数据与 Store，保留该出口资格；回滚由调用者应用 |
-| **Native · before block / after block** | 具体 Native 状态与调用帧的块边界快照；没有出口时明确显示不可用，历史出口保留标记 |
+| **Native · before block / after block** | 所选 Native 抽象状态与调用帧的块边界快照；没有出口时明确显示不可用，历史出口保留标记 |
 | Source only | 来源与解码信息，没有上下文时不补造机器状态 |
 
 Native 中选择 PC 只联动指令位置，memory／storage 仍是块边界观察。检查器保留上下文、stack、memory、calldata、returndata、persistent／transient storage、balance、code、nonce 和账户效果；未知或未观察位置保留原默认值与精度。**Outcomes** 查看返回／回滚数据及事务状态，**Acquisition** 查看固定快照、采集与失败原因，**Coverage / Diagnostics** 保留前沿和可定位的状态／指令证据。
