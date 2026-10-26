@@ -123,10 +123,14 @@ def select_report_namespace(page, report, namespace):
     assert namespace_available(report, namespace), namespace
     if report["hybrid"] is not None:
         label, x = {"Baseline": ("Global model", 50), "Native": ("Detailed paths", 148)}[namespace]
+        if namespace == "Baseline" and report["minimum"] is not None:
+            expected = f"Global model {report['minimum']['status']}"
+        else:
+            expected = f"View: {label}"
         status = page.locator("#analysis-status")
-        if f"View: {label}" not in status.text_content():
+        if expected not in status.text_content():
             page.locator("#evm-canvas").click(position={"x": x, "y": 38})
-        expect(status).to_contain_text(f"View: {label}")
+        expect(status).to_contain_text(expected)
         settle_gesture(page)
 
 

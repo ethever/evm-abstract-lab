@@ -7,7 +7,7 @@ from playwright.sync_api import expect
 import hashlib
 import json
 import re
-from web_test_harness import complete_submission, observe_webgpu, open_input, resize_view, settle_gesture, submit_bytecode, webgpu_evidence
+from web_test_harness import complete_submission, observe_webgpu, open_input, resize_view, select_report_namespace, settle_gesture, submit_bytecode, webgpu_evidence
 from web_test_inspector_helpers import inspector_frame_tab, inspector_title_action, select_inspector_tab
 
 
@@ -57,21 +57,33 @@ def model_namespace_controls(page, canvas, report, output):
     select_inspector_tab(page, canvas, "SSA value")
     expect(status).to_contain_text("Inspector: SSA value %0")
     canvas.screenshot(path=str(output / "namespace-native-selected.png"))
-    canvas.click(position={"x": 50, "y": 38})
-    expect(status).to_contain_text("View: Global model")
-    expect(status).to_contain_text(f"Selected σ₀; source {symbol('P', baseline['metadata']['root_program'])}")
-    expect(status).to_contain_text("0 SSA values")
-    expect(status).to_contain_text("Inspector: SSA value · no value selected")
+    model = report["minimum"]
+    assert model["namespace"] == "Baseline" and model["current"] and model["status"] == "Converged"
+    relation = next(summary["relation"] for summary in reversed(model["summaries"])
+                    if summary["relation"]["source_current"]
+                    and summary["relation"]["root_procedure"] is not None
+                    and summary["relation"]["procedures"][summary["relation"]["root_procedure"]]["process"]["source"]
+                        == model["declared_root_source"])
+    root_node = next(node for node in relation["regional_cfg"]["nodes"]
+                     if node["procedure"] == relation["root_procedure"])
+    point = root_node["frame"]["process"]["location"]
+    point_label = (f"block index {point['Block']}" if type(point) is dict else {
+        "Any": "unobserved code · arbitrary actions", "End": "end of source · no instruction",
+        "JumpTargets": "unknown-jump hub · all legal JUMPDEST targets"}[point])
+    select_report_namespace(page, report, "Baseline")
+    expect(status).to_contain_text(f"Selected MAY source: {point_label}")
+    expect(status).to_contain_text("Inspector: Original inputs")
+    assert "Selected σ" not in status.text_content() and "SSA value %" not in status.text_content()
     assert "Additional condition:" not in status.text_content()
     page.keyboard.press("3")
     settle_gesture(page)
     canvas.screenshot(path=str(output / "namespace-global-ssa.png"))
-    select_inspector_tab(page, canvas, "Frame")
-    expect(status).to_contain_text("Block entry · Frame f₀")
+    expect(status).to_contain_text(f"Selected regional r{root_node['id']};")
+    expect(status).to_contain_text(f"Selected MAY source: {point_label}")
     page.keyboard.press("2")
     settle_gesture(page)
     canvas.screenshot(path=str(output / "namespace-global-control.png"))
-    expect(status).to_contain_text("Original input entry")
+    expect(status).to_contain_text(f"Selected regional r{root_node['id']};")
     # Decoded original-input blocks are legal source provenance. Actual process
     # bodies live in a separate regional namespace and have no instruction cursor.
     assert all(not block["executed_pcs"] for block in baseline["cfg"])
@@ -94,11 +106,14 @@ def model_namespace_controls(page, canvas, report, output):
     expect(status).to_contain_text(f"Selected σ₀; source {symbol('P', root['id'])}")
     expect(status).to_contain_text(f"Additional condition: root ADDRESS = {coordinate}")
     expect(status).to_contain_text(f"{len(native['cfg'])} CFG states")
+    expect(status).to_contain_text("Inspector: SSA value · no value selected")
+    select_inspector_tab(page, canvas, "Frame")
     expect(status).to_contain_text("Block entry · Frame f₀")
     page.keyboard.press("0")
     settle_gesture(page)
     canvas.screenshot(path=str(output / "namespace-native-reset.png"))
-    return {"native_selected_state": target["id"], "global_state": 0, "returned_native_state": 0,
+    return {"native_selected_state": target["id"], "global_regional_node": root_node["id"],
+            "global_may_location": point, "returned_native_state": 0,
             "root_condition": coordinate, "ssa_value_cleared": True, "graph_ids_separate": True}
 
 

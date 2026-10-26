@@ -24,9 +24,20 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
     if native_projection:
         assert hashlib.sha256(bytes.fromhex(code)).hexdigest() == metadata["code_sha256"]
         request = json.loads((output/f"{fixture_name}-request.json").read_text())
+        assert request["input"]["Bytecode"]["address"] is None
         assert request["limits"] == report["metadata"]["limits"] == LAYOUT_DEFAULT_LIMITS
         assert not report["frontiers"] and report["ssa"]["complete"]
-        assert len(report["programs"]) == metadata["expected_programs"]
+        programs = {program["id"]: program for program in report["programs"]}
+        assert len(programs) == len(report["programs"])
+        native_sources = {node["program"] for node in report["cfg"]}
+        assert native_sources == {report["metadata"]["root_program"]}
+        assert len(native_sources) == metadata["expected_programs"]
+        # The shared catalog also retains the original symbolic-address input;
+        # it is not another program executed by this Native fixture.
+        template, = [program for program in programs.values() if program["code_address"] is None]
+        assert template["id"] not in native_sources and set(programs) == native_sources | {template["id"]}
+        assert all(program["kind"] == "Runtime" and program["fork"] == report["fork"]
+                   and program["bytecode"].removeprefix("0x") == code for program in programs.values())
         assert len(report["ssa"]["blocks"]) == metadata["expected_ssa_blocks"]
         assert {block["state"] for block in report["ssa"]["blocks"]} == {node["id"] for node in report["cfg"]}
         assert {node["frame_depth"] for node in report["cfg"]} == {metadata["expected_frame_depth"]}

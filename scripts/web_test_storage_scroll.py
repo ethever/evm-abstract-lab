@@ -1,6 +1,6 @@
 """Storage scroll browser acceptance cases."""
 
-from web_test_hybrid import oracle_graph
+from web_test_hybrid import oracle_graph, source_program
 from pathlib import Path
 from playwright.sync_api import expect
 import json
@@ -41,7 +41,13 @@ def storage_scroll_interactions(browser, url: str, output: Path):
     # This fixture paints the default touch prefix and exactly nine account
     # facts: the captured program is present, with no delegation row.
     assert store["touched_default"] is False and account["touched"] is True
-    assert account["program"] == 0 and account["delegation_target"] is None
+    root = source_program(report, report["metadata"]["root_program"])
+    frame, = machine["frames"]
+    assert account["program"] == frame["program"] == root["id"]
+    assert root["code_address"] == frame["code_address"] == account["address"]
+    assert root["code_hash"] == frame["code_hash"]
+    assert root["kind"] == "Runtime" and root["fork"] == report["fork"]
+    assert root["bytecode"].removeprefix("0x") == code and account["delegation_target"] is None
     assert account["created"] is False and account["pending_destruction"] is False
     graph=report["symbolic"]["nodes"]
     ordered_roots={}
