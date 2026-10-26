@@ -6,7 +6,7 @@ from playwright.sync_api import expect
 import json
 from web_test_graph_helpers import graph_content, graph_mode, graph_overview, graph_scope, pick_graph_instance, symbol
 from web_test_harness import click_control, complete_submission, hide_world_directory, observe_webgpu, rendered_frame, settle_gesture, submit_bytecode, webgpu_evidence
-from web_test_inspector_helpers import hide_inspector
+from web_test_inspector_helpers import hide_inspector, select_inspector_tab
 from web_test_pixels import node_snapshot, screenshot_metrics
 
 
@@ -104,7 +104,7 @@ def block_overview_interactions(browser, url: str, output: Path):
     graph_scope(page, "Blocks", 3, 131, 131)
     # Expose both the native inspector and the full SSA table for the selected
     # instance. A virtualized table must finish its long focus animation.
-    hide_inspector(page, canvas)  # toggle the initially hidden inspector on
+    select_inspector_tab(page, canvas, "Frame")
     page.keyboard.press("3")
     page.wait_for_timeout(800)
     rendered_frame(page)

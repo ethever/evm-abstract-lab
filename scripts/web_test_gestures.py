@@ -2,10 +2,11 @@
 
 from pathlib import Path
 from playwright.sync_api import expect
+import json
 import math
 import re
 from web_test_graph_helpers import frozen_camera, graph_content, graph_mode, graph_overview, pinch_wheel, workspace_panes
-from web_test_harness import click_control, complete_submission, hide_world_directory, launch_browser, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, webgpu_evidence
+from web_test_harness import click_control, complete_submission, hide_world_directory, launch_browser, observe_webgpu, open_input, posted_bytecode, rendered_frame, settle_gesture, ui_controls, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_pixels import assert_anchored_zoom, assert_same_scene, assert_translation, canvas_screenshot, graph_screenshot_metrics, node_snapshot, require_selected_complete, screenshot_metrics
 
@@ -125,6 +126,10 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
             assert abs(touch_ratio - 1.12) < 0.04, f"touchscreen pinch scale was not applied: {touch_ratio}"
             assert page.evaluate("devicePixelRatio") == dpr, "graph gesture changed browser page zoom"
             assert page.evaluate("visualViewport.scale") == 1, "graph gesture changed visual viewport zoom"
+            (output / f"{prefix}-touch-proof.json").write_text(json.dumps({
+                "before": pinched, "after": touch_zoom, "centroid": touch_anchor,
+                "ratio": touch_ratio, "requested_ratio": 1.12, "anchor_tolerance_css_px": 4,
+            }, indent=2) + "\n")
 
             manual_frozen = frozen_camera(page, canvas, output, f"{prefix}-manual-frozen", False)
 
@@ -294,6 +299,12 @@ def graph_interactions(browser_type, executable: str, url: str, output: Path, dp
                     # source tooltip can overlap the neighboring selected node.
                     page.mouse.move(2, 2)
                     settle_gesture(page)
+                    if name == "ssa":
+                        rows = [row for row in ui_controls(page) if row["role"] == "ssa-row" and row["enabled"]]
+                        assert rows, "missing actual neighboring SSA table"
+                        # Selected state/All source states are fixed scope tabs.
+                        # Only the real table header should scroll out of view.
+                        region = (region[0], min(row["rect"][1] for row in rows), region[2], region[3])
                     before_png = canvas_screenshot(page)
                     before_node = graph_screenshot_metrics(page, before_png, graph_region)
                     before_code = screenshot_metrics(page, before_png, region)
