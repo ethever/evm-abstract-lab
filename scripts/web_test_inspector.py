@@ -1,7 +1,7 @@
 """Inspector browser acceptance cases."""
 
 from web_test_graph_helpers import symbol
-from web_test_hybrid import oracle_graph, source_program
+from web_test_hybrid import assert_root_source, oracle_graph, process_control_relation, source_program
 from pathlib import Path
 from playwright.sync_api import expect
 import hashlib
@@ -40,7 +40,7 @@ def model_namespace_controls(page, canvas, report, output):
     assert report["hybrid"]["coverage"]["baseline_current"]
     assert native is not None and native["ssa"]["values"] and not baseline["ssa"]["values"]
     coordinate = baseline["metadata"]["root_binding"]["Namespace"]["coordinate"]
-    assert all(program["code_address"] != coordinate for program in baseline["programs"])
+    assert_root_source(report, baseline["metadata"])
     assert native["metadata"]["environment"]["to"] == {"Concrete": coordinate}
     expect(status).to_contain_text("View: Detailed paths")
     expect(status).to_contain_text(f"Additional condition: root ADDRESS = {coordinate}")
@@ -82,7 +82,13 @@ def model_namespace_controls(page, canvas, report, output):
             assert frame["process"] is not None
             assert all(frame[key] is None for key in ["code_address","code_hash","storage_address",
                                                      "address_value","caller","basic_block","stack_height"])
-            assert frame["context"] == [] and not node["transfer"]["visited_block"]
+            assert frame["context"] == []
+            transfer = node["transfer"]
+            if transfer is not None:
+                assert not transfer["visited_block"]
+                process = transfer["process"]
+                if process is not None and process["control"] is not None:
+                    process_control_relation(baseline, frame["process"], process["control"])
     canvas.click(position={"x": 148, "y": 38})
     expect(status).to_contain_text("View: Detailed paths")
     expect(status).to_contain_text(f"Selected σ₀; source {symbol('P', root['id'])}")

@@ -22,6 +22,45 @@ def source_program(report, program_id):
     return matches[0]
 
 
+def _assert_program_source(program, source):
+    (kind, identity), = source.items()
+    assert kind in {"InputProgram", "Runtime", "InitCode"}, kind
+    address = identity["source"] if kind == "Runtime" else None
+    code_kind = "Initcode" if kind == "InitCode" else "Runtime"
+    assert (program["code_address"], program["code_hash"], program["fork"], program["kind"]) == (
+        address, identity["hash"], identity["fork"], code_kind)
+
+
+def assert_root_source(report, metadata):
+    """Qualify the original source, independently of other shared catalog rows."""
+    if metadata["root_program"] is not None:
+        program = source_program(report, metadata["root_program"])
+        _assert_program_source(program, metadata["declared_root_source"])
+
+
+def process_control_relation(report, key, region):
+    """Resolve an actual MAY receipt; no location becomes a Native PC or ID."""
+    index = region["relation"]
+    assert type(index) is int and 0 <= index < len(report["process_controls"]), index
+    relation = report["process_controls"][index]
+    assert type(relation["id"]) is int and relation["id"] == index
+    assert (relation["epoch"], relation["source"], region["entry"]) == (
+        key["epoch"], key["source"], key["location"])
+    for point in [region["entry"], *region["through"], *region["boundaries"]]:
+        if type(point) is dict:
+            assert set(point) == {"Block"}, point
+            assert type(point["Block"]) is int and 0 <= point["Block"] < len(relation["blocks"]), point
+        else:
+            assert point in {"JumpTargets", "End"}, point
+    if relation["program"] is not None:
+        program = source_program(report, relation["program"])
+        _assert_program_source(program, relation["source"])
+        assert len(relation["blocks"]) == len(program["blocks"])
+    else:
+        assert "InitCode" in relation["source"]
+    return relation
+
+
 def source_block(report, node):
     """Resolve decoded source without claiming that its instructions executed."""
     if node["program"] is None or node["basic_block"] is None:
@@ -40,8 +79,8 @@ def source_instructions(report, node):
 def oracle_graph(report, namespace):
     """Borrow a graph and shared source directory for graph-level semantic oracles.
 
-    Graph pools and IDs stay in their namespace. Only schema and decoded source
-    accompany the graph; publication timing/work/acquisition belong to report.
+    Graph pools and IDs stay in their namespace. Schema and shared source/control
+    directories accompany it; publication timing/work/acquisition stay on report.
     Mutations of a wire reply must use graph(), which returns the original slot.
     """
     selected = graph(report, namespace)
@@ -50,7 +89,8 @@ def oracle_graph(report, namespace):
     root = selected["metadata"]["root_program"]
     blocks = [] if root is None else source_program(report, root)["blocks"]
     return {**selected, "schema_version": report["schema_version"],
-            "programs": report["programs"], "disassembly": blocks}
+            "programs": report["programs"], "process_controls": report["process_controls"],
+            "disassembly": blocks}
 
 
 def displayed_graph(report):
@@ -83,6 +123,10 @@ def job_result_report(envelope, *, job_id=None, publication=None):
     if publication is not None:
         assert identity == publication, (identity, publication)
     report = result["report"]
+    assert type(report) is dict
+    assert type(report["schema_version"]) is int and report["schema_version"] == 21
+    assert "process_controls" in report
+    assert type(report["process_controls"]) is list
     minimum = report["minimum"]
     assert (identity["minimum_version"] is not None) == (minimum is not None), identity
     if minimum is not None:
@@ -143,7 +187,7 @@ def assert_hybrid(report):
     if "Namespace" in baseline["metadata"]["root_binding"]:
         coordinate = baseline["metadata"]["root_binding"]["Namespace"]["coordinate"]
         assert baseline["metadata"]["environment"]["to"].get("Symbolic")
-        assert all(program["code_address"] != coordinate for program in report["programs"])
+        assert_root_source(report, baseline["metadata"])
         assert coverage["chosen"] != "Native"
         if native is not None:
             condition = precision["detail_binding"]["SymbolicOwnerNamespace"]["namespace"]

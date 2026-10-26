@@ -292,6 +292,7 @@ class ReportWireTests(unittest.TestCase):
             "hybrid": {"coverage": {"baseline_current": True}},
             "programs": [{"id": 91, "blocks": [{"id": 12, "instructions": [{"pc": 40}]}]},
                          {"id": 7, "blocks": [{"id": 3, "instructions": [{"pc": 5}]}]}],
+            "process_controls": [],
             "global": {"status": "Converged", "metadata": {"root_program": 91},
                        "states": [{"state": 4, "entry": "global"}]},
             "native": {"status": "Incomplete", "metadata": {"root_program": 7},
@@ -310,6 +311,7 @@ class ReportWireTests(unittest.TestCase):
         native = oracle_graph(report, "Native")
         self.assertIs(native["states"], report["native"]["states"])
         self.assertIs(native["programs"], report["programs"])
+        self.assertIs(native["process_controls"], report["process_controls"])
         self.assertIs(native["disassembly"], report["programs"][1]["blocks"])
         self.assertEqual(displayed_graph(report)["states"][0]["entry"], "global")
         report["selected_view"] = "Native"
@@ -322,6 +324,80 @@ class ReportWireTests(unittest.TestCase):
         report["programs"].append(deepcopy(report["programs"][1]))
         with self.assertRaises(AssertionError):
             source_block(report, {"program": 7, "basic_block": 3})
+
+    def test_shared_catalog_keeps_original_template_and_conditional_native_sources_distinct(self):
+        from web_test_hybrid import assert_root_source
+        report = self.report()
+        coordinate = "0x" + "11" * 20
+        digest = "0x" + "ab" * 32
+        source = {"InputProgram": {"hash": digest, "fork": "Osaka"}}
+        metadata = {"root_program": 91, "declared_root_source": source}
+        for program, address in zip(report["programs"], [None, coordinate], strict=True):
+            program.update(code_address=address, code_hash=digest, fork="Osaka", kind="Runtime")
+        assert_root_source(report, metadata)
+        for field, value in [("code_address", coordinate), ("code_hash", "0x" + "cd" * 32),
+                             ("fork", "Prague"), ("kind", "Initcode")]:
+            invalid = deepcopy(report)
+            invalid["programs"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                assert_root_source(invalid, metadata)
+        with self.assertRaises(AssertionError):
+            assert_root_source(report, {**metadata, "root_program": 7})
+        runtime = deepcopy(report)
+        runtime["programs"][0]["code_address"] = coordinate
+        captured = {"Runtime": {"source": coordinate, "hash": digest, "fork": "Osaka"}}
+        assert_root_source(runtime, {**metadata, "declared_root_source": captured})
+        constructor = deepcopy(report)
+        constructor["programs"][0]["kind"] = "Initcode"
+        initcode = {"InitCode": {"hash": digest, "fork": "Osaka"}}
+        assert_root_source(constructor, {**metadata, "declared_root_source": initcode})
+
+    def test_process_control_receipt_resolves_shared_source_epoch_without_native_fields(self):
+        from web_test_hybrid import oracle_graph, process_control_relation
+        report = self.report()
+        digest, epoch = "0x" + "ab" * 32, "0x" + "cd" * 32
+        source = {"InputProgram": {"hash": digest, "fork": "Osaka"}}
+        report["programs"][0].update(code_address=None, code_hash=digest, fork="Osaka", kind="Runtime")
+        relation = {"id": 0, "epoch": epoch, "source": source, "program": 91,
+                    "blocks": [{"successors": [None, None], "continuation": None, "boundary": True}],
+                    "jump_targets": []}
+        report["process_controls"] = [relation]
+        key = {"epoch": epoch, "owner": "RootNamespace", "source": source,
+               "is_static": False, "location": {"Block": 0}}
+        region = {"relation": 0, "entry": {"Block": 0}, "through": [], "boundaries": [{"Block": 0}]}
+        for namespace in ["Baseline", "Native"]:
+            selected = oracle_graph(report, namespace)
+            self.assertIs(selected["process_controls"], report["process_controls"])
+            self.assertIs(process_control_relation(selected, key, region), relation)
+        for changed in [{**key, "epoch": "0x" + "ef" * 32}, {**key, "location": "JumpTargets"},
+                        {**key, "source": {"Runtime": {"hash": digest, "fork": "Osaka", "source": "0x1"}}}]:
+            with self.subTest(key=changed), self.assertRaises(AssertionError):
+                process_control_relation(report, changed, region)
+        for index in [True, -1, 1]:
+            with self.subTest(index=index), self.assertRaises(AssertionError):
+                process_control_relation(report, key, {**region, "relation": index})
+        invalid = deepcopy(report)
+        invalid["process_controls"][0]["program"] = 7
+        invalid["programs"][1].update(code_address="0x1", code_hash=digest, fork="Osaka", kind="Runtime")
+        with self.assertRaises(AssertionError):
+            process_control_relation(invalid, key, region)
+        self.assertNotIn("executed_pcs", relation)
+        self.assertNotIn("basic_block", key)
+        self.assertEqual(report["global"]["states"], [{"state": 4, "entry": "global"}])
+        self.assertEqual(report["native"]["states"], [{"state": 4, "entry": "native"}])
+
+        # A real hub coordinate stays virtual; its targets use dense source
+        # block indices, independently of the sparse ProgramInfo/Block IDs.
+        report["programs"][0]["blocks"].append({"id": 83, "instructions": [{"pc": 80, "opcode": 0x5b}]})
+        relation["blocks"].append({"successors": [None, None], "continuation": None, "boundary": True})
+        relation["jump_targets"] = [1]
+        hub_key = {**key, "location": "JumpTargets"}
+        hub = {"relation": 0, "entry": "JumpTargets", "through": ["JumpTargets"], "boundaries": [{"Block": 1}]}
+        self.assertIs(process_control_relation(report, hub_key, hub), relation)
+        self.assertEqual(relation["jump_targets"], [1])
+        for point in ["Any", {"Block": True}, {"Block": -1}, {"Block": 2}, {"Block": 83}, {"PC": 80}]:
+            with self.subTest(point=point), self.assertRaises(AssertionError):
+                process_control_relation(report, hub_key, {**hub, "boundaries": [point]})
 
     def test_task_reply_keeps_exact_id_publication_and_global_closure(self):
         from web_test_hybrid import job_result_report
@@ -338,6 +414,23 @@ class ReportWireTests(unittest.TestCase):
         early["result"]["Ok"]["publication"].update(version="9007199254740993", native_version=None)
         self.assertIsNone(job_result_report(early)["native"])
         self.assertEqual(early["result"]["Ok"]["publication"]["global_version"], publication["global_version"])
+
+    def test_final_report_requires_the_shared_process_control_array(self):
+        from web_test_hybrid import job_result_report
+        report = self.report()
+        envelope = {"result": {"Ok": {"id": 42, "publication": self.publication(), "report": report}}}
+        del report["process_controls"]
+        with self.assertRaises(AssertionError):
+            job_result_report(envelope)
+        for value in [None, {}, "controls", True]:
+            report["process_controls"] = value
+            with self.subTest(value=value), self.assertRaises(AssertionError):
+                job_result_report(envelope)
+        report["process_controls"] = []
+        for value in [20, 22, True, "21"]:
+            report["schema_version"] = value
+            with self.subTest(schema=value), self.assertRaises(AssertionError):
+                job_result_report(envelope)
 
     def test_wrong_endpoint_job_and_graph_publications_are_rejected(self):
         from web_test_hybrid import job_result_report

@@ -24,7 +24,8 @@ def source_fixture():
                   metadata=dict(snapshot=None, root_program=7),
                   programs=[dict(id=7, fork="Osaka", kind="Runtime", code_hash="captured-source", bytecode="0x" + code, blocks=blocks)])
     programs = report.pop("programs")
-    envelope = {"schema_version": 21, "selected_view": "Native", "native": report, "global": None, "programs": programs}
+    envelope = {"schema_version": 21, "selected_view": "Native", "native": report, "global": None,
+                "programs": programs, "process_controls": []}
     return envelope, code, metadata
 
 
