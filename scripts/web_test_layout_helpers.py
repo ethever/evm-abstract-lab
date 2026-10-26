@@ -15,6 +15,7 @@ LAYOUT_FIXTURES = Path(__file__).resolve().parent.parent / "crates/evm-abstract-
 LAYOUT_DEFAULT_LIMITS = {
     "max_states":100_000, "max_transfers":10_000_000, "context_depth":128,
     "max_constants":512, "max_work":2_000_000_000, "max_call_depth":1025,
+    "max_detail_regions":1,
     "max_memory_bytes":64*1024*1024, "use_summaries":True, "root_terminal_coverage":True,
     "numeric_model":"Product",
     "reduction_rounds":16, "max_facts":4096, "relations_enabled":True,
@@ -195,7 +196,8 @@ def layout_submission(page, canvas, code: str, output: Path, name: str, timeout_
             assert request["input"]["Bytecode"]["address"] == entry["address"], request
         if "chain_id" in entry:
             assert request["environment"]["chain_id"] == entry["chain_id"], request
-    result = complete_submission(page, admitted, timeout_seconds, namespace="Native", close_directory=True)
+    result = complete_submission(page, admitted, timeout_seconds, namespace="Native", close_directory=True,
+                                 expected_detail_regions=expected_limits["max_detail_regions"])
     assert result.status == 200 and "Ok" in result.json()["result"], result.json()
     full_report = result.report
     (output / f"{name}-task-reply.json").write_text(json.dumps(result.json(), indent=2) + "\n")

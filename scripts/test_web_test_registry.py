@@ -303,6 +303,80 @@ class ReportWireTests(unittest.TestCase):
         return {"version": "9007199254740997", "minimum_version": None, "global_version": "9007199254740993",
                 "native_version": "9007199254740997", "model_closed": True}
 
+    def policy_report(self, requested=1):
+        report = self.report()
+        coverage = report["hybrid"]["coverage"]
+        coverage.update(requested_detail_regions=requested, detail_regions=[],
+                        detail="Disabled" if requested == 0 else "Current")
+        report["hybrid"].update(precision=None, local_prefixes=[])
+        for namespace in ["global", "native"]:
+            report[namespace]["metadata"]["limits"] = {"max_detail_regions": requested}
+        if requested == 0:
+            report["native"] = None
+        return report
+
+    def test_detail_policy_uses_actual_native_selection_with_fixed_requested_bound(self):
+        from web_test_hybrid import assert_detail_policy
+        for requested in [1, 2, 3]:
+            report = self.policy_report(requested)
+            precision = deepcopy(report["hybrid"]["coverage"])
+            precision["detail_regions"] = [{"source": {"Runtime": {
+                "source": "0x" + f"{index + 1:040x}", "hash": "0x" + "ab" * 32, "fork": "Osaka"}},
+                "code_address": "0x" + f"{index + 1:040x}", "code_hash": "0x" + "ab" * 32}
+                for index in range(requested)]
+            report["hybrid"]["precision"] = precision
+            with self.subTest(requested=requested):
+                self.assertIs(assert_detail_policy(report, requested), precision)
+                self.assertEqual(len(precision["detail_regions"]), requested)
+                self.assertEqual(report["hybrid"]["coverage"]["detail_regions"], [])
+        report = self.policy_report()
+        # The requested policy exists before optional rich graphs arrive.
+        report["global"] = report["native"] = None
+        report["minimum"] = {"namespace": "Baseline"}
+        self.assertIs(assert_detail_policy(report, 1), report["hybrid"]["coverage"])
+        disabled = self.policy_report(0)
+        self.assertIs(assert_detail_policy(disabled, 0), disabled["hybrid"]["coverage"])
+
+    def test_detail_policy_rejects_missing_stale_and_mismatched_applied_metadata(self):
+        from web_test_hybrid import assert_detail_policy
+        for field in ["missing", "echo", "precision-echo", "global-limit", "native-limit", "bool-echo", "bool-limit"]:
+            report = self.policy_report()
+            coverage = report["hybrid"]["coverage"]
+            if field == "missing":
+                del coverage["requested_detail_regions"]
+            elif field == "echo":
+                coverage["requested_detail_regions"] = 2
+            elif field == "precision-echo":
+                report["hybrid"]["precision"] = {**coverage, "requested_detail_regions": 2}
+            elif field == "bool-echo":
+                coverage["requested_detail_regions"] = True
+            else:
+                namespace = "native" if field == "native-limit" else "global"
+                report[namespace]["metadata"]["limits"]["max_detail_regions"] = True if field == "bool-limit" else 2
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                assert_detail_policy(report, 1)
+        for requested in [False, -1, 1.0, "1", 2**64]:
+            with self.subTest(requested=requested), self.assertRaises(AssertionError):
+                assert_detail_policy(self.policy_report(), requested)
+
+    def test_detail_policy_rejects_bad_selected_containers_and_fake_disabled_native(self):
+        from web_test_hybrid import assert_detail_policy
+        for regions in [{}, "", [None, None]]:
+            report = self.policy_report()
+            report["hybrid"]["coverage"]["detail_regions"] = regions
+            with self.subTest(regions=regions), self.assertRaises(AssertionError):
+                assert_detail_policy(report, 1)
+        for corruption in ["native", "prefix", "detail"]:
+            report = self.policy_report(0)
+            if corruption == "native":
+                report["native"] = self.policy_report(0)["global"]
+            elif corruption == "prefix":
+                report["hybrid"]["local_prefixes"] = [{}]
+            else:
+                report["hybrid"]["coverage"]["detail"] = "Incomplete"
+            with self.subTest(corruption=corruption), self.assertRaises(AssertionError):
+                assert_detail_policy(report, 0)
+
     def test_graph_selection_borrows_sources_without_combining_namespaces(self):
         from web_test_hybrid import displayed_graph, graph, oracle_graph, source_block
         report = self.report()

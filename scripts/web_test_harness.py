@@ -10,7 +10,7 @@ import re
 import selectors
 import subprocess
 import time
-from web_test_hybrid import job_result_report, namespace_available
+from web_test_hybrid import assert_detail_policy, job_result_report, namespace_available
 
 
 _browser_errors = ContextVar("browser_acceptance_errors", default=None)
@@ -192,7 +192,8 @@ def select_report_namespace(page, report, namespace):
         settle_gesture(page)
 
 
-def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=None, close_directory=False):
+def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=None, close_directory=False,
+                        expected_detail_regions=1):
     # Parse raw HTTP text in Python so u64 Job IDs never pass through JS Number.
     reply = json.loads(admitted.text())["result"]
     if "Err" in reply:
@@ -209,6 +210,12 @@ def complete_submission(page, admitted, timeout_seconds: int = 60, *, namespace=
             assert result.ok, result.text()
             envelope = json.loads(result.text())
             report = job_result_report(envelope, job_id=job_id, publication=job["publication"])
+            if report["hybrid"] is not None:
+                # Only this D5 field has the authoritative omission default1.
+                # Preserve raw request bytes and compare the effective policy.
+                effective = admitted.request.post_data_json["limits"].get("max_detail_regions", 1)
+                assert type(effective) is int and effective == expected_detail_regions
+                assert_detail_policy(report, effective)
             timing = measured_backend_timings(report, require_ssa=namespace == "Native")
             assert timing == job["timings"], "report and completed job disagree on measured time"
             expect(page.locator("#analysis-status")).to_contain_text("Ready:", timeout=timeout_seconds * 1000)

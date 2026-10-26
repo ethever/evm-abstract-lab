@@ -197,6 +197,31 @@ def job_result_report(envelope, *, job_id=None, publication=None):
     return report
 
 
+def assert_detail_policy(report, requested):
+    """Qualify the applied D5 request; selected sources belong to Native coverage."""
+    assert type(requested) is int and 0 <= requested < 2**64, requested
+    hybrid = report["hybrid"]
+    coverage = hybrid["coverage"]
+    precision = hybrid["precision"]
+    if precision is None:
+        precision = coverage
+    for stage in [coverage, precision]:
+        assert type(stage) is dict and "requested_detail_regions" in stage
+        assert type(stage["requested_detail_regions"]) is int
+        assert stage["requested_detail_regions"] == requested
+        assert type(stage["detail_regions"]) is list
+        assert len(stage["detail_regions"]) <= requested
+    for namespace in ["Baseline", "Native"]:
+        selected = graph(report, namespace)
+        if selected is not None:
+            applied = selected["metadata"]["limits"]["max_detail_regions"]
+            assert type(applied) is int and applied == requested, (namespace, applied, requested)
+    if requested == 0:
+        assert graph(report, "Native") is None and hybrid["local_prefixes"] == []
+        assert coverage["detail"] == precision["detail"] == "Disabled"
+    return precision
+
+
 def assert_hybrid(report):
     assert report["schema_version"] == 21
     hybrid = report["hybrid"]
@@ -207,7 +232,7 @@ def assert_hybrid(report):
     baseline = graph(report, "Baseline")
     assert baseline is not None
     native = graph(report, "Native")
-    precision = hybrid["precision"] or coverage
+    precision = assert_detail_policy(report, coverage["requested_detail_regions"])
     assert baseline["metadata"]["source_snapshot"] == coverage["snapshot"]
     assert baseline["metadata"]["revision"] == coverage["baseline_revision"]
     if native is not None:
