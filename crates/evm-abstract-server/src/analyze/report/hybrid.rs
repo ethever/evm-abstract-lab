@@ -177,11 +177,7 @@ pub(in crate::analyze) fn project_with_retained_global<
             analysis::Status::Incomplete => api::AnalysisStatus::Incomplete,
         },
         work: source.work() as u64,
-        transfers: source
-            .baseline()
-            .transfers()
-            .saturating_add(source.detail().map_or(0, |detail| detail.transfers()))
-            as u64,
+        transfers: source.transfers() as u64,
         postprocessing_work: budget.used() as u64,
         timings: api::AnalysisTimings::default(),
         acquisition: source

@@ -82,10 +82,7 @@ pub(crate) fn hybrid<N: WordElement>(
             },
             status: source.status(),
             work: source.work(),
-            transfers: source
-                .baseline()
-                .transfers()
-                .saturating_add(source.detail().map_or(0, |graph| graph.transfers())),
+            transfers: source.transfers(),
             global: NativeGraph {
                 analysis: render::world::evidence(source.baseline())?,
                 ir: None,

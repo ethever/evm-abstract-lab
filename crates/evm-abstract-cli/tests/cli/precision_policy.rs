@@ -84,11 +84,20 @@ fn detail_regions_reach_raw_and_staged_world_commands_with_unchanged_budgets() {
                 assert!(first["report"]["detail"].is_null());
                 let final_line = &lines[1];
                 assert_eq!(final_line["lifecycle"], "Final");
+                for key in ["snapshot", "revision", "global_version"] {
+                    assert_eq!(first[key], final_line[key]);
+                }
                 let report = &final_line["report"];
+                assert_eq!(first["report"]["baseline"], report["baseline"]);
+                assert!(report["baseline"]["transfers"].as_u64().unwrap() > 0);
                 if expected == 0 {
                     assert_eq!(report["coverage"]["detail"], "Disabled");
                     assert!(report["detail"].is_null());
                 } else {
+                    assert!(
+                        report["detail"]["transfers"].as_u64().unwrap()
+                            > report["baseline"]["transfers"].as_u64().unwrap()
+                    );
                     actual_private_regions(
                         &report["coverage"],
                         report["detail"]["states"].as_array().unwrap(),
@@ -107,11 +116,18 @@ fn detail_regions_reach_raw_and_staged_world_commands_with_unchanged_budgets() {
                     10_000_000
                 );
                 let coverage = &report["hybrid"]["coverage"];
+                let global_transfers = report["global"]["analysis"]["transfers"].as_u64().unwrap();
+                assert!(global_transfers > 0);
                 if expected == 0 {
+                    assert_eq!(report["transfers"], global_transfers);
                     assert_eq!(coverage["requested_detail_regions"], 0);
                     assert_eq!(coverage["detail"], "Disabled");
                     assert!(report["native"].is_null());
                 } else {
+                    let native_transfers =
+                        report["native"]["analysis"]["transfers"].as_u64().unwrap();
+                    assert!(native_transfers > global_transfers);
+                    assert_eq!(report["transfers"], native_transfers);
                     actual_private_regions(
                         coverage,
                         report["native"]["analysis"]["states"].as_array().unwrap(),

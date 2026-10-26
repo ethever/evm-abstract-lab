@@ -333,6 +333,12 @@ impl<N: WordElement> HybridAnalysis<N> {
     pub fn work(&self) -> usize {
         self.coverage.work.total
     }
+    /// Actual cumulative transfers, including earlier use of the shared counters.
+    /// Native retains that counter's latest snapshot, which already includes
+    /// the baseline. Without Native execution the baseline snapshot is latest.
+    pub fn transfers(&self) -> usize {
+        self.detail().unwrap_or_else(|| self.baseline()).transfers()
+    }
     /// Transfer ownership to applications without cloning either native graph.
     pub fn into_parts(self) -> (ModelHandle<N>, Option<EvmWorldAnalysis<N>>, HybridCoverage) {
         (self.baseline, self.detail, self.coverage)
