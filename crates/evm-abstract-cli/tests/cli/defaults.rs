@@ -163,9 +163,10 @@ fn old_explicit_world_limits_survive_in_the_report_without_clamping() {
         ],
     );
     let world: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let world = crate::native::select(&world);
     super::native::assert_exit(&world, &output);
-    policy(&world, true, &expected);
+    assert!(world["native"].is_null());
+    assert_eq!(world["hybrid"]["coverage"]["requested_detail_regions"], 1);
+    policy(crate::native::global(&world), true, &expected);
 }
 
 #[test]

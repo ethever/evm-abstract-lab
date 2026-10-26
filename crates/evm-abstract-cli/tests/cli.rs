@@ -92,8 +92,32 @@ fn work_limit_visiting_pc(
                 assert_eq!(native::global(&raw)["status"], "Converged");
                 assert_eq!(coverage["detail"], "Work");
             } else {
-                assert_eq!(native::global(&raw)["status"], "Incomplete");
                 assert_eq!(coverage["detail"], "BaselinePending");
+                assert_eq!(raw["status"], "Incomplete");
+                let global = native::global(&raw);
+                if global["status"] == "Converged" {
+                    // The bounded currency receipt has its own real quote.
+                    // Refusal keeps the closed engine table but withholds its
+                    // certificate; it does not manufacture a machine frontier.
+                    assert_eq!(global["frontiers"], serde_json::json!([]));
+                    let work = &coverage["work"];
+                    assert_eq!(work["preparation"], 0);
+                    assert_eq!(work["detail"], 0);
+                    assert_eq!(work["baseline"], work["total"]);
+                    assert!(
+                        work["total"].as_u64().unwrap()
+                            <= global["config"]["max_work"].as_u64().unwrap()
+                    );
+                } else {
+                    assert_eq!(global["status"], "Incomplete");
+                    assert!(
+                        global["frontiers"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|frontier| frontier["reason"] == "Work")
+                    );
+                }
             }
             return None;
         }
