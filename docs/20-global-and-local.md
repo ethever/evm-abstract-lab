@@ -73,7 +73,11 @@ RPC 保留原始闭合基线的 source guards。新增的同快照精确事实�
 
 CLI JSON 的外层 `status`、`work`、`transfers` 描述组合资格与累计计数。`.global.analysis` 和可选 `.native.analysis` 始终位于固定字段，`selected_view` 只表示初始展示选择。每张图保留自己的 status、work、transfers、snapshot 和 revision；Native 图旁的 `ssa` 或 `partial_ssa` 使用同一 Native 状态 ID。`.hybrid.local_detail` 显式导出 Native receipt 和该图的 frontier 索引；不按选择递归嵌套另一张报告。
 
-Web wire 使用独立的有类型投影。封套保存 `.global`、`.native` 和唯一的 `.programs` 目录；每个 `ProgramInfo` 保留 source account、runtime/initcode 类型、fork、hash、字节码与完整反汇编。CFG 节点通过 `program` 与 `basic_block` 引用目录，根反汇编通过 `metadata.root_program` 查询。相同源码的多个机器状态共享指令，但每个状态的 executed PC、SSA、输入和覆盖仍独立；不同源账户的相同字节码不会只按 hash 合并。每图 `metadata.source_snapshot` / `metadata.revision` 与 Hybrid 声明相互校验，任务 publication version 另行表示交付更新。CLI 原生数值载体和 Web wire 分别保留自己的格式。
+Web wire 使用独立的有类型投影。封套的 `.minimum` 保存原始输入、限定关系和同一出口的数据／Store 联合界限，首份发布可以还没有 `.global` 或 `.native` 丰富图。`.rich_export` 独立记录未请求、完成、拒绝或取消；丰富导出失败不撤销已经发布的最小模型。每个任务先用同一应用后处理账本支付最小模型，再尝试可选丰富导出，详见[渐进结果](progressive-results.md)。
+
+封套的唯一 `.programs` 目录保存 source account、runtime/initcode 类型、fork、hash、字节码与完整反汇编，`.process_controls` 保存来源／epoch 限定的 MAY 控制关系。每个实际 transfer 的 `process.control` 引用该目录及自己的 `entry`、`through`、`boundaries`；具体运行时代码的块必须解析到同角色、账户、hash 与 fork 的捕获来源。丰富图的 CFG 节点通过 `program` 与 `basic_block` 引用指令，根反汇编通过 `metadata.root_program` 查询。相同源码的多个机器状态共享指令，但每个状态的 executed PC、SSA、输入和覆盖仍独立；不同源账户的相同字节码不会只按 hash 合并。每图 `metadata.source_snapshot` / `metadata.revision` 与 Hybrid 声明相互校验，任务 publication version 另行表示交付更新。CLI 原生数值载体和 Web wire 分别保留自己的格式。
+
+Native 可以通过当前的已知调用摘要恢复 caller，而没有在外层图逐条执行子帧指令。这时 Call 仍指向真实子帧入口，`SummaryReturn`／`SummaryRevert`／`SummaryFailure` 表示摘要投递后的 caller 续点；子状态的空 `executed_pcs` 或 SSA 不应补成执行记录。摘要自己的 Native regional Body receipt、覆盖块、联合出口与恢复后的 caller Store／returndata 共同保留这次解释的证据。
 
 `--no-summaries` / `use_summaries=false` 关闭完成调用的缓存复用，仍运行实际的全局 Process 模型。原有终止覆盖选项传给可选 native 阶段；基线始终关闭该辅助包络。可选阶段未开始或预算不足时，可以没有辅助记录。该记录不决定组合闭合、native 替换或前缀完整性。
 

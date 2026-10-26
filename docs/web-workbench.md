@@ -212,13 +212,15 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 | [`evm-abstract-server`](../crates/evm-abstract-server) | 将协议请求转换为引擎输入，验证 SSA，并投影为结构化响应；提供 HTTP 和静态资源 |
 | [`evm-abstract-web`](../crates/evm-abstract-web) | 依赖共享协议和符号库；通过 Web API 获取结果，用 egui Painter 绘制各视图 |
 
-报告封套固定保存 `global`、`native`、`selected_view` 和唯一的 `programs` 指令目录。机器状态与 SSA 的数字 ID 只在所属图中解释；切换展示不会搬移图。`ProgramInfo` 按来源账户、runtime/initcode、fork 和 hash 区分；CFG 用 `program` + `basic_block` 查指令，根反汇编用该图的 `metadata.root_program` 查同一目录。多个上下文不会重复携带同一列表，也不会因为共享指令而合并机器状态。
+报告封套固定保存 `minimum`、`rich_export`、`global`、`native`、`selected_view`，以及共享的 `programs` 指令目录和 `process_controls` MAY 控制目录。首份可用发布可以只有 `minimum`，两张丰富图均为 `null`；此时从最小模型的来源关系导航，不要求 `metadata.root_program` 或 Native 状态存在。机器状态与 SSA 的数字 ID 只在所属图中解释；切换展示不会搬移图。`ProgramInfo` 按来源账户、runtime/initcode、fork 和 hash 区分；丰富图的 CFG 用 `program` + `basic_block` 查指令，根反汇编用该图的 `metadata.root_program` 查同一目录。多个上下文不会重复携带同一指令列表，也不会因为共享指令而合并机器状态。
+
+`process_controls` 的目录项按完整来源与 epoch 限定，`ProcessFrameKey.location` 和实际 transfer 的 `process.control` 在该关系中解释。`Block(i)` 是来源的解码块序号，`JumpTargets` 是共享合法跳转目标集合，`Any` 与 `End` 没有指令位置。导航须核对来源角色、账户、fork、hash、epoch 和块范围；目录或潜在后继的存在不证明 Body 已求值或调用已返回。实际 regional transfer 与 delivery 保留各自的 current、complete、输入 revision 和输出 generation，详见[渐进结果](progressive-results.md)。
 
 每张图的 `metadata.source_snapshot` 与 `metadata.revision` 保留精确输入身份；`snapshot` 另含可用的链上区块头。组合声明、Native 前缀与图来源交叉校验。Process 的 MAY 控制不填入 Native executed PC 或指令 SSA。组合 status/work/transfers、累计 acquisition、后处理实耗和 timings 位于封套，图内保留原始统计；CLI 的原生数值格式独立于此 wire 投影。
 
 协议 9 加入 report-local mixed symbolic DAG。scalar refs、byte views、persistent/transient roots 和完整 path guards 在同一目录中共享；range/join 的待处理 payload 引用有限 pending machine pool。前端校验 node sort、依赖顺序和 pool refs，按可见行显示来源、写入和复制范围。typed export error 保留策略与实耗；MemoryPolicy 的未展开输入与 EVM Failure 分开显示。详情见[第 17 课](17-symbolic-state.md)。
 
-当前 Web 协议版本为 18，原生分析 JSON 为 13，域策略格式为 3，成本版本为 8。协议 16 新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，分别保留共享工作耗尽、取消与 kernel 失败，与局部 `RoundLimit` 区分。此前 cost 6 更新共享 kernel、规则和独立数值查询的逻辑收费；跨成本版本的原始 work 不是同一单位。
+当前 [Web 协议](../crates/evm-abstract-protocol/src/lib.rs)版本为 21，[原生分析 JSON](../crates/evm-abstract/src/analysis.rs)为 16，[域策略格式与成本版本](../crates/evm-abstract/src/domain/spec.rs)为 3 与 9。当前 wire 使用最小模型、独立丰富导出结果和共享控制目录；旧消费者必须迁移完整字段与身份校验，不能只改版本号。此前协议 16 新增 `WorkLimit`、`Cancelled`、`KernelFailure` reduction reason，分别保留共享工作耗尽、取消与 kernel 失败，与局部 `RoundLimit` 区分。跨成本版本的原始 work 不是同一单位。
 
 此前版本 15 新增必填布尔 `AnalysisLimits.root_terminal_coverage` 与必填可选 `AnalysisReport.root_terminal_coverage`（无记录为 null）；当前用户默认请求显式设置前者为 true，保留旧关闭策略的对照请求显式设置为 false。`StoreSnapshot` 在所有报告中增加全局 storage/transient base refs、nonce/code/existence/created/pending-destruction defaults，旧字段继续保留。`InputIdentity.scope` 和新增 snapshot namespace/revision/input scope 均为规范十进制字符串，数字编码、前导零、溢出及未知字段会被拒绝；work、transfer 等计数仍是原整数类型。旧报告不能只改版本号。迁移细节见[wire 15 身份与 Store 契约](19-root-terminal-coverage.md)。
 
@@ -230,11 +232,15 @@ RPC 精化可能反复经历“抽象执行 → 补读数据 → 从入口重跑
 | --- | --- |
 | `GET /api/rpc-providers` | `RpcProvidersReply`：`{"result":{"Ok":[{"id":"mainnet","name":"Ethereum mainnet","endpoint":"https://rpc.example.org/ethereum"}]}}`；无配置时列表为空 |
 | `POST /api/tasks`，body 为 `AnalyzeRequest` | `202` 与 `JobReply`，包含任务 ID |
-| `GET /api/tasks/{id}` | 小型 `JobSnapshot`：状态、阶段、累计计数和实时／冻结的 `timings` |
-| `GET /api/tasks/{id}/result` | 完成后的 `AnalyzeReply`；未完成返回类型化 `TaskNotReady` |
+| `GET /api/tasks/{id}` | `JobReply` 包装的小型 `JobSnapshot`：状态、阶段、累计计数、实时／冻结的 `timings` 与可选 `publication` |
+| `GET /api/tasks/{id}/result` | `JobResultReply`：成功项含 `id`、`publication` 和 `report`；已有发布即可读取，包括任务仍在运行或已取消时；尚无发布返回类型化 `TaskNotReady` |
 | `DELETE /api/tasks/{id}` | 请求取消后的状态，仍通过状态接口确认终态 |
 
-版本 8 为 `Diagnostic` 增加类型化的 `invalid_opcode` 证据。普通指令保留实际 `opcode`、可选 `mnemonic` 与无效原因，区分 `0xfe (INVALID)`、未定义的 `0xef` 和当前 fork 未启用的 `0x1e (CLZ)`；字节来自诊断状态的当前捕获程序。委托入口单独表示为 `DelegationEntry`，无法核验字节时说明缺失原因，不跳到根程序的合成 PC 0。Diagnostics 保留同 PC 不同抽象状态的每条记录及其跳转；记录数不是不同指令数或失败交易次数。原生 CLI 分析格式独立使用版本 10，字段路径见[第 08 课](08-forks.md#从诊断区分原始操作码)。
+`publication` 的 `version` 是本任务的发布序号；`minimum_version`、`global_version`、`native_version` 分别标识实际保留的最小模型与两张丰富图，`model_closed` 表示来源限定的模型闭合。版本使用规范十进制字符串，任务 ID 仍是整数。可选 Native 或丰富导出可以产生新发布而不改变 `minimum_version`；同版本保留的最小模型、已发布的来源与控制目录项保持原内容。客户端同时核对任务、发布及图命名空间，迟到响应不能替换当前结果。
+
+每个任务的应用后处理账本由服务端 `--postprocess-work` 配置，默认 2,000,000,000，先支付必需最小模型，再支付可选丰富导出。最小模型无法付费会明确失败；已有模型之后的丰富导出拒绝或取消记录在 `rich_export`，不会删除模型。该账本与累计 EVM 执行预算分开，重新发布或 RPC 重启不会刷新任何一份预算。
+
+版本 8 为 `Diagnostic` 增加类型化的 `invalid_opcode` 证据。普通指令保留实际 `opcode`、可选 `mnemonic` 与无效原因，区分 `0xfe (INVALID)`、未定义的 `0xef` 和当前 fork 未启用的 `0x1e (CLZ)`；字节来自诊断状态的当前捕获程序。委托入口单独表示为 `DelegationEntry`，无法核验字节时说明缺失原因，不跳到根程序的合成 PC 0。Diagnostics 保留同 PC 不同抽象状态的每条记录及其跳转；记录数不是不同指令数或失败交易次数。原生 CLI 分析格式独立演进，字段路径见[第 08 课](08-forks.md#从诊断区分原始操作码)。
 
 版本 7 为 `JobSnapshot` 和报告的 `metadata` 增加 `AnalysisTimings`。字段均为 `u64` 纳秒：`queue_ns`、`processing_ns`，以及 `validating_ns`、`pinning_ns`、`acquiring_ns`、`analyzing_ns`、`building_ssa_ns`、`projecting_ns`。阶段耗时互不重复，合计为 `processing_ns`；RPC 展示值为 `pinning_ns + acquiring_ns`。直接调用分析服务函数时队列时间为零。成功、失败或取消后，终态快照的计时冻结；成功报告保留同一份后端计时。用户等待与前端准备属于本次浏览器观察，单独保存，不以浏览器与后端的时钟起点相减计算。
 
