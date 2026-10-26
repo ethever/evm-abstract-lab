@@ -202,7 +202,33 @@ def set_control(page, canvas, label, selected, *, role="toggle", **query):
     assert type(control["selected"]) is bool, control
     if control["selected"] != selected:
         click_control(page, canvas, label, role=role, **query)
+        if role == "section":
+            settle_control_geometry(page)
     return ui_control(page, label, role=role, selected=selected, **query)
+
+
+def settle_control_geometry(page):
+    """Wait for actual accepted geometry after a native collapsing section.
+
+    Its open bit precedes animated body sizing and modal recentering. Compare
+    real responses across painted frames; harmless pointer movement supplies
+    those frames even after the application would otherwise become idle.
+    """
+    def geometry():
+        return [(control["id"], control["role"], control["rect"])
+                for control in ui_controls(page) if control["enabled"]]
+    previous, stable, step = geometry(), 0, 0
+    deadline = time.monotonic() + 5
+    while stable < 2:
+        assert time.monotonic() < deadline, "native section response geometry did not settle"
+        before = page.evaluate("window.__webgpuEvidence.submissions")
+        page.mouse.move(1 + step % 2, 1)
+        step += 1
+        page.wait_for_function("before => window.__webgpuEvidence.submissions > before",
+                               arg=before, polling=25, timeout=5000)
+        current = geometry()
+        stable = stable + 1 if current == previous else 0
+        previous = current
 
 
 def focus_text_control(page, canvas, label, *, touch=False, **query):
@@ -238,7 +264,11 @@ def edit_control(page, canvas, label, text, **query):
     control = focus_text_control(page, canvas, label, **query)
     page.keyboard.press("Control+A")
     rendered_frame(page)
-    page.keyboard.insert_text(str(text))
+    replacement = str(text)
+    if replacement:
+        page.keyboard.insert_text(replacement)
+    else:
+        page.keyboard.press("Backspace")
     rendered_frame(page)
     return control
 
@@ -298,7 +328,16 @@ def select_report_context(page, report, namespace, *, state=None, summary=None, 
             assert len(captures) <= 1, captures
             program = captures[0] if captures else None
         query = f"Minimum {{ summary: {summary}, procedure: {procedure} }}"
-    click_control(page, canvas, label, role="tab")
+    modes = [control for control in ui_controls(page)
+             if control["label"] == label and control["enabled"]
+             and control["role"] in {"tab", "action"}]
+    if not modes:
+        # The compact shell deliberately keeps namespace choices in More.
+        # Use its real menu action; wide workspaces retain the direct tabs.
+        click_control(page, canvas, "More", role="menu")
+        modes = [ui_control(page, label, role="action")]
+    assert len(modes) == 1, ("ambiguous namespace chooser", label, modes)
+    click_control(page, canvas, label, role=modes[0]["role"], id=modes[0]["id"])
     # An opaque/program=None context has no captured source row to choose.
     # Listing every context is an explicit presentation action; it does not
     # change the canonical focus until the exact context below is picked.
