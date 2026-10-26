@@ -1,56 +1,67 @@
 """Compact ssa browser acceptance cases."""
 
 from pathlib import Path
-from playwright.sync_api import expect
 import json
-from web_test_harness import complete_submission, hide_world_directory, observe_webgpu, rendered_frame, resize_view, settle_gesture, webgpu_evidence
-from web_test_inspector_helpers import hide_inspector
-from web_test_pixels import screenshot_metrics
+from web_test_example_helpers import example_page
+from web_test_graph_helpers import assert_availability, compare_tab, compare_tab_control, default_entry_cfg, source_content_snapshot, workspace_route
+from web_test_harness import measured_backend_timings, resize_view, select_report_namespace, set_control, webgpu_evidence
+from web_test_hybrid import native_entry_context, oracle_graph, source_program
 
 
 def compact_ssa_interactions(browser, url: str, output: Path):
-    page=browser.new_page(viewport={"width":1440,"height":1000});observe_webgpu(page)
-    with page.expect_response(lambda response: response.url.endswith("/api/tasks")
-                              and response.request.method == "POST") as initial:
-        page.goto(url,wait_until="networkidle")
-    complete_submission(page, initial.value, namespace="Native")
-    expect(page.locator("#analysis-status")).to_contain_text("Ready:",timeout=60000)
-    canvas=page.locator("#evm-canvas");hide_inspector(page,canvas)
-    hide_world_directory(page,canvas)
+    page,canvas,reply=example_page(browser,url,namespace=None,close_directory=False)
+    report=reply.report
+    entry=default_entry_cfg(page,canvas,report,output,"compact-default-entry-cfg")
     requests=[]
     page.on("request",lambda request:requests.append(request.url)
             if request.method=="POST" and request.url.endswith("/api/tasks") else None)
-    results={}
-    for width,name,ssa_x in [(1024,"medium",118),(640,"narrow",198)]:
-        resize_view(page,width,800);page.keyboard.press("0");page.mouse.move(2,2);settle_gesture(page)
-        region=(8,100,172,740)
-        def source_hash(label):
-            page.mouse.move(2,2);page.wait_for_timeout(800);rendered_frame(page)
-            png=canvas.screenshot(path=str(output/f"workspace-{name}-{label}.png"))
-            metrics=screenshot_metrics(page,png,region)
-            assert metrics["selected_pixels"]>100, f"missing selected source block: {name}/{label}"
-            return metrics["hash"]
-        initial=source_hash("initial-ssa")
-        toolbar_y=89 if width==1024 else 105
-        canvas.click(position={"x":ssa_x,"y":toolbar_y});settle_gesture(page)
-        explicit_ssa=source_hash("explicit-ssa")
-        assert initial==explicit_ssa, f"{name} workspace did not initially open SSA"
-        canvas.click(position={"x":52,"y":toolbar_y});settle_gesture(page)
+    results={"initial_entry":entry}
+    workspace_route(page,"SSA")
+    results["may_ssa_unavailable"]=assert_availability(page,"MAY control has no Native instruction or SSA receipt")
+    workspace_route(page,"CFG")
+    select_report_namespace(page,report,"Native")
+    measured_backend_timings(report)
+    set_control(page,canvas,"Inspect",False)
+    root=native_entry_context(report)
+    program=source_program(report,root["program"])
+    native=oracle_graph(report,"Native")
+    block=next(block for block in native["ssa"]["blocks"] if block["state"]==root["id"])
+    for route,ssa in [("Code",None),("SSA",block)]:
+        workspace_route(page,route)
+        source_content_snapshot(page,canvas,program,output,f"compact-native-{route.lower()}",ssa=ssa)
+    for width,name in [(1024,"medium"),(640,"narrow")]:
+        resize_view(page,width,800);workspace_route(page,"Compare")
+        def source_hash(label,*,ssa=False):
+            return source_content_snapshot(page,canvas,program,output,f"workspace-{name}-{label}",
+                                           ssa=block if ssa else None)["hash"]
+        compare_tab(page,canvas,"SSA")
+        explicit_ssa=source_hash("explicit-ssa",ssa=True)
+        compare_tab(page,canvas,"Disassembly")
         disasm=source_hash("disassembly")
         assert disasm!=explicit_ssa, f"{name} Disassembly tab did not show different source content"
-        canvas.click(position={"x":ssa_x,"y":toolbar_y});settle_gesture(page)
-        assert source_hash("ssa-return")==initial, f"{name} SSA tab did not restore its initial source content"
-        canvas.click(position={"x":52,"y":toolbar_y});settle_gesture(page)
+        compare_tab(page,canvas,"SSA")
+        assert source_hash("ssa-return",ssa=True)==explicit_ssa, f"{name} SSA tab did not restore its source content"
+        compare_tab(page,canvas,"Disassembly")
         assert source_hash("disassembly-return")==disasm, f"{name} Disassembly tab did not restore source content"
-        page.keyboard.press("2");settle_gesture(page);page.keyboard.press("0");settle_gesture(page)
+        workspace_route(page,"CFG");workspace_route(page,"Compare")
+        compare_tab_control(page,"Disassembly",selected=True)
         assert source_hash("view-return-disassembly")==disasm, f"{name} tab choice was lost across views"
-        resize_view(page,1440,1000);settle_gesture(page);resize_view(page,width,800);settle_gesture(page)
+        resize_view(page,1440,1000);resize_view(page,width,800)
+        compare_tab_control(page,"Disassembly",selected=True)
         assert source_hash("resize-return-disassembly")==disasm, f"{name} tab choice was lost across width classes"
-        results[name]={"initial_is_ssa":True,"ssa_hash":explicit_ssa,"disassembly_hash":disasm,
+        results[name]={"ssa_hash":explicit_ssa,"disassembly_hash":disasm,
                        "preserves_manual_tab_across_views_and_widths":True}
-    resize_view(page,1024,800);settle_gesture(page)
-    returned=screenshot_metrics(page,canvas.screenshot(path=str(output/"workspace-medium-after-narrow.png")),(8,100,172,740))
+    # Leave different choices in the two width classes, then observe each
+    # preference without clicking the expected tab and masking a lost choice.
+    compare_tab(page,canvas,"SSA")
+    resize_view(page,1024,800)
+    compare_tab_control(page,"Disassembly",selected=True)
+    returned=source_content_snapshot(page,canvas,program,output,"workspace-medium-after-narrow")
     assert returned["hash"]==results["medium"]["disassembly_hash"], "narrow workspace overwrote the medium tab preference"
+    resize_view(page,640,800)
+    compare_tab_control(page,"SSA",selected=True)
+    narrow=source_content_snapshot(page,canvas,program,output,"workspace-narrow-after-medium",ssa=block)
+    assert narrow["hash"]==results["narrow"]["ssa_hash"], "medium workspace overwrote the narrow tab preference"
     assert not requests,"compact source tabs or workspace resizing reran analysis"
     results["renderer"]=webgpu_evidence(page)
     (output/"compact-ssa-report.json").write_text(json.dumps(results,indent=2)+"\n")
