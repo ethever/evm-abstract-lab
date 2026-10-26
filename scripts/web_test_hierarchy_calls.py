@@ -88,8 +88,14 @@ def _selected_native_context(page, canvas, report, node):
 
 def _call_navigation(page, canvas, full_report, report, rpc, output):
     """A real recorded CALL portal opens its callee; typed Back restores Compare."""
-    caller=native_entry_context(full_report)
-    call,=[edge for edge in report["edges"] if edge["kind"]=="Call" and edge["from"]==caller["id"]]
+    entry=native_entry_context(full_report)
+    nodes={node["id"]:node for node in report["cfg"]}
+    call,=[edge for edge in report["edges"] if edge["kind"]=="Call"
+           and nodes[edge["from"]]["program"]==entry["program"]
+           and nodes[edge["from"]]["frame_depth"]==entry["frame_depth"]]
+    caller=nodes[call["from"]]
+    entry_edge,=[edge for edge in report["edges"] if edge["from"]==entry["id"] and edge["to"]==caller["id"]]
+    assert entry_edge["kind"]=="Fallthrough",entry_edge
     callee,=[node for node in report["cfg"] if node["id"]==call["to"]]
     snapshots={snapshot["state"]:snapshot for snapshot in report["states"]}
     parent=snapshots[caller["id"]]["entry"]["frames"][-1]
@@ -110,11 +116,17 @@ def _call_navigation(page, canvas, full_report, report, rpc, output):
     posts=[]
     page.on("request",lambda request:posts.append(request.url)
             if request.method=="POST" and request.url.endswith("/api/tasks") else None)
-    select_report_context(page,full_report,"Native",state=caller["id"])
+    select_report_context(page,full_report,"Native",state=entry["id"])
     workspace_route(page,"Compare")
     set_control(page,canvas,"Overview",False,role="checkbox")
     graph_mode(page,canvas,"Blocks")
     graph_content(page,canvas,"Disasm")
+    source=source_instructions(report,caller)
+    end=source[-1]["pc"]+source[-1]["size"]-1
+    title=f"Block 0x{caller['start_pc']:04x}–0x{end:04x}"
+    click_control(page,canvas,title,role="graph-node")
+    expect(page.locator("#analysis-status")).to_contain_text(
+        f"Selected {symbol('σ',caller['id'])}; source {symbol('P',caller['program'])}")
     click_control(page,canvas,"Fit graph",role="action")
     page.mouse.move(2,2);rendered_frame(page)
     plot=ui_control(page,"CFG canvas",role="graph-canvas")
@@ -150,7 +162,7 @@ def _call_navigation(page, canvas, full_report, report, rpc, output):
     assert_same_scene(before,restored)
     assert float(re.search(r"; CFG zoom: ([0-9.]+)%",status.text_content())[1])==zoom
     assert not posts,"call navigation, source qualification or Back reran analysis"
-    return {"call":call,"call_pc":instructions[0]["pc"],"caller":caller["id"],"callee":callee["id"],
+    return {"entry":entry["id"],"entry_edge":entry_edge,"call":call,"call_pc":instructions[0]["pc"],"caller":caller["id"],"callee":callee["id"],
             "context":context,"child_frame":child,"before":before,"restored":restored,"pan_delta":[dx,dy],"zoom_percent":zoom}
 
 
