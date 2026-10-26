@@ -35,6 +35,8 @@ static EVIDENCE: Counter<Evidence> = Counter::new(Evidence {
     private_deliveries: 0,
 });
 static CLONES: Counter<usize> = Counter::new(0);
+static CANCEL_ON_CLONE: Counter<Option<(usize, analysis_control::Cancellation)>> =
+    Counter::new(None);
 
 fn private<N: WordElement>(value: &EvmValue<N>) -> bool {
     value.numeric().requires_retained_binding()
@@ -123,6 +125,19 @@ impl Word {
 impl Clone for Word {
     fn clone(&self) -> Self {
         CLONES.update(|count| *count += 1);
+        let mut cancellation = None;
+        CANCEL_ON_CLONE.update(|armed| {
+            if let Some((remaining, token)) = armed {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    cancellation = Some(token.clone());
+                    *armed = None;
+                }
+            }
+        });
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
+        }
         Self::make(
             self.facts.clone(),
             self.odd,
@@ -663,4 +678,72 @@ fn native_fanout_does_not_group_a_child_failure_resuming_its_parent() {
             MachineEdgeKind::Intraprocedural(crate::analysis::EdgeKind::BranchTrue)
         ) && successor.payload.call_stack.depth() == 2
     }));
+}
+
+#[test]
+fn native_fanout_metadata_preserves_captured_only_cancellation_after_last_clone() {
+    use crate::analysis::{FrontierReason, transfer::StorageReadPolicy};
+    let _clones = CLONES.scope();
+    let _cancellation = CANCEL_ON_CLONE.scope();
+    let values = ValueAlgebra::new(Algebra { joined_copy: COPY });
+    let domain = values.borrowed();
+    let mut world = EvmWorld::new(Fork::Osaka, "native fanout metadata cancellation");
+    world
+        .insert(
+            address(0x101),
+            EvmAccount::from_hex("565b005b00", world.fork()).unwrap(),
+        )
+        .unwrap();
+    let entry = EvmEntry::<Word>::new(address(0x101));
+    let mut input = crate::analysis::transfer::initial(&world, &entry, domain).unwrap();
+    input.active_mut().stack.extend([
+        EvmValue::from_numeric(Word::private(COPY, "retained")),
+        EvmValue::top(),
+    ]);
+    input.normalize();
+    let config = ExecutionConfig::default();
+    let execute = |input, budget: &mut crate::resource::WorkBudget| {
+        crate::analysis::transfer::execute_inner(
+            &world,
+            &entry,
+            input,
+            &config,
+            domain,
+            &crate::analysis::engine::policy::RecentDistinctJumps,
+            budget,
+            StorageReadPolicy::Abstract,
+            true,
+        )
+    };
+    let control_input = input.clone();
+    let mut control_budget = crate::resource::WorkBudget::new(config.max_work);
+    CLONES.set(0);
+    let control = execute(control_input, &mut control_budget);
+    assert!(control.frontiers.is_empty());
+    assert_eq!(control.common_successors, Some(0..2));
+    let last_clone = CLONES.get();
+    assert!(last_clone > 0);
+
+    // The last native clone belongs to the final target's payload. Cancel
+    // only the ledger's owner there, immediately before metadata reservation.
+    let captured = analysis_control::Cancellation::new();
+    let ambient = analysis_control::Cancellation::new();
+    let mut budget = analysis_control::with_cancellation(&captured, || {
+        crate::resource::WorkBudget::new(config.max_work)
+    });
+    CLONES.set(0);
+    CANCEL_ON_CLONE.set(Some((last_clone, captured.clone())));
+    let execution = analysis_control::with_cancellation(&ambient, || execute(input, &mut budget));
+    assert_eq!(CLONES.get(), last_clone);
+    assert!(captured.is_cancelled());
+    assert!(!ambient.is_cancelled());
+    assert_eq!(execution.successors.len(), 2);
+    assert!(execution.common_successors.is_none());
+    assert_eq!(control_budget.used(), budget.used() + 3);
+    assert_eq!(execution.frontiers.len(), 1);
+    assert_eq!(execution.frontiers[0].pc, 0);
+    assert_eq!(
+        execution.frontiers[0].reason,
+        FrontierReason::Relations(crate::domain::relational::QueryReason::Cancelled)
+    );
 }

@@ -920,8 +920,8 @@ fn execute_inner<D: EvmNumericAlgebra, C: ContextPolicy>(
                         && result.payload.active().code == FrameCode::Runtime
                         && common_end.saturating_sub(common_start) > 1
                     {
-                        if !context.budget.charge(3) {
-                            boundary(&mut result, pc, FrontierReason::Work);
+                        if let Err(error) = crate::resource::clone_payment::pay(context.budget, 3) {
+                            boundary(&mut result, pc, error.into());
                             return result;
                         }
                         result.common_successors = Some(common_start..common_end);
