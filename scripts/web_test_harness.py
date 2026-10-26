@@ -296,6 +296,10 @@ def select_report_context(page, report, namespace, *, state=None, summary=None, 
             program = captures[0] if captures else None
         query = f"Minimum {{ summary: {summary}, procedure: {procedure} }}"
     click_control(page, canvas, label, role="tab")
+    # An opaque/program=None context has no captured source row to choose.
+    # Listing every context is an explicit presentation action; it does not
+    # change the canonical focus until the exact context below is picked.
+    set_control(page, canvas, "All contexts", program is None)
     if program is not None:
         # The original template and its conditional Native alias may have the
         # same bytes. Choose the actual alias before enumerating its contexts.
