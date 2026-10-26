@@ -501,10 +501,22 @@ def _inspect(page, canvas, report, output, posts):
         set_control(page, canvas, store_label, True, role="section")
         store = _panel_snapshot(page, canvas, output, f"coverage-{name}-store")
         assert len(store["rows"]) > len(opened["rows"])
-        set_control(page, canvas, "Unlisted accounts and storage bases", True, role="section")
+        parent = ui_control(page, store_label, role="section", selected=True)
+        following = [control["rect"][1] for control in ui_controls(page)
+                     if control["enabled"] and control["rect"][1] > parent["rect"][3]
+                     and ((control["role"] == "section" and control["label"] in {
+                         "Return alternative", "Revert alternative", "Failure alternative"})
+                         or (control["role"] == "combobox" and control["label"] == "outcome_selection"))]
+        # The observed Native outcome below the auxiliary tuples has its own
+        # defaults section. Bind this header to the expanded tuple's actual
+        # indentation and following sibling, never a first matching label.
+        scope = (parent["rect"][0] + 1, parent["rect"][3], page.viewport_size["width"],
+                 min(following, default=page.viewport_size["height"] - 30))
+        defaults_control = ui_control(page, "Unlisted accounts and storage bases", role="section", within=scope)
+        set_control(page, canvas, "Unlisted accounts and storage bases", True, role="section", id=defaults_control["id"])
         defaults = _panel_snapshot(page, canvas, output, f"coverage-{name}-store-defaults")
         assert len(defaults["rows"]) >= len(store["rows"]) + 9
-        set_control(page, canvas, "Unlisted accounts and storage bases", False, role="section")
+        set_control(page, canvas, "Unlisted accounts and storage bases", False, role="section", id=defaults_control["id"])
         store = _panel_snapshot(page, canvas, output, f"coverage-{name}-defaults-closed")
         set_control(page, canvas, store_label, False, role="section")
         opened = _panel_snapshot(page, canvas, output, f"coverage-{name}-store-closed")
