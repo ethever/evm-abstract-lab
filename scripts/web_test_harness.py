@@ -328,7 +328,16 @@ def select_report_context(page, report, namespace, *, state=None, summary=None, 
             assert len(captures) <= 1, captures
             program = captures[0] if captures else None
         query = f"Minimum {{ summary: {summary}, procedure: {procedure} }}"
-    click_control(page, canvas, label, role="tab")
+    modes = [control for control in ui_controls(page)
+             if control["label"] == label and control["enabled"]
+             and control["role"] in {"tab", "action"}]
+    if not modes:
+        # The compact shell deliberately keeps namespace choices in More.
+        # Use its real menu action; wide workspaces retain the direct tabs.
+        click_control(page, canvas, "More", role="menu")
+        modes = [ui_control(page, label, role="action")]
+    assert len(modes) == 1, ("ambiguous namespace chooser", label, modes)
+    click_control(page, canvas, label, role=modes[0]["role"], id=modes[0]["id"])
     # An opaque/program=None context has no captured source row to choose.
     # Listing every context is an explicit presentation action; it does not
     # change the canonical focus until the exact context below is picked.
