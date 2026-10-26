@@ -202,7 +202,33 @@ def set_control(page, canvas, label, selected, *, role="toggle", **query):
     assert type(control["selected"]) is bool, control
     if control["selected"] != selected:
         click_control(page, canvas, label, role=role, **query)
+        if role == "section":
+            settle_control_geometry(page)
     return ui_control(page, label, role=role, selected=selected, **query)
+
+
+def settle_control_geometry(page):
+    """Wait for actual accepted geometry after a native collapsing section.
+
+    Its open bit precedes animated body sizing and modal recentering. Compare
+    real responses across painted frames; harmless pointer movement supplies
+    those frames even after the application would otherwise become idle.
+    """
+    def geometry():
+        return [(control["id"], control["role"], control["rect"])
+                for control in ui_controls(page) if control["enabled"]]
+    previous, stable, step = geometry(), 0, 0
+    deadline = time.monotonic() + 5
+    while stable < 2:
+        assert time.monotonic() < deadline, "native section response geometry did not settle"
+        before = page.evaluate("window.__webgpuEvidence.submissions")
+        page.mouse.move(1 + step % 2, 1)
+        step += 1
+        page.wait_for_function("before => window.__webgpuEvidence.submissions > before",
+                               arg=before, polling=25, timeout=5000)
+        current = geometry()
+        stable = stable + 1 if current == previous else 0
+        previous = current
 
 
 def focus_text_control(page, canvas, label, *, touch=False, **query):
