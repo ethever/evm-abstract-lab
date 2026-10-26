@@ -1,6 +1,6 @@
 # Rust ELK 选型与 CFG 几何边界
 
-CFG 使用锁定的 `elkrs = "=0.1.1"` 生成分层布局。布局输入是已测量的卡片、边标签和有类型的拓扑；输出是叶节点矩形、完整边折线、标签矩形和空间分组。窗口尺寸、平移和缩放属于渲染器，不参与布局策略。实际接口见 [`evm-abstract-layout`](../crates/evm-abstract-layout/src/lib.rs) 与[几何数据类型](../crates/evm-abstract-layout/src/model.rs)。
+CFG 使用锁定的 `elkrs = "=0.1.1"` 生成分层布局。布局输入是显式范围内已测量的卡片、边标签和有类型的拓扑；输出是叶节点矩形、完整边折线、标签矩形和空间分组。ELK 接口不接收窗口、平移或缩放；前端首次测量卡片时按实际图区选择尺寸与预览密度。实际接口见 [`evm-abstract-layout`](../crates/evm-abstract-layout/src/lib.rs) 与[几何数据类型](../crates/evm-abstract-layout/src/model.rs)。
 
 这里分开记录三类证据：两套上游移植的选型探针、本仓库当前实现，以及尚未解决的限制。选型探针中的小图是用于隔离几何行为的合成输入，不是链上合约分析结果；原生运行和 Node Wasm 运行也不能替代真实浏览器验收。
 
@@ -37,7 +37,7 @@ elkrs 是一个 crate，可通过 `ElkGraph`、`NodeId`、`EdgeId`、`ShapeId`�
 - **Cycle**：在程序相同的普通控制流边上计算强连通分量，含自环的单节点也可成组。CALL、RETURN、Failure、Revert 不作为内部普通连接。
 - **Chain**：每个内部连接的源只有一条出边、目标只有一条入边；平行边按实际数量计数。还要求普通控制流、相同程序、已知且相同的帧深度、两端无前沿或隐藏关联边，并排除 Cycle 成员。
 
-这些条件作用于提交给布局的显示图。States 模式保留可见原生状态及边；Blocks 模式先按现有[显示投影](../crates/evm-abstract-web/src/widgets/graph/projection.rs)聚合，同源码块的多个状态和原边可能已有一个显示身份。布局只保持该投影的身份，不能恢复被投影聚合的原生端点，也不能证明聚合后的 A→B→C 来自一条可接续的执行路径。空间 Cycle 同样不是新的分析结论。
+这些条件作用于提交给布局的显示图。默认来源 CFG 使用[来源级投影](../crates/evm-abstract-web/src/widgets/graph/minimum/control/projection.rs)：源码直接邻接、调用／异常边界与区域宏关系分别保留，宏关系可在 Graph → Model relations 或 Model overview 检查；没有捕获代码的保守上下文使用抽象边界。Detailed paths 的 States 保留范围内原生状态及边，Blocks 先按[Native 显示投影](../crates/evm-abstract-web/src/widgets/graph/projection.rs)聚合，并提供 Instances、Local 和可选 Overview。布局只保持所提交投影的身份；来源点不等于 Native 已执行状态，聚合后的 A→B→C 也不能证明来自一条可接续的执行路径。空间 Cycle 同样不是新的分析结论。
 
 ### 固定世界坐标与联合边布局
 
@@ -45,11 +45,13 @@ elkrs 是一个 crate，可通过 `ElkGraph`、`NodeId`、`EdgeId`、`ShapeId`�
 
 ELK 节点坐标相对于父节点，边 sections 与边标签坐标相对于边的 `containing_node`。适配器累加祖先偏移转换为世界坐标，保留每个 section 的起点、折点和终点，并按原 source→target 拼接全部 sections。导出前核对原端点、标签身份、测量尺寸、容器包含关系、有限坐标、正交性和完整性；失败以 `LayoutError` 返回。Web 的[转换层](../crates/evm-abstract-web/src/widgets/graph/layout.rs)另检查坐标能否安全转换为 Painter 使用的 `f32`。
 
-布局输入不含 viewport。普通窗口或分栏 resize 保留已缓存几何与相机；Fit 只对当前几何调整镜头。内容模式或显示投影变化才重算布局。世界坐标稳定与工作区在宽屏、窄屏之间切换分栏是不同层的行为。
+布局输入不含 viewport。默认 Entry 窗口取实际锚点及全部真实前向一跳备选，含调用边界和实际交付的调用者续点，不沿入边扩展，也没有固定点数上限。Graph 菜单的 Nearby 选择有限邻域，Full source CFG 选择当前上下文全部已准入保留的来源点，含断开、待展开和历史部分；Model overview 另行展示区域关系。这里的来源总数不等于全部静态字节码块或 Native 已执行状态数。
+
+仅因窗口范围省略的入边／出边保存在不参与节点布局的有类型边界元数据中，保留原边种类、层级、来源与精确限定端点，仍可通过目标入口和菜单检查。首次布局先取得实际图区，再选择卡片宽度和预览行数，按入口及其直接备选的完整矩形框定镜头。[范围缓存](../crates/evm-abstract-web/src/widgets/graph/minimum/scene.rs)保留所选窗口与布局偏好；普通 resize、分栏变化和 Back 保留几何与镜头，显式切换窗口可重新布局。Fit 只适配当前几何。
 
 ### 语义缩放只改变绘制内容
 
-[语义缩放](../crates/evm-abstract-web/src/widgets/graph/paint.rs)使用滞回阈值：zoom ≤ 0.55 显示身份内容，zoom ≥ 0.65 显示详细预览，中间区间维持上次级别；初始位于中间区间时使用身份内容。详细预览始终提供测量尺寸，缩放切换不会重新布局、收缩节点矩形或更改 ID。低倍身份卡仍保留原节点可供选择和查看 SSA。
+[语义缩放](../crates/evm-abstract-web/src/widgets/graph/paint.rs)按比例选择轮廓、身份与详细预览，并使用滞回避免闪烁。低倍或过小卡片不绘制不可读文字，文字裁剪在各自卡片边界内；详细预览仍提供测量尺寸，缩放切换不会重新布局、收缩节点矩形或更改 ID。选择与检查继续使用原有来源／上下文或 Native 实例资格，不因可见性获得额外的执行或 SSA 证据。
 
 当前 `layout(&Input)` 是同步计算，Web 在更新布局时同步调用它。拥有型输入输出为后台执行提供了类型边界，但当前实现没有把 ELK 任务提交到浏览器 Worker 或 Rayon 池；引入 Rust ELK 本身不能证明大图布局期间 UI 不阻塞。
 
@@ -65,21 +67,13 @@ ELK 节点坐标相对于父节点，边 sections 与边标签坐标相对于边
 
 Multicall3 的同一 calldata 已通过同一 canonical block 上的只读 `eth_call` 对照，成功返回 1344 字节，结果摘要保存在元数据中。这证明 ABI 输入可供链上合约执行；原生抽象报告仍保留其 `Memory` 前沿，不能据此改称全入口覆盖或完整的链上调用分析。
 
-### 已通过的浏览器布局验收
+<a id="已通过的浏览器布局验收"></a>
 
-本次专门的 Chromium 层级布局检查 `--layout-only` 已退出 0。[浏览器检查脚本](../scripts/test-web-browser.py)通过实际输入表单提交保存的 runtime、精确 calldata，以及 Multicall3 的 root address 和 chain ID，核对真实 `/api/tasks` POST 与全部默认预算。取得后端完整状态报告后，检查 calldata 长度和每个字节，并核对代码、root address 与 `CHAINID=1`。页面使用实际 WebGPU 绘制，检查总览、Focus、身份与 SSA 预览切换，以及报告状态和前沿显示。
+### 浏览器中的 fixture 阅读
 
-上表保留 CLI `cfg` 协议图的观察值；下表记录浏览器使用的完整有状态报告，两种报告的计数分别保留。本次验收没有确定 Multicall3 计数差异的根因。
+完整报告中的状态数不等于默认来源窗口的卡片数。阅读以上 fixture 时先从入口的限定范围开始，再按需打开 Detailed paths、Overview 或 Local，并选择实际实例；全图 Fit 可能把长链文字缩小，Entry 可恢复可读定位。首次卡片尺寸与预览密度按实际图区选择，resize／Back 的稳定性适用于同一显式范围及其已保留的布局偏好。当前操作说明见[Web 工作台](web-workbench.md#阅读结果)。
 
-| 浏览器输入 | 完整报告与 Blocks 视图 | 已检查的覆盖边界 |
-| --- | --- | --- |
-| WETH9 精确 `transferFrom` | 20 个原生状态、20 条原生边；Blocks 显示 18 张源码块卡片 | `Converged`，无前沿 |
-| Router02 精确 `getAmountsOut` | 43 个原生状态、42 条原生边；Blocks 显示 38 张源码块卡片 | `Incomplete`，1 个 `MissingCode` 前沿保持可见 |
-| Multicall3 精确八次自身调用 | 704 个原生状态、716 条原生边；Blocks 显示 66 张源码块卡片；切到 States 后保留全部 704 张状态卡片及 716 条边 | `Incomplete`，8 个 `Memory` 前沿保持可见；States 模式可 Focus，并保留所选原生 ID，投影与镜头操作没有提交新的分析 |
-
-真实大图浏览器证据来自 Multicall3 的 704 状态报告；合成输入另用于隔离相机与几何行为。128 状态长链保留 127 条边和 1 个 Chain 容器，Fit 为 3.379%，继续缩小到 2.157%，确认镜头仍可连续缩小。四状态链在 44.933% 时显示身份，在 81.873% 时恢复 SSA 预览，点击仍选择原生状态 ID 3。宽、窄窗口分别首次布局后，对初始相机归一化的几何检查一致。嵌套调用输入保留 3 个程序、8 个原生状态、9 条边和 6 个空间容器。这些合成案例补充局部行为检查，不替代真实合约大图。
-
-上述结果是本次浏览器布局检查的实际范围；最终提交仍须完成[完整本地门禁](local-ci.md)，本节不作为完整门禁已通过的记录。
+[浏览器检查脚本](../scripts/test-web-browser.py)使用保存的 runtime、calldata、root address 和环境字段提交任务；完整检查要求匹配当前源码的服务与 Wasm，按[完整本地门禁](local-ci.md)执行。fixture 的既有报告计数、合成布局探针或图上可见卡片数均不能替代当前提交的检查结果。
 
 ## 已知限制与验证范围
 
