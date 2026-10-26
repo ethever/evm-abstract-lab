@@ -81,7 +81,8 @@ pub enum HybridInterpretation {
     /// Closed process coverage with bounded current native local observations.
     /// These never exclude a baseline route or imply whole-native closure.
     ProcessWithDetail,
-    /// Fully current native detail under the identical original input binding.
+    /// Current Native detail under the original binding, additionally qualified
+    /// for complete known-code control without an Environment omission.
     Native,
 }
 
@@ -101,6 +102,8 @@ pub enum DetailState {
     /// Native detail retains its actual incomplete frontiers or stale evidence.
     Incomplete,
     /// Native detail is closed and current under its explicit input binding.
+    /// Complete known-code control and original binding are separate conditions
+    /// for selecting it instead of Process.
     Current,
 }
 
@@ -127,7 +130,8 @@ pub struct HybridCoverage {
     /// Baseline kernel closure and all retained procedure source guards hold.
     pub baseline_current: bool,
     /// Native kernel closure and source guards hold under `detail_binding`.
-    /// This alone does not authorize whole-native substitution.
+    /// This alone does not establish original binding or complete known-code
+    /// control, and therefore does not authorize whole-native substitution.
     pub detail_current: bool,
     /// Qualification of the original root owner in native preparation.
     pub detail_binding: HybridNativeBinding,

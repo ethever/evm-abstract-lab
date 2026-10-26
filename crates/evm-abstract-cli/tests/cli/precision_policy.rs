@@ -4,6 +4,101 @@ use std::process::{Command, Output};
 
 const ROOT: &str = "0x1111111111111111111111111111111111111111";
 
+#[test]
+fn current_environment_selects_global_in_actual_raw_and_staged_cli() {
+    let address = |id: u64| format!("0x{id:040x}");
+    for unknown in [false, true] {
+        let target = if unknown { 0x201 } else { 0x301 };
+        let world = serde_json::json!({
+            "fork": "osaka", "provenance": "current F1 CLI selection",
+            "accounts": [
+                {"address": address(0x101), "code": format!("0x60205f5f5f5f61{target:04x}5af15060205ff3"),
+                    "balance": "0xf4240", "nonce": "0x0", "storage": {}, "storage_unknown": false},
+                {"address": address(0x301), "code": "0x305f5260205ff3",
+                    "balance": "0xf4240", "nonce": "0x0", "storage": {}, "storage_unknown": false}
+            ]
+        });
+        let path = std::env::temp_dir().join(format!(
+            "evm-f1-selection-{}-{unknown}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, serde_json::to_vec(&world).unwrap()).unwrap();
+        for staged in [false, true] {
+            let mut command = Command::new(super::native::binary());
+            command.arg("analyze").arg("--world").arg(&path).args([
+                "--evm.to",
+                &address(0x101),
+                "--evm.caller",
+                &address(0x900),
+                "--evm.value",
+                "0",
+                "--evm.calldata",
+                "0x",
+            ]);
+            if staged {
+                command.arg("--staged-json");
+            } else {
+                command.args(["--format", "json"]);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let report: Value = if staged {
+                let lines: Vec<Value> = output
+                    .stdout
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| serde_json::from_slice(line).unwrap())
+                    .collect();
+                assert_eq!(lines.len(), 2);
+                assert_eq!(lines[0]["lifecycle"], "Running");
+                assert_eq!(lines[0]["report"]["coverage"]["chosen"], "Process");
+                assert_eq!(lines[1]["lifecycle"], "Final");
+                lines[1]["report"].clone()
+            } else {
+                serde_json::from_slice(&output.stdout).unwrap()
+            };
+            let coverage = if staged {
+                &report["coverage"]
+            } else {
+                &report["hybrid"]["coverage"]
+            };
+            assert_eq!(coverage["baseline_current"], true);
+            assert_eq!(coverage["detail_current"], true);
+            assert_eq!(coverage["detail_binding"], "OriginalOwner");
+            assert_eq!(coverage["detail"], "Current");
+            assert_eq!(coverage["requested_detail_regions"], 1);
+            assert!(coverage["work"]["total"].as_u64().unwrap() <= 2_000_000_000);
+            assert_eq!(
+                coverage["chosen"],
+                if unknown {
+                    "ProcessWithDetail"
+                } else {
+                    "Native"
+                }
+            );
+            if !staged {
+                assert_eq!(
+                    report["selected_view"],
+                    if unknown { "Baseline" } else { "Native" }
+                );
+                assert_eq!(report["native"]["analysis"]["status"], "Converged");
+                assert!(
+                    report["native"]["analysis"]["frontiers"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(report["native"].is_object() && report["global"].is_object());
+            }
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 fn run(bound: Option<usize>, staged: bool) -> Output {
     let path = format!(
         "{}/../../examples/worlds/nested-detail-regions.json",

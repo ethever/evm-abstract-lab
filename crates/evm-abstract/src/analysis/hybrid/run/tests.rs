@@ -124,6 +124,46 @@ fn hybrid_transfers_use_the_latest_actual_shared_counter_snapshot_once() {
 }
 
 #[test]
+fn unavailable_control_qualification_keeps_original_payer_live_and_native_current() {
+    let algebra = ValueAlgebra::new(ProductAlgebra::default());
+    let policies = EnginePolicies::default();
+    let mut extension = NoExtension;
+    let (world, entry) = fixtures::fixture(&[(0x101, "5f5f5f5f5f6102015af15000"), (0x201, "00")]);
+    let mut budget = WorkBudget::new(100_000_000);
+    assert!(budget.charge(13));
+    let mut counters = engine::Counters::default();
+    let report = AnalysisEngine::new(&algebra, &policies, &mut extension)
+        .run_hybrid_metered(
+            AnalysisInput::new(world, entry).unwrap(),
+            ExecutionConfig {
+                max_work: 100_000_000,
+                ..ExecutionConfig::default()
+            },
+            HybridConfig::default(),
+            &mut budget,
+            &mut counters,
+            StorageReadPolicy::Abstract,
+        )
+        .unwrap();
+    assert!(report.coverage().detail_current);
+    assert!(!report.detail().unwrap().procedure_summaries().is_empty());
+    let prefix = budget.used();
+    budget.limit_remaining(1).unwrap();
+    assert!(!super::complete_native_control(
+        report.detail().unwrap(),
+        &mut budget
+    ));
+    assert_eq!(budget.used(), prefix);
+    assert!(!budget.exhausted());
+    assert!(budget.charge(1));
+    assert!(report.coverage().detail_current);
+    assert_eq!(
+        report.coverage().detail,
+        crate::analysis::DetailState::Current
+    );
+}
+
+#[test]
 fn metered_hybrid_retains_prior_actual_work_and_rejects_sticky_rescue() {
     let algebra = ValueAlgebra::new(ProductAlgebra::default());
     let policies = EnginePolicies::default();

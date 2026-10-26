@@ -7,6 +7,17 @@
 `baseline_handle()`；该不可变句柄保留实际数值载体、快照、事实版本和根绑定。
 取消后仍可读取保留的模型。回调不代表 Native 已完成。
 
+Native 的 `detail_current` 表示它的固定点和来源守卫当前有效；`detail_binding`
+另外说明根 owner 是否保持原始绑定。两者成立仍不等于完整的已知代码控制覆盖。
+当前 Native Environment 的数值效果包络可包含未知代码的终态效果，但未表示未知
+owner 通过 DELEGATECALL/CALLCODE 执行捕获代码的控制上下文。因此，非 RPC Hybrid
+只有在 current、OriginalOwner 且所有保留 procedure record 及其内部 procedure 都
+不使用 Environment 时，才选择 Native 作为完整控制/效果关系；KnownCall 内嵌的
+Environment 也会阻止这一替换。这是充分的正向资格条件，RPC 继续选择 Global。
+资格检查沿用原始累计执行预算；额度不足时保留 Global 与真实 Native 数据，不把
+可选检查拒绝变成 Native 的执行失败。此时 `detail` 仍可为 `Current`，Native 图与
+当前输入前缀仍可独立查看，`chosen` 和应用的 `selected_view` 则保留 Global。
+
 CLI 可输出 JSON Lines：
 
 ```sh
