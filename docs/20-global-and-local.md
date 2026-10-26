@@ -4,17 +4,23 @@ CLI 的 `analyze`、world/RPC `explain` 与 Web 默认先运行全局保守过�
 
 全局模型保存可能的调用、静态回调、委托调用、构造过程、部署、回滚和出口。详细部分可以仍有 pending 路径。组合结果的 `status` 来自全局模型的闭合与来源资格；详细部分的 `Incomplete`、frontiers 和部分 SSA 独立保留。三个终止备选项只属于可选 native 辅助记录，不会闭合过程关系或清除这些义务。
 
-Web 的 **Global model** 与 **Detailed paths** 分别查看两套图。切换会重置状态、程序和 SSA 的本地选择，数字相同的状态 ID 不互相引用。存在当前详细前缀时，初始视图展示详细路径；全局关系始终可切回。符号根的详细视图会明确列出额外的 `root ADDRESS = …` 条件，全局模型仍覆盖其他允许的根地址。
+Web 的 **Global model** 与 **Detailed paths** 分别查看两套图。渐进任务先安装可读的全局发布；后续 Native 到达时保留当前命名空间、相机和有效选择，可以手动切换。切换时状态、程序和 SSA 的本地 ID 按所属图重新解释，数字相同不能跨图引用；用户显示偏好保留。符号根的详细视图会明确列出额外的 `root ADDRESS = …` 条件，全局模型仍覆盖其他允许的根地址。
 
 ## 控制关系怎样闭合
 
 假设 A 的已知代码调用未知地址 U，U 可以再调用 A，随后 A 返回或回退。全局模型保留 A、U 的过程节点、CALL 类动作、真实 subscriber 和返回续点；U→A 的回调继续参与同一个 Body／Resume 固定点。新增输入会更新 callee 的汇合输入，结果变化会重新投递给等待的 caller。每个 subscriber 独立持有 caller 状态及回滚检查点。
 
-过程解释忘掉私有栈、内存和跳转历史，保留代码来源、owner 类、static 模式及 ADDRESS／CALLER／value 的汇合输入。已捕获字节由付费的能力扫描决定动作集合，PUSH 数据里的 CALL 字节不构成动作。未知实现使用覆盖任意外部实现的操作过程。局部效果、重复、出口与 CALL／STATICCALL／DELEGATECALL／CALLCODE／CREATE／CREATE2 共同构成控制关系。
+过程解释忘掉私有栈、内存和跳转历史，保留代码来源、owner 类、static 模式及 ADDRESS／CALLER／value 的汇合输入。已知代码按真实解码块选择本次能力和控制后继，只有到达的效果／调用边界才执行相应动作。`STOP; CALL` 中不可达的 CALL 不进入过程关系，PUSH 数据里的 CALL 字节也不是指令；它们不会因为出现在同一份代码中而变成任意可调用动作。
+
+[`ProcessLocation`](../crates/evm-abstract/src/analysis/process/frame.rs)将 `Block(i)`、未知跳转的 `JumpTargets`、`End` 与未知实现的 `Any` 分开。块内确定的跳转或条件可以排除后继；未知跳转经共享 hub 覆盖全部合法 JUMPDEST，并保留异常 Failure。CALL／CREATE 的 caller continuation 位于后续控制位置，真实子调用的 Return／Revert／Failure delivery 才恢复该续点及检查点；资金或深度拒绝也保留其实际继续关系。
+
+纯控制区域使用同一 kernel 中的[宏步关系](../crates/evm-abstract/src/analysis/process/control.rs)：共享 source／epoch 限定的解码关系，用 `through` 记录经过的纯 MAY 位置，用 `boundaries` 记录仍需数值解释的效果／调用／出口边界，不为每个纯块复制一份数值 Body。未知实现继续使用有限 owner／source 类下覆盖任意外部实现的操作过程。局部效果、重复、出口与 CALL／STATICCALL／DELEGATECALL／CALLCODE／CREATE／CREATE2 共同参与同一相对固定点。
+
+启用合作组件时保留完整的逐块 hook 调度；实际控制步骤选定后才消费该位置的 `ProcessFacts`。一个块的 readonly 保证不能变成整个 callee 子树的证明。没有动作的 Process 步骤可直接操作付费数值摘要；调用／创建边界及未满足紧凑表示前提的输入仍走原有适配路径，不另建求解器。
 
 Return 提交子帧共享效果；Revert／Failure 使用对应的保存点。constructor 的 allocation guard、nonce、零结果、部署、runtime 返回和外层 rollback 分开记录。进入帧后的 Failure 包含有限 gas 下的异常终止，纯循环也保留此分支。work 耗尽仍是分析 frontier。
 
-过程图的节点没有指令 PC、基本块或 SSA 访问证据。`transfer.process`、实际调用和 `delivery` 给出的是采用的控制规则与依赖投递；原生细节中的访问证据使用独立的 ID 空间。
+过程图的 `Block(i)` 是来源限定的 MAY 块位置，宏步的 `through` 也是保守控制证据。它们不填入 Native `executed_pcs`、`visited_block` 或 SSA。`transfer.process.control`、实际调用和 `delivery` 分别保留宏步关系、交互与依赖投递；原生细节中的访问证据使用独立的 ID 空间。
 
 ## 当前前缀的范围
 
@@ -32,11 +38,11 @@ Return 提交子帧共享效果；Revert／Failure 使用对应的保存点。co
 
 例如两个位置进入同一个带返回目标的子程序，选中区域的不同 history 可以让两份栈值分别汇合，从而保留各自的 Jump 目标。实际准备状态和相对位置先完成 history 处理，再交给原有 key／join 策略；owner、来源、static、caller 与 rollback 仍按原表示保留。
 
-所选调用者的历史仍可出现在未选中子调用的完整机器 key 中；细节阶段也继续执行未选中的 native 代码。这些上下文组合仍消耗可选预算，全局过程的闭合不依赖它们全部完成。
+未选中 callee 的相对准入合并可选的调用者跳转历史；caller continuation 和回滚检查点仍由各自 subscriber 保留。原始环境 calldata 与子帧独立 calldata 的来源标志仍区分私有过程身份，不能因为公开 FrameKey 相同而强行做不兼容的形状 join。细节阶段仍执行未选中的 Native 代码并支付其费用，全局过程的闭合不依赖这些详细路径全部完成。
 
 ## 输入、物理账户与来源
 
-native 15 的 `entry.binding` 与 wire 20 的 `metadata.root_binding` 在没有接纳任何状态时也存在。库的 `root_binding()` 不依赖已执行帧；`declared_root_source(...)` 单独支付原始声明来源的读取，不构成 PC 访问证据。
+当前[原生格式](../crates/evm-abstract/src/analysis.rs)的 `entry.binding` 与 [Web wire](../crates/evm-abstract-protocol/src/lib.rs) 的 `metadata.root_binding` 在没有接纳任何状态时也存在。库的 `root_binding()` 不依赖已执行帧；`declared_root_source(...)` 单独支付原始声明来源的读取，不构成 PC 访问证据。
 
 | binding／owner | 表达的事实 |
 | --- | --- |
@@ -54,12 +60,12 @@ native 15 的 `entry.binding` 与 wire 20 的 `metadata.root_binding` 在没有�
 
 ## 实现中的闭合条件
 
-1. owner／代码词汇冻结在完整 source epoch：物理 names、可选单个 namespace、一个 residual，以及有限的已捕获／opaque／boundary source 类。未来创建的代码继续由 opaque complement 覆盖；精确纳入新来源需要来源版本变化及重新分析。
-2. scalar、Store、nonce 等保存在汇合输入中，使用现有 join／widen 契约和 feedback 策略；变化会使依赖的 Body／Resume／subscriber／source 义务重新有效。闭合读取检查当前输入 revision、输出 generation 与来源 guard。
+1. owner／代码词汇冻结在完整 source epoch：物理 names、可选单个 namespace、一个 residual，以及有限的已捕获／opaque／boundary source 类。已知控制位置来自有限的解码块、共享跳转 hub 与结束位置；未来创建的代码继续由 opaque complement 覆盖。精确纳入新来源需要来源版本变化及重新分析。
+2. scalar、Store、nonce 等保存在汇合输入中，使用现有 join／widen 契约和 feedback 策略；变化会使依赖的 Body／Resume／subscriber／source 义务重新有效。内置 prepared Process 表示可复用有限数值坐标的覆盖 join 与付费完整相等检查；自定义策略及尚未准备的 Native 输入保留自己的路径，不据此宣称任意自定义域都会终止。
 3. 能力扫描、效果、copy、native 构造／比较／query、admission 和发布走原有账本。拒付、取消、未覆盖的 catalogue、foreign premise 或不能解释的 native／process continuation 保留类型化失败或 frontier。原生数值 carrier 的实际收费和契约仍适用。
-4. `Converged` 还要求相关队列和依赖义务全部完成。可选根终止覆盖只属于原生细节；过程 baseline 始终关闭该选项，其闭合由自身控制关系建立。
+4. `Converged` 还要求相关队列和依赖义务全部完成。World 闭合检查自身输入 revision、输出 generation，以及实际保留的 Body／Resume 求值与来源 receipt。相同的数值行或共享目录不能代替这些 guard：外部前提退役时新快照失效，同数值重新证明也会唤醒 World；旧不可变模型保留自己的发布依据。可选根终止覆盖只属于原生细节；过程 baseline 始终关闭该选项，其闭合由自身控制关系建立。
 
-这套实现条件说明所支持的有限抽象如何覆盖局部步骤与外部交互；有限 revm 样本用于发现遗漏。具体测试见 [全局控制与 namespace](../crates/evm-abstract/tests/global_process.rs)、[来源 currentness](../crates/evm-abstract/tests/process_source_currency.rs)、[混合选择／预算／局部精度](../crates/evm-abstract/tests/hybrid.rs)。foreign cooperative process 输入和未支持的混合 continuation 仍有显式边界。
+这套实现条件说明所支持的有限抽象如何覆盖局部步骤与外部交互；有限 revm 样本用于发现遗漏。具体测试见 [已知控制与独立 revm 包含性](../crates/evm-abstract/tests/process_route_control.rs)、[全局控制与 namespace](../crates/evm-abstract/tests/global_process.rs)、[来源 currentness](../crates/evm-abstract/tests/process_source_currency.rs)、[实际增长／退役与重新证明](../crates/evm-abstract/src/analysis/engine/cooperation/tests/assembled.rs)、[混合选择／预算／局部精度](../crates/evm-abstract/tests/hybrid.rs)。foreign cooperative process 输入和未支持的混合 continuation 仍有显式边界。
 
 ## RPC 与交付格式
 
