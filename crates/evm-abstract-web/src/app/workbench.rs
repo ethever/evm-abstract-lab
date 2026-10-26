@@ -18,7 +18,8 @@ impl Workspace {
         let mut view_ready = true;
         // Freeze this frame's presentation: a title action takes effect on
         // the next frame, keeping the inspector's widget IDs unique.
-        let inspector_maximized = self.report.is_some() && self.inspector.maximized();
+        let inspector_maximized =
+            self.report.is_some() && self.inspector.maximized() && !self.form.open;
         if self
             .report
             .as_ref()
@@ -51,7 +52,7 @@ impl Workspace {
                         &mut self.ssa_display,
                     );
                 });
-            if self.inspector.expanded && !inspector_maximized {
+            if self.inspector.expanded && !inspector_maximized && !self.form.open {
                 let response = self.inspector.docked_panel(ui, viewport.y).show(ui, |ui| {
                     // Reserve the chosen panel height even for an empty snapshot;
                     // otherwise egui shrinks it after the graph's initial fit.
@@ -65,6 +66,7 @@ impl Workspace {
         let mut pick = None;
         if self.directory.open
             && !inspector_maximized
+            && !self.form.open
             && let Some(report) = &self.report
         {
             let report = &self.report_view.shown(report);

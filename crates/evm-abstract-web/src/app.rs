@@ -97,6 +97,17 @@ pub(crate) enum View {
     Ssa,
 }
 
+impl View {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Split => "Compare",
+            Self::Disassembly => "Code",
+            Self::Graph => "CFG",
+            Self::Ssa => "SSA",
+        }
+    }
+}
+
 /// Browser-independent workbench. Reports remain immutable while a new native
 /// task runs; stale callbacks cannot replace the selected result.
 pub struct Workspace {
@@ -557,7 +568,26 @@ impl Workspace {
 
     /// Live status for assistive tools and real browser verification.
     pub fn accessible_status(&self) -> String {
-        let status = self.accessible_task_status();
+        let status = format!(
+            "{}; Route: {}; Input: {}; Sources: {}; Inspector panel: {}",
+            self.accessible_task_status(),
+            self.view.label(),
+            if self.form.open { "open" } else { "closed" },
+            if self.form.open && self.directory.open {
+                "suspended during input"
+            } else if self.directory.open {
+                "open"
+            } else {
+                "closed"
+            },
+            if self.form.open && self.inspector.expanded {
+                "suspended during input"
+            } else if self.inspector.expanded {
+                "open"
+            } else {
+                "closed"
+            },
+        );
         let timing = self.accessible_timing();
         if timing.is_empty() {
             status

@@ -311,8 +311,8 @@ impl super::Workspace {
                         .select_summary(model, self.minimum_selection.summary);
                 }
             });
-        let maximized = self.inspector.maximized();
-        if self.inspector.expanded && !maximized {
+        let maximized = self.inspector.maximized() && !self.form.open;
+        if self.inspector.expanded && !maximized && !self.form.open {
             let response = self.inspector.docked_panel(ui, viewport.y).show(ui, |ui| {
                 ui.set_min_height(ui.available_height());
                 self.inspector
@@ -321,7 +321,7 @@ impl super::Workspace {
             self.inspector.remember_resize(ui, response.response.rect);
         }
         let mut picked = None;
-        if self.directory.open && !maximized {
+        if self.directory.open && !maximized && !self.form.open {
             let mut open = true;
             super::chrome::source_panel(ui, viewport).show(ui, |ui| {
                 super::chrome::source_heading(ui, &mut open);
