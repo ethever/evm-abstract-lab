@@ -117,8 +117,11 @@ def observe(opener, directory, base_url, endpoint, request_bytes, process, recor
             if identity["version"] == previous["version"]:
                 assert result == retained, "same publication changed"
             elif identity["minimum_version"] is not None and identity["minimum_version"] == previous["minimum_version"]:
-                current_sources = {program["id"]: program for program in report["programs"]}
-                assert all(current_sources.get(program["id"]) == program for program in retained["report"]["programs"])
+                for source_directory in ("programs", "process_controls"):
+                    current_sources = {source["id"]: source for source in report[source_directory]}
+                    assert len(current_sources) == len(report[source_directory]), f"duplicate {source_directory} ID"
+                    assert all(current_sources.get(source["id"]) == source
+                               for source in retained["report"][source_directory]), f"same minimum version changed {source_directory}"
         summary = {"publication": identity, "task_state_at_observation": state,
                    "advertised_publication": advertised, "http": detail, "artifact": name + ".json",
                    "submit_to_body_received_seconds": detail["body_received_monotonic"] - started,
