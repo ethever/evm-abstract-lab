@@ -8,7 +8,7 @@ use egui_extras::{Column, TableBuilder};
 use evm_abstract_notation::Symbol;
 use evm_abstract_protocol::{AccountCode, AccountState, StorageEntry, StoreSnapshot, ValueInfo};
 
-mod slots;
+pub(super) mod slots;
 
 pub(super) fn account<'a>(
     store: Option<&'a StoreSnapshot>,

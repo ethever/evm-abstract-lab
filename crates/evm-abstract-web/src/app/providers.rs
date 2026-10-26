@@ -162,7 +162,7 @@ mod tests {
         workspace.receive_message(Message::Status {
             generation,
             operation: JobOperation::Submit,
-            result: Ok(JobReply {
+            result: Box::new(Ok(JobReply {
                 result: Ok(JobSnapshot {
                     publication: None,
                     id: JobId(17),
@@ -170,7 +170,7 @@ mod tests {
                     progress: AnalysisProgress::default(),
                     timings: evm_abstract_protocol::AnalysisTimings::default(),
                 }),
-            }),
+            })),
         });
         assert!(workspace.task.next_command(0.0).is_none());
         assert!(matches!(

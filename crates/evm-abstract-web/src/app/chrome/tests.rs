@@ -30,7 +30,7 @@ fn status(
     workspace.receive_message(Message::Status {
         generation,
         operation,
-        result: Ok(api::JobReply {
+        result: Box::new(Ok(api::JobReply {
             result: Ok(api::JobSnapshot {
                 publication: (state == evm_abstract_protocol::JobState::Completed)
                     .then(crate::tests::native_publication),
@@ -39,7 +39,7 @@ fn status(
                 progress: api::AnalysisProgress::default(),
                 timings: api::AnalysisTimings::default(),
             }),
-        }),
+        })),
     });
 }
 

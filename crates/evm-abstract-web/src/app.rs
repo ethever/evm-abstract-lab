@@ -7,6 +7,7 @@ mod hybrid;
 mod inspector;
 mod job;
 mod layout;
+pub(crate) mod minimum;
 pub(crate) mod model;
 mod providers;
 mod startup;
@@ -100,6 +101,9 @@ pub(crate) enum View {
 pub struct Workspace {
     report: Option<AnalysisReport>,
     report_view: model::ReportViewState,
+    minimum_selection: minimum::Selection,
+    minimum_source: minimum::SourceCache,
+    minimum_native_requested: bool,
     // Only a validated report from an accepted server result owns this ID.
     // It remains bound to the visible report across later task generations.
     report_job_id: Option<JobId>,
@@ -128,6 +132,9 @@ impl Default for Workspace {
         Self {
             report: None,
             report_view: model::ReportViewState::default(),
+            minimum_selection: minimum::Selection::default(),
+            minimum_source: minimum::SourceCache::default(),
+            minimum_native_requested: false,
             report_job_id: None,
             task: Task::default(),
             startup: startup::Startup::default(),
@@ -253,6 +260,15 @@ impl Workspace {
                     .frame(palette::chrome_frame())
                     .show(ui, |ui| self.model_selector(ui));
             }
+            if self
+                .report
+                .as_ref()
+                .is_some_and(|report| self.report_view.minimum(report).is_some())
+            {
+                view_ready = self.show_minimum(ui, viewport);
+                view_shown = !ui.is_sizing_pass();
+                return;
+            }
             if let Some(report) = &self.report {
                 let report = &self.report_view.shown(report);
                 egui::Panel::top("result_context")
@@ -358,6 +374,10 @@ impl Workspace {
             && viewport.x < 1050.0
             && !self.form.open
             && !self.inspector.maximized()
+            && self
+                .report
+                .as_ref()
+                .is_none_or(|report| self.report_view.minimum(report).is_none())
         {
             let mut open = true;
             let mut pick = None;
@@ -385,6 +405,9 @@ impl Workspace {
         }
         if let Some(request) = self.form.show(ui.ctx(), self.task.busy()) {
             command = Some(self.start(request));
+        }
+        if std::mem::take(&mut self.minimum_native_requested) {
+            self.activate_view(model::Activation::Namespace(AnalysisNamespace::Native));
         }
         self.sync_selection();
         if preparing_report && let Some(timing) = &mut self.report_timing {
@@ -477,6 +500,9 @@ impl Workspace {
     }
 
     fn sync_selection(&mut self) {
+        if self.report_view.identity().is_minimum() {
+            return;
+        }
         self.inspector.select_value(self.selection.value);
         if self.selection.state == self.previous_state {
             return;
@@ -507,7 +533,7 @@ impl Workspace {
                 generation,
                 operation,
                 result,
-            } => self.task.receive_status(generation, operation, result),
+            } => self.task.receive_status(generation, operation, *result),
             Message::Result {
                 generation,
                 id,
@@ -550,17 +576,30 @@ impl Workspace {
                             return;
                         }
                         let publication = &result.publication;
-                        if publication.model_closed
-                            != (result.report.status
-                                == evm_abstract_protocol::AnalysisStatus::Converged)
+                        if (result.report.minimum.is_some()
+                            != publication.minimum_version.is_some())
+                            || (!self.previous_report
+                                && self.report_job_id == Some(id)
+                                && self
+                                    .report
+                                    .as_ref()
+                                    .is_some_and(|old| old.minimum.is_some())
+                                && result.report.minimum.is_none())
+                            || publication.model_closed
+                                != (result.report.status
+                                    == evm_abstract_protocol::AnalysisStatus::Converged)
                             || result.report.global.is_some()
                                 != publication.global_version.is_some()
                             || result.report.native.is_some()
                                 != publication.native_version.is_some()
-                            || [publication.global_version, publication.native_version]
-                                .into_iter()
-                                .flatten()
-                                .any(|version| version > publication.version)
+                            || [
+                                publication.minimum_version,
+                                publication.global_version,
+                                publication.native_version,
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .any(|version| version > publication.version)
                             || self
                                 .task
                                 .advertised_publication()
@@ -667,8 +706,9 @@ impl Workspace {
                 value.map_or("unavailable".into(), |version| version.0.to_string())
             };
             status.push_str(&format!(
-                "; Publication: {}; Global graph: {}; Native graph: {}; Closed model: {}",
+                "; Publication: {}; Minimum model: {}; Global graph: {}; Native graph: {}; Closed model: {}",
                 publication.version.0,
+                version(publication.minimum_version),
                 version(publication.global_version),
                 version(publication.native_version),
                 publication.model_closed
@@ -735,6 +775,9 @@ impl Workspace {
         if !self.previous_report
             && let Some(report) = &self.report
         {
+            if let Some(minimum) = self.report_view.minimum(report) {
+                return self.minimum_status(report, minimum);
+            }
             let report = &self.report_view.shown(report);
             return format!(
                 "{}: {} instructions, {} CFG states, {} SSA blocks, {} SSA values; {:?}; SSA {}; CFG nodes: {}; {} programs, {} accounts, {} outcomes; Selected {}; source {}; {}; {}; SSA details: {:?}",

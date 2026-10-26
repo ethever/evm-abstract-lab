@@ -133,6 +133,12 @@ impl Workspace {
                 } else if self.task.phase==super::job::TaskPhase::Cancelled {
                     ui.colored_label(palette::WARNING,"Cancelled · worker cleanup acknowledged");
                 } else if let Some(model)=&self.report {
+                    if let Some(minimum)=self.report_view.minimum(model) {
+                        ui.colored_label(if minimum.current{palette::ACCENT}else{palette::WARNING},terminal_coverage::detail_status(model));
+                        ui.label(format!("{} qualified relations",minimum.summaries.len()));
+                        ui.label(super::minimum::rich_status(model));
+                        return;
+                    }
                     let report = &self.report_view.shown(model);
                     let complete=report.hybrid.as_ref().map_or(report.status==AnalysisStatus::Converged&&report.ssa.complete, |hybrid| hybrid.coverage.baseline_current);
                     let label=terminal_coverage::detail_status(model);

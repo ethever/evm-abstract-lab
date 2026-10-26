@@ -7,6 +7,7 @@ mod context;
 mod errors;
 mod evidence;
 mod hybrid;
+mod minimum;
 mod panel;
 mod process;
 pub(crate) mod shortcut;
@@ -294,6 +295,34 @@ impl Inspector {
         ui.advance_cursor_after_rect(rect);
     }
 
+    fn window_controls(&mut self, ui: &mut Ui) {
+        if controls::action(ui, "Hide", Density::Compact)
+            .on_hover_text(self.visibility_hint(ui.ctx()))
+            .clicked()
+        {
+            self.expanded = false;
+        }
+        if controls::action(
+            ui,
+            if self.panel.maximized() {
+                "Restore"
+            } else {
+                "Maximize"
+            },
+            Density::Compact,
+        )
+        .on_hover_text(if self.panel.maximized() {
+            "Restore the previous Inspect height"
+        } else {
+            "Use the result workspace for Inspect"
+        })
+        .clicked()
+        {
+            self.panel.toggle_maximized();
+            ui.ctx().request_repaint();
+        }
+    }
+
     fn contents(
         &mut self,
         ui: &mut Ui,
@@ -332,31 +361,7 @@ impl Inspector {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if controls::action(ui, "Hide", Density::Compact)
-                        .on_hover_text(self.visibility_hint(ui.ctx()))
-                        .clicked()
-                    {
-                        self.expanded = false;
-                    }
-                    if controls::action(
-                        ui,
-                        if self.panel.maximized() {
-                            "Restore"
-                        } else {
-                            "Maximize"
-                        },
-                        Density::Compact,
-                    )
-                    .on_hover_text(if self.panel.maximized() {
-                        "Restore the previous Inspect height"
-                    } else {
-                        "Use the result workspace for Inspect"
-                    })
-                    .clicked()
-                    {
-                        self.panel.toggle_maximized();
-                        ui.ctx().request_repaint();
-                    }
+                    self.window_controls(ui)
                 });
             });
         });

@@ -18,6 +18,7 @@ use crate::{
 pub(crate) fn native_publication() -> api::JobPublication {
     api::JobPublication {
         version: api::PublicationVersion(api::DecimalU64(1)),
+        minimum_version: None,
         global_version: None,
         native_version: Some(api::PublicationVersion(api::DecimalU64(1))),
         model_closed: true,
@@ -73,6 +74,7 @@ pub(crate) fn procedure_report(bytecode: &str) -> AnalysisReport {
 /// Legacy native inspectors test this component independently of global coverage.
 pub(crate) fn native_component(mut report: AnalysisReport) -> AnalysisReport {
     report.model.hybrid = None;
+    report.model.minimum = None;
     report.model.global = None;
     report.model.selected_view = api::AnalysisNamespace::Native;
     report
@@ -146,6 +148,8 @@ pub(crate) fn empty_report() -> AnalysisReport {
     AnalysisReport {
         model: api::AnalysisReport {
             schema_version: SCHEMA_VERSION,
+            minimum: None,
+            rich_export: api::RichExportOutcome::Complete,
             selected_view: api::AnalysisNamespace::Native,
             status: AnalysisStatus::Converged,
             work: 0,

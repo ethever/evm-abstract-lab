@@ -139,7 +139,7 @@ pub(super) fn prepare(
     geometry::Input { nodes, edges }
 }
 
-fn kind(kind: EdgeKind) -> geometry::EdgeKind {
+pub(super) fn kind(kind: EdgeKind) -> geometry::EdgeKind {
     match kind {
         // This selects geometric routing only; the wire kind and process label stay intact.
         EdgeKind::Process(_) | EdgeKind::Fallthrough => geometry::EdgeKind::Fallthrough,

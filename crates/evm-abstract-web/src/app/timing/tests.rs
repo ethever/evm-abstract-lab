@@ -23,7 +23,7 @@ fn status(workspace: &mut Workspace, generation: u64, state: api::JobState) {
     workspace.receive_message(Message::Status {
         generation,
         operation: JobOperation::Submit,
-        result: Ok(api::JobReply {
+        result: Box::new(Ok(api::JobReply {
             result: Ok(api::JobSnapshot {
                 publication: (state == api::JobState::Completed)
                     .then(crate::tests::native_publication),
@@ -32,7 +32,7 @@ fn status(workspace: &mut Workspace, generation: u64, state: api::JobState) {
                 progress: api::AnalysisProgress::default(),
                 timings: backend(),
             }),
-        }),
+        })),
     });
 }
 
@@ -168,7 +168,7 @@ fn disconnected_polling_keeps_elapsed_live_while_terminal_failure_and_cancel_fre
     workspace.receive_message(Message::Status {
         generation: 1,
         operation: JobOperation::Poll,
-        result: Err(crate::TransportError::Timeout { seconds: 15 }),
+        result: Box::new(Err(crate::TransportError::Timeout { seconds: 15 })),
     });
     assert!(workspace.task.wait.running());
     assert!(workspace.accessible_status().contains("Elapsed:"));
@@ -264,9 +264,9 @@ fn narrow_status_keeps_the_elapsed_clock_visible_and_backend_stages_are_authorit
     workspace.receive_message(Message::Status {
         generation: 1,
         operation: JobOperation::Submit,
-        result: Ok(api::JobReply {
+        result: Box::new(Ok(api::JobReply {
             result: Ok(snapshot),
-        }),
+        })),
     });
     let strings = frame(&mut workspace, egui::vec2(360.0, 420.0));
     assert!(

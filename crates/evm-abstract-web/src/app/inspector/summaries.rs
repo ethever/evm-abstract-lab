@@ -1,6 +1,6 @@
 //! Explain summarized interactions beside the actual caller and return edges.
 use crate::report::ReportView;
-mod regional;
+pub(super) mod regional;
 
 use super::process;
 use crate::palette;
