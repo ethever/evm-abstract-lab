@@ -74,7 +74,12 @@ fn text_position(output: &FullOutput, expected: &str) -> Option<Pos2> {
         .iter()
         .rev()
         .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.text() == expected || text.galley.text().starts_with(&format!("0x{expected}  ")) => Some(text.pos),
+            egui::Shape::Text(text)
+                if text.galley.text() == expected
+                    || text.galley.text().starts_with(&format!("0x{expected}  ")) =>
+            {
+                Some(text.pos)
+            }
             _ => None,
         })
 }
