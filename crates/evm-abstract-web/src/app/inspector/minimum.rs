@@ -81,7 +81,7 @@ impl Inspector {
                 return;
             }
             if tab == Tab::Frame {
-                original_inputs(ui, model, selected);
+                original_inputs(ui, report, model, selected);
                 return;
             }
             let Some(summary) = selected.summary(model) else {
@@ -199,7 +199,12 @@ impl Inspector {
     }
 }
 
-fn original_inputs(ui: &mut Ui, model: &MinimumModel, selected: &mut Selection) {
+fn original_inputs(
+    ui: &mut Ui,
+    report: &api::AnalysisReport,
+    model: &MinimumModel,
+    selected: &mut Selection,
+) {
     ui.label("Original input observations");
     ui.label("These rows precede analysis effects; procedure inputs may join additional invocation states.");
     egui::Grid::new("minimum_original_environment")
@@ -273,6 +278,9 @@ fn original_inputs(ui: &mut Ui, model: &MinimumModel, selected: &mut Selection) 
 
     });
     ui.collapsing("Model qualification and policy", |ui| {
+        if let Some(policy) = crate::app::hybrid::source_policy(report) {
+            ui.label(policy);
+        }
         ui.monospace(format!(
             "Source: {:?} · facts {}",
             model.source_snapshot, model.revision

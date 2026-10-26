@@ -3,6 +3,8 @@ use egui::{Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawI
 use evm_abstract_protocol as api;
 use evm_abstract_protocol::RpcProvider;
 
+mod precision;
+
 fn frame(ctx: &Context, form: &mut AnalysisForm, events: Vec<Event>) -> Option<AnalyzeRequest> {
     paint(ctx, form, events).0
 }
