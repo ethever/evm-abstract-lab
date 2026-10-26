@@ -4,7 +4,7 @@ from web_test_hybrid import source_program
 from pathlib import Path
 from playwright.sync_api import expect
 import json
-from web_test_graph_helpers import graph_mode, symbol
+from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol
 from web_test_harness import rendered_frame, resize_view, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import layout_page, layout_submission
 from web_test_pixels import assert_translation, graph_screenshot_metrics, screenshot_metrics, text_pixels, workspace_content_bottom
@@ -60,6 +60,8 @@ def ssa_details_interactions(browser, url: str, output: Path):
     assert by_pc[4]["operands"]==by_pc[0]["results"] and not by_pc[4]["results"]
     assert by_pc[8]["operands"]==by_pc[0]["results"]
     assert by_pc[11]["operands"]==by_pc[9]["results"]+by_pc[6]["results"]
+    graph_overview(page,canvas,fit=True)
+    graph_content(page,canvas,"SSA")
     graph_mode(page,canvas,"States");page.keyboard.press("f");settle_gesture(page)
     compact_graph=details_graph_snapshot(page,canvas,output,"ssa-details-graph-compact")
     expect(status).to_contain_text("CFG detail: SSA preview")
