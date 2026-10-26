@@ -4,8 +4,8 @@ from web_test_hybrid import oracle_graph, source_instructions, source_program
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
-from web_test_graph_helpers import graph_mode
-from web_test_harness import analysis_server, complete_submission, observe_webgpu, settle_gesture, webgpu_evidence
+from web_test_graph_helpers import graph_content, graph_mode, graph_overview
+from web_test_harness import analysis_server, complete_submission, hide_world_directory, observe_webgpu, settle_gesture, webgpu_evidence
 from web_test_inspector_helpers import hide_inspector
 from web_test_layout_helpers import LAYOUT_FIXTURES, layout_counts, layout_detail_regions
 from web_test_pixels import node_snapshot
@@ -108,8 +108,10 @@ def _hierarchy_page(browser,url,args,rpc,providers,regions):
         assert executed==set(rpc.accounts)
         relative=None
     (args.output/"hierarchy-nested-calls-analysis.json").write_text(json.dumps(report,indent=2)+"\n")
-    canvas.click(position={"x":1440-180,"y":12});hide_inspector(page,canvas)
-    page.keyboard.press("2");settle_gesture(page);graph_mode(page,canvas,"States")
+    hide_world_directory(page,canvas);hide_inspector(page,canvas)
+    graph_overview(page,canvas,fit=True)
+    graph_content(page,canvas,"SSA")
+    graph_mode(page,canvas,"States")
     page.keyboard.press("f");settle_gesture(page)
     scene=layout_counts(page,report,mode="States")
     assert scene["groups"]>=(2 if regions==1 else 3)
