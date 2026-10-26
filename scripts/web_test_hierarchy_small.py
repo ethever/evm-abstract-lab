@@ -4,7 +4,7 @@ from pathlib import Path
 from playwright.sync_api import expect
 import re
 from web_test_graph_helpers import graph_content, graph_overview, symbol
-from web_test_harness import complete_submission, observe_webgpu, set_control, settle_gesture, webgpu_evidence
+from web_test_harness import click_control, complete_submission, observe_webgpu, set_control, settle_control_geometry, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import layout_counts, layout_fixture, layout_page, layout_submission
 from web_test_pixels import assert_layout_same_geometry, layout_ink, node_snapshot, require_scene_complete
 
@@ -15,8 +15,10 @@ def hierarchy_small_interactions(browser, url: str, output: Path):
     for name in ["shortcut", "linear-chain"]:
         code, metadata = layout_fixture(name)
         report = layout_submission(page, canvas, code, output, name)
-        graph_overview(page, canvas, fit=True)
+        graph_overview(page, canvas)
         graph_content(page, canvas, "SSA")
+        click_control(page,canvas,"Fit graph",role="action")
+        settle_control_geometry(page)
         assert report["status"] == "Converged", report["frontiers"]
         assert len(report["cfg"]) == metadata["expected_native_states"]
         assert len(report["edges"]) == metadata["expected_original_edges"]
@@ -45,11 +47,11 @@ def hierarchy_small_interactions(browser, url: str, output: Path):
                 # pixel oracle by continuing real wheel input until that scale.
                 if ("CFG detail: identities" in status
                         and float(re.search(r"; CFG zoom: ([0-9.]+)%",status)[1]) <= 55): break
-                page.mouse.move(*pointer); page.keyboard.down("Control"); page.mouse.wheel(0,160); page.keyboard.up("Control"); settle_gesture(page)
+                page.mouse.move(*pointer); page.keyboard.down("Control"); page.mouse.wheel(0,40); page.keyboard.up("Control"); settle_gesture(page)
             expect(page.locator("#analysis-status")).to_contain_text("CFG detail: identities")
             low_zoom=float(re.search(r"; CFG zoom: ([0-9.]+)%",page.locator("#analysis-status").text_content())[1])
             assert low_zoom <= 55
-            page.mouse.move(2,2);settle_gesture(page)
+            settle_control_geometry(page)
             low = node_snapshot(page,canvas,output,"hierarchy-chain-identities",measure_nodes=True)
             assert len(low["nodes"])==4,low
             target = max(low["nodes"],key=lambda rect:rect[1])
@@ -66,7 +68,7 @@ def hierarchy_small_interactions(browser, url: str, output: Path):
             for _ in range(12):
                 if "CFG detail: SSA preview" in page.locator("#analysis-status").text_content(): break
                 page.mouse.move(*pointer);page.keyboard.down("Control");page.mouse.wheel(0,-120);page.keyboard.up("Control");settle_gesture(page)
-            page.mouse.move(2,2);settle_gesture(page)
+            settle_control_geometry(page)
             expect(page.locator("#analysis-status")).to_contain_text("CFG detail: SSA preview")
             high_zoom=float(re.search(r"; CFG zoom: ([0-9.]+)%",page.locator("#analysis-status").text_content())[1])
             assert high_zoom >= 65
@@ -93,8 +95,10 @@ def hierarchy_small_interactions(browser, url: str, output: Path):
         # Close the same actual anchored Inspector at either viewport width.
         set_control(page,canvas,"Inspect",False)
         report=layout_submission(page,canvas,code,output,f"hierarchy-initial-{width}")
-        graph_overview(page,canvas,fit=True)
+        graph_overview(page,canvas)
         graph_content(page,canvas,"SSA")
+        click_control(page,canvas,"Fit graph",role="action")
+        settle_control_geometry(page)
         layout_counts(page,report,0)
         samples.append(node_snapshot(page,canvas,output,f"hierarchy-initial-{width}-scene",(4,123,width-4,height-30),True))
         page.close()

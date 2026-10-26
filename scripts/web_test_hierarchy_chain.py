@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 from web_test_graph_helpers import graph_content, graph_mode, graph_overview, symbol
-from web_test_harness import click_control, settle_gesture, webgpu_evidence
+from web_test_harness import click_control, settle_control_geometry, settle_gesture, webgpu_evidence
 from web_test_layout_helpers import LAYOUT_DEFAULT_LIMITS, layout_counts, layout_fixture, layout_page, layout_submission
 from web_test_pixels import layout_camera_intervals, layout_card_extent, layout_ink, node_snapshot
 from web_test_hybrid import source_instructions
@@ -17,9 +17,10 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
     report = layout_submission(page, canvas, code, output, fixture_name)
     # The original full-scene and camera proofs deliberately use all contexts.
     # The default readable entry window has its own scoped-card semantics.
-    graph_overview(page, canvas, fit=True)
+    graph_overview(page, canvas)
     graph_content(page, canvas, "SSA")
-    page.mouse.move(2,2);settle_gesture(page)
+    click_control(page,canvas,"Fit graph",role="action")
+    settle_control_geometry(page)
     assert report["status"] == "Converged", report["frontiers"]
     assert len(report["cfg"]) == metadata["expected_native_states"]
     assert len(report["edges"]) == metadata["expected_original_edges"]
@@ -68,7 +69,8 @@ def hierarchy_long_chain_interactions(browser, url, output, fixture_name="long-l
                (before["bounds"][1]+before["bounds"][3])/2)
     page.mouse.move(*pointer)
     page.keyboard.down("Control"); page.mouse.wheel(0, 160); page.keyboard.up("Control")
-    page.mouse.move(2,2); settle_gesture(page)
+    settle_gesture(page)
+    settle_control_geometry(page)
     after = layout_card_extent(page, canvas.screenshot(path=str(output/f"{prefix}-zoom-out.png")))
     assert after["bounds"] and after["pixels"] > 50, after
     before_height = before["bounds"][3]-before["bounds"][1]
